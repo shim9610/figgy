@@ -104,17 +104,21 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
+| Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
+| Colour images (imshow) | Three channel grids on one lattice, mapped from a `range` (`RgbImage`) | [Colour images](crates/renderer/CONFIG.md#colour-images-imshow) |
+| Parallel coordinates | One column per axis (`Parallel`) on a chart with `Config.parallel`, each axis its own range | [Parallel coordinates](crates/renderer/CONFIG.md#parallel-coordinates) |
 | Vector fields (quiver) | Anchors and (u, v) columns, or two matrices on a grid | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
 | Colour and size maps (bubbles) | A value column per point, mapped by `PointColorMap` through the colorbar (`Config.colorbar`) or by `PointSizeMap` through its size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
-| Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text and arrows | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
+| Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
-| 3D surfaces | A heatmap's grid drawn as a surface in a box with `Config.view_3d` | [Surface](crates/renderer/SURFACE.md) |
-| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical` | [Bars](crates/renderer/CATEGORICAL.md) |
+| 3D surfaces | A heatmap's grid drawn as a surface in a box with `Config.view_3d`, with points and trajectories from a `z_column` | [Surface](crates/renderer/SURFACE.md) |
+| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
 | Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
 | Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
 | Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
+| Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
 
 Every row above pies and donuts is a column-backed chart: its data enters
 through `ColumnSource` into one GPU column pool, and these charts share one
@@ -215,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,

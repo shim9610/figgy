@@ -40,6 +40,15 @@ pub struct SeriesConfig {
     pub x_column: ColumnId,
     /// Y column id.
     pub y_column: ColumnId,
+    /// Z column id: the height of a `Scatter`, `Line` or `ScatterLine`
+    /// series on a 3D chart (`Config.view_3d`), read on `right_y`. Kept
+    /// and unused on a flat chart; `None` (omitted from JSON) is every
+    /// other series.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub z_column: Option<ColumnId>,
     pub render_type: DataRenderType,
 }
 
@@ -130,6 +139,45 @@ pub enum DataRenderType {
         )]
         surface: Option<SurfaceStyle>,
     },
+    /// Three matrices drawn as a colour image (#139): `red`, `green` and
+    /// `blue` on one lattice (the series' coordinate columns; the grids
+    /// share their column count, orientation and layout), each channel's
+    /// value mapped linearly from `range` to 0..1 and clamped. No colourbar
+    /// is read: the colours are the data. `Flat` paints each cell its
+    /// colour, `Interpolated` blends each channel between sample points; a
+    /// cell with a non-finite value in any channel is unpainted. Drawn flat
+    /// only; see [`Config::validate_rgb_image_series`](crate::config::Config::validate_rgb_image_series).
+    RgbImage {
+        red: MatrixRef,
+        green: MatrixRef,
+        blue: MatrixRef,
+        /// The channel values that map to 0 and 1 (`[0, 1]` by default;
+        /// `[0, 255]` for bytes).
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                default = "default_image_range",
+                skip_serializing_if = "is_default_image_range"
+            )
+        )]
+        range: [f64; 2],
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                default = "default_image_shading",
+                skip_serializing_if = "is_default_image_shading"
+            )
+        )]
+        shading: Shading,
+        #[cfg_attr(
+            feature = "serde",
+            serde(
+                default = "default_image_opacity",
+                skip_serializing_if = "is_default_image_opacity"
+            )
+        )]
+        opacity: f32,
+    },
     /// Contour lines only — the field is not filled.
     Contour {
         matrix: MatrixRef,
@@ -191,7 +239,9 @@ pub enum DataRenderType {
     /// axis is the only way to thin them.
     ///
     /// The columns must be GPU resident; a streamed source is rejected with
-    /// an error. Polar charts (`Config.polar`) reject category bars.
+    /// an error. On a polar chart (`Config.polar`) with a categorical angle
+    /// axis the bars fan around the centre as wedges, a rose (#133): the
+    /// group is vertical, the value is the radius.
     CategoryBars {
         /// The fill colour of the series' bars, opaque.
         color: Color,
@@ -493,6 +543,38 @@ pub enum DataRenderType {
         )]
         color_map: Option<PointColorMap>,
     },
+    /// Parallel coordinates (#141): one polyline per row across the axes of
+    /// a parallel chart (`Config.parallel`), row `r` through
+    /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
+    /// normalization only to place the sample (rule 1). `columns` names one
+    /// column per axis, in the axes' order; `x_column` and `y_column` are
+    /// its first two. A row with a non-finite value breaks at that axis.
+    /// With `color_column`, each row's polyline takes the colour of that
+    /// column's value through `Config.colorbar`; without, the line's
+    /// colour. Drawn in the precise draw style only, solid and linear
+    /// without a fill; the columns must be GPU resident. See
+    /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
+    Parallel {
+        /// One column id per axis of the parallel chart, in order (a `Vec`
+        /// of configuration: SSOT, rule 3).
+        columns: Vec<ColumnId>,
+        /// The rows' line: its colour (without `color_column`) and width.
+        line: DataLineStyleConfig,
+        /// Colour each row by a host column through `Config.colorbar`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        color_column: Option<ColumnId>,
+    },
+}
+
+/// A [`DataRenderType::Parallel`] series' fields, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct ParallelRef<'a> {
+    pub columns: &'a [ColumnId],
+    pub line: &'a DataLineStyleConfig,
+    pub color_column: Option<&'a str>,
 }
 
 /// The arrowheads of a [`DataRenderType::Streamlines`] series: the vector
@@ -1183,7 +1265,8 @@ pub enum MatrixOrientation {
     ColumnsAreY,
 }
 
-/// Whether coordinate columns give cell edges or cell centres.
+/// Whether coordinate columns give cell edges, cell centres or the centres
+/// of a hexagonal lattice.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GridLayout {
@@ -1191,6 +1274,18 @@ pub enum GridLayout {
     Edges,
     /// `n` coordinates at the middle of `n` cells.
     Centers,
+    /// `n` columns by `m` rows of flat-topped hexagons (a hexbin, #134): the
+    /// cell of column `c`, row `r` is centred at `(x[c], y[r] + (c mod 2) ·
+    /// (y[1] − y[0]) / 2)`, so the odd columns are raised by half the row
+    /// pitch. Both coordinate columns are uniform (every step equal to the
+    /// first within 1e-6 relative, at least two coordinates each); the cells
+    /// are regular when the column pitch is `√3 / 2` of the row pitch and
+    /// stretched otherwise. The host bins its samples; the renderer draws
+    /// the grid it is given, shaded flat, as a `Heatmap` on linear axes of a
+    /// flat chart: a contour, an interpolated fill, a grid vector and a 3D
+    /// view read a rectangular lattice and are rejected
+    /// ([`Config::validate_hexagonal_series`](crate::config::Config::validate_hexagonal_series)).
+    Hexagonal,
 }
 
 impl MatrixRef {
@@ -1228,7 +1323,7 @@ impl MatrixRef {
         };
         let cells = |coordinates: usize| match self.grid_layout {
             GridLayout::Edges => coordinates.saturating_sub(1),
-            GridLayout::Centers => coordinates,
+            GridLayout::Centers | GridLayout::Hexagonal => coordinates,
         };
         (cells(along), cells(across))
     }
@@ -1253,6 +1348,36 @@ pub enum FillMode {
     /// One flat colour per interval between contour levels. With no levels this
     /// is a single band, i.e. a flat field.
     Bands,
+}
+
+#[cfg(feature = "serde")]
+fn default_image_range() -> [f64; 2] {
+    [0.0, 1.0]
+}
+
+#[cfg(feature = "serde")]
+fn default_image_shading() -> Shading {
+    Shading::Flat
+}
+
+#[cfg(feature = "serde")]
+fn default_image_opacity() -> f32 {
+    1.0
+}
+
+#[cfg(feature = "serde")]
+fn is_default_image_range(range: &[f64; 2]) -> bool {
+    *range == default_image_range()
+}
+
+#[cfg(feature = "serde")]
+fn is_default_image_shading(shading: &Shading) -> bool {
+    *shading == default_image_shading()
+}
+
+#[cfg(feature = "serde")]
+fn is_default_image_opacity(opacity: &f32) -> bool {
+    *opacity == default_image_opacity()
 }
 
 /// Whether a cell is one colour or interpolated across its corners.
@@ -2107,6 +2232,7 @@ impl DataRenderType {
             | DataRenderType::ScatterErrorbarXY { .. }
             | DataRenderType::Histogram { .. }
             | DataRenderType::Heatmap { .. }
+            | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. }
             | DataRenderType::Vector { .. }
@@ -2117,7 +2243,9 @@ impl DataRenderType {
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
             // A ternary chart has no line offsets.
-            | DataRenderType::Ternary { .. } => false,
+            | DataRenderType::Ternary { .. }
+            // Nor has a parallel chart.
+            | DataRenderType::Parallel { .. } => false,
         }
     }
 
@@ -2363,9 +2491,11 @@ impl crate::config::Config {
     /// linear numeric value axis, with no cap on the number of bars (#107),
     /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
-    /// whose own axis is a value axis on y, and a polar chart draws no
-    /// category bars. Whether a column holds one value per category is
-    /// data: the renderer checks it against the pool when it prepares.
+    /// whose own axis is a value axis on y. On a polar chart the bars are
+    /// a rose (#133): wedges of the categorical angle axis (`bottom_x`)
+    /// along the linear radius axis, so the group is vertical. Whether a
+    /// column holds one value per category is data: the renderer checks it
+    /// against the pool when it prepares.
     pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
@@ -2383,9 +2513,6 @@ impl crate::config::Config {
         };
         if bars().next().is_none() {
             return Ok(());
-        }
-        if self.polar.is_some() {
-            return Err("category bars are not drawn on polar axes");
         }
         for layer in self.panel_layers() {
             let members = || bars().filter(|s| self.layer_of_series(&s.series_id) == layer);
@@ -2408,6 +2535,12 @@ impl crate::config::Config {
                 LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
             };
             let chart = subplot.as_ref().unwrap_or(self);
+            if horizontal && chart.polar.is_some() {
+                return Err(
+                    "a rose fans its bars around the centre: the group direction on a polar chart \
+                     is vertical",
+                );
+            }
             let category_axis = if horizontal {
                 &chart.left_y
             } else {
@@ -3047,6 +3180,34 @@ impl DataRenderType {
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
             DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
+    /// A parallel series' columns, line and colour column (#141), or
+    /// `None` for every other kind.
+    pub fn parallel(&self) -> Option<ParallelRef<'_>> {
+        match self {
+            DataRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            } => Some(ParallelRef {
+                columns,
+                line,
+                color_column: color_column.as_deref(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The three channel grids of an [`RgbImage`](DataRenderType::RgbImage)
+    /// series, red first, or `None` for every other kind.
+    pub fn rgb_image(&self) -> Option<[&MatrixRef; 3]> {
+        match self {
+            DataRenderType::RgbImage {
+                red, green, blue, ..
+            } => Some([red, green, blue]),
             _ => None,
         }
     }
@@ -4005,6 +4166,107 @@ impl crate::config::Config {
     /// the angle axis' categories. Whether a column holds one value per
     /// category is data: the renderer checks it against the pool when it
     /// prepares.
+    /// The rules a hexagonal grid ([`GridLayout::Hexagonal`]) is held to:
+    /// it is the grid of a `Heatmap` (a contour or a heatmap with contours
+    /// reads a rectangular lattice, as does a grid vector), shaded flat, on a
+    /// flat chart (no `view_3d`) whose x and y axes are linear, so the
+    /// lattice is uniform on screen as it is in data. The coordinate
+    /// columns' uniformity is the renderer's check, from their statistics.
+    pub fn validate_hexagonal_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        for item in series {
+            let (matrix, shading) = match &item.render_type {
+                DataRenderType::Heatmap { matrix, fill, .. } => (matrix, Some(&fill.shading)),
+                // An image's three grids share one layout (its own rule).
+                DataRenderType::RgbImage { red, shading, .. } => (red, Some(shading)),
+                DataRenderType::Contour { matrix, .. }
+                | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                DataRenderType::Vector {
+                    components: VectorComponents::Grid { u, v },
+                    style,
+                } => {
+                    let color = match &style.color_map {
+                        Some(VectorColorMap::Grid(color)) => Some(color),
+                        _ => None,
+                    };
+                    if [Some(u), Some(v), color]
+                        .into_iter()
+                        .flatten()
+                        .any(|grid| grid.grid_layout == GridLayout::Hexagonal)
+                    {
+                        return Err(
+                            "a grid vector reads a rectangular lattice: not a hexagonal grid",
+                        );
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            if matrix.grid_layout != GridLayout::Hexagonal {
+                continue;
+            }
+            let Some(shading) = shading else {
+                return Err(
+                    "contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only",
+                );
+            };
+            if *shading != Shading::Flat {
+                return Err("a hexagonal grid is shaded flat");
+            }
+            if self.view_3d.is_some() {
+                return Err("a hexagonal grid draws flat: not on a 3D chart");
+            }
+            if self.bottom_x.scale != AxisScale::Linear || self.left_y.scale != AxisScale::Linear {
+                return Err("a hexagonal grid needs linear x and y axes: its lattice is uniform");
+            }
+        }
+        Ok(())
+    }
+
+    /// The rules an image series ([`DataRenderType::RgbImage`], #139) is
+    /// held to: its three grids share their column count, orientation and
+    /// grid layout (one lattice, three tables), `range` is finite with a
+    /// smaller low end, `opacity` is in `0..=1`, and the chart is flat (no
+    /// `view_3d`). Polar charts reject every field series (the renderer's
+    /// rule), and a hexagonal lattice follows
+    /// [`validate_hexagonal_series`](Self::validate_hexagonal_series).
+    pub fn validate_rgb_image_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        for item in series {
+            let DataRenderType::RgbImage {
+                red,
+                green,
+                blue,
+                range,
+                opacity,
+                ..
+            } = &item.render_type
+            else {
+                continue;
+            };
+            if green.columns.len() != red.columns.len() || blue.columns.len() != red.columns.len() {
+                return Err("an image's channels share one lattice: the same number of columns");
+            }
+            if green.orientation != red.orientation
+                || blue.orientation != red.orientation
+                || green.grid_layout != red.grid_layout
+                || blue.grid_layout != red.grid_layout
+            {
+                return Err(
+                    "an image's channels share one lattice: the same orientation and grid layout",
+                );
+            }
+            if !range[0].is_finite() || !range[1].is_finite() || !(range[0] < range[1]) {
+                return Err("an image's range is finite with a smaller low end");
+            }
+            if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                return Err("an image's opacity is 0..=1");
+            }
+            if self.view_3d.is_some() {
+                return Err("an image draws flat: not on a 3D chart");
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         use crate::layer::LayerRef;
         let radars = || series.iter().filter(|s| s.render_type.radar().is_some());
@@ -4133,7 +4395,9 @@ impl DataRenderType {
             // Its samples, as a scatter or a line series'.
             | DataRenderType::Ternary { .. }
             // Its vertices, NaN separators included, as a line's (D4).
-            | DataRenderType::Streamlines { .. } => true,
+            | DataRenderType::Streamlines { .. }
+            // Its rows (#141).
+            | DataRenderType::Parallel { .. } => true,
             DataRenderType::Vector { components, .. } => {
                 matches!(components, VectorComponents::Points { .. })
             }
@@ -4141,6 +4405,7 @@ impl DataRenderType {
             DataRenderType::BoxPlot { points, .. } => points.is_some(),
             DataRenderType::Histogram { .. }
             | DataRenderType::Heatmap { .. }
+            | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. }
             | DataRenderType::CategoryBars { .. }
@@ -4250,6 +4515,12 @@ impl crate::config::Config {
                 // A ternary sample needs its third component too.
                 if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
                     count = count.min(len(c_column));
+                }
+                // A parallel row needs every axis column (#141).
+                if let DataRenderType::Parallel { columns, .. } = &next.render_type {
+                    for column in columns {
+                        count = count.min(len(column));
+                    }
                 }
                 Some(PickedDataRef::Point {
                     series_id: next.series_id.clone(),
@@ -4364,6 +4635,8 @@ impl crate::config::Config {
                     DataRenderType::Heatmap { matrix, .. }
                     | DataRenderType::Contour { matrix, .. }
                     | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                    // An image steps over its red grid, which the others match.
+                    DataRenderType::RgbImage { red, .. } => red,
                     DataRenderType::Vector {
                         components: VectorComponents::Grid { u, .. },
                         ..
@@ -4634,8 +4907,18 @@ mod serde_tests {
         assert_eq!(scatter.point_color_map, None);
         assert_eq!(scatter.point_size_map, None);
 
-        let json = serde_json::to_value(cfg).expect("serialize");
+        let json = serde_json::to_value(cfg.clone()).expect("serialize");
         assert!(json.get("source_id").is_none());
+        // The height column (#132) is omitted while unset and round-trips.
+        assert!(json.get("z_column").is_none());
+        let mut tall = cfg;
+        tall.z_column = Some("z".into());
+        let json_tall = serde_json::to_value(&tall).expect("serialize");
+        assert_eq!(json_tall["z_column"], "z");
+        assert_eq!(
+            serde_json::from_value::<SeriesConfig>(json_tall).expect("parse"),
+            tall
+        );
         let scatter = &json["render_type"]["Scatter"]["scatter"];
         assert!(scatter.get("point_style_table").is_none());
         assert!(scatter.get("point_style_index_column").is_none());
@@ -4865,6 +5148,7 @@ mod serde_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Vector {
                 components: VectorComponents::Points {
                     u: "u".into(),
@@ -4921,6 +5205,24 @@ mod serde_tests {
         assert!(!again.contains("min_length_px"));
         assert!(!again.contains("color_map"));
         assert!(again.contains("\"pivot\":\"Tail\""));
+    }
+
+    #[test]
+    fn a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate() {
+        use super::{GridLayout, MatrixOrientation, MatrixRef};
+        let json = serde_json::to_string(&GridLayout::Hexagonal).unwrap();
+        assert_eq!(json, "\"Hexagonal\"");
+        assert_eq!(
+            serde_json::from_str::<GridLayout>(&json).unwrap(),
+            GridLayout::Hexagonal
+        );
+        let matrix = MatrixRef {
+            columns: vec!["z0".into(), "z1".into(), "z2".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: GridLayout::Hexagonal,
+        };
+        assert_eq!(matrix.coordinate_cells(3, 4), (3, 4));
+        assert_eq!(matrix.effective_extent(3, 4, 2), (3, 2));
     }
 
     #[test]
@@ -5077,6 +5379,65 @@ mod serde_tests {
                 .expect_err("invalid spacing must fail during deserialization");
             assert!(error.to_string().contains("spacing_px must be finite"));
         }
+    }
+    /// An image (#139) parses with its range, shading and opacity defaulted
+    /// (`[0, 1]`, `Flat`, `1`), writes them only when they differ, and round
+    /// trips either way.
+    #[test]
+    fn an_image_parses_with_its_defaults_and_round_trips() {
+        use super::{DataRenderType, Shading};
+        let matrix = |ch: &str| {
+            serde_json::json!({
+                "columns": [format!("{ch}0"), format!("{ch}1")],
+                "orientation": "ColumnsAreX",
+                "grid_layout": "Centers"
+            })
+        };
+        let mut json = base_series_json();
+        json["render_type"] = serde_json::json!({
+            "RgbImage": { "red": matrix("r"), "green": matrix("g"), "blue": matrix("b") }
+        });
+        let parsed: SeriesConfig = serde_json::from_value(json).unwrap();
+        let DataRenderType::RgbImage {
+            red,
+            green,
+            blue,
+            range,
+            shading,
+            opacity,
+        } = &parsed.render_type
+        else {
+            panic!("expected an image");
+        };
+        assert_eq!(red.columns, vec!["r0".to_string(), "r1".to_string()]);
+        assert_eq!(green.columns[1], "g1");
+        assert_eq!(blue.grid_layout, GridLayout::Centers);
+        assert_eq!(*range, [0.0, 1.0]);
+        assert_eq!(*shading, Shading::Flat);
+        assert_eq!(*opacity, 1.0);
+        assert_eq!(
+            parsed
+                .render_type
+                .rgb_image()
+                .map(|g| g[2].columns[0].as_str()),
+            Some("b0")
+        );
+        let again = serde_json::to_string(&parsed).unwrap();
+        for key in ["range", "shading", "opacity"] {
+            assert!(
+                !again.contains(key),
+                "the default {key} is omitted: {again}"
+            );
+        }
+        let back: SeriesConfig = serde_json::from_str(&again).unwrap();
+        assert_eq!(back, parsed);
+        // Explicit values survive the trip.
+        let mut bytes = serde_json::to_value(&parsed).unwrap();
+        bytes["render_type"]["RgbImage"]["range"] = serde_json::json!([0.0, 255.0]);
+        bytes["render_type"]["RgbImage"]["shading"] = serde_json::json!("Interpolated");
+        bytes["render_type"]["RgbImage"]["opacity"] = serde_json::json!(0.5);
+        let parsed: SeriesConfig = serde_json::from_value(bytes.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), bytes);
     }
 }
 
@@ -5366,6 +5727,7 @@ mod category_bar_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("{id}.values"),
+            z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color: Color::from_rgb8(40, 120, 200),
                 style: CategoryBarStyle::default(),
@@ -5547,11 +5909,23 @@ mod category_bar_tests {
         );
     }
 
+    /// A polar chart draws its category bars as a rose (#133): vertical
+    /// groups over the categorical angle axis; a horizontal group is named.
     #[test]
-    fn polar_charts_draw_no_category_bars() {
+    fn polar_charts_draw_vertical_roses_only() {
         let mut config = chart(3);
         config.polar = Some(Default::default());
-        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+        assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..BarGroups::default()
+        });
+        assert_eq!(
+            config.validate_category_bars(&[bars("a")]),
+            Err(
+                "a rose fans its bars around the centre: the group direction on a polar chart is vertical"
+            )
+        );
     }
 
     #[test]
@@ -5912,6 +6286,7 @@ mod box_plot_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("{id}.record"),
+            z_column: None,
             render_type: DataRenderType::BoxPlot {
                 color: Color::from_rgb8(40, 120, 200),
                 style: BoxPlotStyle::default(),
@@ -6475,6 +6850,7 @@ mod radar_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("values.{id}"),
+            z_column: None,
             render_type: DataRenderType::Radar {
                 color: Color::from_rgb8(40, 120, 200),
                 style: RadarSeriesStyle::default(),
@@ -6793,6 +7169,7 @@ mod step_selection_tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type,
         }
     }
@@ -7295,6 +7672,7 @@ mod streamline_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Streamlines {
                 line: DataLineStyleConfig {
                     line_width: 1.5,
@@ -7429,6 +7807,7 @@ mod range_bar_tests {
             label: None,
             x_column: "pos".into(),
             y_column: format!("{id}.end"),
+            z_column: None,
             render_type: DataRenderType::RangeBars {
                 color: Color::from_rgb8(40, 120, 200),
                 style: CategoryBarStyle::default(),
@@ -7804,6 +8183,245 @@ mod range_bar_tests {
         assert_eq!(
             serde_json::from_str::<SeriesConfig>(&again).unwrap(),
             parsed
+        );
+    }
+}
+
+#[cfg(test)]
+mod hexagonal_tests {
+    use super::{
+        ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout,
+        LineInterpolation, MatrixOrientation, MatrixRef, SeriesConfig, Shading, VectorComponents,
+        VectorScale, VectorStyle,
+    };
+    use crate::color::Color;
+    use crate::config::AxisScale;
+    use crate::line::LineStylePreset;
+    use crate::view3d::View3d;
+
+    fn matrix(layout: GridLayout) -> MatrixRef {
+        MatrixRef {
+            columns: vec!["z0".into(), "z1".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: layout,
+        }
+    }
+
+    fn fill(shading: Shading) -> FieldFillConfig {
+        FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading,
+            opacity: 1.0,
+        }
+    }
+
+    fn series(render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "hex".into(),
+            source_id: None,
+            z_column: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type,
+        }
+    }
+
+    fn heatmap(layout: GridLayout, shading: Shading) -> SeriesConfig {
+        series(DataRenderType::Heatmap {
+            matrix: matrix(layout),
+            fill: fill(shading),
+            surface: None,
+        })
+    }
+
+    fn contour() -> ContourConfig {
+        ContourConfig {
+            levels: vec![0.5],
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: LineInterpolation::Linear,
+            },
+            per_level_color: None,
+            labels: None,
+        }
+    }
+
+    /// A hexagonal grid is a flat heatmap on linear axes of a flat chart;
+    /// every other reading of it is named.
+    #[test]
+    fn the_rules_name_each_rejection() {
+        let config = crate::default::default_config();
+        let ok = |series: &[SeriesConfig]| config.validate_hexagonal_series(series);
+        assert_eq!(ok(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]), Ok(()));
+        assert_eq!(
+            ok(&[heatmap(GridLayout::Centers, Shading::Interpolated)]),
+            Ok(()),
+            "a rectangular grid keeps its freedoms"
+        );
+        assert_eq!(
+            ok(&[heatmap(GridLayout::Hexagonal, Shading::Interpolated)]),
+            Err("a hexagonal grid is shaded flat")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::Contour {
+                matrix: matrix(GridLayout::Hexagonal),
+                contour: contour(),
+            })]),
+            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::HeatmapContour {
+                matrix: matrix(GridLayout::Hexagonal),
+                fill: fill(Shading::Flat),
+                contour: contour(),
+                surface: None,
+            })]),
+            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::Vector {
+                components: VectorComponents::Grid {
+                    u: matrix(GridLayout::Hexagonal),
+                    v: matrix(GridLayout::Hexagonal),
+                },
+                style: VectorStyle {
+                    color: Color::BLACK,
+                    width_px: 1.0,
+                    scale: VectorScale::Pixels { px_per_unit: 1.0 },
+                    head_length_px: 4.0,
+                    head_width_px: 3.0,
+                    pivot: Default::default(),
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            })]),
+            Err("a grid vector reads a rectangular lattice: not a hexagonal grid")
+        );
+        let mut log = config.clone();
+        log.left_y.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            log.validate_hexagonal_series(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]),
+            Err("a hexagonal grid needs linear x and y axes: its lattice is uniform")
+        );
+        let mut three_d = config.clone();
+        three_d.view_3d = Some(View3d::default());
+        let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];
+        assert_eq!(
+            three_d.validate_hexagonal_series(&hex),
+            Err("a hexagonal grid draws flat: not on a 3D chart")
+        );
+        assert_eq!(
+            three_d.validate_view3d_series(&hex),
+            Err("a hexagonal grid draws flat: not on a 3D chart"),
+            "the 3D rules reject it too, whichever runs first"
+        );
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::{DataRenderType, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Shading};
+    use crate::view3d::View3d;
+
+    fn matrix(ch: &str, orientation: MatrixOrientation, layout: GridLayout) -> MatrixRef {
+        MatrixRef {
+            columns: vec![format!("{ch}0"), format!("{ch}1")],
+            orientation,
+            grid_layout: layout,
+        }
+    }
+
+    fn image(range: [f64; 2], opacity: f32) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "img".into(),
+            source_id: None,
+            z_column: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::RgbImage {
+                red: matrix("r", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
+                green: matrix("g", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
+                blue: matrix("b", MatrixOrientation::ColumnsAreX, GridLayout::Centers),
+                range,
+                shading: Shading::Flat,
+                opacity,
+            },
+        }
+    }
+
+    /// An image's channels share one lattice, its range is finite and
+    /// ordered, its opacity 0..=1, and it draws flat; every other reading is
+    /// named.
+    #[test]
+    fn the_rules_name_each_rejection() {
+        let config = crate::default::default_config();
+        let ok = |series: &[SeriesConfig]| config.validate_rgb_image_series(series);
+        assert_eq!(ok(&[image([0.0, 1.0], 1.0)]), Ok(()));
+        assert_eq!(
+            ok(&[image([0.0, 255.0], 0.0)]),
+            Ok(()),
+            "bytes, fully transparent"
+        );
+        let mut short = image([0.0, 1.0], 1.0);
+        if let DataRenderType::RgbImage { green, .. } = &mut short.render_type {
+            green.columns.pop();
+        }
+        assert_eq!(
+            ok(&[short]),
+            Err("an image's channels share one lattice: the same number of columns")
+        );
+        let mut turned = image([0.0, 1.0], 1.0);
+        if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
+            blue.orientation = MatrixOrientation::ColumnsAreY;
+        }
+        assert_eq!(
+            ok(&[turned]),
+            Err("an image's channels share one lattice: the same orientation and grid layout")
+        );
+        let mut edges = image([0.0, 1.0], 1.0);
+        if let DataRenderType::RgbImage { red, .. } = &mut edges.render_type {
+            red.grid_layout = GridLayout::Edges;
+        }
+        assert_eq!(
+            ok(&[edges]),
+            Err("an image's channels share one lattice: the same orientation and grid layout")
+        );
+        for range in [
+            [1.0, 1.0],
+            [2.0, 1.0],
+            [0.0, f64::INFINITY],
+            [f64::NAN, 1.0],
+        ] {
+            assert_eq!(
+                ok(&[image(range, 1.0)]),
+                Err("an image's range is finite with a smaller low end"),
+                "{range:?}"
+            );
+        }
+        for opacity in [-0.1, 1.5, f32::NAN] {
+            assert_eq!(
+                ok(&[image([0.0, 1.0], opacity)]),
+                Err("an image's opacity is 0..=1"),
+                "{opacity}"
+            );
+        }
+        let mut three_d = config.clone();
+        three_d.view_3d = Some(View3d::default());
+        let flat = [image([0.0, 1.0], 1.0)];
+        assert_eq!(
+            three_d.validate_rgb_image_series(&flat),
+            Err("an image draws flat: not on a 3D chart")
+        );
+        assert_eq!(
+            three_d.validate_view3d_series(&flat),
+            Err("an image draws flat: not on a 3D chart"),
+            "the 3D rules reject it too, whichever runs first"
         );
     }
 }

@@ -120,34 +120,110 @@ fn frame(chart: &RadialChart, size: (u32, u32), scale: f32) -> Result<Frame, Rad
     })
 }
 
-/// Where one circle of the chart sits: its slices, shape, start angle and
+/// Where a node's label is drawn: its own placement, except that on a
+/// sunburst only the outermost ring has outside labels; an inner ring's
+/// `Outside` draws inside its band (#140).
+pub(super) fn placement(
+    chart: &RadialChart,
+    target: RadialTarget,
+    slice: &RadialSlice,
+) -> RadialLabels {
+    let own = slice.labels.unwrap_or(chart.labels);
+    if own == RadialLabels::Outside && chart.is_sunburst() && target.group + 1 < chart.group_count()
+    {
+        RadialLabels::Inside
+    } else {
+        own
+    }
+}
+
+/// Where one circle of the chart sits: its nodes, shape, start angle and
 /// total, and its centre and radius in logical pixels. Group 0 is the main
-/// circle, group 1 the detail circle of a split.
+/// circle, group 1 the detail circle of a split; on a sunburst (#140) group
+/// `k` is ring `k` of the one circle, its band between `hole` and 1 of
+/// `radius`.
 struct Circle<'a> {
-    slices: &'a [RadialSlice],
-    kind: RadialKind,
+    chart: &'a RadialChart,
+    group: usize,
+    /// The nodes of a plain circle; a sunburst ring reads its nodes through
+    /// the chart's ring walk.
+    slices: Option<&'a [RadialSlice]>,
     start: f32,
-    total: f64,
     center: [f32; 2],
+    /// The outer radius of this circle's band, logical pixels.
     radius: f32,
+    /// The inner radius of the band as a fraction of `radius`.
+    hole: f32,
     max_explode: f32,
 }
+impl<'a> Circle<'a> {
+    fn len(&self) -> usize {
+        match self.slices {
+            Some(slices) => slices.len(),
+            None => self.chart.group_len(self.group),
+        }
+    }
+    fn node(&self, index: usize) -> Option<&'a RadialSlice> {
+        match self.slices {
+            Some(slices) => slices.get(index),
+            None => self.chart.slice(RadialTarget {
+                group: self.group,
+                index,
+            }),
+        }
+    }
+    /// The angles of node `index`: both ends from the same cumulative sum
+    /// (`RadialChart::node_span`), so no f32 wedge increments accumulate
+    /// and the last node leaves no rounding hole.
+    fn span(&self, index: usize) -> Option<(f32, f32)> {
+        let (a, b) = self.chart.node_span(RadialTarget {
+            group: self.group,
+            index,
+        })?;
+        Some((self.start + a as f32 * TAU, self.start + b as f32 * TAU))
+    }
+    /// The label placement of node `index`.
+    fn placement(&self, index: usize, slice: &RadialSlice) -> RadialLabels {
+        placement(
+            self.chart,
+            RadialTarget {
+                group: self.group,
+                index,
+            },
+            slice,
+        )
+    }
+}
 fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a>, RadialError> {
-    let (slices, kind, start) = match (g, &chart.split) {
-        (0, _) => (
-            chart.slices.as_slice(),
+    let sunburst = chart.is_sunburst();
+    if g >= chart.group_count() {
+        return Err(RadialError::Invalid(if sunburst {
+            "sunburst has no such ring"
+        } else {
+            "radial chart has no detail circle"
+        }));
+    }
+    let (slices, kind, start) = match (sunburst, g, &chart.split) {
+        (true, _, _) => (
+            None,
             chart.kind,
             chart.start_angle_degrees.rem_euclid(360.0).to_radians(),
         ),
-        (_, Some(split)) => (
-            split.children.as_slice(),
+        (false, 0, _) => (
+            Some(chart.slices.as_slice()),
+            chart.kind,
+            chart.start_angle_degrees.rem_euclid(360.0).to_radians(),
+        ),
+        (false, _, Some(split)) => (
+            Some(split.children.as_slice()),
             split.kind,
             -std::f32::consts::FRAC_PI_2,
         ),
-        (_, None) => return Err(RadialError::Invalid("radial chart has no detail circle")),
+        (false, _, None) => {
+            return Err(RadialError::Invalid("radial chart has no detail circle"));
+        }
     };
     let (top, bottom) = (area.y, area.y + area.height);
-    let total = slices.iter().map(|s| s.value).sum::<f64>();
     let (left, right) = if chart.split.is_none() {
         (area.x, area.x + area.width)
     } else if g == 0 {
@@ -155,48 +231,57 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     } else {
         (area.x + (area.width + 48.) * 0.6, area.x + area.width)
     };
-    let max_explode = slices
-        .iter()
-        .filter(|s| s.value > 0.0)
-        .map(|s| s.explode)
+    // The nodes the circle's geometry is measured over: a plain circle's
+    // slices, or every node of a sunburst (its rings share one centre and
+    // one outer radius) with its effective label placement.
+    let nodes = || -> Box<dyn Iterator<Item = (&'a RadialSlice, RadialLabels)> + 'a> {
+        match slices {
+            Some(slices) => Box::new(
+                slices
+                    .iter()
+                    .map(move |s| (s, placement(chart, RadialTarget { group: g, index: 0 }, s))),
+            ),
+            None => Box::new((0..chart.group_count()).flat_map(move |group| {
+                (0..chart.group_len(group)).filter_map(move |index| {
+                    let target = RadialTarget { group, index };
+                    let s = chart.slice(target)?;
+                    Some((s, placement(chart, target, s)))
+                })
+            })),
+        }
+    };
+    let max_explode = nodes()
+        .filter(|(s, _)| s.value > 0.0)
+        .map(|(s, _)| s.explode)
         .fold(0.0, f32::max);
     // The automatic area already reserves 24 logical pixels at both
     // outer edges (and either side of the split). Keep the original
     // default geometry while leaving room for all eight resize handles.
     let mut margin = 0.0;
-    let outside =
-        |slice: &RadialSlice| slice.labels.unwrap_or(chart.labels) == RadialLabels::Outside;
-    if slices.iter().any(outside) {
-        let max_label = slices
-            .iter()
-            .filter(|s| s.value > 0.0 && outside(s))
-            .flat_map(|s| text_lines(s))
+    if nodes().any(|(_, p)| p == RadialLabels::Outside) {
+        let max_label = nodes()
+            .filter(|(s, p)| s.value > 0.0 && *p == RadialLabels::Outside)
+            .flat_map(|(s, _)| text_lines(s))
             .map(|line| width(chart, line, chart.font_size))
             .fold(0.0, f32::max);
         margin = max_label + 12.0;
     }
     let sn = chart.style.tilt_degrees.to_radians().sin();
     // Reserve the maximum lift even at rest: interaction must not resize the chart.
-    let max_lift = slices
-        .iter()
-        .map(|s| s.style.as_ref().unwrap_or(&chart.style).hover_lift)
+    let max_lift = nodes()
+        .map(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).hover_lift)
         .fold(0.0, f32::max);
-    let max_depth = slices
-        .iter()
-        .map(|s| s.style.as_ref().unwrap_or(&chart.style).depth)
+    let max_depth = nodes()
+        .map(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).depth)
         .fold(chart.style.depth, f32::max);
-    let shadow_margin = if slices
-        .iter()
-        .any(|s| s.style.as_ref().unwrap_or(&chart.style).shadow)
-    {
+    let shadow_margin = if nodes().any(|(s, _)| s.style.as_ref().unwrap_or(&chart.style).shadow) {
         0.55
     } else {
         0.25
     };
-    let extent = slices
-        .iter()
-        .filter(|s| s.value > 0.0)
-        .map(|s| {
+    let extent = nodes()
+        .filter(|(s, _)| s.value > 0.0)
+        .map(|(s, _)| {
             let style = s.style.as_ref().unwrap_or(&chart.style);
             let tilt = style.tilt_degrees.to_radians();
             2.0 * tilt.cos() * (1.0 + max_explode)
@@ -209,7 +294,11 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     margin = margin.min(((right - left) * 0.5 - 40.0 * (1.0 + max_explode)).max(0.));
     let radius =
         ((right - left - 2.0 * margin) / (2.0 * (1.0 + max_explode))).min((bottom - top) / extent);
-    let radius = if g == 1 { radius * 0.76 } else { radius };
+    let radius = if !sunburst && g == 1 {
+        radius * 0.76
+    } else {
+        radius
+    };
     if radius < 32.0 {
         return Err(RadialError::Invalid("radial data area is too small"));
     }
@@ -217,15 +306,32 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
         (left + right) * 0.5,
         (top + bottom) * 0.5 + chart.style.depth * sn * radius * 0.5,
     ];
+    // A sunburst's rings split the band between the hole and the rim into
+    // equal depths: ring `k` of `d` runs from `h + (1 - h) k / d` to
+    // `h + (1 - h) (k + 1) / d` of the radius (`ring_band`).
+    let (radius, hole) = if sunburst {
+        let (inner, outer) = ring_band(kind.inner_radius(), g, chart.group_count());
+        (radius * outer, inner / outer)
+    } else {
+        (radius, kind.inner_radius())
+    };
     Ok(Circle {
+        chart,
+        group: g,
         slices,
-        kind,
         start,
-        total,
         center,
         radius,
+        hole,
         max_explode,
     })
+}
+
+/// The band of ring `ring` of `depth` rings between the hole `hole` and the
+/// rim, as fractions of the circle's radius: `(inner, outer)`.
+fn ring_band(hole: f32, ring: usize, depth: usize) -> (f32, f32) {
+    let step = (1.0 - hole) / depth.max(1) as f32;
+    (hole + step * ring as f32, hole + step * (ring + 1) as f32)
 }
 
 /// The sector of slice `index` of circle `g`, in physical pixels, or `None`
@@ -239,13 +345,11 @@ fn sector(
     index: usize,
     scale: f32,
 ) -> Option<Sector> {
-    let slice = &c.slices[index];
+    let slice = c.node(index)?;
     if slice.value == 0.0 {
         return None;
     }
-    let before = c.slices[..index].iter().map(|s| s.value).sum::<f64>();
-    let a = c.start + (before / c.total) as f32 * TAU;
-    let b = c.start + ((before + slice.value) / c.total) as f32 * TAU;
+    let (a, b) = c.span(index)?;
     let style = slice.style.as_ref().unwrap_or(&chart.style);
     let target = RadialTarget { group: g, index };
     let amount = chart.interaction.amount(target);
@@ -257,12 +361,7 @@ fn sector(
     // glyphs and their hit regions all read it from `effects[3]`.
     let label_lift = vertical_lift * tilt.sin() * radius_px;
     Some(Sector {
-        geometry: [
-            c.center[0] * scale,
-            c.center[1] * scale,
-            radius_px,
-            c.kind.inner_radius(),
-        ],
+        geometry: [c.center[0] * scale, c.center[1] * scale, radius_px, c.hole],
         arc: [a, b - a, tilt, style.depth],
         color: [slice.color.r, slice.color.g, slice.color.b, 1.0],
         material: MaterialGpu::pack(
@@ -271,7 +370,9 @@ fn sector(
             style.texture_strength,
             style.texture_scale,
             style.gloss,
-            index as f32 * 13.17,
+            // Two rings' same-index nodes do not share grain; a plain
+            // circle's seeds are unchanged (group 0).
+            (g * 97 + index) as f32 * 13.17,
             style.texture_angle_degrees.rem_euclid(360.0).to_radians(),
             amount * style.hover_brightness,
         ),
@@ -297,7 +398,7 @@ fn sector(
         effects: [
             0.0,
             0.0,
-            if slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside
+            if c.placement(index, slice) == RadialLabels::Inside
                 && !raster_moves_inside_labels(chart)
             {
                 1.0
@@ -375,7 +476,9 @@ fn emit_inside(
     let Some(s) = sector(chart, c, g, index, scale) else {
         return;
     };
-    let slice = &c.slices[index];
+    let Some(slice) = c.node(index) else {
+        return;
+    };
     let mid = s.arc[0] + s.arc[1] * 0.5;
     let r = (s.geometry[3] + 1.0) * 0.5;
     let (x, mut y) = projected(&s, mid, r.max(0.6));
@@ -431,8 +534,11 @@ fn side_labels(
 ) -> ([((f32, f32), usize); MAX_RADIAL_SLICES], usize) {
     let mut labels = [((0.0, 0.0), 0); MAX_RADIAL_SLICES];
     let mut n = 0;
-    for (index, slice) in c.slices.iter().enumerate() {
-        if slice.labels.unwrap_or(chart.labels) != RadialLabels::Outside {
+    for index in 0..c.len() {
+        let Some(slice) = c.node(index) else {
+            continue;
+        };
+        if c.placement(index, slice) != RadialLabels::Outside {
             continue;
         }
         let Some(s) = sector(chart, c, g, index, scale) else {
@@ -518,7 +624,9 @@ fn emit_outside(
         if only.is_some_and(|only| only != *index) {
             continue;
         }
-        let slice = &c.slices[*index];
+        let Some(slice) = c.node(*index) else {
+            continue;
+        };
         let target = RadialTarget {
             group: g,
             index: *index,
@@ -591,10 +699,10 @@ pub(super) fn emit_decoration(
             let Ok(c) = circle(chart, f.area, t.group) else {
                 return false;
             };
-            let Some(slice) = c.slices.get(t.index) else {
+            let Some(slice) = c.node(t.index) else {
                 return true;
             };
-            match slice.labels.unwrap_or(chart.labels) {
+            match c.placement(t.index, slice) {
                 RadialLabels::Inside => emit_inside(chart, &f, &c, t.group, t.index, false, sink),
                 RadialLabels::Outside => {
                     let Some(s) = sector(chart, &c, t.group, t.index, scale) else {
@@ -689,7 +797,7 @@ impl Selectable<RadialChart> for RadialDecoration {
         match &self.id {
             DecorationId::RadialLabel(t) => chart
                 .slice(*t)
-                .is_some_and(|s| s.labels.unwrap_or(chart.labels) == RadialLabels::Outside),
+                .is_some_and(|s| placement(chart, *t, s) == RadialLabels::Outside),
             _ => false,
         }
     }
@@ -884,23 +992,32 @@ pub(super) fn layout(
     }
     // While the shader lifts the inside glyphs, they are rastered at rest.
     let inside_at_rest = annotate && !raster_moves_inside_labels(chart);
-    for g in 0..if chart.split.is_some() { 2 } else { 1 } {
+    // Main ring first, then ring by ring (a split's detail circle second),
+    // so the sector buffer's order is the targets' order.
+    for g in 0..chart.group_count() {
         let c = circle(chart, f.area, g)?;
-        out.groups[g] = [
-            c.center[0] * scale,
-            c.center[1] * scale,
-            c.radius * scale,
-            chart.style.tilt_degrees.to_radians().cos(),
-        ];
-        out.holes[g] = c.kind.inner_radius();
-        for index in 0..c.slices.len() {
+        // The two circle lanes of the uniform describe the main circle and
+        // a split's detail circle; a sunburst's rings share the first.
+        if g < out.groups.len() {
+            out.groups[g] = [
+                c.center[0] * scale,
+                c.center[1] * scale,
+                c.radius * scale,
+                chart.style.tilt_degrees.to_radians().cos(),
+            ];
+            out.holes[g] = c.hole;
+        }
+        for index in 0..c.len() {
             if let Some(s) = sector(chart, &c, g, index, scale) {
                 out.targets.push(RadialTarget { group: g, index });
                 out.sectors.push(s);
             }
         }
-        for (index, slice) in c.slices.iter().enumerate() {
-            if slice.value > 0.0 && slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside {
+        for index in 0..c.len() {
+            let Some(slice) = c.node(index) else {
+                continue;
+            };
+            if slice.value > 0.0 && c.placement(index, slice) == RadialLabels::Inside {
                 if let Some(paint) = paint.as_deref_mut() {
                     emit_inside(chart, &f, &c, g, index, inside_at_rest, paint);
                 }

@@ -9,6 +9,9 @@ use crate::format::PlainNumberFormat;
 use crate::{Color, Material};
 
 pub const MAX_RADIAL_SLICES: usize = 64;
+/// The rings of a sunburst ([`RadialSlice::children`], #140): a tree deeper
+/// than this is rejected. Approved on #140 as the DataLess chart's limit.
+pub const MAX_SUNBURST_DEPTH: usize = 8;
 /// The lines of a slice's drawn label text.
 const MAX_LABEL_LINES: usize = 2;
 /// The characters of one line of a slice's drawn label text: room for the
@@ -52,6 +55,17 @@ pub struct RadialSlice {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub text: Option<String>,
+    /// The slice's children (#140): a chart whose slices have children is a
+    /// sunburst, the tree's rings drawn outward from the centre, each child
+    /// the sector of the next ring over its share of its parent's angular
+    /// span, in order. The children's values are in the parent's units and
+    /// sum to at most the parent's value; the remainder of the span stays
+    /// empty on the child ring. Empty for a plain slice (omitted on the wire).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub children: Vec<RadialSlice>,
 }
 impl RadialSlice {
     pub fn new(label: impl Into<String>, value: f64, color: Color) -> Self {
@@ -65,8 +79,86 @@ impl RadialSlice {
             label_format: None,
             label_color: None,
             text: None,
+            children: Vec::new(),
         }
     }
+}
+
+/// The depth of a slice tree: 0 for no slices, 1 for slices without children.
+fn tree_depth(slices: &[RadialSlice]) -> usize {
+    slices
+        .iter()
+        .map(|s| 1 + tree_depth(&s.children))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Visits the nodes of ring `ring` of a slice tree in document order (the
+/// children of each node of the ring above, parent by parent), until `f`
+/// answers `false`. Returns whether the walk ran to the end.
+fn walk_ring<'a>(
+    slices: &'a [RadialSlice],
+    ring: usize,
+    f: &mut dyn FnMut(&'a RadialSlice) -> bool,
+) -> bool {
+    if ring == 0 {
+        return slices.iter().all(|s| f(s));
+    }
+    slices.iter().all(|s| walk_ring(&s.children, ring - 1, f))
+}
+
+/// [`walk_ring`], mutably.
+fn walk_ring_mut<'a>(
+    slices: &'a mut [RadialSlice],
+    ring: usize,
+    f: &mut dyn FnMut(&'a mut RadialSlice) -> bool,
+) -> bool {
+    if ring == 0 {
+        return slices.iter_mut().all(|s| f(s));
+    }
+    slices
+        .iter_mut()
+        .all(|s| walk_ring_mut(&mut s.children, ring - 1, f))
+}
+
+/// The span of the `left`-th node of ring `ring` under `slices`, whose
+/// parent spans `(a, b)` of the turn with value `parent`: each node's share
+/// of its parent's value, laid in order from `a`. Counts `left` down past
+/// the ring's earlier nodes.
+fn span_walk(
+    slices: &[RadialSlice],
+    ring: usize,
+    (a, b): (f64, f64),
+    parent: f64,
+    left: &mut usize,
+) -> Option<(f64, f64)> {
+    let mut before = 0.0;
+    for s in slices {
+        let share = |v: f64| {
+            if parent > 0.0 {
+                a + (b - a) * v / parent
+            } else {
+                a
+            }
+        };
+        let span = (share(before), share(before + s.value));
+        before += s.value;
+        if ring == 0 {
+            if *left == 0 {
+                return Some(span);
+            }
+            *left -= 1;
+        } else if let Some(found) = span_walk(&s.children, ring - 1, span, s.value, left) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Visits every node of a slice tree, parents before their children, until
+/// `f` answers `false`. Returns whether the walk ran to the end.
+fn walk_tree<'a>(slices: &'a [RadialSlice], f: &mut dyn FnMut(&'a RadialSlice) -> bool) -> bool {
+    slices.iter().all(|s| f(s) && walk_tree(&s.children, f))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,7 +225,10 @@ impl Default for RadialOutline {
     }
 }
 
-/// Index in the original array (including zero-valued slices). group 1 is detail.
+/// Index in the original array (including zero-valued slices). group 1 is
+/// detail. On a sunburst ([`RadialSlice::children`]) `group` is the ring
+/// (0 the centre) and `index` the node's position among that ring's nodes
+/// in document order, zero-valued nodes included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadialTarget {
@@ -523,8 +618,81 @@ impl RadialChart {
         }
     }
 
+    /// Whether the chart is a sunburst (#140): a slice has children, so the
+    /// tree's rings are drawn outward from the centre.
+    pub fn is_sunburst(&self) -> bool {
+        self.slices.iter().any(|s| !s.children.is_empty())
+    }
+    /// The rings of the chart: the tree's depth on a sunburst (1 for a plain
+    /// chart without children), else the main circle and the detail circle
+    /// of a split.
+    pub fn group_count(&self) -> usize {
+        if self.is_sunburst() {
+            tree_depth(&self.slices)
+        } else {
+            1 + usize::from(self.split.is_some())
+        }
+    }
+    /// The nodes of group `group`: a ring's nodes on a sunburst, the slices
+    /// or the detail children otherwise; 0 for a group the chart has not.
+    pub fn group_len(&self, group: usize) -> usize {
+        if self.is_sunburst() {
+            let mut n = 0;
+            walk_ring(&self.slices, group, &mut |_| {
+                n += 1;
+                true
+            });
+            n
+        } else {
+            match group {
+                0 => self.slices.len(),
+                1 => self.split.as_ref().map_or(0, |s| s.children.len()),
+                _ => 0,
+            }
+        }
+    }
+    /// Every node the chart draws or lists: the slices and the detail
+    /// children, or every ring's nodes of a sunburst.
+    pub fn node_count(&self) -> usize {
+        (0..self.group_count()).map(|g| self.group_len(g)).sum()
+    }
+    /// The angular span of `target` as fractions of the turn from the start
+    /// angle, `[a, b)`: a slice's share of its circle's total, or a sunburst
+    /// node's share of its parent's value within the parent's span (the
+    /// children laid in order; a parent's remainder past its last child is
+    /// empty). `None` for a target the chart has not.
+    pub fn node_span(&self, target: RadialTarget) -> Option<(f64, f64)> {
+        if self.is_sunburst() {
+            let total = self.slices.iter().map(|s| s.value).sum::<f64>();
+            let mut left = target.index;
+            return span_walk(&self.slices, target.group, (0.0, 1.0), total, &mut left);
+        }
+        let slices = match target.group {
+            0 => self.slices.as_slice(),
+            1 => self.split.as_ref()?.children.as_slice(),
+            _ => return None,
+        };
+        let slice = slices.get(target.index)?;
+        let total = slices.iter().map(|s| s.value).sum::<f64>();
+        let before = slices[..target.index].iter().map(|s| s.value).sum::<f64>();
+        Some((before / total, (before + slice.value) / total))
+    }
     /// Resolve an original array index; invalid groups/indices return None.
+    /// On a sunburst the target is a ring and a position on it.
     pub fn slice(&self, target: RadialTarget) -> Option<&RadialSlice> {
+        if self.is_sunburst() {
+            let mut left = target.index;
+            let mut found = None;
+            walk_ring(&self.slices, target.group, &mut |s| {
+                if left == 0 {
+                    found = Some(s);
+                    return false;
+                }
+                left -= 1;
+                true
+            });
+            return found;
+        }
         match target.group {
             0 => self.slices.get(target.index),
             1 => self.split.as_ref()?.children.get(target.index),
@@ -533,6 +701,19 @@ impl RadialChart {
     }
     /// Edit the source model, then prepare a new renderer frame to display it.
     pub fn slice_mut(&mut self, target: RadialTarget) -> Option<&mut RadialSlice> {
+        if self.is_sunburst() {
+            let mut left = target.index;
+            let mut found = None;
+            walk_ring_mut(&mut self.slices, target.group, &mut |s| {
+                if left == 0 {
+                    found = Some(s);
+                    return false;
+                }
+                left -= 1;
+                true
+            });
+            return found;
+        }
         match target.group {
             0 => self.slices.get_mut(target.index),
             1 => self.split.as_mut()?.children.get_mut(target.index),
@@ -563,7 +744,8 @@ impl RadialChart {
 
     /// Write every slice's and every detail child's drawn [`RadialSlice::text`]
     /// from its label format, [`Self::label_decimals`], [`Self::value_suffix`]
-    /// and its circle's total, replacing what was there. Call it after
+    /// and its circle's total (a sunburst node's parent value: its
+    /// percentage is its share of its parent), replacing what was there. Call it after
     /// editing values, names, formats, the decimals or the suffix; the
     /// renderer draws the stored strings and formats nothing. A slice whose
     /// text the host wrote itself is overwritten too: set it again after
@@ -583,40 +765,46 @@ impl RadialChart {
 
     fn write_labels(&mut self, all: bool) {
         let mut slices = std::mem::take(&mut self.slices);
-        self.write_group(&mut slices, all);
+        let total = slices.iter().map(|s| s.value).sum::<f64>();
+        self.write_group(&mut slices, total, all);
         self.slices = slices;
         if let Some(mut split) = self.split.take() {
-            self.write_group(&mut split.children, all);
+            let total = split.children.iter().map(|s| s.value).sum::<f64>();
+            self.write_group(&mut split.children, total, all);
             self.split = Some(split);
         }
     }
 
-    /// The texts of one circle: percentages are of this circle's total.
-    fn write_group(&self, slices: &mut [RadialSlice], all: bool) {
-        let total = slices.iter().map(|s| s.value).sum::<f64>();
+    /// The texts of one circle or sibling group: percentages are of `total`
+    /// (the circle's total, or a sunburst parent's value for its children).
+    fn write_group(&self, slices: &mut [RadialSlice], total: f64, all: bool) {
         for slice in slices {
             if all || slice.text.is_none() {
                 slice.text = Some(self.label_lines(slice, total).join("\n"));
             }
+            if !slice.children.is_empty() {
+                let parent = slice.value;
+                self.write_group(&mut slice.children, parent, all);
+            }
         }
     }
 
-    /// Whether a frame can draw every shown label: each slice and detail
-    /// child with a value whose label is shown has its drawn text.
+    /// Whether a frame can draw every shown label: each slice, detail child
+    /// and sunburst node with a value whose label is shown has its drawn text.
     pub fn labels_have_text(&self) -> bool {
-        self.slices
-            .iter()
-            .chain(self.split.iter().flat_map(|s| s.children.iter()))
-            .all(|s| {
-                s.value == 0.0
-                    || s.labels.unwrap_or(self.labels) == RadialLabels::None
-                    || s.text.is_some()
-            })
+        let has = |s: &RadialSlice| {
+            s.value == 0.0
+                || s.labels.unwrap_or(self.labels) == RadialLabels::None
+                || s.text.is_some()
+        };
+        walk_tree(&self.slices, &mut |s| has(s))
+            && self.split.iter().flat_map(|s| s.children.iter()).all(has)
     }
 
     /// Move the persistent selection to the next (or, `backwards`, the
     /// previous) slice with a value: the main circle's slices in order, then
-    /// the detail circle's children while a split is set, wrapping at either
+    /// the detail circle's children while a split is set (on a sunburst the
+    /// centre ring's nodes, then each ring outward), wrapping at either
     /// end. From no selection, or one on a slice without a value, it starts
     /// at the first (or the last). Nothing changes when no slice has a value.
     pub fn step_selection(&mut self, backwards: bool) {
@@ -637,23 +825,14 @@ impl RadialChart {
         let next = self.steppable().nth(i);
         self.interaction.selected = next;
     }
-    /// The targets [`Self::step_selection`] visits, in its order.
+    /// The targets [`Self::step_selection`] visits, in its order: group by
+    /// group, the nodes with a value in document order.
     fn steppable(&self) -> impl Iterator<Item = RadialTarget> + '_ {
-        let main = self
-            .slices
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.value > 0.)
-            .map(|(i, _)| RadialTarget::main(i));
-        let detail = self.split.iter().flat_map(|split| {
-            split
-                .children
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.value > 0.)
-                .map(|(i, _)| RadialTarget::detail(i))
-        });
-        main.chain(detail)
+        (0..self.group_count())
+            .flat_map(move |group| {
+                (0..self.group_len(group)).map(move |index| RadialTarget { group, index })
+            })
+            .filter(move |t| self.slice(*t).is_some_and(|s| s.value > 0.))
     }
 
     /// Zero values are retained in the model, but have no geometry or label.
@@ -705,6 +884,9 @@ impl RadialChart {
             }
         }
         if let Some(split) = &self.split {
+            if self.is_sunburst() {
+                return Err("a sunburst has no detail circle");
+            }
             let parent = self
                 .slices
                 .get(split.slice_index)
@@ -716,6 +898,55 @@ impl RadialChart {
             if !kind(split.kind) {
                 return Err("invalid detail chart shape");
             }
+        }
+        if self.is_sunburst() {
+            self.validate_sunburst()?;
+        }
+        Ok(())
+    }
+
+    /// The rules of a sunburst (#140): at most [`MAX_SUNBURST_DEPTH`] rings
+    /// of at most [`MAX_RADIAL_SLICES`] nodes each; every node's children
+    /// valid as slices (one sibling group as one circle: finite values,
+    /// opaque colours, a positive sum) and summing to at most the node's
+    /// value (1e-9 relative); and a flat chart, since the rings share one
+    /// centre on screen only without a tilt or a depth.
+    fn validate_sunburst(&self) -> Result<(), &'static str> {
+        let depth = tree_depth(&self.slices);
+        if depth > MAX_SUNBURST_DEPTH {
+            return Err("a sunburst has at most 8 rings");
+        }
+        for ring in 1..depth {
+            if self.group_len(ring) > MAX_RADIAL_SLICES {
+                return Err("a sunburst ring has at most 64 nodes");
+            }
+        }
+        let flat = |style: &RadialStyle| style.tilt_degrees == 0.0 && style.depth == 0.0;
+        let mut result = Ok(());
+        walk_tree(&self.slices, &mut |s| {
+            if !s.style.as_ref().is_none_or(flat) {
+                result = Err("a sunburst draws flat: no tilt or depth");
+                return false;
+            }
+            if s.children.is_empty() {
+                return true;
+            }
+            let sum = match total(&s.children) {
+                Ok(sum) => sum,
+                Err(e) => {
+                    result = Err(e);
+                    return false;
+                }
+            };
+            if sum > s.value * (1.0 + 1e-9) {
+                result = Err("a node's children sum to at most its value");
+                return false;
+            }
+            true
+        });
+        result?;
+        if !flat(&self.style) {
+            return Err("a sunburst draws flat: no tilt or depth");
         }
         Ok(())
     }
@@ -871,6 +1102,230 @@ mod tests {
             c,
             serde_json::from_str::<RadialChart>(&serde_json::to_string(&c).unwrap()).unwrap()
         );
+    }
+
+    /// A three-ring budget: two departments, their teams, one team's
+    /// projects; one zero-valued node and one parent with a remainder.
+    fn sunburst() -> RadialChart {
+        let node = |label: &str, value: f64, children: Vec<RadialSlice>| RadialSlice {
+            children,
+            ..RadialSlice::new(label, value, Color::WHITE)
+        };
+        RadialChart {
+            slices: vec![
+                node(
+                    "Ops",
+                    60.0,
+                    vec![
+                        node(
+                            "Fleet",
+                            40.0,
+                            vec![node("Fuel", 25.0, vec![]), node("Tyres", 15.0, vec![])],
+                        ),
+                        node("Depot", 0.0, vec![]),
+                        node("Crew", 10.0, vec![]),
+                    ],
+                ),
+                node("R&D", 40.0, vec![node("Lab", 40.0, vec![])]),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// A sunburst's targets are rings and positions in document order; the
+    /// selection steps the centre ring, then each ring outward, skipping
+    /// nodes without a value; the ring walk resolves and edits every node.
+    #[test]
+    fn a_sunburst_resolves_its_rings_and_steps_them_outward() {
+        let mut c = sunburst();
+        assert!(c.is_sunburst());
+        assert_eq!(c.group_count(), 3);
+        assert_eq!([c.group_len(0), c.group_len(1), c.group_len(2)], [2, 4, 2]);
+        assert_eq!(c.group_len(3), 0);
+        let t = |group, index| RadialTarget { group, index };
+        fn label(c: &RadialChart, group: usize, index: usize) -> Option<&str> {
+            c.slice(RadialTarget { group, index })
+                .map(|s| s.label.as_str())
+        }
+        assert_eq!(label(&c, 0, 1), Some("R&D"));
+        assert_eq!(label(&c, 1, 0), Some("Fleet"));
+        assert_eq!(label(&c, 1, 1), Some("Depot"));
+        assert_eq!(label(&c, 1, 3), Some("Lab"));
+        assert_eq!(label(&c, 2, 1), Some("Tyres"));
+        assert_eq!(label(&c, 2, 2), None);
+        assert_eq!(label(&c, 3, 0), None);
+        // Spans: Ops is the first 60 % of the turn; Fleet the first two
+        // thirds of Ops; Tyres the last 15/40 of Fleet; Crew after the
+        // empty Depot; the span past Crew (60 - 40 - 10 = 10) stays empty.
+        let span = |group, index| c.node_span(t(group, index)).unwrap();
+        let close =
+            |(a, b): (f64, f64), (x, y): (f64, f64)| (a - x).abs() < 1e-12 && (b - y).abs() < 1e-12;
+        assert!(close(span(0, 0), (0.0, 0.6)));
+        assert!(close(span(0, 1), (0.6, 1.0)));
+        assert!(close(span(1, 0), (0.0, 0.4)));
+        assert!(close(span(1, 1), (0.4, 0.4)), "{:?}", span(1, 1));
+        assert!(close(span(1, 2), (0.4, 0.5)));
+        assert!(close(span(1, 3), (0.6, 1.0)));
+        assert!(close(span(2, 0), (0.0, 0.25)));
+        assert!(close(span(2, 1), (0.25, 0.4)));
+        assert_eq!(c.node_span(t(2, 2)), None);
+        assert_eq!(c.node_count(), 8);
+        let plain_span = chart().node_span(t(0, 1)).unwrap();
+        assert!(close(plain_span, (0.87, 1.0)));
+        c.slice_mut(t(2, 0)).unwrap().value = 20.0;
+        assert_eq!(c.slices[0].children[0].children[0].value, 20.0);
+        let walk = |c: &mut RadialChart, backwards: bool, steps: usize| {
+            c.interaction.selected = None;
+            (0..steps)
+                .map(|_| {
+                    c.step_selection(backwards);
+                    c.interaction.selected.unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            walk(&mut c, false, 8),
+            [
+                t(0, 0),
+                t(0, 1),
+                t(1, 0),
+                t(1, 2),
+                t(1, 3),
+                t(2, 0),
+                t(2, 1),
+                t(0, 0)
+            ]
+        );
+        assert_eq!(walk(&mut c, true, 3), [t(2, 1), t(2, 0), t(1, 3)]);
+        // A plain chart's groups are unchanged.
+        let plain = chart();
+        assert!(!plain.is_sunburst());
+        assert_eq!((plain.group_count(), plain.group_len(0)), (1, 2));
+    }
+
+    /// The rules name each rejection: a detail circle, a tilt or depth on
+    /// the chart or a node, children past their parent, a bad child, a
+    /// ninth ring and a 65-node ring; the well-formed tree validates and
+    /// its interaction targets resolve.
+    #[test]
+    fn a_sunburst_names_each_rejection() {
+        let c = sunburst();
+        assert_eq!(c.validate(), Ok(()));
+        let mut selected = sunburst();
+        selected.interaction.selected = Some(RadialTarget { group: 2, index: 1 });
+        selected.interaction.hovered = Some(RadialTarget { group: 1, index: 3 });
+        assert_eq!(selected.validate(), Ok(()));
+        selected.interaction.selected = Some(RadialTarget { group: 1, index: 1 });
+        assert_eq!(
+            selected.validate(),
+            Err("cannot emphasize a zero-valued slice")
+        );
+        selected.interaction.selected = Some(RadialTarget { group: 3, index: 0 });
+        assert_eq!(
+            selected.validate(),
+            Err("radial interaction target is out of range")
+        );
+        let mut split = sunburst();
+        split.split = Some(RadialSplit {
+            slice_index: 1,
+            kind: RadialKind::Pie,
+            children: vec![RadialSlice::new("Lab", 40.0, Color::WHITE)],
+        });
+        assert_eq!(split.validate(), Err("a sunburst has no detail circle"));
+        let mut tilted = sunburst();
+        tilted.style = RadialStyle::three_dimensional();
+        assert_eq!(
+            tilted.validate(),
+            Err("a sunburst draws flat: no tilt or depth")
+        );
+        let mut node_tilted = sunburst();
+        node_tilted.slices[1].children[0].style = Some(RadialStyle::three_dimensional());
+        assert_eq!(
+            node_tilted.validate(),
+            Err("a sunburst draws flat: no tilt or depth")
+        );
+        let mut over = sunburst();
+        over.slices[0].children[2].value = 25.0;
+        assert_eq!(
+            over.validate(),
+            Err("a node's children sum to at most its value")
+        );
+        let mut bad_child = sunburst();
+        bad_child.slices[0].children[0].children[1].value = -1.0;
+        assert_eq!(
+            bad_child.validate(),
+            Err("slice values must be finite and nonnegative")
+        );
+        let mut deep = sunburst();
+        {
+            let mut node = &mut deep.slices[1].children[0];
+            for _ in 0..MAX_SUNBURST_DEPTH - 1 {
+                node.children = vec![RadialSlice::new("deeper", node.value, Color::WHITE)];
+                node = &mut node.children[0];
+            }
+        }
+        assert_eq!(deep.validate(), Err("a sunburst has at most 8 rings"));
+        let mut wide = sunburst();
+        wide.slices[1].children[0].children = (0..65)
+            .map(|i| RadialSlice::new(format!("p{i}"), 0.5, Color::WHITE))
+            .collect();
+        assert_eq!(
+            wide.validate(),
+            Err("a sunburst ring has at most 64 nodes"),
+            "a sibling group past 64 is a ring past 64"
+        );
+        let mut wide_ring = sunburst();
+        wide_ring.slices[0].children = (0..33)
+            .map(|i| RadialSlice::new(format!("a{i}"), 1.0, Color::WHITE))
+            .collect();
+        wide_ring.slices[1].children = (0..32)
+            .map(|i| RadialSlice::new(format!("b{i}"), 1.0, Color::WHITE))
+            .collect();
+        assert_eq!(
+            wide_ring.validate(),
+            Err("a sunburst ring has at most 64 nodes")
+        );
+    }
+
+    /// A node's percentage is its share of its parent; the texts reach every
+    /// ring, and a missing one is caught.
+    #[test]
+    fn sunburst_labels_are_shares_of_the_parent() {
+        let mut c = sunburst();
+        c.label_format = RadialLabelFormat::Percent;
+        c.label_decimals = 0;
+        assert!(!c.labels_have_text());
+        c.format_labels();
+        assert!(c.labels_have_text());
+        assert_eq!(c.slices[0].text.as_deref(), Some("60%"));
+        assert_eq!(c.slices[0].children[0].text.as_deref(), Some("67%"));
+        assert_eq!(
+            c.slices[0].children[0].children[1].text.as_deref(),
+            Some("38%")
+        );
+        assert_eq!(c.slices[1].children[0].text.as_deref(), Some("100%"));
+        c.slices[0].children[0].children[1].text = None;
+        assert!(!c.labels_have_text());
+        c.normalize_labels();
+        assert_eq!(
+            c.slices[0].children[0].children[1].text.as_deref(),
+            Some("38%")
+        );
+    }
+
+    /// `children` is omitted when empty and round trips when not; a document
+    /// without the key parses as a plain chart.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn sunburst_children_round_trip_and_are_omitted_when_empty() {
+        let plain = chart();
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("children"), "{json}");
+        let c = sunburst();
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["slices"][0]["children"][0]["label"], "Fleet");
+        assert!(json["slices"][1]["children"][0].get("children").is_none());
+        assert_eq!(serde_json::from_value::<RadialChart>(json).unwrap(), c);
     }
 }
 

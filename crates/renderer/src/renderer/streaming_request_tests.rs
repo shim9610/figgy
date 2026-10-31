@@ -49,6 +49,7 @@ fn declaration(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -2520,6 +2521,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::ScatterLine { .. }
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::Heatmap { .. }
+                    | DataRenderType::RgbImage { .. }
                     | DataRenderType::Contour { .. }
                     | DataRenderType::HeatmapContour { .. }
                     | DataRenderType::CategoryBars { .. }
@@ -2527,6 +2529,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::RangeBars { .. }
                     | DataRenderType::Radar { .. }
                     | DataRenderType::Ternary { .. }
+                    | DataRenderType::Parallel { .. }
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

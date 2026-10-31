@@ -821,6 +821,7 @@ fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -841,6 +842,7 @@ fn state_test_scatter_line(id: &str, source: Option<&str>, x: &str, y: &str) -> 
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: test_scatter_style(),
             line: DataLineStyleConfig {
@@ -862,6 +864,7 @@ fn state_test_scatter(id: &str, source: Option<&str>, x: &str, y: &str) -> Serie
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: test_scatter_style(),
         },
@@ -1056,6 +1059,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
         label: None,
         x_column: "edges".into(),
         y_column: "counts".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::BLACK,
@@ -1111,6 +1115,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
         label: None,
         x_column: "edges".into(),
         y_column: "counts".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
@@ -1190,6 +1195,7 @@ fn typed_gpu_pick_returns_canonical_heatmap_cell_indices() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Heatmap {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z0".into(), "z1".into()],
@@ -1250,6 +1256,7 @@ fn typed_gpu_pick_prefers_heatmap_contour_level_over_containing_cell() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z0".into(), "z1".into()],
@@ -1513,6 +1520,7 @@ fn colour_only_edits_reuse_the_pick_slot() {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Scatter { scatter },
         }
     };
@@ -1887,6 +1895,7 @@ fn state_test_heatmap(id: &str, x: &str, y: &str, z: &[&str]) -> SeriesConfig {
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::Heatmap {
             matrix: crate::data_config::MatrixRef {
                 columns: z.iter().map(|c| c.to_string()).collect(),
@@ -3131,6 +3140,7 @@ fn set_chart_config_rejects_removing_required_colorbar_without_publishing() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Heatmap {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z".into()],
@@ -4078,6 +4088,7 @@ fn removing_errorbar_column_removes_active_scatter_picker_slot() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: test_scatter_style(),
             err_y: ErrorRef::Symmetric {
@@ -4893,6 +4904,7 @@ fn state_test_histogram(
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: crate::data_config::DataBarStyleConfig {
                 fill_color: Color::new(0.2, 0.5, 0.8, 1.0),
@@ -5147,6 +5159,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
         label: None,
         x_column: "sx".into(),
         y_column: "sy".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: test_scatter_style(),
         },
@@ -5198,6 +5211,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
         label: None,
         x_column: "ex".into(),
         y_column: "ey".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: test_scatter_style(),
             err_y: ErrorRef::Symmetric {
@@ -5298,6 +5312,7 @@ fn point_constellation_scatterline_exports() {
         label: None,
         x_column: "pc_x".into(),
         y_column: "pc_y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: DataScatterStyleConfig {
                 point_color: Color::new(1.0, 1.0, 1.0, 1.0),
@@ -5383,6 +5398,7 @@ fn all_scatter_shapes_export_visible_markers() {
             label: None,
             x_column: x_id,
             y_column: y_id,
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::new(1.0, 0.0, 0.0, 1.0),
@@ -5446,6 +5462,7 @@ fn xy_errorbar_does_not_require_zero_column() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarXY {
             scatter: test_scatter_style(),
             err_x: ErrorRef::Symmetric {
@@ -5499,6 +5516,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter,
             err_y: ErrorRef::Symmetric {
@@ -5547,6 +5565,7 @@ fn errorbar_style_index_colors_points_independently() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter,
             err_y: ErrorRef::Symmetric {
@@ -5835,6 +5854,7 @@ fn override_only_scatter_series(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Scatter { scatter },
     }
 }
@@ -5969,6 +5989,7 @@ fn value_mapped_scatter_series(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter { scatter },
     }
 }
@@ -6311,6 +6332,7 @@ fn streamed_series_reject_value_maps() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter { scatter: plain },
     };
     assert!(PrepareContext::validate_stream_series(&config, &plain).is_ok());
@@ -6364,6 +6386,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
@@ -6407,6 +6430,7 @@ fn streamed_series_reject_category_bars() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::CategoryBars {
             color: Color::BLACK,
             style: Default::default(),
@@ -6434,6 +6458,7 @@ fn streamed_series_reject_box_plots() {
         label: None,
         x_column: "x".into(),
         y_column: "record".into(),
+        z_column: None,
         render_type: DataRenderType::BoxPlot {
             color: Color::BLACK,
             style: Default::default(),
@@ -6463,6 +6488,7 @@ fn streamed_series_reject_range_bars() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::RangeBars {
             color: Color::BLACK,
             style: Default::default(),
@@ -6484,6 +6510,40 @@ fn streamed_series_reject_range_bars() {
 
 /// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
 /// streamed one is rejected with an explicit reason.
+/// A hexagonal grid reads its lattice from resident coordinate columns
+/// whose uniform steps the pool measured; a streamed one is rejected (rule
+/// 8, #134).
+#[test]
+fn streamed_series_reject_hexagonal_grids() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        z_column: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Heatmap {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into(), "z1".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Hexagonal,
+            },
+            fill: crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("hexagonal") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 #[test]
 fn streamed_series_reject_ternary_series() {
     let config = basic_errorbar_chart().config().clone();
@@ -6493,6 +6553,7 @@ fn streamed_series_reject_ternary_series() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Ternary {
             c_column: "c".into(),
             scatter: Some(crate::data_config::DataScatterStyleConfig {
@@ -6528,6 +6589,7 @@ fn streamed_series_reject_violins_and_raw_points() {
         label: None,
         x_column: "x".into(),
         y_column: String::new(),
+        z_column: None,
         render_type: DataRenderType::BoxPlot {
             color: Color::BLACK,
             style: Default::default(),
@@ -6573,6 +6635,7 @@ fn streamed_series_reject_radar() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Radar {
             color: Color::BLACK,
             style: Default::default(),
@@ -6593,6 +6656,7 @@ fn streamline_series(id: &str, color: Option<&str>) -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Streamlines {
             line: crate::data_config::DataLineStyleConfig::default(),
             arrows: Some(crate::data_config::StreamlineArrows::default()),
@@ -6722,6 +6786,7 @@ fn streamed_series_reject_polar_charts() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: Color::BLACK,
@@ -6756,6 +6821,7 @@ fn streamed_series_reject_categorical_axes() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -6881,6 +6947,7 @@ fn override_only_errorbar_paints_on_screen_and_export() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter,
             err_y: ErrorRef::Symmetric {
@@ -6971,6 +7038,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
             label: None,
             x_column: "sx".into(),
             y_column: "sy".into(),
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -6999,6 +7067,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
             label: None,
             x_column: "ex".into(),
             y_column: "ey".into(),
+            z_column: None,
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: hidden_scatter,
                 err_y: ErrorRef::Symmetric {
@@ -7073,6 +7142,7 @@ fn style_table_without_index_still_ensures_mapped_scatter_pipeline() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: Color::new(1.0, 0.0, 0.0, 1.0),
@@ -7131,6 +7201,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: test_scatter_style(),
             err_y: ErrorRef::Symmetric {
@@ -7216,6 +7287,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
         label: None,
         x_column: "short_x".into(),
         y_column: "short_y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: test_scatter_style(),
             err_y: ErrorRef::Symmetric {
@@ -7230,6 +7302,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
         label: None,
         x_column: "long_x".into(),
         y_column: "long_y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarX {
             scatter: test_scatter_style(),
             err_x: ErrorRef::Symmetric {
@@ -7326,6 +7399,7 @@ fn two_line_series_both_render() {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -7418,6 +7492,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -7512,6 +7587,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -8187,6 +8263,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
         label: None,
         x_column: "cache_x".into(),
         y_column: "cache_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Dash,
@@ -9193,6 +9270,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
         label: None,
         x_column: "rx".into(),
         y_column: "ry".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -9432,6 +9510,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
         label: None,
         x_column: "registered_x".into(),
         y_column: "registered_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -9670,6 +9749,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         label: None,
         x_column: "st_x".into(),
         y_column: "st_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -9780,6 +9860,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         label: None,
         x_column: "st_x".into(),
         y_column: "st_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Dash,
@@ -9894,6 +9975,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
         label: None,
         x_column: "mw_x".into(),
         y_column: "mw_y".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: test_scatter_style(),
             line: DataLineStyleConfig {
@@ -10093,6 +10175,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -10188,6 +10271,7 @@ fn precise_zoom_keeps_connections_to_distant_endpoints() {
         label: None,
         x_column: "zx".into(),
         y_column: "zy".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -10299,6 +10383,7 @@ fn dense_line_has_no_gaps() {
         label: None,
         x_column: "dx".into(),
         y_column: "dy".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -10394,6 +10479,7 @@ fn solid_line_exports_analytic_aa_fringe() {
         label: None,
         x_column: "aa_x".into(),
         y_column: "aa_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -10465,6 +10551,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -10622,6 +10709,7 @@ fn dashed_curve_runs_match_pattern() {
         label: None,
         x_column: "t".into(),
         y_column: "v".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Dash, // [8, 4]
@@ -10764,6 +10852,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
         label: None,
         x_column: "far_x".into(),
         y_column: "far_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Dash, // [8, 4]
@@ -11352,6 +11441,7 @@ fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
         label: None,
         x_column: "grow_x".into(),
         y_column: "grow_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: crate::data_config::DataLineStyleConfig {
                 line_style: crate::line::LineStylePreset::Solid,
@@ -13822,6 +13912,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: test_scatter_style(),
                 err_y: ErrorRef::Symmetric {
@@ -13837,6 +13928,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -13854,6 +13946,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
         label: None,
         x_column: "x".into(),
         y_column: "y2".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,

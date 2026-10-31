@@ -166,6 +166,7 @@ fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: Color::from_rgb8(31, 119, 180),
@@ -322,6 +323,7 @@ impl Sink for TextLog {
     fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
     fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<Border<'_>>) {}
     fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn polygon(&mut self, _: Slot, _: &[[f32; 2]], _: Option<Color>, _: Option<&StrokeStyle<'_>>) {}
     fn ramp(&mut self, _: Slot, _: RectF, _: &ColorBarOptions) {}
 }
 

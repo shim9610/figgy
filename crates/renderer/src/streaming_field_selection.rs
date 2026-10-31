@@ -105,6 +105,7 @@ pub(super) fn packet(
         level_color_count: 0,
         z_min: [0.0; 2],
         z_max: [0.0; 2],
+        image: [0; 4],
     };
     let (field_bg, charge) = data_render::create_field_data_bind_group(
         context.device,

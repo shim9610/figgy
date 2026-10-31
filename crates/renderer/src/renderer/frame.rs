@@ -53,6 +53,7 @@ pub(super) fn annotation_raster_for_chart(
         polar: _,
         ternary: _,
         view_3d: _,
+        parallel: _,
         overlays: _,
         subplots: _,
         active_layer: _,
@@ -218,6 +219,45 @@ pub(super) struct PreparedAreaLayer {
     pub(super) closed: bool,
 }
 
+/// A parallel coordinates series' rows and its picked row's redraw (#141).
+pub(super) struct PreparedParallelLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) data: data_render::ParallelData,
+    pub(super) selected: Option<(wgpu::RenderPipeline, wgpu::BindGroup, u32)>,
+}
+
+impl PreparedParallelLayer {
+    fn own(layer: data_render::ColumnParallelLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            data: layer.data,
+            selected: layer
+                .selected
+                .map(|selected| (selected.pipeline.clone(), selected.style_bg, selected.row)),
+        }
+    }
+
+    fn borrow(&self) -> data_render::ColumnParallelLayer<'_> {
+        data_render::ColumnParallelLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: &self.style_bg,
+            data: self.data.clone(),
+            selected: self.selected.as_ref().map(|(pipeline, style_bg, row)| {
+                data_render::ParallelSelection {
+                    pipeline,
+                    style_bg: style_bg.clone(),
+                    row: *row,
+                }
+            }),
+        }
+    }
+}
+
 pub(super) struct PreparedLineLayer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) transform_bg: wgpu::BindGroup,
@@ -232,7 +272,54 @@ pub(super) struct PreparedLineLayer {
     /// A colour-mapped stroke: the value column and the groups 2 and 3 of
     /// the mapped line pipeline.
     pub(super) value_map: Option<(ColumnHandle, wgpu::BindGroup, wgpu::BindGroup)>,
-    pub(super) ternary_c: Option<ColumnHandle>,
+    pub(super) third: Option<ColumnHandle>,
+    pub(super) view3d: Option<data_render::surface_mesh::View3dBinding>,
+}
+
+impl PreparedLineLayer {
+    fn own(layer: ColumnLineLayer<'_>) -> Self {
+        PreparedLineLayer {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            pool_buffer: layer.pool_buffer.clone(),
+            x: layer.x,
+            y: layer.y,
+            arc: layer.arc,
+            verts_per_instance: layer.verts_per_instance,
+            texture_bg: layer.texture_bg.cloned(),
+            closed: layer.closed,
+            value_map: layer
+                .value_map
+                .map(|map| (map.column, map.neutral_bg.clone(), map.value_map_bg.clone())),
+            third: layer.third,
+            view3d: layer.view3d,
+        }
+    }
+
+    fn borrow(&self) -> ColumnLineLayer<'_> {
+        ColumnLineLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: &self.style_bg,
+            pool_buffer: &self.pool_buffer,
+            x: self.x,
+            y: self.y,
+            arc: self.arc.clone(),
+            verts_per_instance: self.verts_per_instance,
+            texture_bg: self.texture_bg.as_ref(),
+            closed: self.closed,
+            value_map: self.value_map.as_ref().map(|(column, neutral, map)| {
+                data_render::LineValueMap {
+                    column: *column,
+                    neutral_bg: neutral,
+                    value_map_bg: map,
+                }
+            }),
+            third: self.third,
+            view3d: self.view3d.clone(),
+        }
+    }
 }
 
 pub(super) struct PreparedScatterLayer {
@@ -249,7 +336,50 @@ pub(super) struct PreparedScatterLayer {
     pub(super) color_value: Option<ColumnHandle>,
     pub(super) size_value: Option<ColumnHandle>,
     pub(super) texture_bg: Option<wgpu::BindGroup>,
-    pub(super) ternary_c: Option<ColumnHandle>,
+    pub(super) third: Option<ColumnHandle>,
+    pub(super) view3d: Option<data_render::surface_mesh::View3dBinding>,
+}
+
+impl PreparedScatterLayer {
+    fn own(layer: ColumnScatterLayer<'_>) -> Self {
+        PreparedScatterLayer {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            style_map_bg: layer.style_map_bg.cloned(),
+            value_map_bg: layer.value_map_bg.cloned(),
+            quad_vb: layer.quad_vb.clone(),
+            pool_buffer: layer.pool_buffer.clone(),
+            x: layer.x,
+            y: layer.y,
+            style_index: layer.style_index,
+            color_value: layer.color_value,
+            size_value: layer.size_value,
+            texture_bg: layer.texture_bg.cloned(),
+            third: layer.third,
+            view3d: layer.view3d,
+        }
+    }
+
+    fn borrow(&self) -> ColumnScatterLayer<'_> {
+        ColumnScatterLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: &self.style_bg,
+            style_map_bg: self.style_map_bg.as_ref(),
+            value_map_bg: self.value_map_bg.as_ref(),
+            quad_vb: &self.quad_vb,
+            pool_buffer: &self.pool_buffer,
+            x: self.x,
+            y: self.y,
+            style_index: self.style_index,
+            color_value: self.color_value,
+            size_value: self.size_value,
+            texture_bg: self.texture_bg.as_ref(),
+            third: self.third,
+            view3d: self.view3d.clone(),
+        }
+    }
 }
 
 pub(super) struct PreparedPickRingLayer {
@@ -266,7 +396,8 @@ pub(super) struct PreparedPickRingLayer {
     pub(super) color_value: Option<ColumnHandle>,
     pub(super) size_value: Option<ColumnHandle>,
     pub(super) instance: u32,
-    pub(super) ternary_c: Option<ColumnHandle>,
+    pub(super) third: Option<ColumnHandle>,
+    pub(super) view3d: Option<data_render::surface_mesh::View3dBinding>,
 }
 
 pub(super) struct PreparedBarSelectionLayer {
@@ -512,8 +643,11 @@ pub(super) struct PreparedSeries {
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
     pub(super) line: Option<PreparedLineLayer>,
+    pub(super) parallel: Option<PreparedParallelLayer>,
     pub(super) line_extra: Option<PreparedStarLayer>,
     pub(super) scatter: Option<PreparedScatterLayer>,
+    pub(super) line_3d: Option<PreparedLineLayer>,
+    pub(super) scatter_3d: Option<PreparedScatterLayer>,
     pub(super) selected_bars: Vec<PreparedBarSelectionLayer>,
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
@@ -674,6 +808,9 @@ pub(super) struct ResidentDisplayKey {
     pub(super) transform: data_render::ScatterTransform,
     pub(super) draw_style: crate::config::DrawStyle,
     pub(super) polar: Option<crate::polar::PolarOptions>,
+    /// The parallel axes' ranges (`Config::parallel`): every row is placed
+    /// by them (#141).
+    pub(super) parallel: Option<crate::parallel::ParallelOptions>,
     pub(super) colorbar: Option<crate::config::ColorBarOptions>,
     /// How category bars share a slot (`Config::bar_groups`): group width,
     /// gap and stacking are drawn into the bodies.
@@ -743,6 +880,7 @@ impl ResidentDisplayKey {
             && self.stencil == probe.stencil
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
+            && self.parallel == probe.chart_config.parallel
             && self.colorbar == probe.chart_config.colorbar
             && self.bar_groups == probe.chart_config.bar_groups
             && match &self.categories {
@@ -771,6 +909,7 @@ impl ResidentDisplayKey {
             transform: probe.transform,
             draw_style: probe.chart_config.draw_style,
             polar: probe.chart_config.polar.clone(),
+            parallel: probe.chart_config.parallel.clone(),
             colorbar: probe.chart_config.colorbar.clone(),
             bar_groups: probe.chart_config.bar_groups.clone(),
             categories: has_category_bars(probe.series).then(|| {
@@ -943,22 +1082,10 @@ impl PreparedSeries {
                 err_x_hi: layer.err_x_hi,
                 style_index: layer.style_index,
             }),
-            line: layers.line.map(|layer| PreparedLineLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg.clone(),
-                pool_buffer: layer.pool_buffer.clone(),
-                x: layer.x,
-                y: layer.y,
-                arc: layer.arc,
-                verts_per_instance: layer.verts_per_instance,
-                texture_bg: layer.texture_bg.cloned(),
-                closed: layer.closed,
-                value_map: layer
-                    .value_map
-                    .map(|map| (map.column, map.neutral_bg.clone(), map.value_map_bg.clone())),
-                ternary_c: layer.ternary_c,
-            }),
+            line: layers.line.map(PreparedLineLayer::own),
+            parallel: layers.parallel.map(PreparedParallelLayer::own),
+            line_3d: layers.line_3d.map(PreparedLineLayer::own),
+            scatter_3d: layers.scatter_3d.map(PreparedScatterLayer::own),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -967,22 +1094,7 @@ impl PreparedSeries {
                 star_bg: layer.star_bg.clone(),
                 indirect: layer.indirect.clone(),
             }),
-            scatter: layers.scatter.map(|layer| PreparedScatterLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg.clone(),
-                style_map_bg: layer.style_map_bg.cloned(),
-                value_map_bg: layer.value_map_bg.cloned(),
-                quad_vb: layer.quad_vb.clone(),
-                pool_buffer: layer.pool_buffer.clone(),
-                x: layer.x,
-                y: layer.y,
-                style_index: layer.style_index,
-                color_value: layer.color_value,
-                size_value: layer.size_value,
-                texture_bg: layer.texture_bg.cloned(),
-                ternary_c: layer.ternary_c,
-            }),
+            scatter: layers.scatter.map(PreparedScatterLayer::own),
             selected_bars: layers
                 .selected_bars
                 .into_iter()
@@ -1029,7 +1141,8 @@ impl PreparedSeries {
                     color_value: layer.color_value,
                     size_value: layer.size_value,
                     instance: layer.instance,
-                    ternary_c: layer.ternary_c,
+                    third: layer.third,
+                    view3d: layer.view3d,
                 })
                 .collect(),
             value_labels: layers.value_labels.map(|layer| PreparedValueLabelLayer {
@@ -1144,26 +1257,10 @@ impl PreparedSeries {
                 err_x_hi: layer.err_x_hi,
                 style_index: layer.style_index,
             }),
-            line: self.line.as_ref().map(|layer| ColumnLineLayer {
-                pipeline: &layer.pipeline,
-                transform_bg: &layer.transform_bg,
-                style_bg: &layer.style_bg,
-                pool_buffer: &layer.pool_buffer,
-                x: layer.x,
-                y: layer.y,
-                arc: layer.arc.clone(),
-                verts_per_instance: layer.verts_per_instance,
-                texture_bg: layer.texture_bg.as_ref(),
-                closed: layer.closed,
-                value_map: layer.value_map.as_ref().map(|(column, neutral, map)| {
-                    data_render::LineValueMap {
-                        column: *column,
-                        neutral_bg: neutral,
-                        value_map_bg: map,
-                    }
-                }),
-                ternary_c: layer.ternary_c,
-            }),
+            line: self.line.as_ref().map(PreparedLineLayer::borrow),
+            parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
+            line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),
+            scatter_3d: self.scatter_3d.as_ref().map(PreparedScatterLayer::borrow),
             line_extra: self
                 .line_extra
                 .as_ref()
@@ -1175,22 +1272,7 @@ impl PreparedSeries {
                     star_bg: &layer.star_bg,
                     indirect: &layer.indirect,
                 }),
-            scatter: self.scatter.as_ref().map(|layer| ColumnScatterLayer {
-                pipeline: &layer.pipeline,
-                transform_bg: &layer.transform_bg,
-                style_bg: &layer.style_bg,
-                style_map_bg: layer.style_map_bg.as_ref(),
-                value_map_bg: layer.value_map_bg.as_ref(),
-                quad_vb: &layer.quad_vb,
-                pool_buffer: &layer.pool_buffer,
-                x: layer.x,
-                y: layer.y,
-                style_index: layer.style_index,
-                color_value: layer.color_value,
-                size_value: layer.size_value,
-                texture_bg: layer.texture_bg.as_ref(),
-                ternary_c: layer.ternary_c,
-            }),
+            scatter: self.scatter.as_ref().map(PreparedScatterLayer::borrow),
             selected_bars: self
                 .selected_bars
                 .iter()
@@ -1237,7 +1319,8 @@ impl PreparedSeries {
                     color_value: layer.color_value,
                     size_value: layer.size_value,
                     instance: layer.instance,
-                    ternary_c: layer.ternary_c,
+                    third: layer.third,
+                    view3d: layer.view3d.clone(),
                 })
                 .collect(),
             value_labels: self.value_labels.as_ref().map(|layer| {
@@ -2330,12 +2413,15 @@ impl Renderer {
                 region_bgl: &self.region_bgl,
                 vector_bgl: &self.vector_bgl,
                 category_bar_data_bgl: &self.category_bar_data_bgl,
+                parallel_bgl: &self.parallel_bgl,
                 value_label_bgl: &self.value_label_bgl,
                 field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,
                 point_value_map_bgl: &self.point_value_map_bgl,
                 neutral_point_value_map_bg: &self.neutral_point_value_map_bg,
+                neutral_point_value_map_buffers: &self.neutral_point_value_map_buffers,
+                view3d_value_map_bgl: &self.view3d_value_map_bgl,
                 data_selection_bgl: &self.data_selection_bgl,
                 star_data_bgl: &self.star_data_bgl,
                 sampler: &self.sampler,
@@ -2446,43 +2532,8 @@ impl Renderer {
                 )?;
             }
         }
-        let mut style_updates: Vec<(ChartId, RegisteredChartStyles)> = Vec::new();
-        style_updates
-            .try_reserve_exact(items.len())
-            .map_err(allocation)?;
         for item in items {
-            let state = self
-                .chart_states
-                .get(&item.chart_id)
-                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
-            if state
-                .prepared_styles
-                .as_ref()
-                .is_some_and(|styles| styles.series_revision == state.revisions.series)
-                || style_updates.iter().any(|(id, _)| *id == item.chart_id)
-            {
-                continue;
-            }
-            let mut styles = Vec::new();
-            styles
-                .try_reserve_exact(state.series.len())
-                .map_err(allocation)?;
-            for series in &state.series {
-                styles.push(self.create_style_for_series_scaled_inner(series, 1.0)?);
-            }
-            style_updates.push((
-                item.chart_id,
-                RegisteredChartStyles {
-                    series_revision: state.revisions.series,
-                    styles,
-                },
-            ));
-        }
-        for (id, styles) in style_updates {
-            self.chart_states
-                .get_mut(&id)
-                .ok_or(FiggyError::UnknownChart { id })?
-                .prepared_styles = Some(styles);
+            self.ensure_registered_styles(item.chart_id)?;
         }
         let (states, mut preparation) = self.preparation_parts();
         let mut series_inputs = Vec::new();
@@ -2974,6 +3025,47 @@ impl Renderer {
                 );
             }
         }
+        Ok(())
+    }
+}
+
+impl Renderer {
+    /// The GPU styles of chart `id`'s series as registered
+    /// (`ChartState::prepared_styles`), built when missing or stale: the
+    /// frame prepares them before its draws, and a 3D chart's point pick
+    /// binds them (#132).
+    pub(super) fn ensure_registered_styles(&mut self, id: ChartId) -> Result<()> {
+        let allocation =
+            |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource: "registered chart styles",
+                reason: error.to_string(),
+            };
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if state
+            .prepared_styles
+            .as_ref()
+            .is_some_and(|styles| styles.series_revision == state.revisions.series)
+        {
+            return Ok(());
+        }
+        let mut styles = Vec::new();
+        styles
+            .try_reserve_exact(state.series.len())
+            .map_err(allocation)?;
+        for series in &state.series {
+            styles.push(self.create_style_for_series_scaled_inner(series, 1.0)?);
+        }
+        let series_revision = state.revisions.series;
+        self.chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?
+            .prepared_styles = Some(RegisteredChartStyles {
+            series_revision,
+            styles,
+        });
         Ok(())
     }
 }

@@ -48,7 +48,7 @@ To change shared shader code:
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
-| `data_pick.wgsl` | bar, field, grid vector |
+| `data_pick.wgsl` | bar, field, grid vector, line (the parallel row pick, §5.23) |
 | `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
@@ -103,6 +103,10 @@ with a conservative pad, and the exact pass decides.
 단계 전까지 외부에서 읽지 않으므로 중간 좌표를 위한 별도 버퍼나 바인딩이 없다.
 
 `fullscreen_textured.wgsl`은 텍스처·샘플러용 별도 바인드 레이아웃을 사용하므로 이 문서의 공통 정의를 사용하지 않는다.
+
+The line module splices [`parallel_columnar.wgsl`](parallel_columnar.wgsl)
+after `line_columnar.wgsl`: the parallel coordinates entries (§5.23), which
+reuse the line stroke and its fragment stage.
 
 ---
 
@@ -432,11 +436,43 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
-대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
+대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(80바이트), `create_field_data_bind_group_layout`이다.
 
 The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
+
+**Hexagonal lattice** (`FIELD_HEXAGONAL`, `GridLayout::Hexagonal`, #134).
+With the flag set, `field_cell_sample`, `field_pick_cell` and
+`selected_cell_coverage` take `hex_cell(t)` instead of the per-axis `locate`:
+the lattice's origin and pitches are `x[0]`, `y[0]`, `x[1] − x[0]`,
+`y[1] − y[0]` read from the pool (`hex_lattice`), the cell of column `c`,
+row `r` is centred at `(x[c], y[r] + (c & 1) · py / 2)` (`hex_center_t`),
+and the fragment's cell is the nearest centre, in the data metric
+(`hex_data_offset`: axis fractions scaled by the axis ranges over the panel
+share, so the cell is the host's bin whatever the axes' pixel scales), among
+the column nearest its x, the row nearest its y in that column and that
+cell's six neighbours (`hex_neighbor`). A candidate past the lattice's edge
+stays a rival and never answers, so a border cell is a whole hexagon. The
+selection outline is `width_px` inside the nearest of the six bisectors
+(`hex_edge_distance_px`, the bisector's data-metric normal scaled into
+pixels). Nothing per cell is stored; the lookup is O(1) per fragment.
+
+**Colour images** (`FIELD_RGB`, `DataRenderType::RgbImage`, #139). The
+three channel grids share one `GridColumn` table: the green table follows
+the red one `FieldParams.image.x` entries later and the blue table
+`2 · image.x` (the channel stride is the red grid's column count;
+`grid_value_in(c, r, offset)` reads a table entry at an offset). With the
+flag set, `fs_main` paints `field_image_color` instead of the ramp: each
+channel is `field_fill_sample` at the located cell (flat, or the bilinear
+blend under `FIELD_INTERPOLATED`) mapped linearly from `z_min..z_max`
+(the `range` pair; never logarithmic) to 0..1 and clamped
+(`field_image_channel`), premultiplied by `opacity`; a channel that is
+unplaceable or non-finite leaves the cell unpainted, and the pick gate
+(`field_image_paints`) answers nothing there. The stop table is one
+padding entry (`stop_count` 0) and `nan_color` is transparent. The
+`Shading` lattice, the cell pick and `selected_cell_coverage` are the
+heatmap's.
 
 <a id="51-field-only-contour-lookup-metadata--group-2-binding-6"></a>
 
@@ -1084,7 +1120,7 @@ pipeline never reads group 3 bindings 8 to 10.
 ```wgsl
 struct CategoryBarParams { positions, count, member, members, mode,
     horizontal: u32, gap_px, group_width, corner_radius_px, emphasis,
-    scale: f32, seed: u32, slot_half: vec2<f32>, _reserved: vec2<u32> };   // 64 bytes
+    scale: f32, seed: u32, slot_half: vec2<f32>, wedge: u32, _reserved: u32 };   // 64 bytes
 @group(3) @binding(8) var<storage, read> category_pool: array<f32>;
 @group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
 @group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
@@ -1109,6 +1145,7 @@ number of series is one storage array of that many `u32`s.
 | `scale` | render pixels per logical pixel: the material's object unit (`Bar.effects.y`) |
 | `seed` | the series salt; the grain seed of a bar is `(seed ^ row · 2654435761) % 4096` |
 | `slot_half` | half a slot along the position axis in data units, a `(hi, lo)` pair: `(0.5, 0)` (half a category, `CATEGORY_SLOT_HALF`) for category bars and boxes, half a range bar series' `slot_width` on a numeric axis (§5.18); the slot's edges are `category_slot_edge(position, ±1)` |
+| `wedge` | 1 on a polar chart (`Config::polar`): the bars are wedges of the angle axis along the radius, a rose (#133), built by `category_wedge` below |
 
 Rust twin: `data_render::CategoryBarParamsGpu` (`bar.rs`), written by
 `renderer/series.rs::category_bar_params`; the lane table is written by
@@ -1120,6 +1157,29 @@ on the CPU;
 category bar lanes `material` and `finish`, read under
 `BAR_STYLE_MASK_MATERIAL`) and `Transform` to their twins. The pool is bound whole as storage, as the
 vector shader binds it, and the values are `(hi, lo)` pairs.
+
+**Roses (#133).** With `wedge` set, `category_bar` hands its stack
+arithmetic (the start and end values, `exposed`) to `category_wedge`: the
+category's slot edges become angles through the transform's `polar_angle`
+lanes (`angle = zero + per_value · position`, as `polar_ndc`), the start
+and end values radii through the y-axis fraction and the `polar_extent`
+ring (`category_radius_px`), the group's `group_width` share of the slot
+is centred and its grouped wedges sit side by side from the slot edge the
+axis arrives from, `gap_px / ring` radians apart (the gap in pixels along
+the ring). The `CategoryBar` then carries `wedge = (centre.xy, ring
+radius, inner fraction)` and `arc = (start, span, inner rounding, outer
+rounding)` in the pixel frame (y down: the polar arc `[θ, θ + span]` is the
+sector arc from `−(θ + span)`), its `rect` the wedge's bounding box (the
+quad and the material's object frame) and its `end_px` the end radius;
+`category_bar_distance`, `category_bar_unowned` and `category_bar_sample`
+branch on `wedge.z > 0`, the distance being the radial chart's sector
+footprint (`radial_sector.wgsl`, spliced into the bar module before this
+fragment) built in registers from the wedge, scaled back to pixels, so the
+fill, the outline, the pick and the highlight share the pie's one shape.
+The shared arcs of a stack have one owner as the shared edges do
+(`CATEGORY_EDGE_BOTTOM` the inner arc, `_TOP` the outer). The value label
+of a wedge (`value_label_wedge`, §5.17) sits past the exposed arc along the
+wedge's middle direction or at its middle radius.
 
 `category_bar(row, resolved)` builds the bar on every draw, and the draw,
 the selection and the pick all call it:
@@ -1593,6 +1653,45 @@ fragment and the stroke widths are floor-plane pixels (#49 D7). The ID pick writ
 surface sample and `(id | 0x80000000, level, c, r)` for a floor contour, to
 an `Rgba32Uint` target with the depth test.
 
+**3D points and lines (#132).** `view3d_point_t` places a sample of three
+columns (x, y and the height of a series' `z_column`) and
+`view3d_point_valid` accepts it when the flat sample is valid, the height
+finite (positive on a logarithmic z) and the box point inside the box; a
+sample outside the box is not drawn and breaks a line. `view3d_pick_id`
+reads the series' pick id from `flags.w`, as the floor pick does. The
+scatter, line and arc modules splice `project_3d.wgsl` (after the sample
+validity) and gain the entries: `scatter_columnar.wgsl` `vs_3d` /
+`vs_3d_mapped` (the height at slot 3 / 6, the flat marker quad around the
+projected clip position scaled by its `w`, so it is `point_radius_px` on
+screen; `scatter_vertex_clip` / `mapped_vertex_clip` are the flat vertex
+functions with a clip position), `vs_3d_pick` / `vs_3d_mapped_pick` with
+`fs_3d_pick` / `fs_3d_mapped_pick` (the ID pick: `(id, 1, index, 0)` where
+the marker is at least half covered, `precise_marker_alpha` /
+`mapped_marker_alpha` the fragment coverage `fs_main` / `fs_mapped` paint
+with), and `vs_pick_ring_3d` / `vs_pick_ring_3d_mapped` (the ring through
+`project_box_live`); `line_columnar.wgsl` `vs_3d` (the heights at slots 6
+and 7, the flat stroke built between the projected ends, each corner at its
+end's depth) and `vs_3d_pick` / `fs_3d_pick` (`(id, 1, nearer end, 0)`
+where the stroke's dashes are at least half covered); `line_arc.wgsl`
+`seg_init_3d` (`ARC_FLAG_3D` in `ArcParams.flags`, the height at `c_base`,
+the chord length between the projected ends in the target's pixels, the
+camera as group 3 of its own layout so the flat `seg_init` keeps its two
+groups). The precise 3D entries bind the surface group (bindings 4 and 5)
+as group 3; the mapped ones bind
+`surface_mesh::create_view3d_value_map_bind_group_layout`, the point value
+map (bindings 0 and 1) and the camera (4 and 5) in one group, because the
+mapped scatter pipeline already fills groups 0 to 3. The draws take the
+depth state `surface_mesh::point_depth_stencil` (`LessEqual`, written, no
+bias): a marker is placed at the depth of the front of a ball of its radius
+and a stroke at the front of a tube of its half width
+(`project_box_front`, the box point moved that many output pixels towards
+the eye, `flags.z` pixels per box half-diagonal), so a mark exactly on a
+surface shows whole and a marker covers its own stroke at the sample. The
+draws convert coverage to sample coverage (`alpha_to_coverage_enabled`,
+`View3dPass::multisample`) on a multisampled composite, so an antialiased
+fringe writes depth only on the samples it covers and a dense trajectory
+stays solid; the picks render one sample into the ID target.
+
 ### 5.22 Ternary region fill (group 1) and its pick
 
 [`ternary_region.wgsl`](ternary_region.wgsl), assembled with the transform,
@@ -1625,6 +1724,59 @@ parity, compares `pick_region_hit` (a `PICK_KIND_FILL` candidate at
 distance zero on that index) with the best candidate, so the fill beats
 every farther candidate and loses every tie to a marker or a stroke, as a
 line fill does. The cross-series reduction sees finished candidates only.
+
+### 5.23 Parallel coordinates (group 3, bindings 0 to 5)
+
+[`parallel_columnar.wgsl`](parallel_columnar.wgsl), spliced into the line
+module after `line_columnar.wgsl`, draws the rows of a parallel coordinates
+series (`DataRenderType::Parallel`, `Config.parallel`, #141) and picks
+them. Group 3 is the series' parallel data
+(`line.rs::create_parallel_data_bind_group_layout`): the point value map
+the row colours read (bindings 0 and 1, the line module's `line_value_map`
+and `line_value_stops` of §5.2, the series' colourbar map when a colour
+column is named and the renderer's neutral map otherwise), the column pool
+as read-only storage (binding 2, `parallel_pool: array<f32>`),
+`ParallelParams` (binding 3; CPU twin `line.rs::ParallelParamsGpu`, 16 B:
+`rows`, `axes`, `color_lane`, `flags` with `PARALLEL_COLOR = 1`), the axis
+lane table (binding 4, `parallel_lanes: array<u32>`, each axis's column
+f32 lane base in axis order) and the axis range table (binding 5,
+`parallel_axes: array<ParallelAxis>`; CPU twin `line.rs::ParallelAxisGpu`,
+16 B: `lo` the axis minimum (`log10` of it on a logarithmic axis) as a
+`(hi, lo)` pair, `span_inv` the reciprocal of the span in the same space,
+`mode` with `PARALLEL_AXIS_INVERTED = 1` and `PARALLEL_AXIS_LOG = 2`).
+Both tables are sized by the axis count and written straight into their
+mappings (`create_parallel_data_bind_group`): nothing per row is on the
+CPU, and no field bounds the number of axes (#107 R3). No vertex slot is
+bound.
+
+`vs_parallel` draws instance `inst` as segment `i = inst mod (axes − 1)` of
+row `r = inst / (axes − 1)`: both ends are read from the pool through the
+lanes (`parallel_value`), placed by their axes (`parallel_fraction`: `(v −
+lo) · span_inv`, the high parts' difference first so close f64 values keep
+their distance, in `log10` on a logarithmic axis, flipped when inverted;
+NaN for a non-finite value or a non-positive one on a logarithmic axis),
+and the quad is `line_stroke_vertex` (§5.6) between `(i, f_a)` and
+`(i + 1, f_b)` in the chart's data space (the categorical `bottom_x`
+positions, the normalized band of `left_y`), with no arc prefix (the
+stroke is solid). An end without a value masks the segment. The row's
+colour is a flat varying: `line_value_color` of the colour lane's value
+under `PARALLEL_COLOR` (`nan_color` where non-finite), `style.color_premul`
+otherwise; `fs_parallel` is `line_fragment_color` with it.
+`vs_parallel_selected` is the same geometry in `style.color_premul` (the
+selection's style as group 1): the picked row's segments are redrawn over
+every series body. The pipelines are `TargetPipelines.line_parallel` /
+`line_parallel_selection` (`create_line_parallel_pipeline_with_sample_count`,
+layouts `[transform, style, —, parallel]`).
+
+`pick_parallel` (compute, the data pick query of `data_pick.wgsl` as
+group 1, bindings 1 to 3, and the same group 3) walks every segment with
+its workgroup: a segment whose ends are placeable is a candidate at the
+pixel distance from the cursor (in the draw's pixel frame, `data_to_px`)
+to the segment, within `limits.x`; nearer wins and the earlier row on a
+tie. The candidate is kind 0 (a point) with `index0` the row and `index1`
+the nearer axis, so the pick answers `PickedData::Point { point_index }`.
+The bundle's pipeline is `DataPickPipelineBundle.parallel`
+(`GpuDataPickGeometry::Parallel`).
 
 ## Checklist
 

@@ -147,6 +147,8 @@ mod tests {
             ("FIELD_INTERPOLATED", dr::FIELD_FLAG_INTERPOLATED),
             ("FIELD_BANDS", dr::FIELD_FLAG_BANDS),
             ("FIELD_LOG_Z", dr::FIELD_FLAG_LOG_Z),
+            ("FIELD_HEXAGONAL", dr::FIELD_FLAG_HEXAGONAL),
+            ("FIELD_RGB", dr::FIELD_FLAG_RGB),
             ("VECTOR_FLAG_GRID", vector::VECTOR_FLAG_GRID),
             (
                 "VECTOR_FLAG_COLUMNS_ARE_Y",
@@ -172,6 +174,7 @@ mod tests {
             ("PICK_FLAG_SIZE_AREA", pick::FLAG_SIZE_AREA),
             ("PICK_FLAG_VECTOR", pick::FLAG_VECTOR),
             ("PICK_FLAG_REGION", pick::FLAG_REGION),
+            ("ARC_FLAG_3D", crate::data_render::line_arc::ARC_FLAG_3D),
             ("PICK_VECTOR_SCALE_PIXELS", pick::VECTOR_SCALE_PIXELS),
             ("PICK_MARKER_PRECISE", pick::PICK_MARKER_PRECISE),
             ("PICK_MARKER_SKETCH", pick::PICK_MARKER_SKETCH),
@@ -525,6 +528,7 @@ mod tests {
                     level_color_count,
                     z_min,
                     z_max,
+                    image,
                 }
             ),
             mirror!(
@@ -659,6 +663,7 @@ mod tests {
                     scale,
                     seed,
                     slot_half,
+                    wedge,
                     _reserved,
                 }
             ),

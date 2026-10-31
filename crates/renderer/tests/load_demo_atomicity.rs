@@ -38,6 +38,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.to_string(),
         y_column: y.to_string(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,

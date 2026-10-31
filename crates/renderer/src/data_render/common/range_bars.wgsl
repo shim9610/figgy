@@ -127,7 +127,7 @@ fn range_bar(row: u32, resolved: ResolvedBarStyle) -> RangeBar {
 /// The bar as the category bar shape, for its rounded-rect distance and
 /// coverage.
 fn range_shape(bar: RangeBar) -> CategoryBar {
-    return CategoryBar(bar.valid, bar.rect, bar.radii, 0u, bar.end_px, true);
+    return CategoryBar(bar.valid, bar.rect, bar.radii, 0u, bar.end_px, true, vec4<f32>(0.0), vec4<f32>(0.0));
 }
 
 /// Style slot `k`, or `None` (an all-zero mask) when the series has none.
@@ -335,7 +335,7 @@ fn vs_range_bars(@builtin(vertex_index) vi: u32, @builtin(instance_index) row: u
 /// outline over it, and the part past the progress split at the remaining
 /// opacity.
 fn range_body_color(in: RangeVsOut) -> vec4<f32> {
-    let bar = CategoryBar(true, in.rect, in.radii, 0u, 0.0, true);
+    let bar = CategoryBar(true, in.rect, in.radii, 0u, 0.0, true, vec4<f32>(0.0), vec4<f32>(0.0));
     let p = in.local;
     let cover = category_coverage(p, bar, in.metrics.x);
     if (cover.x <= 0.0) {
@@ -406,7 +406,7 @@ fn vs_range_bar_selection(@builtin(vertex_index) vi: u32, @builtin(instance_inde
 
 @fragment
 fn fs_range_bar_selection(in: RangeVsOut) -> @location(0) vec4<f32> {
-    let cover = category_coverage(in.local, CategoryBar(true, in.rect, in.radii, 0u, 0.0, true), in.metrics.x);
+    let cover = category_coverage(in.local, CategoryBar(true, in.rect, in.radii, 0u, 0.0, true, vec4<f32>(0.0), vec4<f32>(0.0)), in.metrics.x);
     if (cover.x <= 0.0) {
         discard;
     }

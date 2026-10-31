@@ -113,6 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             label: None,
             x_column: "time".into(),
             y_column: id.into(),
+            z_column: None,
             render_type: DataRenderType::ScatterLine {
                 scatter: DataScatterStyleConfig {
                     point_color: color,

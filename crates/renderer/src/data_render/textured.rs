@@ -284,6 +284,11 @@ pub(crate) async fn prewarm_browser_render_feature(
             &[
                 ("precise line", "figgy line columnar pipeline"),
                 ("colour-mapped line", "figgy line mapped pipeline"),
+                ("parallel rows", "figgy line parallel pipeline"),
+                (
+                    "selected parallel row",
+                    "figgy selected parallel row pipeline",
+                ),
                 ("line area fill", "figgy line area pipeline"),
                 ("hand-drawn line", "figgy line styled pipeline"),
                 ("milkyway ribbon", "figgy milkyway ribbon pipeline"),

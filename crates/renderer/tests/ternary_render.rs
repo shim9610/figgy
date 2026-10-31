@@ -157,6 +157,7 @@ fn ternary(
         label: None,
         x_column: "a".into(),
         y_column: "b".into(),
+        z_column: None,
         render_type: DataRenderType::Ternary {
             c_column: "c".into(),
             scatter,

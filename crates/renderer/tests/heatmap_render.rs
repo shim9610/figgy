@@ -198,6 +198,7 @@ fn heatmap(
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: if levels.is_empty() {
             DataRenderType::Heatmap {
                 matrix,

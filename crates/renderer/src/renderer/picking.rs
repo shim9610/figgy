@@ -1066,6 +1066,7 @@ impl RendererPicker {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1097,6 +1098,7 @@ impl RendererPicker {
                     bar_style_bgl,
                     vector_bgl,
                     category_bgl,
+                    parallel_bgl,
                     observer,
                 );
                 self.pipeline_state = PickerPipelineState::Ready { point, data };
@@ -1121,6 +1123,7 @@ impl RendererPicker {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1154,6 +1157,7 @@ impl RendererPicker {
                     bar_style_bgl,
                     vector_bgl,
                     category_bgl,
+                    parallel_bgl,
                     observer,
                 )
                 .await
@@ -1625,12 +1629,14 @@ impl Renderer {
                 bar: &self.pipelines.shaders.bar,
                 field: &self.pipelines.shaders.field,
                 vector_grid: &self.pipelines.shaders.vector_grid,
+                line: &self.pipelines.shaders.line,
             },
             &self.transform_bgl,
             &self.field_bgl,
             &self.per_point_style_map_bgl,
             &self.vector_bgl,
             &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             observer,
         )
     }
@@ -1655,12 +1661,14 @@ impl Renderer {
                     bar: &self.pipelines.shaders.bar,
                     field: &self.pipelines.shaders.field,
                     vector_grid: &self.pipelines.shaders.vector_grid,
+                    line: &self.pipelines.shaders.line,
                 },
                 &self.transform_bgl,
                 &self.field_bgl,
                 &self.per_point_style_map_bgl,
                 &self.vector_bgl,
                 &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 observer,
             )
             .await
@@ -1746,7 +1754,7 @@ impl Renderer {
                         &series.y_column,
                         match &series.render_type {
                             crate::data_config::DataRenderType::Ternary { c_column, .. } => {
-                                Some(c_column.as_str())
+                                Some(super::prepare::ArcThird::Ternary(c_column.as_str()))
                             }
                             _ => None,
                         },
@@ -1817,7 +1825,16 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
-        let (config, series, display_config, members) = {
+        // A 3D chart's point pick binds the series' registered styles (#132),
+        // built here when the chart has not been drawn yet.
+        if self
+            .chart_states
+            .get(&id)
+            .is_some_and(|state| state.config.view_3d.is_some())
+        {
+            self.ensure_registered_styles(id)?;
+        }
+        let (config, series, display_config, members, styles) = {
             let state = self
                 .chart_states
                 .get(&id)
@@ -1838,13 +1855,31 @@ impl Renderer {
             );
             let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
             let members = inputs.member_count();
-            (inputs.panel, inputs.series, display_config, members)
+            // The prepared styles of the layer's series, for a 3D chart's
+            // point picks (#132): a series not prepared yet has none.
+            let styles: Vec<Option<super::surface_pick::PickStyle3d>> = inputs
+                .series
+                .iter()
+                .map(|cfg| {
+                    let position = state
+                        .series
+                        .iter()
+                        .position(|s| s.series_id == cfg.series_id)?;
+                    state
+                        .prepared_styles
+                        .as_ref()
+                        .and_then(|prepared| prepared.styles.get(position))
+                        .map(super::surface_pick::PickStyle3d::of)
+                })
+                .collect();
+            (inputs.panel, inputs.series, display_config, members, styles)
         };
 
-        // A 3D chart's surfaces are picked by their ID render: the draw's
-        // own rasterizer and depth test, so a hidden quad never answers.
+        // A 3D chart's surfaces, markers and strokes are picked by their ID
+        // render: the draw's own rasterizer and depth test, so a hidden
+        // quad or point never answers.
         if display_config.view_3d.is_some() {
-            return self.pick_surface(&display_config, &series, &request);
+            return self.pick_surface(&display_config, &series, &styles, &request);
         }
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
@@ -2101,6 +2136,36 @@ impl Renderer {
                                 style_map,
                             )?,
                         },
+                    });
+                }
+                continue;
+            }
+
+            if primitives.parallel {
+                // The rows the parallel entries draw at the pick's display
+                // transform, over the same lane and range tables (#141);
+                // the colour is not read, so the neutral value map binds.
+                let lookup = |id: &str| {
+                    self.pool
+                        .handle_for(id)
+                        .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                };
+                let data = build_parallel_data(
+                    &self.device,
+                    &self.gpu_ledger,
+                    &self.parallel_bgl,
+                    self.pool.buffer(),
+                    &self.neutral_point_value_map_buffers,
+                    &display_config,
+                    cfg,
+                    lookup,
+                )?;
+                if data.instances() != 0 {
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Parallel { data },
                     });
                 }
                 continue;

@@ -1145,6 +1145,23 @@ impl CartesianHost {
                             color(ui, "colour", &mut style.line.color);
                             slider(ui, "head length", &mut style.head_length, 2.0..=30.0);
                         }
+                        // A shape's look: the fill (or none), the border and
+                        // whether it sits under the data.
+                        AnnotationKind::Rect { style, .. }
+                        | AnnotationKind::Ellipse { style, .. }
+                        | AnnotationKind::Polygon { style, .. } => {
+                            let mut filled = style.fill.is_some();
+                            if ui.checkbox(&mut filled, "fill").changed() {
+                                style.fill =
+                                    filled.then_some(Color::new(0.3, 0.5, 0.9, 0.25));
+                            }
+                            if let Some(fill) = &mut style.fill {
+                                color(ui, "fill colour", fill);
+                            }
+                            color(ui, "border colour", &mut style.border.color);
+                            slider(ui, "border width", &mut style.border.width, 0.0..=6.0);
+                            ui.checkbox(&mut style.below, "below the data");
+                        }
                     }
                     if ui.button("Delete annotation").clicked() {
                         config.annotations.items.remove(i);
@@ -1504,10 +1521,12 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Ternary { .. } => "ternary",
         DataRenderType::Radar { .. } => "radar",
         DataRenderType::Heatmap { .. } => "heatmap",
+        DataRenderType::RgbImage { .. } => "image",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
         DataRenderType::Vector { .. } => "vector",
         DataRenderType::Streamlines { .. } => "streamlines",
+        DataRenderType::Parallel { .. } => "parallel",
     }
 }
 
@@ -1783,6 +1802,9 @@ fn series_controls(
 ) {
     match &mut s.render_type {
         DataRenderType::Line { line } => line_controls(ui, line),
+        // A parallel series' rows: their line (its colour stands when no
+        // colour column maps them).
+        DataRenderType::Parallel { line, .. } => line_controls(ui, line),
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
             if let Some(scatter) = scatter {
@@ -1944,6 +1966,27 @@ fn series_controls(
                 &mut fill.shading,
                 &[Shading::Interpolated, Shading::Flat],
             );
+        }
+        // An image's channels are its data; its look is the opacity and the
+        // shading, and the range the bytes map through.
+        DataRenderType::RgbImage {
+            range,
+            shading,
+            opacity,
+            ..
+        } => {
+            slider(ui, "opacity", opacity, 0.0..=1.0);
+            choice(
+                ui,
+                "shading",
+                shading,
+                &[Shading::Interpolated, Shading::Flat],
+            );
+            ui.horizontal(|ui| {
+                ui.label("range");
+                ui.add(egui::DragValue::new(&mut range[0]).speed(0.5));
+                ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
+            });
         }
         DataRenderType::Contour { contour, .. } => contour_controls(ui, contour, config),
         DataRenderType::HeatmapContour { fill, contour, .. } => {
@@ -2144,6 +2187,7 @@ fn layer_columns<'a>(
             !matches!(
                 s.render_type,
                 DataRenderType::Heatmap { .. }
+                    | DataRenderType::RgbImage { .. }
                     | DataRenderType::Contour { .. }
                     | DataRenderType::HeatmapContour { .. }
             )

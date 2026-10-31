@@ -40,6 +40,7 @@ fn histogram(id: &str, edges: &str, values: &str, orientation: BarOrientation) -
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: Color::BLACK,
@@ -171,6 +172,7 @@ async fn point_vector_selection_steps_along_its_anchors() {
         label: None,
         x_column: "vx".into(),
         y_column: "vy".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "vu".into(),
@@ -221,6 +223,7 @@ fn trace(id: &str) -> SeriesConfig {
         label: None,
         x_column: "ox".into(),
         y_column: "oy".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: renderer::DataLineStyleConfig {
                 line_width: 2.0,

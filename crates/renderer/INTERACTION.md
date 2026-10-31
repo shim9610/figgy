@@ -171,13 +171,33 @@ triangle refits. The annotation layer places ratio anchors only, ternary
 subplots carry their own triangle, and overlays and streamed sources are
 rejected.
 
+Parallel coordinates (`Config.parallel`, `DataRenderType::Parallel`,
+[configuration](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates))
+keep the rectangular chart's interactions and add the axes' own. A row is
+picked by `pick_chart_data` as `PickedData::Point { point_index }` where its
+nearest segment is within the distance; the picked row is redrawn in the
+selection's colour and width over every row; `step_selection` walks the
+rows (bounded by the shortest column); `selection_details()` reports
+`values` (one per axis) and, mapped, `color_value`. Each parallel axis's
+tick labels are their own element (`Element::ParallelAxisLabel(i)`, hit id
+`parallel_axis_labels_{i}`) and drag into the axis's `label_offset`; the
+categorical `bottom_x` (its labels, drag and title), the chart title, the
+legend and the plot area behave as on any rectangular chart, and `left_y`
+registers its elements but draws nothing. The annotation layer places
+ratio anchors and `bottom_x` data anchors (the y axis is the normalized
+band `0..1`); parallel subplots carry their own axes; overlays and streamed
+sources are rejected.
+
 3D charts (`Config.view_3d`, a heatmap drawn as a surface,
 [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
 pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
 depth test: a surface answers `PickedData::MatrixCell` for the grid sample
 nearest the fragment inside its quad, never one hidden behind the surface,
-and a floor contour answers its level. The picked sample's patch is
-outlined and brightened over anything in front of it. `step_selection`
+and a floor contour answers its level; a scatter or line series with a
+`z_column` answers `PickedData::Point` for the marker or the segment end
+under the cursor, never a mark behind a surface. The picked sample's patch is
+outlined and brightened over anything in front of it, and a picked point is
+ringed at its projected place. `step_selection`
 walks the samples and `selection_details()` reports the sample's values. A
 data-area drag orbits the camera (`Config::orbit_view`) and
 `Config::zoom_view` zooms it; the data area's edges still resize it. A box
@@ -787,10 +807,15 @@ common blue selection box; the handles it carries are the item's own: a span's
 two edges (`W`/`E` or `N`/`S`), a reference line's two value handles (`W`/`E`
 on an `X` line, `N`/`S` on a `Y` line; both move the value), an arrow's two
 endpoints (the endpoint further left is `W`, the other `E`;
-`N`/`S` for a vertical arrow); a text box has none. `resize_by` with that
-compass name moves the handle, `drag_by` moves the whole item. Moves that
-would leave the axis range (lines, span edges), the plot (a whole span) or the
-panel (text, arrow endpoints) are rejected atomically. Later items win where
+`N`/`S` for a vertical arrow); a rectangle's or ellipse's eight box handles
+(`W` / `E` move the side at the smaller / larger x, `N` / `S` the same in y, a
+corner both); a polygon's handles are its vertices (`hit_vertex`,
+`drag_vertex(layer, id, vertex, dx, dy)`, never a compass name); a text box has
+none. A shape is hit anywhere inside its polygon (a concave one in its arms
+and not in its notch), and its selection outline is that polygon. `resize_by`
+with that compass name moves the handle, `drag_by` moves the whole item. Moves
+that would leave the axis range (lines, span edges), the plot (a whole span or
+shape) or the panel (text, arrow endpoints) are rejected atomically. Later items win where
 items overlap. Hidden items and items the raster skipped are not registered;
 the skipped ones are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` / `BoundedAnnotationFrame::render_warnings()`.

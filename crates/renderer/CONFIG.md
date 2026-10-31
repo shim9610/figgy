@@ -31,6 +31,7 @@ pub struct Config {
     pub polar: Option<PolarOptions>,         // None = rectangular; Some draws bottom_x as the angle, left_y as the radius
     pub ternary: Option<TernaryOptions>,     // None = rectangular; Some draws a triangle, bottom_x / left_y / right_y its three components
     pub view_3d: Option<View3d>,             // None = flat; Some draws a 3D box, bottom_x / left_y / right_y its x, y and z
+    pub parallel: Option<ParallelOptions>,   // None = rectangular; Some draws one vertical axis per category of bottom_x, each with its own range (parallel coordinates)
     pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
@@ -288,11 +289,12 @@ Validation (`Config::validate_view_3d`, reported as `InvalidConfig { field:
 linear or logarithmic and not categorical; neither polar nor ternary; no
 `overlays`, no `line_offsets` members and the `Precise` draw style.
 `Config::validate_view3d_series` (reported as `InvalidSeriesConfig` at
-registration): a 3D chart draws only heatmaps, contours and heatmap
-contours; a surface's fill is continuous, a floor contour has no labels and
-a colour grid matches its height grid. Streamed sources are rejected. Fits
-also fit `right_y` to the heights. Annotations are placed by ratio only.
-Subplots carry their own `view_3d`.
+registration): a 3D chart draws heatmaps, contours, heatmap contours and
+the scatter, line and scatter-line series that name a `z_column` (linear,
+without an area fill); a surface's fill is continuous, a floor contour has
+no labels and a colour grid matches its height grid. Streamed sources are
+rejected. Fits also fit `right_y` to the heights and the z columns.
+Annotations are placed by ratio only. Subplots carry their own `view_3d`.
 
 ### `TernaryOptions` (`Config::ternary`)
 
@@ -337,6 +339,48 @@ outward normal. Axis titles move in screen space through `offset_x` /
 `offset_y`. The slanted edges and their labels hit and outline on their
 drawn parts. The top axis is not drawn and registers nothing.
 
+<a id="paralleloptions-configparallel"></a>
+### `ParallelOptions` (`Config::parallel`)
+
+`parallel: None` (default, key absent in JSON) is the rectangular chart.
+`Some(ParallelOptions { axes })` (JSON `{ "parallel": { "axes": [..] } }`,
+[#141](https://github.com/shim9610/figgy/issues/141)) draws a parallel
+coordinates chart: one vertical axis per category of `bottom_x`, in order,
+at the category's position, each with its own range
+`ParallelAxis { min, max, inverted, scale, label_offset }` (`inverted`,
+`scale` and `label_offset` defaulted: `false`, `Linear`, `[0, 0]`). Every
+[`Parallel`](#parallel-coordinates) series draws one polyline per row across
+the axes, each value placed on its axis at
+`(v − min) / (max − min)` (in `log10` on a logarithmic axis, flipped when
+inverted): the normalization only places the value (rule 1), as the
+ternary placement does, computed on every draw and never stored. The
+categorical `bottom_x` names the axes (its labels, drag and title as
+today); `left_y` spans the normalized band and is read, not drawn.
+
+Each axis draws its own line, major and minor ticks and tick labels in
+`left_y`'s style over its own range; the tick labels are their own element
+(`Element::ParallelAxisLabel(i)`, hit id `parallel_axis_labels_{i}`),
+dragged into the axis's `label_offset`.
+
+Validation (`Config::validate_parallel`, reported as `InvalidConfig { field:
+"parallel" }` where the chart is drawn): at least two axes, each with a
+finite range whose `min` is smaller than `max` (positive when
+logarithmic) and a finite `label_offset`; `bottom_x` categorical with one
+category per axis; `left_y` linear over exactly `0..1`, not inverted and
+not categorical; neither polar, ternary nor 3D; no `overlays` and no
+`line_offsets` members; the `Precise` draw style; no subplot axis links.
+`Config::validate_parallel_series` (reported as `InvalidSeriesConfig` at
+registration): a parallel chart draws only `Parallel` series and a
+`Parallel` series needs a parallel chart; it names one column per axis,
+its `x_column` and `y_column` being its first two; its line is solid and
+linear without a fill; a `color_column` needs `Config.colorbar`. Streamed
+sources are rejected. The axis fits (`auto_fit_x_extent`,
+`auto_fit_y_extent`, `apply_auto_fit_all`) leave the chart's own axes
+alone; `Chart::auto_fit_parallel_axes` (and `auto_fit_layer_union` on a
+parallel chart) fits each axis's range from the statistics of the columns
+the parallel series name for it. Annotations are placed by ratio and
+`bottom_x` data anchors; subplots carry their own `parallel`.
+
 ### `LayerRef` / `AnnotationLayer`
 
 The layer fields shared by every chart family (`Config`, `RadialChart`,
@@ -358,7 +402,7 @@ Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
 |---|---|---|
 | `id` | `String` | Free host label that survives reordering. Empty by default and omitted from JSON then |
 | `visible` | `bool` | A hidden item is neither drawn nor registered in the hit map; its geometry is kept. `true` by default and omitted then |
-| `kind` | `AnnotationKind` | One of the four variants below, externally tagged (serde's default): `"kind": {"Span": {...}}` |
+| `kind` | `AnnotationKind` | One of the seven variants below, externally tagged (serde's default): `"kind": {"Span": {...}}` |
 
 | `AnnotationKind` | Fields | Where and how it is drawn |
 |---|---|---|
@@ -366,6 +410,9 @@ Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
 | `Span` | `axis: AnnotationAxis`, `from: f64`, `to: f64`, `fill: Color` | Underlay, below the data, so a translucent fill never tints it. The band between `from` and `to`, clipped to the plot area; a band partly outside is clipped, one entirely outside is skipped |
 | `Text` | `anchor: Anchor`, `text: RichText`, `box_style: Option<BoxStyle>` | Overlay. The text block's top-left corner (the frame's corner when boxed) sits at the anchor, anywhere in the panel; a block that would leave the panel is skipped |
 | `Arrow` | `from: Anchor`, `to: Anchor`, `style: ArrowStyle`, `text: Option<RichText>` | Overlay. A shaft from `from` to `to` with a filled triangular head at `to`; the label is centred beside the shaft's midpoint, on its upper side |
+| `Rect` | `from: Anchor`, `to: Anchor`, `style: ShapeStyle` | The axis-aligned rectangle between the two anchors, clipped to the plot area; a rectangle with nothing left inside the plot is skipped. Overlay, or the underlay with `style.below` (#138) |
+| `Ellipse` | `from: Anchor`, `to: Anchor`, `style: ShapeStyle` | The ellipse inscribed in that rectangle, drawn as `ELLIPSE_SEGMENTS` (64) chords in the raster and the vector export alike, clipped to the plot area |
+| `Polygon` | `vertices: Vec<Anchor>` (at least three), `style: ShapeStyle` | The closed polygon through the anchors in order, concave or not, clipped to the plot area |
 
 `AnnotationAxis` is `X` (horizontal on screen) or `Y` (vertical) in every
 family. Cartesian charts map them to `bottom_x` / `left_y`, the axes the data
@@ -394,6 +441,7 @@ The styles are `serde(default)` with these defaults:
 | `AnnotationLineStyle` | `color` (dark grey), `width: f32` (1.5), `style: LineStylePreset` (`Solid`) |
 | `BoxStyle` | `fill` (white, alpha 0.9), `border_color` (dark grey), `border_width` (1.0), `padding` (4.0) between border and text |
 | `ArrowStyle` | `line: AnnotationLineStyle`, `head_length` (10.0), `head_width` (8.0) |
+| `ShapeStyle` | `fill: Option<Color>` (`None`: outline only), `border: AnnotationLineStyle` (a zero width or a transparent colour draws none; dash patterns run around the corners), `below: bool` (`false`: the overlay; `true`: the underlay below the data, as a span) |
 
 Every pixel dimension (strokes, text sizes, padding, arrow heads) scales with
 `Config::scaled` like the rest of the chart, so a 2× export draws the layer at
@@ -611,7 +659,7 @@ Consequences:
 | Field | Type | Meaning |
 |---|---|---|
 | `mode` | `CategoryBarMode` | `Grouped` (side by side in series order), `Stacked` (positive and negative values stack away from zero independently) or `PercentStacked` (shares of the category total, `0..=100`; negative values are rejected) |
-| `direction` | `CategoryBarDirection` | `Vertical`: categories on `bottom_x`, values on `left_y`; `Horizontal`: categories on `left_y`, values on `bottom_x` (base panel only) |
+| `direction` | `CategoryBarDirection` | `Vertical`: categories on `bottom_x`, values on `left_y`; `Horizontal`: categories on `left_y`, values on `bottom_x` (base panel only). On a polar chart the bars are a rose ([POLAR.md](POLAR.md#roses-polar-bars)): `Vertical` only, the categories on the angle axis and the values on the radius |
 | `group_width` | f32 | Share of a category slot the bars of the slot cover, `0.1..=0.95` (default 0.7) |
 | `bar_gap` | f32 | Logical pixels between grouped bars, `0..=24` (default 3) |
 
@@ -669,19 +717,19 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | Type | Fields | Role |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
-| `DataRenderType` | enum, 16 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
+| `DataRenderType` | enum, 17 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset. `point_color_map` colours each point by a value column through `Config.colorbar`; `point_size_map` sizes each point by a value column over an explicit domain. See [Point colour and size maps](#point-colour-and-size-maps) |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | Errorbar appearance. The optional style map applies only to precise errorbars; each table/override slot can replace color, stem width, cap half-size, cap width, or any subset |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
-| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries) or `Centers` (n cell centres). See [Matrix fields and contours](#matrix-fields-and-contours) |
+| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series, a channel of an `RgbImage` or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries), `Centers` (n cell centres) or `Hexagonal` (n centres of flat-topped hexagons, a hexbin). See [Matrix fields and contours](#matrix-fields-and-contours) and [Hexagonal grids](#hexagonal-grids-hexbins) |
 | `FieldFillConfig` | `mode, shading, opacity` | Heatmap fill. `mode` is `Continuous` or `Bands` (one colour per interval between the contour levels); `shading` is `Flat` (one colour per cell) or `Interpolated` (bilinear across the cell corners); `opacity` multiplies the colormap alpha |
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | Contour lines. `levels` is an explicit list in data units (at most 1024); `contour.set_nice_levels(&colorbar.axis, n)` writes about `n` round levels strictly inside the colourbar range (`ContourConfig::nice_levels` returns them without writing), and `contour.set_colormap_colors(&colorbar)` fills `per_level_color` from the ramp |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | Inline level labels. `spacing_px` must be finite and positive; empty `anchors` means automatic placement |
 
-**The 16 `DataRenderType` variants**:
+**The 17 `DataRenderType` variants**:
 
 | Variant | Sub-styles used | Meaning |
 |---|---|---|
@@ -694,13 +742,15 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | The above + connecting line |
 | `Histogram { bar }` | bar | Bars from host-binned `(edges, counts)`. `bar.orientation` alone decides which column is which: `Vertical` = `x_column` edges / `y_column` counts, `Horizontal` the reverse. The `edges = counts + 1` length relation is never used to guess |
 | `Heatmap { matrix, fill, surface? }` | fill | Filled field only; a surface on a 3D chart (`surface` its look, see [`View3d`](#view3d-configview_3d)) |
+| `RgbImage { red, green, blue, range, shading, opacity }` | fill | A colour image: three matrices on one lattice, each channel mapped linearly from `range` to 0..1; no colourbar. See [Colour images](#colour-images-imshow) |
 | `Contour { matrix, contour }` | contour | Contour lines only; on a 3D chart's floor |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | Filled field with lines over it; on a 3D chart, the surface with the lines on the floor |
 | `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
-| `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. See [Categorical bars](CATEGORICAL.md) |
+| `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. On a polar chart with a categorical angle axis the bars are wedges, a rose ([POLAR.md](POLAR.md#roses-polar-bars)). See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
 | `Ternary { c_column, scatter?, line?, region? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern), `region` (`TernaryRegionStyle { color, opacity }`) fills the closed polygons the samples outline (a NaN row separates polygons; even-odd within a series, so a polygon inside another is a hole) under every series' markers and lines; at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
+| `Parallel { columns, line, color_column }` | parallel | One polyline per row across the axes of a parallel chart (`Config.parallel`): `columns` names one column per axis in order (`x_column` and `y_column` are its first two), `line` the rows' colour and width (solid, linear, unfilled), `color_column` an optional column colouring each row through `Config.colorbar`. A row with a non-finite value breaks at that axis. See [Parallel coordinates](#parallel-coordinates) |
 | `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, drawn outside each vertex along its spoke; `labels.offsets` holds each label's drag offset. Needs `Config.polar` with `Chord` interpolation, any number of radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see
@@ -897,9 +947,70 @@ else. There is no separate matrix container: resident drawing reads those column
 from the pool, while supported nonresident Heatmap drawing replays their registered
 sources in bounded ranges.
 `grid_layout` says whether the coordinate
-columns are cell `Edges` (n + 1) or `Centers` (n); it is never inferred from the
-lengths. A declaration that does not line up with the data is **not an error** —
-the smallest common extent is drawn and the truncation is reported.
+columns are cell `Edges` (n + 1), `Centers` (n) or the centres of a
+`Hexagonal` lattice (n, [below](#hexagonal-grids-hexbins)); it is never
+inferred from the lengths. A declaration that does not line up with the data
+is **not an error** — the smallest common extent is drawn and the truncation
+is reported.
+
+<a id="hexagonal-grids-hexbins"></a>
+
+#### Hexagonal grids (hexbins)
+
+`GridLayout::Hexagonal` ([#134](https://github.com/shim9610/figgy/issues/134))
+draws a `Heatmap` as `n` columns by `m` rows of flat-topped hexagons: the cell
+of column `c`, row `r` is centred at `(x[c], y[r] + (c mod 2) · py / 2)`, the
+odd columns raised by half the row pitch `py = y[1] − y[0]`. The host bins
+its samples (the renderer never bins, rule 1) and registers the counts as the
+grid's constituent columns, one per lattice column under `ColumnsAreX` (per
+row under `ColumnsAreY`), exactly as a `Centers` heatmap. The hexagons are
+regular when the column pitch `px = x[1] − x[0]` is `√3 / 2` of the row
+pitch and stretched otherwise. A hexagon is the Voronoi cell of its centre in
+the data metric, so a fragment, the cell pick and the selection outline all
+agree on the nearest centre, and a border cell is a whole hexagon with nothing
+painted past the lattice. The auto-fit covers every hexagon whole: a sixth of
+the column pitch past the centres' half-pitch bounds on each side, and half a
+row pitch past the raised columns' end.
+
+The rules (`Config::validate_hexagonal_series`, at registration): both
+coordinate columns are uniform (at least two values, every step equal to the
+first within 1e-6 relative; the pool measures it as the column is written),
+the series is a `Heatmap` shaded `Flat` (a `Contour`, a `HeatmapContour`, an
+`Interpolated` fill and a grid vector read a rectangular lattice), the x and
+y axes are linear, the chart is flat (no `view_3d`), and the columns are
+resident (streamed sources are rejected). Hover, click, `step_selection`
+and the picked outline are the heatmap's; `selection_details()` reports the
+raised centre of an odd column.
+
+<a id="colour-images-imshow"></a>
+
+#### Colour images (imshow)
+
+`DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`
+([#139](https://github.com/shim9610/figgy/issues/139)) draws three matrices
+as one colour image: `red`, `green` and `blue` are `MatrixRef`s on one
+lattice (the series' coordinate columns; the three share their column count,
+orientation and grid layout: `Edges`, `Centers` or, shaded `Flat`, a
+`Hexagonal` lattice under the [hexbin rules](#hexagonal-grids-hexbins)), and a cell's colour is
+its three channel values mapped linearly from `range` to 0..1 and clamped
+(`[0, 1]` by default, `[0, 255]` for bytes), at `opacity`. The host supplies
+the channels as it supplies any grid; the renderer maps them and derives
+nothing (rule 1), so a histogram equalization, a gamma or a false colour is
+the host's. No colourbar is read or required: the colours are the data.
+`Flat` paints each cell its colour, `Interpolated` blends each channel
+bilinearly between the sample points; a cell with a non-finite value in any
+channel is unpainted and not picked. Hover, click, `step_selection` and the
+picked outline are the heatmap's cell interactions; a picked cell's
+`selection_details()` reports `red`, `green` and `blue`. The drawn extent
+is the smallest of the three channels', reported through
+`series_draw_info` as a heatmap's.
+
+The rules (`Config::validate_rgb_image_series`, at registration): the three
+channels have the same number of columns, orientation and grid layout,
+`range` is finite with a smaller low end,
+`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular (a
+polar chart rejects every field series), and the columns are resident
+(streamed sources are rejected).
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
 `ContourConfig.levels` is always an explicit list in data units (there is no
@@ -954,6 +1065,48 @@ label rectangle. `bg_padding_px` pads that real line gap whether `bg_color` is
 opaque or absent. A `bg_color` box is antialiased at any rotation: the label quad
 extends past the box into the atlas cell's transparent gutter, so the box edge is
 filtered like the glyphs inside it rather than rasterized as the quad edge.
+
+<a id="parallel-coordinates"></a>
+
+#### Parallel coordinates
+
+`DataRenderType::Parallel { columns, line, color_column }`
+([#141](https://github.com/shim9610/figgy/issues/141)) draws a multivariate
+table as parallel coordinates on a chart with
+[`Config.parallel`](#paralleloptions-configparallel): `columns` names one
+registered column per axis, in the axes' order (`x_column` and `y_column`
+are its first two, so every reader of a series' coordinate columns sees
+registered columns), and row `r` is the polyline through
+`(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, each value
+placed on its own axis's range (the normalization is appearance, rule 1:
+hover, selection and the reported values are the original columns). A row
+with a non-finite value breaks at that axis: the two segments touching it
+are not drawn. The rows drawn are the shortest column's (and the colour
+column's), as a line's `min(x, y)` is, reported through `series_draw_info`
+as `rows · (axes − 1)` segments.
+
+`line` is the rows' colour and width: solid (a dash along a polyline of
+independent segments is a later decision), linear and unfilled. With
+`color_column`, each row takes the colour of that column's value through
+`Config.colorbar` (its range, scale, colormap and `nan_color`), as a
+colour-mapped marker does; without, every row is `line.line_color`. The
+rows draw in the `Precise` style only.
+
+Interaction: the GPU pick (`pick_chart_data`) answers the row whose nearest
+segment is within the distance as `PickedData::Point { point_index }`, the
+row; the picked row is redrawn in the selection's colour and width over
+every row; `step_selection` walks the rows (bounded by the shortest
+column); a picked row's `selection_details()` reports `values` (one per
+axis) and, mapped, `color_value`. Each axis's tick labels drag into its
+`label_offset`; the category axis, the title, the legend and the plot area
+drag and resize as on any rectangular chart. Polar, ternary and 3D charts
+and streamed sources are rejected.
+
+The rows draw through the line module's parallel entries: no vertex slot,
+one quad per segment instance, the ends read from the column pool through
+the series' axis lane table and placed by its axis range table
+([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md)
+§5.23), so the axis count is unbounded and nothing per row is stored.
 
 #### Draw info, fitting and series styles
 
@@ -1032,6 +1185,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // 색상 막대이자 차트의 Z 스케일
     pub draw_style: DrawStyle,
     pub polar: Option<PolarOptions>,         // None이면 직교 차트. Some이면 bottom_x를 각도, left_y를 반지름으로 그린다
+    pub parallel: Option<ParallelOptions>,   // None이면 직교 차트. Some이면 bottom_x의 범주마다 자기 범위를 가진 세로 축을 세운다(평행 좌표)
     pub overlays: Vec<OverlayLayer>,         // 오른쪽 보조 Y축. 각 축은 나열한 시리즈의 스케일을 맡는다
     pub subplots: Vec<Subplot>,              // 같은 문서에 그리는 추가 차트. 차트마다 축을 따로 가진다
     pub active_layer: LayerRef,              // 포인터 상호작용 대상 레이어. 기본값 `Base`는 차트 자체의 시리즈와 장식
@@ -1360,7 +1514,7 @@ pub struct Config {
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `mode` | `CategoryBarMode` | `Grouped`(시리즈 순서대로 나란히), `Stacked`(양수와 음수를 0에서부터 따로 쌓음), `PercentStacked`(범주 합계에 대한 비율, `0..=100`, 음수는 거부) |
-| `direction` | `CategoryBarDirection` | `Vertical`은 범주가 `bottom_x`, 값이 `left_y`, `Horizontal`은 범주가 `left_y`, 값이 `bottom_x`(기본 패널에서만) |
+| `direction` | `CategoryBarDirection` | `Vertical`은 범주가 `bottom_x`, 값이 `left_y`, `Horizontal`은 범주가 `left_y`, 값이 `bottom_x`(기본 패널에서만). 극좌표 차트에서는 막대가 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 되며 `Vertical`만 허용한다 |
 | `group_width` | f32 | 범주 칸에서 막대 묶음이 차지하는 비율, `0.1..=0.95`(기본 0.7) |
 | `bar_gap` | f32 | 묶음 안 막대 사이의 논리 픽셀, `0..=24`(기본 3) |
 
@@ -1408,7 +1562,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | 타입 | 필드 | 역할 |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 시리즈 설정. `source_id`는 생략할 수 있으며, 피킹·선택 결과에서 호스트가 데이터 출처를 구분하는 데 쓴다. 컬럼 ID는 상주 풀 또는 재공급 가능한 비상주 소스를 가리킨다. 웹 편집 중 표시할 라벨은 `legend.content`를 기준으로 하며 일반 시리즈 편집은 기호만 갱신한다. `SeriesConfig.label`은 `reset_legend_from_series_labels()`로 범례를 다시 만들 때 사용한다. |
-| `DataRenderType` | 16종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
+| `DataRenderType` | 17종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | 선 모양. `fill`은 선 아래(`ToBaseline(y)`) 또는 다른 시리즈까지(`ToSeries(series_id)`) 면을 채우고, `fill_color`는 생략 시 `line_color`의 알파를 1/4로 줄인 색이며, `interpolation`은 `Linear`(기본)·`StepPre`·`StepPost`·`StepMid`다. [면 채움과 계단선](#면-채움과-계단선) 참고 |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. `point_color_map`은 값 컬럼을 `Config.colorbar`로 색에, `point_size_map`은 값 컬럼을 명시한 범위로 크기에 대응시킨다. [점 색과 크기 매핑](#점-색과-크기-매핑) 참고 |
@@ -1420,7 +1574,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | 등고선. `levels`는 데이터 단위의 명시적 목록(최대 1024개)이다. `contour.set_nice_levels(&colorbar.axis, n)`은 색상 막대 범위 안쪽(양 끝 제외)에 약 `n`개의 깔끔한 레벨을 쓰고(`ContourConfig::nice_levels`는 쓰지 않고 돌려주기만 한다), `contour.set_colormap_colors(&colorbar)`는 색상표에서 `per_level_color`를 채운다 |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | 선 위의 레벨 라벨. `spacing_px`는 유한한 양수여야 하며, `anchors`가 비어 있으면 자동으로 배치한다 |
 
-**`DataRenderType`의 16가지 종류**
+**`DataRenderType`의 17가지 종류**
 
 | 종류 | 사용하는 스타일 | 의미 |
 |---|---|---|
@@ -1433,11 +1587,13 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | 위 3 + 연결선 |
 | `Histogram { bar }` | bar | 호스트가 집계한 경계·빈도 `(edges, counts)`로 막대를 그린다. `bar.orientation`이 `Vertical`이면 X컬럼이 경계, Y컬럼이 빈도이며 `Horizontal`은 반대다. `edges = counts + 1`이라는 길이 관계로 역할을 추측하지 않는다. |
 | `Heatmap { matrix, fill, surface? }` | fill | 면만. 3D 차트에서는 곡면 |
+| `RgbImage { red, green, blue, range, shading, opacity }` | fill | 컬러 이미지. 같은 격자 위의 행렬 세 개를 R·G·B 채널로 읽어 `range`를 0..1로 선형 매핑한다. 색상 막대를 쓰지 않는다 |
 | `Contour { matrix, contour }` | contour | 선만. 3D 차트에서는 바닥에 |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | 면 + 그 위의 선. 3D 차트에서는 곡면과 바닥의 선 |
 | `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
-| `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. [범주형 막대](CATEGORICAL.md) 참고 |
+| `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 범주형 각도 축을 가진 극좌표 차트에서는 막대가 쐐기, 즉 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 된다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
+| `Parallel { columns, line, color_column }` | parallel | 평행 좌표 차트(`Config.parallel`)의 축을 가로지르는 행마다 꺾은선 하나. `columns`는 축 순서대로 축마다 컬럼 하나(`x_column`·`y_column`은 그 첫 둘), `line`은 행의 색과 굵기(실선·직선·채움 없음), `color_column`은 `Config.colorbar`로 행마다 색을 입히는 선택 컬럼이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. [평행 좌표](#평행-좌표) 참고 |
 | `Radar { color, style, labels }` | radar | 극좌표 차트의 범주형 각도 축에서 범주마다 값 하나를 지나는 닫힌 외곽선. `x_column`은 위치 컬럼 `0..n`, `y_column`은 값이다(NaN이면 그 자리에서 외곽선과 채움이 끊긴다). 마지막 범주와 첫 범주를 닫는 세그먼트로 잇는다. `style`은 `RadarSeriesStyle`(선 굵기, 채움 색이나 `fill_opacity`, 꼭짓점 표식과 크기)이며, 전체 원에서는 안쪽 고리까지 채우고 표식은 산점도 경로로 그린다. `labels.text`는 `format_radar_labels`가 기록한 값 라벨 문자열이며 꼭짓점 바깥쪽 바큇살 방향에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. `Chord` 보간의 `Config.polar`가 필요하고 레이어마다 레이더 시리즈 수에는 상한이 없으며 스트리밍 소스는 거부한다. [레이더 차트](RADAR.md) 참고 |
 
 세로·가로 설정과 기존 차트의 방향 변경 예제는 [히스토그램 사용법](HISTOGRAM.md)에 있다.
@@ -1489,6 +1645,20 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 머리의 위치와 방향은 데이터 좌표에서 계산한다. 선형축에서는 그린 선분 위에 정확히 놓이며, 로그축에서는 화면 현과 1픽셀 미만으로 어긋난다. 피킹도 같은 계산을 따른다. 선과 머리는 선 시리즈처럼 피킹하고 선택한다. 머리를 눌러도 그 머리가 놓인 선분의 가까운 끝점을 돌려주며, `step_selection`은 NaN 구분 행을 포함한 꼭짓점을 차례로 옮긴다. 정밀 스타일에서만 그리고, 극좌표 차트와 스트리밍 소스는 오류로 거부한다. 범례 기호는 머리가 있으면 선 색의 화살표, 없으면 선이다.
 
 선은 선 셰이더로, 색을 입힌 선은 값 컬럼을 정점 슬롯 6/7에 묶는 `vs_main_mapped` / `fs_main_mapped`로 그린다. 머리는 벡터 셰이더의 경로 입력(`VectorInput::Path`)이 호 길이 스캔의 슬롯마다 그리며, 개수는 GPU가 정하는 간접 그리기다([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.3, §5.6). 머리 위치, 방향, 색은 그릴 때마다 계산하고 따로 저장하지 않는다.
+
+<a id="평행-좌표"></a>
+
+#### 평행 좌표
+
+`DataRenderType::Parallel { columns, line, color_column }`([#141](https://github.com/shim9610/figgy/issues/141))은 `Config.parallel`이 있는 차트에서 다변량 표를 평행 좌표로 그린다. `Config.parallel`은 `ParallelOptions { axes }`이며 `bottom_x`의 범주마다 축 하나(`ParallelAxis { min, max, inverted, scale, label_offset }`)를 그 범주 자리에 세로로 세운다. `columns`는 축 순서대로 등록된 컬럼 하나씩이고(`x_column`·`y_column`은 그 첫 둘), 행 `r`은 축마다 `(v_i − min_i) / (max_i − min_i)`(로그 축은 `log10`, `inverted`면 뒤집음)에 놓인 점을 잇는 꺾은선이다. 정규화는 값을 축 위에 놓기 위한 외관일 뿐(규칙 1)이며 그릴 때마다 계산하고 저장하지 않는다. 호버·선택·보고 값은 원래 컬럼이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. 그리는 행 수는 가장 짧은 컬럼(색 컬럼 포함)이 정한다.
+
+- `line`은 행의 색과 굵기다. 실선·직선·채움 없음이어야 한다.
+- `color_column`이 있으면 행마다 그 컬럼 값을 `Config.colorbar`의 색으로 입힌다(색상 막대가 없으면 거부). 없으면 모든 행이 `line.line_color`다.
+- 축마다 자기 범위의 선·눈금·라벨을 `left_y`의 스타일로 그린다. 라벨은 축마다 별도 요소(`Element::ParallelAxisLabel(i)`, 히트 id `parallel_axis_labels_{i}`)이며 끌면 그 축의 `label_offset`에 기록된다. 범주형 `bottom_x`가 축 이름·끌기·제목을 맡고 `left_y`는 정규화 띠(`0..1`)로 읽기만 하고 그리지 않는다.
+
+규칙(`Config::validate_parallel`, 그릴 때 `InvalidConfig { field: "parallel" }`): 축 둘 이상, 축마다 유한하고 `min < max`인 범위(로그면 양수), `bottom_x`는 축 수만큼의 범주, `left_y`는 선형 `0..1`에 뒤집지 않음, 극좌표·삼각·3D가 아님, `overlays`·`line_offsets` 없음, `Precise` 스타일, 서브플롯 축 링크 없음. `Config::validate_parallel_series`(등록 시 `InvalidSeriesConfig`): 평행 좌표 차트는 `Parallel` 시리즈만 그리고 `Parallel` 시리즈는 평행 좌표 차트가 필요하며 축마다 컬럼 하나를 댄다. 스트리밍 소스는 거부한다. 축 맞춤은 `Chart::auto_fit_parallel_axes`(평행 좌표 차트의 `auto_fit_layer_union`)가 컬럼 통계로 축마다 범위를 쓰며, 차트 자체의 축은 건드리지 않는다.
+
+피킹은 가장 가까운 세그먼트의 행을 `PickedData::Point { point_index }`로 답하고, 선택한 행은 선택 색과 굵기로 모든 행 위에 다시 그린다. `step_selection`은 행을 옮기고, 선택한 행의 `selection_details()`는 축마다의 `values`와 매핑된 `color_value`를 보고한다. 행은 선 셰이더의 평행 좌표 엔트리로 그린다. 정점 슬롯 없이 세그먼트 인스턴스마다 사각형 하나를, 끝점은 컬럼 풀에서 축 레인 표와 축 범위 표로 읽어 놓는다([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.23). 축 수에 상한이 없고 행마다 저장하는 것이 없다.
 
 <a id="면-채움과-계단선"></a>
 

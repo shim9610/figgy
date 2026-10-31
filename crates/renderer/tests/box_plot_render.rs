@@ -179,6 +179,7 @@ fn boxes(id: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: "pos".into(),
         y_column: format!("{id}.record"),
+        z_column: None,
         render_type: DataRenderType::BoxPlot {
             color,
             style: flat_style(),

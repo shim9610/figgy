@@ -174,7 +174,7 @@ impl Playground {
 
     fn switch(&mut self, kind: SceneKind, gpu: &Gpu, egui_renderer: &mut egui_wgpu::Renderer) {
         let next = if kind.is_radial() {
-            RadialHost::create(gpu.renderer_device()).map(|r| Active::Radial(Box::new(r)))
+            RadialHost::create(gpu.renderer_device(), kind).map(|r| Active::Radial(Box::new(r)))
         } else {
             CartesianHost::new(&mut self.cartesian, kind)
                 .map(|c| Active::Cartesian(Box::new(c)))

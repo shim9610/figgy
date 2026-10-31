@@ -3,20 +3,26 @@
 
 use super::*;
 
-/// Invoke the fused source capability once while the write-only view is live.
+/// Invoke the fused source capability once while the write-only view is
+/// live, measuring the values' uniform step (`UniformStep`, #134) as they
+/// are written.
 pub(super) fn write_staging_pairs(
     staging: &Buffer,
     raw_bytes: u64,
     write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
-) -> ColumnUploadStats {
+) -> (ColumnUploadStats, Option<f64>) {
     let mut view = staging
         .slice(0..raw_bytes)
         .get_mapped_range_mut()
         .expect("column staging is mapped at creation");
-    let stats = write_pairs(ColumnPairWriter::new(view.slice(..)));
+    let mut step = crate::data::UniformStep::new();
+    let stats = {
+        let mut observe = |index: usize, hi: f32, lo: f32| step.record(index, hi, lo);
+        write_pairs(ColumnPairWriter::new_observed(view.slice(..), &mut observe))
+    };
     drop(view);
     staging.unmap();
-    stats
+    (stats, step.finish())
 }
 
 /// Source metadata captured before an upload is prepared.
@@ -743,6 +749,7 @@ impl ColumnPool {
                         min: staged.min,
                         max: staged.max,
                         min_positive: staged.min_positive,
+                        uniform_step: None,
                     },
                 );
             }
@@ -845,6 +852,7 @@ impl ColumnPool {
                     min: staged.min,
                     max: staged.max,
                     min_positive: staged.min_positive,
+                    uniform_step: None,
                 },
             );
         }
@@ -1068,18 +1076,23 @@ impl ColumnPool {
                 let local = chunk.column_offsets[index - chunk.columns.start];
                 let dst = view.slice(local..local + raw_bytes as usize);
                 let index_lanes = index_column == Some(index);
+                let mut step = crate::data::UniformStep::new();
                 let stats = if let Some(observe) = observe.as_mut() {
-                    let mut per_column =
-                        |row: usize, hi: f32, lo: f32| (*observe)(index, row, hi, lo);
+                    let mut per_column = |row: usize, hi: f32, lo: f32| {
+                        step.record(row, hi, lo);
+                        (*observe)(index, row, hi, lo);
+                    };
                     write_scalar_source_as_pairs(
                         source,
                         ColumnPairWriter::new_observed(dst, &mut per_column)
                             .with_index_lanes(index_lanes),
                     )
                 } else {
+                    let mut per_column = |row: usize, hi: f32, lo: f32| step.record(row, hi, lo);
                     write_scalar_source_as_pairs(
                         source,
-                        ColumnPairWriter::new(dst).with_index_lanes(index_lanes),
+                        ColumnPairWriter::new_observed(dst, &mut per_column)
+                            .with_index_lanes(index_lanes),
                     )
                 };
                 epoch += 1;
@@ -1095,6 +1108,7 @@ impl ColumnPool {
                         min: source.min(),
                         max: source.max(),
                         min_positive: stats.min_positive,
+                        uniform_step: step.finish(),
                     },
                 );
             }
@@ -1263,6 +1277,7 @@ impl ColumnPool {
             min: f64,
             max: f64,
             min_positive: Option<f64>,
+            uniform_step: Option<f64>,
             staging: Buffer,
         }
 
@@ -1322,17 +1337,17 @@ impl ColumnPool {
             )?;
             staged_bytes = staged_bytes.saturating_add(byte_size);
             self.note_buffer_created(staged_bytes);
-            let min_positive = write_staging_pairs(&staging, raw_bytes, |dst| {
+            let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, |dst| {
                 write_scalar_source_as_pairs(source, dst)
-            })
-            .min_positive;
+            });
             staged.push(StagedColumn {
                 id,
                 len_values,
                 byte_size,
                 min: source.min(),
                 max: source.max(),
-                min_positive,
+                min_positive: stats.min_positive,
+                uniform_step,
                 staging,
             });
         }
@@ -1458,6 +1473,7 @@ impl ColumnPool {
                 min: column.min,
                 max: column.max,
                 min_positive: column.min_positive,
+                uniform_step: column.uniform_step,
             };
             handles.push(ColumnHandle {
                 generation: slot.generation,
@@ -1607,7 +1623,8 @@ impl ColumnPool {
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
         self.note_buffer_created(byte_size);
-        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs).min_positive;
+        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs);
+        let min_positive = stats.min_positive;
 
         let old_slot = self.slots.get(&id).cloned();
         let replaced_existing = old_slot.is_some();
@@ -1750,6 +1767,7 @@ impl ColumnPool {
             min,
             max,
             min_positive,
+            uniform_step,
         };
         let handle = ColumnHandle {
             generation: slot.generation,
@@ -1944,7 +1962,8 @@ impl ColumnPool {
 
         // The source writes and collects stats while the write-only view lives.
         let staging = create_staging(byte_size)?;
-        let min_positive = write_staging_pairs(&staging, raw_bytes, write_pairs).min_positive;
+        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs);
+        let min_positive = stats.min_positive;
 
         let slot = ColumnSlot {
             id: id.clone(),
@@ -1955,6 +1974,7 @@ impl ColumnPool {
             min,
             max,
             min_positive,
+            uniform_step,
         };
         let handle = ColumnHandle {
             generation: slot.generation,

@@ -32,6 +32,7 @@ pub use model::annotation::{
     AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
     AxisSpace, BoxStyle, MeasuredText, PixelSpace, emit_annotation,
 };
+use model::drag::DragConfig;
 use model::select::SelectionGeometry;
 use model::sink::{Sink, Slot};
 use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
@@ -215,6 +216,37 @@ impl AnnotationMap {
             dy,
         ))
     }
+
+    /// The vertex of a polygon item whose handle square covers `position`.
+    pub fn hit_vertex(&self, id: HitId, position: [f32; 2]) -> Option<usize> {
+        self.element(id)?
+            .hit_vertex(&self.state, position[0], position[1])
+    }
+
+    /// Move one vertex of a polygon item by a screen delta, through the
+    /// item's anchor space; `None` for an item that is not a drawn
+    /// polygon.
+    pub fn drag_vertex(
+        &self,
+        layer: &mut AnnotationLayer,
+        id: HitId,
+        vertex: usize,
+        dx: f32,
+        dy: f32,
+    ) -> Option<NudgeResult> {
+        let element = self.element(id)?;
+        if !matches!(
+            layer.items.get(element.index).map(|item| &item.kind),
+            Some(AnnotationKind::Polygon { .. })
+        ) {
+            return None;
+        }
+        let moved = AnnotationElement {
+            handle: Some(model::annotation::AnnotationHandle::Vertex(vertex)),
+            ..element.clone()
+        };
+        Some(layer.nudge(moved, &CpuTextMeasure::default(), dx, dy))
+    }
 }
 
 /// What a pointer hit on the active layer's route names: an annotation item
@@ -379,6 +411,24 @@ fn skip_reason(
                 AnnotationSkip::OutOfRange
             }
         }
+        AnnotationKind::Rect { from, to, .. } | AnnotationKind::Ellipse { from, to, .. } => {
+            if !finite_anchor(from) || !finite_anchor(to) {
+                AnnotationSkip::NonFinite
+            } else if !anchor_has_axes(from) || !anchor_has_axes(to) {
+                AnnotationSkip::NoValueAxis
+            } else {
+                AnnotationSkip::OutOfRange
+            }
+        }
+        AnnotationKind::Polygon { vertices, .. } => {
+            if !vertices.iter().all(finite_anchor) {
+                AnnotationSkip::NonFinite
+            } else if !vertices.iter().all(anchor_has_axes) {
+                AnnotationSkip::NoValueAxis
+            } else {
+                AnnotationSkip::OutOfRange
+            }
+        }
     }
 }
 
@@ -452,6 +502,20 @@ impl Sink for LayerSink {
     fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: model::Color) {
         self.ensure(slot);
         self.canvas_sink().triangle(slot, points, color);
+    }
+
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<model::Color>,
+        border: Option<&model::sink::StrokeStyle<'_>>,
+    ) {
+        if fill.is_none() && border.is_none() {
+            return;
+        }
+        self.ensure(slot);
+        self.canvas_sink().polygon(slot, points, fill, border);
     }
 
     fn ramp(&mut self, slot: Slot, rect: RectF, bar: &model::config::ColorBarOptions) {
@@ -532,7 +596,10 @@ pub(crate) fn emit_annotation_layer(
             AnnotationKind::ReferenceLine { label, .. } => label
                 .as_ref()
                 .and_then(|t| measure(t, 0.0, scale, request.policy)),
-            AnnotationKind::Span { .. } => None,
+            AnnotationKind::Span { .. }
+            | AnnotationKind::Rect { .. }
+            | AnnotationKind::Ellipse { .. }
+            | AnnotationKind::Polygon { .. } => None,
             AnnotationKind::Text {
                 text, box_style, ..
             } => measure(

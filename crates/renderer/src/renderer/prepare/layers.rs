@@ -320,6 +320,16 @@ impl PrepareContext<'_> {
             ),
         };
 
+        // A 3D chart's camera for this panel (#132): the scatter and line
+        // series with a height column draw through the 3D entries with it.
+        let camera_3d = chart_config.view_3d.as_ref().and_then(|_| {
+            let panel = view.panel_rect;
+            let target = (
+                (f64::from(panel.x), f64::from(panel.y)),
+                (f64::from(panel.width), f64::from(panel.height)),
+            );
+            data_render::surface_mesh::view3d_gpu(chart_config, target, target)
+        });
         let mut out = Vec::with_capacity(series_specs.len());
         for (idx, series) in series_specs.iter().enumerate() {
             let cfg = series.config;
@@ -327,6 +337,35 @@ impl PrepareContext<'_> {
             let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
             let primitives = effective_series_primitives(&chart_config.draw_style, rt);
             let x_h = lookup(&cfg.x_column)?;
+            // The height column of a scatter or line series on a 3D chart
+            // (#132), and its camera group: the surface layout for the
+            // precise entries, the combined value map and camera layout for
+            // the mapped markers and their ring.
+            let z_3d = match (camera_3d.as_ref(), cfg.z_column.as_deref()) {
+                (Some(_), Some(z))
+                    if (primitives.line || primitives.scatter) && phase.is_none() =>
+                {
+                    Some(lookup(z)?)
+                }
+                _ => None,
+            };
+            let camera_binding = |mapped: bool| {
+                data_render::surface_mesh::create_view3d_binding(
+                    &self.gpu_ledger,
+                    &self.device,
+                    if mapped {
+                        self.view3d_value_map_bgl
+                    } else {
+                        self.surface_bgl
+                    },
+                    camera_3d
+                        .as_ref()
+                        .expect("a 3D series has its panel's camera"),
+                    series.style.display_scale,
+                    0,
+                    self.scatter_value_map_buffers(cfg, mapped),
+                )
+            };
             // A box plot's `y_column` is its record, not a column: its
             // member columns are looked up with its params below.
             let y_h = if rt.box_plot().is_some() {
@@ -790,8 +829,15 @@ impl PrepareContext<'_> {
                 // A ternary series' stroke: the ternary entry with its third
                 // component (never mapped, never styled).
                 let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
+                // A 3D series' stroke: the 3D entry with its height and the
+                // panel's camera (#132).
+                let line_3d = z_3d.map(|z| (z, camera_binding(false)));
                 Some(ColumnLineLayer {
-                    pipeline: if value_map.is_some() {
+                    pipeline: if line_3d.is_some() {
+                        pipelines.view3d[View3dPipeline::Line as usize]
+                            .as_ref()
+                            .expect("prepare ensured the 3D line pipeline")
+                    } else if value_map.is_some() {
                         pipelines
                             .line_mapped
                             .as_ref()
@@ -803,7 +849,8 @@ impl PrepareContext<'_> {
                     } else {
                         line_pick.pipeline
                     },
-                    ternary_c,
+                    third: line_3d.as_ref().map(|(z, _)| *z).or(ternary_c),
+                    view3d: line_3d.map(|(_, binding)| binding),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: column_buffer,
@@ -1021,17 +1068,29 @@ impl PrepareContext<'_> {
                         .as_ref()
                         .expect("prepare ensured the ternary scatter pipeline")
                 };
+                // A 3D series' markers: the 3D entries with its height and
+                // the panel's camera, beside the value map when mapped
+                // (#132).
+                let view3d = |kind: View3dPipeline| {
+                    pipelines.view3d[kind as usize]
+                        .as_ref()
+                        .expect("prepare ensured the 3D scatter pipeline")
+                };
+                let scatter_3d = z_3d.map(|z| (z, camera_binding(precise_style_map.is_some())));
                 Some(ColumnScatterLayer {
-                    pipeline: match (precise_style_map, ternary_c) {
-                        (Some(_), Some(_)) => ternary(TernaryPipeline::ScatterMapped),
-                        (None, Some(_)) => ternary(TernaryPipeline::Scatter),
-                        (Some(_), None) => pipelines
+                    pipeline: match (precise_style_map, ternary_c, scatter_3d.is_some()) {
+                        (Some(_), _, true) => view3d(View3dPipeline::ScatterMapped),
+                        (None, _, true) => view3d(View3dPipeline::Scatter),
+                        (Some(_), Some(_), false) => ternary(TernaryPipeline::ScatterMapped),
+                        (None, Some(_), false) => ternary(TernaryPipeline::Scatter),
+                        (Some(_), None, false) => pipelines
                             .scatter_mapped
                             .as_ref()
                             .expect("prepare ensured mapped scatter pipeline"),
-                        (None, None) => scatter_pick.pipeline,
+                        (None, None, false) => scatter_pick.pipeline,
                     },
-                    ternary_c,
+                    third: scatter_3d.as_ref().map(|(z, _)| *z).or(ternary_c),
+                    view3d: scatter_3d.map(|(_, binding)| binding),
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     style_map_bg: precise_style_map.map(|m| &m.bind_group),
@@ -1175,6 +1234,14 @@ impl PrepareContext<'_> {
                         box_points: box_points.as_ref().map(|layer| layer.data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
+                        view3d: z_3d.filter(|_| primitives.scatter).map(|z| {
+                            (
+                                z,
+                                camera_binding(
+                                    styled.is_none() && series.style.scatter_map.is_some(),
+                                ),
+                            )
+                        }),
                     },
                     products
                         .contours
@@ -1244,6 +1311,86 @@ impl PrepareContext<'_> {
                     vertices,
                 }
             });
+            // A parallel coordinates series' rows (#141): the axis lane and
+            // range tables over the chart's parallel axes, the rows coloured
+            // through the value map `ensure_value_map_scratch` resolved when
+            // a colour column is named. Resident and precise only; the
+            // picked row (a point selection of this series) is redrawn in
+            // the selection's style over every body.
+            let parallel = if primitives.parallel && phase.is_none() {
+                let value_map = match rt.parallel().and_then(|p| p.color_column) {
+                    Some(_) => {
+                        &self
+                            .value_map_cache
+                            .get(cfg.series_id.as_str())
+                            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "a colour-mapped parallel series needs its value map \
+                                         prepared; recreate the chart's preparation"
+                                    .into(),
+                            })?
+                            .buffers
+                    }
+                    None => self.neutral_point_value_map_buffers,
+                };
+                let data = build_parallel_data(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.parallel_bgl,
+                    column_buffer,
+                    value_map,
+                    chart_config,
+                    cfg,
+                    &mut lookup,
+                )?;
+                let selected = selection_prepare::point_selection_visuals(
+                    chart_config,
+                    cfg,
+                    selection_prepare::SelectionRows::RESIDENT.refs,
+                )
+                .into_iter()
+                .next()
+                .zip(pipelines.line_parallel_selection.as_ref())
+                .and_then(|(visual, pipeline)| {
+                    let row = u32::try_from(visual.point_index).ok()?;
+                    let style = PrimitiveStyle::from_color_with_width(
+                        visual.color,
+                        visual.width_px * series.style.display_scale,
+                    );
+                    let buffer = data_render::create_style_uniform_buffer(&self.device, &style);
+                    Some(data_render::ParallelSelection {
+                        pipeline,
+                        style_bg: data_render::create_style_bind_group(
+                            &self.device,
+                            self.style_bgl,
+                            &buffer,
+                        ),
+                        row,
+                    })
+                });
+                Some(data_render::ColumnParallelLayer {
+                    pipeline: pipelines
+                        .line_parallel
+                        .as_ref()
+                        .expect("prepare ensured the parallel pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.line_bg,
+                    data,
+                    selected,
+                })
+            } else {
+                None
+            };
+            // A 3D series' line and markers draw with the surfaces, not
+            // among the flat bodies.
+            let (line, line_3d) = match z_3d {
+                Some(_) => (None, line),
+                None => (line, None),
+            };
+            let (scatter, scatter_3d) = match z_3d {
+                Some(_) => (None, scatter),
+                None => (scatter, None),
+            };
             out.push(data_render::SeriesLayers {
                 area,
                 field,
@@ -1255,8 +1402,11 @@ impl PrepareContext<'_> {
                 vector,
                 errorbar,
                 line,
+                parallel,
                 line_extra,
                 scatter,
+                line_3d,
+                scatter_3d,
                 selected_bars,
                 selected_fields,
                 picked,

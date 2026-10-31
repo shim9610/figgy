@@ -607,6 +607,7 @@ fn radial_cases() -> Vec<(&'static str, RadialChart)> {
         ("radial", plain),
         ("split", split),
         ("annotated, title selected", annotated),
+        ("sunburst", scenes::radial::sunburst_chart()),
     ]
 }
 
@@ -616,7 +617,7 @@ fn radial_cases() -> Vec<(&'static str, RadialChart)> {
 #[test]
 fn the_radial_chart_reads_back_as_its_emitted_parts() {
     let gpu = gpu();
-    let mut rr = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut rr = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let size = (800, 520);
     let selection = {
         let c = renderer::select::SELECTION_COLOR;
@@ -656,6 +657,16 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
                 pdf.images["Im1"].rgba == decode_png(&file.images[0].1).rgba,
                 "{context}: the PDF's frame image is the SVG's"
             );
+            // Retire this case's frame and export buffers before the next:
+            // four documents at two scales would otherwise outgrow the
+            // radial renderer's default budget.
+            rr.end_frame();
+            gpu.device()
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
             assert_eq!(
                 svg,
                 rr.export_svg(&chart, size, scale).unwrap(),

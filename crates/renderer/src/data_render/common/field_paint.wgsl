@@ -107,6 +107,22 @@ struct FieldFillValue {
 
 fn field_fill_value(z00: GridValue, z10: GridValue, z01: GridValue,
     z11: GridValue, fc: f32, fr: f32) -> FieldFillValue {
+    var out = field_fill_sample(z00, z10, z01, z11, fc, fr);
+    if (!out.placeable) {
+        return out;
+    }
+    out.t = z_ramp_t(out.z);
+    // Unplaceable on the colourbar: `nan_color` as well.
+    out.placeable = out.t >= 0.0;
+    return out;
+}
+
+/// The shaded value before the colourbar: the located cell's pair, or the
+/// bilinear blend of the four surrounding sample points when interpolated;
+/// `placeable` is false for a bounds miss or a non-finite value, `t` is
+/// left at -1.
+fn field_fill_sample(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32) -> FieldFillValue {
     var out: FieldFillValue;
     out.placeable = false;
     out.z = vec2<f32>(0.0, 0.0);
@@ -142,10 +158,58 @@ fn field_fill_value(z00: GridValue, z10: GridValue, z01: GridValue,
         z = sample.pair;
     }
     out.z = z;
-    out.t = z_ramp_t(z);
-    // Unplaceable on the colourbar: `nan_color` as well.
-    out.placeable = out.t >= 0.0;
+    out.placeable = true;
     return out;
+}
+
+/// One channel of an image at the located cell (`FIELD_RGB`, #139): the
+/// channel's table `offset` entries on, shaded as the fill's value is
+/// (flat or bilinear), mapped linearly from `z_min..z_max` to 0..1 and
+/// clamped. `placeable` is false where any read is unplaceable.
+fn field_image_channel(c: u32, r: u32, fc: f32, fr: f32, offset: u32) -> FieldFillValue {
+    var v = field_fill_sample(
+        grid_value_in(c, r, offset),
+        grid_value_in(c + 1u, r, offset),
+        grid_value_in(c, r + 1u, offset),
+        grid_value_in(c + 1u, r + 1u, offset),
+        fc,
+        fr,
+    );
+    // A flat sample is placeable before the ramp reads it; a missing
+    // channel (a non-finite value) leaves the cell unpainted and unpicked.
+    if (!v.placeable || !vec2_f32_is_finite(v.z)) {
+        v.placeable = false;
+        return v;
+    }
+    let lo = field.z_min.x + field.z_min.y;
+    let span = (field.z_max.x - field.z_min.x) + (field.z_max.y - field.z_min.y);
+    v.t = clamp((v.z.x + v.z.y - lo) / span, 0.0, 1.0);
+    return v;
+}
+
+/// The premultiplied colour of an image at the located cell: the three
+/// channels at `field.opacity`, or nothing where a channel is unplaceable.
+fn field_image_color(c: u32, r: u32, fc: f32, fr: f32) -> vec4<f32> {
+    var rgb = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        let v = field_image_channel(c, r, fc, fr, k * field.image.x);
+        if (!v.placeable) {
+            return vec4<f32>(0.0);
+        }
+        rgb[k] = v.t;
+    }
+    return vec4<f32>(rgb * field.opacity, field.opacity);
+}
+
+/// Whether an image paints at the located cell: every channel placeable and
+/// the opacity positive.
+fn field_image_paints(c: u32, r: u32, fc: f32, fr: f32) -> bool {
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        if (!field_image_channel(c, r, fc, fr, k * field.image.x).placeable) {
+            return false;
+        }
+    }
+    return field.opacity > 0.0;
 }
 
 // Resident storage and bounded replay share all final field colour arithmetic.

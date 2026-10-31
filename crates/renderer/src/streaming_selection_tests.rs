@@ -106,6 +106,7 @@ fn fixture_with_display(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: Color::new(0.0, 0.2, 0.7, 0.4),
@@ -134,6 +135,7 @@ fn fixture_with_display(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: Color::new(0.5, 0.2, 0.1, 0.2),

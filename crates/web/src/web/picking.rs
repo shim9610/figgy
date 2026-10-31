@@ -25,7 +25,10 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Radar { .. }
         // A streamline has no markers; its colour column colours the line.
         | DataRenderType::Streamlines { .. }
+        // Nor has a parallel series; its colour column colours the rows.
+        | DataRenderType::Parallel { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. } => None,
@@ -255,14 +258,24 @@ impl FiggyChart {
                     }
                     _ => None,
                 };
-                // A ternary point reports its third component, read last.
+                // A ternary point reports its third component, and a point
+                // with a height column (a 3D chart's) its z, read last.
                 let ternary_c = series.render_type.ternary_c_column().is_some();
                 if let Some(c) = series.render_type.ternary_c_column() {
                     samples.push((c.to_owned(), *point_index));
                 }
+                let height = series.z_column.clone();
+                if let Some(z) = &height {
+                    samples.push((z.clone(), *point_index));
+                }
                 let values = self.read_selection_samples(&samples).await?;
+                let mut last = values.len();
+                if height.is_some() {
+                    last -= 1;
+                    result["z"] = serde_json::json!(values[last]);
+                }
                 if ternary_c {
-                    result["c"] = serde_json::json!(values[values.len() - 1]);
+                    result["c"] = serde_json::json!(values[last - 1]);
                 }
                 result["index"] = serde_json::json!(point_index);
                 result["x"] = serde_json::json!(values[0]);
@@ -304,6 +317,25 @@ impl FiggyChart {
                     result["v"] = serde_json::json!(values[next + 1]);
                     if colour_mapped {
                         result["color_value"] = serde_json::json!(values[next + 2]);
+                    }
+                }
+                // A parallel row reports every axis's value (`values`, in
+                // axis order) and, mapped, its colour value, read from the
+                // GPU columns the draw used (#141).
+                if let Some(parallel) = series.render_type.parallel() {
+                    let mut samples: Vec<(String, usize)> = parallel
+                        .columns
+                        .iter()
+                        .map(|column| (column.clone(), *point_index))
+                        .collect();
+                    if let Some(column) = parallel.color_column {
+                        samples.push((column.to_owned(), *point_index));
+                    }
+                    let read = self.read_selection_samples(&samples).await?;
+                    let axes = parallel.columns.len();
+                    result["values"] = serde_json::json!(read[..axes]);
+                    if parallel.color_column.is_some() {
+                        result["color_value"] = serde_json::json!(read[axes]);
                     }
                 }
             }
@@ -509,10 +541,14 @@ impl FiggyChart {
                 use renderer::data_config::{GridLayout, MatrixOrientation};
                 // A field's matrix, or a grid vector's `u` grid with its `v`
                 // grid and colour grid beside it.
+                let image = series.render_type.rgb_image();
                 let (matrix, vector) = match &series.render_type {
                     DataRenderType::Heatmap { matrix, .. }
                     | DataRenderType::Contour { matrix, .. }
                     | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                    // An image's lattice is its red grid's; the green and
+                    // blue values are read beside it (#139).
+                    DataRenderType::RgbImage { red, .. } => (red, None),
                     rt => match vector_columns(rt) {
                         Some(VectorColumns::Grid { u, v, color }) => (u, Some((v, color))),
                         _ => return Err(js_err("selected series is not a grid")),
@@ -539,11 +575,21 @@ impl FiggyChart {
                         (series.y_column.clone(), y_index + 1),
                     ]);
                 }
+                // A hexagonal grid's odd columns are raised by half the row
+                // pitch (#134): the centre reported is the raised one.
+                let hexagonal = matches!(matrix.grid_layout, GridLayout::Hexagonal);
+                if hexagonal {
+                    samples.extend([(series.y_column.clone(), 0), (series.y_column.clone(), 1)]);
+                }
                 if let Some((v, color)) = vector {
                     samples.push((grid_column(v)?, sample_index));
                     if let Some(color) = color {
                         samples.push((grid_column(color)?, sample_index));
                     }
+                }
+                if let Some([_, green, blue]) = image {
+                    samples.push((grid_column(green)?, sample_index));
+                    samples.push((grid_column(blue)?, sample_index));
                 }
                 // A surface coloured by a second grid also reports the value
                 // its colour came from.
@@ -565,11 +611,18 @@ impl FiggyChart {
                 });
                 result["y"] = serde_json::json!(if edges {
                     (values[1] + values[4]) * 0.5
+                } else if hexagonal {
+                    values[1] + (x_index % 2) as f64 * (values[4] - values[3]) * 0.5
                 } else {
                     values[1]
                 });
-                let mut next = if edges { 5 } else { 3 };
+                let mut next = if edges || hexagonal { 5 } else { 3 };
                 match vector {
+                    None if image.is_some() => {
+                        result["red"] = serde_json::json!(values[2]);
+                        result["green"] = serde_json::json!(values[next]);
+                        result["blue"] = serde_json::json!(values[next + 1]);
+                    }
                     None => {
                         result["value"] = serde_json::json!(values[2]);
                         if surface_color.is_some() {

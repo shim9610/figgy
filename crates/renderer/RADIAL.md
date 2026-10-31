@@ -102,6 +102,51 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 `slice_index`는 0인 항목까지 포함한 원본 배열 인덱스다. 연결선은 선택한 부모 조각의 두
 각도 경계와 상세 원을 잇는다. 예제처럼 부모 조각을 오른쪽에 두면 두 원의 관계가 잘 보인다.
 
+### 선버스트(중첩 고리)
+
+조각에 `children`([#140](https://github.com/shim9610/figgy/issues/140))을 두면 차트는
+선버스트가 된다. 트리의 깊이 `d`만큼 구멍(`kind.inner_radius()`, 파이는 0이므로 가운데 고리는
+원판)과 바깥 반지름 사이를 같은 두께의 고리 `d`개로 나누고, 깊이 `k`의 노드는 고리 `k` 위에서
+부모의 각도 구간 가운데 자기 몫(부모 값 대비 자기 값, 자식 순서대로)만큼을 차지한다. 자식 값의
+합은 부모 값 이하여야 하며(상대 오차 1e-9), 남는 구간은 자식 고리에서 비워 둔다. `children`은
+비어 있으면 JSON에서 생략한다.
+
+- `RadialTarget { group, index }`에서 `group`은 고리(0이 가운데), `index`는 그 고리의 노드를
+  문서 순서(부모 순서대로 자식들)로 센 위치이며 값이 0인 노드도 포함한다. `slice()`,
+  `slice_mut()`, `step_selection`(가운데 고리부터 바깥쪽으로, 값이 있는 노드만), 라벨의
+  `DecorationId::RadialLabel`과 `radial_label_{group}_{index}` 이름이 모두 이 규칙을 따른다.
+  `group_count()`, `group_len(group)`, `node_count()`, `node_span(target)`가 고리와 구간을
+  알려 준다.
+- 라벨의 백분율은 부모 값 대비 자기 몫이다(가운데 고리는 전체 합 대비). `format_labels()`가
+  모든 고리의 `text`를 쓴다.
+- `Outside` 라벨은 가장 바깥 고리에만 놓인다(기존의 좌우 쌓기, 바깥 반지름의 1.015 지점에서
+  연결선 시작). 안쪽 고리의 `Outside`는 자기 띠 안에 내부 라벨로 그린다. 내부 라벨은 띠의 가운데
+  반지름에 놓이고 띠의 두께와 호 길이에 맞춰 줄어든다.
+- 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
+  거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
+  (`"a sunburst has no detail circle"`).
+- 한계([#140](https://github.com/shim9610/figgy/issues/140)에서 승인): 고리는 최대 8개
+  (`MAX_SUNBURST_DEPTH`), 고리 하나의 노드는 최대 64개(`MAX_RADIAL_SLICES`, 외부 라벨 쌓기
+  배열의 크기). 그 밖의 거부 사유: `"a node's children sum to at most its value"`,
+  `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
+- 셰이더는 바뀌지 않았다. 고리의 섹터는 기존 `Sector`에 바깥 반지름과 안쪽 비율을 넣은 것이며,
+  피킹·강조·호버·재질(고리마다 다른 결) 모두 조각과 같다.
+
+```rust
+use renderer::radial::*;
+use renderer::Color;
+let mut chart = RadialChart::default();
+let mut ops = RadialSlice::new("Ops", 60.0, Color::from_rgb8(220, 60, 40));
+ops.children = vec![
+    RadialSlice::new("Fleet", 40.0, Color::from_rgb8(60, 120, 220)),
+    RadialSlice::new("Crew", 10.0, Color::from_rgb8(40, 170, 70)),
+]; // 남은 10은 자식 고리에서 빈 구간
+chart.slices = vec![ops, RadialSlice::new("R&D", 40.0, Color::from_rgb8(80, 80, 80))];
+chart.format_labels();
+assert_eq!(chart.group_count(), 2);
+assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_str()), Some("Crew"));
+```
+
 ## 재질과 입체 표현
 
 모델 기본값은 정면에서 내려다본 평면 파이다. 재질을 바꾸는 것만으로 기울기나 깊이가

@@ -261,6 +261,16 @@ pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn 
         // x, y and z axes; the top axis is not drawn.
         box3d::emit_box_grid(config, &da, fp, sink);
         box3d::emit_box_axes(config, &da, fp, sink);
+    } else if config.parallel.is_some() {
+        // The category axes name the parallel axes; each parallel axis
+        // draws its own line, ticks and labels at its category. No grid:
+        // the axes are the structure, and `left_y` is the normalized band,
+        // not drawn (#141).
+        for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
+            let cross = crate::layout::axis_cross(config, &side);
+            emit_axis(axis, side, &plot, cross, fp, sink);
+        }
+        parallel::emit_parallel_axes(config, &da, fp, sink);
     } else {
         emit_grid(config, &plot, fp, sink);
         for (axis, side) in [
@@ -337,6 +347,28 @@ pub(crate) fn emit_part_of(
                 box3d::emit_box_labels(config, &da, k, fp, sink);
             }
         }
+        // A parallel chart's value axes are its parallel axes; `left_y` and
+        // `right_y` are not drawn (#141).
+        Element::AxisLabel(side) if config.parallel.is_some() => match side {
+            Side::Top | Side::Bottom => {
+                emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
+            }
+            Side::Left | Side::Right => {}
+        },
+        Element::Axis(side) if config.parallel.is_some() => match side {
+            Side::Top | Side::Bottom => emit_axis_strokes(
+                axis_of(side),
+                side.clone(),
+                &data_area_rect(&da),
+                crate::layout::axis_cross(config, side),
+                fp,
+                sink,
+            ),
+            Side::Left | Side::Right => {}
+        },
+        Element::ParallelAxisLabel(i) => {
+            parallel::emit_parallel_labels(config, &da, *i, fp, sink);
+        }
         Element::Axis(side) if config.view_3d.is_some() => {
             if let Some(k) = box3d::side_component(side) {
                 box3d::emit_box_axis_strokes(config, &da, k, fp, sink);
@@ -377,6 +409,9 @@ mod ternary;
 
 #[path = "box3d_axes.rs"]
 mod box3d;
+
+#[path = "parallel_axes.rs"]
+mod parallel;
 
 #[cfg(test)]
 mod tests;

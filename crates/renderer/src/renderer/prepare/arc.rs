@@ -37,12 +37,37 @@ pub(in crate::renderer) struct ArcResultKey {
     pub(in crate::renderer) geometry_transform_bits: [u32; 16],
     pub(in crate::renderer) polar_transform_bits: [u32; 8],
     pub(in crate::renderer) ternary_transform_bits: [u32; 8],
-    /// A ternary line's third component: its element base and allocation
-    /// epoch (the chord lengths are measured through it).
+    /// A ternary line's third component or a 3D line's height: its element
+    /// base and allocation epoch (the chord lengths are measured through it).
     pub(in crate::renderer) c: Option<(u32, u64)>,
+    /// A 3D line's camera (#132): the projected chords change with it.
+    pub(in crate::renderer) view3d_bits: Option<[u32; 52]>,
     pub(in crate::renderer) star_pitch_bits: Option<u32>,
     /// Step interpolation mode: a stepped path has a different arc length.
     pub(in crate::renderer) step_mode: u32,
+}
+
+/// The third column a line's arc is measured with (#132): a ternary
+/// series' third component, or a 3D series' height with the panel's camera.
+#[derive(Clone, Copy)]
+pub(in crate::renderer) enum ArcThird<'a> {
+    Ternary(&'a str),
+    Height(&'a str, &'a data_render::surface_mesh::View3dGpu),
+}
+
+impl<'a> ArcThird<'a> {
+    fn column(self) -> &'a str {
+        match self {
+            ArcThird::Ternary(id) | ArcThird::Height(id, _) => id,
+        }
+    }
+
+    fn camera(self) -> Option<&'a data_render::surface_mesh::View3dGpu> {
+        match self {
+            ArcThird::Height(_, camera) => Some(camera),
+            ArcThird::Ternary(_) => None,
+        }
+    }
 }
 
 pub(in crate::renderer) struct ArcResultEntry {
@@ -75,6 +100,14 @@ impl PrepareContext<'_> {
                 ),
                 _ => None,
             };
+            // A 3D chart's camera for its panel (#132): the lines' chords
+            // are measured as projected.
+            let panel = item.view.panel_rect;
+            let target = (
+                (f64::from(panel.x), f64::from(panel.y)),
+                (f64::from(panel.width), f64::from(panel.height)),
+            );
+            let camera = data_render::surface_mesh::view3d_gpu(item.chart_config, target, target);
             let mut per_series = Vec::with_capacity(item.series.len());
             for series in item.series {
                 let cfg = series.config;
@@ -98,10 +131,13 @@ impl PrepareContext<'_> {
                         &cfg.series_id,
                         &cfg.x_column,
                         &cfg.y_column,
-                        match &cfg.render_type {
-                            crate::data_config::DataRenderType::Ternary { c_column, .. } => {
-                                Some(c_column.as_str())
-                            }
+                        match (&cfg.render_type, cfg.z_column.as_deref(), camera.as_ref()) {
+                            (
+                                crate::data_config::DataRenderType::Ternary { c_column, .. },
+                                _,
+                                _,
+                            ) => Some(ArcThird::Ternary(c_column.as_str())),
+                            (_, Some(z), Some(camera)) => Some(ArcThird::Height(z, camera)),
                             _ => None,
                         },
                         &t,
@@ -179,7 +215,7 @@ impl PrepareContext<'_> {
         series_id: &str,
         x_id: &str,
         y_id: &str,
-        c_id: Option<&str>,
+        third: Option<ArcThird<'_>>,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
@@ -193,8 +229,9 @@ impl PrepareContext<'_> {
             ));
         }
         let (x_base, y_base, mut n) = self.arc_source_layout(x_id, y_id)?;
-        // A ternary line's third component bounds the polyline too.
-        let c = match c_id {
+        // A ternary line's third component or a 3D line's height bounds the
+        // polyline too.
+        let c = match third.map(|third| third.column()) {
             Some(id) => {
                 let slot = self.pool.slot(id)?;
                 n = n.min(u32::try_from(slot.len_values).ok()?);
@@ -230,6 +267,9 @@ impl PrepareContext<'_> {
             polar_transform_bits,
             ternary_transform_bits,
             c,
+            view3d_bits: third
+                .and_then(|third| third.camera())
+                .map(|camera| bytemuck::cast(*camera)),
             star_pitch_bits: star_pitch.map(f32::to_bits),
             step_mode,
         };
@@ -276,6 +316,7 @@ impl PrepareContext<'_> {
             star_pitch.is_some().then_some(&self.star_data_bgl),
             step_mode,
             c.map_or(0, |(base, _)| base),
+            third.and_then(|third| third.camera()),
         )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
 
         let mut encoder = self

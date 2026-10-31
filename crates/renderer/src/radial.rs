@@ -164,18 +164,10 @@ impl RadialFrame {
         &'a self,
         chart: &'a RadialChart,
     ) -> impl Iterator<Item = (crate::HitId, model::DecorationId)> + 'a {
-        let labels = chart
-            .slices
-            .iter()
-            .enumerate()
-            .map(|(index, _)| RadialTarget::main(index))
-            .chain(
-                chart
-                    .split
-                    .iter()
-                    .flat_map(|s| s.children.iter().enumerate())
-                    .map(|(index, _)| RadialTarget::detail(index)),
-            )
+        let labels = (0..chart.group_count())
+            .flat_map(|group| {
+                (0..chart.group_len(group)).map(move |index| RadialTarget { group, index })
+            })
             .map(model::DecorationId::RadialLabel);
         [
             model::DecorationId::DataArea,
@@ -796,7 +788,7 @@ impl RadialRenderer {
         {
             return Ok(Arc::clone(frame));
         }
-        let count = chart.slices.len() + chart.split.as_ref().map_or(0, |s| s.children.len());
+        let count = chart.node_count();
         let key = annotation_key(chart);
         let reused = self
             .annotations_cached
@@ -898,7 +890,7 @@ impl RadialRenderer {
         out: &mut dyn crate::vector_export::VectorOut,
     ) -> Result<(), RadialError> {
         let (width, height) = self.frame_size(chart, size, scale)?;
-        let count = chart.slices.len() + chart.split.as_ref().map_or(0, |s| s.children.len());
+        let count = chart.node_count();
         self.admit(
             u64::from(width) * u64::from(height) * 4
                 + 112
@@ -1404,11 +1396,15 @@ pub fn written_vector_parts(
 // ordinary data selection do not invalidate the rasterized label texture.
 // Edited/selected inside labels are rasterized at their current lifted position.
 fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
-    let has_inside = chart
-        .slices
-        .iter()
-        .chain(chart.split.iter().flat_map(|s| s.children.iter()))
-        .any(|s| s.value > 0.0 && s.labels.unwrap_or(chart.labels) == RadialLabels::Inside);
+    let has_inside = (0..chart.group_count())
+        .flat_map(|group| {
+            (0..chart.group_len(group)).map(move |index| RadialTarget { group, index })
+        })
+        .any(|t| {
+            chart.slice(t).is_some_and(|s| {
+                s.value > 0.0 && layout::placement(chart, t, s) == RadialLabels::Inside
+            })
+        });
     has_inside
         && (matches!(
             chart.decorations.selected,

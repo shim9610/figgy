@@ -508,6 +508,7 @@ fn setup_fixture(
         level_color_count: 0,
         z_min: [1_000_000_000.0, 0.0],
         z_max: [1_000_000_000.0, 1.0],
+        image: [0; 4],
     };
     (transform, style, params, pool, grid, columns)
 }

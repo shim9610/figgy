@@ -170,6 +170,13 @@ pub mod view3d {
     pub use model::view3d::*;
 }
 pub use model::view3d::{SurfaceStyle, View3d};
+/// Parallel coordinates for the Cartesian chart (#141): `ParallelOptions`
+/// for `Config.parallel`, one `ParallelAxis` range per category of the
+/// bottom axis.
+pub mod parallel {
+    pub use model::parallel::*;
+}
+pub use model::parallel::{ParallelAxis, ParallelOptions};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {
@@ -189,7 +196,7 @@ pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
     AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
-    Subplot,
+    ShapeStyle, Subplot,
 };
 pub mod decoration;
 

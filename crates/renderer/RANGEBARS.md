@@ -80,6 +80,7 @@ let waterfall = SeriesConfig {
     label: None,
     x_column: "positions".into(),
     y_column: "end".into(),
+    z_column: None,
     render_type: DataRenderType::RangeBars {
         color: Color::from_rgb8(90, 110, 130),
         style: CategoryBarStyle::default(),

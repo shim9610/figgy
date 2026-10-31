@@ -325,12 +325,14 @@ fn err_refs(
         // Bars, fields, vectors, radar polygons and streamlines carry no
         // error columns.
         DataRenderType::Histogram { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -403,6 +405,22 @@ fn series_extent_request_from(
     }
 
     let (matrix, field_orientation) = match &cfg.render_type {
+        // An image's identity holds its three grids; its lattice is the
+        // red grid's, which the others match.
+        renderer::DataRenderType::RgbImage {
+            red, green, blue, ..
+        } => (
+            red.columns
+                .iter()
+                .chain(&green.columns)
+                .chain(&blue.columns)
+                .map(|id| revisioned_column_from(revisions, id))
+                .collect::<Option<Vec<_>>>()?,
+            Some(match &red.orientation {
+                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
+                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
+            }),
+        ),
         renderer::DataRenderType::Heatmap { matrix, .. }
         | renderer::DataRenderType::Contour { matrix, .. }
         | renderer::DataRenderType::HeatmapContour { matrix, .. } => (
@@ -461,6 +479,9 @@ fn series_extent_request_from(
         | renderer::DataRenderType::Radar { .. }
         // A ternary chart's axes are the triangle: the fit reads no column.
         | renderer::DataRenderType::Ternary { .. }
+        // A parallel chart's axes fit from their columns' statistics
+        // (`Chart::auto_fit_parallel_axes`), not from this reducer.
+        | renderer::DataRenderType::Parallel { .. }
         | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
     let vector_factor_bits = match &cfg.render_type {
@@ -874,10 +895,13 @@ fn prepare_demo_declarations(
                 DataRenderType::Contour { contour, .. }
                 | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch
-                // this demo could reuse.
-                DataRenderType::Heatmap { .. } => cycle.color(index),
+                // this demo could reuse; an image's colours are its data.
+                DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {
+                    cycle.color(index)
+                }
                 DataRenderType::Vector { style, .. } => style.color,
-                DataRenderType::Streamlines { line, .. } => line.line_color,
+                DataRenderType::Streamlines { line, .. }
+                | DataRenderType::Parallel { line, .. } => line.line_color,
                 DataRenderType::Ternary { scatter, line, .. } => scatter
                     .as_ref()
                     .map(|s| s.point_color)
@@ -904,6 +928,7 @@ fn prepare_demo_declarations(
             label: Some(rich_label.clone()),
             x_column: x_column.to_string(),
             y_column: y_column.to_string(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -1025,6 +1050,7 @@ mod tests {
             label: None,
             x_column: "x".to_string(),
             y_column: "y".to_string(),
+            z_column: None,
             render_type,
         }
     }
@@ -1036,6 +1062,7 @@ mod tests {
             label: None,
             x_column: x.to_string(),
             y_column: y.to_string(),
+            z_column: None,
             render_type: DataRenderType::Line { line: line_style() },
         }
     }
@@ -2301,6 +2328,7 @@ mod web {
     use convert::{column_registration_error, js_err, js_safe_u64};
     mod decorations;
     pub use decorations::AxisPreset;
+    pub(crate) use decorations::vertex_handle_index;
     pub(crate) use decorations::{annotation_kind_name, annotation_warnings_json};
     mod export;
     mod picking;

@@ -24,6 +24,7 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/data_pick.wgsl",
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
+    "data_render/common/radial_sector.wgsl",
     "data_render/common/category_bars.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
@@ -483,7 +484,10 @@ pub struct CategoryBarParamsGpu {
     /// pair: `CATEGORY_SLOT_HALF` for category bars and boxes, half a
     /// range bar series' `slot_width` on a numeric axis.
     pub slot_half: [f32; 2],
-    pub _reserved: [u32; 2],
+    /// 1 on a polar chart: the bars are wedges of the angle axis along the
+    /// radius (a rose, #133), built by `category_wedge`.
+    pub wedge: u32,
+    pub _reserved: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<CategoryBarParamsGpu>() == 64);

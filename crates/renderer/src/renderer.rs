@@ -228,7 +228,13 @@ pub struct Renderer {
     /// The value-map group bound for a mapped scatter series that has no value
     /// map: every flag clear, so the shader reads nothing from it.
     neutral_point_value_map_bg: wgpu::BindGroup,
+    /// The neutral group's buffers, bound again with the camera for a
+    /// mapped scatter series on a 3D chart that has no value map (#132).
+    neutral_point_value_map_buffers: data_render::PointValueMapBuffers,
     _neutral_point_value_map_charge: crate::gpu_memory::SharedCharge,
+    /// Group 3 of a 3D chart's mapped scatter entries: the value map and the
+    /// camera in one group (#132).
+    view3d_value_map_bgl: wgpu::BindGroupLayout,
     data_selection_bgl: wgpu::BindGroupLayout,
     /// Milkyway star-pass data layout (arc prefix + pool + offsets) —
     /// shared by the stars pipeline and every per-series star bind group.
@@ -249,6 +255,10 @@ pub struct Renderer {
     /// Category bar data layout (pool + `CategoryBarParams`), group 3 of the
     /// category bar pipelines and pick.
     category_bar_data_bgl: wgpu::BindGroupLayout,
+    /// Parallel data layout (value map + pool + `ParallelParams` + the axis
+    /// lane and range tables), group 3 of the line module's parallel entries
+    /// and pick (#141).
+    parallel_bgl: wgpu::BindGroupLayout,
     /// Value label layout (uniform + atlas + sampler), group 1 of the value
     /// label pipelines of the bar module.
     value_label_bgl: wgpu::BindGroupLayout,

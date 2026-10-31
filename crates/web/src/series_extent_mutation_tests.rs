@@ -135,6 +135,7 @@ fn declared(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesCo
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type,
     }
 }

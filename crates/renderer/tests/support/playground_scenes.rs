@@ -27,8 +27,8 @@ use renderer::polar::{PolarInterpolation, PolarOptions};
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
-    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, Subplot,
-    default,
+    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, ShapeStyle,
+    Subplot, default,
 };
 
 /// Logical size of every Cartesian document; the window fits it uniformly.
@@ -64,10 +64,15 @@ pub enum SceneKind {
     Raincloud,
     Ternary,
     Surface,
+    Hexbin,
+    Rose,
+    Image,
+    Sunburst,
+    Parallel,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 27] = [
+    pub const ALL: [SceneKind; 32] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -95,6 +100,11 @@ impl SceneKind {
         SceneKind::Raincloud,
         SceneKind::Ternary,
         SceneKind::Surface,
+        SceneKind::Hexbin,
+        SceneKind::Rose,
+        SceneKind::Image,
+        SceneKind::Sunburst,
+        SceneKind::Parallel,
     ];
 
     pub fn label(self) -> &'static str {
@@ -126,6 +136,11 @@ impl SceneKind {
             SceneKind::Raincloud => "Raincloud (box plot)",
             SceneKind::Ternary => "Ternary (three components)",
             SceneKind::Surface => "3D surface",
+            SceneKind::Hexbin => "Hexbin (hexagonal grid)",
+            SceneKind::Rose => "Rose (polar bars)",
+            SceneKind::Image => "Image (RGB test card)",
+            SceneKind::Sunburst => "Sunburst (nested rings)",
+            SceneKind::Parallel => "Parallel coordinates",
         }
     }
 
@@ -237,12 +252,41 @@ impl SceneKind {
                  box, and the raw points jittered on the left. Pick a point and \
                  step along the points, or a cloud."
             }
+            SceneKind::Hexbin => {
+                "Thirty thousand samples of a bivariate normal binned by the host \
+                 into 40 by 35 flat-topped hexagons, the counts through the \
+                 colourbar. Pick a cell and step with the arrows."
+            }
+            SceneKind::Rose => {
+                "A wind rose: the hours of wind from sixteen directions, three \
+                 speed bands stacked outward from the centre. Pick a wedge and \
+                 step around the compass with the arrows."
+            }
+            SceneKind::Image => {
+                "A 256 by 192 test card the host composes as bytes (colour bars, \
+                 a hue sweep, a grey ramp), registered as three channel grids on \
+                 one lattice, with markers over it. Pick a cell and step with the \
+                 arrows."
+            }
+            SceneKind::Sunburst => {
+                "A budget as three nested rings: departments, their teams and the \
+                 teams' projects, each ring over its parent's span. Click a node; \
+                 step ring by ring with the arrows; drag the outer labels."
+            }
+            SceneKind::Parallel => {
+                "150 flowers of three species over four measurements, one polyline \
+                 per flower across four axes with their own ranges, coloured by \
+                 species through the colourbar. Pick a row and step with the \
+                 arrows; drag an axis's labels."
+            }
         }
     }
 
-    /// Whether the scene is the radial chart, which its own renderer draws.
+    /// Whether the scene is a radial chart (a pie, a donut or a sunburst),
+    /// which its own renderer draws from a `RadialChart` document
+    /// (`radial::document`).
     pub fn is_radial(self) -> bool {
-        matches!(self, SceneKind::Radial)
+        matches!(self, SceneKind::Radial | SceneKind::Sunburst)
     }
 }
 
@@ -315,6 +359,7 @@ pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> Series
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type,
     }
 }
@@ -430,8 +475,14 @@ pub fn build(
         SceneKind::Raincloud => raincloud(r),
         SceneKind::Ternary => ternary(r),
         SceneKind::Surface => surface(r),
+        SceneKind::Hexbin => hexbin(r),
+        SceneKind::Rose => rose(r),
+        SceneKind::Image => image(r),
+        SceneKind::Parallel => parallel(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
-        SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
+        SceneKind::Radial | SceneKind::Sunburst => {
+            unreachable!("a radial scene is built by `radial::document`")
+        }
     }
 }
 
@@ -1603,6 +1654,60 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             style: ArrowStyle::default(),
             text: None,
         }),
+        // A region of interest around the knee of the curve, below the
+        // data; an ellipse on the plateau; a concave polygon (an L) in
+        // the lower right, all filled so every point inside is ink.
+        Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Data {
+                x: x0 + 0.3 * (x1 - x0),
+                y: y0 + 0.55 * (y1 - y0),
+            },
+            to: Anchor::Data {
+                x: x0 + 0.45 * (x1 - x0),
+                y: y0 + 0.8 * (y1 - y0),
+            },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.2, 0.5, 0.9, 0.18)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(40, 90, 180),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: true,
+            },
+        }),
+        Annotation::new(AnnotationKind::Ellipse {
+            from: Anchor::Ratio { x: 0.7, y: 0.08 },
+            to: Anchor::Ratio { x: 0.95, y: 0.3 },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.9, 0.3, 0.2, 0.2)),
+                border: AnnotationLineStyle {
+                    color: red,
+                    width: 1.5,
+                    style: LineStylePreset::Dot,
+                },
+                below: false,
+            },
+        }),
+        Annotation::new(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.7, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.92 },
+                Anchor::Ratio { x: 0.7, y: 0.92 },
+            ],
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.3, 0.7, 0.3, 0.25)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(30, 120, 50),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: false,
+            },
+        }),
     ];
     let mut config = chart.config().clone();
     config.annotations.items = items;
@@ -2165,11 +2270,94 @@ fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 // The radial scene
 // ---------------------------------------------------------------------------
 
-/// The starting model of the radial scene; the playground's `radial.rs`
-/// hosts it.
+/// The starting models of the radial scenes; the playground's `radial.rs`
+/// hosts them.
 pub mod radial {
     use renderer::Color;
     use renderer::radial::*;
+
+    /// The document of radial scene `kind`.
+    pub fn document(kind: super::SceneKind) -> RadialChart {
+        match kind {
+            super::SceneKind::Sunburst => sunburst_chart(),
+            _ => radial_chart(),
+        }
+    }
+
+    /// A sunburst (#140): a year's budget as three rings, departments at the
+    /// centre, their teams, and the teams' projects, each node over its
+    /// share of its parent's span; two parents keep a remainder. Outside
+    /// labels on the projects, inside labels within.
+    pub fn sunburst_chart() -> RadialChart {
+        let node =
+            |label: &str, value: f64, rgb: (u8, u8, u8), children: Vec<RadialSlice>| RadialSlice {
+                children,
+                ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
+            };
+        let mut chart = RadialChart {
+            title: "Budget by department, team and project".into(),
+            kind: RadialKind::Donut { inner_radius: 0.18 },
+            labels: RadialLabels::Outside,
+            label_format: RadialLabelFormat::NamePercent,
+            slices: vec![
+                node(
+                    "Engineering",
+                    48.0,
+                    (51, 132, 245),
+                    vec![
+                        node(
+                            "Platform",
+                            22.0,
+                            (96, 165, 250),
+                            vec![
+                                node("Runtime", 12.0, (147, 197, 253), vec![]),
+                                node("Storage", 7.0, (191, 219, 254), vec![]),
+                            ],
+                        ),
+                        node(
+                            "Apps",
+                            18.0,
+                            (56, 189, 248),
+                            vec![
+                                node("Mobile", 10.0, (125, 211, 252), vec![]),
+                                node("Web", 8.0, (186, 230, 253), vec![]),
+                            ],
+                        ),
+                        node("Tooling", 8.0, (14, 165, 233), vec![]),
+                    ],
+                ),
+                node(
+                    "Sales",
+                    30.0,
+                    (255, 151, 62),
+                    vec![
+                        node(
+                            "Field",
+                            18.0,
+                            (251, 191, 36),
+                            vec![
+                                node("EMEA", 10.0, (253, 224, 71), vec![]),
+                                node("APAC", 6.0, (254, 240, 138), vec![]),
+                            ],
+                        ),
+                        node("Inside", 9.0, (245, 158, 11), vec![]),
+                    ],
+                ),
+                node(
+                    "Operations",
+                    22.0,
+                    (165, 216, 72),
+                    vec![
+                        node("Facilities", 12.0, (190, 242, 100), vec![]),
+                        node("People", 10.0, (217, 249, 157), vec![]),
+                    ],
+                ),
+            ],
+            ..Default::default()
+        };
+        chart.format_labels();
+        chart
+    }
 
     pub fn radial_chart() -> RadialChart {
         let mut chart = RadialChart {
@@ -2658,40 +2846,77 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         per_level_color: None,
         labels: None,
     };
-    let series = vec![series(
-        "surface",
-        "sf_x",
-        "sf_y",
-        DataRenderType::HeatmapContour {
-            matrix: MatrixRef {
-                columns: columns.iter().map(|c| c.as_str().into()).collect(),
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
+    // A trajectory over the surface (#132): a scatter-line series with a
+    // height column, drawn through the 3D point entries.
+    let steps = 120;
+    let path: Vec<[f64; 3]> = (0..steps)
+        .map(|i| {
+            let t = i as f64 / (steps - 1) as f64;
+            let a = 1.5 * std::f64::consts::TAU * t;
+            let x = 1.4 * a.cos() * (1.0 - 0.4 * t);
+            let y = 1.4 * a.sin() * (1.0 - 0.4 * t);
+            [x, y, height(x, y) + 0.25]
+        })
+        .collect();
+    upload(r, "sf_tx", path.iter().map(|p| p[0]).collect())?;
+    upload(r, "sf_ty", path.iter().map(|p| p[1]).collect())?;
+    upload(r, "sf_tz", path.iter().map(|p| p[2]).collect())?;
+    let mut trajectory = series(
+        "trajectory",
+        "sf_tx",
+        "sf_ty",
+        DataRenderType::ScatterLine {
+            scatter: renderer::data_config::DataScatterStyleConfig {
+                point_color: Color::from_rgb8(220, 60, 40),
+                point_shape: renderer::ScatterShape::CircleFilled,
+                point_size: 3.5,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
-            fill: FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.0,
-            },
-            contour: {
-                let mut bar = default::default_colorbar_options();
-                bar.axis.min = -0.8;
-                bar.axis.max = 1.3;
-                contour
-                    .set_nice_levels(&bar.axis, 8)
-                    .expect("the surface scene's colourbar range gives nice levels");
-                contour
-            },
-            surface: Some(SurfaceStyle {
-                wireframe: Some(SurfaceWireframe {
-                    color: Color::new(0.1, 0.1, 0.1, 0.35),
-                    width: 0.8,
-                }),
-                material: renderer::Material::Matte,
-                ..SurfaceStyle::default()
-            }),
+            line: line_style(Color::from_rgb8(220, 60, 40), 1.5),
         },
-    )];
+    );
+    trajectory.z_column = Some("sf_tz".into());
+    let series = vec![
+        series(
+            "surface",
+            "sf_x",
+            "sf_y",
+            DataRenderType::HeatmapContour {
+                matrix: MatrixRef {
+                    columns: columns.iter().map(|c| c.as_str().into()).collect(),
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: GridLayout::Centers,
+                },
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Interpolated,
+                    opacity: 1.0,
+                },
+                contour: {
+                    let mut bar = default::default_colorbar_options();
+                    bar.axis.min = -0.8;
+                    bar.axis.max = 1.3;
+                    contour
+                        .set_nice_levels(&bar.axis, 8)
+                        .expect("the surface scene's colourbar range gives nice levels");
+                    contour
+                },
+                surface: Some(SurfaceStyle {
+                    wireframe: Some(SurfaceWireframe {
+                        color: Color::new(0.1, 0.1, 0.1, 0.35),
+                        width: 0.8,
+                    }),
+                    material: renderer::Material::Matte,
+                    ..SurfaceStyle::default()
+                }),
+            },
+        ),
+        trajectory,
+    ];
     let mut config = base_config("Surface", "x", "y");
     let mut right = config.left_y.clone();
     right.title_option.text = RichText::plain(
@@ -3006,4 +3231,441 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     // weekly tick, so no tick label sits on the plot's right edge.
     config.bottom_x.max = T0 + 27.5 * DAY;
     Ok(CartesianScene { config, series })
+}
+
+/// A hexbin (#134): the host bins samples of a bivariate normal into a
+/// lattice of flat-topped hexagons (the renderer never bins, rule 1) and
+/// registers the counts as a hexagonal grid, coloured through the colourbar.
+fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, CategoryBarMode, CategoryBarStyle};
+    use renderer::polar::PolarOptions;
+    const DIRECTIONS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    // Hours of wind per direction and speed band over a year: a prevailing
+    // south-westerly with a secondary northerly, the faster bands rarer.
+    let hours = |band: usize, k: usize| {
+        let a = (k as f64) * std::f64::consts::TAU / 16.0;
+        let prevailing = (1.0 + (a - 3.9).cos()).powi(2) * 0.25;
+        let secondary = (1.0 + a.cos()).powi(3) * 0.08;
+        let shape = 0.08 + prevailing + secondary;
+        let share = [0.55, 0.32, 0.13][band];
+        (1100.0 * shape * share * (1.0 + 0.08 * noise(70 + band as u64, k))).round()
+    };
+    upload(r, "rose_pos", (0..16).map(|k| k as f64).collect())?;
+    let bands = ["rose_calm", "rose_fresh", "rose_strong"];
+    for (band, id) in bands.iter().enumerate() {
+        upload(r, id, (0..16).map(|k| hours(band, k)).collect())?;
+    }
+    let colors = [
+        Color::from_rgb8(158, 202, 225),
+        Color::from_rgb8(66, 146, 198),
+        Color::from_rgb8(8, 69, 148),
+    ];
+    let labels = ["0 to 5 m/s", "5 to 10 m/s", "over 10 m/s"];
+    let series: Vec<SeriesConfig> = bands
+        .iter()
+        .zip(colors)
+        .zip(labels)
+        .map(|((id, color), label)| {
+            let mut s = series(
+                id,
+                "rose_pos",
+                id,
+                DataRenderType::CategoryBars {
+                    color,
+                    style: CategoryBarStyle {
+                        corner_radius: 0.0,
+                        ..CategoryBarStyle::default()
+                    },
+                    labels: Default::default(),
+                    label_format: Default::default(),
+                    overrides: None,
+                },
+            );
+            s.label = Some(RichText::plain(label, Color::BLACK, 12.0, ""));
+            s
+        })
+        .collect();
+    let mut config = base_config(
+        "Wind rose: hours by direction and speed",
+        "Direction",
+        "Hours",
+    );
+    config.bottom_x.categories = Some(
+        DIRECTIONS
+            .iter()
+            .map(|d| Category::new(d.to_lowercase(), *d))
+            .collect(),
+    );
+    config.polar = Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    });
+    config.bar_groups = Some(BarGroups {
+        mode: CategoryBarMode::Stacked,
+        group_width: 0.9,
+        ..BarGroups::default()
+    });
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const COLS: usize = 40;
+    const ROWS: usize = 35;
+    // Regular hexagons of circumradius `radius`: column pitch 1.5 r, row
+    // pitch √3 r, the odd columns raised by half a row pitch.
+    let radius = 1.0 / (1.5 * COLS as f64);
+    let (px, py) = (1.5 * radius, 3f64.sqrt() * radius);
+    let xs: Vec<f64> = (0..COLS).map(|c| radius + c as f64 * px).collect();
+    let ys: Vec<f64> = (0..ROWS).map(|r| py / 2.0 + r as f64 * py).collect();
+    let ids: Vec<String> = (0..COLS).map(|c| format!("hexbin_z{c}")).collect();
+    if r.handle_for("hexbin_x").is_err() {
+        let center = |c: i64, row: i64| {
+            (
+                xs[0] + c as f64 * px,
+                ys[0] + row as f64 * py + (c & 1) as f64 * py / 2.0,
+            )
+        };
+        let mut counts = vec![vec![0.0f64; ROWS]; COLS];
+        for i in 0..30_000 {
+            // Box-Muller from two uniforms, correlated by a shear.
+            let u1 = ((noise(41, i) + 1.0) * 0.5).clamp(1e-9, 1.0 - 1e-9);
+            let u2 = (noise(43, i) + 1.0) * 0.5;
+            let radius_n = (-2.0 * u1.ln()).sqrt();
+            let (g1, g2) = (
+                radius_n * (std::f64::consts::TAU * u2).cos(),
+                radius_n * (std::f64::consts::TAU * u2).sin(),
+            );
+            let x = 0.5 + 0.16 * g1;
+            let y = 0.5 + 0.11 * g2 + 0.06 * g1;
+            // The host's binning: the nearest centre on the lattice among
+            // the nearest column, the nearest row in it and its neighbours.
+            let c0 = ((x - xs[0]) / px).round() as i64;
+            let r0 = ((y - ys[0] - (c0 & 1) as f64 * py / 2.0) / py).round() as i64;
+            let up = c0 & 1;
+            let candidates = [
+                (c0, r0),
+                (c0, r0 - 1),
+                (c0, r0 + 1),
+                (c0 - 1, r0 - 1 + up),
+                (c0 - 1, r0 + up),
+                (c0 + 1, r0 - 1 + up),
+                (c0 + 1, r0 + up),
+            ];
+            let (best, _) = candidates
+                .iter()
+                .map(|&(c, row)| {
+                    let (cx, cy) = center(c, row);
+                    ((c, row), (x - cx).powi(2) + (y - cy).powi(2))
+                })
+                .fold(((0, 0), f64::INFINITY), |acc, item| {
+                    if item.1 < acc.1 { item } else { acc }
+                });
+            if best.0 >= 0 && best.0 < COLS as i64 && best.1 >= 0 && best.1 < ROWS as i64 {
+                counts[best.0 as usize][best.1 as usize] += 1.0;
+            }
+        }
+        let grid: Vec<Column<f64>> = counts
+            .into_iter()
+            .map(|data| {
+                let max = data.iter().copied().fold(0.0f64, f64::max);
+                Column {
+                    data,
+                    min: 0.0,
+                    max,
+                }
+            })
+            .collect();
+        let x = Column {
+            data: xs.clone(),
+            min: xs[0],
+            max: xs[COLS - 1],
+        };
+        let y = Column {
+            data: ys.clone(),
+            min: ys[0],
+            max: ys[ROWS - 1],
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("hexbin_x", &x), ("hexbin_y", &y)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Hexbin: binned samples", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 120.0;
+    bar.axis.major_spacing = 20.0;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 1.0 + py);
+    let series = vec![series(
+        "hexbin",
+        "hexbin_x",
+        "hexbin_y",
+        DataRenderType::Heatmap {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Hexagonal,
+            },
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    )];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// Parallel coordinates (#141): 150 synthetic flowers of three species over
+/// four measurements, an iris-like mixture, one row per flower across four
+/// axes with their own ranges, coloured by the species column through the
+/// colourbar.
+fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{Category, TickVisibility};
+    use renderer::parallel::{ParallelAxis, ParallelOptions};
+    // (centre, spread) per measurement, per species.
+    let species: [[(f64, f64); 4]; 3] = [
+        [(5.0, 0.35), (3.4, 0.38), (1.5, 0.17), (0.25, 0.1)],
+        [(5.9, 0.5), (2.8, 0.3), (4.3, 0.47), (1.3, 0.2)],
+        [(6.6, 0.64), (3.0, 0.32), (5.5, 0.55), (2.0, 0.27)],
+    ];
+    let names = ["pc_sepal_l", "pc_sepal_w", "pc_petal_l", "pc_petal_w"];
+    let mut columns: [Vec<f64>; 4] = Default::default();
+    let mut class = Vec::new();
+    for (k, spread) in species.iter().enumerate() {
+        for i in 0..50 {
+            for (j, (centre, sigma)) in spread.iter().enumerate() {
+                let seed = 301 + 7 * k as u64 + j as u64;
+                columns[j].push((centre + noise(seed, i) * 2.0 * sigma).max(0.1));
+            }
+            class.push(k as f64);
+        }
+    }
+    let ranges: Vec<(f64, f64)> = columns
+        .iter()
+        .map(|c| {
+            c.iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(*v), hi.max(*v))
+                })
+        })
+        .collect();
+    for (name, column) in names.iter().zip(columns) {
+        upload(r, name, column)?;
+    }
+    upload(r, "pc_species", class)?;
+    let series = vec![series(
+        "flowers",
+        names[0],
+        names[1],
+        DataRenderType::Parallel {
+            columns: names.iter().map(|n| (*n).to_owned()).collect(),
+            line: line_style(Color::from_rgb8(31, 119, 180), 1.2),
+            color_column: Some("pc_species".into()),
+        },
+    )];
+    let mut config = base_config("Iris measurements", "", "");
+    config.bottom_x.categories = Some(
+        [
+            ("sepal_l", "Sepal length"),
+            ("sepal_w", "Sepal width"),
+            ("petal_l", "Petal length"),
+            ("petal_w", "Petal width"),
+        ]
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect(),
+    );
+    config.bottom_x.tick = TickVisibility::None;
+    config.bottom_x.line_visible = false;
+    config.left_y.min = 0.0;
+    config.left_y.max = 1.0;
+    config.left_y.major_spacing = 0.25;
+    config.left_y.title_option.visible = false;
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_x = false;
+    config.grid.show_minor_y = false;
+    // Each axis spans its measurement with a little room past the data.
+    config.parallel = Some(ParallelOptions {
+        axes: ranges
+            .iter()
+            .map(|(lo, hi)| {
+                let pad = (hi - lo) * 0.05;
+                let lo = ((lo - pad) * 10.0).floor() / 10.0;
+                let hi = ((hi + pad) * 10.0).ceil() / 10.0;
+                ParallelAxis::new(lo, hi)
+            })
+            .collect(),
+    });
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 2.0;
+    bar.axis.major_spacing = 1.0;
+    bar.axis.title_option.text = RichText::plain(
+        "Species",
+        bar.axis.title_option.text.color,
+        bar.axis.title_option.text.font_size,
+        bar.axis.title_option.text.font.clone(),
+    );
+    config.colorbar = Some(bar);
+    Ok(CartesianScene {
+        config: with_legend(config, &series),
+        series,
+    })
+}
+
+/// A colour image (#139): a 256 by 192 test card the host composes as bytes
+/// on the CPU (eight colour bars, a hue sweep and a grey ramp; the renderer
+/// maps the bytes through `range` and derives no value), registered as
+/// three channel grids on one `Edges` lattice, with a scatter series of
+/// markers over it.
+fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const W: usize = 256;
+    const H: usize = 192;
+    let ids: [Vec<String>; 3] =
+        ["r", "g", "b"].map(|ch| (0..W).map(|c| format!("img_{ch}{c}")).collect());
+    if r.handle_for("img_x").is_err() {
+        // The card, as bytes: the upper two thirds eight 75 % colour bars
+        // (white, yellow, cyan, green, magenta, red, blue, black), then a
+        // hue sweep across the width, then a grey ramp.
+        let card = |c: usize, row: usize| -> [f64; 3] {
+            if row >= 2 * H / 3 {
+                let bar = c * 8 / W;
+                let on = |bit: usize| {
+                    if (7 - bar) >> bit & 1 == 1 {
+                        191.0
+                    } else {
+                        0.0
+                    }
+                };
+                [on(2), on(1), on(0)]
+            } else if row >= H / 3 {
+                let h = c as f64 / W as f64 * 6.0;
+                let x = 255.0 * (1.0 - (h % 2.0 - 1.0).abs());
+                match h as usize {
+                    0 => [255.0, x, 0.0],
+                    1 => [x, 255.0, 0.0],
+                    2 => [0.0, 255.0, x],
+                    3 => [0.0, x, 255.0],
+                    4 => [x, 0.0, 255.0],
+                    _ => [255.0, 0.0, x],
+                }
+            } else {
+                let v = (c as f64 / (W - 1) as f64 * 255.0).round();
+                [v, v, v]
+            }
+        };
+        let channel = |k: usize| -> Vec<Column<f64>> {
+            (0..W)
+                .map(|c| Column {
+                    data: (0..H).map(|row| card(c, row)[k]).collect(),
+                    min: 0.0,
+                    max: 255.0,
+                })
+                .collect()
+        };
+        let grids = [channel(0), channel(1), channel(2)];
+        let x = Column {
+            data: (0..=W).map(|v| v as f64).collect(),
+            min: 0.0,
+            max: W as f64,
+        };
+        let y = Column {
+            data: (0..=H).map(|v| v as f64).collect(),
+            min: 0.0,
+            max: H as f64,
+        };
+        // Markers at the centre of each colour bar and along the hue sweep.
+        let mx = Column {
+            data: (0..8).map(|i| (i as f64 + 0.5) * W as f64 / 8.0).collect(),
+            min: W as f64 / 16.0,
+            max: W as f64 * 15.0 / 16.0,
+        };
+        let my = Column {
+            data: (0..8)
+                .map(|i| H as f64 * (5.0 + (i % 2) as f64) / 6.0 - H as f64 / 12.0)
+                .collect(),
+            min: H as f64 * 4.0 / 6.0 + H as f64 / 12.0 - H as f64 / 6.0,
+            max: H as f64 * 5.0 / 6.0 + H as f64 / 12.0,
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
+            ("img_x", &x),
+            ("img_y", &y),
+            ("img_mx", &mx),
+            ("img_my", &my),
+        ];
+        for (ids, grid) in ids.iter().zip(&grids) {
+            for (id, column) in ids.iter().zip(grid) {
+                batch.push((id.as_str(), column as &dyn ColumnSource));
+            }
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Image: a test card as bytes", "x (px)", "y (px)");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, W as f64);
+    chart.set_y_range(0.0, H as f64);
+    let lattice = |columns: &[String]| MatrixRef {
+        columns: columns.to_vec(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Edges,
+    };
+    let series = vec![
+        series(
+            "image",
+            "img_x",
+            "img_y",
+            DataRenderType::RgbImage {
+                red: lattice(&ids[0]),
+                green: lattice(&ids[1]),
+                blue: lattice(&ids[2]),
+                range: [0.0, 255.0],
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+        ),
+        series(
+            "marks",
+            "img_mx",
+            "img_my",
+            DataRenderType::Scatter {
+                scatter: scatter_style(
+                    Color::from_rgb8(20, 20, 20),
+                    ScatterShape::DiamondFilled,
+                    6.0,
+                ),
+            },
+        ),
+    ];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
 }
