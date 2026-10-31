@@ -1882,11 +1882,11 @@ pub(super) fn lift_annotation_overlays(items: &mut [PreparedItem], group_sizes: 
 }
 
 /// How many panels `config` draws as; see [`expand_for_render`].
-pub(super) fn render_panel_count(config: &Config) -> usize {
+pub(super) fn render_panel_count(config: &Config) -> Result<usize> {
     if !is_layered(config) {
-        1
+        Ok(1)
     } else {
-        expand_for_render(config).map_or(1, |panels| panels.len())
+        Ok(expand_for_render(config)?.len())
     }
 }
 
@@ -2688,7 +2688,7 @@ impl Renderer {
             panel_counts.push(if active {
                 0
             } else {
-                render_panel_count(config)
+                render_panel_count(config)?
             });
             if active {
                 self.preflight_chart_stream_display(item.chart_id, item.view)?;
