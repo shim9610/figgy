@@ -234,7 +234,8 @@ mod tests {
             + std::mem::size_of::<[f32; 4]>()
             + std::mem::size_of::<ContourLookupMetadataGpu>()
             + std::mem::size_of::<FieldParamsGpu>();
-        assert_eq!(expected, 116);
+        // The params grew to 80 bytes with the image lane (#139).
+        assert_eq!(expected, 132);
         assert_eq!(
             ledger
                 .snapshot()
