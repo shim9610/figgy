@@ -51,6 +51,12 @@ fn shared_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
     static DEVICE: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(|| {
         let (device, queue) = test_gpu::device();
+        device.set_device_lost_callback(|reason, message| {
+            eprintln!("DIAG device lost: {reason:?}: {message}");
+        });
+        device.on_uncaptured_error(Arc::new(|error| {
+            eprintln!("DIAG uncaptured error: {error}");
+        }));
         (Arc::new(device), Arc::new(queue))
     });
     (Arc::clone(device), Arc::clone(queue))
@@ -1399,4 +1405,57 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     assert!(is_magenta(at(&screen, body)), "screen fill");
     assert!(!is_magenta(at(&screen, hole)), "screen hole");
     assert!(is_red(at(&screen, vertex)), "screen marker over fill");
+}
+
+// ───── Metal diagnostic (#63), not for merging ─────
+
+fn diag_rings(rings: usize, per_ring: usize) -> Vec<[f64; 3]> {
+    let mut rows = Vec::with_capacity(rings * (per_ring + 1));
+    for k in 0..rings {
+        let r = 25.0 * (1.0 - k as f64 / rings as f64 * 0.9);
+        for i in 0..per_ring {
+            let t = i as f64 / per_ring as f64 * std::f64::consts::TAU;
+            let (dx, dy) = (r * t.cos(), r * t.sin());
+            rows.push([
+                33.3 + dx,
+                33.3 + dy * 0.5 - dx * 0.5,
+                33.4 - dy * 0.5 - dx * 0.5,
+            ]);
+        }
+        rows.push(NAN_ROW);
+    }
+    rows
+}
+
+fn diag_region(label: &str, rows: &[[f64; 3]]) {
+    let mut r = renderer();
+    upload(&mut r, rows);
+    let config = bare_config();
+    let series = [region_series("disc", region(RED, 1.0))];
+    let started = std::time::Instant::now();
+    let img = export(&mut r, &config, &series, 1.0);
+    let red = (0..img.height)
+        .flat_map(|y| (0..img.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| is_red(pixel(&img, x, y)))
+        .count();
+    eprintln!(
+        "DIAG {label}: {} rows exported in {:?}, {red} red pixels",
+        rows.len(),
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_diag_1_ring_of_131k() {
+    diag_region("one ring of 131072", &diag_rings(1, 1 << 17));
+}
+
+#[test]
+fn a_diag_2_1024_rings_of_1023() {
+    diag_region("1024 rings of 1023", &diag_rings(1024, 1023));
+}
+
+#[test]
+fn a_diag_3_one_ring_of_a_million() {
+    diag_region("one ring of 1048576", &diag_rings(1, 1 << 20));
 }

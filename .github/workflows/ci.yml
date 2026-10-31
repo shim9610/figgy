@@ -29,11 +29,9 @@ jobs:
         run: rustup toolchain install 1.99.0 --profile minimal
       - name: Build the ternary suite
         run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render --no-run
-      - name: Every test but the million-vertex region, in one process
-        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render -- --test-threads=1 --skip a_million_vertex_region || echo "STEP FAILED"
-      - name: The million-vertex region alone
-        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render a_million_vertex_region -- --exact --nocapture || echo "STEP FAILED"
-      - name: Points alone, a fresh process
-        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render points_land_at_their_normalized_position -- --exact --nocapture || echo "STEP FAILED"
-      - name: The region tests without the million, in one process
-        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render region -- --test-threads=1 --skip a_million_vertex_region || echo "STEP FAILED"
+      - name: A ring of 131k, then the points, one process
+        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render -- --test-threads=1 --nocapture a_diag_1 points_land || echo "STEP FAILED"
+      - name: 1024 rings of 1023, then the points, one process
+        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render -- --test-threads=1 --nocapture a_diag_2 points_land || echo "STEP FAILED"
+      - name: One ring of a million, then the points, one process
+        run: cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render -- --test-threads=1 --nocapture a_diag_3 points_land || echo "STEP FAILED"
