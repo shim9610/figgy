@@ -277,29 +277,31 @@ impl DragConfig for DecorationLayout {
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
         }
-        if matches!(
-            element.id,
-            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
-        ) {
+        // `None` moves the whole data area, `Some(side)` resizes one edge.
+        let data_area_target = match &element.id {
+            DecorationId::DataArea => Some(None),
+            DecorationId::DataAreaEdge(side) => Some(Some(side.clone())),
+            _ => None,
+        };
+        if let Some(edge) = data_area_target {
             let Ok(mut r) = self.resolve_data_area(element.base_bounds) else {
                 return reject;
             };
-            match element.id {
-                DecorationId::DataArea => {
+            match edge {
+                None => {
                     r.x += dx;
                     r.y += dy;
                 }
-                DecorationId::DataAreaEdge(Side::Left) => {
+                Some(Side::Left) => {
                     r.x += dx;
                     r.width -= dx;
                 }
-                DecorationId::DataAreaEdge(Side::Right) => r.width += dx,
-                DecorationId::DataAreaEdge(Side::Top) => {
+                Some(Side::Right) => r.width += dx,
+                Some(Side::Top) => {
                     r.y += dy;
                     r.height -= dy;
                 }
-                DecorationId::DataAreaEdge(Side::Bottom) => r.height += dy,
-                _ => unreachable!(),
+                Some(Side::Bottom) => r.height += dy,
             }
             let mut trial = self.clone();
             trial.data_area = Some(r);

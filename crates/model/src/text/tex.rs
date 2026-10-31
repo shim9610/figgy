@@ -48,7 +48,11 @@ pub enum TexErrorKind {
     /// `\displaystyle` or `\textstyle` anywhere but at the start of a math
     /// span.
     Unsupported,
-    /// Math nodes nested deeper than [`MAX_MATH_DEPTH`].
+    /// Math nodes nested deeper than [`MAX_MATH_DEPTH`], or `{…}` groups
+    /// and font-command arguments (`\mathrm` and the like) nested deeper
+    /// than 64. Neither opens a node, but each is one more level of the
+    /// parser's recursion, so the bound keeps a hostile input from
+    /// overflowing the stack (#152).
     TooDeep,
     /// A `\left`, `\right`, `\middle` or `\big` argument that is not a
     /// delimiter.
@@ -69,7 +73,9 @@ impl TexErrorKind {
                  or a style command other than a leading `\\displaystyle` or `\\textstyle` of a \
                  math span)"
             }
-            TexErrorKind::TooDeep => "math nested deeper than 16",
+            TexErrorKind::TooDeep => {
+                "math nested deeper than 16 nodes or 64 groups and font arguments"
+            }
             TexErrorKind::BadDelimiter => "not a delimiter",
         }
     }
@@ -145,6 +151,7 @@ pub fn rich_segments_from_tex(tex: &str) -> Result<Vec<RichSegment>, TexError> {
         out: Vec::new(),
         next_id: 0,
         depth: 0,
+        groups: 0,
     };
     p.text_mode()?;
     renumber(&mut p.out);
@@ -239,9 +246,20 @@ struct Parser<'a> {
     next_id: u32,
     /// Nodes open around the current position.
     depth: usize,
+    /// `{…}` groups and font-command arguments open around the current
+    /// position, bounded by [`MAX_GROUP_DEPTH`].
+    groups: usize,
 }
 
 const ZWSP: char = '\u{200B}';
+
+/// How deep `{…}` groups and font-command arguments nest. They open no
+/// math node, so [`MAX_MATH_DEPTH`] does not bound them, but each is one
+/// level of the parser's recursion: the bound turns a hostile input into
+/// [`TexErrorKind::TooDeep`] instead of a stack overflow (#152). It is
+/// generous: an argument written as a group counts twice (`\mathrm{x}`), and
+/// node nesting stops at 16 long before.
+const MAX_GROUP_DEPTH: usize = 64;
 
 fn err<T>(at: Range<usize>, kind: TexErrorKind) -> Result<T, TexError> {
     Err(TexError { at, kind })
@@ -351,6 +369,16 @@ impl<'a> Parser<'a> {
             ..RichSegment::plain(text)
         });
         Ok(id)
+    }
+
+    /// Open a `{…}` group or a font-command argument that started at
+    /// `at`; the caller closes it with `self.groups -= 1`.
+    fn open_group(&mut self, at: usize) -> Result<(), TexError> {
+        if self.groups == MAX_GROUP_DEPTH {
+            return err(at..self.pos, TexErrorKind::TooDeep);
+        }
+        self.groups += 1;
+        Ok(())
     }
 
     /// Write a leaf.
@@ -549,7 +577,9 @@ impl<'a> Parser<'a> {
         match c {
             '{' => {
                 self.bump();
+                self.open_group(start)?;
                 self.row(parent, Until::Brace, alphabet)?;
+                self.groups -= 1;
                 return Ok(plain);
             }
             '}' | '^' | '_' | '$' => return err(start..start + 1, TexErrorKind::MissingArgument),
@@ -621,7 +651,9 @@ impl<'a> Parser<'a> {
             return Ok(plain);
         }
         if let Some(alphabet) = font(name) {
+            self.open_group(start)?;
             self.argument(parent, alphabet, here)?;
+            self.groups -= 1;
             return Ok(plain);
         }
         match name {
@@ -1665,6 +1697,48 @@ mod tests {
             ..RichText::plain("", Color::BLACK, 12.0, "")
         };
         assert_eq!(rt.validate_math().unwrap_err().kind, MathErrorKind::TooDeep);
+    }
+
+    // Groups and font arguments open no node, so the node depth does not
+    // bound them; they stop at their own bound with `TooDeep`, and a hostile
+    // depth is an error, not a stack overflow (#152).
+    #[test]
+    fn groups_and_font_arguments_stop_at_their_depth_limit() {
+        let groups = |n: usize| format!("${}x{}$", "{".repeat(n), "}".repeat(n));
+        let fonts = |n: usize| format!("${} x$", r"\mathrm".repeat(n));
+        let braced_fonts = |n: usize| format!("${}x{}$", r"\mathbf{".repeat(n), "}".repeat(n));
+        assert_eq!(
+            parse(&groups(MAX_GROUP_DEPTH))
+                .iter()
+                .filter(|s| s.math_node.is_some())
+                .count(),
+            1
+        );
+        parse(&fonts(MAX_GROUP_DEPTH));
+        parse(&braced_fonts(MAX_GROUP_DEPTH / 2));
+        assert_eq!(kind_of(&groups(MAX_GROUP_DEPTH + 1)), TexErrorKind::TooDeep);
+        assert_eq!(kind_of(&fonts(MAX_GROUP_DEPTH + 1)), TexErrorKind::TooDeep);
+        assert_eq!(
+            kind_of(&braced_fonts(MAX_GROUP_DEPTH / 2 + 1)),
+            TexErrorKind::TooDeep
+        );
+        // Every recursive path, at a depth far past any stack.
+        const N: usize = 100_000;
+        let hostile = [
+            groups(N),
+            fonts(N),
+            braced_fonts(N),
+            format!("${}x{}$", r"\sqrt{".repeat(N), "}".repeat(N)),
+            format!("${}x$", r"\sqrt".repeat(N)),
+            format!("${}x$", r"\hat".repeat(N)),
+            format!("${}x{}$", "x^{".repeat(N), "}".repeat(N)),
+            format!("${}x{}$", r"\left(".repeat(N), r"\right)".repeat(N)),
+            format!("${}x{}$", r"\sqrt[".repeat(N), "]x".repeat(N)),
+            format!("${}x{}$", r"\xrightarrow[".repeat(N), "]x".repeat(N)),
+        ];
+        for tex in &hostile {
+            assert_eq!(kind_of(tex), TexErrorKind::TooDeep, "{}", &tex[..24]);
+        }
     }
 
     /// A formula of every supported command family.

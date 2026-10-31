@@ -330,7 +330,12 @@ impl BoxPlotChart {
             for s in &self.series {
                 if let Some(v) = &s.values[i] {
                     let target = BoxPlotTarget::new(&c.id, &s.id);
-                    if self.resolved_style(&target).unwrap().notched && v.median_ci.is_none() {
+                    // A box with a value always resolves a style: its series
+                    // exists and its summary is the value read here.
+                    let style = self
+                        .resolved_style(&target)
+                        .ok_or("internal: a box with a value resolved no style")?;
+                    if style.notched && v.median_ci.is_none() {
                         return Err("notched boxes require an explicit median CI");
                     }
                 }
