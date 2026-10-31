@@ -53,7 +53,9 @@ async fn a_math_title_draws_hits_and_exports_with_the_bundled_font() {
     let rect = |i: usize| bounds["rect"][i].as_f64().unwrap();
     let (x, y, w, h) = (rect(0), rect(1), rect(2), rect(3));
     assert!(w > 20.0 && h > 18.0, "{bounds}");
-    let hit = chart.hit_test((x + w / 2.0) as f32, (y + h / 2.0) as f32);
+    let hit = chart
+        .hit_test((x + w / 2.0) as f32, (y + h / 2.0) as f32)
+        .unwrap();
     assert_eq!(hit.as_deref(), Some("chart_title"));
 
     let png = chart.export_png(2.0).await.unwrap();

@@ -472,7 +472,8 @@ impl FiggyRadialChart {
     }
     /// The compass name of the annotation's live handle under a point.
     pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
-        let id = self.annotation_hit_id(index as usize).ok()?;
+        // An annotation not drawn in the current frame has no handle.
+        let id = self.annotations.annotations().find(index as usize)?;
         self.annotations
             .annotations()
             .hit_resize_handle(id, [x, y])
@@ -480,7 +481,8 @@ impl FiggyRadialChart {
     }
     /// The vertex handle (`"v<i>"`) of a polygon annotation under a point.
     pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
-        let id = self.annotation_hit_id(index as usize).ok()?;
+        // An annotation not drawn in the current frame has no handle.
+        let id = self.annotations.annotations().find(index as usize)?;
         self.annotations
             .annotations()
             .hit_vertex(id, [x, y])

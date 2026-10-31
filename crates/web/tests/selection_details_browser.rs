@@ -285,7 +285,10 @@ async fn offset_lines_round_trip_hit_test_and_report_unshifted_values() {
     };
     // The data area answers for every panel; no member element exists.
     let (cx, cy) = px(5.0, 6.0);
-    assert_eq!(chart.hit_test(cx, cy).as_deref(), Some("data_area"));
+    assert_eq!(
+        chart.hit_test(cx, cy).unwrap().as_deref(),
+        Some("data_area")
+    );
 
     // Point 3 of `high` is drawn half a unit right and five up.
     let (x, y) = px(7.5, 9.0);

@@ -147,3 +147,20 @@ async fn a_value_label_picks_selects_and_drags() {
     assert_eq!(after, series);
     chart.frame().unwrap();
 }
+
+// A document whose series styles cannot be created is rejected before the
+// chart changes: the previous document stays committed (#152).
+#[wasm_bindgen_test(async)]
+async fn a_rejected_categorical_document_keeps_the_previous_one() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.set_categorical_document(DOCUMENT).unwrap();
+    let config = chart.get_config().unwrap();
+    let series = chart.get_series().unwrap();
+    // A budget at the current usage leaves no room for the new styles.
+    let status: serde_json::Value = serde_json::from_str(&chart.gpu_memory_status()).unwrap();
+    let total = status["total_bytes"].as_f64().unwrap();
+    chart.configure_auto_residency(total, total).unwrap();
+    assert!(chart.set_categorical_document(DOCUMENT).is_err());
+    assert_eq!(chart.get_config().unwrap(), config);
+    assert_eq!(chart.get_series().unwrap(), series);
+}

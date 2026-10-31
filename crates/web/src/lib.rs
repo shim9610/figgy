@@ -2477,8 +2477,8 @@ mod web {
                 .collect();
 
             FiggyAuthority {
-                config: chart.chart_config().clone(),
-                series: chart.chart_series().to_vec(),
+                config: chart.chart_config().unwrap().clone(),
+                series: chart.chart_series().unwrap().to_vec(),
                 columns: chart.columns.clone(),
                 column_revisions: chart.column_revisions.clone(),
                 next_column_revision: chart.next_column_revision,
@@ -2553,12 +2553,14 @@ mod web {
             assert!(
                 chart
                     .chart_series()
+                    .unwrap()
                     .iter()
                     .any(|series| series.series_id == "sine")
             );
             assert!(
                 chart
                     .chart_series()
+                    .unwrap()
                     .iter()
                     .any(|series| series.series_id == "rc")
             );
@@ -2626,7 +2628,7 @@ mod web {
 
             let stable_key = crate::series_extent_request_from(
                 &chart.column_revisions,
-                &chart.chart_series()[0],
+                &chart.chart_series().unwrap()[0],
             )
             .unwrap()
             .key;
@@ -2642,6 +2644,7 @@ mod web {
 
             let demo_keys = chart
                 .chart_series()
+                .unwrap()
                 .iter()
                 .filter(|series| series.series_id == "sine" || series.series_id == "rc")
                 .map(|series| {

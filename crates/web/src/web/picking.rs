@@ -51,7 +51,7 @@ impl FiggyChart {
             .renderer
             .set_active_layer(self.chart_id, layer)
             .map_err(js_err)?;
-        self.sync_hitmap();
+        self.sync_hitmap()?;
         serde_json::to_string(&stored).map_err(js_err)
     }
 
@@ -79,17 +79,20 @@ impl FiggyChart {
     /// While the annotation layer is active (and shown) its drawn items
     /// sit on top and answer as `"annotation_<n>"`; on every other layer
     /// they are not registered and clicks pass through them.
-    pub fn hit_test(&self, x: f32, y: f32) -> Option<String> {
-        let (display_config, _, _) = self.display_config();
-        match self
-            .view
-            .hit_test_active_layer(&display_config, &self.hitmap, [x, y])?
-        {
-            LayerHit::Annotation { index, .. } => {
-                Some(renderer::DecorationId::Annotation(index).element_id())
-            }
-            LayerHit::Element(id) => self.hitmap.get(id).map(|el| el.element_id()),
-        }
+    pub fn hit_test(&self, x: f32, y: f32) -> Result<Option<String>, JsValue> {
+        let (display_config, _, _) = self.display_config()?;
+        Ok(
+            match self
+                .view
+                .hit_test_active_layer(&display_config, &self.hitmap, [x, y])
+            {
+                None => None,
+                Some(LayerHit::Annotation { index, .. }) => {
+                    Some(renderer::DecorationId::Annotation(index).element_id())
+                }
+                Some(LayerHit::Element(id)) => self.hitmap.get(id).map(|el| el.element_id()),
+            },
+        )
     }
 
     // Copy only the selected scalar pairs out of the resident GPU pool.
@@ -138,15 +141,18 @@ impl FiggyChart {
         let slice = buffer.slice(..);
         let (sender, receiver) = futures_channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
+            if sender.send(result).is_err() {
+                // Receiver dropped: the waiting call was cancelled.
+            }
         });
         receiver.await.map_err(js_err)?.map_err(js_err)?;
         let mapped = slice.get_mapped_range().map_err(js_err)?;
-        let values = mapped
-            .chunks_exact(8)
-            .map(|pair| {
-                f32::from_le_bytes(pair[..4].try_into().unwrap()) as f64
-                    + f32::from_le_bytes(pair[4..].try_into().unwrap()) as f64
+        let (pairs, _) = mapped.as_chunks::<8>();
+        let values = pairs
+            .iter()
+            .map(|&[h0, h1, h2, h3, l0, l1, l2, l3]| {
+                f32::from_le_bytes([h0, h1, h2, h3]) as f64
+                    + f32::from_le_bytes([l0, l1, l2, l3]) as f64
             })
             .collect();
         drop(mapped);
@@ -162,7 +168,7 @@ impl FiggyChart {
     pub async fn selection_details(&self) -> Result<String, JsValue> {
         use renderer::config::PickedDataRef;
         let Some(reference) = self
-            .chart_config()
+            .chart_config()?
             .picked_data
             .as_ref()
             .and_then(|selection| selection.refs.first())
@@ -171,7 +177,7 @@ impl FiggyChart {
             return Ok("null".into());
         };
         let series = self
-            .chart_series()
+            .chart_series()?
             .iter()
             .find(|series| series.series_id == reference.series_id())
             .cloned()
@@ -188,7 +194,7 @@ impl FiggyChart {
                     .is_some_and(|b| b.points.is_some()) =>
             {
                 let Some(points) = series.render_type.box_plot().and_then(|b| b.points) else {
-                    unreachable!("the guard matched a box plot with points");
+                    return Err(js_err("internal: the guard matched a box plot with points"));
                 };
                 let samples = [
                     (points.positions.clone(), *point_index),
@@ -198,7 +204,7 @@ impl FiggyChart {
                 result["index"] = serde_json::json!(point_index);
                 result["position"] = serde_json::json!(values[0].is_finite().then_some(values[0]));
                 result["value"] = serde_json::json!(values[1].is_finite().then_some(values[1]));
-                let config = self.chart_config();
+                let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);
                 let groups = config.bar_groups_of(layer);
                 let panel = match layer {
@@ -283,7 +289,7 @@ impl FiggyChart {
                 // A radar vertex also names its category: the angle axis'
                 // category at its index.
                 if series.render_type.radar().is_some() {
-                    let config = self.chart_config();
+                    let config = self.chart_config()?;
                     let panel = match config.layer_of_series(&series.series_id) {
                         renderer::LayerRef::Subplot(index)
                         | renderer::LayerRef::SubplotOverlay(index, _) => config
@@ -348,7 +354,7 @@ impl FiggyChart {
                 if let Some(half) = half {
                     result["half"] = serde_json::json!(half);
                 }
-                let config = self.chart_config();
+                let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);
                 let groups = config.bar_groups_of(layer);
                 let panel = match layer {
@@ -411,7 +417,7 @@ impl FiggyChart {
             {
                 use renderer::data_config::RangeColor;
                 let Some(bars) = series.render_type.range_bars() else {
-                    unreachable!("the guard matched a range bar series");
+                    return Err(js_err("internal: the guard matched a range bar series"));
                 };
                 let colour = match bars.color_by {
                     RangeColor::Single => None,
@@ -442,7 +448,7 @@ impl FiggyChart {
                 for (name, value) in names.iter().zip(&values) {
                     result[*name] = serde_json::json!(value.is_finite().then_some(*value));
                 }
-                let config = self.chart_config();
+                let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);
                 let groups = config.bar_groups_of(layer);
                 let panel = match layer {
@@ -478,7 +484,7 @@ impl FiggyChart {
             PickedDataRef::HistogramBin { bin_index, .. }
                 if series.render_type.category_bars().is_some() =>
             {
-                let config = self.chart_config();
+                let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);
                 let groups = config.bar_groups_of(layer);
                 let panel = match layer {
@@ -642,7 +648,7 @@ impl FiggyChart {
             // A value label reports its category, its drawn string and its
             // drag offset: configuration, nothing is read back.
             PickedDataRef::ValueLabel { category_index, .. } => {
-                let config = self.chart_config();
+                let config = self.chart_config()?;
                 let layer = config.layer_of_series(&series.series_id);
                 let panel = match layer {
                     renderer::LayerRef::Subplot(index)
@@ -689,9 +695,9 @@ impl FiggyChart {
     /// `Config::step_selection` over the chart's series and the registered
     /// column lengths, then the moved config replaces the chart's.
     pub fn step_selection(&mut self, dx: i32, dy: i32) -> Result<bool, JsValue> {
-        let mut cfg = self.chart_config().clone();
+        let mut cfg = self.chart_config()?.clone();
         if !cfg
-            .step_selection(self.chart_series(), dx, dy, |column| {
+            .step_selection(self.chart_series()?, dx, dy, |column| {
                 self.columns.get(column).copied()
             })
             .map_err(js_err)?
@@ -706,7 +712,7 @@ impl FiggyChart {
     /// divided by `factor` and clamped (`Config::zoom_view`). Returns whether
     /// the view changed; a flat chart never does.
     pub fn zoom_view(&mut self, factor: f64) -> Result<bool, JsValue> {
-        let mut cfg = self.chart_config().clone();
+        let mut cfg = self.chart_config()?.clone();
         if !cfg.zoom_view(factor) {
             return Ok(false);
         }
@@ -766,7 +772,7 @@ impl FiggyChart {
         self.prepare_gpu_picking().await?;
         // A drawn value label is a typed pick target; the point pick does
         // not see it.
-        let labelled = self.chart_series().iter().any(|series| {
+        let labelled = self.chart_series()?.iter().any(|series| {
             series
                 .value_label_text()
                 .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
@@ -819,7 +825,7 @@ impl FiggyChart {
             return Ok(false);
         };
         let Some(series) = self
-            .chart_series()
+            .chart_series()?
             .iter()
             .find(|series| series.series_id == series_id)
         else {
@@ -836,13 +842,13 @@ impl FiggyChart {
             series_id: series.series_id.clone(),
             category_index: index,
         };
-        if self.chart_selection().is_some() {
+        if self.chart_selection()?.is_some() {
             self.renderer
                 .set_chart_selection(self.chart_id, None)
                 .map_err(js_err)?;
         }
         self.set_selected_annotation(None);
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let mut picked = config.picked_data.take().unwrap_or_default();
         picked.refs = vec![reference];
         config.picked_data = Some(picked);
@@ -862,7 +868,7 @@ impl FiggyChart {
             category_index,
             ..
         }) = self
-            .chart_config()
+            .chart_config()?
             .picked_data
             .as_ref()
             .and_then(|picked| picked.refs.first())
@@ -870,14 +876,14 @@ impl FiggyChart {
         else {
             return Ok(());
         };
-        let (dx, dy) = self.display_delta_to_document(dx, dy);
-        let mut series = self.chart_series().to_vec();
+        let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+        let mut series = self.chart_series()?.to_vec();
         let Some(item) = series.iter_mut().find(|s| s.series_id == series_id) else {
             return Ok(());
         };
         let count = item.value_label_text().map_or(0, <[String]>::len);
         if item.drag_value_label(category_index, count, dx, dy) == NudgeResult::Moved {
-            let config = self.chart_config().clone();
+            let config = self.chart_config()?.clone();
             self.replace_chart_state(config, series)?;
         }
         Ok(())
@@ -954,7 +960,7 @@ impl FiggyChart {
     pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
         let picked: Option<renderer::config::PickedPointsConfig> =
             serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.picked_points = picked;
         self.replace_chart_config(config)
     }
@@ -965,7 +971,7 @@ impl FiggyChart {
     pub fn set_picked_data(&mut self, json: &str) -> Result<(), JsValue> {
         let picked: Option<renderer::DataSelectionsConfig> =
             serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.picked_data = picked;
         self.replace_chart_config(config)
     }
@@ -982,7 +988,7 @@ impl FiggyChart {
     /// are not part of the route.
     pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
         self.value_label_pointer = false;
-        let (display_config, _, _) = self.display_config();
+        let (display_config, _, _) = self.display_config()?;
         let routes_annotations = renderer::AnnotationMap::receives_pointer(
             display_config.active_layer(),
             &display_config.annotations,
@@ -1001,7 +1007,7 @@ impl FiggyChart {
             self.view
                 .hit_test_active_layer(&display_config, &self.hitmap, [x, y])
         {
-            if self.chart_selection().is_some() {
+            if self.chart_selection()?.is_some() {
                 self.renderer
                     .set_chart_selection(self.chart_id, None)
                     .map_err(js_err)?;
@@ -1013,7 +1019,7 @@ impl FiggyChart {
             return Ok(true);
         }
         self.annotation_pointer = false;
-        let selected = self.chart_selection();
+        let selected = self.chart_selection()?;
         // Resize handles on the selected element win over hit-testing.
         if let Some(id) = selected
             && let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
@@ -1050,7 +1056,7 @@ impl FiggyChart {
         }
         self.resizing = None;
         self.dragging = dragging;
-        self.drag_pointer = self.display_point_to_document(x, y);
+        self.drag_pointer = self.display_point_to_document(x, y)?;
         Ok(new_sel.is_some())
     }
 
@@ -1074,11 +1080,11 @@ impl FiggyChart {
             }
             return Ok(());
         }
-        let Some(id) = self.chart_selection() else {
+        let Some(id) = self.chart_selection()? else {
             return Ok(());
         };
-        let (dx, dy) = self.display_delta_to_document(dx, dy);
-        let mut config = self.chart_config().clone();
+        let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+        let mut config = self.chart_config()?.clone();
         // Containment is measured on the drawn parts, with the font the
         // document draws with.
         let measure = CpuTextMeasure::for_style(&config.draw_style);
@@ -1110,8 +1116,8 @@ impl FiggyChart {
     }
 
     /// `true` while a chart element or an annotation is selected.
-    pub fn has_selection(&self) -> bool {
-        self.chart_selection().is_some() || self.selected_annotation.is_some()
+    pub fn has_selection(&self) -> Result<bool, JsValue> {
+        Ok(self.chart_selection()?.is_some() || self.selected_annotation.is_some())
     }
 
     /// Compatibility entry point. Nonresident picking is disabled because

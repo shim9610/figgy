@@ -68,7 +68,7 @@ pub(crate) fn annotation_warnings_json(
 impl FiggyChart {
     /// Fit the x axis to a column's range with proportional padding.
     pub fn auto_fit_x(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-        let mut chart = Chart::new(self.chart_config().clone());
+        let mut chart = Chart::new(self.chart_config()?.clone());
         chart
             .auto_fit_x(self.renderer.pool(), column, padding)
             .map_err(js_err)?;
@@ -77,7 +77,7 @@ impl FiggyChart {
     }
 
     pub fn auto_fit_y(&mut self, column: &str, padding: f64) -> Result<(), JsValue> {
-        let mut chart = Chart::new(self.chart_config().clone());
+        let mut chart = Chart::new(self.chart_config()?.clone());
         chart
             .auto_fit_y(self.renderer.pool(), column, padding)
             .map_err(js_err)?;
@@ -95,10 +95,10 @@ impl FiggyChart {
         column: &str,
         padding: f64,
     ) -> Result<(), JsValue> {
-        if layer >= self.chart_config().overlays.len() {
+        if layer >= self.chart_config()?.overlays.len() {
             return Err(js_err("overlay layer index is out of range"));
         }
-        let mut chart = Chart::new(self.chart_config().clone());
+        let mut chart = Chart::new(self.chart_config()?.clone());
         chart
             .auto_fit_overlay_y_union(self.renderer.pool(), layer, &[column], padding)
             .map_err(js_err)?;
@@ -118,11 +118,11 @@ impl FiggyChart {
         columns: Vec<String>,
         padding: f64,
     ) -> Result<(), JsValue> {
-        if index >= self.chart_config().subplots.len() {
+        if index >= self.chart_config()?.subplots.len() {
             return Err(js_err("subplot index is out of range"));
         }
         let ids: Vec<&str> = columns.iter().map(String::as_str).collect();
-        let mut chart = Chart::new(self.chart_config().clone());
+        let mut chart = Chart::new(self.chart_config()?.clone());
         match axis {
             "x" => chart.auto_fit_subplot_x_union(self.renderer.pool(), index, &ids, padding),
             "y" => chart.auto_fit_subplot_y_union(self.renderer.pool(), index, &ids, padding),
@@ -170,7 +170,7 @@ impl FiggyChart {
         }
         // A ternary chart's axes span the whole triangle, not a data extent.
         let ternary = {
-            let config = self.chart_config();
+            let config = self.chart_config()?;
             match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
                 renderer::LayerRef::Subplot(index)
                 | renderer::LayerRef::SubplotOverlay(index, _) => config
@@ -184,9 +184,9 @@ impl FiggyChart {
             return Ok(());
         }
         // A parallel chart fits each axis to its columns' statistics (#141).
-        if self.chart_config().parallel.is_some() {
-            let series = self.chart_series().to_vec();
-            let mut chart = Chart::new(self.chart_config().clone());
+        if self.chart_config()?.parallel.is_some() {
+            let series = self.chart_series()?.to_vec();
+            let mut chart = Chart::new(self.chart_config()?.clone());
             chart
                 .auto_fit_parallel_axes(self.renderer.pool(), &series, padding)
                 .map_err(js_err)?;
@@ -194,7 +194,7 @@ impl FiggyChart {
             self.request_host_redraw();
             return Ok(());
         }
-        let series = self.chart_series().to_vec();
+        let series = self.chart_series()?.to_vec();
         if series
             .iter()
             .any(|cfg| series_extent_mode(&cfg.render_type).is_some())
@@ -216,7 +216,7 @@ impl FiggyChart {
         let prepared = self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
         // The cache keeps every series' extent job; only the series drawn
         // against the fitted axes take part in this fit.
-        let config = self.chart_config();
+        let config = self.chart_config()?;
         let mut jobs = Vec::new();
         jobs.try_reserve(series.len()).map_err(js_err)?;
         jobs.extend(series.iter().filter_map(|cfg| {
@@ -241,7 +241,7 @@ impl FiggyChart {
             if let Some(extent) = extent {
                 // A line offset member fits where it is drawn.
                 let (extent_x, extent_y) = Chart::line_offset_fit_extents(
-                    self.chart_config(),
+                    self.chart_config()?,
                     series_id,
                     extent.x,
                     extent.y,
@@ -260,7 +260,7 @@ impl FiggyChart {
             min_positive: (value > 0.0).then_some(value),
         };
         for cfg in &series {
-            let (x, y) = self.chart_config().series_fit_roles(layer, &cfg.series_id);
+            let (x, y) = self.chart_config()?.series_fit_roles(layer, &cfg.series_id);
             match &cfg.render_type {
                 DataRenderType::Histogram { bar } if x || y => {
                     let (edge_column, count_column) =
@@ -308,12 +308,12 @@ impl FiggyChart {
                     "axis range/scale, ordered fit geometry, or source column content changed",
                 ));
             }
-            let mut chart = Chart::new(self.chart_config().clone());
+            let mut chart = Chart::new(self.chart_config()?.clone());
             chart.auto_fit_layer_extent(layer, &x_ext, &y_ext, padding);
             self.replace_chart_config(chart.config().clone())?;
         }
         // A 3D chart's z axis fits to its height columns' statistics.
-        let config = self.chart_config();
+        let config = self.chart_config()?;
         let three_d = match layer {
             renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
                 config
@@ -339,7 +339,7 @@ impl FiggyChart {
     /// maps and streamline colour columns. A chart without a colourbar is left unchanged.
     pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
         let mut z_extent = FitExtent::EMPTY;
-        for cfg in self.chart_series() {
+        for cfg in self.chart_series()? {
             let mut union = |id: &str| -> Result<(), JsValue> {
                 z_extent.union(&Chart::slot_extent(self.renderer.pool(), id).map_err(js_err)?);
                 Ok(())
@@ -411,7 +411,7 @@ impl FiggyChart {
                 | DataRenderType::Ternary { scatter: None, .. } => {}
             }
         }
-        let mut chart = Chart::new(self.chart_config().clone());
+        let mut chart = Chart::new(self.chart_config()?.clone());
         chart.auto_fit_colorbar_extent(&z_extent, padding);
         self.replace_chart_config(chart.config().clone())?;
         self.request_host_redraw();
@@ -424,19 +424,19 @@ impl FiggyChart {
     /// edit that keeps the exact margin, use `get_config` / `set_config`
     /// and change only `chart_title.text`.
     pub fn set_title(&mut self, text: &str) -> Result<(), JsValue> {
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         set_plain_chart_title(&mut config, text);
         self.replace_chart_config(config)
     }
 
     pub fn set_x_title(&mut self, text: &str) -> Result<(), JsValue> {
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.bottom_x.title_option.text.segments = rich_segments_from_text(text);
         self.replace_chart_config(config)
     }
 
     pub fn set_y_title(&mut self, text: &str) -> Result<(), JsValue> {
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.left_y.title_option.text.segments = rich_segments_from_text(text);
         self.replace_chart_config(config)
     }
@@ -445,7 +445,7 @@ impl FiggyChart {
     /// hides it. The full rich-text/title offsets remain available through
     /// `set_colorbar_axis` or the chart Config SSoT.
     pub fn set_colorbar_title(&mut self, text: &str) -> Result<(), JsValue> {
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let bar = config
             .colorbar
             .as_mut()
@@ -460,7 +460,7 @@ impl FiggyChart {
     /// direction, tick-label style/offsets, and title options.
     pub fn set_colorbar_axis(&mut self, json: &str) -> Result<(), JsValue> {
         let axis: renderer::config::AxisOptions = serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let bar = config
             .colorbar
             .as_mut()
@@ -474,7 +474,7 @@ impl FiggyChart {
     /// Apply an axis frame preset to all four axes (decoration-only).
     pub fn apply_axis_preset(&mut self, preset: AxisPreset) -> Result<(), JsValue> {
         let p: renderer::AxisPreset = preset.into();
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.apply_axis_preset(p);
         self.replace_chart_config(config)
     }
@@ -483,11 +483,11 @@ impl FiggyChart {
     /// rebuilds their GPU styles, and keeps legend swatches in sync.
     pub fn apply_color_cycle(&mut self, cycle: ColorCycle) -> Result<(), JsValue> {
         let cycle = renderer::ColorCycle::from(cycle);
-        let mut series = self.chart_series().to_vec();
+        let mut series = self.chart_series()?.to_vec();
         for (i, cfg) in series.iter_mut().enumerate() {
             cycle.apply_to_series(cfg, i);
         }
-        let (scale, _) = self.display_scale_and_panel();
+        let (scale, _) = self.display_scale_and_panel()?;
         let mut styles = Vec::new();
         styles.try_reserve(series.len()).map_err(js_err)?;
         for cfg in &series {
@@ -497,7 +497,7 @@ impl FiggyChart {
                     .map_err(js_err)?,
             );
         }
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         renderer::config::update_legend_symbols_preserving_text(
             &mut config.legend.content,
             &series,
@@ -543,7 +543,7 @@ impl FiggyChart {
     ) -> Result<bool, JsValue> {
         let id = self.annotation_hit_id(index)?;
         let map = self.view.annotation_map();
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let result = match handle {
             Some(h) => map.resize_by(&mut config.annotations, id, h, dx, dy),
             None => map.drag_by(&mut config.annotations, id, dx, dy),
@@ -563,7 +563,7 @@ impl FiggyChart {
     /// absent here and listed by `annotation_warnings`.
     pub fn annotations(&self) -> Result<String, JsValue> {
         let map = self.view.annotation_map();
-        let items = &self.chart_config().annotations.items;
+        let items = &self.chart_config()?.annotations.items;
         let values = map
                 .entries()
                 .filter_map(|(id, e)| {
@@ -598,11 +598,11 @@ impl FiggyChart {
     pub fn select_annotation(&mut self, index: Option<u32>) -> Result<(), JsValue> {
         let index = index.map(|i| i as usize);
         if let Some(i) = index
-            && i >= self.chart_config().annotations.items.len()
+            && i >= self.chart_config()?.annotations.items.len()
         {
             return Err(js_err("unknown annotation"));
         }
-        if index.is_some() && self.chart_selection().is_some() {
+        if index.is_some() && self.chart_selection()?.is_some() {
             self.renderer
                 .set_chart_selection(self.chart_id, None)
                 .map_err(js_err)?;
@@ -620,7 +620,8 @@ impl FiggyChart {
     /// live: a span's two edges, a line's two value handles, an arrow's
     /// two endpoints.
     pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
-        let id = self.annotation_hit_id(index as usize).ok()?;
+        // An annotation not drawn in the current frame has no handle.
+        let id = self.view.annotation_map().find(index as usize)?;
         self.view
             .annotation_map()
             .hit_resize_handle(id, [x, y])
@@ -630,7 +631,8 @@ impl FiggyChart {
     /// The vertex handle (`"v<i>"`) of a polygon annotation under a
     /// point, or none: a polygon's handles are its vertices.
     pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
-        let id = self.annotation_hit_id(index as usize).ok()?;
+        // An annotation not drawn in the current frame has no handle.
+        let id = self.view.annotation_map().find(index as usize)?;
         self.view
             .annotation_map()
             .hit_vertex(id, [x, y])
@@ -656,7 +658,7 @@ impl FiggyChart {
         if let Some(vertex) = handle.as_deref().and_then(vertex_handle_index) {
             let id = self.annotation_hit_id(index as usize)?;
             let map = self.view.annotation_map();
-            let mut config = self.chart_config().clone();
+            let mut config = self.chart_config()?.clone();
             let result = map.drag_vertex(&mut config.annotations, id, vertex, dx, dy);
             if result != Some(NudgeResult::Moved) {
                 return Ok(false);
@@ -680,7 +682,7 @@ impl FiggyChart {
     /// and return its index.
     pub fn add_annotation(&mut self, json: &str) -> Result<u32, JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.annotations.items.push(item);
         let index = config.annotations.items.len() - 1;
         self.replace_chart_config(config)?;
@@ -690,7 +692,7 @@ impl FiggyChart {
     /// Replace the annotation at `index` with an `Annotation` JSON value.
     pub fn set_annotation(&mut self, index: u32, json: &str) -> Result<(), JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let slot = config
             .annotations
             .items
@@ -704,7 +706,7 @@ impl FiggyChart {
     /// index; the selection follows or clears.
     pub fn remove_annotation(&mut self, index: u32) -> Result<(), JsValue> {
         let index = index as usize;
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         if index >= config.annotations.items.len() {
             return Err(js_err("unknown annotation"));
         }
@@ -722,7 +724,7 @@ impl FiggyChart {
     /// Show or hide the whole annotation layer. Hiding skips the two
     /// composite draws and re-rasterizes nothing.
     pub fn set_annotations_visible(&mut self, visible: bool) -> Result<(), JsValue> {
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.annotations.visible = visible;
         self.replace_chart_config(config)
     }
@@ -757,7 +759,7 @@ impl FiggyChart {
     /// An `"annotation_<n>"` id that `hit_test` reports resolves to the
     /// drawn item's selection box.
     pub fn decoration_bounds(&self, target: &str) -> Result<String, JsValue> {
-        let (config, _, _) = self.display_config();
+        let (config, _, _) = self.display_config()?;
         let annotations = self.view.annotation_map();
         if let Some(b) = annotations
             .entries()

@@ -5,19 +5,51 @@ use super::*;
 
 pub(super) const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 
-pub(super) fn emit_init_progress(on_event: Option<&js_sys::Function>, event: InitEvent) {
+/// Report one init stage to the host's `on_event` as `{ scope, stage,
+/// phase }`. An exception the callback throws (or a failed property set on
+/// the payload) is returned, so the call that reports progress rejects
+/// with it.
+pub(super) fn emit_init_progress(
+    on_event: Option<&js_sys::Function>,
+    event: InitEvent,
+) -> Result<(), JsValue> {
     let Some(callback) = on_event else {
-        return;
+        return Ok(());
     };
     let payload = js_sys::Object::new();
     let phase = match event.phase {
         InitPhase::Started => "started",
         InitPhase::Finished => "finished",
     };
-    let _ = js_sys::Reflect::set(&payload, &"scope".into(), &JsValue::from_str(event.scope));
-    let _ = js_sys::Reflect::set(&payload, &"stage".into(), &JsValue::from_str(event.stage));
-    let _ = js_sys::Reflect::set(&payload, &"phase".into(), &JsValue::from_str(phase));
-    let _ = callback.call1(&JsValue::UNDEFINED, &payload);
+    for (key, value) in [
+        ("scope", event.scope),
+        ("stage", event.stage),
+        ("phase", phase),
+    ] {
+        if !js_sys::Reflect::set(&payload, &key.into(), &JsValue::from_str(value))? {
+            return Err(js_err(format!(
+                "init progress: could not set `{key}` on the event object"
+            )));
+        }
+    }
+    callback.call1(&JsValue::UNDEFINED, &payload)?;
+    Ok(())
+}
+
+/// [`emit_init_progress`] for a renderer observer, which cannot return an
+/// error: the first failure is kept in `failed` and later events are not
+/// reported. The caller rejects with `failed` once the observed call
+/// returns.
+fn observe_init_progress(
+    on_event: Option<&js_sys::Function>,
+    event: InitEvent,
+    failed: &mut Option<JsValue>,
+) {
+    if failed.is_none()
+        && let Err(error) = emit_init_progress(on_event, event)
+    {
+        *failed = Some(error);
+    }
 }
 
 pub(super) async fn create_chart_kernel(
@@ -28,16 +60,21 @@ pub(super) async fn create_chart_kernel(
 
     let (mut renderer, w, h) = {
         let on_event_ref = on_event.as_ref();
-        let mut observer = |event| emit_init_progress(on_event_ref, event);
+        let mut failed = None;
+        let mut observer = |event| observe_init_progress(on_event_ref, event, &mut failed);
         let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-        let mut renderer = Renderer::for_window_async_observed(
+        let renderer = Renderer::for_window_async_observed(
             wgpu::SurfaceTarget::Canvas(canvas),
             (w, h),
             POOL_CAPACITY,
             &mut observer,
         )
         .await
-        .map_err(js_err)?;
+        .map_err(js_err);
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        let mut renderer = renderer?;
         renderer.set_defrag_policy(DefragPolicy::OnAllocFailure);
         (renderer, w, h)
     };
@@ -45,7 +82,7 @@ pub(super) async fn create_chart_kernel(
     emit_init_progress(
         on_event.as_ref(),
         InitEvent::new("web.create", "chart resources", InitPhase::Started),
-    );
+    )?;
 
     let mut config = renderer::default::default_config();
     config.chart_area = ChartArea(Rect {
@@ -73,7 +110,7 @@ pub(super) async fn create_chart_kernel(
     emit_init_progress(
         on_event.as_ref(),
         InitEvent::new("web.create", "chart resources", InitPhase::Finished),
-    );
+    )?;
     let mut chart = FiggyChart {
         renderer,
         chart_id,
@@ -108,12 +145,12 @@ pub(super) async fn create_chart_kernel(
     emit_init_progress(
         on_event.as_ref(),
         InitEvent::new("web.create", "first frame", InitPhase::Started),
-    );
+    )?;
     chart.first_frame_ready().await?;
     emit_init_progress(
         on_event.as_ref(),
         InitEvent::new("web.create", "first frame", InitPhase::Finished),
-    );
+    )?;
     Ok(chart)
 }
 
@@ -249,29 +286,23 @@ pub struct FiggyChart {
 }
 
 impl FiggyChart {
-    pub(super) fn chart_config(&self) -> &renderer::Config {
-        self.renderer
-            .chart_config(self.chart_id)
-            .expect("FiggyChart keeps its renderer-owned chart registered")
+    pub(super) fn chart_config(&self) -> Result<&renderer::Config, JsValue> {
+        self.renderer.chart_config(self.chart_id).map_err(js_err)
     }
 
-    pub(super) fn chart_series(&self) -> &[SeriesConfig] {
-        self.renderer
-            .chart_series(self.chart_id)
-            .expect("FiggyChart keeps its renderer-owned chart registered")
+    pub(super) fn chart_series(&self) -> Result<&[SeriesConfig], JsValue> {
+        self.renderer.chart_series(self.chart_id).map_err(js_err)
     }
 
-    pub(super) fn chart_selection(&self) -> Option<HitId> {
-        self.renderer
-            .chart_selection(self.chart_id)
-            .expect("FiggyChart keeps its renderer-owned chart registered")
+    pub(super) fn chart_selection(&self) -> Result<Option<HitId>, JsValue> {
+        self.renderer.chart_selection(self.chart_id).map_err(js_err)
     }
 
     pub(super) fn replace_chart_config(&mut self, config: renderer::Config) -> Result<(), JsValue> {
         self.renderer
             .set_chart_config(self.chart_id, config)
             .map_err(js_err)?;
-        self.sync_hitmap();
+        self.sync_hitmap()?;
         Ok(())
     }
 
@@ -283,7 +314,7 @@ impl FiggyChart {
         self.renderer
             .set_chart_state(self.chart_id, config, series)
             .map_err(js_err)?;
-        self.sync_hitmap();
+        self.sync_hitmap()?;
         Ok(())
     }
 
@@ -294,8 +325,8 @@ impl FiggyChart {
     /// annotation selection: it is the element selection of the
     /// annotation layer, one level below the layer like the registry's
     /// `HitId`.
-    pub(super) fn sync_hitmap(&mut self) {
-        let config = self.chart_config();
+    pub(super) fn sync_hitmap(&mut self) -> Result<(), JsValue> {
+        let config = self.chart_config()?;
         let layer = config.active_layer();
         let subplot_overlays = match layer {
             renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
@@ -319,77 +350,96 @@ impl FiggyChart {
                 self.set_selected_annotation(None);
             }
         }
+        Ok(())
     }
 
     /// The display scale and where the whole document lands on the
     /// surface.
-    pub(super) fn display_scale_and_panel(&self) -> (f32, Rect) {
-        let logical = self.chart_config().document_area();
-        renderer::fit_display_panel((logical.width, logical.height), self.surface_size)
+    pub(super) fn display_scale_and_panel(&self) -> Result<(f32, Rect), JsValue> {
+        let logical = self.chart_config()?.document_area();
+        Ok(renderer::fit_display_panel(
+            (logical.width, logical.height),
+            self.surface_size,
+        ))
     }
 
-    pub(super) fn display_config(&self) -> (renderer::config::Config, Rect, f32) {
-        renderer::display_config_for_surface(self.chart_config(), self.surface_size)
+    pub(super) fn display_config(&self) -> Result<(renderer::config::Config, Rect, f32), JsValue> {
+        Ok(renderer::display_config_for_surface(
+            self.chart_config()?,
+            self.surface_size,
+        ))
     }
 
-    pub(super) fn display_delta_to_document(&self, dx: f32, dy: f32) -> (f32, f32) {
-        let (scale, _) = self.display_scale_and_panel();
-        if scale > 0.0 {
+    pub(super) fn display_delta_to_document(
+        &self,
+        dx: f32,
+        dy: f32,
+    ) -> Result<(f32, f32), JsValue> {
+        let (scale, _) = self.display_scale_and_panel()?;
+        Ok(if scale > 0.0 {
             (dx / scale, dy / scale)
         } else {
             (dx, dy)
-        }
+        })
     }
 
     /// A display point in document coordinates: the inverse of
     /// `display_config_for_surface`'s scale and placement.
-    pub(super) fn display_point_to_document(&self, x: f32, y: f32) -> [f32; 2] {
-        let (scale, panel) = self.display_scale_and_panel();
-        let logical = self.chart_config().document_area();
-        if scale > 0.0 {
+    pub(super) fn display_point_to_document(&self, x: f32, y: f32) -> Result<[f32; 2], JsValue> {
+        let (scale, panel) = self.display_scale_and_panel()?;
+        let logical = self.chart_config()?.document_area();
+        Ok(if scale > 0.0 {
             [
                 logical.x as f32 + (x - panel.x as f32) / scale,
                 logical.y as f32 + (y - panel.y as f32) / scale,
             ]
         } else {
             [x, y]
-        }
+        })
     }
 
-    pub(super) fn label_text(&self, label: &str) -> RichText {
-        let content = &self.chart_config().legend.content;
-        RichText {
+    pub(super) fn label_text(&self, label: &str) -> Result<RichText, JsValue> {
+        let content = &self.chart_config()?.legend.content;
+        Ok(RichText {
             segments: rich_segments_from_text(label),
             color: content.color,
             font_size: content.font_size,
             font: content.font.clone(),
             align: content.align,
-        }
+        })
     }
 
     pub(super) fn rich_text_to_plain(rt: &RichText) -> String {
         rt.segments.iter().map(|s| s.text).collect()
     }
 
-    pub(super) fn fallback_label(&self, i: usize) -> Option<RichText> {
-        self.chart_series()
+    pub(super) fn fallback_label(&self, i: usize) -> Result<Option<RichText>, JsValue> {
+        if let Some(label) = self
+            .chart_series()?
             .get(i)
             .and_then(|cfg| cfg.label.clone())
-            .or_else(|| self.labels.get(i)?.as_ref().map(|s| self.label_text(s)))
+        {
+            return Ok(Some(label));
+        }
+        match self.labels.get(i) {
+            Some(Some(label)) => self.label_text(label).map(Some),
+            _ => Ok(None),
+        }
     }
 
     /// Explicit reset: rebuild every auto legend row from SeriesConfig.label
     /// first, falling back to the wrapper's legacy string labels.
     pub(super) fn rebuild_legend_from_series_labels(&mut self) -> Result<(), JsValue> {
-        let entries: Vec<(SeriesConfig, RichText)> = self
-            .chart_series()
-            .iter()
-            .cloned()
-            .enumerate()
-            .filter_map(|(i, cfg)| Some((cfg, self.fallback_label(i)?)))
-            .collect();
+        let series = self.chart_series()?;
+        let mut entries: Vec<(SeriesConfig, RichText)> = Vec::new();
+        entries.try_reserve(series.len()).map_err(js_err)?;
+        for (i, cfg) in series.iter().enumerate() {
+            if let Some(label) = self.fallback_label(i)? {
+                entries.push((cfg.clone(), label));
+            }
+        }
 
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         config.legend.content.segments.clear();
         for (cfg, label) in entries {
             renderer::config::append_legend_entry_rich(
@@ -411,9 +461,9 @@ impl FiggyChart {
         &mut self,
         surface_size: (u32, u32),
     ) -> Result<Vec<ChartStyle>, JsValue> {
-        let logical = self.chart_config().document_area();
+        let logical = self.chart_config()?.document_area();
         let (scale, _) = renderer::fit_display_panel((logical.width, logical.height), surface_size);
-        let series = self.chart_series().to_vec();
+        let series = self.chart_series()?.to_vec();
         series
             .iter()
             .map(|cfg| {
@@ -504,17 +554,15 @@ impl FiggyChart {
 
     /// Removing series cannot create a new extent identity. Retire stale
     /// jobs without allocating or submitting new GPU work.
-    pub(super) fn retire_series_extent_cache(&mut self) {
-        let series_cfgs = self
-            .renderer
-            .chart_series(self.chart_id)
-            .expect("FiggyChart keeps its renderer-owned chart registered");
+    pub(super) fn retire_series_extent_cache(&mut self) -> Result<(), JsValue> {
+        let series_cfgs = self.renderer.chart_series(self.chart_id).map_err(js_err)?;
         let revisions = &self.column_revisions;
         self.series_extents.retain(|key, _| {
             series_cfgs
                 .iter()
                 .any(|cfg| series_extent_key_matches_config(key, cfg, revisions))
         });
+        Ok(())
     }
 
     pub(super) fn spawn_series_extent(
@@ -571,7 +619,8 @@ impl FiggyChart {
 
     /// Same as [`Self::create`], reporting each init stage to `on_event`
     /// as `{ scope, stage, phase }`. Do not call other kernel methods
-    /// from the callback.
+    /// from the callback. An exception the callback throws rejects the
+    /// returned promise with it; later stages are not reported.
     pub async fn create_with_progress(
         canvas: HtmlCanvasElement,
         on_event: js_sys::Function,
@@ -705,7 +754,7 @@ impl FiggyChart {
         line_width: f32,
         label: &str,
     ) -> Result<(), JsValue> {
-        let current = self.chart_series().to_vec();
+        let current = self.chart_series()?.to_vec();
         let existing = current.iter().position(|c| c.series_id == series_id);
         let color = match existing {
             Some(i) => match &current[i].render_type {
@@ -723,7 +772,7 @@ impl FiggyChart {
         };
         let label_changed = !label.is_empty();
         let rich_label = if label_changed {
-            Some(self.label_text(label))
+            Some(self.label_text(label)?)
         } else {
             existing.and_then(|i| current[i].label.clone())
         };
@@ -752,7 +801,7 @@ impl FiggyChart {
             },
         };
         self.ensure_columns_exist(&cfg)?;
-        let (scale, _) = self.display_scale_and_panel();
+        let (scale, _) = self.display_scale_and_panel()?;
         let mut proposed = current;
         if let Some(index) = existing {
             proposed[index] = cfg.clone();
@@ -781,7 +830,7 @@ impl FiggyChart {
             next_labels.try_reserve(1).map_err(js_err)?;
             next_labels.push(plain_label);
         }
-        let mut next_config = self.chart_config().clone();
+        let mut next_config = self.chart_config()?.clone();
         if label_changed && let Some(label) = rich_label {
             match existing {
                 Some(index) => renderer::config::set_legend_entry_label(
@@ -826,11 +875,11 @@ impl FiggyChart {
     /// Empty string removes the legend row. Returns `true` when the
     /// series exists.
     pub fn set_series_label(&mut self, series_id: &str, label: &str) -> Result<bool, JsValue> {
-        let mut series = self.chart_series().to_vec();
+        let mut series = self.chart_series()?.to_vec();
         let Some(i) = series.iter().position(|c| c.series_id == series_id) else {
             return Ok(false);
         };
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         let mut labels = self.labels.clone();
         if label.is_empty() {
             labels[i] = None;
@@ -841,7 +890,7 @@ impl FiggyChart {
                 config.legend.visible = false;
             }
         } else {
-            let label = self.label_text(label);
+            let label = self.label_text(label)?;
             labels[i] = Some(Self::rich_text_to_plain(&label));
             series[i].label = Some(label.clone());
             renderer::config::set_legend_entry_label(
@@ -865,12 +914,12 @@ impl FiggyChart {
     /// synchronize recognized series symbols.
     /// Returns `true` when the series existed.
     pub fn remove_series(&mut self, series_id: &str) -> Result<bool, JsValue> {
-        let mut series = self.chart_series().to_vec();
+        let mut series = self.chart_series()?.to_vec();
         let Some(i) = series.iter().position(|c| c.series_id == series_id) else {
             return Ok(false);
         };
         series.remove(i);
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         if self.legend_auto_managed {
             if renderer::config::remove_legend_entry(&mut config.legend.content, i)
                 && config.legend.content.segments.is_empty()
@@ -887,7 +936,7 @@ impl FiggyChart {
         self.replace_chart_state(config, series)?;
         self.styles.remove(i);
         self.labels.remove(i);
-        self.retire_series_extent_cache();
+        self.retire_series_extent_cache()?;
         Ok(true)
     }
 
@@ -900,11 +949,11 @@ impl FiggyChart {
         use_colormap_colors: bool,
     ) -> Result<u32, JsValue> {
         let colorbar = self
-            .chart_config()
+            .chart_config()?
             .colorbar
             .clone()
             .ok_or_else(|| js_err("contour levels need Config.colorbar"))?;
-        let mut series = self.chart_series().to_vec();
+        let mut series = self.chart_series()?.to_vec();
         let cfg = series
             .iter_mut()
             .find(|cfg| cfg.series_id == series_id)
@@ -953,7 +1002,7 @@ impl FiggyChart {
     /// Serialize the full chart option SSoT to a JSON string.
     /// JS: `const cfg = JSON.parse(chart.get_config());`
     pub fn get_config(&self) -> Result<String, JsValue> {
-        serde_json::to_string(self.chart_config()).map_err(js_err)
+        serde_json::to_string(self.chart_config()?).map_err(js_err)
     }
 
     /// Replace the whole option SSoT from JSON. Marks everything dirty —
@@ -967,11 +1016,11 @@ impl FiggyChart {
     /// JS: `chart.set_config(JSON.stringify(cfg));`
     pub fn set_config(&mut self, json: &str) -> Result<(), JsValue> {
         let mut new_cfg: renderer::Config = serde_json::from_str(json).map_err(js_err)?;
-        let old_config = self.chart_config();
+        let old_config = self.chart_config()?;
         let legend_content_changed = old_config.legend.content != new_cfg.legend.content;
         let colormap_changed = old_config.colorbar.as_ref().map(|bar| &bar.colormap)
             != new_cfg.colorbar.as_ref().map(|bar| &bar.colormap);
-        let series = self.chart_series().to_vec();
+        let series = self.chart_series()?.to_vec();
         // A heatmap's legend mark shows the colour map: an auto-managed
         // legend follows a new map, a host-written one stays as written.
         if colormap_changed && !legend_content_changed && self.legend_auto_managed {
@@ -1001,7 +1050,7 @@ impl FiggyChart {
 
     /// Serialize the series declarations (columns, render type, styles).
     pub fn get_series(&self) -> Result<String, JsValue> {
-        serde_json::to_string(self.chart_series()).map_err(js_err)
+        serde_json::to_string(self.chart_series()?).map_err(js_err)
     }
 
     /// Replace the series declarations from JSON. Column references must
@@ -1021,7 +1070,7 @@ impl FiggyChart {
         for cfg in &new_series {
             self.ensure_columns_exist(cfg)?;
         }
-        let old_series = self.chart_series().to_vec();
+        let old_series = self.chart_series()?.to_vec();
         let mut new_labels = Vec::new();
         new_labels.try_reserve(new_series.len()).map_err(js_err)?;
         for cfg in &new_series {
@@ -1037,7 +1086,7 @@ impl FiggyChart {
                     }),
             );
         }
-        let (scale, _) = self.display_scale_and_panel();
+        let (scale, _) = self.display_scale_and_panel()?;
         let mut new_styles = Vec::new();
         new_styles.try_reserve(new_series.len()).map_err(js_err)?;
         for cfg in &new_series {
@@ -1047,7 +1096,7 @@ impl FiggyChart {
                     .map_err(js_err)?,
             );
         }
-        let mut config = self.chart_config().clone();
+        let mut config = self.chart_config()?.clone();
         if self.legend_auto_managed {
             let existing = renderer::config::legend_entry_count(&config.legend.content);
             renderer::config::update_legend_symbols_preserving_text(
@@ -1061,11 +1110,11 @@ impl FiggyChart {
                 }
             }
             for index in existing..new_series.len() {
-                let label = new_series[index].label.clone().or_else(|| {
-                    new_labels[index]
-                        .as_ref()
-                        .map(|label| self.label_text(label))
-                });
+                let label = match (&new_series[index].label, &new_labels[index]) {
+                    (Some(label), _) => Some(label.clone()),
+                    (None, Some(label)) => Some(self.label_text(label)?),
+                    (None, None) => None,
+                };
                 if let Some(label) = label {
                     renderer::config::append_legend_entry_rich(
                         &mut config.legend.content,
@@ -1084,7 +1133,7 @@ impl FiggyChart {
         self.labels = new_labels;
         self.styles = new_styles;
         self.color_seq = new_len.max(self.color_seq);
-        let extent_series = self.chart_series().to_vec();
+        let extent_series = self.chart_series()?.to_vec();
         let extent_revisions = self.column_revisions.clone();
         self.publish_series_extents_if_engine_ready(&extent_series, &extent_revisions, false)?;
         Ok(())
@@ -1106,6 +1155,12 @@ impl FiggyChart {
     /// edited through the Cartesian API (`get_config` / `set_config`,
     /// `get_series` / `set_series`, the column registry).
     ///
+    /// A document that does not parse or validate, or whose series styles
+    /// cannot be created, is rejected with the previous chart unchanged. A
+    /// failure while the new columns upload or the axis fits from them
+    /// rejects with a chart that has no series: the previous document's
+    /// series and columns are retired by then.
+    ///
     /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
@@ -1113,28 +1168,35 @@ impl FiggyChart {
         let document: renderer::CategoricalChart = serde_json::from_str(json).map_err(js_err)?;
         document.validate().map_err(js_err)?;
         let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
-        config.chart_area = self.chart_config().chart_area.clone();
-
-        // Retire the previous document's series, then its columns.
-        let empty = self.chart_config().clone();
-        self.replace_chart_state(empty, Vec::new())?;
-        self.labels.clear();
-        self.styles.clear();
-        for upload in &uploads {
-            if self.columns.contains_key(&upload.column) {
-                self.remove_column(&upload.column)?;
-            }
-        }
+        config.chart_area = self.chart_config()?.chart_area.clone();
         let Some((positions, values)) = uploads.split_first() else {
             return Err(js_err(
                 "a categorical document converts to at least its positions",
             ));
         };
-        self.upsert_column_atomic(
-            &positions.column,
-            positions.values.len(),
-            super::columns::ColumnUploadSource::Scalar(&positions.values),
-        )?;
+
+        // Everything that can fail without changing the chart comes first:
+        // the GPU styles and labels of the new series and the id and source lists of the value batch. A failure there
+        // leaves the previous document committed. The chart changes only
+        // after them; the new columns upload and the axis fits from them
+        // last, the chart state is committed at the end.
+        let (scale, _) = self.display_scale_and_panel()?;
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
         // The value columns go in one batch commit, the one
         // `register_columns_f64` uses.
         let mut ids = Vec::new();
@@ -1143,6 +1205,22 @@ impl FiggyChart {
         let mut sources = Vec::new();
         sources.try_reserve_exact(values.len()).map_err(js_err)?;
         sources.extend(values.iter().map(|upload| upload.values));
+
+        // Retire the previous document's series, then its columns.
+        let empty = self.chart_config()?.clone();
+        self.replace_chart_state(empty, Vec::new())?;
+        self.labels.clear();
+        self.styles.clear();
+        for upload in &uploads {
+            if self.columns.contains_key(&upload.column) {
+                self.remove_column(&upload.column)?;
+            }
+        }
+        self.upsert_column_atomic(
+            &positions.column,
+            positions.values.len(),
+            super::columns::ColumnUploadSource::Scalar(&positions.values),
+        )?;
         self.commit_column_batch(&ids, document.categories.len(), &sources)?;
 
         // Fit the value axis to the bars and round it to nice ticks. A range
@@ -1168,6 +1246,8 @@ impl FiggyChart {
         };
         value.label_style.format = format;
         let (min, max) = (value.min, value.max);
+        // A fitted range that ticks cannot round (`TickError`: empty, non-finite
+        // or non-positive on a log axis) keeps the fit as it is.
         if value.auto_ticks(min, max, 5).is_ok() {
             let fitted = value.clone();
             let twin = if horizontal {
@@ -1181,23 +1261,6 @@ impl FiggyChart {
             twin.minor_count = fitted.minor_count;
         }
 
-        let (scale, _) = self.display_scale_and_panel();
-        let mut styles = Vec::new();
-        styles.try_reserve(series.len()).map_err(js_err)?;
-        for cfg in &series {
-            styles.push(
-                self.renderer
-                    .create_style_for_series_scaled(cfg, scale)
-                    .map_err(js_err)?,
-            );
-        }
-        let mut labels = Vec::new();
-        labels.try_reserve(series.len()).map_err(js_err)?;
-        labels.extend(
-            series
-                .iter()
-                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
-        );
         let count = series.len();
         self.replace_chart_state(config, series)?;
         // The document wrote its own legend.
@@ -1227,6 +1290,12 @@ impl FiggyChart {
     /// replaced, every other column stays. From here on the chart is edited
     /// through the Cartesian API.
     ///
+    /// A document that does not parse or validate, or whose series styles
+    /// cannot be created, is rejected with the previous chart unchanged. A
+    /// failure while the new columns upload or the axis fits from them
+    /// rejects with a chart that has no series: the previous document's
+    /// series and columns are retired by then.
+    ///
     /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
@@ -1235,10 +1304,33 @@ impl FiggyChart {
         let document: renderer::BoxPlotChart = serde_json::from_str(json).map_err(js_err)?;
         document.validate().map_err(js_err)?;
         let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
-        config.chart_area = self.chart_config().chart_area.clone();
+        config.chart_area = self.chart_config()?.chart_area.clone();
+
+        // Everything that can fail without changing the chart comes first:
+        // the GPU styles and labels of the new series. A failure there
+        // leaves the previous document committed. The chart changes only
+        // after them; the new columns upload and the axis fits from them
+        // last, the chart state is committed at the end.
+        let (scale, _) = self.display_scale_and_panel()?;
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
 
         // Retire the previous document's series, then its positions.
-        let empty = self.chart_config().clone();
+        let empty = self.chart_config()?.clone();
         self.replace_chart_state(empty, Vec::new())?;
         self.labels.clear();
         self.styles.clear();
@@ -1324,6 +1416,8 @@ impl FiggyChart {
             };
             value.label_style.format = format;
             let (min, max) = (value.min, value.max);
+            // A fitted range that ticks cannot round (`TickError`: empty, non-finite
+            // or non-positive on a log axis) keeps the fit as it is.
             if value.auto_ticks(min, max, 5).is_ok() {
                 let fitted = value.clone();
                 let twin = if horizontal {
@@ -1338,23 +1432,6 @@ impl FiggyChart {
             }
         }
 
-        let (scale, _) = self.display_scale_and_panel();
-        let mut styles = Vec::new();
-        styles.try_reserve(series.len()).map_err(js_err)?;
-        for cfg in &series {
-            styles.push(
-                self.renderer
-                    .create_style_for_series_scaled(cfg, scale)
-                    .map_err(js_err)?,
-            );
-        }
-        let mut labels = Vec::new();
-        labels.try_reserve(series.len()).map_err(js_err)?;
-        labels.extend(
-            series
-                .iter()
-                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
-        );
         let count = series.len();
         self.replace_chart_state(config, series)?;
         // The document wrote its own legend.
@@ -1383,6 +1460,12 @@ impl FiggyChart {
     /// API (`get_config` / `set_config`, `get_series` / `set_series`, the
     /// column registry), and its vertices pick, select and step as points.
     ///
+    /// A document that does not parse or validate, or whose series styles
+    /// cannot be created, is rejected with the previous chart unchanged. A
+    /// failure while the new columns upload or the axis fits from them
+    /// rejects with a chart that has no series: the previous document's
+    /// series and columns are retired by then.
+    ///
     /// JS: `chart.set_radar_document(JSON.stringify(doc));`
     // The legacy document is read through its deprecated reader type.
     #[allow(deprecated)]
@@ -1390,10 +1473,33 @@ impl FiggyChart {
         let document: renderer::RadarChart = serde_json::from_str(json).map_err(js_err)?;
         document.validate().map_err(js_err)?;
         let (mut config, series, uploads) = renderer::config::Config::from_radar(&document);
-        config.chart_area = self.chart_config().chart_area.clone();
+        config.chart_area = self.chart_config()?.chart_area.clone();
+
+        // Everything that can fail without changing the chart comes first:
+        // the GPU styles and labels of the new series. A failure there
+        // leaves the previous document committed. The chart changes only
+        // after them; the new columns upload and the axis fits from them
+        // last, the chart state is committed at the end.
+        let (scale, _) = self.display_scale_and_panel()?;
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
 
         // Retire the previous document's series, then its columns.
-        let empty = self.chart_config().clone();
+        let empty = self.chart_config()?.clone();
         self.replace_chart_state(empty, Vec::new())?;
         self.labels.clear();
         self.styles.clear();
@@ -1422,6 +1528,8 @@ impl FiggyChart {
             radius.label_style.format = format;
             let min = if radius.min >= 0.0 { 0.0 } else { radius.min };
             let max = radius.max;
+            // A fitted range that ticks cannot round (`TickError`: empty, non-finite
+            // or non-positive on a log axis) keeps the fit as it is.
             if radius.auto_ticks(min, max, 5).is_ok()
                 && let Some(spacing) = document.ring_spacing
             {
@@ -1429,23 +1537,6 @@ impl FiggyChart {
             }
         }
 
-        let (scale, _) = self.display_scale_and_panel();
-        let mut styles = Vec::new();
-        styles.try_reserve(series.len()).map_err(js_err)?;
-        for cfg in &series {
-            styles.push(
-                self.renderer
-                    .create_style_for_series_scaled(cfg, scale)
-                    .map_err(js_err)?,
-            );
-        }
-        let mut labels = Vec::new();
-        labels.try_reserve(series.len()).map_err(js_err)?;
-        labels.extend(
-            series
-                .iter()
-                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
-        );
         let count = series.len();
         self.replace_chart_state(config, series)?;
         // The document wrote its own legend.
@@ -1461,8 +1552,8 @@ impl FiggyChart {
     /// Wait until previously submitted GPU work has finished. Does not
     /// draw. Used to separate an earlier compute submit from the next
     /// render submit when measuring startup.
-    pub async fn wait_submitted_work(&self) {
-        self.renderer.wait_submitted_work().await;
+    pub async fn wait_submitted_work(&self) -> Result<(), JsValue> {
+        self.renderer.wait_submitted_work().await.map_err(js_err)
     }
 
     /// Compile the drawable-series fit-bound engine without drawing. On wasm
@@ -1500,16 +1591,24 @@ impl FiggyChart {
     /// allocations are outside this scope. The chart is mutably
     /// borrowed until the Promise settles; hosts must keep their normal
     /// async busy gate active and queue chart work rather than calling the
-    /// kernel from the callback.
+    /// kernel from the callback. An exception the callback throws rejects
+    /// the returned promise with it once the prewarm returns; later stages
+    /// are not reported.
     pub async fn prewarm_all_with_progress(
         &mut self,
         on_event: js_sys::Function,
     ) -> Result<(), JsValue> {
-        let mut observer = |event| emit_init_progress(Some(&on_event), event);
-        self.renderer
+        let mut failed = None;
+        let mut observer = |event| observe_init_progress(Some(&on_event), event, &mut failed);
+        let prewarmed = self
+            .renderer
             .prewarm_all_observed(&mut observer)
             .await
-            .map_err(js_err)?;
+            .map_err(js_err);
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        prewarmed?;
         self.request_host_redraw();
         Ok(())
     }
@@ -1572,11 +1671,11 @@ impl FiggyChart {
         // Browser resize is preview zoom, not a document mutation. The
         // stored chart remains the export SSoT; the live canvas renders a
         // scaled/letterboxed display chart derived from it.
-        let (display_config, panel_rect, _) = self.display_config();
+        let (display_config, panel_rect, _) = self.display_config()?;
         let display_chart = Chart::new(display_config);
         if refresh_raster {
             let selected_id: Option<String> = self
-                .chart_selection()
+                .chart_selection()?
                 .and_then(|id| self.hitmap.get(id).map(|el| el.element_id()));
             self.renderer
                 .refresh_axis_with_selection(
@@ -1611,7 +1710,7 @@ impl FiggyChart {
                 )
                 .map_err(js_err)?;
         } else {
-            let series_configs = self.chart_series().to_vec();
+            let series_configs = self.chart_series()?.to_vec();
             let series: Vec<Series<'_>> = self
                 .styles
                 .iter()
