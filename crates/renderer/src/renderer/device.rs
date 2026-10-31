@@ -15,13 +15,26 @@ use super::*;
 pub struct RendererDevice {
     pub(super) device: Arc<wgpu::Device>,
     pub(super) queue: Arc<wgpu::Queue>,
+    /// Device-lost and uncaptured-error record, registered once here and
+    /// shared by every renderer built from this bundle (#152).
+    pub(super) health: DeviceHealth,
 }
 
 impl RendererDevice {
     /// Bundle a wgpu device and queue that came from the same `request_device`
     /// result or host render state.
+    ///
+    /// Registers the device's device-lost callback and uncaptured-error
+    /// handler, so figgy reports a lost device and every GPU error as a
+    /// [`FiggyError`] instead of wgpu's default panic. wgpu keeps one of each
+    /// per device: build one bundle per device and clone it.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-        Self { device, queue }
+        let health = DeviceHealth::watch(&device);
+        Self {
+            device,
+            queue,
+            health,
+        }
     }
 
     pub fn device(&self) -> &Arc<wgpu::Device> {
@@ -2333,32 +2346,212 @@ pub(super) fn validate_buffer_size(
     Ok(())
 }
 
-pub(super) fn create_texture_checked(
+pub(crate) fn create_texture_checked(
     device: &wgpu::Device,
     desc: &wgpu::TextureDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Texture> {
     // gpu-alloc: caller
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc))).map_err(
-        |_| FiggyError::GpuResourceAllocationFailed {
-            resource,
-            reason: "wgpu Device::create_texture panicked".into(),
-        },
-    )
+    gpu_checked(device, resource, || device.create_texture(desc))
 }
 
-pub(super) fn create_buffer_checked(
+pub(crate) fn create_buffer_checked(
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Buffer> {
     // gpu-alloc: caller
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
-        |_| FiggyError::GpuResourceAllocationFailed {
+    gpu_checked(device, resource, || device.create_buffer(desc))
+}
+
+// ---------------------------------------------------------------------------
+// GPU errors as values (#152)
+// ---------------------------------------------------------------------------
+
+/// Run `work` inside wgpu error scopes for out-of-memory, validation and
+/// internal errors, and return what they captured as an error.
+///
+/// Native wgpu resolves a popped scope at once (`wgpu_core` returns a ready
+/// future), so a synchronous call learns about its own failure before it
+/// returns. A browser scope resolves asynchronously, so there the error
+/// reaches the device's uncaptured-error handler instead, which
+/// [`DeviceHealth`] records and the next [`DeviceHealth::check`] returns.
+pub(crate) fn gpu_checked<T>(
+    device: &wgpu::Device,
+    resource: &'static str,
+    work: impl FnOnce() -> T,
+) -> Result<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let value = work();
+        // Popped in reverse push order, every one, before any is inspected.
+        let internal = resolve_ready(internal.pop());
+        let validation = resolve_ready(validation.pop());
+        let out_of_memory = resolve_ready(out_of_memory.pop());
+        for captured in [out_of_memory, validation, internal] {
+            match captured {
+                ScopeResult::Clear => {}
+                ScopeResult::Captured(error) => return Err(gpu_error(resource, error)),
+                ScopeResult::Unresolved => {
+                    return Err(FiggyError::internal(
+                        "a native wgpu error scope did not resolve when popped",
+                    ));
+                }
+            }
+        }
+        Ok(value)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _scoped_by_the_uncaptured_handler = (device, resource);
+        Ok(work())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum ScopeResult {
+    Clear,
+    Captured(wgpu::Error),
+    Unresolved,
+}
+
+/// Poll a popped native error scope once. `wgpu_core` hands back a ready
+/// future; anything else is reported, never waited on.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_ready(popped: impl std::future::Future<Output = Option<wgpu::Error>>) -> ScopeResult {
+    let mut popped = std::pin::pin!(popped);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match popped.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(None) => ScopeResult::Clear,
+        std::task::Poll::Ready(Some(error)) => ScopeResult::Captured(error),
+        std::task::Poll::Pending => ScopeResult::Unresolved,
+    }
+}
+
+/// One wgpu error as a figgy error: out of memory is an allocation failure,
+/// validation and internal errors are [`FiggyError::GpuValidation`].
+pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyError {
+    match error {
+        wgpu::Error::OutOfMemory { .. } => FiggyError::GpuResourceAllocationFailed {
             resource,
-            reason: "wgpu Device::create_buffer panicked".into(),
+            reason: error.to_string(),
         },
-    )
+        other => FiggyError::GpuValidation {
+            resource,
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// The health of one wgpu device: whether it was lost, and how many errors
+/// reached its uncaptured-error handler.
+///
+/// [`RendererDevice::new`] registers the device-lost callback and the
+/// uncaptured-error handler once; every renderer and engine built from that
+/// bundle shares the record. wgpu keeps one callback and one handler per
+/// device, so a host that registers its own after building the bundle
+/// replaces figgy's, and figgy then learns of a loss only from the failures
+/// it causes.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DeviceHealth {
+    state: Arc<DeviceHealthState>,
+}
+
+#[derive(Debug, Default)]
+struct DeviceHealthState {
+    lost: std::sync::OnceLock<String>,
+    errors: std::sync::atomic::AtomicU64,
+    reported: std::sync::atomic::AtomicU64,
+    first_error: std::sync::OnceLock<String>,
+}
+
+impl DeviceHealth {
+    pub(crate) fn watch(device: &wgpu::Device) -> Self {
+        let health = Self::default();
+        let lost = Arc::clone(&health.state);
+        device.set_device_lost_callback(move |reason, message| {
+            let text = format!("{reason:?}: {message}");
+            if lost.lost.set(text).is_err() {
+                // A second callback for the same device: the first reason
+                // already stands and is what every later call returns.
+            }
+        });
+        let errors = Arc::clone(&health.state);
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            errors
+                .errors
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if errors.first_error.set(error.to_string()).is_err() {
+                // Not the first: the count above reports it, and the first
+                // error's text stays the one shown.
+            }
+        }));
+        health
+    }
+
+    /// `Err` once the device is lost, or when GPU errors reached the
+    /// uncaptured-error handler since the last check.
+    pub(crate) fn check(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if let Some(reason) = self.state.lost.get() {
+            return Err(FiggyError::DeviceLost {
+                reason: reason.clone(),
+            });
+        }
+        let errors = self.state.errors.load(Ordering::Acquire);
+        let reported = self.state.reported.fetch_max(errors, Ordering::AcqRel);
+        if errors > reported {
+            let first = self
+                .state
+                .first_error
+                .get()
+                .map(String::as_str)
+                .unwrap_or("no message recorded");
+            return Err(FiggyError::GpuValidation {
+                resource: "figgy GPU work",
+                reason: format!(
+                    "{} GPU error(s) reached the uncaptured-error handler; the first: {first}",
+                    errors - reported
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_lost(&self) -> bool {
+        self.state.lost.get().is_some()
+    }
+}
+
+/// `device.poll` that never runs on a lost device and returns every failure.
+///
+/// wgpu 30 turns a poll error on a lost device into a panic
+/// (`handle_error_fatal`), and the device-lost callback that tells figgy
+/// about the loss runs inside that same poll. On native the poll therefore
+/// runs under `catch_unwind`: this is the one place where wgpu offers no
+/// other signal, and the caught panic becomes [`FiggyError::DeviceLost`].
+pub(crate) fn gpu_poll(
+    health: &DeviceHealth,
+    device: &wgpu::Device,
+    poll: wgpu::PollType,
+) -> Result<wgpu::PollStatus> {
+    health.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(poll)))
+        .map_err(|_| FiggyError::DeviceLost {
+            reason: "wgpu Device::poll failed fatally (device lost during the poll)".into(),
+        });
+    #[cfg(target_arch = "wasm32")]
+    let polled: Result<_> = Ok(device.poll(poll));
+    let status = polled?.map_err(|error| FiggyError::GpuValidation {
+        resource: "device poll",
+        reason: error.to_string(),
+    })?;
+    health.check()?;
+    Ok(status)
 }
 
 /// Allocation context for one column-pool call.
@@ -2711,7 +2904,11 @@ impl Renderer {
         target_sample_count: u32,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
-        let RendererDevice { device, queue } = gpu;
+        let RendererDevice {
+            device,
+            queue,
+            health,
+        } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
         // Downlevel (GL-class) adapters report compute limits below what the
@@ -2811,6 +3008,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            health,
             caps,
             pool,
             chart_states: HashMap::new(),
@@ -2878,7 +3076,11 @@ impl Renderer {
         minimal: bool,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
-        let RendererDevice { device, queue } = gpu;
+        let RendererDevice {
+            device,
+            queue,
+            health,
+        } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
         if caps.max_compute_invocations_per_workgroup < data_render::line_arc::WG
@@ -2972,6 +3174,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            health,
             caps,
             pool,
             chart_states: HashMap::new(),

@@ -367,6 +367,14 @@ pub enum AllocError {
     EmptySource,
     /// A monotonic identity counter cannot advance without wrapping.
     CounterExhausted { counter: &'static str },
+    /// An internal invariant of the pool did not hold. This is a figgy bug,
+    /// reported as an error instead of a panic (#152).
+    Internal { invariant: &'static str },
+    /// The GPU reported an error while the pool created or wrote a resource.
+    Gpu {
+        resource: &'static str,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for AllocError {
@@ -404,6 +412,12 @@ impl std::fmt::Display for AllocError {
             AllocError::EmptySource => write!(f, "ColumnPool: empty source not allowed"),
             AllocError::CounterExhausted { counter } => {
                 write!(f, "ColumnPool {counter} exhausted")
+            }
+            AllocError::Internal { invariant } => {
+                write!(f, "ColumnPool internal invariant failed: {invariant}")
+            }
+            AllocError::Gpu { resource, reason } => {
+                write!(f, "ColumnPool {resource}: GPU error: {reason}")
             }
         }
     }

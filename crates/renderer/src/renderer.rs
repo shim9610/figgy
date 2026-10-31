@@ -196,6 +196,9 @@ pub(super) struct ResidentStreamHandoff {
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    /// Lost-device and uncaptured-error record shared with the
+    /// [`RendererDevice`] this renderer was built from (#152).
+    health: DeviceHealth,
     caps: RendererDeviceCaps,
     pool: ColumnPool,
     // Disjoint from pool ids: host metadata only, never payloads or copied slots.

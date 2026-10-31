@@ -80,6 +80,11 @@ pub enum GpuPickError {
     },
     ForeignColumnPool,
     RegistryGenerationExhausted,
+    /// An internal invariant of the picker did not hold. This is a figgy
+    /// bug, reported as an error instead of a panic (#152).
+    Internal(&'static str),
+    /// The GPU reported an error during a pick.
+    Gpu(String),
 }
 
 impl fmt::Display for GpuPickError {
@@ -150,6 +155,10 @@ impl fmt::Display for GpuPickError {
             Self::RegistryGenerationExhausted => {
                 write!(f, "GPU pick registry generation is exhausted")
             }
+            Self::Internal(invariant) => {
+                write!(f, "GPU pick internal invariant failed: {invariant}")
+            }
+            Self::Gpu(reason) => write!(f, "GPU pick: GPU error: {reason}"),
         }
     }
 }

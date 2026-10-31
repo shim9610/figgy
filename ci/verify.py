@@ -62,6 +62,20 @@ def run(args, *, cwd=ROOT, env=None, capture=False, collect=False):
     return "\n".join(lines) if collect else None
 
 
+# Lints that keep product code free of panics and dropped errors (#152).
+# Only these run: `-A clippy::all` first, then each one denied. The assert
+# family is listed in the root `clippy.toml` (`disallowed_macros`).
+PANIC_GATE_LINTS = ("-A", "clippy::all", *(
+    flag for lint in ("unwrap_used", "expect_used", "panic", "unreachable", "todo",
+                      "unimplemented", "disallowed_macros", "let_underscore_must_use",
+                      "let_underscore_future", "unused_result_ok")
+    for flag in ("-D", f"clippy::{lint}")))
+PANIC_GATE_TARGETS = (
+    ("--all-features",),
+    ("--target", "wasm32-unknown-unknown", "--features", "figgy-renderer/serde"),
+)
+
+
 def static():
     # CI script and package-relative documentation checks run before any compilation.
     run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
@@ -71,6 +85,10 @@ def static():
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])
+    # No panic path and no dropped error in product code (#152), native and WASM.
+    for target in PANIC_GATE_TARGETS:
+        run(["cargo", "clippy", "--locked", "--workspace", "--lib", "--bins", *target,
+             "--", *PANIC_GATE_LINTS])
     # Compile the browser tests too; running them needs a WebGPU browser.
     # Every WASM test target is named `*_browser`; the other tests are native.
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",
