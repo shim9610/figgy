@@ -354,6 +354,10 @@ pub enum TernaryRegionPass {
     Cover,
 }
 
+// `TargetPipelines::ternary_region` has `ALL.len()` slots indexed by
+// `pass as usize`: the last discriminant is the last slot (#152).
+const _: () = assert!(TernaryRegionPass::Cover as usize + 1 == TernaryRegionPass::ALL.len());
+
 impl TernaryRegionPass {
     pub const ALL: [TernaryRegionPass; 2] = [TernaryRegionPass::Stencil, TernaryRegionPass::Cover];
 

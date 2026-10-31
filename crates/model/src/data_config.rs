@@ -6650,6 +6650,43 @@ mod box_plot_tests {
         })
     }
 
+    /// BAR_LANE_LAYOUT_FITS (#152): the renderer's violin lane table holds
+    /// two halves, so `halves()` yields at most two, in body order, for the
+    /// symmetric body and every split with or without each side.
+    #[test]
+    fn a_violin_has_at_most_two_halves() {
+        let sides =
+            |violin: &Violin| -> Vec<ViolinSide> { violin.halves().map(|(s, _)| s).collect() };
+        assert_eq!(
+            sides(&Violin::new(ViolinBody::Symmetric(half("c")))),
+            [ViolinSide::Both]
+        );
+        for (low, high) in [(false, false), (true, false), (false, true), (true, true)] {
+            let violin = Violin::new(ViolinBody::Split {
+                low: low.then(|| half("low")),
+                high: high.then(|| half("high")),
+            });
+            let found = sides(&violin);
+            assert!(found.len() <= 2, "{found:?}");
+            let mut expected = Vec::new();
+            if low {
+                expected.push(ViolinSide::Low);
+            }
+            if high {
+                expected.push(ViolinSide::High);
+            }
+            assert_eq!(found, expected);
+            for (side, h) in violin.halves() {
+                let curve = match side {
+                    ViolinSide::Low => "low",
+                    ViolinSide::High => "high",
+                    ViolinSide::Both => unreachable!(),
+                };
+                assert_eq!(h.curve, curve);
+            }
+        }
+    }
+
     #[test]
     fn violins_and_points_validate_and_a_violin_needs_no_record() {
         let config = chart(3);

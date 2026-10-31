@@ -2408,6 +2408,73 @@ mod tests {
         );
     }
 
+    /// PANELS_MATCH_LAYERS (#152): `expand` gives one panel per entry of
+    /// `panel_layers`, in that order, or a layout error, for a single-layer
+    /// chart, overlays, line offset groups of 0, 1 and 200 members (past any
+    /// old cap), subplots with overlays and members of their own and a chart
+    /// area squeezed below its margins. `panel_layers` always starts with the
+    /// base, and a nested subplot is refused.
+    #[test]
+    fn expanded_panels_follow_the_panel_layers() {
+        use crate::layout::LayoutError;
+        let members =
+            |count: usize| -> Vec<String> { (0..count).map(|k| format!("m{k}")).collect() };
+        let with_members = |mut cfg: Config, count: usize| {
+            let ids = members(count);
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            cfg.line_offsets = Some(offsets(&refs, 0.5, 0.0));
+            cfg
+        };
+        let mut documents = vec![default_config(), layered(0, &[]), layered(1, &[])];
+        for count in [0, 1, 200] {
+            documents.push(with_members(layered(0, &[]), count));
+            documents.push(with_members(layered(3, &[]), count));
+        }
+        let mut subplots = with_members(layered(2, &[1, 0, 2]), 3);
+        subplots.subplots[0].series.push("sm0".into());
+        subplots.subplots[0].series.push("sm1".into());
+        subplots.subplots[0].config.line_offsets = Some(offsets(&["s0", "sm0", "sm1"], 1.0, 0.0));
+        documents.push(subplots.clone());
+        for (width, height) in [(40, 30), (1, 1)] {
+            let mut squeezed = with_members(layered(2, &[]), 5);
+            squeezed.chart_area = ChartArea(Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            });
+            documents.push(squeezed);
+        }
+        let mut expanded = 0;
+        for cfg in &documents {
+            let layers = cfg.panel_layers();
+            assert_eq!(layers.first(), Some(&LayerRef::Base));
+            match cfg.expand() {
+                Ok(expansion) => {
+                    assert_eq!(expansion.panels.len(), layers.len());
+                    for (panel, layer) in expansion.panels.iter().zip(&layers) {
+                        assert_eq!(panel.layer, *layer);
+                    }
+                    expanded += 1;
+                }
+                Err(
+                    LayoutError::OverflowHorizontal { .. }
+                    | LayoutError::OverflowVertical { .. }
+                    | LayoutError::EmptyDataArea,
+                ) => assert!(cfg.chart_area.0.width <= 40, "{:?}", cfg.chart_area),
+                Err(error) => panic!("{error:?} for {} layers", layers.len()),
+            }
+        }
+        assert_eq!(expanded, documents.len() - 2);
+        let with_200 = with_members(layered(3, &[]), 200);
+        assert_eq!(with_200.panel_layers().len(), 1 + 3 + 200);
+        // A subplot of a subplot is refused: `panel_layers` does not recurse.
+        let mut nested = layered(0, &[1]);
+        nested.subplots[0].config.subplots = layered(0, &[0]).subplots;
+        assert!(nested.validate_subplots().is_err());
+        assert!(nested.expand().is_err());
+    }
+
     // OVERLAY_PANEL_INDEX (#152): `overlay_panel(i)` is `Some` exactly for
     // `i < overlays.len()`, and a drag of an overlay axis through a hit map
     // built before an overlay was removed is refused, not indexed.

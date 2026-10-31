@@ -846,9 +846,14 @@ impl Renderer {
             export_sample_count,
         );
         let PanelDrawStorage {
-            configs: panel_configs,
+            configs: mut panel_configs,
             ..
         } = storage;
+        // A panel export draws the base panel only: its panels are its one
+        // item's, so no pass indexes `items` past the end (#152).
+        if scope == ExportScope::Panel {
+            panel_configs.truncate(1);
+        }
         Ok(ExportFrame {
             size: (w, h),
             logical: (orig.width, orig.height),

@@ -399,6 +399,27 @@ pub(crate) const VIOLIN_LANES: usize = VIOLIN_HALF_BASE + 2 * VIOLIN_HALF_LANES;
 pub(crate) const VIOLIN_SIDE_BOTH: u32 = 0;
 pub(crate) const VIOLIN_SIDE_LOW: u32 = 1;
 pub(crate) const VIOLIN_SIDE_HIGH: u32 = 2;
+// The lane tables are indexed by these constants (#152): the record's
+// fields take lanes `0..BOX_PLOT_RECORD.len()` before the outlier lanes,
+// every named lane and both violin halves' curve lanes (two each) fit
+// `BOX_PLOT_LANES`, and the violin table holds its two header lanes and two
+// halves of `VIOLIN_HALF_LANES`, whose last lane is `base + 6`.
+const _: () = assert!(super::BOX_PLOT_RECORD.len() <= BOX_LANE_OUTLIER_VALUES as usize);
+const _: () = assert!(super::BOX_PLOT_RECORD.len() <= BOX_PLOT_LANES);
+const _: () = assert!(
+    BOX_LANE_OUTLIER_VALUES < BOX_LANE_OUTLIER_OFFSETS
+        && BOX_LANE_OUTLIER_OFFSETS < BOX_LANE_OUTLIER_GROUPS
+        && BOX_LANE_OUTLIER_GROUPS < BOX_LANE_MAX_GROUP
+        && BOX_LANE_MAX_GROUP < BOX_LANE_BOX_WIDTH
+        && BOX_LANE_BOX_WIDTH < BOX_LANE_VIOLIN_CURVES
+);
+const _: () = assert!(BOX_LANE_VIOLIN_CURVES as usize + 2 * 2 <= BOX_PLOT_LANES);
+const _: () = assert!(BOX_LANE_ABSENT as usize >= BOX_PLOT_LANES);
+const _: () =
+    assert!(VIOLIN_LANE_HALVES < VIOLIN_HALF_BASE && VIOLIN_LANE_FIRST_SEGMENTS < VIOLIN_HALF_BASE);
+const _: () = assert!(VIOLIN_HALF_LANES >= 7);
+const _: () = assert!(VIOLIN_HALF_BASE + 2 * VIOLIN_HALF_LANES <= VIOLIN_LANES);
+
 /// A raw point's marker shape code (`finish.w` of its style slot): the
 /// `marker.wgsl` base shape id, plus this when filled.
 pub(crate) const BOX_POINTS_FILLED: u32 = 100;

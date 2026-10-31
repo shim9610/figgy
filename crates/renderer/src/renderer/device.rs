@@ -226,6 +226,10 @@ pub(super) enum TernaryPipeline {
     RingMapped = 4,
 }
 
+// `TargetPipelines::ternary` is indexed by `kind as usize`: the last
+// discriminant is the last slot (#152).
+const _: () = assert!(TernaryPipeline::RingMapped as usize + 1 == TERNARY_PIPELINES);
+
 impl TernaryPipeline {
     pub(super) const ALL: [Self; TERNARY_PIPELINES] = [
         Self::Line,
@@ -338,6 +342,10 @@ pub(super) enum View3dPipeline {
     Line = 6,
     LinePick = 7,
 }
+
+// `TargetPipelines::view3d` is indexed by `kind as usize`: the last
+// discriminant is the last slot (#152).
+const _: () = assert!(View3dPipeline::LinePick as usize + 1 == VIEW3D_PIPELINES);
 
 impl View3dPipeline {
     pub(super) const ALL: [Self; VIEW3D_PIPELINES] = [
@@ -524,14 +532,16 @@ pub(super) struct TargetPipelines {
     /// the panel composite, the picked patch in the live slot and the ID
     /// pick. Compiled only when a 3D chart is drawn.
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
-    pub(super) surface: [Option<wgpu::RenderPipeline>; 5],
+    pub(super) surface:
+        [Option<wgpu::RenderPipeline>; data_render::surface_mesh::SurfacePass::ALL.len()],
     /// A ternary series' region fill: the module and its stencil and cover
     /// pipelines, indexed by
     /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
     /// panel composite's stencil attachment. Compiled only when a ternary
     /// chart with a region fill is drawn.
     pub(super) ternary_region_shader: Option<wgpu::ShaderModule>,
-    pub(super) ternary_region: [Option<wgpu::RenderPipeline>; 2],
+    pub(super) ternary_region:
+        [Option<wgpu::RenderPipeline>; data_render::ternary_region::TernaryRegionPass::ALL.len()],
     /// The ring-start scan the region draw and pick read (#49), from the
     /// same module.
     pub(super) ternary_region_scan:

@@ -358,6 +358,10 @@ pub enum SurfacePass {
     FloorContourPick,
 }
 
+// `TargetPipelines::surface` has `ALL.len()` slots indexed by
+// `pass as usize`: the last discriminant is the last slot (#152).
+const _: () = assert!(SurfacePass::FloorContourPick as usize + 1 == SurfacePass::ALL.len());
+
 impl SurfacePass {
     pub const ALL: [SurfacePass; 5] = [
         SurfacePass::Draw,
