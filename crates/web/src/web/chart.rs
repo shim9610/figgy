@@ -122,10 +122,6 @@ pub(super) async fn create_chart_kernel(
         surface_size: (w, h),
         labels: Vec::new(),
         legend_auto_managed: true,
-        columns: HashMap::new(),
-        column_revisions: HashMap::new(),
-        next_column_revision: 1,
-        pending_stream_handoff: None,
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
         hitmap_layer: (renderer::LayerRef::Base, 0, None),
@@ -232,14 +228,6 @@ pub struct FiggyChart {
     /// Direct `set_config` legend edits turn this off so later series
     /// changes preserve user-authored text instead of deleting rows.
     pub(super) legend_auto_managed: bool,
-    /// Registered columns: id to logical value count.
-    pub(super) columns: HashMap<String, usize>,
-    /// Successful changed-upload revision for each live GPU column.
-    pub(super) column_revisions: HashMap<String, u64>,
-    pub(super) next_column_revision: u64,
-    /// Prepared wrapper metadata for a core handoff that is not live
-    /// until the renderer reports its atomic completion.
-    pub(super) pending_stream_handoff: Option<PendingStreamHandoffMetadata>,
     /// Monotonic color assignment for newly registered series.
     pub(super) color_seq: usize,
     pub(super) hitmap: HitMap,
@@ -523,23 +511,21 @@ impl FiggyChart {
         let usage = self.renderer.gpu_memory_usage();
         let pool = self.renderer.pool();
         let mut sources: Vec<_> = self
-            .columns
-            .iter()
-            .map(|(id, &length)| {
-                let (residency, encoded_bytes) = match self.renderer.logical_column(id) {
-                    Some(renderer::LogicalColumn::Resident(slot)) => {
-                        ("resident", Some(slot.byte_size))
-                    }
-                    Some(renderer::LogicalColumn::Streamed(_)) => ("streamed", None),
-                    None => ("missing", None),
+            .renderer
+            .logical_column_ids()
+            .filter_map(|id| {
+                let column = self.renderer.logical_column(id)?;
+                let (residency, encoded_bytes) = match column {
+                    renderer::LogicalColumn::Resident(slot) => ("resident", Some(slot.byte_size)),
+                    renderer::LogicalColumn::Streamed(_) => ("streamed", None),
                 };
-                serde_json::json!({
+                Some(serde_json::json!({
                     "id": id,
-                    "length": length,
-                    "revision": self.column_revisions.get(id).map(u64::to_string),
+                    "length": column.len(),
+                    "revision": self.renderer.column_revision(id).map(|r| r.to_string()),
                     "residency": residency,
                     "encoded_bytes": encoded_bytes,
-                })
+                }))
             })
             .collect();
         sources.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
@@ -1023,16 +1009,15 @@ impl FiggyChart {
         self.replace_chart_state(empty, Vec::new())?;
         self.labels.clear();
         for upload in &uploads {
-            if self.columns.contains_key(&upload.column) {
+            if self.renderer.logical_column(&upload.column).is_some() {
                 self.remove_column(&upload.column)?;
             }
         }
         self.upsert_column_atomic(
             &positions.column,
-            positions.values.len(),
             super::columns::ColumnUploadSource::Scalar(&positions.values),
         )?;
-        self.commit_column_batch(&ids, document.categories.len(), &sources)?;
+        self.commit_column_batch(&ids, &sources)?;
 
         // Fit the value axis to the bars and round it to nice ticks. A range
         // fit resets the label format, so the document's is put back.
@@ -1172,12 +1157,11 @@ impl FiggyChart {
                         .map_err(js_err)?;
                 }
                 values => {
-                    if self.columns.contains_key(&upload.column) {
+                    if self.renderer.logical_column(&upload.column).is_some() {
                         self.remove_column(&upload.column)?;
                     }
                     self.upsert_column_atomic(
                         &upload.column,
-                        values.len(),
                         super::columns::ColumnUploadSource::Scalar(values),
                     )?;
                 }
@@ -1297,12 +1281,11 @@ impl FiggyChart {
         self.replace_chart_state(empty, Vec::new())?;
         self.labels.clear();
         for upload in &uploads {
-            if self.columns.contains_key(&upload.column) {
+            if self.renderer.logical_column(&upload.column).is_some() {
                 self.remove_column(&upload.column)?;
             }
             self.upsert_column_atomic(
                 &upload.column,
-                upload.values.len(),
                 super::columns::ColumnUploadSource::Scalar(&upload.values),
             )?;
         }

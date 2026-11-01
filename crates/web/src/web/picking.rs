@@ -703,7 +703,9 @@ impl FiggyChart {
         let mut cfg = self.chart_config()?.clone();
         if !cfg
             .step_selection(self.chart_series()?, dx, dy, |column| {
-                self.columns.get(column).copied()
+                self.renderer
+                    .logical_column(column)
+                    .and_then(|column| usize::try_from(column.len()).ok())
             })
             .map_err(js_err)?
         {

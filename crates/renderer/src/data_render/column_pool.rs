@@ -552,6 +552,15 @@ impl ColumnPool {
         self.allocation_epochs.get(id).copied()
     }
 
+    /// The ids of every resident column a host registered: record and ragged
+    /// member columns are part of their owner and are left out.
+    pub(crate) fn column_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        self.slots
+            .keys()
+            .map(String::as_str)
+            .filter(|id| !self.is_member_column(id))
+    }
+
     fn checked_generation_successor(&self) -> Result<u32, AllocError> {
         self.generation
             .checked_add(1)

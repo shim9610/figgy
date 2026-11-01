@@ -199,22 +199,8 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
     serde_json::to_string(&value)
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
-fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
-    next.checked_add(1)
-        .map(|successor| (next, successor))
-        .ok_or("column revision counter exhausted")
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(target_arch = "wasm32")]
 const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-
-#[cfg(any(target_arch = "wasm32", test))]
-struct PreparedColumnMetadata {
-    columns: std::collections::HashMap<String, usize>,
-    revisions: std::collections::HashMap<String, u64>,
-    next_revision: u64,
-}
 
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,7 +238,7 @@ fn validate_column_data_len(len: usize) -> Result<(), &'static str> {
 /// `ids.len() x values_per_column` shape cannot be cut into columns at all.
 #[cfg(any(target_arch = "wasm32", test))]
 fn validate_column_batch(
-    columns: &std::collections::HashMap<String, usize>,
+    is_registered: impl Fn(&str) -> bool,
     ids: &[String],
     values_per_column: usize,
     data_len: usize,
@@ -280,154 +266,13 @@ fn validate_column_batch(
     seen.try_reserve(ids.len())
         .map_err(|_| "column batch id set allocation failed".to_string())?;
     for id in ids {
-        validate_column_registry_action(columns.contains_key(id), ColumnRegistryAction::Register)
+        validate_column_registry_action(is_registered(id), ColumnRegistryAction::Register)
             .map_err(|reason| format!("column '{id}' {reason}"))?;
         if !seen.insert(id.as_str()) {
             return Err(format!("column '{id}' appears twice in one batch"));
         }
     }
     Ok(())
-}
-
-/// Registry metadata for a whole batch, prepared into fresh maps.
-///
-/// Same prepare-then-commit shape as [`prepare_demo_column_metadata`], for the
-/// same reason: nothing installs until the renderer's own atomic insert has
-/// succeeded. Each id gets its own revision, so a host watching revisions sees
-/// one bump per column rather than one for the batch.
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_batch_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    ids: &[String],
-    len: usize,
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let column_capacity = columns
-        .len()
-        .checked_add(ids.len())
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(column_capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let revision_capacity = revisions
-        .len()
-        .checked_add(ids.len())
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(revision_capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let mut successor = next_revision;
-    for id in ids {
-        let (revision, next) = checked_column_revision(successor)?;
-        future_columns.insert(id.clone(), len);
-        future_revisions.insert(id.clone(), revision);
-        successor = next;
-    }
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    id: &str,
-    len: usize,
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let (revision, successor) = checked_column_revision(next_revision)?;
-    let capacity = columns
-        .len()
-        .checked_add(1)
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-    future_columns.insert(id.to_string(), len);
-
-    let capacity = revisions
-        .len()
-        .checked_add(1)
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-    future_revisions.insert(id.to_string(), revision);
-
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_demo_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    lengths: [usize; 4],
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let additional_columns = DEMO_COLUMN_IDS
-        .iter()
-        .filter(|id| !columns.contains_key(**id))
-        .count();
-    let column_capacity = columns
-        .len()
-        .checked_add(additional_columns)
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(column_capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let additional_revisions = DEMO_COLUMN_IDS
-        .iter()
-        .filter(|id| !revisions.contains_key(**id))
-        .count();
-    let revision_capacity = revisions
-        .len()
-        .checked_add(additional_revisions)
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(revision_capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let mut successor = next_revision;
-    for (id, len) in DEMO_COLUMN_IDS.into_iter().zip(lengths) {
-        let (revision, next) = checked_column_revision(successor)?;
-        future_columns.insert(id.to_string(), len);
-        future_revisions.insert(id.to_string(), revision);
-        successor = next;
-    }
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
 }
 
 /// Replace the chart title with plain `text` and grow its band to hold it, as
@@ -584,8 +429,6 @@ fn prepare_demo_declarations(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use renderer::data_config::{
         ContourConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
@@ -597,12 +440,10 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, checked_column_revision,
-        consume_successful_frame, frame_decision, picked_data_json_string,
-        picked_label_json_string, picked_point_json_string, prepare_batch_column_metadata,
-        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
-        set_plain_chart_title, validate_column_batch, validate_column_data_len,
-        validate_column_registry_action,
+        ColumnRegistryAction, FrameDecision, consume_successful_frame, frame_decision,
+        picked_data_json_string, picked_label_json_string, picked_point_json_string,
+        prepare_demo_declarations, set_plain_chart_title, validate_column_batch,
+        validate_column_data_len, validate_column_registry_action,
     };
 
     fn scatter_style() -> DataScatterStyleConfig {
@@ -1003,15 +844,6 @@ mod tests {
     }
 
     #[test]
-    fn column_revision_successor_rejects_overflow() {
-        assert_eq!(checked_column_revision(41), Ok((41, 42)));
-        assert_eq!(
-            checked_column_revision(u64::MAX),
-            Err("column revision counter exhausted")
-        );
-    }
-
-    #[test]
     fn all_render_types_normalize_to_their_drawable_extent_domain() {
         let x_error = ErrorRef::Symmetric {
             column: "x_err".to_string(),
@@ -1167,124 +999,37 @@ mod tests {
     }
 
     #[test]
-    fn metadata_preflight_does_not_publish_before_commit() {
-        let columns = HashMap::from([("x".to_string(), 2)]);
-        let revisions = HashMap::from([("x".to_string(), 7)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-
-        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 3).unwrap();
-
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("x"), Some(&3));
-        assert_eq!(prepared.revisions.get("x"), Some(&8));
-        assert_eq!(prepared.next_revision, 9);
-    }
-
-    #[test]
-    fn same_length_update_still_issues_a_new_revision() {
-        let columns = HashMap::from([("x".to_string(), 2)]);
-        let revisions = HashMap::from([("x".to_string(), 7)]);
-
-        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 2).unwrap();
-
-        assert_eq!(prepared.columns.get("x"), Some(&2));
-        assert_eq!(prepared.revisions.get("x"), Some(&8));
-        assert_eq!(prepared.next_revision, 9);
-    }
-
-    #[test]
-    fn demo_metadata_issues_four_revisions_without_partial_publication() {
-        let columns = HashMap::from([("stable".to_string(), 7), ("demo_x".to_string(), 3)]);
-        let revisions = HashMap::from([("stable".to_string(), 10), ("demo_x".to_string(), 11)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-        let prepared = prepare_demo_column_metadata(&columns, &revisions, 20, [512; 4]).unwrap();
-
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("stable"), Some(&7));
-        assert_eq!(prepared.revisions.get("stable"), Some(&10));
-        for (index, id) in DEMO_COLUMN_IDS.into_iter().enumerate() {
-            assert_eq!(prepared.columns.get(id), Some(&512));
-            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
-        }
-        assert_eq!(prepared.next_revision, 24);
-
-        let error = match prepare_demo_column_metadata(&columns, &revisions, u64::MAX - 3, [512; 4])
-        {
-            Ok(_) => panic!("fourth demo revision must reject overflow"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "column revision counter exhausted");
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-    }
-
-    #[test]
-    fn batch_metadata_issues_one_revision_per_column_without_partial_publication() {
-        let columns = HashMap::from([("stable".to_string(), 7)]);
-        let revisions = HashMap::from([("stable".to_string(), 10)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-        let ids = ["g0".to_string(), "g1".to_string(), "g2".to_string()];
-
-        let prepared = prepare_batch_column_metadata(&columns, &revisions, 20, &ids, 64).unwrap();
-        // The caller's maps are untouched until it installs the prepared ones.
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("stable"), Some(&7));
-        assert_eq!(prepared.revisions.get("stable"), Some(&10));
-        for (index, id) in ids.iter().enumerate() {
-            assert_eq!(prepared.columns.get(id), Some(&64));
-            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
-        }
-        assert_eq!(prepared.next_revision, 23);
-
-        // Overflow on the third id rejects the whole batch, not the first two.
-        let error =
-            match prepare_batch_column_metadata(&columns, &revisions, u64::MAX - 2, &ids, 64) {
-                Ok(_) => panic!("a batch revision past the counter must be rejected"),
-                Err(error) => error,
-            };
-        assert_eq!(error, "column revision counter exhausted");
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-    }
-
-    #[test]
     fn a_column_batch_is_validated_before_anything_is_uploaded() {
-        let columns = HashMap::from([("taken".to_string(), 4)]);
+        let columns = |id: &str| id == "taken";
         let ids = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
 
         // The shape that works: 3 ids x 2 values = 6.
-        assert!(validate_column_batch(&columns, &ids(&["a", "b", "c"]), 2, 6).is_ok());
+        assert!(validate_column_batch(columns, &ids(&["a", "b", "c"]), 2, 6).is_ok());
 
         assert_eq!(
-            validate_column_batch(&columns, &[], 2, 0).unwrap_err(),
+            validate_column_batch(columns, &[], 2, 0).unwrap_err(),
             "a column batch needs at least one id"
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a"]), 0, 0).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a"]), 0, 0).unwrap_err(),
             "values_per_column data must not be empty"
         );
         // A flat buffer that does not divide into the declared shape is not a
         // length mismatch to draw through — it cannot be cut into columns at all.
         assert!(
-            validate_column_batch(&columns, &ids(&["a", "b"]), 3, 5)
+            validate_column_batch(columns, &ids(&["a", "b"]), 3, 5)
                 .unwrap_err()
                 .contains("5 values")
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a", "taken"]), 2, 4).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a", "taken"]), 2, 4).unwrap_err(),
             "column 'taken' is already registered"
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a", "a"]), 2, 4).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a", "a"]), 2, 4).unwrap_err(),
             "column 'a' appears twice in one batch"
         );
-        assert!(validate_column_batch(&columns, &ids(&["__zero"]), 2, 2).is_ok());
+        assert!(validate_column_batch(columns, &ids(&["__zero"]), 2, 2).is_ok());
     }
 
     #[test]
@@ -1337,14 +1082,10 @@ mod tests {
     fn demo_precommit_abort_preserves_every_host_owned_authority() {
         let config = renderer::default::default_config();
         let series = vec![line_series("stable", "stable-x", "stable-y")];
-        let columns = HashMap::from([("stable-x".to_string(), 2), ("stable-y".to_string(), 2)]);
-        let revisions = HashMap::from([("stable-x".to_string(), 1), ("stable-y".to_string(), 1)]);
         let labels = vec![Some("stable".to_string())];
         let styles = vec![7u32];
         let color_seq = 1usize;
 
-        let prepared_metadata =
-            prepare_demo_column_metadata(&columns, &revisions, 2, [512; 4]).unwrap();
         let prepared_declarations = prepare_demo_declarations(
             &config,
             &series,
@@ -1353,12 +1094,10 @@ mod tests {
             color_seq,
         )
         .unwrap();
-        drop((prepared_metadata, prepared_declarations));
+        drop(prepared_declarations);
 
         assert_eq!(config, renderer::default::default_config());
         assert_eq!(series, vec![line_series("stable", "stable-x", "stable-y")]);
-        assert_eq!(columns.len(), 2);
-        assert_eq!(revisions.len(), 2);
         assert_eq!(styles, vec![7]);
         assert_eq!(labels, vec![Some("stable".to_string())]);
         assert_eq!(color_seq, 1);
@@ -1393,7 +1132,7 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::{cell::Cell, collections::HashMap};
+    use std::cell::Cell;
 
     use wasm_bindgen::prelude::*;
     use web_sys::HtmlCanvasElement;
@@ -1420,9 +1159,8 @@ mod web {
         JsStreamColumn,
     };
     use crate::{
-        ColumnRegistryAction, FrameDecision, PreparedDemoDeclarations, consume_successful_frame,
-        frame_decision, prepare_batch_column_metadata, prepare_column_metadata,
-        prepare_demo_column_metadata, prepare_demo_declarations, set_plain_chart_title,
+        ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
+        consume_successful_frame, frame_decision, prepare_demo_declarations, set_plain_chart_title,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
@@ -1442,7 +1180,6 @@ mod web {
     mod export;
     mod picking;
     mod streaming;
-    use streaming::PendingStreamHandoffMetadata;
     pub use streaming::{AutoStreamingRangeRequestResult, AutoStreamingRequestResult};
     pub use streaming::{StreamingOperationHandle, StreamingStepResult, StreamingUsageResult};
 
@@ -1458,10 +1195,7 @@ mod web {
 
     #[cfg(test)]
     mod tests {
-        use std::{
-            collections::HashMap,
-            hash::{Hash, Hasher},
-        };
+        use std::hash::{Hash, Hasher};
 
         use wasm_bindgen::JsCast;
         use wasm_bindgen_test::*;
@@ -1484,9 +1218,7 @@ mod web {
         struct FiggyAuthority {
             config: renderer::Config,
             series: Vec<SeriesConfig>,
-            columns: HashMap<String, usize>,
-            column_revisions: HashMap<String, u64>,
-            next_column_revision: u64,
+            column_revisions: Vec<(String, Option<u64>)>,
             labels: Vec<Option<String>>,
             legend_auto_managed: bool,
             color_seq: usize,
@@ -1520,9 +1252,17 @@ mod web {
 
         fn snapshot(chart: &FiggyChart) -> FiggyAuthority {
             let pool = chart.renderer.pool();
-            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            let mut ids = chart
+                .renderer
+                .logical_column_ids()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             ids.sort();
             ids.dedup();
+            let column_revisions = ids
+                .iter()
+                .map(|id| (id.clone(), chart.renderer.column_revision(id)))
+                .collect();
             let slots = ids
                 .into_iter()
                 .map(|id| {
@@ -1545,9 +1285,7 @@ mod web {
             FiggyAuthority {
                 config: chart.chart_config().unwrap().clone(),
                 series: chart.chart_series().unwrap().to_vec(),
-                columns: chart.columns.clone(),
-                column_revisions: chart.column_revisions.clone(),
-                next_column_revision: chart.next_column_revision,
+                column_revisions,
                 labels: chart.labels.clone(),
                 legend_auto_managed: chart.legend_auto_managed,
                 color_seq: chart.color_seq,
@@ -1606,7 +1344,10 @@ mod web {
 
             chart.load_demo().expect("retry must commit");
             for id in crate::DEMO_COLUMN_IDS {
-                assert_eq!(chart.columns.get(id), Some(&512));
+                assert_eq!(
+                    chart.renderer.logical_column(id).map(|c| c.len()),
+                    Some(512)
+                );
                 assert!(chart.renderer.pool().slot(id).is_some());
             }
             assert!(
@@ -1659,13 +1400,16 @@ mod web {
             );
 
             for id in &ids {
-                assert_eq!(chart.columns.get(id), Some(&N));
-                assert!(chart.column_revisions.contains_key(id));
+                assert_eq!(
+                    chart.renderer.logical_column(id).map(|c| c.len()),
+                    Some(N as u64)
+                );
+                assert!(chart.renderer.column_revision(id).is_some());
             }
             // One revision per column, not one for the batch.
             let mut revisions: Vec<u64> = ids
                 .iter()
-                .map(|id| *chart.column_revisions.get(id).unwrap())
+                .map(|id| chart.renderer.column_revision(id).unwrap())
                 .collect();
             revisions.sort_unstable();
             revisions.dedup();
@@ -1675,7 +1419,7 @@ mod web {
             let clash = vec![format!("fresh"), ids[0].clone()];
             let small: Vec<f64> = vec![0.0; 2 * N];
             assert!(chart.register_columns_f64(clash, &small, N).is_err());
-            assert!(!chart.columns.contains_key("fresh"));
+            assert!(chart.renderer.logical_column("fresh").is_none());
         }
 
         // ---- #152 index invariants at their producers ----
@@ -2432,7 +2176,11 @@ mod web {
         /// Remove every registered column of `chart` in turn, checking the
         /// labels after each.
         fn remove_every_column(chart: &mut FiggyChart, at: &str) {
-            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            let mut ids = chart
+                .renderer
+                .logical_column_ids()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             ids.sort();
             for id in ids {
                 chart.remove_column(&id).unwrap();
