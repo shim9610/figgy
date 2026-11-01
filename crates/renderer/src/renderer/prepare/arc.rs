@@ -5,7 +5,7 @@ use super::*;
 
 /// A dashed series' GPU arc-length prefix: the buffer (bound as the line
 /// pipeline's vertex slots 4/5) and its used byte length.
-pub(in crate::renderer) type ArcPrefix = (Arc<wgpu::Buffer>, u64);
+pub(in crate::renderer) type ArcPrefix = (wgpu::Buffer, u64);
 
 pub(in crate::renderer) const ARC_PREFIX_CACHE_LIMIT: usize = 256;
 
@@ -295,7 +295,7 @@ impl PrepareContext<'_> {
             });
             return Ok(Some(PreparedArc {
                 prefix: (
-                    Arc::clone(&hit.scratch.arc),
+                    hit.scratch.arc.clone(),
                     u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
                 ),
                 star,
@@ -346,7 +346,7 @@ impl PrepareContext<'_> {
         });
         let prepared = PreparedArc {
             prefix: (
-                Arc::clone(&scratch.arc),
+                scratch.arc.clone(),
                 u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
             ),
             star,

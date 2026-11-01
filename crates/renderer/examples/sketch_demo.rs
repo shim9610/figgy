@@ -3,8 +3,6 @@
 //! Run: `cargo run -p figgy-renderer --example sketch_demo`
 //! Output: `target/sketch_demo/{precise,sketch,sketch_tour}.png`
 
-use std::sync::Arc;
-
 use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
 use renderer::data::Column;
@@ -47,7 +45,7 @@ fn main() {
     let adapter = request_adapter(&inst).expect("adapter");
     let (device, queue) = request_device(&adapter).expect("device");
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )

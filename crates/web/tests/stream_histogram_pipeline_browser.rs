@@ -1,7 +1,5 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::{
     Chart, Color, DataRenderType, RegisteredChartDrawItem, Renderer, RendererDevice, SeriesConfig,
     data::Column,
@@ -53,10 +51,8 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
     let (device, queue) = request_device_async(&adapter)
         .await
         .expect("Chrome WebGPU device required");
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4096,
     )

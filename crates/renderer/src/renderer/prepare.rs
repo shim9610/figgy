@@ -42,8 +42,8 @@ pub(super) fn evict_if_full<V>(cache: &mut HashMap<String, V>, series_id: &str, 
 // Disjoint GPU borrows let registered preparation read the registry in place.
 // This context never owns chart Config or SeriesConfig values.
 pub(super) struct PrepareContext<'a> {
-    pub(super) device: &'a Arc<wgpu::Device>,
-    pub(super) queue: &'a Arc<wgpu::Queue>,
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
     pub(super) caps: &'a RendererDeviceCaps,
     pub(super) pool: &'a ColumnPool,
     pub(super) gpu_ledger: &'a Arc<GpuLedger>,

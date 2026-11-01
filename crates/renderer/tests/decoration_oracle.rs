@@ -905,7 +905,7 @@ fn auto_layout_i7_hit_map_entries_are_the_emitted_elements() {
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(Arc::new(device), Arc::new(queue))
+    RendererDevice::new(device, queue)
 }
 
 fn scene_name(kind: SceneKind) -> &'static str {

@@ -551,7 +551,7 @@ impl GpuStreamDataPick {
         Ok(GpuDataPickTicket {
             state: GpuDataPickTicketState::Stream(DataPickTicket {
                 state: DataPickTicketState::Pending {
-                    device: Arc::clone(&self.bundle.device),
+                    device: self.bundle.device.clone(),
                     health: self.bundle.health.clone(),
                     readback,
                     receiver,
@@ -628,8 +628,8 @@ fn category_axis_pick_query(
 }
 
 pub(crate) struct DataPickPipelineBundle {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     /// The device's health record; every typed pick readback polls through it.
     health: crate::renderer::DeviceHealth,
@@ -659,8 +659,8 @@ pub(crate) struct DataPickPipelineBundle {
 impl DataPickPipelineBundle {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_observed(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         shaders: DataPickShaders<'_>,
@@ -971,8 +971,8 @@ impl DataPickPipelineBundle {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new_observed_async(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         shaders: DataPickShaders<'_>,
@@ -1346,7 +1346,7 @@ impl DataPickPipelineBundle {
                         _charge: Arc::clone(&labels.charge),
                         _label: None,
                     });
-                    label_params = Some((Arc::clone(&labels.params), Arc::clone(&labels.cells)));
+                    label_params = Some((labels.params.clone(), labels.cells.clone()));
                     (
                         category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
                         PreparedKind::ValueLabels(data),
@@ -1503,7 +1503,7 @@ impl DataPickPipelineBundle {
         });
         Ok(DataPickTicket {
             state: DataPickTicketState::Pending {
-                device: Arc::clone(&self.device),
+                device: self.device.clone(),
                 health: self.health.clone(),
                 readback,
                 receiver,
@@ -1531,7 +1531,7 @@ fn lane_base(handle: ColumnHandle) -> Result<u32, crate::gpu_pick::GpuPickError>
 enum DataPickTicketState {
     ReadyNone,
     Pending {
-        device: Arc<wgpu::Device>,
+        device: wgpu::Device,
         /// The device's health record, checked by the readback poll.
         health: crate::renderer::DeviceHealth,
         readback: wgpu::Buffer,
@@ -1770,7 +1770,7 @@ pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
 pub(crate) struct SurfacePickTicket {
     /// Polled for the readback on native; the browser's device polls itself.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) device: Arc<wgpu::Device>,
+    pub(crate) device: wgpu::Device,
     /// The device's health record, checked by the readback poll.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) health: crate::renderer::DeviceHealth,
@@ -1949,7 +1949,7 @@ mod stream_tests {
     use crate::data_render::{self, BarStyleOverrideGpu, GpuAllocCtx};
     use wgpu::util::DeviceExt;
 
-    fn bundle(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Arc<DataPickPipelineBundle> {
+    fn bundle(device: wgpu::Device, queue: wgpu::Queue) -> Arc<DataPickPipelineBundle> {
         let bar = crate::gpu_compile::shader_module(
             &device,
             wgpu::ShaderModuleDescriptor {
@@ -2046,7 +2046,7 @@ mod stream_tests {
         let Some((device, queue)) = data_render::shared_device() else {
             return;
         };
-        let bundle = bundle(Arc::clone(&device), Arc::clone(&queue));
+        let bundle = bundle(device.clone(), queue.clone());
         for logarithmic in [false, true] {
             let origin = if logarithmic {
                 0.0
@@ -2224,7 +2224,7 @@ mod stream_tests {
         let Some((device, queue)) = data_render::shared_device() else {
             return;
         };
-        let bundle = bundle(Arc::clone(&device), Arc::clone(&queue));
+        let bundle = bundle(device.clone(), queue.clone());
         let query = GpuDataPickQuery {
             transform: data_render::scatter_transform_from_config(&config(false)),
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],

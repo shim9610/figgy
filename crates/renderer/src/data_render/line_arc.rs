@@ -662,7 +662,7 @@ struct ChunkBinds {
 /// source/transform key gets a different `ArcScratch`; an existing result is
 /// never rewritten after dispatch.
 pub struct ArcScratch {
-    pub arc: Arc<wgpu::Buffer>,
+    pub arc: wgpu::Buffer,
     transform_buf: wgpu::Buffer,
     carry_buf: wgpu::Buffer,
     // The params uniforms and sums buffers live inside the bind groups —
@@ -933,7 +933,6 @@ impl ArcScratch {
     /// `None` for styles without it.
     // Prepared frames share this immutable result with the cache. A different
     // dispatch key builds different buffers; this scratch is never rewritten.
-    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         device: &wgpu::Device,
@@ -1000,7 +999,7 @@ impl ArcScratch {
                 },
             )
         };
-        let arc = Arc::new(storage_buf("figgy line arc prefix", n, true)?);
+        let arc = storage_buf("figgy line arc prefix", n, true)?;
         let sums0 = storage_buf("figgy arc sums0", b0_max, false)?;
         let sums1 = storage_buf("figgy arc sums1", b1_max, false)?;
         // Block-sum sink for the final single-block scan of sums1.

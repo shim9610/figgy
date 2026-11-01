@@ -165,11 +165,11 @@ impl PreparedPickRegistryTransition<'_> {
 /// The arc prefix of the series at registry position `index`, when one was
 /// supplied and holds a value for each of its `point_count` points.
 pub(super) fn series_arc(
-    arcs: &[Option<Arc<wgpu::Buffer>>],
+    arcs: &[Option<wgpu::Buffer>],
     index: usize,
     point_count: u32,
 ) -> Option<&wgpu::Buffer> {
-    arcs.get(index).and_then(Option::as_deref).filter(|buffer| {
+    arcs.get(index).and_then(Option::as_ref).filter(|buffer| {
         buffer.size() >= u64::from(point_count) * crate::data_render::line_arc::ARC_PAIR_BYTES
     })
 }
@@ -177,13 +177,13 @@ pub(super) fn series_arc(
 /// Series `index`'s ring starts (a region series', #49), when one covers its
 /// `point_count` rows.
 pub(super) fn series_ring(
-    rings: &[Option<Arc<wgpu::Buffer>>],
+    rings: &[Option<wgpu::Buffer>],
     index: usize,
     point_count: u32,
 ) -> Option<&wgpu::Buffer> {
     rings
         .get(index)
-        .and_then(Option::as_deref)
+        .and_then(Option::as_ref)
         .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
 }
 

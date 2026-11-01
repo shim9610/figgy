@@ -7,7 +7,6 @@
 //! `cargo run --release -p figgy-renderer --example streaming_capacity_demo --features egui_demo`
 //! Add `-- --benchmark` to run the default 1 GiB virtual source once and print measured timings.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -654,10 +653,7 @@ impl Default for DemoApp {
 impl DemoApp {
     fn initialize(&mut self, render_state: &egui_wgpu::RenderState) -> renderer::Result<()> {
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(
-                Arc::new(render_state.device.clone()),
-                Arc::new(render_state.queue.clone()),
-            ),
+            RendererDevice::new(render_state.device.clone(), render_state.queue.clone()),
             render_state.target_format,
             POOL_CAPACITY,
         )?;

@@ -106,14 +106,13 @@ pub fn request_device(
 /// missing adapter or rejected device cannot turn a GPU test into a false pass.
 /// The Option return is retained for existing test fixture call sites.
 #[cfg(test)]
-pub(crate) fn shared_device() -> Option<(std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>)>
-{
-    use std::sync::{Arc, OnceLock};
-    static SHARED: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+pub(crate) fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    use std::sync::OnceLock;
+    static SHARED: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     SHARED
         .get_or_init(|| {
             let (device, queue) = crate::test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .clone()
 }

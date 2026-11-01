@@ -921,7 +921,7 @@ mod tests {
     }
 
     use super::*;
-    use std::sync::{Arc, OnceLock};
+    use std::sync::OnceLock;
     use std::time::Duration;
 
     use renderer::data_render::column_pool::ALIGN;
@@ -929,17 +929,17 @@ mod tests {
     use renderer::{AllocError, ColumnHandle, ColumnPool};
     use wgpu::{BufferDescriptor, BufferUsages};
 
-    fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-        static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+    fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
         DEVICE
             .get_or_init(|| {
                 let instance = create_instance();
                 let adapter = request_adapter(&instance).ok()?;
                 let (device, queue) = request_device(&adapter).ok()?;
-                Some((Arc::new(device), Arc::new(queue)))
+                Some((device, queue))
             })
             .as_ref()
-            .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+            .map(|(device, queue)| (device.clone(), queue.clone()))
     }
 
     fn read_uploaded_bytes(

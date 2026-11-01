@@ -803,13 +803,7 @@ fn scalar_source_expansion_accepts_empty_input() {
     assert_eq!(stats.min_positive, None);
 }
 
-fn mk_pool(
-    cap: u64,
-) -> Option<(
-    std::sync::Arc<wgpu::Device>,
-    std::sync::Arc<wgpu::Queue>,
-    ColumnPool,
-)> {
+fn mk_pool(cap: u64) -> Option<(wgpu::Device, wgpu::Queue, ColumnPool)> {
     // Shared device across the test binary — see `data_render::shared_device`.
     let (device, queue) = crate::data_render::shared_device()?;
     let pool = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), cap)

@@ -10,7 +10,7 @@ use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{error::Error, path::PathBuf};
 
 fn column(data: Vec<f64>) -> Column<f64> {
     let min = data.iter().copied().fold(f64::INFINITY, f64::min);
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("Adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         8 * 1024 * 1024,
     )?;

@@ -6,7 +6,7 @@ use renderer::{
     encode_png,
     radial::*,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 fn base() -> RadialChart {
     let mut chart = RadialChart {
         title: "Regional share".into(),
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = request_adapter(&instance)?;
     eprintln!("adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut cases = Vec::new();
     for (name, material) in [

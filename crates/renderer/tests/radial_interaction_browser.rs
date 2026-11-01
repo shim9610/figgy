@@ -4,7 +4,6 @@ use renderer::{
     Color, DecorationId, RadialChart, RadialFrame, RadialKind, RadialRenderer, RadialSlice,
     RadialTarget, RendererDevice, layout::NudgeResult,
 };
-use std::sync::Arc;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 /// Select and drag a decoration of a radial frame, whose decorations place
@@ -52,7 +51,7 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
         .await
         .unwrap();
     assert!(device.as_webgpu().is_some());
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let mut r = RadialRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
         .await
         .unwrap();
@@ -95,5 +94,5 @@ async fn radial_png_preserves_hover_progress_and_persistent_selection_on_webgpu(
         .await
         .unwrap();
     assert!(device.as_webgpu().is_some());
-    radial_export::check(RendererDevice::new(Arc::new(device), Arc::new(queue))).await;
+    radial_export::check(RendererDevice::new(device, queue)).await;
 }

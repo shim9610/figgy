@@ -491,7 +491,7 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         let result = {
-            let device = Arc::clone(&self.device);
+            let device = self.device.clone();
             native_export_scoped(
                 &device,
                 self.export_vector_inner::<F>(chart, series, scale, clear),
@@ -571,7 +571,7 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         let result = {
-            let device = Arc::clone(&self.device);
+            let device = self.device.clone();
             native_export_scoped(
                 &device,
                 self.export_rgba_with_clear_inner(chart, series, scale, clear, scope),

@@ -441,7 +441,7 @@ pub struct ColumnLineLayer<'a> {
     /// in bytes)`. `None` for solid lines: the X column is bound as inert
     /// filler instead. `Arc` because the buffer lives in the renderer's
     /// per-series cache while the layer is a per-frame view.
-    pub arc: Option<(std::sync::Arc<wgpu::Buffer>, u64)>,
+    pub arc: Option<(wgpu::Buffer, u64)>,
     /// Strip vertices per instance — must match `pipeline`'s vertex entry:
     /// 4 for the precise `vs_main`, [`LINE_SKETCH_VERTICES_PER_INSTANCE`]
     /// for the sketch `vs_sketch`, [`MILKYWAY_RIBBON_VERTICES`] for

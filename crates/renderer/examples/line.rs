@@ -9,7 +9,6 @@ use renderer::{
     layout::{ChartArea, Rect},
     line::LineStylePreset,
 };
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance = create_instance();
@@ -17,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024, // initial GPU column pool size in bytes
     )?;

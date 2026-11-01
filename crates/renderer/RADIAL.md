@@ -44,8 +44,6 @@ use renderer::{
 # let instance = renderer::data_render::create_instance();
 # let adapter = renderer::data_render::request_adapter(&instance)?;
 # let (device, queue) = renderer::data_render::request_device(&adapter)?;
-# let device = std::sync::Arc::new(device);
-# let queue = std::sync::Arc::new(queue);
 let mut renderer = RadialRenderer::new(
     RendererDevice::new(device, queue),
     wgpu::TextureFormat::Rgba8Unorm,

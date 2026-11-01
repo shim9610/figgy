@@ -17,7 +17,7 @@ use renderer::{
     layout::{ChartArea, Rect},
     text::RichText,
 };
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{error::Error, path::PathBuf};
 
 /// The page.
 const SIZE: (u32, u32) = (1200, 1600);
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let adapter = request_adapter(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 16 << 20)?;
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
         let chart = Chart::new(gallery(sketch)?);

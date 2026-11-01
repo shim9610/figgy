@@ -54,8 +54,8 @@ const PANEL_WIDTH: f32 = 330.0;
 struct Gpu {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     _adapter: wgpu::Adapter,
     _instance: wgpu::Instance,
 }
@@ -74,8 +74,6 @@ impl Gpu {
             limits.max_buffer_size >> 20,
             limits.max_storage_buffer_binding_size >> 20
         );
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
         let config = data_render::try_configure_surface(
             &surface,
             &adapter,
@@ -101,7 +99,7 @@ impl Gpu {
     }
 
     fn renderer_device(&self) -> RendererDevice {
-        RendererDevice::new(Arc::clone(&self.device), Arc::clone(&self.queue))
+        RendererDevice::new(self.device.clone(), self.queue.clone())
     }
 }
 
@@ -130,8 +128,8 @@ fn request_device(
 
 /// What the scene code needs from the host while egui runs.
 pub struct HostCtx<'a> {
-    pub device: &'a Arc<wgpu::Device>,
-    pub queue: &'a Arc<wgpu::Queue>,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
     pub egui_renderer: &'a mut egui_wgpu::Renderer,
     pub pixels_per_point: f32,
     pub status: &'a mut String,
@@ -520,7 +518,7 @@ fn main() {
         let instance = data_render::create_instance();
         let adapter = data_render::request_adapter(&instance).expect("adapter");
         let (d, q) = data_render::request_device(&adapter).expect("device");
-        let gpu = RendererDevice::new(Arc::new(d), Arc::new(q));
+        let gpu = RendererDevice::new(d, q);
         let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Bgra8Unorm, POOL_CAPACITY)
             .expect("renderer");
         match cartesian::selftest(&mut r) {

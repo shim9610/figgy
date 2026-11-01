@@ -16,7 +16,7 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::config::{Category, TickVisibility};
 use renderer::data::Column;
@@ -46,13 +46,13 @@ const ONE: [f64; 3] = [10.0, 20.0, 5.0];
 const TWO: [f64; 3] = [20.0, 10.0, 15.0];
 const SCALES: [f32; 2] = [1.0, 2.0];
 
-fn shared_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-    static DEVICE: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+fn shared_device() -> (wgpu::Device, wgpu::Queue) {
+    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(|| {
         let (device, queue) = test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+        (device, queue)
     });
-    (Arc::clone(device), Arc::clone(queue))
+    (device.clone(), queue.clone())
 }
 
 fn col(data: Vec<f64>) -> Column<f64> {

@@ -42,7 +42,7 @@ fn parity_with_samples(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()),
             wgpu::TextureFormat::Rgba8Unorm,
             (n as u64 * 32).max(4096),
             samples,

@@ -3,7 +3,7 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::default::default_config;
 use renderer::{
@@ -13,13 +13,13 @@ use renderer::{
 };
 
 fn renderer() -> Renderer {
-    static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = GPU.get_or_init(|| {
         let (device, queue) = test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+        (device, queue)
     });
     Renderer::try_new(
-        RendererDevice::new(Arc::clone(device), Arc::clone(queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

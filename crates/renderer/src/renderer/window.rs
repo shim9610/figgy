@@ -1210,7 +1210,6 @@ impl Renderer {
     /// timestamp-free startup stage boundaries to `observer`.
     // Keep the Arc-based RendererDevice API identical across targets. wgpu's
     // WebGPU handles are intentionally !Send/!Sync on the wasm main thread.
-    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     pub async fn for_window_async_observed<'w>(
         target: impl Into<wgpu::SurfaceTarget<'w>>,
         size: (u32, u32),
@@ -1269,8 +1268,8 @@ impl Renderer {
         finished(observer, "window", "device");
         // The bundle registers the device's lost callback and error handler
         // before figgy uses the device, once for this device.
-        let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-        let device = Arc::clone(gpu.device());
+        let gpu = RendererDevice::new(device, queue);
+        let device = gpu.device().clone();
         let surface_config = observe_result(observer, "window", "configure", || {
             data_render::try_configure_surface(
                 &surface,

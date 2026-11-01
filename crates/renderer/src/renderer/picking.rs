@@ -1065,8 +1065,8 @@ impl RendererPicker {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn enable_observed(
         &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         gpu_ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         shaders: crate::gpu_data_pick::DataPickShaders<'_>,
@@ -1091,8 +1091,8 @@ impl RendererPicker {
         }
 
         match crate::gpu_pick::PickPipelineBundle::new_observed(
-            Arc::clone(&device),
-            Arc::clone(&queue),
+            device.clone(),
+            queue.clone(),
             Arc::clone(&gpu_ledger),
             health.clone(),
             observer,
@@ -1130,8 +1130,8 @@ impl RendererPicker {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn enable_observed_async(
         &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         gpu_ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         shaders: crate::gpu_data_pick::DataPickShaders<'_>,
@@ -1156,8 +1156,8 @@ impl RendererPicker {
         }
 
         match crate::gpu_pick::PickPipelineBundle::new_observed_async(
-            Arc::clone(&device),
-            Arc::clone(&queue),
+            device.clone(),
+            queue.clone(),
             Arc::clone(&gpu_ledger),
             health.clone(),
             observer,
@@ -1649,8 +1649,8 @@ impl Renderer {
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
         self.picker.enable_observed(
-            Arc::clone(&self.device),
-            Arc::clone(&self.queue),
+            self.device.clone(),
+            self.queue.clone(),
             Arc::clone(&self.gpu_ledger),
             self.health.clone(),
             crate::gpu_data_pick::DataPickShaders {
@@ -1683,8 +1683,8 @@ impl Renderer {
         self.pick_health()?;
         self.picker
             .enable_observed_async(
-                Arc::clone(&self.device),
-                Arc::clone(&self.queue),
+                self.device.clone(),
+                self.queue.clone(),
                 Arc::clone(&self.gpu_ledger),
                 self.health.clone(),
                 crate::gpu_data_pick::DataPickShaders {
@@ -1760,14 +1760,14 @@ impl Renderer {
             ))?
             .engine
             .series_identities();
-        let mut arcs: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
+        let mut arcs: Vec<Option<wgpu::Buffer>> = Vec::new();
         arcs.try_reserve_exact(slots.len()).map_err(|_| {
             crate::gpu_pick::GpuPickError::AllocationFailed {
                 resource: "renderer pick arc prefixes",
             }
         })?;
         // A region series' ring starts, the scan its draw reads (#49).
-        let mut rings: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
+        let mut rings: Vec<Option<wgpu::Buffer>> = Vec::new();
         rings.try_reserve_exact(slots.len()).map_err(|_| {
             crate::gpu_pick::GpuPickError::AllocationFailed {
                 resource: "renderer pick ring starts",

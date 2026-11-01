@@ -6,8 +6,6 @@
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::Arc;
-
 use renderer::default::default_config;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
@@ -35,7 +33,7 @@ fn host_frame(renderer: &mut Renderer, view: &mut ChartView, chart: &mut Chart) 
 fn a_refreshed_view_reports_the_substituted_spacing_until_it_is_fixed() {
     let (device, queue) = test_gpu::device();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

@@ -29,7 +29,7 @@ use renderer::{
     data_render::{create_instance, request_adapter, request_device},
     radial::*,
 };
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 use styled::{SIZE, cartesian, rgb, save};
 
 // 1. A dashboard card: restrained chrome and two high-contrast service metrics.
@@ -357,7 +357,7 @@ fn main() -> Result {
     let adapter = request_adapter(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let mut r = Renderer::try_new(
         gpu.clone(),
         wgpu::TextureFormat::Rgba8Unorm,

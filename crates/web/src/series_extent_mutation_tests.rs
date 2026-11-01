@@ -14,7 +14,6 @@
 mod config_mutation;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use renderer::data_config::{
     FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading, VectorComponents,
@@ -56,13 +55,12 @@ fn column(values: impl Iterator<Item = f64>) -> renderer::Column<f64> {
     renderer::Column { data, min, max }
 }
 
-fn fixture() -> (Renderer, Arc<wgpu::Device>) {
+fn fixture() -> (Renderer, wgpu::Device) {
     let instance = renderer::data_render::create_instance();
     let adapter = renderer::data_render::request_adapter(&instance).expect("GPU adapter");
     let (device, queue) = renderer::data_render::request_device(&adapter).expect("GPU device");
-    let device = Arc::new(device);
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        RendererDevice::new(device.clone(), queue),
         wgpu::TextureFormat::Rgba8Unorm,
         1 << 20,
     )

@@ -6,7 +6,7 @@
 //! Line / scatter / errorbar pipelines and the errorbar extent engine compile
 //! on first use.
 //!
-//! Ownership: holds `Arc<wgpu::Device>` and `Arc<wgpu::Queue>` so the same
+//! Ownership: holds `wgpu::Device` and `wgpu::Queue` so the same
 //! device can be shared with the host (egui_wgpu, iced_wgpu, etc.) without
 //! lifetime gymnastics.
 //!
@@ -194,8 +194,8 @@ pub(super) struct ResidentStreamHandoff {
 
 /// Cartesian renderer owning its column pool, views' shared resources and pipeline caches.
 pub struct Renderer {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     /// Lost-device and uncaptured-error record shared with the
     /// [`RendererDevice`] this renderer was built from (#152).
     health: DeviceHealth,

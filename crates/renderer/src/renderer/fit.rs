@@ -769,7 +769,7 @@ impl Renderer {
         warm_result?;
         self.errorbar_extent_engine = Some(
             crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
-                self.device.as_ref(),
+                &self.device,
                 Arc::clone(&self.gpu_ledger),
             )
             .with_health(self.health.clone()),
