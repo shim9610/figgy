@@ -285,9 +285,9 @@ compatibility. See [optimization measurements and limitations](shader-compilatio
 
 Requires Rust 1.99.0 with the `rustfmt` and `clippy` components and the
 `wasm32-unknown-unknown` target (all pinned in `rust-toolchain.toml`), and Python
-3.12 or newer. On Linux, CI
-also installs the Ubuntu packages `pkg-config libx11-dev libxkbcommon-dev
-libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers libvulkan1`. On a machine
+3.12 or newer. On Linux, CI also installs the Ubuntu packages `pkg-config
+libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers
+libvulkan1`. On a machine
 without a render device, set `VK_DRIVER_FILES` (and `VK_ICD_FILENAMES` for older
 Vulkan loaders) to Mesa's `lvp_icd*.json` to test on lavapipe. `ci/verify.py` does
 not set `RUSTFLAGS` or `RUSTDOCFLAGS`; export both as `-D warnings` to fail on
