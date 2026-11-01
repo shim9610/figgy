@@ -138,7 +138,11 @@ def static():
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])
     # No panic path and no dropped error in product code (#152), native and WASM.
-    lints = ["-A", "clippy::all", *(f for lint in PANIC_GATE_LINTS for f in ("-W", f"clippy::{lint}"))]
+    # `--cap-lints warn` keeps CI's `RUSTFLAGS=-D warnings` from turning the
+    # findings into compile errors before the gate filters them: compile-time
+    # `const _` assertions and derive expansions are exempt.
+    lints = ["--cap-lints", "warn", "-A", "clippy::all",
+             *(f for lint in PANIC_GATE_LINTS for f in ("-W", f"clippy::{lint}"))]
     findings = []
     for target in PANIC_GATE_TARGETS:
         output = run(["cargo", "clippy", "--locked", "--workspace", "--lib", "--bins", *target,
