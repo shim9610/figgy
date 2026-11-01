@@ -1930,11 +1930,20 @@ impl Renderer {
                         .series
                         .iter()
                         .position(|s| s.series_id == cfg.series_id)?;
-                    state
-                        .prepared_styles
-                        .as_ref()
-                        .and_then(|prepared| prepared.styles.get(position))
-                        .map(super::surface_pick::PickStyle3d::of)
+                    // The styles the chart is drawn with: at the display
+                    // scale when the pick is in that display (#160).
+                    let display = state.display.as_ref().and_then(|display| {
+                        display
+                            .styles
+                            .as_ref()
+                            .filter(|(bits, _)| *bits == request.display_scale.to_bits())
+                    });
+                    match display {
+                        Some((_, styles)) => Some(styles),
+                        None => state.prepared_styles.as_ref(),
+                    }
+                    .and_then(|prepared| prepared.styles.get(position))
+                    .map(super::surface_pick::PickStyle3d::of)
                 })
                 .collect();
             (inputs.panel, inputs.series, display_config, members, styles)

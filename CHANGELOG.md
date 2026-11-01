@@ -869,6 +869,20 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Registered charts drawn on a display** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Renderer::set_chart_display(chart, Some((width, height)))` makes
+  `draw_registered` draw the chart scaled and letterboxed onto that surface,
+  as `display_config_for_surface` places it, with the series' styles at the
+  display scale; `None` draws the document as stored. The stored config is
+  unchanged, so a fit token stays current. The placed config and the styles
+  are rebuilt only when the config, the series or the surface change.
+  `chart_display_config` returns the config, panel rect and scale it draws
+  with, and `preflight_chart_styles` checks a series list's styles against the
+  memory budget and the device's storage limits without creating them.
+  Behaviour change: `draw_registered` skips a series whose source is not
+  resident (a cancelled or unpublished stream) instead of failing the frame,
+  and draws the rest of the chart. A 3D chart's point picks use the styles
+  at the display scale when the pick is made in that display.
 - **Whole-chart auto-fit on the renderer** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Renderer::begin_auto_fit_all(chart, padding)` returns an
   `AutoFitAllTicket`; `AutoFitAllTicket::resolve` awaits its reductions
@@ -2016,6 +2030,13 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **The canvas draws through the renderer's registry** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `frame()` draws every chart with `draw_registered` at the canvas display
+  (`set_chart_display`, kept current by `resize`) instead of copying the
+  series configs and building a list of draw inputs on every frame, and the
+  wrapper no longer keeps its own GPU styles: edits check them with
+  `preflight_chart_styles`, and the renderer builds them once per edit or
+  resize. The JS API is unchanged.
 - **`auto_fit_all` through the renderer** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The wrapper calls the renderer's whole-chart fit instead of keeping its
   own series-extent cache, and no longer starts extent reductions when

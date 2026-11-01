@@ -424,6 +424,29 @@ pub(super) struct ChartRenderState {
     /// repeated fit over unchanged columns reuses the extent instead of
     /// rerunning the reduction; a fit replaces the whole map (#160).
     pub(super) fit_extents: HashMap<FitSeriesStamp, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    /// The surface a host draws this chart on through
+    /// [`Renderer::prepare_registered`], when it set one with
+    /// [`Renderer::set_chart_display`]; `None` draws the document as stored.
+    pub(super) display: Option<ChartDisplay>,
+}
+
+/// A registered chart drawn scaled onto a surface (#160). The placed config
+/// and the styles at the display scale are display parameters (rule 1): built
+/// from the stored config and series when they change, never edited.
+pub(super) struct ChartDisplay {
+    pub(super) surface: (u32, u32),
+    pub(super) placed: Option<PlacedDisplay>,
+    /// The series' styles at `placed.scale`, with that scale's bits.
+    pub(super) styles: Option<(u32, RegisteredChartStyles)>,
+}
+
+/// The stored config scaled and placed on the display surface, for one
+/// config revision.
+pub(super) struct PlacedDisplay {
+    pub(super) config_revision: RenderRevision,
+    pub(super) config: Config,
+    pub(super) panel_rect: Rect,
+    pub(super) scale: f32,
 }
 
 // GPU-only derivative; authoritative options stay in ChartRenderState.series.
@@ -467,6 +490,16 @@ impl PreparedChartMutation<'_> {
         };
         if same_series {
             if let Some(styles) = &mut self.chart_state.prepared_styles {
+                if styles.series_revision == self.chart_state.revisions.series {
+                    styles.series_revision = self.next_revisions.series;
+                }
+            }
+            if let Some((_, styles)) = self
+                .chart_state
+                .display
+                .as_mut()
+                .and_then(|display| display.styles.as_mut())
+            {
                 if styles.series_revision == self.chart_state.revisions.series {
                     styles.series_revision = self.next_revisions.series;
                 }
@@ -2412,6 +2445,7 @@ impl Renderer {
                 stream_auto_fit_padding: None,
                 revisions: ChartRevisions::initial(chart_revision),
                 fit_extents: HashMap::new(),
+                display: None,
             },
         );
         self.chart_order.push(id);
@@ -2775,6 +2809,185 @@ impl Renderer {
             picker,
         }
         .commit();
+        Ok(())
+    }
+
+    /// Draw chart `id` scaled and letterboxed onto a surface of `surface`
+    /// physical pixels in [`Self::prepare_registered`] and
+    /// [`WindowedRenderer::draw_registered`] (the document fitted as
+    /// [`display_config_for_surface`] fits it), or as stored for `None`. The
+    /// stored config is unchanged: this is how the chart is shown, not what it
+    /// is, so a fit token taken before the call stays current. The scaled
+    /// config and the series' styles at that scale are built when the chart is
+    /// next prepared, and again only when the config, the series or the scale
+    /// change (#160).
+    pub fn set_chart_display(&mut self, id: ChartId, surface: Option<(u32, u32)>) -> Result<()> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if state.display.as_ref().map(|display| display.surface) == surface {
+            return Ok(());
+        }
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.display = surface.map(|surface| ChartDisplay {
+            surface,
+            placed: None,
+            styles: None,
+        });
+        state.revisions.desired = desired;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    /// Chart `id`'s config as [`Self::prepare_registered`] draws it, the rect
+    /// its parent panel lands on, and the scale: the placed config of
+    /// [`Self::set_chart_display`], borrowed when it is current; or the
+    /// stored config at scale 1 when no display is set.
+    pub fn chart_display_config(
+        &self,
+        id: ChartId,
+    ) -> Result<(std::borrow::Cow<'_, Config>, Rect, f32)> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(display) = &state.display else {
+            return Ok((
+                std::borrow::Cow::Borrowed(&state.config),
+                state.config.chart_area.0,
+                1.0,
+            ));
+        };
+        if let Some(placed) = display
+            .placed
+            .as_ref()
+            .filter(|placed| placed.config_revision == state.revisions.config)
+        {
+            return Ok((
+                std::borrow::Cow::Borrowed(&placed.config),
+                placed.panel_rect,
+                placed.scale,
+            ));
+        }
+        let (config, panel_rect, scale) =
+            display_config_for_surface(&state.config, display.surface);
+        Ok((std::borrow::Cow::Owned(config), panel_rect, scale))
+    }
+
+    /// Bring chart `id`'s placed config and display-scale styles up to date
+    /// with its config, series and surface. A chart without a display has
+    /// neither.
+    pub(super) fn ensure_registered_display(&mut self, id: ChartId) -> Result<()> {
+        let allocation =
+            |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource: "registered chart display styles",
+                reason: error.to_string(),
+            };
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(display) = &state.display else {
+            return Ok(());
+        };
+        let placed_current = display
+            .placed
+            .as_ref()
+            .is_some_and(|placed| placed.config_revision == state.revisions.config);
+        let placed = if placed_current {
+            None
+        } else {
+            let (config, panel_rect, scale) =
+                display_config_for_surface(&state.config, display.surface);
+            Some(PlacedDisplay {
+                config_revision: state.revisions.config,
+                config,
+                panel_rect,
+                scale,
+            })
+        };
+        let scale = match (&placed, &display.placed) {
+            (Some(placed), _) | (None, Some(placed)) => placed.scale,
+            (None, None) => return Err(FiggyError::internal("a current display is placed")),
+        };
+        let styles_current = display.styles.as_ref().is_some_and(|(bits, styles)| {
+            *bits == scale.to_bits() && styles.series_revision == state.revisions.series
+        });
+        let styles = if styles_current {
+            None
+        } else {
+            let mut styles = Vec::new();
+            styles
+                .try_reserve_exact(state.series.len())
+                .map_err(allocation)?;
+            for series in &state.series {
+                styles.push(self.create_style_for_series_scaled_inner(series, scale)?);
+            }
+            Some((
+                scale.to_bits(),
+                RegisteredChartStyles {
+                    series_revision: state.revisions.series,
+                    styles,
+                },
+            ))
+        };
+        let display = self
+            .chart_states
+            .get_mut(&id)
+            .and_then(|state| state.display.as_mut())
+            .ok_or(FiggyError::UnknownChart { id })?;
+        if placed.is_some() {
+            display.placed = placed;
+        }
+        if styles.is_some() {
+            display.styles = styles;
+        }
+        Ok(())
+    }
+
+    /// Whether the styles of `series` fit the memory budget and the device's
+    /// storage limits, without creating them: a host checks an edit with it
+    /// before committing, and the styles are created when the chart is next
+    /// prepared.
+    pub fn preflight_chart_styles(&self, series: &[SeriesConfig]) -> Result<()> {
+        let mut bytes = 0u64;
+        for item in series {
+            bytes = bytes
+                .checked_add(self.style_allocation_bytes(item)?)
+                .ok_or(FiggyError::GpuResourceLimit {
+                    resource: "chart style bytes",
+                    requested: u64::MAX,
+                    limit: self.memory_budget.unwrap_or(u64::MAX),
+                })?;
+        }
+        let limit = self.memory_budget.unwrap_or(u64::MAX);
+        let requested = self
+            .gpu_memory_usage()
+            .checked_total_bytes()
+            .and_then(|used| used.checked_add(bytes))
+            .ok_or(FiggyError::GpuResourceLimit {
+                resource: "chart style budget",
+                requested: u64::MAX,
+                limit,
+            })?;
+        if requested > limit {
+            return Err(FiggyError::GpuResourceLimit {
+                resource: "chart style budget",
+                requested,
+                limit,
+            });
+        }
         Ok(())
     }
 

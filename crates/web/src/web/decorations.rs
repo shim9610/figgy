@@ -343,26 +343,19 @@ impl FiggyChart {
         for (i, cfg) in series.iter_mut().enumerate() {
             cycle.apply_to_series(cfg, i);
         }
-        let (scale, _) = self.display_scale_and_panel()?;
-        let mut styles = Vec::new();
-        styles.try_reserve(series.len()).map_err(js_err)?;
-        for cfg in &series {
-            styles.push(
-                self.renderer
-                    .create_style_for_series_scaled(cfg, scale)
-                    .map_err(js_err)?,
-            );
-        }
+        self.renderer
+            .preflight_chart_styles(&series)
+            .map_err(js_err)?;
         let mut config = self.chart_config()?.clone();
         renderer::config::update_legend_symbols_preserving_text(
             &mut config.legend.content,
             &series,
             config.colorbar.as_ref().map(|bar| &bar.colormap),
         );
+        let count = series.len();
         self.replace_chart_state(config, series)?;
         self.cycle = cycle;
-        self.color_seq = styles.len();
-        self.styles = styles;
+        self.color_seq = count;
         Ok(())
     }
 

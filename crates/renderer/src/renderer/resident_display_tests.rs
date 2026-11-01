@@ -919,3 +919,114 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
 #[cfg(feature = "serde")]
 #[path = "resident_display_mutation_tests.rs"]
 mod mutation;
+
+/// A chart drawn through `draw_registered` with a display set paints the same
+/// pixels as the direct draw of its placed config with styles at the display
+/// scale, which is what the browser product drew before (#160). Checked at a
+/// shrinking, an equal and a growing surface.
+#[test]
+fn a_registered_display_paints_the_placed_document_at_its_scale() {
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    for surface in [(160, 120), (320, 240), (640, 480)] {
+        let mut r = renderer(format, 1);
+        let config = base_config();
+        let declarations = vec![series("a", "a"), series("b", "b")];
+        let id = r
+            .register_chart(config.clone(), declarations.clone())
+            .unwrap();
+        r.set_chart_display(id, Some(surface)).unwrap();
+
+        let (placed, panel_rect, scale) = crate::display_config_for_surface(&config, surface);
+        let (display, display_rect, display_scale) = r.chart_display_config(id).unwrap();
+        assert_eq!(*display, placed);
+        assert_eq!((display_rect, display_scale), (panel_rect, scale));
+
+        let chart = Chart::new(placed.clone());
+        let view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let registered = prepare(&mut r, id, &view);
+        let registered = try_paint(&r, &registered, 1, surface).unwrap();
+
+        let styles: Vec<ChartStyle> = declarations
+            .iter()
+            .map(|s| r.create_style_for_series_scaled(s, scale).unwrap())
+            .collect();
+        let direct_series: Vec<Series<'_>> = declarations
+            .iter()
+            .zip(&styles)
+            .map(|(config, style)| Series { config, style })
+            .collect();
+        let direct_view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let direct = r
+            .prepare(&[ChartDrawItem {
+                view: &direct_view,
+                chart_config: &placed,
+                series: &direct_series,
+            }])
+            .unwrap();
+        let direct = try_paint(&r, &direct, 1, surface).unwrap();
+        assert_eq!(registered, direct, "surface {surface:?}");
+    }
+}
+
+/// Setting a display changes how the chart is drawn, not the chart: a fit
+/// token stays current, and the render stamp moves. The placed config follows
+/// a config edit.
+#[test]
+fn a_registered_display_follows_the_config_and_keeps_fit_tokens() {
+    let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
+    let id = r
+        .register_chart(base_config(), vec![series("a", "a")])
+        .unwrap();
+    let token = r.begin_fit_commit(id).unwrap();
+    let stamp = r.chart_render_stamp(id).unwrap();
+    r.set_chart_display(id, Some((640, 480))).unwrap();
+    assert_eq!(r.begin_fit_commit(id).unwrap(), token);
+    assert_ne!(r.chart_render_stamp(id).unwrap(), stamp);
+
+    let mut edited = base_config();
+    edited.bottom_x.max = 2.0;
+    r.set_chart_config(id, edited.clone()).unwrap();
+    let (display, _, _) = r.chart_display_config(id).unwrap();
+    assert_eq!(
+        *display,
+        crate::display_config_for_surface(&edited, (640, 480)).0
+    );
+
+    // Clearing the display draws the stored document again.
+    r.set_chart_display(id, None).unwrap();
+    let (display, rect, scale) = r.chart_display_config(id).unwrap();
+    assert_eq!(*display, edited);
+    assert_eq!((rect, scale), (PANEL, 1.0));
+}
+
+/// A series whose source is not resident is skipped by the registered draw,
+/// and the rest of the chart still prepares (#160).
+#[test]
+fn a_registered_draw_skips_a_series_without_a_resident_source() {
+    let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
+    r.register_streamed_columns(vec![crate::StreamColumn {
+        id: "s".into(),
+        len: 100,
+        encoding: crate::StreamEncoding::HiLoF32,
+        replay: crate::StreamReplay::Sequential,
+        revision: 1,
+        statistics: crate::StreamStatistics::Unknown,
+    }])
+    .unwrap();
+    let id = r
+        .register_chart(
+            base_config(),
+            vec![series("a", "a"), declaration("streamed", "s", "s")],
+        )
+        .unwrap();
+    r.set_chart_display(id, Some((320, 240))).unwrap();
+    let chart = Chart::new(r.chart_config(id).unwrap().clone());
+    let view = r.create_chart_view(&chart, PANEL).unwrap();
+    let frame = prepare(&mut r, id, &view);
+    assert_eq!(frame.items.len(), 1);
+    assert_eq!(
+        frame.items[0].series.len(),
+        1,
+        "only the resident series is drawn"
+    );
+}
