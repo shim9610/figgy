@@ -9,6 +9,7 @@
 //! channel read from the wrong table, a wrong neighbour or a cell painted
 //! past its edge fails rather than passes.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -305,7 +306,10 @@ fn cells_paint_their_channels_at_1x_and_2x() {
     let chart = chart();
     let series = [flat("img", &ids)];
     for scale in [1.0f64, 2.0] {
-        let img = r.export_panel_rgba(&chart, &series, scale as f32).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, scale as f32)
+            .block_on()
+            .unwrap();
         save(&format!("image-cells-{scale}x"), &img);
         assert_eq!(
             (img.width, img.height),
@@ -395,7 +399,10 @@ fn a_byte_range_maps_128_to_mid_grey() {
         range,
         Shading::Flat,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("image-bytes", &img);
     let (x, y) = center(3, 0);
     let grey = pixel(&img, data_to_px(&chart, x, y, 1.0));
@@ -418,7 +425,10 @@ fn a_byte_range_maps_128_to_mid_grey() {
         [0.0, 127.5],
         Shading::Flat,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert_colour_at(
         &img,
         data_to_px(&chart, x, y, 1.0),
@@ -464,7 +474,10 @@ fn interpolated_shading_blends_each_channel_between_sample_points() {
         [0.0, 1.0],
         Shading::Interpolated,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("image-interpolated", &img);
     // Interior points of the first two quads (red, green, yellow, cyan;
     // then green, blue, cyan, magenta) and the quad between the mixed cells.
@@ -528,7 +541,10 @@ fn columns_are_y_reads_the_grid_transposed() {
         [0.0, 1.0],
         Shading::Flat,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let background = pixel(&img, data_to_px(&chart, 0.3, 1.0, 1.0));
     for c in 0..COLS {
         for row in 0..ROWS {
@@ -569,7 +585,10 @@ fn a_hexagonal_lattice_paints_its_centres() {
             channel.grid_layout = GridLayout::Hexagonal;
         }
     }
-    let img = r.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .block_on()
+        .unwrap();
     save("image-hexagonal", &img);
     let background = pixel(&img, data_to_px(&chart, 0.1, 1.0, 1.0));
     for c in 0..COLS {
@@ -714,7 +733,10 @@ fn the_picked_highlight_outlines_the_cell() {
         contour_width_extra_px: 0.0,
     });
     let series = [flat("img", &ids)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("image-selected", &img);
     // The cell (1, 1) spans 1.5..2.5 in both axes.
     let (left, top) = data_to_px(&chart, 1.5, 2.5, 1.0);
@@ -897,7 +919,8 @@ fn registration_names_what_an_image_cannot_read() {
         .register_chart(chart.config().clone(), vec![flat("img", &ids)])
         .unwrap();
     r.remove_chart(id).unwrap();
-    r.export_panel_rgba(&chart, &[flat("img", &ids)], 1.0)
+    r.export_panel_rgba_async(&chart, &[flat("img", &ids)], 1.0)
+        .block_on()
         .unwrap();
 }
 
@@ -950,7 +973,10 @@ fn a_two_thousand_square_image_draws_and_picks() {
         Shading::Flat,
     );
     let started = std::time::Instant::now();
-    let img = r.export_panel_rgba(&chart, &[series.clone()], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[series.clone()], 1.0)
+        .block_on()
+        .unwrap();
     eprintln!(
         "{cols} x {rows} x 3 image exported in {:?}",
         started.elapsed()

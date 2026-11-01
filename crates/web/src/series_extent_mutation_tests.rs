@@ -10,6 +10,7 @@
 //!
 //! The walker is the renderer crate's test-support module, compiled here
 //! from its source file.
+use pollster::FutureExt as _;
 #[path = "../../renderer/src/renderer/config_mutation.rs"]
 mod config_mutation;
 
@@ -57,8 +58,12 @@ fn column(values: impl Iterator<Item = f64>) -> renderer::Column<f64> {
 
 fn fixture() -> (Renderer, wgpu::Device) {
     let instance = renderer::data_render::create_instance();
-    let adapter = renderer::data_render::request_adapter(&instance).expect("GPU adapter");
-    let (device, queue) = renderer::data_render::request_device(&adapter).expect("GPU device");
+    let adapter = renderer::data_render::request_adapter_async(&instance)
+        .block_on()
+        .expect("GPU adapter");
+    let (device, queue) = renderer::data_render::request_device_async(&adapter)
+        .block_on()
+        .expect("GPU device");
     let mut r = Renderer::try_new(
         RendererDevice::new(device.clone(), queue),
         wgpu::TextureFormat::Rgba8Unorm,

@@ -4,6 +4,7 @@
 //! Run: `cargo run -p figgy-renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
 
+use pollster::FutureExt as _;
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
@@ -11,7 +12,7 @@ use renderer::data_config::{
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
     ScatterShape, SeriesConfig,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
+use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
@@ -36,7 +37,10 @@ fn over_space(img: &mut RasterImage) {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
-    let mut img = r.export_panel_rgba(chart, series, 1.0).expect("export");
+    let mut img = r
+        .export_panel_rgba_async(chart, series, 1.0)
+        .block_on()
+        .expect("export");
     over_space(&mut img);
     let ink = img
         .rgba
@@ -108,8 +112,8 @@ fn build_chart(style: DrawStyle) -> Chart {
 
 fn main() {
     let inst = create_instance();
-    let adapter = request_adapter(&inst).expect("adapter");
-    let (device, queue) = request_device(&adapter).expect("device");
+    let adapter = request_adapter_async(&inst).block_on().expect("adapter");
+    let (device, queue) = request_device_async(&adapter).block_on().expect("device");
     let mut r = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Bgra8Unorm,
@@ -249,7 +253,8 @@ fn main() {
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
     let mut img = r
-        .export_panel_rgba(&spec_chart(), &spec_distinct, 2.0)
+        .export_panel_rgba_async(&spec_chart(), &spec_distinct, 2.0)
+        .block_on()
         .expect("export");
     over_space(&mut img);
     std::fs::write(

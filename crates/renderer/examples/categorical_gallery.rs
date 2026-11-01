@@ -4,6 +4,7 @@
 //! at 900 x 620 without post-render scaling.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, ColumnSource, LayerRef, Material, Renderer, RendererDevice, categorical::*,
     config::Config, data_render, encode_png,
@@ -72,7 +73,9 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
     value
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
-    let image = r.export_panel_rgba(&Chart::new(config), &series, 1.0)?;
+    let image = r
+        .export_panel_rgba_async(&Chart::new(config), &series, 1.0)
+        .block_on()?;
     std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
     println!("{name}: {}x{}", image.width, image.height);
     Ok(())
@@ -86,8 +89,8 @@ fn main() -> Result {
     );
     std::fs::create_dir_all(&directory)?;
     let instance = data_render::create_instance();
-    let adapter = data_render::request_adapter(&instance)?;
-    let (device, queue) = data_render::request_device(&adapter)?;
+    let adapter = data_render::request_adapter_async(&instance).block_on()?;
+    let (device, queue) = data_render::request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(device, queue);
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 4 << 20)?;
     let mut chart = CategoricalChart {

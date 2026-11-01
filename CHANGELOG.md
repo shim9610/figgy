@@ -869,6 +869,20 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **No blocking wrappers** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The fourteen native wrappers that only ran `pollster::block_on` over an
+  async method are removed: `Renderer` and `WindowedRenderer`
+  `export_panel_rgba`, `export_panel_png_bytes`, `export_document_rgba`,
+  `export_document_png_bytes`, `export_document_svg` and
+  `export_document_pdf`; `Renderer::for_window`; `RadialRenderer`
+  `export_rgba`, `export_svg` and `export_pdf`;
+  `RadialPickTicket::resolve_blocking`; and `data_render::request_adapter`,
+  `request_adapter_for_surface` and `request_device`. `pollster` is no
+  longer a dependency of the renderer. Migration: call the `_async` method
+  and block on it with the executor of your choice, for example
+  `pollster::block_on(renderer.export_panel_rgba_async(&chart, &series, 1.0))`
+  or, with `use pollster::FutureExt as _;`,
+  `renderer.export_panel_rgba_async(&chart, &series, 1.0).block_on()`.
 - **Plain wgpu handles instead of `Arc`-wrapped ones**
   ([#160](https://github.com/shim9610/figgy/issues/160)). `wgpu::Device`,
   `wgpu::Queue` and `wgpu::Buffer` are reference-counted handles that

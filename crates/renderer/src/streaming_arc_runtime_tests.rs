@@ -1,4 +1,5 @@
 use super::*;
+use pollster::FutureExt as _;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
     crate::Column {
@@ -309,7 +310,10 @@ fn parity_with_samples(
             }
         }
         let actual = pollster::block_on(streamed.finish_stream_export(operation)).unwrap();
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let different = actual
             .rgba
             .iter()

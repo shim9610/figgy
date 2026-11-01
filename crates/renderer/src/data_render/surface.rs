@@ -21,16 +21,6 @@ pub async fn request_adapter_async(
     instance.request_adapter(&options).await
 }
 
-/// Blocking convenience wrapper around [`request_adapter_async`]. Native
-/// only — on wasm, blocking the single thread would deadlock; await the
-/// async variant from the host's event loop instead.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn request_adapter(
-    instance: &wgpu::Instance,
-) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
-    pollster::block_on(request_adapter_async(instance))
-}
-
 /// Create a wgpu `Surface` for any window-like target. figgy itself does not
 /// depend on winit; the caller passes its own window handle (winit / egui /
 /// iced / ...). Using an `Arc<Window>` yields a `Surface<'static>` since
@@ -58,16 +48,6 @@ pub async fn request_adapter_for_surface_async(
     instance.request_adapter(&options).await
 }
 
-/// Blocking convenience wrapper around [`request_adapter_for_surface_async`].
-/// Native only — see [`request_adapter`].
-#[cfg(not(target_arch = "wasm32"))]
-pub fn request_adapter_for_surface(
-    instance: &wgpu::Instance,
-    surface: &wgpu::Surface<'_>,
-) -> Result<wgpu::Adapter, wgpu::RequestAdapterError> {
-    pollster::block_on(request_adapter_for_surface_async(instance, surface))
-}
-
 /// Open a logical device and its queue with the adapter's supported limits,
 /// so the largest column the pool can hold is the hardware's, not the WebGPU
 /// baseline's 128 MiB binding (#107).
@@ -83,15 +63,6 @@ pub async fn request_device_async(
         trace: wgpu::Trace::Off,
     };
     adapter.request_device(&descriptor).await
-}
-
-/// Blocking convenience wrapper around [`request_device_async`]. Native only
-/// — see [`request_adapter`].
-#[cfg(not(target_arch = "wasm32"))]
-pub fn request_device(
-    adapter: &wgpu::Adapter,
-) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
-    pollster::block_on(request_device_async(adapter))
 }
 
 /// One wgpu device+queue shared by every unit test in this binary.

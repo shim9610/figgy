@@ -407,7 +407,7 @@ const png = await withKernelOperation((chart) => chart.export_png(2.0));
 
 `<figgy-chart>` 래퍼는 비동기 커널 작업을 위해 연결 세대를 확인하는 게이트를 이미 갖고 있다. 경쟁하는 앱 호출은 `"figgy chart is busy"`로 거부하며, 일반적인 호출 대기열이 아니다. 래퍼를 쓸 때는 래퍼에 있는 메서드를 저수준 커널로 우회해 호출하지 않는다. 래퍼에 없는 메서드는 [`element.kernel`](#figgy-chart-kernel)로 호출한다. 연결 해제와 재연결을 지원하는 호스트는 [3.9절](#39-async-메서드와-객체-잠금-필독)의 수명 규칙도 따라야 한다.
 
-동기 출력 함수 `export_panel_png_bytes`는 웹 빌드에서 제외된다. 웹에서는 비동기 버전을 사용해야 한다.
+출력 함수는 모두 비동기다. 네이티브 호스트는 `pollster::block_on` 같은 실행기로 기다린다.
 
 #### SVG와 PDF 내보내기
 

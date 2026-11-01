@@ -1,10 +1,11 @@
 //! Shared native device setup, presentation defaults and PNG checks for gallery examples.
 //! Chart data and series definitions live in each example, not in this module.
+use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape},
-    data_render::{create_instance, request_adapter, request_device},
+    data_render::{create_instance, request_adapter_async, request_device_async},
     default, encode_png,
     layout::{ChartArea, Rect},
     line::LineStylePreset,
@@ -127,9 +128,9 @@ pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
     // Instance and adapter stay alive until rendering and readback finish.
     // Software GPU selection belongs to the environment, not the example.
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Gallery adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let mut renderer = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,

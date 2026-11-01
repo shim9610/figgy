@@ -64,7 +64,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             region: None, // Some(TernaryRegionStyle { .. }) fills the polygons the samples outline
         },
     }];
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0)?;
+    let image = pollster::block_on(renderer.export_panel_rgba_async(&chart, &series, 1.0))?;
     std::fs::write("ternary.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

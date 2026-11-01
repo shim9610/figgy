@@ -1,10 +1,11 @@
 //! README Milkyway preview: line-generated stars and nebula only.
 //! cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
+use pollster::FutureExt as _;
 use renderer::config::{DrawStyle, LegendCorner, LegendEntryKind, MilkywayOptions};
 use renderer::data::Column;
 use renderer::data_config::{DataLineStyleConfig, DataRenderType};
-use renderer::data_render::{create_instance, request_adapter, request_device};
+use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
@@ -26,9 +27,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(parent)?;
     }
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let mut r = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,

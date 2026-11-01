@@ -10,6 +10,7 @@
 //! so the tests say where an isoline *should* be rather than where it happened to
 //! land.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -280,7 +281,10 @@ fn a_contour_traces_one_unbroken_isoline_and_nothing_else() {
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("lines", &img);
 
     // On the isoline, at three points along it.
@@ -339,7 +343,10 @@ fn each_level_draws_in_its_own_colour() {
         vec![1.0, 3.0],
         Some(vec![LINE_A, LINE_B]),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     // z = 1 runs through (0.5, 0.5); z = 3 through (1.5, 1.5).
     assert!(
@@ -388,14 +395,15 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
     colors[31] = lower;
     colors[32] = upper;
     let expanded = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
             1.0,
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -404,6 +412,7 @@ fn a_1024_level_draw_preserves_duplicate_order_across_lookup_blocks() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -428,14 +437,15 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
     colors[1023] = marker;
 
     let expanded = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(&["p0", "p1", "p2"], levels, Some(colors))],
             1.0,
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -444,6 +454,7 @@ fn level_1023_keeps_its_declared_colour_and_numeric_lookup_index() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -463,7 +474,7 @@ fn non_finite_levels_never_draw_contour_lines() {
         a: 0.75,
     };
     let expanded = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -472,9 +483,10 @@ fn non_finite_levels_never_draw_contour_lines() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
     let reference = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -483,6 +495,7 @@ fn non_finite_levels_never_draw_contour_lines() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
 
     assert_eq!(expanded.rgba, reference.rgba);
@@ -525,7 +538,10 @@ fn finite_corners_whose_derivatives_overflow_draw_no_contour_or_anchor() {
     if let DataRenderType::Contour { contour, .. } = &mut series.render_type {
         contour.labels = Some(auto_label_config(2000.0));
     }
-    let image = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let image = renderer
+        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .block_on()
+        .unwrap();
 
     assert!(
         ink_bounds(&image, is_blue).is_none(),
@@ -551,7 +567,7 @@ fn all_1024_reachable_candidates_are_composited() {
         a: 1.0 / 2048.0,
     };
     let expanded = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -560,6 +576,7 @@ fn all_1024_reachable_candidates_are_composited() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
 
     let equivalent_for = |count: usize| {
@@ -584,7 +601,7 @@ fn all_1024_reachable_candidates_are_composited() {
         }
     };
     let reference = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -593,9 +610,10 @@ fn all_1024_reachable_candidates_are_composited() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
     let under_composited = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -604,6 +622,7 @@ fn all_1024_reachable_candidates_are_composited() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
     let centre = data_to_px(&chart, 1.0, 1.0);
     assert_eq!(
@@ -629,7 +648,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
         .collect();
     let colors = vec![LINE_A; renderer::MAX_CONTOUR_LEVELS];
     let expected = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -638,12 +657,13 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
 
     let mut reversed = sorted.clone();
     reversed.reverse();
     let actual = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(
                 &["p0", "p1", "p2"],
@@ -652,6 +672,7 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
     assert_eq!(actual.rgba, expected.rgba);
 
@@ -662,11 +683,12 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
         shuffled.swap(upper, state as usize % (upper + 1));
     }
     let actual = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(&["p0", "p1", "p2"], shuffled, Some(colors))],
             1.0,
         )
+        .block_on()
         .unwrap();
     assert_eq!(actual.rgba, expected.rgba);
 }
@@ -685,7 +707,10 @@ fn the_last_1024_level_label_cell_and_manual_index_draw() {
         None,
         label_config(vec![anchor(1023, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let image = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     assert!(
         near(&image, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
@@ -704,7 +729,10 @@ fn a_level_outside_the_data_draws_nothing() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     for levels in [vec![], vec![99.0]] {
         let series = vec![contour_only(&["p0", "p1", "p2"], levels.clone(), None)];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         let ink = img.rgba.chunks_exact(4).filter(|p| is_blue(p)).count();
         assert_eq!(ink, 0, "levels {levels:?} left {ink} contour pixels");
     }
@@ -720,7 +748,10 @@ fn contour_lines_land_on_top_of_the_field() {
     let bar = colorbar(0.0, 4.0);
     let chart = bare_chart(bar.clone());
     let series = vec![heatmap_contour(&["p0", "p1", "p2"], vec![2.0])];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("over-fill", &img);
 
     // On the isoline: the line wins.
@@ -796,7 +827,10 @@ fn the_stroke_is_as_wide_as_it_is_declared() {
     let chart = bare_chart(colorbar(0.0, 2.0));
     let run = |renderer: &mut Renderer, width: f32| {
         let series = vec![flat_y_series(vec![1.0], width)];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         let (_, y0, _, y1) = ink_bounds(&img, is_blue).expect("no contour ink");
         y1 - y0 + 1
     };
@@ -858,7 +892,10 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
             contour: contour_config(vec![2.0], None),
         },
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     // 33 samples along the whole isoline `x + y == 2`, every one of which must
     // have ink within a couple of pixels.
     for i in 1..34u32 {
@@ -918,7 +955,10 @@ fn a_saddle_needs_no_tie_break() {
             contour: contour_config(vec![0.0], None),
         },
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     // Both diagonals, at four points each, and the centre they cross at.
     for t in [0.3f64, 0.7, 1.3, 1.7] {
         assert!(
@@ -1045,7 +1085,10 @@ fn the_isoline_lands_on_its_level_at_tight_curvature() {
                 contour,
             },
         }];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
 
         // The row nearest the hyperbola's vertex, and that row's exact crossing.
         // Taking the reference from the row's own data y (a pixel centre) keeps
@@ -1188,7 +1231,10 @@ fn a_contour_label_draws_at_its_anchor() {
         None,
         label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("labelled", &img);
 
     assert!(
@@ -1197,7 +1243,10 @@ fn a_contour_label_draws_at_its_anchor() {
     );
     // And the same chart without the label has none there.
     let bare = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let without = renderer.export_panel_rgba(&chart, &bare, 1.0).unwrap();
+    let without = renderer
+        .export_panel_rgba_async(&chart, &bare, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         !near(&without, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
         "the anchor position already had ink before the label was added"
@@ -1220,7 +1269,10 @@ fn a_label_rotates_along_its_tangent() {
             None,
             label_config(vec![anchor(0, 1.0, 1.0, tx, ty)], true),
         )];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         let (x0, y0, x1, y1) = ink_bounds(&img, is_blue).expect("label ink");
         (x1 - x0, y1 - y0)
     };
@@ -1247,7 +1299,10 @@ fn an_invisible_label_draws_nothing() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     let labels = label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], false);
     let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         !near(&img, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
         "a label was drawn where none was asked for"
@@ -1276,7 +1331,10 @@ fn an_anchor_naming_a_missing_level_is_skipped() {
             true,
         ),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         !near(&img, data_to_px(&chart, 0.3, 1.0), 14, is_blue),
         "an anchor for level 7 of a one-level declaration drew something"
@@ -1300,7 +1358,10 @@ fn all_stale_anchors_fall_back_to_automatic_placement() {
     labels.bg_color = Some(LABEL_BG);
     labels.bg_padding_px = 3.0;
     let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     assert!(
         ink_bounds(&img, is_magenta).is_some(),
@@ -1328,7 +1389,10 @@ fn explicit_anchors_keep_the_first_1024_in_input_order() {
     labels.bg_color = Some(LABEL_BG);
     labels.bg_padding_px = 3.0;
     let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     assert!(
         near(&img, data_to_px(&chart, 1.0, 0.7), 16, is_magenta),
@@ -1362,7 +1426,10 @@ fn automatic_labels_keep_all_1024_levels() {
         labels.bg_color = Some(LABEL_BG);
         labels.bg_padding_px = 2.0;
         let series = [labelled(levels, Some(vec![transparent; count]), labels)];
-        renderer.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap()
     };
     let baseline = render(&mut renderer, all_levels[..256].to_vec());
     let full = render(&mut renderer, all_levels);
@@ -1396,7 +1463,10 @@ fn a_label_color_is_independent_of_per_level_stroke_colors() {
         Some(vec![LINE_A, LABEL_BG]),
         labels,
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     // Neither anchor sits on an isoline (z = 1.8 and z = 0.6 there), and both
     // labels stay white despite two unrelated per-level stroke colours.
     assert!(
@@ -1425,7 +1495,10 @@ fn a_label_reads_its_level_value() {
             None,
             label_config(vec![anchor(0, 1.0, 1.0, 1.0, 0.0)], true),
         )];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         let (x0, _, x1, _) = ink_bounds(&img, is_blue).expect("label ink");
         x1 - x0
     };
@@ -1468,7 +1541,10 @@ fn an_automatic_anchor_lands_on_its_isoline() {
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![labelled(vec![2.0], None, auto_label_config(2000.0))];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     let (x0, y0, x1, y1) = ink_bounds(&img, is_magenta).expect("no automatic label was placed");
     let centre = ((x0 + x1) / 2, (y0 + y1) / 2);
@@ -1628,7 +1704,10 @@ fn spacing_px_separates_automatic_labels() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     let clusters = |renderer: &mut Renderer, spacing: f32| {
         let series = vec![fine_labelled(&ids, vec![2.0], auto_label_config(spacing))];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         magenta_clusters(&img)
     };
     // Wider than the panel: the lattice saturates at 1 x 1, so one label.
@@ -1681,7 +1760,10 @@ fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
     // z = 0.8 at (0.4, 0.4): well clear of the level-2 isoline.
     with_bg.anchors = vec![anchor(0, 0.4, 0.4, 1.0, 0.0)];
     let series = vec![labelled(vec![2.0], None, with_bg)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         near(&img, at, 20, is_magenta),
         "bg_color painted nothing behind the explicit anchor's label"
@@ -1698,7 +1780,10 @@ fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
         None,
         label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], true),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         near(&img, at, 20, is_blue),
         "the label itself must still draw without a background"
@@ -1721,11 +1806,12 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     let at = data_to_px(&chart, 1.0, 1.0); // z = 2, exactly on the isoline.
 
     let baseline = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[contour_only(&["p0", "p1", "p2"], vec![2.0], None)],
             1.0,
         )
+        .block_on()
         .unwrap();
     assert!(
         near(&baseline, at, 2, is_blue),
@@ -1736,7 +1822,8 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     labels.color = Color::new(0.0, 0.0, 0.0, 0.0);
     labels.bg_padding_px = 3.0;
     let labelled = renderer
-        .export_panel_rgba(&chart, &[labelled(vec![2.0], None, labels)], 1.0)
+        .export_panel_rgba_async(&chart, &[labelled(vec![2.0], None, labels)], 1.0)
+        .block_on()
         .unwrap();
     assert!(
         !near(&labelled, at, 2, is_blue),
@@ -1817,7 +1904,8 @@ fn a_rotated_label_gap_lies_inside_its_quad() {
         let s = f64::from(scale);
         let mut export = |line: Color, labels: Option<ContourLabelConfig>| {
             renderer
-                .export_panel_rgba(&chart, &[series(line, labels)], scale)
+                .export_panel_rgba_async(&chart, &[series(line, labels)], scale)
+                .block_on()
                 .unwrap()
         };
         let stroke = export(LINE_A, None);
@@ -1912,8 +2000,14 @@ fn automatic_label_placement_is_deterministic() {
             auto_label_config(120.0),
         )]
     };
-    let first = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
-    let second = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+    let first = renderer
+        .export_panel_rgba_async(&chart, &build(), 1.0)
+        .block_on()
+        .unwrap();
+    let second = renderer
+        .export_panel_rgba_async(&chart, &build(), 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         ink_bounds(&first, is_magenta).is_some(),
         "the fixture drew no labels, so the comparison would prove nothing"
@@ -1938,12 +2032,18 @@ fn re_dispatching_anchors_allocates_nothing() {
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
     let build = || vec![labelled(vec![2.0], None, auto_label_config(120.0))];
-    let _ = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+    let _ = renderer
+        .export_panel_rgba_async(&chart, &build(), 1.0)
+        .block_on()
+        .unwrap();
     let after_first = renderer
         .gpu_memory_usage()
         .creations_of(renderer::GpuResourceKind::ContourScratch);
     for _ in 0..3 {
-        let _ = renderer.export_panel_rgba(&chart, &build(), 1.0).unwrap();
+        let _ = renderer
+            .export_panel_rgba_async(&chart, &build(), 1.0)
+            .block_on()
+            .unwrap();
     }
     let after_more = renderer
         .gpu_memory_usage()
@@ -2058,7 +2158,10 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
             surface: None,
         },
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("demo_panel", &img);
 
     // The fill: the peak is the ramp's top, a corner its bottom. The sample
@@ -2111,7 +2214,8 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     };
     contour.labels = None;
     let plain = renderer
-        .export_panel_rgba(&chart, &unlabelled, 1.0)
+        .export_panel_rgba_async(&chart, &unlabelled, 1.0)
+        .block_on()
         .unwrap();
     let between = data_to_px(&chart, 0.5 + 0.19, 0.5);
     assert!(

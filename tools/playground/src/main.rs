@@ -23,6 +23,7 @@
 //! Run:
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
+use pollster::FutureExt as _;
 mod big_data;
 mod cartesian;
 mod radial;
@@ -65,7 +66,7 @@ impl Gpu {
         let size = window.inner_size();
         let instance = data_render::create_instance();
         let surface = data_render::create_surface_for_window(&instance, window)?;
-        let adapter = data_render::request_adapter_for_surface(&instance, &surface)?;
+        let adapter = data_render::request_adapter_for_surface_async(&instance, &surface).block_on()?;
         eprintln!("[gpu] adapter: {:?}", adapter.get_info());
         let (device, queue) = request_device(&adapter)?;
         let limits = device.limits();
@@ -516,8 +517,8 @@ impl Drop for App {
 fn main() {
     if std::env::args().any(|a| a == "--selftest") {
         let instance = data_render::create_instance();
-        let adapter = data_render::request_adapter(&instance).expect("adapter");
-        let (d, q) = data_render::request_device(&adapter).expect("device");
+        let adapter = data_render::request_adapter_async(&instance).block_on().expect("adapter");
+        let (d, q) = data_render::request_device_async(&adapter).block_on().expect("device");
         let gpu = RendererDevice::new(d, q);
         let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Bgra8Unorm, POOL_CAPACITY)
             .expect("renderer");

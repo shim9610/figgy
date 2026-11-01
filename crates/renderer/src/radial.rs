@@ -490,11 +490,6 @@ impl RadialPickTicket {
             .map(Some)
             .ok_or_else(|| RadialError::Gpu("radial pick returned no sector of the frame".into()))
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Native blocking wrapper for [`Self::resolve`].
-    pub fn resolve_blocking(self) -> Result<Option<RadialTarget>, RadialError> {
-        pollster::block_on(self.resolve())
-    }
 }
 
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
@@ -1359,39 +1354,6 @@ impl RadialRenderer {
         self.write_vector(chart, size, scale, &mut out).await?;
         out.finish_file()
             .map_err(|e| RadialError::Gpu(e.to_string()))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Native blocking wrapper for [`Self::export_svg_async`].
-    pub fn export_svg(
-        &mut self,
-        chart: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<String, RadialError> {
-        pollster::block_on(self.export_svg_async(chart, size, scale))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Native blocking wrapper for [`Self::export_pdf_async`].
-    pub fn export_pdf(
-        &mut self,
-        chart: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Vec<u8>, RadialError> {
-        pollster::block_on(self.export_pdf_async(chart, size, scale))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Native blocking wrapper for [`Self::export_rgba_async`].
-    pub fn export_rgba(
-        &mut self,
-        chart: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<RasterImage, RadialError> {
-        pollster::block_on(self.export_rgba_async(chart, size, scale))
     }
 }
 

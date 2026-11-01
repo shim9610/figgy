@@ -6,6 +6,7 @@ use crate::data_config::{
     ContourConfig, DataErrorBarPointStyleOverride, DataScatterPointStyleOverride, FieldFillConfig,
     FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
+use pollster::FutureExt as _;
 use std::cell::{Cell, RefCell};
 
 struct RangeOnly<'a> {
@@ -804,10 +805,13 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
     // browser/Dawn D3D12 result can be compared with native D3D12 and Vulkan.
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = data_render::request_adapter(&instance).expect("style export GPU required");
+    let adapter = data_render::request_adapter_async(&instance)
+        .block_on()
+        .expect("style export GPU required");
     eprintln!("style export adapter: {:?}", adapter.get_info());
-    let (device, queue) =
-        data_render::request_device(&adapter).expect("style export device required");
+    let (device, queue) = data_render::request_device_async(&adapter)
+        .block_on()
+        .expect("style export device required");
     let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(

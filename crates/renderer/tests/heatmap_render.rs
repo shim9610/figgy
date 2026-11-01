@@ -12,6 +12,7 @@
 //! walks the same ramp, so a divergence between the two paths is the bug this
 //! file exists to catch.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -322,7 +323,10 @@ fn every_cell_carries_its_own_value_colour() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("flat-continuous", &img);
 
     for (c, column) in Z.iter().enumerate() {
@@ -363,7 +367,10 @@ fn selected_matrix_cell_outlines_the_canonical_xy_cell() {
         Vec::new(),
     )];
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (x0, y1) = data_to_px(&chart, 1.0, 0.0);
     let (x1, y0) = data_to_px(&chart, 2.0, 1.0);
     let mut selected = 0usize;
@@ -417,7 +424,10 @@ fn selected_contour_level_is_redrawn_from_the_same_field_snapshot() {
         vec![2.5],
     )];
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let selected = img
         .rgba
         .chunks_exact(4)
@@ -451,7 +461,10 @@ fn nothing_is_painted_outside_the_grid() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     // Inside: the grid is there.
     let inside = data_to_px(&chart, 0.5, 0.5);
@@ -506,7 +519,10 @@ fn a_nan_cell_takes_the_nan_colour() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     assert_colour_at(&img, data_to_px(&chart, 0.5, 0.5), NAN_PAINT, "NaN cell");
     assert_colour_at(
@@ -542,7 +558,10 @@ fn columns_are_y_reads_the_grid_transposed() {
             Vec::new(),
         )
     }];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     // Column c is now the y cell, value r the x cell.
     for (c, column) in Z.iter().enumerate() {
@@ -601,7 +620,10 @@ fn centers_layout_puts_the_cell_around_its_coordinate() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     let low = bar.color_for_z(0.0);
     let high = bar.color_for_z(5.0);
@@ -663,7 +685,10 @@ fn interpolated_shading_blends_between_sample_points() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("interpolated-continuous", &img);
 
     // The midpoint is the exact claim: halfway between two samples is halfway
@@ -730,7 +755,10 @@ fn bands_quantize_the_ramp_into_flat_steps() {
         FillMode::Bands,
         vec![2.5],
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("flat-bands", &img);
 
     // Two bands: the ramp at 0.25 and at 0.75.
@@ -782,7 +810,10 @@ fn interpolated_finite_pairs_that_overflow_reconstruction_take_nan_colour() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let image = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     assert_colour_at(
         &image,
@@ -817,7 +848,7 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
     let image = renderer
-        .export_panel_rgba(
+        .export_panel_rgba_async(
             &chart,
             &[heatmap(
                 &["z0"],
@@ -829,8 +860,12 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
             )],
             1.0,
         )
+        .block_on()
         .unwrap();
-    let empty = renderer.export_panel_rgba(&chart, &[], 1.0).unwrap();
+    let empty = renderer
+        .export_panel_rgba_async(&chart, &[], 1.0)
+        .block_on()
+        .unwrap();
     let center = data_to_px(&chart, 0.5, 0.5);
     assert_eq!(
         pixel(&image, center.0, center.1),
@@ -863,7 +898,10 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
         FillMode::Bands,
         levels.clone(),
     )];
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let image = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     for (column, values) in Z.iter().enumerate() {
         for (row, z) in values.iter().enumerate() {
@@ -920,7 +958,10 @@ fn a_logarithmic_colourbar_maps_z_by_its_logarithm() {
         FillMode::Continuous,
         Vec::new(),
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     // A decade is half the range, so z = 10 is the ramp's midpoint — which a
     // linear mapping would put at 10/100 instead.

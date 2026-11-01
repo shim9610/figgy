@@ -11,6 +11,7 @@
 //! colour predicate attributes every pixel to one part. Expected extents
 //! come from the same data area and axis ranges the renderer draws with.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -322,7 +323,10 @@ fn bars_float_from_start_to_end_in_both_directions_and_scales() {
         let series = [ranges("one", RED), ranges("two", BLUE)];
         for scale in [1.0f32, 2.0] {
             let case = format!("{direction:?} {scale}x");
-            let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+            let img = r
+                .export_panel_rgba_async(&chart, &series, scale)
+                .block_on()
+                .unwrap();
             for k in 0..3 {
                 let region = slot(&chart, direction, k, scale);
                 let red = bbox(&img, region, is_red).unwrap_or_else(|| panic!("{case} red {k}"));
@@ -425,7 +429,8 @@ fn direction_total_and_state_colour_each_bar() {
     let series = decorated(ranges("one", RED));
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba(&chart, std::slice::from_ref(&series), scale)
+            .export_panel_rgba_async(&chart, std::slice::from_ref(&series), scale)
+            .block_on()
             .unwrap();
         assert!(bbox(&img, slot(&chart, direction, 0, scale), is_green).is_some());
         assert!(bbox(&img, slot(&chart, direction, 1, scale), is_blue).is_some());
@@ -440,7 +445,10 @@ fn direction_total_and_state_colour_each_bar() {
             RangeStateStyle { color: BLUE },
         ],
     };
-    let img = r.export_panel_rgba(&chart, &[states], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[states], 1.0)
+        .block_on()
+        .unwrap();
     // States 1, 0 and 7: the third has no style.
     assert!(bbox(&img, slot(&chart, direction, 0, 1.0), is_blue).is_some());
     assert!(bbox(&img, slot(&chart, direction, 1, 1.0), is_green).is_some());
@@ -458,7 +466,10 @@ fn whiskers_and_connectors_stand_where_their_values_are() {
         let series = [decorated(ranges("one", RED))];
         for scale in [1.0f32, 2.0] {
             let case = format!("{direction:?} {scale}x");
-            let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+            let img = r
+                .export_panel_rgba_async(&chart, &series, scale)
+                .block_on()
+                .unwrap();
             for k in 0..3 {
                 let region = slot(&chart, direction, k, scale);
                 let wick =
@@ -521,7 +532,8 @@ fn progress_fades_the_unfinished_part() {
     });
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba(&chart, std::slice::from_ref(&series), scale)
+            .export_panel_rgba_async(&chart, std::slice::from_ref(&series), scale)
+            .block_on()
             .unwrap();
         // Row 0 runs 20 → 60 at progress 0.5: solid red to 40.
         let solid = bbox(&img, slot(&chart, direction, 0, scale), is_red).expect("the solid part");
@@ -579,7 +591,10 @@ fn missing_rows_and_equal_ends_draw_nothing() {
     };
     *start = "gappy.start".into();
     *color_by = RangeColor::Single;
-    let img = r.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .block_on()
+        .unwrap();
     assert!(bbox(&img, slot(&chart, direction, 0, 1.0), is_red).is_some());
     for k in [1, 2] {
         let region = slot(&chart, direction, k, 1.0);
@@ -604,10 +619,16 @@ fn the_highlight_traces_the_body_and_every_part_picks_its_bar() {
     let series = [series];
     for scale in [1.0f32, 2.0] {
         chart.config_mut().picked_data = None;
-        let painted = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        let painted = r
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let body = bbox(&painted, slot(&chart, direction, 1, scale), is_blue).expect("body");
         chart.config_mut().picked_data = Some(selection("one", 1));
-        let outlined = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        let outlined = r
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let full = (0, 0, outlined.width, outlined.height);
         let ring = bbox(&outlined, full, is_magenta).expect("the selected bar is outlined");
         let edges = [
@@ -679,7 +700,8 @@ fn value_labels_sit_past_each_end() {
         labels.text = vec!["+40".into(), "-30".into(), "".into()];
     }
     let img = r
-        .export_panel_rgba(&chart, std::slice::from_ref(&series), 1.0)
+        .export_panel_rgba_async(&chart, std::slice::from_ref(&series), 1.0)
+        .block_on()
         .unwrap();
     // Inside the data area, clear of the tick marks along its edges.
     let inner = |k: usize| {
@@ -700,7 +722,8 @@ fn value_labels_sit_past_each_end() {
     assert_eq!(ink(2), None, "an empty string draws nothing");
     fields(&mut series).4.placement = CategoryBarLabels::None;
     let img = r
-        .export_panel_rgba(&chart, std::slice::from_ref(&series), 1.0)
+        .export_panel_rgba_async(&chart, std::slice::from_ref(&series), 1.0)
+        .block_on()
         .unwrap();
     for k in 0..3 {
         assert_eq!(bbox(&img, inner(k), dark), None, "{k}");
@@ -741,7 +764,8 @@ fn time_axes_keep_their_precision_and_fit_their_slots() {
     let x = &gantt_chart.config().bottom_x;
     assert_eq!((x.min, x.max), (T0, T0 + 3.0 * DAY));
     let img = r
-        .export_panel_rgba(&gantt_chart, std::slice::from_ref(&gantt), 1.0)
+        .export_panel_rgba_async(&gantt_chart, std::slice::from_ref(&gantt), 1.0)
+        .block_on()
         .unwrap();
     // The six-hour task spans a quarter of a day's pixels.
     let short = bbox(&img, slot(&gantt_chart, direction, 1, 1.0), is_red).expect("a short task");
@@ -779,7 +803,8 @@ fn time_axes_keep_their_precision_and_fit_their_slots() {
     let y = &candles.config().left_y;
     assert_eq!((y.min, y.max), (20.0, 80.0));
     let img = r
-        .export_panel_rgba(&candles, std::slice::from_ref(&bars), 1.0)
+        .export_panel_rgba_async(&candles, std::slice::from_ref(&bars), 1.0)
+        .block_on()
         .unwrap();
     let da = candles.config().data_area().unwrap();
     for k in 0..3 {
@@ -812,7 +837,8 @@ fn a_logarithmic_value_axis_draws_the_bars() {
     config.left_y.min = 10.0;
     config.left_y.max = 100.0;
     let img = r
-        .export_panel_rgba(&chart, &[ranges("one", RED)], 1.0)
+        .export_panel_rgba_async(&chart, &[ranges("one", RED)], 1.0)
+        .block_on()
         .unwrap();
     for k in 0..3 {
         let bar =
@@ -836,11 +862,17 @@ fn a_replaced_column_redraws_and_mismatched_columns_are_errors() {
     let direction = CategoryBarDirection::Vertical;
     let chart = chart(direction);
     let series = [ranges("one", RED)];
-    let before = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let before = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     r.remove_column("start").unwrap();
     r.add_column("start", &col(START.iter().map(|v| v - 10.0).collect()))
         .unwrap();
-    let after = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let after = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let region = slot(&chart, direction, 0, 1.0);
     let (a, b) = (
         bbox(&before, region, is_red).unwrap(),
@@ -858,7 +890,8 @@ fn a_replaced_column_redraws_and_mismatched_columns_are_errors() {
         *start = "short".into();
     }
     let error = r
-        .export_panel_rgba(&chart, &[short], 1.0)
+        .export_panel_rgba_async(&chart, &[short], 1.0)
+        .block_on()
         .err()
         .expect("an error");
     assert!(error.to_string().contains("\"short\""), "{error}");
@@ -867,7 +900,8 @@ fn a_replaced_column_redraws_and_mismatched_columns_are_errors() {
         *start = "nowhere".into();
     }
     let error = r
-        .export_panel_rgba(&chart, &[missing], 1.0)
+        .export_panel_rgba_async(&chart, &[missing], 1.0)
+        .block_on()
         .err()
         .expect("an error");
     assert!(error.to_string().contains("nowhere"), "{error}");
@@ -908,7 +942,10 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
         ranges("below", GREEN),
     ];
     for scale in [1.0f32, 2.0] {
-        let img = r.export_document_rgba(&parent, &series, scale).unwrap();
+        let img = r
+            .export_document_rgba_async(&parent, &series, scale)
+            .block_on()
+            .unwrap();
         let (w, h) = (img.width, img.height);
         let first = slot(&parent, direction, 0, scale);
         let red = bbox(&img, first, is_red).expect("the parent's bars");
@@ -964,8 +1001,14 @@ fn a_2x_export_is_the_1x_layout_doubled() {
     for direction in DIRECTIONS {
         let chart = chart(direction);
         let series = [decorated(ranges("one", RED))];
-        let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-        let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+        let one = r
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
+        let two = r
+            .export_panel_rgba_async(&chart, &series, 2.0)
+            .block_on()
+            .unwrap();
         for (pred, what) in [
             (is_green as fn(&[u8]) -> bool, "up"),
             (is_blue, "down"),
@@ -1034,7 +1077,10 @@ fn three_thousand_rows_draw_pick_and_highlight() {
         *slot_width = Some(1.0);
     }
     let series = [bars];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let da = chart.config().data_area().unwrap();
     let x_of = |k: usize| da.x as f32 + (k as f32 + 0.5) / N as f32 * da.width as f32;
     let y = value_px(&chart, CategoryBarDirection::Vertical, 40.0, 1.0) as u32;
@@ -1071,7 +1117,10 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     );
     r.remove_chart(id).unwrap();
     chart.config_mut().picked_data = Some(selection("one", N - 1));
-    let outlined = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let outlined = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let x = x_of(N - 1) as u32;
     assert!(bbox(&outlined, (x - 3, 0, x + 4, HEIGHT), is_magenta).is_some());
     assert_eq!(bbox(&outlined, (0, 0, x - 10, HEIGHT), is_magenta), None);
@@ -1095,9 +1144,15 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     .unwrap();
     chart.config_mut().picked_data = None;
     chart.config_mut().bottom_x.max = BIG as f64 - 0.5;
-    let _ = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let _ = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let started = std::time::Instant::now();
-    let _ = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let _ = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let draw = started.elapsed();
     let id = r
         .register_chart(chart.config().clone(), series.to_vec())

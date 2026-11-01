@@ -1,10 +1,11 @@
 //! Minimal native line chart: upload two columns and write a PNG.
 //! cargo run --locked -p figgy-renderer --example line
+use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType},
-    data_render::{create_instance, request_adapter, request_device},
+    data_render::{create_instance, request_adapter_async, request_device_async},
     default, encode_png,
     layout::{ChartArea, Rect},
     line::LineStylePreset,
@@ -12,9 +13,9 @@ use renderer::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let mut renderer = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,

@@ -6,6 +6,7 @@
 //! lands on through `Config::polar_geometry`, so a wrong angle, direction,
 //! radius or sector fails rather than passes.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -215,7 +216,10 @@ fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
 }
 
 fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer.export_panel_rgba(chart, series, 1.0).unwrap()
+    renderer
+        .export_panel_rgba_async(chart, series, 1.0)
+        .block_on()
+        .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -713,7 +717,8 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         },
     };
     match renderer
-        .export_panel_rgba(&chart, &[histogram], 1.0)
+        .export_panel_rgba_async(&chart, &[histogram], 1.0)
+        .block_on()
         .map(|_| ())
     {
         Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
@@ -729,13 +734,16 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         ..PolarOptions::default()
     });
     assert!(matches!(
-        renderer.export_panel_rgba(&arc, &[line("step", stepped)], 1.0),
+        renderer
+            .export_panel_rgba_async(&arc, &[line("step", stepped)], 1.0)
+            .block_on(),
         Err(FiggyError::InvalidSeriesConfig { .. })
     ));
     let mut overlay = bare_chart(PolarOptions::default());
     overlay.config_mut().overlays.push(OverlayLayer::default());
     match renderer
-        .export_panel_rgba(&overlay, &[scatter("points", 4.0)], 1.0)
+        .export_panel_rgba_async(&overlay, &[scatter("points", 4.0)], 1.0)
+        .block_on()
         .map(|_| ())
     {
         Err(FiggyError::InvalidConfig { field, .. }) => assert_eq!(field, "polar"),
@@ -745,13 +753,16 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     log_angle.config_mut().bottom_x.scale = AxisScale::Logarithmic;
     log_angle.set_x_range(1.0, 360.0);
     assert!(matches!(
-        renderer.export_panel_rgba(&log_angle, &[scatter("points", 4.0)], 1.0),
+        renderer
+            .export_panel_rgba_async(&log_angle, &[scatter("points", 4.0)], 1.0)
+            .block_on(),
         Err(FiggyError::InvalidConfig { field: "polar", .. })
     ));
     // The same series draws once the chart is valid again.
     assert!(
         renderer
-            .export_panel_rgba(&chart, &[scatter("points", 4.0)], 1.0)
+            .export_panel_rgba_async(&chart, &[scatter("points", 4.0)], 1.0)
+            .block_on()
             .is_ok()
     );
 }
@@ -783,7 +794,8 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     polar_points.series_id = "polar_points".into();
     let series = [scatter("points", 8.0), polar_points];
     let document = renderer
-        .export_document_rgba(&parent, &series, 1.0)
+        .export_document_rgba_async(&parent, &series, 1.0)
+        .block_on()
         .unwrap();
     assert_eq!((document.width, document.height), (2 * WIDTH, HEIGHT));
     // The rectangular panel of the document equals its standalone export.
@@ -883,7 +895,10 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
         "angle label at pi/2"
     );
     // The 2x export doubles every position.
-    let img2 = renderer.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let img2 = renderer
+        .export_panel_rgba_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert_eq!((img2.width, img2.height), (2 * WIDTH, 2 * HEIGHT));
     let scaled = chart.config().scaled(2.0);
     let spoke2 = polar_px(&scaled, std::f64::consts::FRAC_PI_4, 0.75);
@@ -1199,7 +1214,10 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
     assert!(ray_labels(config) >= 3);
 
     // 2x: the same rings, at twice the pixels.
-    let img2 = renderer.export_panel_rgba(&adaptive, &series, 2.0).unwrap();
+    let img2 = renderer
+        .export_panel_rgba_async(&adaptive, &series, 2.0)
+        .block_on()
+        .unwrap();
     let scaled = adaptive.config().scaled(2.0);
     for value in [2e4, 5e4, 2e5, 5e5] {
         let ring = polar_px(&scaled, 200.0, value);

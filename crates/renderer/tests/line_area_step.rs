@@ -9,6 +9,7 @@
 //! matches a predicate. Expected positions are computed through the chart's
 //! own data area and axis range, the same mapping the GPU transform uses.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -231,7 +232,10 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
         LineFill::ToBaseline(0.0),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     expect(&img, &chart, 1.0, 0.5, is_green, "under the peak");
     expect(&img, &chart, 0.5, 0.3, is_green, "under the rising edge");
@@ -261,7 +265,10 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
         LineFill::ToBaseline(0.4),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -297,7 +304,10 @@ fn default_fill_colour_is_the_line_colour_at_quarter_alpha() {
             LineInterpolation::Linear,
         ),
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let under = pixel(&img, data_x_to_px(&chart, 0.5), data_y_to_px(&chart, 0.25));
     assert!(
         under[0] > 200 && under[1] < 40 && under[2] < 40,
@@ -344,7 +354,10 @@ fn fill_between_two_series_follows_the_referenced_series() {
             GREEN,
         ),
     ];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     expect(
         &img,
@@ -408,7 +421,10 @@ fn fills_composite_in_series_order_under_every_line() {
         filled("low", "fo_x", "fo_low", LineFill::ToBaseline(0.0), BLUE),
         filled("high", "fo_x", "fo_high", LineFill::ToBaseline(0.0), GREEN),
     ];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -429,7 +445,10 @@ fn fills_composite_in_series_order_under_every_line() {
 
     // Reversed declaration order reverses the composite: blue wins below.
     let series = [series[1].clone(), series[0].clone()];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -468,7 +487,10 @@ fn fill_breaks_where_the_line_breaks() {
             ),
             filled("gap", "gap_x", "gap_y", fill.clone(), GREEN),
         ];
-        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         expect(
             &img,
             &chart,
@@ -518,7 +540,10 @@ fn non_monotonic_series_blends_overlapping_trapezoids_twice() {
         LineFill::ToBaseline(0.0),
         half_green,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let once = pixel(&img, data_x_to_px(&chart, 0.5), data_y_to_px(&chart, 0.5));
     let twice = pixel(&img, data_x_to_px(&chart, 1.5), data_y_to_px(&chart, 0.5));
     assert!(is_green(&once) && is_green(&twice), "{once:?} / {twice:?}");
@@ -552,7 +577,10 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
             LineFill::ToBaseline(baseline),
             GREEN,
         )];
-        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         expect(
             &img,
             &chart,
@@ -573,7 +601,10 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
         LineFill::ToBaseline(10.0),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -630,7 +661,7 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
         (&unknown[..], "not in this chart"),
         (&itself[..], "reference the series itself"),
     ] {
-        match r.export_panel_rgba(&chart, series, 1.0) {
+        match r.export_panel_rgba_async(&chart, series, 1.0).block_on() {
             Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
                 assert_eq!(series_id, "hi");
                 assert!(reason.contains(needle), "{reason}");
@@ -660,7 +691,9 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
         ),
         filled("hi", "rj_x", "rj_y", LineFill::ToSeries("lo".into()), GREEN),
     ];
-    r.export_panel_rgba(&chart, &ok, 1.0).unwrap();
+    r.export_panel_rgba_async(&chart, &ok, 1.0)
+        .block_on()
+        .unwrap();
 }
 
 /// A fill or a step mode on a streamed (nonresident) series is refused with
@@ -731,7 +764,9 @@ fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
     let (chart, x, y) = two_point_chart(&mut r, "st");
     let render = |r: &mut Renderer, mode| {
         let series = [series("step", &x, &y, line(None, None, mode))];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap()
     };
 
     let linear = render(&mut r, LineInterpolation::Linear);
@@ -832,7 +867,9 @@ fn step_fill_follows_the_stepped_line() {
             &y,
             line(Some(LineFill::ToBaseline(0.0)), Some(GREEN), mode),
         )];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap()
     };
     let linear = render(&mut r, LineInterpolation::Linear);
     expect(
@@ -943,7 +980,9 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
                     ..line(None, None, mode)
                 },
             )];
-            r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+            r.export_panel_rgba_async(&chart, &series, 1.0)
+                .block_on()
+                .unwrap()
         };
         let solid = count(&render(&mut r, LineStylePreset::Solid), is_red);
         let dashed = count(&render(&mut r, LineStylePreset::Dash), is_red);
@@ -976,8 +1015,14 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
             LineInterpolation::StepPost,
         ),
     )];
-    let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let sixteen = r.export_panel_rgba(&chart, &series, 16.0).unwrap();
+    let one = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let sixteen = r
+        .export_panel_rgba_async(&chart, &series, 16.0)
+        .block_on()
+        .unwrap();
     assert_eq!(
         (sixteen.width, sixteen.height),
         (one.width * 16, one.height * 16)
@@ -987,16 +1032,25 @@ fn export_scale_is_bounded_by_the_device_texture_limit_only() {
         (g16 as f64 / g1 as f64 / 256.0 - 1.0).abs() < 0.05,
         "fill ink scales by area: {g1} → {g16}"
     );
-    let svg = r.export_document_svg(&chart, &series, 16.0).unwrap();
+    let svg = r
+        .export_document_svg_async(&chart, &series, 16.0)
+        .block_on()
+        .unwrap();
     assert!(
         svg.contains(r#"viewBox="0 0 6400 4800""#),
         "the SVG is 16× too"
     );
     let too_big = 1.0e4;
     for result in [
-        r.export_panel_rgba(&chart, &series, too_big).map(|_| ()),
-        r.export_document_svg(&chart, &series, too_big).map(|_| ()),
-        r.export_document_pdf(&chart, &series, too_big).map(|_| ()),
+        r.export_panel_rgba_async(&chart, &series, too_big)
+            .block_on()
+            .map(|_| ()),
+        r.export_document_svg_async(&chart, &series, too_big)
+            .block_on()
+            .map(|_| ()),
+        r.export_document_pdf_async(&chart, &series, too_big)
+            .block_on()
+            .map(|_| ()),
     ] {
         assert!(
             matches!(result, Err(FiggyError::GpuResourceLimit { .. })),
@@ -1021,8 +1075,14 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
             LineInterpolation::StepPost,
         ),
     )];
-    let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let one = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let two = r
+        .export_panel_rgba_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
     let (g1, g2) = (count(&one, is_green), count(&two, is_green));
     assert!(
@@ -1048,7 +1108,10 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
         assert!(is_empty(&probe(0.5, 0.6)), "{scale}x no chord");
     }
     // PNG export goes through the same path and decodes to the same size.
-    let png = r.export_panel_png_bytes(&chart, &series, 2.0).unwrap();
+    let png = r
+        .export_panel_png_bytes_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 }
 
@@ -1072,7 +1135,9 @@ fn fills_and_steps_are_deterministic_across_renderers() {
             ),
             filled("between", &x, &y, LineFill::ToSeries("step".into()), GREEN),
         ];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap()
     };
     let mut a = renderer();
     let first = build(&mut a);
@@ -1108,7 +1173,9 @@ fn legend_symbol_shows_a_band_for_a_filled_series() {
             renderer::legend::series_symbol_segments(&series[0], None),
             "filled",
         );
-        r.export_panel_rgba(chart, &series, 1.0).unwrap()
+        r.export_panel_rgba_async(chart, &series, 1.0)
+            .block_on()
+            .unwrap()
     };
     let plain = render(&mut r, &mut chart, None);
     let banded = render(&mut r, &mut chart, Some(LineFill::ToBaseline(0.0)));
@@ -1150,7 +1217,10 @@ fn log_axis_places_lines_at_every_magnitude() {
             "ly",
             line(None, None, LineInterpolation::Linear),
         )];
-        let img = r.export_panel_rgba(&chart, &s, 1.0).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &s, 1.0)
+            .block_on()
+            .unwrap();
         let x = data_x_to_px(&chart, 0.5);
         let y = data_y_to_px(&chart, magnitude);
         let p = pixel(&img, x, y);
@@ -1237,7 +1307,10 @@ fn offset_lines_report_unshifted_values() {
     let id = r
         .register_chart(chart.config().clone(), declared.to_vec())
         .unwrap();
-    let image = r.export_document_rgba(&chart, &declared, 1.0).unwrap();
+    let image = r
+        .export_document_rgba_async(&chart, &declared, 1.0)
+        .block_on()
+        .unwrap();
     for index in 0..xs.len() {
         // `high` is drawn half a unit right and five up.
         let (x, y) = (
@@ -1312,7 +1385,10 @@ fn forty_offset_members_draw_and_pick() {
         .register_chart(chart.config().clone(), declared.clone())
         .unwrap();
     for scale in [1.0f32, 2.0] {
-        let image = r.export_document_rgba(&chart, &declared, scale).unwrap();
+        let image = r
+            .export_document_rgba_async(&chart, &declared, scale)
+            .block_on()
+            .unwrap();
         for k in [0, 31, 32, MEMBERS - 1] {
             let shift = STEP * k as f64;
             for index in [0, 3] {

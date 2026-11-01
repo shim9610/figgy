@@ -4,7 +4,7 @@
 //!
 //! 1. **Data → Column**: wrap two `Vec<f64>` from `renderer::demo` as
 //!    `renderer::Column<f64>` (default `ColumnSource` impl).
-//! 2. **One-line WindowedRenderer**: `Renderer::for_window(window, size,
+//! 2. **One-line WindowedRenderer**: `Renderer::for_window_async(window, size,
 //!    pool_capacity)` — figgy owns instance / adapter / device / queue /
 //!    surface / swap chain. Zero wgpu setup code.
 //! 3. **Register columns**: `renderer.add_column(id, &column)`.
@@ -35,6 +35,7 @@
 //!   to resize it, or drag inside the area to move it (size preserved,
 //!   ticks and data follow).
 
+use pollster::FutureExt as _;
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
@@ -514,11 +515,13 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
 
         // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = match Renderer::for_window(
+        let mut renderer = match Renderer::for_window_async(
             Arc::clone(&window),
             (size.width, size.height),
             POOL_CAPACITY,
-        ) {
+        )
+        .block_on()
+        {
             Ok(renderer) => renderer,
             Err(e) => {
                 eprintln!("[init] {e}");
@@ -778,7 +781,10 @@ impl App {
             return;
         };
         for (i, panel) in self.panels.iter().enumerate() {
-            match renderer.export_panel_png_bytes(&panel.chart, &panel.series, EXPORT_SCALE) {
+            match renderer
+                .export_panel_png_bytes_async(&panel.chart, &panel.series, EXPORT_SCALE)
+                .block_on()
+            {
                 Ok(bytes) => {
                     let path = format!("/tmp/figgy_winit_panel_{i}.png");
                     if let Err(e) = std::fs::write(&path, &bytes) {

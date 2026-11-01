@@ -6,6 +6,7 @@
 //! into `labels.text` by the reader).
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+use pollster::FutureExt as _;
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
     RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, data_render,
@@ -75,7 +76,7 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
         chart
     };
-    let image = r.export_panel_rgba(&chart, &series, 1.0)?;
+    let image = r.export_panel_rgba_async(&chart, &series, 1.0).block_on()?;
     let colored = image
         .rgba
         .chunks_exact(4)
@@ -100,9 +101,9 @@ fn main() -> Result {
     );
     std::fs::create_dir_all(&dir)?;
     let instance = data_render::create_instance();
-    let adapter = data_render::request_adapter(&instance)?;
+    let adapter = data_render::request_adapter_async(&instance).block_on()?;
     eprintln!("Boxplot adapter: {:?}", adapter.get_info());
-    let (d, q) = data_render::request_device(&adapter)?;
+    let (d, q) = data_render::request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(d, q);
     let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = BoxPlotChart {

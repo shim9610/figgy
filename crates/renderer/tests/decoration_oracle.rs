@@ -63,6 +63,7 @@
 //! chart and the annotation layer.
 #![cfg(not(target_arch = "wasm32"))]
 
+use pollster::FutureExt as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[allow(dead_code)]
@@ -2485,7 +2486,10 @@ fn check_export(
     // The export takes the unscaled document and the scale.
     let mut doc = palette_1x.clone();
     doc.annotations.visible = false;
-    let image = match r.export_document_rgba(&Chart::new(doc), series, at.scale) {
+    let image = match r
+        .export_document_rgba_async(&Chart::new(doc), series, at.scale)
+        .block_on()
+    {
         Ok(image) => image,
         Err(e) => {
             report.check(at, "<export>", Inv::I7, false, || {
@@ -3271,7 +3275,8 @@ impl Radial {
     fn export(&mut self, c: &RadialChart, scale: f32) -> Result<RasterImage, String> {
         let image = self
             .0
-            .export_rgba(c, RADIAL_SIZE, scale)
+            .export_rgba_async(c, RADIAL_SIZE, scale)
+            .block_on()
             .map_err(|e| e.to_string());
         self.0.end_frame();
         image
@@ -3961,7 +3966,8 @@ fn export_annotations(
         Some(i) => doc.annotations.items[i].visible = false,
         None => {}
     }
-    r.export_document_rgba(&Chart::new(doc), series, scale)
+    r.export_document_rgba_async(&Chart::new(doc), series, scale)
+        .block_on()
         .map_err(|e| e.to_string())
 }
 

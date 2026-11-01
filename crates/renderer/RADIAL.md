@@ -42,8 +42,8 @@ use renderer::{
 };
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let instance = renderer::data_render::create_instance();
-# let adapter = renderer::data_render::request_adapter(&instance)?;
-# let (device, queue) = renderer::data_render::request_device(&adapter)?;
+# let adapter = pollster::block_on(renderer::data_render::request_adapter_async(&instance))?;
+# let (device, queue) = pollster::block_on(renderer::data_render::request_device_async(&adapter))?;
 let mut renderer = RadialRenderer::new(
     RendererDevice::new(device, queue),
     wgpu::TextureFormat::Rgba8Unorm,
@@ -64,7 +64,7 @@ chart.format_labels();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
-let image = renderer.export_rgba(&chart, (1000, 600), 2.0)?;
+let image = pollster::block_on(renderer.export_rgba_async(&chart, (1000, 600), 2.0))?;
 std::fs::write("donut.png", encode_png(&image)?)?;
 renderer.end_frame();
 # Ok(())

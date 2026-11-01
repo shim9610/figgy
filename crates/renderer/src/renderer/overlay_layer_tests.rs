@@ -6,6 +6,7 @@ use super::*;
 use crate::layout::{ChartArea, Rect};
 use crate::text::RichText;
 use crate::{HitMap, LayerRef, OverlayLayer, WarningAxis};
+use pollster::FutureExt as _;
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -491,14 +492,35 @@ fn document_export_composites_every_layer() {
     let mut r = renderer();
     let series = three_series();
     let plain = Chart::new(base_config());
-    let plain_document = r.export_document_rgba(&plain, &series, 1.0).unwrap();
-    let plain_panel = r.export_panel_rgba(&plain, &series, 1.0).unwrap();
+    let plain_document = r
+        .export_document_rgba_async(&plain, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let plain_panel = r
+        .export_panel_rgba_async(&plain, &series, 1.0)
+        .block_on()
+        .unwrap();
     let layered = Chart::new(two_overlay_config());
-    let document = r.export_document_rgba(&layered, &series, 1.0).unwrap();
-    let panel = r.export_panel_rgba(&layered, &series, 1.0).unwrap();
-    let large = r.export_document_rgba(&layered, &series, 2.0).unwrap();
-    let large_panel = r.export_panel_rgba(&layered, &series, 2.0).unwrap();
-    let png = r.export_document_png_bytes(&layered, &series, 1.0).unwrap();
+    let document = r
+        .export_document_rgba_async(&layered, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let panel = r
+        .export_panel_rgba_async(&layered, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let large = r
+        .export_document_rgba_async(&layered, &series, 2.0)
+        .block_on()
+        .unwrap();
+    let large_panel = r
+        .export_panel_rgba_async(&layered, &series, 2.0)
+        .block_on()
+        .unwrap();
+    let png = r
+        .export_document_png_bytes_async(&layered, &series, 1.0)
+        .block_on()
+        .unwrap();
     drop(fonts);
 
     assert_eq!((plain_document.width, plain_document.height), (320, 240));
@@ -615,10 +637,17 @@ fn an_adaptive_log_axis_replans_on_every_zoom() {
     let decades = Chart::new(decades_config);
     let mut exports = Vec::new();
     for scale in [1.0f32, 2.0] {
-        let image = r.export_document_rgba(&adaptive, &series, scale).unwrap();
-        let other = r.export_document_rgba(&decades, &series, scale).unwrap();
+        let image = r
+            .export_document_rgba_async(&adaptive, &series, scale)
+            .block_on()
+            .unwrap();
+        let other = r
+            .export_document_rgba_async(&decades, &series, scale)
+            .block_on()
+            .unwrap();
         let png = r
-            .export_document_png_bytes(&adaptive, &series, scale)
+            .export_document_png_bytes_async(&adaptive, &series, scale)
+            .block_on()
             .unwrap();
         exports.push((scale, image.width, image.rgba != other.rgba, png));
     }
@@ -813,16 +842,20 @@ fn offset_lines_export_at_1x_and_2x() {
     let mut results = Vec::new();
     for scale in [1.0f32, 2.0] {
         let drawn = r
-            .export_document_rgba(&offset, &offset_series(false), scale)
+            .export_document_rgba_async(&offset, &offset_series(false), scale)
+            .block_on()
             .unwrap();
         let expected = r
-            .export_document_rgba(&host, &offset_series(true), scale)
+            .export_document_rgba_async(&host, &offset_series(true), scale)
+            .block_on()
             .unwrap();
         let unshifted = r
-            .export_document_rgba(&host, &offset_series(false), scale)
+            .export_document_rgba_async(&host, &offset_series(false), scale)
+            .block_on()
             .unwrap();
         let png = r
-            .export_document_png_bytes(&offset, &offset_series(false), scale)
+            .export_document_png_bytes_async(&offset, &offset_series(false), scale)
+            .block_on()
             .unwrap();
         results.push((scale, drawn, expected, unshifted, png));
     }
@@ -923,10 +956,12 @@ fn offset_members_shift_on_their_overlay_axis() {
     assert_eq!(panels[3].left_y.max, 70.0);
     assert!(!panels[3].right_y.line_visible);
     let drawn = r
-        .export_document_rgba(&Chart::new(config.clone()), &series(false), 1.0)
+        .export_document_rgba_async(&Chart::new(config.clone()), &series(false), 1.0)
+        .block_on()
         .unwrap();
     let expected = r
-        .export_document_rgba(&Chart::new(layered(false)), &series(true), 1.0)
+        .export_document_rgba_async(&Chart::new(layered(false)), &series(true), 1.0)
+        .block_on()
         .unwrap();
     drop(fonts);
     let (largest, count) = image_difference(&drawn, &expected);
@@ -966,21 +1001,24 @@ fn offset_line_ring_sits_on_the_shifted_point() {
         config
     };
     let drawn = r
-        .export_document_rgba(
+        .export_document_rgba_async(
             &Chart::new(select(offset_config())),
             &offset_series(false),
             1.0,
         )
+        .block_on()
         .unwrap();
     let unselected = r
-        .export_document_rgba(&Chart::new(offset_config()), &offset_series(false), 1.0)
+        .export_document_rgba_async(&Chart::new(offset_config()), &offset_series(false), 1.0)
+        .block_on()
         .unwrap();
     let expected = r
-        .export_document_rgba(
+        .export_document_rgba_async(
             &Chart::new(select(base_config())),
             &offset_series(true),
             1.0,
         )
+        .block_on()
         .unwrap();
     drop(fonts);
     let (largest, count) = image_difference(&drawn, &expected);

@@ -1,4 +1,5 @@
 use super::*;
+use pollster::FutureExt as _;
 
 /// Wait until every retired GPU charge of `renderer` has completed. A
 /// completion callback can run on another test's polling thread on the
@@ -2229,7 +2230,12 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     let before = renderer
         .gpu_memory_usage()
         .creations_of(GpuResourceKind::ContourScratch);
-    assert_contour_spacing_error(renderer.export_panel_rgba(&chart, &automatic, scale), true);
+    assert_contour_spacing_error(
+        renderer
+            .export_panel_rgba_async(&chart, &automatic, scale)
+            .block_on(),
+        true,
+    );
     assert_eq!(
         renderer
             .gpu_memory_usage()
@@ -2246,17 +2252,21 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     };
     let explicit = [state_test_labelled_contour(huge, vec![anchor])];
     renderer
-        .export_panel_rgba(&chart, &explicit, scale)
+        .export_panel_rgba_async(&chart, &explicit, scale)
+        .block_on()
         .expect("explicit placement must not multiply spacing by export scale");
 
     let mut hidden = state_test_labelled_contour(huge, Vec::new());
     state_test_contour_labels_mut(&mut hidden).visible = false;
     renderer
-        .export_panel_rgba(&chart, &[hidden], scale)
+        .export_panel_rgba_async(&chart, &[hidden], scale)
+        .block_on()
         .expect("hidden labels must not multiply spacing by export scale");
     // An infinite scale is no longer clamped: it cannot fit the device.
     assert!(matches!(
-        renderer.export_panel_rgba(&chart, &explicit, f32::INFINITY),
+        renderer
+            .export_panel_rgba_async(&chart, &explicit, f32::INFINITY)
+            .block_on(),
         Err(FiggyError::GpuResourceLimit { .. })
     ));
 }
@@ -2526,7 +2536,10 @@ fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
             &["fz0", "fz1"],
             crate::data_config::MAX_CONTOUR_LEVELS,
         )];
-        let image = renderer.export_panel_rgba(&chart, &accepted, 1.0).unwrap();
+        let image = renderer
+            .export_panel_rgba_async(&chart, &accepted, 1.0)
+            .block_on()
+            .unwrap();
         assert_eq!(image.width, chart.config().chart_area.0.width);
         assert_eq!(image.height, chart.config().chart_area.0.height);
 
@@ -2541,7 +2554,11 @@ fn direct_export_covers_both_contour_variants_at_the_level_boundary() {
             &["fz0", "fz1"],
             crate::data_config::MAX_CONTOUR_LEVELS + 1,
         )];
-        assert_contour_limit_error(renderer.export_panel_rgba(&chart, &rejected, 1.0));
+        assert_contour_limit_error(
+            renderer
+                .export_panel_rgba_async(&chart, &rejected, 1.0)
+                .block_on(),
+        );
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -5334,7 +5351,10 @@ fn point_constellation_scatterline_exports() {
             },
         },
     }];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let lit = img.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
     assert!(
         lit > 100,
@@ -5426,7 +5446,10 @@ fn all_scatter_shapes_export_visible_markers() {
     chart.set_x_range(-0.5, 6.5);
     chart.set_y_range(-0.5, 3.8);
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let red_ink = img
         .rgba
         .chunks_exact(4)
@@ -5475,7 +5498,9 @@ fn xy_errorbar_does_not_require_zero_column() {
         },
     }];
 
-    r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    r.export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 }
 
 /// A zero-size marker draws a dot and picks (`pick_draw_agreement`), so a
@@ -5526,7 +5551,10 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let green_ring_ink = img
         .rgba
         .chunks_exact(4)
@@ -5592,7 +5620,10 @@ fn errorbar_style_index_colors_points_independently() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let green = img
         .rgba
         .chunks_exact(4)
@@ -5804,7 +5835,8 @@ fn render_mapped_style_case(
         )
     };
     let export = renderer
-        .export_panel_rgba(chart, series_cfgs, 1.0)
+        .export_panel_rgba_async(chart, series_cfgs, 1.0)
+        .block_on()
         .expect("export must not panic when a style map exists without an index column");
     MappedStyleRender {
         styles,
@@ -6130,8 +6162,14 @@ fn size_mapped_scatter_scales_with_the_export_multiplier() {
         None,
         Some(("s", SizeScale::Radius)),
     )];
-    let one = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let two = renderer.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let one = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
+    let two = renderer
+        .export_panel_rgba_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     let one_px = count_rgba_ink(&one.rgba, is_saturated_red);
     let two_px = count_rgba_ink(&two.rgba, is_saturated_red);
     assert!(one_px > 0);
@@ -7246,7 +7284,8 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
         .add_column("ey", &col_f64(vec![0.3, 0.1, 0.2]))
         .unwrap();
     let image = export_renderer
-        .export_panel_rgba(&chart, &series_configs, 1.0)
+        .export_panel_rgba_async(&chart, &series_configs, 1.0)
+        .block_on()
         .expect("single-direction errorbar export");
     assert!(export_renderer.pool().slot("__zero").is_none());
     assert!(image.rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
@@ -7416,7 +7455,10 @@ fn two_line_series_both_render() {
         line_cfg("rc", "t", "v", Color::new(1.0, 0.0, 0.0, 1.0)),
     ];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (mut red, mut black) = (0usize, 0usize);
     for px in img.rgba.chunks_exact(4) {
         if px[3] > 16 {
@@ -7506,7 +7548,10 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
     };
     let mut star_ink = |id: &str, x: &str, y: &str| -> usize {
         let series = [line_cfg(id, x, y)];
-        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         img.rgba
             .chunks_exact(4)
             .filter(|p| p[3] > 0 && (p[0] > 40 || p[1] > 40 || p[2] > 40))
@@ -7601,7 +7646,10 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
     };
     // Ink in the right fifth of the image, where only the tail run reaches.
     let mut right_ink = |series: &[SeriesConfig]| -> usize {
-        let img = r.export_panel_rgba(&chart, series, 1.0).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, series, 1.0)
+            .block_on()
+            .unwrap();
         let width = img.width as usize;
         img.rgba
             .chunks_exact(4)
@@ -7743,7 +7791,10 @@ fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
     let chart = Chart::new(config);
 
     for scale in [1.0, 2.0] {
-        let img = r.export_panel_rgba(&chart, &[], scale).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &[], scale)
+            .block_on()
+            .unwrap();
         let off_base = img
             .rgba
             .chunks_exact(4)
@@ -10194,7 +10245,10 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (w, h) = (img.width as usize, img.height as usize);
     let da = chart.config().data_area().unwrap().0;
 
@@ -10311,7 +10365,10 @@ fn precise_zoom_keeps_connections_to_distant_endpoints() {
                     let mut chart = Chart::new(config.clone());
                     chart.set_x_range(shift, 1.0 + shift);
                     chart.set_y_range(shift, 1.0 + shift);
-                    let image = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+                    let image = r
+                        .export_panel_rgba_async(&chart, &series, 1.0)
+                        .block_on()
+                        .unwrap();
                     let area = chart.config().data_area().unwrap().0;
                     let red = |x: u32, y: u32| {
                         let p = &image.rgba[((y * image.width + x) * 4) as usize..][..4];
@@ -10402,7 +10459,10 @@ fn dense_line_has_no_gaps() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (w, h) = (img.width as usize, img.height as usize);
     let col_has_red = |x: usize| {
         (0..h).any(|y| {
@@ -10498,7 +10558,10 @@ fn solid_line_exports_analytic_aa_fringe() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let red_alphas: Vec<u8> = img
         .rgba
         .chunks_exact(4)
@@ -10602,7 +10665,10 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     r.add_column("gy", &col_f64(ys)).unwrap();
 
     let series = [line_cfg("gap", "gx", "gy")];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let cols = red_cols(&img);
     let da = chart.config().data_area().unwrap().0;
     let to_px = |v: f64| da.x as f64 + v * da.width as f64;
@@ -10644,7 +10710,10 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     r.add_column("my", &col_f64(ys2)).unwrap();
 
     let series2 = [line_cfg("loop", "mx", "my")];
-    let img2 = r.export_panel_rgba(&chart, &series2, 1.0).unwrap();
+    let img2 = r
+        .export_panel_rgba_async(&chart, &series2, 1.0)
+        .block_on()
+        .unwrap();
     let (w2, h2) = (img2.width as usize, img2.height as usize);
     let half = h2 / 2; // y=0.25 band renders below the midline, 0.75 above
     let band_has = |x: usize, top: bool| {
@@ -10728,7 +10797,10 @@ fn dashed_curve_runs_match_pattern() {
         },
     }];
 
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (w, h) = (img.width as usize, img.height as usize);
     let is_red = |x: usize, y: usize| {
         let i = (y * w + x) * 4;
@@ -10870,7 +10942,10 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
             },
         },
     }];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (w, h) = (img.width as usize, img.height as usize);
     let red = |x: usize, y: usize| {
         let p = &img.rgba[(y * w + x) * 4..(y * w + x) * 4 + 4];
@@ -11459,7 +11534,10 @@ fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
             },
         },
     }];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let width = img.width as usize;
     // Red ink in the right fifth: values from index 80 000 on, far past the
     // 8 192 the initial pool held.
@@ -14762,15 +14840,25 @@ fn export_frames_hold_one_item_per_panel() {
     let (config, series) = &documents[2];
     let chart = Chart::new(config.clone());
     for scale in [1.0f32, 2.0] {
-        let svg = renderer.export_document_svg(&chart, series, scale).unwrap();
+        let svg = renderer
+            .export_document_svg_async(&chart, series, scale)
+            .block_on()
+            .unwrap();
         assert!(svg.ends_with("</svg>\n"));
-        let pdf = renderer.export_document_pdf(&chart, series, scale).unwrap();
+        let pdf = renderer
+            .export_document_pdf_async(&chart, series, scale)
+            .block_on()
+            .unwrap();
         assert!(pdf.ends_with(b"%%EOF\n"));
         let png = renderer
-            .export_document_rgba(&chart, series, scale)
+            .export_document_rgba_async(&chart, series, scale)
+            .block_on()
             .unwrap();
         assert_eq!(png.rgba.len(), (png.width * png.height * 4) as usize);
-        let panel = renderer.export_panel_rgba(&chart, series, scale).unwrap();
+        let panel = renderer
+            .export_panel_rgba_async(&chart, series, scale)
+            .block_on()
+            .unwrap();
         assert_eq!(panel.rgba.len(), (panel.width * panel.height * 4) as usize);
     }
 }

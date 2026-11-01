@@ -1,6 +1,7 @@
 //! Native SSOT editor. Click a slice, change its color/style/label, or edit the chart.
 //! cargo run -p figgy-renderer --example radial_editor --features egui_demo
 use eframe::egui_wgpu::RenderState;
+use pollster::FutureExt as _;
 use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::Arc;
 const MATERIALS: &[Material] = &[
@@ -194,7 +195,7 @@ impl Editor {
 }
 /// A radial pick request resolved on the spot; a failed pick reads as a miss.
 fn resolved(ticket: Result<renderer::RadialPickTicket, RadialError>) -> Option<RadialTarget> {
-    ticket.ok()?.resolve_blocking().ok()?
+    ticket.ok()?.resolve().block_on().ok()?
 }
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {

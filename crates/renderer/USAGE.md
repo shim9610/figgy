@@ -135,11 +135,11 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // One-line setup — figgy owns instance/adapter/device/queue/surface/swap chain.
-let mut renderer = Renderer::for_window(
+let mut renderer = pollster::block_on(Renderer::for_window_async(
     Arc::clone(&window),
     (size.width, size.height),
     16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
-).unwrap();
+)).unwrap();
 
 // renderer.add_column takes `&dyn ColumnSource`.
 // Implement the trait on your own type (see `ColumnSource` section below) — Vec, ndarray,
@@ -603,11 +603,12 @@ boxes are never drawn, as in the PNG export.
 The SVG's `viewBox` is in physical pixels and its `width` / `height`, like
 the PDF page, are the logical size in points (1 px = 0.75 pt), so a 2x export
 has the same page size with twice the image resolution. `scale` is clamped
-as for the PNG export, the `_with_clear_async` variants paint the clear
-colour as a rectangle under everything, and the native blocking wrappers are
-`export_document_svg` / `export_document_pdf`. `WindowedRenderer` has the same
-six methods. A series with a streamed source is rejected with
-`FiggyError::ColumnNotResident`, as by the PNG export.
+as for the PNG export, and the `_with_clear_async` variants paint the clear
+colour as a rectangle under everything. Every export is async; a native host
+blocks on it with an executor such as `pollster::block_on`.
+`WindowedRenderer` has the same four methods. A series with a streamed
+source is rejected with `FiggyError::ColumnNotResident`, as by the PNG
+export.
 
 The radial chart exports with `RadialRenderer::export_svg_async(&chart, size,
 scale)` and `export_pdf_async` (blocking: `export_svg` / `export_pdf`): the
@@ -732,11 +733,11 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // 한 줄로 초기화한다. instance·adapter·device·queue·surface·swap chain은 모두 figgy가 소유한다.
-let mut renderer = Renderer::for_window(
+let mut renderer = pollster::block_on(Renderer::for_window_async(
     Arc::clone(&window),
     (size.width, size.height),
     16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
-).unwrap();
+)).unwrap();
 
 // renderer.add_column은 `&dyn ColumnSource`를 받는다.
 // 사용하는 데이터 타입에 트레이트를 구현하면(아래 `ColumnSource` 절 참고) Vec, ndarray,
@@ -1092,7 +1093,7 @@ std::fs::write("/tmp/out.pdf", pdf)?;
 장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
 데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
 
-SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그리고, 네이티브 동기 래퍼의 이름은 `export_document_svg` / `export_document_pdf`다. `WindowedRenderer`에도 같은 메서드 여섯 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
+SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `pollster::block_on` 같은 실행기로 기다린다. `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
 
 원형 차트는 `RadialRenderer::export_svg_async(&chart, size, scale)`와 `export_pdf_async`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 
