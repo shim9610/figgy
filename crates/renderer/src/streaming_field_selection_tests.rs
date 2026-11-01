@@ -34,9 +34,13 @@ fn pump_with_selection(f: &mut Fixture, operation: StreamingOperation) {
                     .submit_stream_operation_ranges(operation, &bindings)
                     .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::Complete { .. } => return,
-            crate::AutoStreamingRangeRequest::AllSubmitted { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::AllSubmitted { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
         }
     }
     panic!("field selection export did not terminate");
@@ -134,7 +138,9 @@ fn heatmap_selection_matches_resident_with_bounded_axis_neighbours() {
                         .submit_stream_selection_ranges(ticket, &bindings)
                         .unwrap();
                 }
-                crate::StreamingSelectionRequest::Backpressure { .. } => f.renderer.wait_idle(),
+                crate::StreamingSelectionRequest::Backpressure { .. } => {
+                    f.renderer.wait_idle().unwrap()
+                }
                 crate::StreamingSelectionRequest::Complete { .. } => break,
                 crate::StreamingSelectionRequest::Failed { .. } => panic!("selection failed"),
             }

@@ -45,6 +45,21 @@ impl std::fmt::Display for RadialError {
     }
 }
 impl std::error::Error for RadialError {}
+
+/// Run `create` inside the device's error scopes
+/// ([`crate::renderer::gpu_checked`]): an out-of-memory or validation
+/// failure is a [`RadialError::Gpu`], not a panic (#152).
+fn gpu_created<T>(
+    device: &wgpu::Device,
+    resource: &'static str,
+    create: impl FnOnce() -> T,
+) -> Result<T, RadialError> {
+    crate::renderer::gpu_checked(device, resource, create).map_err(radial_gpu_error)
+}
+
+fn radial_gpu_error(error: crate::FiggyError) -> RadialError {
+    RadialError::Gpu(error.to_string())
+}
 /// One sector as the radial modules read it (`radial_sector.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -309,31 +324,37 @@ impl RadialFrame {
         }
         let device = self.gpu.device();
         // gpu-alloc: PickScratch
-        let query = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("radial pick query"),
-            contents: bytemuck::bytes_of(&RadialPickQueryGpu {
-                pixel,
-                count: self.targets.len() as u32,
-                rest: u32::from(rest),
-            }),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let query = gpu_created(device, "radial pick query", || {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("radial pick query"),
+                contents: bytemuck::bytes_of(&RadialPickQueryGpu {
+                    pixel,
+                    count: self.targets.len() as u32,
+                    rest: u32::from(rest),
+                }),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        })?;
         let query = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, query);
         // gpu-alloc: PickScratch
-        let result = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("radial pick result"),
-            size: RADIAL_PICK_RESULT_BYTES,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let result = gpu_created(device, "radial pick result", || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("radial pick result"),
+                size: RADIAL_PICK_RESULT_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        })?;
         let result = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, result);
         // gpu-alloc: Readback
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("radial pick readback"),
-            size: RADIAL_PICK_RESULT_BYTES,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let readback = gpu_created(device, "radial pick readback", || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("radial pick readback"),
+                size: RADIAL_PICK_RESULT_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })?;
         let readback = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, readback);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("radial pick"),
@@ -369,7 +390,9 @@ impl RadialFrame {
         self.gpu.queue().submit([encoder.finish()]);
         let (sender, receiver) = futures_channel::oneshot::channel();
         readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = sender.send(r);
+            if sender.send(r).is_err() {
+                // receiver dropped: the waiting call was cancelled
+            }
         });
         Ok(RadialPickTicket {
             pending: Some(PendingRadialPick {
@@ -434,15 +457,15 @@ impl RadialPickTicket {
             return Ok(None);
         };
         #[cfg(not(target_arch = "wasm32"))]
-        pending
-            .frame
-            .gpu
-            .device()
-            .poll(wgpu::PollType::Wait {
+        crate::renderer::gpu_poll(
+            pending.frame.gpu.health(),
+            pending.frame.gpu.device(),
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            })
-            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+            },
+        )
+        .map_err(radial_gpu_error)?;
         pending
             .receiver
             .await
@@ -739,15 +762,17 @@ impl RadialRenderer {
                     .bytes_needed(&chart.annotations, frame.size),
             )?;
         }
-        Ok(self.annotation_layer.prepare(
-            &self.gpu,
-            &self.ledger,
-            &chart.annotations,
-            space,
-            frame.size,
-            scale,
-            selected,
-        ))
+        self.annotation_layer
+            .prepare(
+                &self.gpu,
+                &self.ledger,
+                &chart.annotations,
+                space,
+                frame.size,
+                scale,
+                selected,
+            )
+            .map_err(|error| RadialError::Gpu(error.to_string()))
     }
     /// Accounted live resources plus resources awaiting submission completion.
     pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
@@ -814,20 +839,25 @@ impl RadialRenderer {
             texture
         } else {
             // gpu-alloc: PanelTexture
-            let annotations = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("radial labels at output resolution"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
+            let annotations = crate::renderer::create_texture_checked(
+                device,
+                &wgpu::TextureDescriptor {
+                    label: Some("radial labels at output resolution"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
                 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
+                "radial label texture",
+            )
+            .map_err(radial_gpu_error)?;
             let annotations =
                 TrackedTexture::new(&self.ledger, GpuResourceKind::PanelTexture, annotations);
             self.gpu.queue().write_texture(
@@ -852,7 +882,7 @@ impl RadialRenderer {
             Arc::new(annotations)
         };
         let (uniform, sectors, bind_group) =
-            self.bind_frame(chart, &l, (width, height), &annotations);
+            self.bind_frame(chart, &l, (width, height), &annotations)?;
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
             gpu: self.gpu.clone(),
@@ -899,22 +929,28 @@ impl RadialRenderer {
         let l = layout::layout(chart, size, scale, layout::Labels::None)?;
         // A texture starts zeroed: the frame draws no label.
         // gpu-alloc: PanelTexture
-        let labels = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("radial vector export without labels"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
+        let labels = crate::renderer::create_texture_checked(
+            self.gpu.device(),
+            &wgpu::TextureDescriptor {
+                label: Some("radial vector export without labels"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+            "radial export label texture",
+        )
+        .map_err(radial_gpu_error)?;
         let labels = TrackedTexture::new(&self.ledger, GpuResourceKind::PanelTexture, labels);
-        let (_uniform, _sectors, bind_group) = self.bind_frame(chart, &l, (width, height), &labels);
+        let (_uniform, _sectors, bind_group) =
+            self.bind_frame(chart, &l, (width, height), &labels)?;
         let image = self
             .render_rgba((width, height), |pass| {
                 pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
@@ -1012,7 +1048,7 @@ impl RadialRenderer {
         l: &layout::Layout,
         (width, height): (u32, u32),
         labels: &TrackedTexture,
-    ) -> (TrackedBuffer, TrackedBuffer, wgpu::BindGroup) {
+    ) -> Result<(TrackedBuffer, TrackedBuffer, wgpu::BindGroup), RadialError> {
         let globals = Globals {
             size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
             background: [
@@ -1038,18 +1074,22 @@ impl RadialRenderer {
         };
         let device = self.gpu.device();
         // gpu-alloc: Uniform
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("radial globals"),
-            contents: bytemuck::bytes_of(&globals),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform = gpu_created(device, "radial globals", || {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("radial globals"),
+                contents: bytemuck::bytes_of(&globals),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
+        })?;
         let uniform = TrackedBuffer::new(&self.ledger, GpuResourceKind::Uniform, uniform);
         // gpu-alloc: FieldTable
-        let sectors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("radial sectors"),
-            contents: bytemuck::cast_slice(&l.sectors),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let sectors = gpu_created(device, "radial sectors", || {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("radial sectors"),
+                contents: bytemuck::cast_slice(&l.sectors),
+                usage: wgpu::BufferUsages::STORAGE,
+            })
+        })?;
         let sectors = TrackedBuffer::new(&self.ledger, GpuResourceKind::FieldTable, sectors);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("radial frame"),
@@ -1071,7 +1111,7 @@ impl RadialRenderer {
                 },
             ],
         });
-        (uniform, sectors, bind_group)
+        Ok((uniform, sectors, bind_group))
     }
 
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -1097,7 +1137,9 @@ impl RadialRenderer {
         {
             let (tx, rx) = futures_channel::oneshot::channel();
             self.gpu.queue().on_submitted_work_done(move || {
-                let _ = tx.send(());
+                if tx.send(()).is_err() {
+                    // receiver dropped: the waiting task was cancelled
+                }
             });
             wasm_bindgen_futures::spawn_local(async move {
                 if rx.await.is_ok() {
@@ -1142,28 +1184,35 @@ impl RadialRenderer {
         self.admit(u64::from(width) * u64::from(height) * 4 + bytes)?;
         let device = self.gpu.device();
         // gpu-alloc: ExportTarget
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("radial export"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
+        let target = crate::renderer::create_texture_checked(
+            device,
+            &wgpu::TextureDescriptor {
+                label: Some("radial export"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+            "radial export target",
+        )
+        .map_err(radial_gpu_error)?;
         let target = TrackedTexture::new(&self.ledger, GpuResourceKind::ExportTarget, target);
         // gpu-alloc: Readback
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("radial readback"),
-            size: bytes,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = gpu_created(device, "radial readback", || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("radial readback"),
+                size: bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        })?;
         let buffer = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, buffer);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -1207,15 +1256,20 @@ impl RadialRenderer {
         self.gpu.queue().submit([encoder.finish()]);
         let (tx, rx) = futures_channel::oneshot::channel();
         buffer.map_async(wgpu::MapMode::Read, .., move |r| {
-            let _ = tx.send(r);
+            if tx.send(r).is_err() {
+                // receiver dropped: the waiting call was cancelled
+            }
         });
         #[cfg(not(target_arch = "wasm32"))]
-        device
-            .poll(wgpu::PollType::Wait {
+        crate::renderer::gpu_poll(
+            self.gpu.health(),
+            device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            })
-            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+            },
+        )
+        .map_err(radial_gpu_error)?;
         rx.await
             .map_err(|e| RadialError::Gpu(e.to_string()))?
             .map_err(|e| RadialError::Gpu(e.to_string()))?;
@@ -1355,6 +1409,8 @@ pub fn written_vector_parts(
     scale: f32,
     out: &mut dyn FnMut(crate::WrittenPart),
 ) -> Result<(), RadialError> {
+    // `layout::layout` reads a validated chart, as every other caller's.
+    chart.validate().map_err(RadialError::Invalid)?;
     let canvas = crate::layout::Rect {
         x: 0,
         y: 0,

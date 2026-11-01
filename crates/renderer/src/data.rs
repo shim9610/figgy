@@ -21,19 +21,25 @@ pub struct ColumnPairWriter<'a> {
     /// Store each pair as a `u32` index lane instead of the f32 pair: a
     /// ragged column's offsets (`SHADER_COMMON.md` §5.14).
     index_lanes: bool,
+    /// Set when the source writes an index outside `0..len()`. The write is
+    /// not performed, and the caller that built the writer rejects the
+    /// upload once the source returns (#152).
+    out_of_range: &'a std::cell::Cell<bool>,
 }
 
 impl<'a> ColumnPairWriter<'a> {
-    pub(crate) fn new(dst: wgpu::WriteOnly<'a, [u8]>) -> Self {
-        assert_eq!(
-            dst.len() % COLUMN_VALUE_BYTES,
-            0,
-            "column pair destination must contain complete f32 pairs"
-        );
+    /// A writer over `dst`. `len()` counts complete pairs only, so a write
+    /// never reaches past `dst`; a write outside `0..len()` sets
+    /// `out_of_range`, which the caller checks after the source returns.
+    pub(crate) fn new(
+        dst: wgpu::WriteOnly<'a, [u8]>,
+        out_of_range: &'a std::cell::Cell<bool>,
+    ) -> Self {
         Self {
             dst,
             observer: None,
             index_lanes: false,
+            out_of_range,
         }
     }
 
@@ -50,16 +56,20 @@ impl<'a> ColumnPairWriter<'a> {
 
     pub(crate) fn new_observed(
         dst: wgpu::WriteOnly<'a, [u8]>,
+        out_of_range: &'a std::cell::Cell<bool>,
         observer: &'a mut dyn FnMut(usize, f32, f32),
     ) -> Self {
-        let mut writer = Self::new(dst);
+        let mut writer = Self::new(dst, out_of_range);
         writer.observer = Some(observer);
         writer
     }
 
     #[cfg(test)]
-    pub(crate) fn from_bytes_for_test(dst: &'a mut [u8]) -> Self {
-        Self::new(wgpu::WriteOnly::from_mut(dst))
+    pub(crate) fn from_bytes_for_test(
+        dst: &'a mut [u8],
+        out_of_range: &'a std::cell::Cell<bool>,
+    ) -> Self {
+        Self::new(wgpu::WriteOnly::from_mut(dst), out_of_range)
     }
 
     /// Number of logical `(hi, lo)` pairs available for writing.
@@ -74,14 +84,14 @@ impl<'a> ColumnPairWriter<'a> {
 
     /// Write one little-endian `(hi, lo)` pair.
     ///
-    /// Panics when `index` is outside `0..self.len()`.
-    #[track_caller]
+    /// A write with `index` outside `0..self.len()` is not performed, and
+    /// the upload this writer belongs to fails with an error once the source
+    /// returns.
     pub fn write_pair(&mut self, index: usize, hi: f32, lo: f32) {
-        assert!(
-            index < self.len(),
-            "column pair index {index} out of bounds for length {}",
-            self.len()
-        );
+        if index >= self.len() {
+            self.out_of_range.set(true);
+            return;
+        }
         let start = index * COLUMN_VALUE_BYTES;
         let (hi_bytes, lo_bytes) = if self.index_lanes {
             (index_lane(hi, lo).to_le_bytes(), [0; 4])
@@ -291,8 +301,9 @@ pub trait ColumnSource {
     fn min(&self) -> f64;
 
     /// Legacy scalar encoding helper. The caller guarantees
-    /// `dst.len() == self.len() * 4`; nulls encode as `f32::NAN`. Pool upload
-    /// uses [`Self::write_f32_pair_le_into_with_stats`] instead.
+    /// `dst.len() == self.len() * 4`; the built-in sources write only the
+    /// leading values that fit a shorter `dst`. Nulls encode as `f32::NAN`.
+    /// Pool upload uses [`Self::write_f32_pair_le_into_with_stats`] instead.
     fn write_f32_le_into(&self, dst: &mut [u8]);
 
     /// Write the scalar GPU representation directly as `(value, 0)` f32
@@ -300,18 +311,16 @@ pub trait ColumnSource {
     /// place without allocating a per-value buffer. Pool upload uses the
     /// write-only fused capability below instead.
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        let n = self.len();
-        debug_assert_eq!(dst.len(), n * COLUMN_VALUE_BYTES);
+        // The caller guarantees `dst.len() == self.len() * 8`; a shorter
+        // destination receives the leading pairs that fit, so every index
+        // below stays inside `dst`.
+        let n = self.len().min(dst.len() / COLUMN_VALUE_BYTES);
         let scalar_bytes = n * std::mem::size_of::<f32>();
-        self.write_f32_le_into(&mut dst[..scalar_bytes]);
-        if n == 0 {
-            return;
-        }
-        let words: &mut [u32] = bytemuck::cast_slice_mut(dst);
+        let (scalars, _) = dst.split_at_mut(scalar_bytes);
+        self.write_f32_le_into(scalars);
         for i in (0..n).rev() {
-            let scalar_bits = words[i];
-            words[i * 2] = scalar_bits;
-            words[i * 2 + 1] = 0;
+            dst.copy_within(i * 4..i * 4 + 4, i * COLUMN_VALUE_BYTES);
+            dst[i * COLUMN_VALUE_BYTES + 4..(i + 1) * COLUMN_VALUE_BYTES].fill(0);
         }
     }
 
@@ -422,13 +431,11 @@ impl ColumnSource for Column<f64> {
         self.max
     }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * 4);
-        for (i, &v) in self.data.iter().enumerate() {
-            dst[i * 4..i * 4 + 4].copy_from_slice(&(v as f32).to_le_bytes());
+        for (scalar, &v) in dst.chunks_exact_mut(4).zip(&self.data) {
+            scalar.copy_from_slice(&(v as f32).to_le_bytes());
         }
     }
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
             pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
@@ -438,7 +445,6 @@ impl ColumnSource for Column<f64> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         // The (hi, lo) split, written straight into the destination: an f64
         // column keeps about 48 bits on the GPU, not f32's 24 (#107).
@@ -479,7 +485,6 @@ impl HiLoColumnSource for Column<f64> {
         self.max
     }
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             let (hi, lo) = split_f64_to_f32_pair(value);
             pair[..4].copy_from_slice(&hi.to_le_bytes());
@@ -490,7 +495,6 @@ impl HiLoColumnSource for Column<f64> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         for (index, &v) in self.data.iter().enumerate() {
             let (hi, lo) = split_f64_to_f32_pair(v);
@@ -526,13 +530,11 @@ impl ColumnSource for Column<f32> {
         self.max as f64
     }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * 4);
-        // Already f32; on little-endian targets bit patterns match.
-        let dst_f32: &mut [f32] = bytemuck::cast_slice_mut(dst);
-        dst_f32.copy_from_slice(&self.data);
+        for (scalar, &v) in dst.chunks_exact_mut(4).zip(&self.data) {
+            scalar.copy_from_slice(&v.to_le_bytes());
+        }
     }
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             pair[..4].copy_from_slice(&value.to_le_bytes());
             pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
@@ -573,7 +575,6 @@ impl HiLoColumnSource for Column<f32> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         for (index, &hi) in self.data.iter().enumerate() {
             dst.write_pair(index, hi, 0.0);
@@ -608,16 +609,18 @@ impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
         ::model::bounded_sources::UploadValues::max(self)
     }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), ColumnSource::len(self) * 4);
-        for i in 0..ColumnSource::len(self) {
-            dst[i * 4..i * 4 + 4].copy_from_slice(&(self.value(i) as f32).to_le_bytes());
+        for (i, scalar) in dst
+            .chunks_exact_mut(4)
+            .take(ColumnSource::len(self))
+            .enumerate()
+        {
+            scalar.copy_from_slice(&(self.value(i) as f32).to_le_bytes());
         }
     }
     fn write_f32_pair_le_into_with_stats(
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), ColumnSource::len(self));
         let mut stats = ColumnUploadStats { min_positive: None };
         for index in 0..ColumnSource::len(self) {
             let (hi, lo) = split_f64_to_f32_pair(self.value(index));
@@ -645,16 +648,16 @@ impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
         ::model::bounded_sources::BoxColumn::max(self)
     }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), ColumnSource::len(self) * 4);
         self.for_each(|i, value| {
-            dst[i * 4..i * 4 + 4].copy_from_slice(&(value as f32).to_le_bytes());
+            if let Some(scalar) = dst.get_mut(i * 4..i * 4 + 4) {
+                scalar.copy_from_slice(&(value as f32).to_le_bytes());
+            }
         });
     }
     fn write_f32_pair_le_into_with_stats(
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), ColumnSource::len(self));
         let mut stats = ColumnUploadStats { min_positive: None };
         self.for_each(|index, value| {
             let (hi, lo) = split_f64_to_f32_pair(value);
@@ -676,14 +679,12 @@ impl ColumnSource for Column<Option<f64>> {
         self.max.unwrap_or(f64::NAN)
     }
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * 4);
-        for (i, opt) in self.data.iter().enumerate() {
+        for (scalar, opt) in dst.chunks_exact_mut(4).zip(&self.data) {
             let v = opt.map(|x| x as f32).unwrap_or(f32::NAN);
-            dst[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            scalar.copy_from_slice(&v.to_le_bytes());
         }
     }
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
             pair[..4].copy_from_slice(&value.to_le_bytes());
@@ -694,7 +695,6 @@ impl ColumnSource for Column<Option<f64>> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         // The (hi, lo) split, written straight into the destination (about
         // 48 bits); a missing value is NaN (#107).
@@ -736,7 +736,6 @@ impl HiLoColumnSource for Column<Option<f64>> {
         self.max.unwrap_or(f64::NAN)
     }
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
             let (hi, lo) = value.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
             pair[..4].copy_from_slice(&hi.to_le_bytes());
@@ -747,7 +746,6 @@ impl HiLoColumnSource for Column<Option<f64>> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         for (index, opt) in self.data.iter().enumerate() {
             let (hi, lo) = opt.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
@@ -778,15 +776,17 @@ mod tests {
 
     fn scalar_upload(source: &dyn ColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
         let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
-        let stats = source
-            .write_f32_pair_le_into_with_stats(ColumnPairWriter::from_bytes_for_test(&mut bytes));
+        let stats = source.write_f32_pair_le_into_with_stats(
+            ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false)),
+        );
         (decode_pairs(&bytes), stats)
     }
 
     fn hilo_upload(source: &dyn HiLoColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
         let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
-        let stats = source
-            .write_f32_pair_le_into_with_stats(ColumnPairWriter::from_bytes_for_test(&mut bytes));
+        let stats = source.write_f32_pair_le_into_with_stats(
+            ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false)),
+        );
         (decode_pairs(&bytes), stats)
     }
 
@@ -813,7 +813,7 @@ mod tests {
         let scalar_bounds = <Column<f64> as ColumnSource>::write_f32_pair_range_into_with_stats(
             &source,
             2,
-            ColumnPairWriter::from_bytes_for_test(&mut scalar_bytes),
+            ColumnPairWriter::from_bytes_for_test(&mut scalar_bytes, &std::cell::Cell::new(false)),
         )
         .unwrap();
         assert_eq!(decode_pairs(&scalar_bytes), vec![(3.5, 0.0), (4.75, 0.0)]);
@@ -830,7 +830,7 @@ mod tests {
         let hilo_bounds = <Column<f64> as HiLoColumnSource>::write_f32_pair_range_into_with_stats(
             &source,
             1,
-            ColumnPairWriter::from_bytes_for_test(&mut hilo_bytes),
+            ColumnPairWriter::from_bytes_for_test(&mut hilo_bytes, &std::cell::Cell::new(false)),
         )
         .unwrap();
         let pairs = decode_pairs(&hilo_bytes);
@@ -850,23 +850,29 @@ mod tests {
     #[test]
     fn pair_writer_reports_logical_length_and_checks_bounds() {
         let mut bytes = [0; 2 * COLUMN_VALUE_BYTES];
+        let out_of_range = std::cell::Cell::new(false);
         {
-            let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes);
+            let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes, &out_of_range);
             assert_eq!(writer.len(), 2);
             assert!(!writer.is_empty());
             writer.write_pair(1, 3.5, -0.25);
         }
         assert_eq!(decode_pairs(&bytes)[1], (3.5, -0.25));
+        assert!(!out_of_range.get());
 
         let mut empty = [];
-        assert!(ColumnPairWriter::from_bytes_for_test(&mut empty).is_empty());
+        assert!(ColumnPairWriter::from_bytes_for_test(&mut empty, &out_of_range).is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "column pair index 1 out of bounds for length 1")]
     fn pair_writer_rejects_out_of_bounds_writes() {
-        let mut bytes = [0; COLUMN_VALUE_BYTES];
-        ColumnPairWriter::from_bytes_for_test(&mut bytes).write_pair(1, 0.0, 0.0);
+        let mut bytes = [7; COLUMN_VALUE_BYTES + 3];
+        let out_of_range = std::cell::Cell::new(false);
+        let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes, &out_of_range);
+        assert_eq!(writer.len(), 1);
+        writer.write_pair(1, 0.0, 0.0);
+        assert!(out_of_range.get());
+        assert_eq!(bytes, [7; COLUMN_VALUE_BYTES + 3]);
     }
 
     #[test]

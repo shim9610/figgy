@@ -266,7 +266,7 @@ pub(crate) fn create_view3d_binding(
     scale: f32,
     pick_id: u32,
     value_map: Option<&super::PointValueMapBuffers>,
-) -> View3dBinding {
+) -> crate::Result<View3dBinding> {
     let look = surface_params_gpu(None, 0, scale, None, pick_id);
     let tally = crate::gpu_memory::ChargeTally::new();
     let uniform = |label, contents: &[u8]| {
@@ -280,8 +280,8 @@ pub(crate) fn create_view3d_binding(
             },
         )
     };
-    let view_buf = uniform("figgy view3d camera uniform", bytemuck::bytes_of(camera));
-    let look_buf = uniform("figgy view3d params uniform", bytemuck::bytes_of(&look));
+    let view_buf = uniform("figgy view3d camera uniform", bytemuck::bytes_of(camera))?;
+    let look_buf = uniform("figgy view3d params uniform", bytemuck::bytes_of(&look))?;
     let camera_entries = [
         wgpu::BindGroupEntry {
             binding: 4,
@@ -315,14 +315,14 @@ pub(crate) fn create_view3d_binding(
             entries: &camera_entries,
         }),
     };
-    View3dBinding {
+    Ok(View3dBinding {
         bind_group,
         charge: crate::gpu_memory::shared_charge(
             tally,
             ledger,
             crate::gpu_memory::GpuResourceKind::Uniform,
         ),
-    }
+    })
 }
 
 /// The depth state of a 3D scatter or line draw (#132): depth tested and
@@ -357,6 +357,10 @@ pub enum SurfacePass {
     /// The floor contours' ID pick.
     FloorContourPick,
 }
+
+// `TargetPipelines::surface` has `ALL.len()` slots indexed by
+// `pass as usize`: the last discriminant is the last slot (#152).
+const _: () = assert!(SurfacePass::FloorContourPick as usize + 1 == SurfacePass::ALL.len());
 
 impl SurfacePass {
     pub const ALL: [SurfacePass; 5] = [
@@ -534,7 +538,7 @@ pub(crate) fn create_surface_bind_group(
     layout: &wgpu::BindGroupLayout,
     view: &View3dGpu,
     surface: &SurfaceParamsGpu,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     let tally = crate::gpu_memory::ChargeTally::new();
     let uniform = |label, contents: &[u8]| {
         crate::gpu_memory::charged_buffer_init(
@@ -547,8 +551,8 @@ pub(crate) fn create_surface_bind_group(
             },
         )
     };
-    let view_buf = uniform("figgy surface camera uniform", bytemuck::bytes_of(view));
-    let surface_buf = uniform("figgy surface params uniform", bytemuck::bytes_of(surface));
+    let view_buf = uniform("figgy surface camera uniform", bytemuck::bytes_of(view))?;
+    let surface_buf = uniform("figgy surface params uniform", bytemuck::bytes_of(surface))?;
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy surface bg"),
         layout,
@@ -568,7 +572,7 @@ pub(crate) fn create_surface_bind_group(
         ledger,
         crate::gpu_memory::GpuResourceKind::Uniform,
     );
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }
 
 /// The surface look of `style` (the default when `None`) for the GPU:

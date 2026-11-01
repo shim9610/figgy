@@ -50,7 +50,10 @@ async fn chart_title_hit_press_move_and_release_updates_config_offset() {
 
     let title_center = (480.0, 16.0);
     assert_eq!(
-        chart.hit_test(title_center.0, title_center.1).as_deref(),
+        chart
+            .hit_test(title_center.0, title_center.1)
+            .unwrap()
+            .as_deref(),
         Some("chart_title")
     );
     assert_eq!(title_offsets(&chart), (0.0, 0.0));
@@ -60,12 +63,13 @@ async fn chart_title_hit_press_move_and_release_updates_config_offset() {
             .on_press(title_center.0, title_center.1)
             .expect("press title")
     );
-    assert!(chart.has_selection());
+    assert!(chart.has_selection().unwrap());
     chart.on_move(18.0, 7.0).expect("drag title");
     assert_eq!(title_offsets(&chart), (18.0, 7.0));
     assert_eq!(
         chart
             .hit_test(title_center.0 + 18.0, title_center.1 + 7.0)
+            .unwrap()
             .as_deref(),
         Some("chart_title")
     );
@@ -125,7 +129,10 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
         .expect("title bounds");
     let title_point = (title.x + title.width * 0.5, title.y + title.height * 0.5);
     assert_eq!(
-        chart.hit_test(title_point.0, title_point.1).as_deref(),
+        chart
+            .hit_test(title_point.0, title_point.1)
+            .unwrap()
+            .as_deref(),
         Some("colorbar_title")
     );
     chart.on_press(title_point.0, title_point.1).unwrap();
@@ -141,7 +148,10 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
         .expect("label bounds");
     let label_point = (labels.x + labels.width * 0.5, labels.y + 1.0);
     assert_eq!(
-        chart.hit_test(label_point.0, label_point.1).as_deref(),
+        chart
+            .hit_test(label_point.0, label_point.1)
+            .unwrap()
+            .as_deref(),
         Some("colorbar_tick_labels")
     );
     chart.on_press(label_point.0, label_point.1).unwrap();
@@ -157,7 +167,10 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
         .expect("axis bounds");
     let axis_point = (axis.x + axis.width * 0.5, axis.y + axis.height * 0.5);
     assert_eq!(
-        chart.hit_test(axis_point.0, axis_point.1).as_deref(),
+        chart
+            .hit_test(axis_point.0, axis_point.1)
+            .unwrap()
+            .as_deref(),
         Some("colorbar_axis")
     );
     chart.on_press(axis_point.0, axis_point.1).unwrap();
@@ -213,7 +226,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
 
     // Base: the item is not part of the route.
     assert_ne!(
-        chart.hit_test(point.0, point.1).as_deref(),
+        chart.hit_test(point.0, point.1).unwrap().as_deref(),
         Some("annotation_0")
     );
     chart.on_press(point.0, point.1).unwrap();
@@ -227,12 +240,12 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
         r#""Annotations""#
     );
     assert_eq!(
-        chart.hit_test(point.0, point.1).as_deref(),
+        chart.hit_test(point.0, point.1).unwrap().as_deref(),
         Some("annotation_0")
     );
     assert!(chart.on_press(point.0, point.1).unwrap());
     assert_eq!(chart.selected_annotation(), Some(0));
-    assert!(chart.has_selection());
+    assert!(chart.has_selection().unwrap());
     chart.on_move(24.0, 16.0).unwrap();
     chart.on_release();
     let moved = match &chart_config(&chart).annotations.items[0].kind {
@@ -345,7 +358,10 @@ async fn an_adaptive_log_axis_round_trips_and_its_2e4_label_hits_and_drags() {
 
     let label = label_starting_with(&cfg, Side::Left, '2');
     let (cx, cy) = label.center();
-    assert_eq!(chart.hit_test(cx, cy).as_deref(), Some("tick_labels_left"));
+    assert_eq!(
+        chart.hit_test(cx, cy).unwrap().as_deref(),
+        Some("tick_labels_left")
+    );
     let bounds: serde_json::Value =
         serde_json::from_str(&chart.decoration_bounds("tick_labels_left").unwrap()).unwrap();
     let rect: Vec<f32> = bounds["rect"]
@@ -370,7 +386,10 @@ async fn an_adaptive_log_axis_round_trips_and_its_2e4_label_hits_and_drags() {
     let moved = label_starting_with(&cfg, Side::Left, '2');
     assert_eq!((moved.x - label.x, moved.y - label.y), (5.0, 12.0));
     let (mx, my) = moved.center();
-    assert_eq!(chart.hit_test(mx, my).as_deref(), Some("tick_labels_left"));
+    assert_eq!(
+        chart.hit_test(mx, my).unwrap().as_deref(),
+        Some("tick_labels_left")
+    );
 
     // The colourbar's axis takes the policy through its focused setter.
     let mut config = chart_config(&chart);

@@ -4848,7 +4848,7 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
     assert!(!renderer.errorbar_extent_engine_ready());
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 #[test]
@@ -7819,6 +7819,7 @@ fn gpu_arc_prefix_matches_cpu_reference() {
                 LineInterpolation::Linear,
             )
             .expect("arc prefix")
+            .unwrap()
             .prefix;
 
         // Read the GPU result back.
@@ -7936,6 +7937,7 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
             LineInterpolation::Linear,
         )
         .expect("arc prefix")
+        .unwrap()
         .prefix;
     assert_eq!(len_bytes, n as u64 * data_render::line_arc::ARC_PAIR_BYTES);
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -8116,6 +8118,7 @@ fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
         let (arc_buf, len_bytes) = r
             .ensure_arc_prefix("stepped", "step_ax", "step_ay", &t, None, mode)
             .expect("arc prefix")
+            .unwrap()
             .prefix;
         // Arc pairs (SHADER_COMMON.md §5.6): fixed-point (low, high) words.
         let gpu: Vec<f32> = read(&device, &queue, &arc_buf, len_bytes)
@@ -8338,7 +8341,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("changed geometry arc result");
+        .expect("changed geometry arc result")
+        .unwrap();
     let changed_arc = Arc::clone(&changed.prefix.0);
     assert!(
         !Arc::ptr_eq(&arc_of(&r.prepare(&items_a).unwrap()), &changed_arc),
@@ -8355,7 +8359,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("cached changed geometry arc result");
+        .expect("cached changed geometry arc result")
+        .unwrap();
     assert!(
         Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
         "an exact changed key should reuse its immutable result"
@@ -8372,7 +8377,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("style-only arc result");
+        .expect("style-only arc result")
+        .unwrap();
     assert!(
         Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
         "style-only changes must not retraverse geometry columns"
@@ -8389,7 +8395,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("changed data generation arc result");
+        .expect("changed data generation arc result")
+        .unwrap();
     assert!(
         !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
         "a new source generation must not reuse an old prefix"
@@ -14222,4 +14229,632 @@ fn series_labels_with_math_validate_at_registration() {
     };
     assert_eq!(series_id, "scatter");
     assert!(reason.starts_with("label: segment 2"), "{reason}");
+}
+
+// A chart view whose panel rect is sized differently from the config's chart
+// area cannot hold the raster laid out from that area: the mismatch is an
+// error before anything is rasterised, never a panic in the upload (#152).
+#[test]
+fn chart_view_size_mismatch_is_an_error() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 240,
+        height: 180,
+    };
+    let mut chart = Chart::new(panel_config(area.width, area.height));
+    chart.config_mut().chart_area = crate::layout::ChartArea(area);
+    let wider = Rect {
+        width: area.width + 16,
+        ..area
+    };
+    let result = renderer.create_chart_view(&chart, wider);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { width, height })
+            if width == wider.width && height == wider.height),
+        "a mismatched panel rect was accepted: {:?}",
+        result.err()
+    );
+
+    let mut view = renderer.create_chart_view(&chart, area).unwrap();
+    let result = renderer.refresh_axis(&mut view, &chart, wider);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { .. })),
+        "a mismatched refresh was accepted: {result:?}"
+    );
+    let result = renderer.refresh_annotations(&mut view, &chart, wider, None);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { .. })),
+        "a mismatched annotation refresh was accepted: {result:?}"
+    );
+    // The matching size still refreshes.
+    renderer.refresh_axis(&mut view, &chart, area).unwrap();
+}
+
+// A lost device is reported by every wait instead of wgpu's fatal poll
+// panic (#152).
+#[test]
+fn waits_on_a_destroyed_device_return_device_lost() {
+    let (device, queue) = crate::test_gpu::device();
+    let device = Arc::new(device);
+    let renderer = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1024 * 1024,
+    )
+    .expect("required GPU test: renderer initialization failed");
+    renderer.wait_idle().unwrap();
+    device.destroy();
+    let result = renderer.wait_idle();
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "a wait on a destroyed device returned {result:?}"
+    );
+    let result = renderer.service_gpu_completions();
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "polling a destroyed device returned {result:?}"
+    );
+    let result = pollster::block_on(renderer.wait_submitted_work());
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "waiting for work on a destroyed device returned {result:?}"
+    );
+}
+
+/// PIPELINE_ENUM_FITS_ARRAY (#152): each pipeline enum used as
+/// `kind as usize` lists every variant once in `ALL`, and its discriminants
+/// are exactly `0..N` for the `N` slots of the `TargetPipelines` array it
+/// indexes.
+#[test]
+fn pipeline_enums_index_their_target_arrays() {
+    fn check(name: &str, discriminants: Vec<usize>, slots: usize) {
+        assert_eq!(discriminants.len(), slots, "{name}: ALL length");
+        let mut sorted = discriminants.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            (0..slots).collect::<Vec<_>>(),
+            "{name}: discriminants"
+        );
+    }
+    // The slot counts of the `TargetPipelines` arrays, read from their types.
+    fn slots<T, const N: usize>(_: impl Fn(&TargetPipelines) -> &[T; N]) -> usize {
+        N
+    }
+    check(
+        "TernaryPipeline",
+        TernaryPipeline::ALL.iter().map(|&k| k as usize).collect(),
+        slots(|t| &t.ternary),
+    );
+    check(
+        "View3dPipeline",
+        View3dPipeline::ALL.iter().map(|&k| k as usize).collect(),
+        slots(|t| &t.view3d),
+    );
+    check(
+        "SurfacePass",
+        crate::data_render::surface_mesh::SurfacePass::ALL
+            .iter()
+            .map(|&k| k as usize)
+            .collect(),
+        slots(|t| &t.surface),
+    );
+    check(
+        "TernaryRegionPass",
+        crate::data_render::ternary_region::TernaryRegionPass::ALL
+            .iter()
+            .map(|&k| k as usize)
+            .collect(),
+        slots(|t| &t.ternary_region),
+    );
+    assert_eq!(slots(|t| &t.ternary), TERNARY_PIPELINES);
+    assert_eq!(slots(|t| &t.view3d), VIEW3D_PIPELINES);
+}
+
+/// CONTOUR_LEVELS_COVER_DECLARED (#152): `contour_levels` holds at least
+/// `max(1, declared_level_count)` levels for every render type, so the
+/// `levels[..level_count]` slices of the contour and field prepares stay in
+/// range. A registered contour and heatmap-contour series with 0, 1 and
+/// `MAX_CONTOUR_LEVELS` levels, switched through `set_chart_series`, prepare
+/// and draw, and their cached signatures keep the relation.
+#[test]
+fn contour_levels_cover_the_declared_count_at_every_producer() {
+    let max = crate::data_config::MAX_CONTOUR_LEVELS;
+    let mut variants = Vec::new();
+    for levels in [0, 1, max, 1, 0] {
+        variants.push(state_test_contour(
+            "c",
+            "clx",
+            "cly",
+            &["clz0", "clz1", "clz2"],
+            levels,
+        ));
+        variants.push(state_test_heatmap_contour(
+            "c",
+            "clx",
+            "cly",
+            &["clz0", "clz1", "clz2"],
+            levels,
+        ));
+    }
+    let heatmap = state_test_heatmap("c", "clx", "cly", &["clz0", "clz1", "clz2"]);
+    let plain = state_test_line("c", "clx", "cly");
+    for rt in variants
+        .iter()
+        .chain([&heatmap, &plain])
+        .map(|s| &s.render_type)
+    {
+        let levels = contour_levels(rt).unwrap();
+        let declared = declared_level_count(rt);
+        assert!(levels.len() >= declared.max(1), "{rt:?}");
+        assert!(u32::try_from(declared).unwrap_or(u32::MAX) as usize <= levels.len());
+    }
+
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_contour_grid(&mut renderer);
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 480,
+        height: 360,
+    };
+    let chart = state_test_contour_chart(rect, (0.0, 1.0));
+    let id = renderer
+        .register_chart(chart.config().clone(), vec![heatmap.clone()])
+        .unwrap();
+    let view = renderer
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    for series in variants.iter().chain([&heatmap]) {
+        renderer.set_chart_series(id, vec![series.clone()]).unwrap();
+        let frame = renderer
+            .prepare_registered(&[RegisteredChartDrawItem {
+                chart_id: id,
+                view: &view,
+            }])
+            .unwrap();
+        paint_prepared_rgba(&renderer, &frame, rect.width, rect.height);
+        drop(frame);
+        // Every cached signature, current or left from an earlier series,
+        // keeps its levels at least `max(1, level_count)` long; the current
+        // series' own entry counts its declared levels.
+        let declared = declared_level_count(&series.render_type);
+        let contour_kind = matches!(series.render_type, DataRenderType::Contour { .. });
+        let mut checked = 0;
+        if let Some(entry) = renderer.contour_cache.get("c").and_then(|e| e.contour()) {
+            let signature = &entry.signature;
+            let count = signature.params.level_count as usize;
+            assert!(signature.levels.len() >= count.max(1));
+            if contour_kind {
+                assert_eq!(count, declared);
+                checked += 1;
+            }
+        }
+        if let Some(entry) = renderer.field_cache.get("c") {
+            let signature = &entry.signature;
+            let count = signature.params.level_count as usize;
+            assert!(signature.levels.len() >= count.max(1));
+            if !contour_kind {
+                assert_eq!(count, declared);
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "{:?} prepared no field or contour",
+            series.render_type
+        );
+        renderer.end_gpu_frame();
+    }
+}
+
+/// A 480 x 360 document with `overlays` overlays (`o{k}`), a line offset
+/// group of `members` base series (`m{k}`) and `subplots` 240 x 240
+/// subplots below it (`p{i}`); the base draws `s0`.
+fn layered_test_config(overlays: usize, members: usize, subplots: usize) -> Config {
+    let mut c = panel_config(480, 360);
+    c.overlays = (0..overlays)
+        .map(|k| {
+            let mut overlay = crate::OverlayLayer::default();
+            overlay.y_axis.min = 0.0;
+            overlay.y_axis.max = 1.0;
+            overlay.y_axis.out_margin = 30.0;
+            overlay.series = vec![format!("o{k}")];
+            overlay
+        })
+        .collect();
+    if members > 0 {
+        c.line_offsets = Some(crate::data_config::LineOffsets {
+            series: (0..members).map(|k| format!("m{k}")).collect(),
+            step_y: 0.001,
+            step_x: 0.0,
+        });
+    }
+    c.subplots = (0..subplots)
+        .map(|i| {
+            let mut config = panel_config(240, 240);
+            config.chart_area = crate::layout::ChartArea(Rect {
+                x: 240 * i as u32,
+                y: 360,
+                width: 240,
+                height: 240,
+            });
+            crate::Subplot {
+                config,
+                series: vec![format!("p{i}")],
+                link_x: None,
+                link_y: None,
+            }
+        })
+        .collect();
+    c
+}
+
+/// The line series `layered_test_config(overlays, members, subplots)`
+/// names, over the columns `lx` / `ly`.
+fn layered_test_series(overlays: usize, members: usize, subplots: usize) -> Vec<SeriesConfig> {
+    std::iter::once("s0".to_string())
+        .chain((0..overlays).map(|k| format!("o{k}")))
+        .chain((0..members).map(|k| format!("m{k}")))
+        .chain((0..subplots).map(|i| format!("p{i}")))
+        .map(|id| state_test_line(&id, "lx", "ly"))
+        .collect()
+}
+
+/// PANEL_STORAGE_MATCHES_SOURCE (#152): after `PanelDrawStorage::expand`
+/// the configs, series and views are parallel, one per expanded panel
+/// (`counts` summed), with one count per layered source item; `items` and
+/// `group_sizes` read the same source the same way, and each panel's series
+/// are the ones `series_panel_index` routes there. A source mixes
+/// single-layer items with zero and one series, an overlay, 150 line offset
+/// members and subplots, then again with the layers removed (as
+/// `set_chart_config` would leave the item: single-layer).
+#[test]
+fn panel_storage_is_parallel_to_its_source_items() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "lx", "ly", vec![0.0, 0.5, 1.0]);
+    let shapes = [
+        (0, 0, 0, 0usize),
+        (0, 0, 0, 1),
+        (1, 0, 0, usize::MAX),
+        (0, 150, 0, usize::MAX),
+        (1, 3, 2, usize::MAX),
+    ];
+    for layered in [true, false] {
+        let configs: Vec<Config> = shapes
+            .iter()
+            .map(|&(o, m, p, _)| {
+                if layered {
+                    layered_test_config(o, m, p)
+                } else {
+                    layered_test_config(0, 0, 0)
+                }
+            })
+            .collect();
+        let declarations: Vec<Vec<SeriesConfig>> = shapes
+            .iter()
+            .map(|&(o, m, p, keep)| {
+                let mut all = layered_test_series(o, m, p);
+                all.truncate(keep);
+                all
+            })
+            .collect();
+        let styles: Vec<Vec<ChartStyle>> = declarations
+            .iter()
+            .map(|list| {
+                list.iter()
+                    .map(|s| renderer.create_style_for_series(s).unwrap())
+                    .collect()
+            })
+            .collect();
+        let series: Vec<Vec<Series<'_>>> = declarations
+            .iter()
+            .zip(&styles)
+            .map(|(list, styles)| {
+                list.iter()
+                    .zip(styles)
+                    .map(|(config, style)| Series { config, style })
+                    .collect()
+            })
+            .collect();
+        let views: Vec<ChartView> = configs
+            .iter()
+            .map(|c| {
+                renderer
+                    .create_chart_view(&Chart::new(c.clone()), c.chart_area.0)
+                    .unwrap()
+            })
+            .collect();
+        let source: Vec<ChartDrawItem<'_>> = configs
+            .iter()
+            .zip(&views)
+            .zip(&series)
+            .map(|((chart_config, view), series)| ChartDrawItem {
+                view,
+                chart_config,
+                series,
+            })
+            .collect();
+        let storage = PanelDrawStorage::expand(&source).unwrap();
+        let total: usize = storage.counts.iter().sum();
+        assert_eq!(storage.configs.len(), total);
+        assert_eq!(storage.series.len(), total);
+        assert_eq!(storage.views.len(), total);
+        let layered_items = source.iter().filter(|i| is_layered(i.chart_config)).count();
+        assert_eq!(storage.counts.len(), layered_items);
+        assert_eq!(layered_items, if layered { 3 } else { 0 });
+        let items = storage.items(&source).unwrap();
+        let sizes = storage.group_sizes(&source).unwrap();
+        assert_eq!(sizes.len(), source.len());
+        assert_eq!(items.len(), sizes.iter().sum::<usize>());
+        let mut start = 0;
+        for (item, &size) in source.iter().zip(&sizes) {
+            let group = &items[start..start + size];
+            if is_layered(item.chart_config) {
+                assert_eq!(size, item.chart_config.panel_layers().len());
+                for (panel, drawn) in group.iter().enumerate() {
+                    for entry in drawn.series {
+                        let id = &entry.config.series_id;
+                        assert_eq!(
+                            series_panel_index(item.chart_config, size, id),
+                            panel,
+                            "{id}"
+                        );
+                    }
+                }
+                let routed: usize = group.iter().map(|g| g.series.len()).sum();
+                assert_eq!(routed, item.series.len());
+            } else {
+                assert_eq!(size, 1);
+                assert_eq!(group[0].series.len(), item.series.len());
+            }
+            start += size;
+        }
+    }
+}
+
+/// EXPORT_ITEMS_MATCH_PANELS (#152): a document export frame holds one
+/// prepared item per panel, and every data pass `Passes` names over its
+/// panels ends within the items; a panel export frame holds one item and
+/// one panel (it used to keep every expanded panel config). Single-layer
+/// documents with 0 and 1 series and a layered one (2 overlays, 120 line
+/// offset members, 2 subplots) at 1x and 2x, then the public SVG, PDF and
+/// PNG exports of the layered one.
+#[test]
+fn export_frames_hold_one_item_per_panel() {
+    use crate::vector_export::{Pass, Passes};
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "lx", "ly", vec![0.0, 0.5, 1.0]);
+    let documents = [
+        (layered_test_config(0, 0, 0), Vec::new()),
+        (layered_test_config(0, 0, 0), layered_test_series(0, 0, 0)),
+        (
+            layered_test_config(2, 120, 2),
+            layered_test_series(2, 120, 2),
+        ),
+    ];
+    for (config, series) in &documents {
+        let chart = Chart::new(config.clone());
+        for scale in [1.0f32, 2.0] {
+            let frame = renderer
+                .prepare_export(&chart, series, scale, ExportScope::Document)
+                .unwrap();
+            assert_eq!(frame.items.len(), frame.panels().len());
+            assert_eq!(frame.panels().len(), config.panel_layers().len());
+            let mut passes = Passes::new();
+            let mut data = 0;
+            while let Some(pass) = passes.next(frame.chart.config(), frame.panels()) {
+                if let Pass::Data(range) = pass {
+                    assert!(range.start < range.end && range.end <= frame.items.len());
+                    data += 1;
+                }
+            }
+            assert!(data > 0);
+            drop(frame);
+            renderer.end_gpu_frame();
+            let frame = renderer
+                .prepare_export(&chart, series, scale, ExportScope::Panel)
+                .unwrap();
+            assert_eq!(frame.items.len(), 1);
+            assert_eq!(frame.panels().len(), 1);
+            drop(frame);
+            renderer.end_gpu_frame();
+        }
+    }
+    let (config, series) = &documents[2];
+    let chart = Chart::new(config.clone());
+    for scale in [1.0f32, 2.0] {
+        let svg = renderer.export_document_svg(&chart, series, scale).unwrap();
+        assert!(svg.ends_with("</svg>\n"));
+        let pdf = renderer.export_document_pdf(&chart, series, scale).unwrap();
+        assert!(pdf.ends_with(b"%%EOF\n"));
+        let png = renderer
+            .export_document_rgba(&chart, series, scale)
+            .unwrap();
+        assert_eq!(png.rgba.len(), (png.width * png.height * 4) as usize);
+        let panel = renderer.export_panel_rgba(&chart, series, scale).unwrap();
+        assert_eq!(panel.rgba.len(), (panel.width * panel.height * 4) as usize);
+    }
+}
+
+/// A Precise scatter with error bars whose marker style table has
+/// `marker_rows` rows and `min(marker_rows, 64)` overrides, and whose error
+/// bar table has `bar_rows` rows and `min(bar_rows, 64)` overrides; each
+/// override list ends with one index past `u32` (skipped by the pick).
+fn styled_errorbar_series(marker_rows: usize, bar_rows: usize) -> SeriesConfig {
+    let mut scatter = test_scatter_style();
+    scatter.point_style_index_column = Some("ms".into());
+    scatter.point_style_table = Some(
+        (0..marker_rows)
+            .map(|k| DataScatterPointStyleConfig {
+                point_size: Some(1.0 + (k % 7) as f32),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    scatter.point_style_overrides = Some(
+        (0..marker_rows.min(64))
+            .map(|index| DataScatterPointStyleOverride {
+                index,
+                style: Default::default(),
+            })
+            .chain([DataScatterPointStyleOverride {
+                index: u32::MAX as usize + 1,
+                style: Default::default(),
+            }])
+            .collect(),
+    );
+    let mut err_style = test_errorbar_style();
+    err_style.error_bar_style_index_column = Some("es".into());
+    err_style.error_bar_style_table = Some(
+        (0..bar_rows)
+            .map(|k| DataErrorBarPointStyleConfig {
+                error_bar_color: Some(Color::new(
+                    0.0,
+                    1.0,
+                    0.0,
+                    if k % 2 == 0 { 1.0 } else { 0.0 },
+                )),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    err_style.error_bar_style_overrides = Some(
+        (0..bar_rows.min(64))
+            .map(|index| DataErrorBarPointStyleOverride {
+                index,
+                style: Default::default(),
+            })
+            .chain([DataErrorBarPointStyleOverride {
+                index: u32::MAX as usize + 1,
+                style: Default::default(),
+            }])
+            .collect(),
+    );
+    SeriesConfig {
+        series_id: format!("styled-{marker_rows}-{bar_rows}"),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: ErrorRef::Symmetric {
+                column: "ee".into(),
+            },
+            err_style,
+        },
+    }
+}
+
+/// PICK_STYLE_META_WITHIN_ROWS (#152): every pick scatter's style meta
+/// counts at most the rows of its slot and override vectors, the counts
+/// are the markers' rows taken before the error bar rows are appended, and
+/// the descriptor splits the vectors into the markers' rows and the error
+/// bars' rows in that order. Marker tables of 0, 1 and 10 000 rows, error
+/// bar tables of 0, 1 and 5 000 rows, overrides with an index past `u32`;
+/// then a styled error bar is picked through the public pick.
+#[test]
+fn pick_style_meta_counts_stay_within_the_style_rows() {
+    let config = basic_errorbar_chart().config().clone();
+    assert!(config.draw_style.is_precise());
+    for marker_rows in [0usize, 1, 10_000] {
+        for bar_rows in [0usize, 1, 5_000] {
+            let series = styled_errorbar_series(marker_rows, bar_rows);
+            let marker_overrides = marker_rows.min(64);
+            let bar_overrides = bar_rows.min(64);
+            let mut plain = series.clone();
+            plain.series_id.push_str("-plain");
+            if let DataRenderType::ScatterErrorbarY { scatter, .. } = &plain.render_type {
+                plain.render_type = DataRenderType::Scatter {
+                    scatter: scatter.clone(),
+                };
+            }
+            let list = [series.clone(), plain];
+            for plan in [
+                PickChartPlan::new(&config, &list).unwrap(),
+                PickChartPlan::for_active_layer(&config, &list).unwrap(),
+            ] {
+                assert_eq!(plan.descriptors.len(), 2);
+                for (k, owned) in plan.descriptors.iter().enumerate() {
+                    let bars = if k == 0 { bar_rows } else { 0 };
+                    let bar_ov = if k == 0 { bar_overrides } else { 0 };
+                    let scatter = owned.resource.scatter.as_ref().expect("a marker slot");
+                    let meta = scatter.style_meta.expect("an indexed style map");
+                    assert!(meta.style_count as usize <= scatter.style_slots.len());
+                    assert!(meta.override_count as usize <= scatter.style_overrides.len());
+                    assert_eq!(meta.style_count as usize, marker_rows);
+                    assert_eq!(meta.override_count as usize, marker_overrides);
+                    assert_eq!(scatter.style_slots.len(), marker_rows + bars);
+                    assert_eq!(scatter.style_overrides.len(), marker_overrides + bar_ov);
+                    let descriptor = owned.descriptor();
+                    let map = descriptor
+                        .scatter
+                        .as_ref()
+                        .and_then(|s| s.style_map.as_ref())
+                        .expect("the marker map");
+                    assert_eq!(map.style_slots.len(), marker_rows);
+                    assert_eq!(map.style_overrides.len(), marker_overrides);
+                    match descriptor
+                        .errorbar
+                        .as_ref()
+                        .and_then(|e| e.style_map.as_ref())
+                    {
+                        Some(map) => {
+                            assert_eq!(k, 0);
+                            assert_eq!(map.style_slots.len(), bar_rows);
+                            assert_eq!(map.style_overrides.len(), bar_overrides);
+                            // The error bars' rows are the second part.
+                            assert_eq!(
+                                bytemuck::cast_slice::<_, u8>(map.style_slots),
+                                bytemuck::cast_slice::<_, u8>(&scatter.style_slots[marker_rows..])
+                            );
+                        }
+                        None => assert_eq!(k, 1),
+                    }
+                }
+            }
+        }
+    }
+
+    // The public pick reads the error bar rows past the marker rows: point
+    // 0's bar paints (row 0), point 1's does not (row 1, alpha 0).
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+    renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+    renderer.add_column("ee", &col_f64(vec![2.0, 2.0])).unwrap();
+    renderer.add_column("ms", &col_f64(vec![0.0, 0.0])).unwrap();
+    renderer.add_column("es", &col_f64(vec![0.0, 1.0])).unwrap();
+    let series = styled_errorbar_series(3, 2);
+    let chart = renderer
+        .register_chart(config.clone(), vec![series.clone()])
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let pick = |renderer: &mut Renderer, x: f64| {
+        let mut request = typed_pick_request(&config, typed_pick_position(&config, x, 4.0));
+        request.max_distance_px = 2.0;
+        pollster::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
+    };
+    let hit = pick(&mut renderer, 1.0).expect("the painted bar picks");
+    assert_eq!(
+        (hit.series_id.as_str(), hit.point_index),
+        (series.series_id.as_str(), 0)
+    );
+    assert!(
+        pick(&mut renderer, 3.0).is_none(),
+        "a bar whose row does not paint picked"
+    );
 }

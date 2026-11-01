@@ -270,9 +270,10 @@ fn pump(r: &mut Renderer, id: ChartId, values: &[(&str, crate::Column<f32>)]) {
     loop {
         match r.request_stream_selection_ranges(id).unwrap() {
             StreamingSelectionRequest::Ready { ticket, ranges, .. } => {
+                assert!(r.check_stream_tickets_for_test() >= 1);
                 supply(r, ticket, &ranges, values)
             }
-            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle(),
+            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             StreamingSelectionRequest::Complete { .. } => break,
             StreamingSelectionRequest::Failed { .. } => panic!("unexpected failed selection"),
         }
@@ -316,7 +317,7 @@ fn finish_export(
                 r.submit_stream_operation_ranges(operation, &bindings)
                     .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
@@ -357,7 +358,7 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     );
     r.queue.submit([encoder.finish()]);
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let mapped = buffer.slice(..).get_mapped_range().unwrap();
     let mut pixels: Vec<_> = mapped
         .chunks_exact(padded as usize)
@@ -412,11 +413,11 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         match r.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
-            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
             _ => {}
         }
     }
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let old = screen(&mut r, id, &view);
     r.auto_stream_chart_step(id, &bindings).unwrap();
     let progress = r.stream_progress_counts(job).unwrap();
@@ -525,7 +526,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         .unwrap()
         .outline_width_px += 0.5;
     r.set_chart_config(id, chart.config().clone()).unwrap();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let bytes = r.gpu_memory_usage().total_bytes();
     r.memory_budget = Some(bytes);
     assert!(r.request_stream_selection_ranges(id).is_err());
@@ -562,7 +563,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
             crate::AutoStreamingProgress::Complete { .. } => break,
             crate::AutoStreamingProgress::Backpressure { .. }
             | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                r.wait_idle();
+                r.wait_idle().unwrap();
                 screen(&mut r, id, &view);
             }
             _ => {}
@@ -578,7 +579,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
         panic!()
     };
     supply(&mut r, ticket, &ranges, &values);
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let StreamingSelectionRequest::Ready {
         ticket: suspended,
         ranges: requested,
@@ -638,7 +639,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     r.cancel_chart_stream(id).unwrap();
     assert!(r.submit_stream_selection_ranges(ticket, &[]).is_err());
     r.end_gpu_frame();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     r.service_stream_requests();
     assert_eq!(r.stream_request_usage(), (0, 0, 0));
 }
@@ -664,7 +665,7 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
                 crate::AutoStreamingProgress::Complete { .. } => break,
                 crate::AutoStreamingProgress::Backpressure { .. }
                 | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                    r.wait_idle();
+                    r.wait_idle().unwrap();
                     screen(&mut r, id, &view);
                 }
                 _ => {}
@@ -736,4 +737,170 @@ fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
     assert!(display_error(&[0, 0, 0, 0], &[0, 0, 0, 64]).0 > 1);
     assert!(display_error(&[255, 0, 0, 64], &[0, 0, 0, 64]).1 > 3 * 255);
     assert!(display_error(&[0, 0, 0, 255], &[4, 0, 0, 255]).1 > 3 * 255);
+}
+
+/// SELECTION_PLAN_COUNT_LE_3 (#152): `columns_for` names one to three
+/// distinct columns (`x`, `y` and the Precise style index), so its `[_; 3]`
+/// ids, rows and offsets cover `..count`: x equal to y, a histogram bar
+/// (its edge column read twice as far), a Precise scatter with its own style
+/// column, a style column equal to x, a Sketch scatter (no style column),
+/// and a field cell on equal and on different axes.
+#[test]
+fn a_selection_column_plan_names_one_to_three_distinct_columns() {
+    let (_, _, _, _, chart, series, _) = fixture();
+    let precise = chart.config().clone();
+    assert!(matches!(precise.draw_style, DrawStyle::Precise));
+    let mut sketch = precise.clone();
+    sketch.draw_style = DrawStyle::Sketch(Default::default());
+    let entry = |bar: bool, field: Option<field::Cell>| SelectionEntry {
+        series: 0,
+        index: 4,
+        filter: SelectionRefFilter::All,
+        bar,
+        field,
+    };
+    let check = |plan: SelectionColumnPlan<'_>, expected: &[(&str, u64)]| {
+        assert!((1..=3).contains(&plan.count), "count {}", plan.count);
+        let named: Vec<(&str, u64)> = plan.ids[..plan.count]
+            .iter()
+            .copied()
+            .zip(plan.rows[..plan.count].iter().copied())
+            .collect();
+        assert_eq!(named, expected);
+        let mut ids = plan.ids[..plan.count].to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), plan.count, "repeated ids");
+    };
+    let point = &series[0];
+    let bar = &series[1];
+    check(
+        columns_for(&precise, point, entry(false, None)),
+        &[("x", 1), ("y", 1), ("index", 1)],
+    );
+    check(
+        columns_for(&sketch, point, entry(false, None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut style_is_x = point.clone();
+    if let DataRenderType::Scatter { scatter } = &mut style_is_x.render_type {
+        scatter.point_style_index_column = Some("x".into());
+    }
+    check(
+        columns_for(&precise, &style_is_x, entry(false, None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut same = style_is_x.clone();
+    same.y_column = "x".into();
+    check(
+        columns_for(&precise, &same, entry(false, None)),
+        &[("x", 1)],
+    );
+    check(
+        columns_for(&precise, bar, entry(true, None)),
+        &[("x", 2), ("y", 1)],
+    );
+    let mut same_bar = bar.clone();
+    same_bar.y_column = "x".into();
+    check(
+        columns_for(&precise, &same_bar, entry(true, None)),
+        &[("x", 2)],
+    );
+
+    let heatmap = |x: &str, y: &str| SeriesConfig {
+        source_id: None,
+        series_id: "field".into(),
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: None,
+        render_type: DataRenderType::Heatmap {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into(), "z1".into(), "z2".into(), "z3".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Edges,
+            },
+            fill: crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    };
+    let len = |_: &str| Some(5u64);
+    for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {
+        let series = heatmap(x, y);
+        let cell = field::Cell::resolve(&series, [1, 1], len).expect("an inner cell");
+        let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+        assert_eq!(plan.count, count, "{x} {y}");
+        assert!(plan.count <= 3);
+        let ids = &plan.ids[..plan.count];
+        assert!(ids.iter().all(|id| *id == x || *id == y));
+    }
+    // Different cells on one axis column are two ranges of the same id.
+    let series = heatmap("fx", "fx");
+    let cell = field::Cell::resolve(&series, [0, 2], len).expect("a cell");
+    let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+    assert_eq!(plan.count, 2);
+}
+
+/// STREAM_JOB_CHART_LIVE (#152): a selection ticket issued for a chart
+/// that is then removed is refused, and the removed chart's selection
+/// request reports the unknown chart instead of reading its state.
+#[test]
+fn a_removed_chart_refuses_its_pending_selection_ticket() {
+    let (mut r, _, id, _, mut chart, _, values) = fixture();
+    let bindings: Vec<_> = values
+        .iter()
+        .map(|(id, values)| crate::StreamSourceBinding {
+            id,
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(values),
+        })
+        .collect();
+    loop {
+        match r.auto_stream_chart_step(id, &bindings).unwrap() {
+            crate::AutoStreamingProgress::AllSubmitted { .. }
+            | crate::AutoStreamingProgress::Complete { .. } => break,
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
+            _ => {}
+        }
+    }
+    r.wait_idle().unwrap();
+    select(chart.config_mut(), &[3, 4]);
+    r.set_chart_config(id, chart.config().clone()).unwrap();
+    let StreamingSelectionRequest::Ready { ticket, ranges, .. } =
+        r.request_stream_selection_ranges(id).unwrap()
+    else {
+        panic!("a selection ticket")
+    };
+    r.remove_chart(id).unwrap();
+    let payload: Vec<_> = ranges
+        .iter()
+        .map(|range| {
+            let values = &values
+                .iter()
+                .find(|(id, _)| *id == range.id)
+                .unwrap()
+                .1
+                .data;
+            column(values[range.offset as usize..(range.offset + range.len) as usize].to_vec())
+        })
+        .collect();
+    let supplied: Vec<_> = ranges
+        .iter()
+        .zip(&payload)
+        .map(|(range, data)| crate::StreamRangeSourceBinding {
+            id: &range.id,
+            revision: range.revision,
+            source_len: range.source_len,
+            offset: range.offset,
+            source: crate::StreamColumnSource::Scalar(data),
+        })
+        .collect();
+    let submit = r.submit_stream_selection_ranges(ticket, &supplied);
+    assert!(submit.is_err(), "{submit:?}");
+    let request = r.request_stream_selection_ranges(id);
+    assert!(request.is_err(), "{request:?}");
 }

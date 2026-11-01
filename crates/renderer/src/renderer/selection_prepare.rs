@@ -305,42 +305,47 @@ impl PrepareContext<'_> {
                 let ternary = |kind: TernaryPipeline| {
                     pipelines.ternary[kind as usize]
                         .as_ref()
-                        .expect("prepare ensured the ternary pick ring pipeline")
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured the ternary pick ring pipeline",
+                        ))
                 };
                 // A 3D point's ring: the 3D ring entries with its height and
                 // camera (#132).
                 let view3d_ring = |kind: View3dPipeline| {
                     pipelines.view3d[kind as usize]
                         .as_ref()
-                        .expect("prepare ensured the 3D pick ring pipeline")
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured the 3D pick ring pipeline",
+                        ))
                 };
-                let (third, view3d, pipeline) = match &columns.view3d {
-                    Some((z, binding)) => (
-                        Some(*z),
-                        Some(binding.clone()),
-                        if uses_mapped_pick {
-                            view3d_ring(View3dPipeline::RingMapped)
-                        } else {
-                            view3d_ring(View3dPipeline::Ring)
-                        },
-                    ),
-                    None => (
-                        ternary_c,
-                        None,
-                        match (uses_mapped_pick, ternary_c.is_some()) {
-                            (true, true) => ternary(TernaryPipeline::RingMapped),
-                            (false, true) => ternary(TernaryPipeline::Ring),
-                            (true, false) => pipelines
-                                .pick_ring_mapped
-                                .as_ref()
-                                .expect("prepare ensured mapped pick ring pipeline"),
-                            (false, false) => pipelines
-                                .pick_ring
-                                .as_ref()
-                                .expect("prepare ensured pick ring pipeline"),
-                        },
-                    ),
-                };
+                let (third, view3d, pipeline) =
+                    match &columns.view3d {
+                        Some((z, binding)) => (
+                            Some(*z),
+                            Some(binding.clone()),
+                            if uses_mapped_pick {
+                                view3d_ring(View3dPipeline::RingMapped)?
+                            } else {
+                                view3d_ring(View3dPipeline::Ring)?
+                            },
+                        ),
+                        None => (
+                            ternary_c,
+                            None,
+                            match (uses_mapped_pick, ternary_c.is_some()) {
+                                (true, true) => ternary(TernaryPipeline::RingMapped)?,
+                                (false, true) => ternary(TernaryPipeline::Ring)?,
+                                (true, false) => pipelines.pick_ring_mapped.as_ref().ok_or(
+                                    FiggyError::internal(
+                                        "prepare ensured mapped pick ring pipeline",
+                                    ),
+                                )?,
+                                (false, false) => pipelines.pick_ring.as_ref().ok_or(
+                                    FiggyError::internal("prepare ensured pick ring pipeline"),
+                                )?,
+                            },
+                        ),
+                    };
                 picked.push(ColumnPickRingLayer {
                     pipeline,
                     third,
@@ -373,8 +378,9 @@ impl PrepareContext<'_> {
                 }
                 match picked_ref {
                     PickedDataRef::HistogramBin { bin_index, .. } if primitives.bar => {
-                        let (edges, values) =
-                            columns.bar.expect("bar primitive has selection columns");
+                        let (edges, values) = columns
+                            .bar
+                            .ok_or(FiggyError::internal("bar primitive has selection columns"))?;
                         let count =
                             data_render::bar_instance_count(edges.len_values, values.len_values);
                         let Some(instance) = columns.rows.instance(*bin_index, count as usize)
@@ -391,8 +397,8 @@ impl PrepareContext<'_> {
                         // border (`bar_columnar.wgsl`): the outline resolves
                         // the bin's gap and width on the GPU exactly when the
                         // draw binds the style map.
-                        let bar_cfg =
-                            extract_bar(rt).expect("histogram selection has a bar config");
+                        let bar_cfg = extract_bar(rt)
+                            .ok_or(FiggyError::internal("histogram selection has a bar config"))?;
                         let mut outline_style =
                             PrimitiveStyle::from_bar(bar_cfg, series.style.display_scale);
                         outline_style.color_premul =
@@ -409,14 +415,19 @@ impl PrepareContext<'_> {
                         let style_map = series.style.bar_map.as_ref();
                         selected_bars.push(ColumnBarSelectionLayer {
                             pipeline: match style_map {
-                                Some(_) => pipelines
-                                    .bar_selection_mapped
-                                    .as_ref()
-                                    .expect("prepare ensured mapped histogram selection pipeline"),
-                                None => pipelines
-                                    .bar_selection
-                                    .as_ref()
-                                    .expect("prepare ensured histogram selection pipeline"),
+                                Some(_) => pipelines.bar_selection_mapped.as_ref().ok_or(
+                                    FiggyError::internal(
+                                        "prepare ensured mapped histogram selection pipeline",
+                                    ),
+                                )?,
+                                None => {
+                                    pipelines
+                                        .bar_selection
+                                        .as_ref()
+                                        .ok_or(FiggyError::internal(
+                                            "prepare ensured histogram selection pipeline",
+                                        ))?
+                                }
                             },
                             transform_bg: &view.transform_bg,
                             style_bg,
@@ -441,9 +452,9 @@ impl PrepareContext<'_> {
                         let Ok(row) = u32::try_from(*bin_index) else {
                             continue;
                         };
-                        let boxes = rt
-                            .box_plot()
-                            .expect("a box plot selection has a box plot config");
+                        let boxes = rt.box_plot().ok_or(FiggyError::internal(
+                            "a box plot selection has a box plot config",
+                        ))?;
                         let mut highlight = PrimitiveStyle::from_box_plot(
                             boxes.color,
                             boxes.style,
@@ -473,10 +484,11 @@ impl PrepareContext<'_> {
                             let buffer =
                                 data_render::create_style_uniform_buffer(&self.device, &highlight);
                             selected_bars.push(ColumnBarSelectionLayer {
-                                pipeline: pipelines
-                                    .bar_violin_selection
-                                    .as_ref()
-                                    .expect("prepare ensured violin selection pipeline"),
+                                pipeline: pipelines.bar_violin_selection.as_ref().ok_or(
+                                    FiggyError::internal(
+                                        "prepare ensured violin selection pipeline",
+                                    ),
+                                )?,
                                 transform_bg: &view.transform_bg,
                                 style_bg: data_render::create_style_bind_group(
                                     &self.device,
@@ -496,10 +508,9 @@ impl PrepareContext<'_> {
                             continue;
                         }
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_box_plot_selection
-                                .as_ref()
-                                .expect("prepare ensured box plot selection pipeline"),
+                            pipeline: pipelines.bar_box_plot_selection.as_ref().ok_or(
+                                FiggyError::internal("prepare ensured box plot selection pipeline"),
+                            )?,
                             transform_bg: &view.transform_bg,
                             style_bg,
                             style_map_bg: None,
@@ -523,9 +534,9 @@ impl PrepareContext<'_> {
                         let Ok(index) = u32::try_from(*point_index) else {
                             continue;
                         };
-                        let boxes = rt
-                            .box_plot()
-                            .expect("a box point selection has a box plot config");
+                        let boxes = rt.box_plot().ok_or(FiggyError::internal(
+                            "a box point selection has a box plot config",
+                        ))?;
                         let mut highlight = PrimitiveStyle::from_box_plot(
                             boxes.color,
                             boxes.style,
@@ -537,10 +548,11 @@ impl PrepareContext<'_> {
                         let buffer =
                             data_render::create_style_uniform_buffer(&self.device, &highlight);
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_box_point_selection
-                                .as_ref()
-                                .expect("prepare ensured box point selection pipeline"),
+                            pipeline: pipelines.bar_box_point_selection.as_ref().ok_or(
+                                FiggyError::internal(
+                                    "prepare ensured box point selection pipeline",
+                                ),
+                            )?,
                             transform_bg: &view.transform_bg,
                             style_bg: data_render::create_style_bind_group(
                                 &self.device,
@@ -563,9 +575,9 @@ impl PrepareContext<'_> {
                         let Ok(row) = u32::try_from(*bin_index) else {
                             continue;
                         };
-                        let ranges = rt
-                            .range_bars()
-                            .expect("a range bar selection has a range bar config");
+                        let ranges = rt.range_bars().ok_or(FiggyError::internal(
+                            "a range bar selection has a range bar config",
+                        ))?;
                         let mut highlight = PrimitiveStyle::from_category_bars(
                             ranges.color,
                             ranges.style,
@@ -583,10 +595,11 @@ impl PrepareContext<'_> {
                             &buffer,
                         );
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_range_selection
-                                .as_ref()
-                                .expect("prepare ensured range bar selection pipeline"),
+                            pipeline: pipelines.bar_range_selection.as_ref().ok_or(
+                                FiggyError::internal(
+                                    "prepare ensured range bar selection pipeline",
+                                ),
+                            )?,
                             transform_bg: &view.transform_bg,
                             style_bg,
                             style_map_bg: None,
@@ -608,9 +621,9 @@ impl PrepareContext<'_> {
                         let Ok(row) = u32::try_from(*bin_index) else {
                             continue;
                         };
-                        let bars = rt
-                            .category_bars()
-                            .expect("a category bar selection has a category bar config");
+                        let bars = rt.category_bars().ok_or(FiggyError::internal(
+                            "a category bar selection has a category bar config",
+                        ))?;
                         let mut highlight = PrimitiveStyle::from_category_bars(
                             bars.color,
                             bars.style,
@@ -628,10 +641,11 @@ impl PrepareContext<'_> {
                             &buffer,
                         );
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_category_selection
-                                .as_ref()
-                                .expect("prepare ensured category bar selection pipeline"),
+                            pipeline: pipelines.bar_category_selection.as_ref().ok_or(
+                                FiggyError::internal(
+                                    "prepare ensured category bar selection pipeline",
+                                ),
+                            )?,
                             transform_bg: &view.transform_bg,
                             style_bg,
                             style_map_bg: None,
@@ -653,10 +667,9 @@ impl PrepareContext<'_> {
                         else {
                             continue;
                         };
-                        let scratch = self
-                            .field_cache
-                            .get(cfg.series_id.as_str())
-                            .expect("prepare ensured selected field scratch");
+                        let scratch = self.field_cache.get(cfg.series_id.as_str()).ok_or(
+                            FiggyError::internal("prepare ensured selected field scratch"),
+                        )?;
                         let mut selection = data_render::DataSelectionGpu::from_color(
                             selection_cfg.highlight_color,
                         );
@@ -673,12 +686,11 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline: pipelines
-                                .field_selection
-                                .as_ref()
-                                .expect("prepare ensured field selection pipeline"),
+                            pipeline: pipelines.field_selection.as_ref().ok_or(
+                                FiggyError::internal("prepare ensured field selection pipeline"),
+                            )?,
                             transform_bg: &view.transform_bg,
                             selection_bg,
                             selection_charge,
@@ -697,10 +709,9 @@ impl PrepareContext<'_> {
                         else {
                             continue;
                         };
-                        let scratch = self
-                            .vector_cache
-                            .get(cfg.series_id.as_str())
-                            .expect("prepare ensured selected vector scratch");
+                        let scratch = self.vector_cache.get(cfg.series_id.as_str()).ok_or(
+                            FiggyError::internal("prepare ensured selected vector scratch"),
+                        )?;
                         let Some((field_bg, charge)) = scratch.field.as_ref() else {
                             continue;
                         };
@@ -720,12 +731,11 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         selected_fields.push(ColumnFieldSelectionLayer {
-                            pipeline: pipelines
-                                .field_selection
-                                .as_ref()
-                                .expect("prepare ensured field selection pipeline"),
+                            pipeline: pipelines.field_selection.as_ref().ok_or(
+                                FiggyError::internal("prepare ensured field selection pipeline"),
+                            )?,
                             transform_bg: &view.transform_bg,
                             selection_bg,
                             selection_charge,
@@ -752,8 +762,9 @@ impl PrepareContext<'_> {
                         }) {
                             continue;
                         }
-                        let scratch =
-                            contour_scratch.expect("prepare captured selected contour scratch");
+                        let scratch = contour_scratch.ok_or(FiggyError::internal(
+                            "prepare captured selected contour scratch",
+                        ))?;
                         let mut selection = data_render::DataSelectionGpu::from_color(
                             selection_cfg.highlight_color,
                         );
@@ -770,19 +781,22 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         // A labelled contour's highlight leaves its label
                         // gaps; the draw binds the label group with it.
                         let pipeline = if scratch.label.is_some() {
-                            pipelines
-                                .field_selection_labelled
-                                .as_ref()
-                                .expect("prepare ensured labelled contour selection pipeline")
+                            pipelines.field_selection_labelled.as_ref().ok_or(
+                                FiggyError::internal(
+                                    "prepare ensured labelled contour selection pipeline",
+                                ),
+                            )?
                         } else {
                             pipelines
                                 .field_selection
                                 .as_ref()
-                                .expect("prepare ensured contour selection pipeline")
+                                .ok_or(FiggyError::internal(
+                                    "prepare ensured contour selection pipeline",
+                                ))?
                         };
                         selected_fields.push(ColumnFieldSelectionLayer {
                             pipeline,
@@ -1171,6 +1185,7 @@ mod tests {
                                     2,
                                     &tally,
                                 )
+                                .unwrap()
                             })
                         })
                         .flatten();

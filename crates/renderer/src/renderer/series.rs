@@ -1435,18 +1435,22 @@ pub(super) fn box_extras_data<'c>(
     if points {
         let (params, lanes) =
             box_points_params(config, group, series, display_scale, pool, lookup)?;
-        let style = boxes.points.expect("checked by box_points_params");
+        let style = boxes
+            .points
+            .ok_or(FiggyError::internal("checked by box_points_params"))?;
         let style_map = crate::renderer::style::box_points_style_map(
             device,
             style_map_bgl,
             style,
             display_scale,
-        );
+        )?;
         Ok((create(&params, &lanes, style_map)?, params.count))
     } else {
         let (params, lanes, segments) =
             violin_params(config, group, series, display_scale, pool, lookup)?;
-        let violin = boxes.violin.expect("checked by violin_params");
+        let violin = boxes
+            .violin
+            .ok_or(FiggyError::internal("checked by violin_params"))?;
         let style_map = crate::renderer::style::violin_style_map(
             device,
             style_map_bgl,
@@ -1454,7 +1458,7 @@ pub(super) fn box_extras_data<'c>(
             boxes,
             violin,
             display_scale,
-        );
+        )?;
         Ok((create(&params, &lanes, style_map)?, segments))
     }
 }
@@ -1626,7 +1630,7 @@ pub(super) fn range_bar_data<'c>(
             })?;
     let (params, lanes) = range_bar_params(config, group, series, display_scale, lookup)?;
     let style_map =
-        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale);
+        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale)?;
     let data = data_render::create_category_bar_data_bind_group(
         device,
         ledger,

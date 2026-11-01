@@ -255,19 +255,19 @@ pub fn create_field_cell_tables(
     let levels = storage(
         "figgy field cell levels (padding)",
         bytemuck::cast_slice(&[0.0f32]),
-    );
+    )?;
     let stops = storage(
         "figgy field cell stops (padding)",
         bytemuck::cast_slice(&lookup.stops),
-    );
+    )?;
     let level_colors = storage(
         "figgy field cell level colours (padding)",
         bytemuck::cast_slice(&[[0.0f32; 4]]),
-    );
+    )?;
     let lookup_metadata = storage(
         "figgy field cell lookup metadata (padding)",
         bytemuck::cast_slice(&lookup.metadata),
-    );
+    )?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -294,7 +294,7 @@ pub fn create_field_cell_bind_group(
     grid: &wgpu::Buffer,
     tables: &FieldCellTables,
     params: &FieldParamsGpu,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     use crate::gpu_memory::{ChargeTally, charged_buffer_init};
     let tally = ChargeTally::new();
     let param_buf = charged_buffer_init(
@@ -305,7 +305,7 @@ pub fn create_field_cell_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -345,7 +345,7 @@ pub fn create_field_cell_bind_group(
             },
         ],
     });
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }
 
 pub(crate) struct FieldLookupTables {
@@ -452,7 +452,7 @@ pub fn create_field_data_bind_group(
     layout: &wgpu::BindGroupLayout,
     pool_buffer: &wgpu::Buffer,
     tables: FieldTables<'_>,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     use crate::gpu_memory::{ChargeTally, charged_buffer_init};
     let FieldTables {
         grid,
@@ -471,7 +471,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::cast_slice(grid),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let level_buf = charged_buffer_init(
         &tally,
         device,
@@ -480,7 +480,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::cast_slice(levels),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let stop_buf = charged_buffer_init(
         &tally,
         device,
@@ -489,7 +489,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::cast_slice(stops),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let level_color_buf = charged_buffer_init(
         &tally,
         device,
@@ -498,7 +498,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::cast_slice(level_colors),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let lookup_metadata_buf = charged_buffer_init(
         &tally,
         device,
@@ -507,7 +507,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::cast_slice(lookup_metadata),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let param_buf = charged_buffer_init(
         &tally,
         device,
@@ -516,7 +516,7 @@ pub fn create_field_data_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -556,7 +556,7 @@ pub fn create_field_data_bind_group(
             },
         ],
     });
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }
 
 /// Columnar field pipeline. No vertex buffers — the quad is emitted from

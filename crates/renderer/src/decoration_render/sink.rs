@@ -32,6 +32,10 @@ pub(crate) struct CanvasSink<'a> {
     policy: FontPolicy,
     origin: [f32; 2],
     scale: f32,
+    /// The first text that could not be drawn (a glyph above
+    /// `MAX_GLYPH_PX`); [`Self::finish`] returns it. Later parts still
+    /// paint, later text does not.
+    text_error: Option<crate::FiggyError>,
 }
 
 impl<'a> CanvasSink<'a> {
@@ -62,6 +66,15 @@ impl<'a> CanvasSink<'a> {
             policy,
             origin,
             scale,
+            text_error: None,
+        }
+    }
+
+    /// The end of a placement: the first text error, if any part failed.
+    pub(crate) fn finish(self) -> crate::Result<()> {
+        match self.text_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -114,6 +127,9 @@ impl Sink for CanvasSink<'_> {
             .rotation
             .map(|(degrees, center)| (degrees, self.point([center.0, center.1])));
         let (scale, policy) = (self.scale, self.policy);
+        if self.text_error.is_some() {
+            return;
+        }
         let Some(canvas) = self.canvas(slot) else {
             return;
         };
@@ -121,7 +137,7 @@ impl Sink for CanvasSink<'_> {
             canvas.save();
             canvas.rotate_at(degrees, center.0, center.1);
         }
-        match text.text {
+        let drawn = match text.text {
             TextRef::Plain {
                 text,
                 family,
@@ -140,15 +156,18 @@ impl Sink for CanvasSink<'_> {
             ),
             TextRef::Rich(rich) => {
                 if scale == 1.0 {
-                    draw_rich_text(canvas, rich, origin, policy);
+                    draw_rich_text(canvas, rich, origin, policy)
                 } else {
                     let scaled = crate::decoration::scaled_rich_text(rich, scale);
-                    draw_rich_text(canvas, &scaled, origin, policy);
+                    draw_rich_text(canvas, &scaled, origin, policy)
                 }
             }
-        }
+        };
         if rotation.is_some() {
             canvas.restore();
+        }
+        if let Err(error) = drawn {
+            self.text_error = Some(error);
         }
     }
 

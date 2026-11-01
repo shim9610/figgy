@@ -123,14 +123,8 @@ impl Renderer {
                 .iter()
                 .all(|p| p.ranges.is_empty())
             {
-                let target = self
-                    .stream_runtime
-                    .as_ref()
-                    .unwrap()
-                    .draws
-                    .iter()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                let target = live_runtime(&self.stream_runtime)?
+                    .live_draw(job)?
                     .target
                     .clone();
                 self.submit_chart_stream_draw_supply(
@@ -179,13 +173,51 @@ impl Renderer {
     }
 
     /// Optional admission must leave room for the stream itself. Never let a
-    /// failed cache allocation turn a successful source upload into a failure.
-    fn new_source_cache(&self, job: StreamJob, headroom: u64) -> Option<SourceCache> {
+    /// failed cache allocation turn a successful source upload into a failure:
+    /// a cache that does not fit, or whose buffer the device cannot allocate,
+    /// is `Ok(None)`. Other GPU errors (a lost device, a validation error) are
+    /// returned.
+    fn new_source_cache(&self, job: StreamJob, headroom: u64) -> Result<Option<SourceCache>> {
+        let Some((columns, total)) = self.source_cache_admission(job, headroom) else {
+            return Ok(None);
+        };
+        let buffer = gpu_checked(&self.device, "figgy bounded original source cache", || {
+            // gpu-alloc: ViewResident
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("figgy bounded original source cache"),
+                size: total,
+                usage: wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            })
+        });
+        let buffer = match buffer {
+            Ok(buffer) => buffer,
+            // The documented optional-cache fallback above.
+            Err(FiggyError::GpuResourceAllocationFailed { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(Some(SourceCache {
+            work: TrackedBuffer::new(&self.gpu_ledger, GpuResourceKind::ViewResident, buffer),
+            columns,
+        }))
+    }
+
+    /// The cache columns and their total bytes, or `None` when the cache is
+    /// not admitted (no limit or budget, too large, or no host memory).
+    fn source_cache_admission(
+        &self,
+        job: StreamJob,
+        headroom: u64,
+    ) -> Option<(Vec<CachedColumn>, u64)> {
         let snapshot = self.auto_stream_snapshot(job)?;
         let limit = self.auto_resident_working_set_limit.filter(|n| *n != 0)?;
         let budget = self.memory_budget?;
         let mut total = 0u64;
         let mut columns = Vec::new();
+        // A failed host reservation is a failed optional cache allocation.
         columns.try_reserve_exact(snapshot.sources.len()).ok()?;
         for (id, source) in &snapshot.sources {
             let offset = total;
@@ -221,23 +253,7 @@ impl Renderer {
         {
             return None;
         }
-        let buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // gpu-alloc: ViewResident
-            self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("figgy bounded original source cache"),
-                size: total,
-                usage: wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::VERTEX,
-                mapped_at_creation: false,
-            })
-        }))
-        .ok()?;
-        Some(SourceCache {
-            work: TrackedBuffer::new(&self.gpu_ledger, GpuResourceKind::ViewResident, buffer),
-            columns,
-        })
+        Some((columns, total))
     }
 
     pub(super) fn record_source_cache(
@@ -246,15 +262,15 @@ impl Renderer {
         chunk: &RecordedChunk,
         encoder: &mut wgpu::CommandEncoder,
         headroom: u64,
-    ) {
+    ) -> Result<()> {
         let Some(runtime) = self.stream_runtime.as_ref() else {
-            return;
+            return Ok(());
         };
         let Some(draw) = runtime.draws.iter().find(|d| d.job == ticket.job) else {
-            return;
+            return Ok(());
         };
         let Some(request) = runtime.requests.iter().find(|r| r.ticket == ticket) else {
-            return;
+            return Ok(());
         };
         if request.selection
             || draw.auxiliary.is_some()
@@ -268,37 +284,38 @@ impl Renderer {
                 }
             )
         {
-            return;
+            return Ok(());
         }
         if !draw.source_cache_attempted {
-            let cache = self.new_source_cache(ticket.job, headroom).map(Arc::new);
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
+            let cache = self.new_source_cache(ticket.job, headroom)?.map(Arc::new);
+            let draw = live_runtime_mut(&mut self.stream_runtime)?
                 .draws
                 .iter_mut()
                 .find(|d| d.job == ticket.job)
-                .unwrap();
+                .ok_or(FiggyError::internal("a recorded ticket's cursor is live"))?;
             draw.source_cache_attempted = true;
             draw.source_cache_writable = cache.is_some();
             draw.source_cache = cache;
         }
-        let runtime = self.stream_runtime.as_mut().unwrap();
-        let draw = runtime.draws.iter().find(|d| d.job == ticket.job).unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
+        let draw = runtime
+            .draws
+            .iter()
+            .find(|d| d.job == ticket.job)
+            .ok_or(FiggyError::internal("a recorded ticket's cursor is live"))?;
         if !draw.source_cache_writable {
-            return;
+            return Ok(());
         }
         let Some(cache) = draw.source_cache.as_ref() else {
-            return;
+            return Ok(());
         };
         let request = runtime
             .requests
             .iter_mut()
             .find(|r| r.ticket == ticket)
-            .unwrap();
+            .ok_or(FiggyError::internal("a recorded ticket keeps its request"))?;
         if request.columns.len() != chunk.columns.len() {
-            return;
+            return Ok(());
         }
         // All identities/ranges are validated before the encoder is changed.
         if request
@@ -307,10 +324,14 @@ impl Renderer {
             .zip(&chunk.columns)
             .any(|(r, u)| cache.column(r).is_none() || r.range != u.range)
         {
-            return;
+            return Ok(());
         }
         for (r, uploaded) in request.columns.iter().zip(&chunk.columns) {
-            let c = cache.column(r).unwrap();
+            let Some(c) = cache.column(r) else {
+                return Err(FiggyError::internal(
+                    "every cached column was validated before the copy",
+                ));
+            };
             encoder.copy_buffer_to_buffer(
                 &chunk.work,
                 uploaded.offset_bytes,
@@ -320,17 +341,20 @@ impl Renderer {
             );
         }
         request.source_cache_capture = true;
+        Ok(())
     }
+}
 
+impl StreamRuntime {
+    /// Publish the coverage a submitted ticket copied into its source cache.
     pub(super) fn publish_source_cache_capture(&mut self, ticket: StreamTicket) {
-        let runtime = self.stream_runtime.as_mut().unwrap();
-        let Some(request) = runtime.requests.iter_mut().find(|r| r.ticket == ticket) else {
+        let Some(request) = self.requests.iter_mut().find(|r| r.ticket == ticket) else {
             return;
         };
         if !std::mem::take(&mut request.source_cache_capture) {
             return;
         }
-        if let Some(cache) = runtime
+        if let Some(cache) = self
             .draws
             .iter_mut()
             .find(|d| d.job == ticket.job)

@@ -949,33 +949,35 @@ impl ArcScratch {
         step_mode: u32,
         c_base: u32,
         view3d: Option<&super::surface_mesh::View3dGpu>,
-    ) -> Option<Self> {
+    ) -> crate::Result<Option<Self>> {
         let arc_flags = if view3d.is_some() { ARC_FLAG_3D } else { 0 };
-        let view3d = view3d.map(|camera| {
-            super::surface_mesh::create_view3d_binding(
-                ledger,
-                device,
-                &pipelines.view3d_bgl,
-                camera,
-                1.0,
-                0,
-                None,
-            )
-        });
-        let plan = buffer_plan(
+        let view3d = view3d
+            .map(|camera| {
+                super::surface_mesh::create_view3d_binding(
+                    ledger,
+                    device,
+                    &pipelines.view3d_bgl,
+                    camera,
+                    1.0,
+                    0,
+                    None,
+                )
+            })
+            .transpose()?;
+        let Some(plan) = buffer_plan(
             n,
             max_workgroups_per_dimension,
             chunk_capacity_override,
             star_data_bgl.is_some(),
-        )?;
+        ) else {
+            return Ok(None);
+        };
         let cap = plan.chunk_capacity;
 
         // First chunk is the widest; the shared sums scratch is sized for it.
-        let len0 = n.min(cap);
-        let b0_max = blocks(len0);
-        let b1_max = blocks(b0_max);
-        debug_assert_eq!(plan.first_level_blocks, b0_max);
-        debug_assert_eq!(plan.second_level_blocks, b1_max);
+        // `buffer_plan` computes its block counts from the same first chunk.
+        let b0_max = plan.first_level_blocks;
+        let b1_max = plan.second_level_blocks;
 
         // Every buffer below is created through `charged_buffer*`, which tallies
         // the size the device is handed. Nothing here can allocate without
@@ -998,11 +1000,11 @@ impl ArcScratch {
                 },
             )
         };
-        let arc = Arc::new(storage_buf("figgy line arc prefix", n, true));
-        let sums0 = storage_buf("figgy arc sums0", b0_max, false);
-        let sums1 = storage_buf("figgy arc sums1", b1_max, false);
+        let arc = Arc::new(storage_buf("figgy line arc prefix", n, true)?);
+        let sums0 = storage_buf("figgy arc sums0", b0_max, false)?;
+        let sums1 = storage_buf("figgy arc sums1", b1_max, false)?;
         // Block-sum sink for the final single-block scan of sums1.
-        let sums2 = storage_buf("figgy arc sums2", 1, false);
+        let sums2 = storage_buf("figgy arc sums2", 1, false)?;
         // gpu-alloc: ArcScan
         let carry_buf = charged_buffer(
             &tally,
@@ -1013,7 +1015,7 @@ impl ArcScratch {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )?;
 
         let params_buf = |label: &str, p: ArcParams| {
             // gpu-alloc: ArcScan
@@ -1038,7 +1040,7 @@ impl ArcScratch {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         let bg_transform = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy arc transform bg"),
             layout: &pipelines.transform_bgl,
@@ -1096,7 +1098,7 @@ impl ArcScratch {
                     flags: arc_flags,
                     _pad: 0,
                 },
-            );
+            )?;
             let p_s0 = params_buf(
                 "figgy arc params s0",
                 ArcParams {
@@ -1109,7 +1111,7 @@ impl ArcScratch {
                     flags: 0,
                     _pad: 0,
                 },
-            );
+            )?;
             let p_s1 = params_buf(
                 "figgy arc params s1",
                 ArcParams {
@@ -1122,7 +1124,7 @@ impl ArcScratch {
                     flags: 0,
                     _pad: 0,
                 },
-            );
+            )?;
             chunks.push(ChunkBinds {
                 bg_arc: storage_bg("figgy arc bg(arc)", &arc, &sums0, &p_main),
                 bg_s0: storage_bg("figgy arc bg(s0)", &sums0, &sums1, &p_s0),
@@ -1132,85 +1134,87 @@ impl ArcScratch {
             start += len;
         }
 
-        let star = star_data_bgl.map(|vs_bgl| {
-            // gpu-alloc: ArcScan
-            let indirect = charged_buffer(
-                &tally,
-                device,
-                &wgpu::BufferDescriptor {
-                    label: Some("figgy star indirect args"),
-                    size: 16,
-                    usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
-                    mapped_at_creation: false,
-                },
-            );
-            // gpu-alloc: ArcScan
-            let kernel_params_buf = charged_buffer(
-                &tally,
-                device,
-                &wgpu::BufferDescriptor {
-                    label: Some("figgy star indirect params"),
-                    size: std::mem::size_of::<StarIndirectParams>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                },
-            );
-            let kernel_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy star args bg"),
-                layout: &pipelines.star_args_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: indirect.as_entire_binding(),
+        let star = star_data_bgl
+            .map(|vs_bgl| -> crate::Result<StarPass> {
+                // gpu-alloc: ArcScan
+                let indirect = charged_buffer(
+                    &tally,
+                    device,
+                    &wgpu::BufferDescriptor {
+                        label: Some("figgy star indirect args"),
+                        size: 16,
+                        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+                        mapped_at_creation: false,
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: kernel_params_buf.as_entire_binding(),
+                )?;
+                // gpu-alloc: ArcScan
+                let kernel_params_buf = charged_buffer(
+                    &tally,
+                    device,
+                    &wgpu::BufferDescriptor {
+                        label: Some("figgy star indirect params"),
+                        size: std::mem::size_of::<StarIndirectParams>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
                     },
-                ],
-            });
-            // gpu-alloc: ArcScan
-            let vs_params = charged_buffer_init(
-                &tally,
-                device,
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("figgy star vs params"),
-                    contents: bytemuck::bytes_of(&StarVsParams {
-                        n_points: n,
-                        x_base,
-                        y_base,
-                        mode: step_mode,
-                    }),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                },
-            );
-            let vs_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy star vs bg"),
-                layout: vs_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: arc.as_entire_binding(),
+                )?;
+                let kernel_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("figgy star args bg"),
+                    layout: &pipelines.star_args_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: indirect.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: kernel_params_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+                // gpu-alloc: ArcScan
+                let vs_params = charged_buffer_init(
+                    &tally,
+                    device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("figgy star vs params"),
+                        contents: bytemuck::bytes_of(&StarVsParams {
+                            n_points: n,
+                            x_base,
+                            y_base,
+                            mode: step_mode,
+                        }),
+                        usage: wgpu::BufferUsages::UNIFORM,
                     },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: pool_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: vs_params.as_entire_binding(),
-                    },
-                ],
-            });
-            StarPass {
-                indirect,
-                vs_bg,
-                kernel_bg,
-                kernel_params_buf,
-            }
-        });
+                )?;
+                let vs_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("figgy star vs bg"),
+                    layout: vs_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: arc.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: pool_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: vs_params.as_entire_binding(),
+                        },
+                    ],
+                });
+                Ok(StarPass {
+                    indirect,
+                    vs_bg,
+                    kernel_bg,
+                    kernel_params_buf,
+                })
+            })
+            .transpose()?;
 
-        Some(Self {
+        Ok(Some(Self {
             arc,
             transform_buf,
             carry_buf,
@@ -1219,7 +1223,7 @@ impl ArcScratch {
             view3d,
             star,
             charge: shared_charge(tally, ledger, GpuResourceKind::ArcScan),
-        })
+        }))
     }
 
     /// Write the current transform and record the full scan chain — every
@@ -1469,6 +1473,7 @@ mod replay_product_tests {
                 mapped_at_creation: false,
             },
         )
+        .unwrap()
     }
 
     fn init<T: bytemuck::Pod>(device: &wgpu::Device, value: &T) -> wgpu::Buffer {
@@ -1481,6 +1486,7 @@ mod replay_product_tests {
                 usage: wgpu::BufferUsages::UNIFORM,
             },
         )
+        .unwrap()
     }
 
     fn submit(device: &wgpu::Device, queue: &wgpu::Queue, encoder: wgpu::CommandEncoder) {
@@ -1604,7 +1610,8 @@ mod replay_product_tests {
                     contents: bytemuck::cast_slice(&resident_data),
                     usage: wgpu::BufferUsages::STORAGE,
                 },
-            );
+            )
+            .unwrap();
             let ledger = Arc::new(GpuLedger::new());
             let resident = ArcScratch::build(
                 &device,
@@ -1621,6 +1628,7 @@ mod replay_product_tests {
                 0,
                 None,
             )
+            .unwrap()
             .expect("resident oracle build");
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("arc resident oracle"),

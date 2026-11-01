@@ -249,6 +249,9 @@ const LINE_SLOTS: usize = 6;
 /// value at A and B; the ternary stroke's are the same with the third
 /// component at A and B.
 const LINE_MAPPED_SLOTS: usize = 8;
+// `line_slot_pipeline` takes the first `slots` of its `LINE_MAPPED_SLOTS`
+// vertex buffers, and the line entries pass `LINE_SLOTS` (#152).
+const _: () = assert!(LINE_SLOTS <= LINE_MAPPED_SLOTS);
 
 /// The stroke of a ternary series (`vs_ternary` / `fs_main`): the six line
 /// slots plus the third component at slots 6/7, over the line's groups.
@@ -790,7 +793,7 @@ pub fn create_parallel_data_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let table = |label, entry: usize| -> crate::Result<wgpu::Buffer> {
         let bytes = (axes.max(1) as u64).checked_mul(entry as u64).ok_or(
             crate::FiggyError::GpuResourceLimit {
@@ -799,7 +802,7 @@ pub fn create_parallel_data_bind_group(
                 limit: u64::MAX / entry as u64,
             },
         )?;
-        Ok(charged_buffer(
+        charged_buffer(
             &tally,
             device,
             &wgpu::BufferDescriptor {
@@ -808,19 +811,23 @@ pub fn create_parallel_data_bind_group(
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: true,
             },
-        ))
+        )
     };
     let lane_buf = table("figgy parallel lane table", LANE)?;
     let range_buf = table("figgy parallel axis range table", RANGE)?;
     let written = {
+        let mapping_error = |error: wgpu::MapRangeError| crate::FiggyError::GpuValidation {
+            resource: "parallel axis tables",
+            reason: error.to_string(),
+        };
         let mut lanes = lane_buf
             .slice(..)
             .get_mapped_range_mut()
-            .expect("the lane table is mapped at creation");
+            .map_err(mapping_error)?;
         let mut ranges = range_buf
             .slice(..)
             .get_mapped_range_mut()
-            .expect("the axis range table is mapped at creation");
+            .map_err(mapping_error)?;
         let mut written = 0usize;
         let result = write(&mut |lane, range| {
             if written < axes {

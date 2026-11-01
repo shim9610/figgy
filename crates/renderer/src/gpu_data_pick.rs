@@ -206,7 +206,8 @@ impl DataPickPipelineBundle {
                 contents: bytemuck::bytes_of(&query.transform),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let transform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy stream typed pick transform bg"),
             layout: &self.histogram.get_bind_group_layout(0),
@@ -228,9 +229,10 @@ impl DataPickPipelineBundle {
                     mapped_at_creation: false,
                 },
             )
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)
         };
-        let candidate = make_scalar("figgy stream typed pick candidate");
-        let best = make_scalar("figgy stream typed pick best");
+        let candidate = make_scalar("figgy stream typed pick candidate")?;
+        let best = make_scalar("figgy stream typed pick best")?;
         let [cx, cy] = query.canvas_position_px;
         let [x, y, w, h] = query.chart_rect_px;
         let enabled = [cx, cy, x, y, w, h, query.max_distance_px]
@@ -301,7 +303,8 @@ impl GpuStreamDataPick {
                 contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         Ok(GpuStreamFieldQuery {
             query,
             candidate: self.candidate.clone(),
@@ -462,7 +465,8 @@ impl GpuStreamDataPick {
                 contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let query_bg = self
             .bundle
             .device
@@ -526,7 +530,8 @@ impl GpuStreamDataPick {
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let mut encoder =
             self.bundle
                 .device
@@ -539,12 +544,15 @@ impl GpuStreamDataPick {
         readback
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
+                if sender.send(result).is_err() {
+                    // receiver dropped: the waiting call was cancelled
+                }
             });
         Ok(GpuDataPickTicket {
             state: GpuDataPickTicketState::Stream(DataPickTicket {
                 state: DataPickTicketState::Pending {
                     device: Arc::clone(&self.bundle.device),
+                    health: self.bundle.health.clone(),
                     readback,
                     receiver,
                     identities: self.identities,
@@ -623,6 +631,8 @@ pub(crate) struct DataPickPipelineBundle {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     ledger: Arc<GpuLedger>,
+    /// The device's health record; every typed pick readback polls through it.
+    health: crate::renderer::DeviceHealth,
     query_bgl: wgpu::BindGroupLayout,
     histogram: wgpu::ComputePipeline,
     field: wgpu::ComputePipeline,
@@ -652,6 +662,7 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -660,7 +671,7 @@ impl DataPickPipelineBundle {
         category_bgl: &wgpu::BindGroupLayout,
         parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         let DataPickShaders {
             bar: bar_shader,
             field: field_shader,
@@ -703,7 +714,8 @@ impl DataPickPipelineBundle {
             },
         );
         let (empty_label_gap, empty_label_gap_charge) =
-            crate::gpu_contour::create_empty_label_gap_bind_group(&device, &ledger, &label_gap_bgl);
+            crate::gpu_contour::create_empty_label_gap_bind_group(&device, &ledger, &label_gap_bgl)
+                .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let vector_layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
@@ -884,7 +896,9 @@ impl DataPickPipelineBundle {
             )
         });
         let empty_bar_style_map =
-            crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[]).bind_group;
+            crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[])
+                .map_err(crate::gpu_pick::GpuPickError::from_figgy)?
+                .bind_group;
         let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(
             &device,
             &wgpu::BindGroupLayoutDescriptor {
@@ -930,10 +944,11 @@ impl DataPickPipelineBundle {
             observe_value(observer, INIT_SCOPE, "stream_reduce_point", || {
                 make_reduce("accumulate_point")
             });
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             device,
             queue,
             ledger,
+            health,
             query_bgl,
             histogram,
             field,
@@ -951,7 +966,7 @@ impl DataPickPipelineBundle {
             stream_reduce_bgl,
             stream_reduce_data,
             stream_reduce_point,
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -959,6 +974,7 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -1026,10 +1042,11 @@ impl DataPickPipelineBundle {
             .await
             .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
         }
-        Ok(Self::new_observed(
+        Self::new_observed(
             device,
             queue,
             ledger,
+            health,
             shaders,
             transform_bgl,
             field_bgl,
@@ -1038,7 +1055,7 @@ impl DataPickPipelineBundle {
             category_bgl,
             parallel_bgl,
             observer,
-        ))
+        )
     }
 
     pub(crate) fn submit(
@@ -1129,7 +1146,8 @@ impl DataPickPipelineBundle {
                 contents: bytemuck::bytes_of(&query.transform),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let transform_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy typed data pick transform bg"),
             layout: &self.histogram.get_bind_group_layout(0),
@@ -1147,7 +1165,8 @@ impl DataPickPipelineBundle {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         let readback = charged_buffer(
             &readback_tally,
             &self.device,
@@ -1157,7 +1176,8 @@ impl DataPickPipelineBundle {
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
 
         enum PreparedKind {
             Histogram(wgpu::BindGroup),
@@ -1341,7 +1361,8 @@ impl DataPickPipelineBundle {
                     contents: bytemuck::bytes_of(&params),
                     usage: wgpu::BufferUsages::UNIFORM,
                 },
-            );
+            )
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
             let offset = u64::try_from(index)
                 .ok()
                 .and_then(|index| index.checked_mul(candidate_stride))
@@ -1476,11 +1497,14 @@ impl DataPickPipelineBundle {
         let slice = readback.slice(..candidate_bytes);
         let (sender, receiver) = oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
+            if sender.send(result).is_err() {
+                // receiver dropped: the waiting call was cancelled
+            }
         });
         Ok(DataPickTicket {
             state: DataPickTicketState::Pending {
                 device: Arc::clone(&self.device),
+                health: self.health.clone(),
                 readback,
                 receiver,
                 identities: identities.into(),
@@ -1508,6 +1532,8 @@ enum DataPickTicketState {
     ReadyNone,
     Pending {
         device: Arc<wgpu::Device>,
+        /// The device's health record, checked by the readback poll.
+        health: crate::renderer::DeviceHealth,
         readback: wgpu::Buffer,
         receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
         identities: Arc<[DataPickIdentity]>,
@@ -1540,6 +1566,7 @@ impl DataPickTicket {
     ) -> Result<Option<RankedPickedData>, crate::gpu_pick::GpuPickError> {
         let DataPickTicketState::Pending {
             device: _poll_device,
+            health: _poll_health,
             readback,
             receiver,
             identities,
@@ -1554,10 +1581,15 @@ impl DataPickTicket {
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        let _ = _poll_device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        crate::renderer::gpu_poll(
+            &_poll_health,
+            &_poll_device,
+            wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         receiver
             .await
             .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
@@ -1565,7 +1597,7 @@ impl DataPickTicket {
         let slice = readback.slice(..byte_len);
         let mapped = slice
             .get_mapped_range()
-            .expect("typed data pick readback is mapped after map_async");
+            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?;
         let result = (|| {
             let records: &[DataPickCandidateGpu] = bytemuck::cast_slice(&mapped);
             if gpu_reduced {
@@ -1734,6 +1766,9 @@ pub(crate) struct SurfacePickTicket {
     /// Polled for the readback on native; the browser's device polls itself.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) device: Arc<wgpu::Device>,
+    /// The device's health record, checked by the readback poll.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) health: crate::renderer::DeviceHealth,
     pub(crate) readback: wgpu::Buffer,
     pub(crate) receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
     pub(crate) identities: Vec<SurfacePickIdentity>,
@@ -1743,10 +1778,15 @@ pub(crate) struct SurfacePickTicket {
 impl SurfacePickTicket {
     async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        crate::renderer::gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            },
+        )
+        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
         self.receiver
             .await
             .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
@@ -1754,7 +1794,7 @@ impl SurfacePickTicket {
         let slice = self.readback.slice(..16);
         let mapped = slice
             .get_mapped_range()
-            .expect("surface pick readback is mapped after map_async");
+            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?;
         let words: &[u32] = bytemuck::cast_slice(&mapped);
         let [word, b, c, r] = [words[0], words[1], words[2], words[3]];
         // The top bit marks a floor contour: `b` its level, `(c, r)` its
@@ -1938,6 +1978,7 @@ mod stream_tests {
             device,
             queue,
             Arc::new(GpuLedger::new()),
+            crate::renderer::DeviceHealth::default(),
             DataPickShaders {
                 bar: &bar,
                 field: &field,
@@ -1952,6 +1993,7 @@ mod stream_tests {
             &parallel_bgl,
             &mut |_| {},
         )
+        .unwrap()
     }
 
     fn config(logarithmic: bool) -> crate::config::Config {
@@ -2050,6 +2092,7 @@ mod stream_tests {
                             finish: [0.0; 4],
                         }],
                     )
+                    .unwrap()
                     .bind_group
                 });
                 let series = |order: u32, edges, values, bin_count| GpuDataPickSeries {

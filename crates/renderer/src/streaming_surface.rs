@@ -12,12 +12,14 @@ pub(crate) fn compile_replay_for_test(device: &wgpu::Device, spec: StreamSurface
 
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer, TrackedTexture};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum StreamSurfaceError {
     InvalidOptions,
     Overflow,
     TooLarge,
-    AllocationFailed,
+    /// The GPU rejected a surface resource or pipeline, the device was lost,
+    /// or an internal invariant of the surface did not hold.
+    Gpu(crate::FiggyError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +85,7 @@ impl StreamTransfer {
         sample_count: u32,
     ) -> Result<Self, StreamSurfaceError> {
         validate_format(format, sample_count)?;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::renderer::gpu_checked(device, "stream prefix sample transfer", || {
             let shader = crate::gpu_compile::shader_module(
                 &device,
                 wgpu::ShaderModuleDescriptor {
@@ -205,8 +207,8 @@ impl StreamTransfer {
                 sample_count,
                 replay: None,
             }
-        }))
-        .map_err(|_| StreamSurfaceError::AllocationFailed)
+        })
+        .map_err(StreamSurfaceError::Gpu)
     }
 }
 
@@ -249,7 +251,7 @@ impl StreamSurface {
         if total > renderer_budget_bytes {
             return Err(StreamSurfaceError::TooLarge);
         }
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::renderer::gpu_checked(device, "stream display surface", || {
             let create = |label, samples| {
                 // gpu-alloc: caller
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -309,8 +311,8 @@ impl StreamSurface {
                 rescale: None,
                 replay: None,
             }
-        }))
-        .map_err(|_| StreamSurfaceError::AllocationFailed)
+        })
+        .map_err(StreamSurfaceError::Gpu)
     }
 
     pub(crate) fn prefix(&self) -> &TrackedTexture {
@@ -330,14 +332,28 @@ impl StreamSurface {
         pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         if self.rescale.is_none() {
-            if ledger
-                .total_bytes()
-                .saturating_add(pool_bytes)
-                .saturating_add(32)
-                > budget
-            {
-                return Err(StreamSurfaceError::TooLarge);
-            }
+            self.rescale = Some(self.create_rescale(device, ledger, transfer, budget, pool_bytes)?);
+        }
+        Ok(())
+    }
+
+    fn create_rescale(
+        &self,
+        device: &wgpu::Device,
+        ledger: &Arc<GpuLedger>,
+        transfer: &StreamTransfer,
+        budget: u64,
+        pool_bytes: u64,
+    ) -> Result<(TrackedBuffer, wgpu::BindGroup, wgpu::BindGroup), StreamSurfaceError> {
+        if ledger
+            .total_bytes()
+            .saturating_add(pool_bytes)
+            .saturating_add(32)
+            > budget
+        {
+            return Err(StreamSurfaceError::TooLarge);
+        }
+        crate::renderer::gpu_checked(device, "stream preview rescale", || {
             // gpu-alloc: caller
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stream preview rescale parameters"),
@@ -370,9 +386,9 @@ impl StreamSurface {
                     resource: wgpu::BindingResource::TextureView(&self.display_view),
                 }],
             });
-            self.rescale = Some((buffer, source, scratch));
-        }
-        Ok(())
+            (buffer, source, scratch)
+        })
+        .map_err(StreamSurfaceError::Gpu)
     }
 
     // Reuse the display attachment as scratch; no data-sized or per-refit textures.
@@ -388,8 +404,11 @@ impl StreamSurface {
         budget: u64,
         pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
-        self.prepare_rescale(device, ledger, transfer, budget, pool_bytes)?;
-        let (buffer, source, scratch) = self.rescale.as_ref().unwrap();
+        let rescale = match self.rescale.take() {
+            Some(rescale) => rescale,
+            None => self.create_rescale(device, ledger, transfer, budget, pool_bytes)?,
+        };
+        let (buffer, source, scratch) = &*self.rescale.insert(rescale);
         let mut bytes = [0u8; 32];
         for (destination, value) in bytes.chunks_exact_mut(4).zip(mapping) {
             destination.copy_from_slice(&value.to_le_bytes());
@@ -510,7 +529,7 @@ impl StreamSurface {
         data_suffix(&mut pass);
         if let Some(clip) = replay_clip {
             drop(pass);
-            self.record_replay_restore(transfer, encoder, clip, suffix);
+            self.record_replay_restore(transfer, encoder, clip, suffix)?;
         } else {
             suffix(&mut pass);
         }
@@ -530,28 +549,31 @@ mod tests {
             format: wgpu::TextureFormat::Rgba8Unorm,
             sample_count: 1,
         };
-        assert_eq!(spec.charged_bytes(), Ok(256 * 16 * 4 * 2));
+        assert!(matches!(spec.charged_bytes(), Ok(n) if n == 256 * 16 * 4 * 2));
         spec.sample_count = 4;
-        assert_eq!(spec.charged_bytes(), Ok(256 * 16 * 4 * 9));
+        assert!(matches!(spec.charged_bytes(), Ok(n) if n == 256 * 16 * 4 * 9));
         spec.width = u32::MAX;
         spec.height = u32::MAX;
-        assert_eq!(spec.charged_bytes(), Err(StreamSurfaceError::Overflow));
+        assert!(matches!(
+            spec.charged_bytes(),
+            Err(StreamSurfaceError::Overflow)
+        ));
         spec.width = 0;
-        assert_eq!(
+        assert!(matches!(
             spec.charged_bytes(),
             Err(StreamSurfaceError::InvalidOptions)
-        );
+        ));
         spec.width = 1;
         spec.sample_count = 2;
-        assert_eq!(
+        assert!(matches!(
             spec.charged_bytes(),
             Err(StreamSurfaceError::InvalidOptions)
-        );
+        ));
         spec.sample_count = 1;
         spec.format = wgpu::TextureFormat::Rgba16Float;
-        assert_eq!(
+        assert!(matches!(
             spec.charged_bytes(),
             Err(StreamSurfaceError::InvalidOptions)
-        );
+        ));
     }
 }

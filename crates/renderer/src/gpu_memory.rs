@@ -229,6 +229,24 @@ impl GpuResourceKind {
     }
 }
 
+// Every `[_; GPU_RESOURCE_KIND_COUNT]` row table is indexed by
+// `GpuResourceKind::index`, and the report walks `ALL` by position: the
+// index of `ALL[i]` is `i`, so `index` maps the listed kinds one to one onto
+// the rows (#152).
+const _: () = assert!(kinds_are_listed_in_row_order());
+
+/// Whether `GpuResourceKind::ALL[i].index() == i` for every `i`.
+const fn kinds_are_listed_in_row_order() -> bool {
+    let mut i = 0;
+    while i < GpuResourceKind::ALL.len() {
+        if GpuResourceKind::ALL[i].index() != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Exact byte cost of a live texture, samples and mip levels included.
 pub fn texture_bytes(texture: &wgpu::Texture) -> u64 {
     texture_extent_bytes(
@@ -354,13 +372,14 @@ pub(crate) struct RetiredBytes {
 }
 
 impl RetiredBytes {
+    // The byte counters saturate: a u64 of bytes cannot overflow from real
+    // allocations, and these run from `Drop` paths that cannot report one.
     pub(crate) fn retire(&self, bytes: u64) {
         self.add_total(bytes);
         self.pending
-            .try_update(Ordering::Release, Ordering::Relaxed, |n| {
-                n.checked_add(bytes)
-            })
-            .expect("pending GPU byte total overflow");
+            .update(Ordering::Release, Ordering::Relaxed, |n| {
+                n.saturating_add(bytes)
+            });
     }
 
     // Physical resources carry their own pending credit in the queue entry.
@@ -368,10 +387,9 @@ impl RetiredBytes {
     // completion credit bytes before the corresponding handle was drained.
     fn add_total(&self, bytes: u64) {
         self.total
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(bytes)
-            })
-            .expect("retired GPU byte total overflow");
+            .update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.saturating_add(bytes)
+            });
     }
 
     pub(crate) fn total(&self) -> u64 {
@@ -383,11 +401,13 @@ impl RetiredBytes {
     }
 
     pub(crate) fn complete(&self, bytes: u64) {
+        // A completion owns exactly the bytes its batch took, so it never
+        // exceeds the total; saturating as `remove_live` does keeps a
+        // mis-paired credit at zero instead of wrapping.
         self.total
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_sub(bytes)
-            })
-            .expect("completed GPU byte batch exceeds retired total");
+            .update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.saturating_sub(bytes)
+            });
     }
 }
 
@@ -432,8 +452,8 @@ impl GpuLedger {
     fn remove_live(&self, kind: GpuResourceKind, bytes: u64) {
         // Saturating so a mis-paired credit reports zero rather than wrapping
         // to a nonsense total that would refuse every later allocation.
-        let _ = self.live[kind.index()].try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-            Some(live.saturating_sub(bytes))
+        self.live[kind.index()].update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            live.saturating_sub(bytes)
         });
     }
 
@@ -449,13 +469,17 @@ impl GpuLedger {
         self.retired[kind.index()].add_total(bytes);
         self.remove_live(kind, bytes);
         // host-alloc: W1-d
-        self.pending_resources
-            .push(RetiredAllocation {
-                kind,
-                bytes,
-                resource,
-            })
-            .expect("the unbounded retirement queue is never closed");
+        if let Err(refused) = self.pending_resources.push(RetiredAllocation {
+            kind,
+            bytes,
+            resource,
+        }) {
+            // The unbounded queue is never closed, so this does not happen;
+            // if it did, destroy the resource now and credit its bytes.
+            let allocation = refused.into_inner();
+            self.retired[allocation.kind.index()].complete(allocation.bytes);
+            drop(allocation);
+        }
     }
 
     pub(crate) fn take_retirement(&self) -> RetirementBatch {
@@ -474,9 +498,7 @@ impl GpuLedger {
                 break;
             };
             let row = &mut batch.bytes[allocation.kind.index()];
-            *row = row
-                .checked_add(allocation.bytes)
-                .expect("retirement batch overflow");
+            *row = row.saturating_add(allocation.bytes);
             // host-alloc: W1-d
             batch.resources.push(allocation.resource);
         }
@@ -530,11 +552,7 @@ impl GpuLedger {
 
     fn bump_peak(&self) {
         let total = self.total_bytes();
-        let _ = self
-            .peak_bytes
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |peak| {
-                (total > peak).then_some(total)
-            });
+        self.peak_bytes.fetch_max(total, Ordering::Relaxed);
     }
 }
 
@@ -822,14 +840,20 @@ impl ChargeTally {
 }
 
 /// Create a buffer and tally exactly the size the device was asked for.
+///
+/// The buffer is created inside wgpu error scopes (`gpu_checked`),
+/// so an out-of-memory or limit failure is an error, not a panic (#152).
+/// The size is tallied only when the buffer was created.
 pub fn charged_buffer(
     tally: &ChargeTally,
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
-) -> wgpu::Buffer {
-    tally.add(desc.size);
+) -> crate::Result<wgpu::Buffer> {
     // gpu-alloc: caller
-    device.create_buffer(desc)
+    let buffer =
+        crate::renderer::gpu_checked(device, "charged GPU buffer", || device.create_buffer(desc))?;
+    tally.add(desc.size);
+    Ok(buffer)
 }
 
 /// Create an initialized buffer and tally the size wgpu will actually allocate.
@@ -842,11 +866,14 @@ pub fn charged_buffer_init(
     tally: &ChargeTally,
     device: &wgpu::Device,
     desc: &wgpu::util::BufferInitDescriptor<'_>,
-) -> wgpu::Buffer {
+) -> crate::Result<wgpu::Buffer> {
     use wgpu::util::DeviceExt;
-    tally.add(buffer_init_bytes(desc.contents.len() as u64));
     // gpu-alloc: caller
-    device.create_buffer_init(desc)
+    let buffer = crate::renderer::gpu_checked(device, "charged GPU buffer", || {
+        device.create_buffer_init(desc)
+    })?;
+    tally.add(buffer_init_bytes(desc.contents.len() as u64));
+    Ok(buffer)
 }
 
 /// Bytes `create_buffer_init` allocates for `contents_len` bytes of contents.

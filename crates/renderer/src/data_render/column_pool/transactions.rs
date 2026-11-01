@@ -10,19 +10,38 @@ pub(super) fn write_staging_pairs(
     staging: &Buffer,
     raw_bytes: u64,
     write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
-) -> (ColumnUploadStats, Option<f64>) {
+) -> Result<(ColumnUploadStats, Option<f64>), AllocError> {
     let mut view = staging
         .slice(0..raw_bytes)
         .get_mapped_range_mut()
-        .expect("column staging is mapped at creation");
+        .map_err(|error| AllocError::Gpu {
+            resource: "column staging buffer",
+            reason: error.to_string(),
+        })?;
     let mut step = crate::data::UniformStep::new();
+    let out_of_range = std::cell::Cell::new(false);
     let stats = {
         let mut observe = |index: usize, hi: f32, lo: f32| step.record(index, hi, lo);
-        write_pairs(ColumnPairWriter::new_observed(view.slice(..), &mut observe))
+        write_pairs(ColumnPairWriter::new_observed(
+            view.slice(..),
+            &out_of_range,
+            &mut observe,
+        ))
     };
     drop(view);
     staging.unmap();
-    (stats, step.finish())
+    if out_of_range.get() {
+        return Err(source_wrote_out_of_range());
+    }
+    Ok((stats, step.finish()))
+}
+
+/// The error for a source that wrote a pair index outside its own length.
+pub(super) fn source_wrote_out_of_range() -> AllocError {
+    AllocError::AllocationFailed {
+        resource: "column source",
+        reason: "the source wrote a value index outside its own length".into(),
+    }
 }
 
 /// Source metadata captured before an upload is prepared.
@@ -79,19 +98,29 @@ pub(super) fn stage_streamed_columns(
     let mut view = staging
         .slice(..)
         .get_mapped_range_mut()
-        .expect("streamed promotion staging is mapped at creation");
+        .map_err(|error| AllocError::Gpu {
+            resource: "streamed promotion staging buffer",
+            reason: error.to_string(),
+        })?;
     let mut offset = 0u64;
     let written = (|| {
         for column in columns {
             let len_values = column.len_values;
             let raw_bytes = column_raw_bytes(len_values);
-            let byte_size = column_region_bytes(len_values).expect("promotion batch was sized");
+            let byte_size = column_region_bytes(len_values).ok_or(AllocError::Internal {
+                invariant: "a staged promotion column has a region size",
+            })?;
             let start = offset as usize;
             let end = start + raw_bytes as usize;
+            let out_of_range = std::cell::Cell::new(false);
+            // `write_range` is the host's code. A panic there is the host's,
+            // not figgy's, and is returned as this promotion's failure, as
+            // the streamed upload does (`streaming_upload.rs`).
             let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                column
-                    .source
-                    .write_range(0, ColumnPairWriter::new(view.slice(start..end)))
+                column.source.write_range(
+                    0,
+                    ColumnPairWriter::new(view.slice(start..end), &out_of_range),
+                )
             }))
             .map_err(|_| AllocError::AllocationFailed {
                 resource: "streamed promotion source",
@@ -101,6 +130,9 @@ pub(super) fn stage_streamed_columns(
                 resource: "streamed promotion source",
                 reason: error.reason().to_owned(),
             })?;
+            if out_of_range.get() {
+                return Err(source_wrote_out_of_range());
+            }
             crate::streaming_source::validate_statistics(
                 len_values as u64,
                 crate::StreamStatistics::Known(bounds),
@@ -300,21 +332,49 @@ impl StreamedColumnPromotion<'_> {
 
 pub(crate) struct ColumnBatchCandidate<'a> {
     pub(super) pool: &'a mut ColumnPool,
-    pub(super) candidate: Option<ColumnPool>,
+    pub(super) candidate: ColumnPool,
+    pub(super) abandon: CandidateAbandon,
+}
+
+/// Notes an uncommitted candidate slab as retired on the live pool when the
+/// guard that owns it is dropped. The guards themselves have no `Drop`, so
+/// `commit` can move the candidate out by value.
+pub(super) struct CandidateAbandon {
+    retired: Arc<RetiredBytes>,
+    bytes: u64,
+    committed: bool,
+}
+
+impl CandidateAbandon {
+    pub(super) fn new(pool: &ColumnPool, candidate: &ColumnPool) -> Self {
+        Self {
+            retired: Arc::clone(&pool.retired_bytes),
+            bytes: candidate.primary.size(),
+            committed: false,
+        }
+    }
+}
+
+impl Drop for CandidateAbandon {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.retired.retire(self.bytes);
+        }
+    }
 }
 
 impl ColumnBatchCandidate<'_> {
     pub(super) fn pool(&self) -> &ColumnPool {
-        self.candidate
-            .as_ref()
-            .expect("streamed promotion candidate remains live")
+        &self.candidate
     }
 
-    pub(super) fn commit(mut self) {
-        let candidate = self
-            .candidate
-            .take()
-            .expect("streamed promotion candidate remains live");
+    pub(super) fn commit(self) {
+        let Self {
+            pool,
+            candidate,
+            mut abandon,
+        } = self;
+        abandon.committed = true;
         let ColumnPool {
             identity: _,
             primary,
@@ -327,44 +387,34 @@ impl ColumnBatchCandidate<'_> {
             allocation_epochs,
             allocation_epoch_counter,
             layout_generation,
-            backup,
+            // Both constructors build the candidate without a backup.
+            backup: _,
             defrag_policy: _,
             growth_policy: _,
             retired_bytes: _,
             peak_bytes: _,
             buffer_creations: _,
         } = candidate;
-        debug_assert!(backup.is_none());
-
-        let old_primary = std::mem::replace(&mut self.pool.primary, primary);
-        let old_capacity = self.pool.capacity;
-        self.pool.capacity = capacity;
-        self.pool.slots = slots;
-        self.pool.free = free;
-        self.pool.generation = generation;
-        self.pool.allocation_epochs = allocation_epochs;
-        self.pool.allocation_epoch_counter = allocation_epoch_counter;
-        self.pool.layout_generation = layout_generation;
+        let old_primary = std::mem::replace(&mut pool.primary, primary);
+        let old_capacity = pool.capacity;
+        pool.capacity = capacity;
+        pool.slots = slots;
+        pool.free = free;
+        pool.generation = generation;
+        pool.allocation_epochs = allocation_epochs;
+        pool.allocation_epoch_counter = allocation_epoch_counter;
+        pool.layout_generation = layout_generation;
 
         if old_capacity == capacity {
-            if let Some(superseded) = self.pool.backup.replace(old_primary) {
-                self.pool.note_buffer_retired(superseded.size());
+            if let Some(superseded) = pool.backup.replace(old_primary) {
+                pool.note_buffer_retired(superseded.size());
             }
         } else {
             let mut released = old_primary.size();
             released =
-                released.saturating_add(self.pool.backup.take().map_or(0, |buffer| buffer.size()));
-            self.pool.note_buffer_retired(released);
+                released.saturating_add(pool.backup.take().map_or(0, |buffer| buffer.size()));
+            pool.note_buffer_retired(released);
         }
-    }
-}
-
-impl Drop for ColumnBatchCandidate<'_> {
-    fn drop(&mut self) {
-        let Some(candidate) = self.candidate.take() else {
-            return;
-        };
-        self.pool.note_buffer_retired(candidate.primary.size());
     }
 }
 
@@ -445,22 +495,24 @@ impl Drop for ColumnUpsert<'_> {
 #[must_use = "dropping a ColumnBatchUpsert leaves the live pool unchanged"]
 pub(crate) struct ColumnBatchUpsert<'a> {
     pub(super) pool: &'a mut ColumnPool,
-    pub(super) candidate: Option<ColumnPool>,
+    pub(super) candidate: ColumnPool,
+    pub(super) abandon: CandidateAbandon,
     pub(super) handles: [ColumnHandle; 4],
 }
 
 impl ColumnBatchUpsert<'_> {
     pub(crate) fn pool(&self) -> &ColumnPool {
-        self.candidate
-            .as_ref()
-            .expect("demo column batch candidate remains live")
+        &self.candidate
     }
 
-    pub(crate) fn commit(mut self) -> [ColumnHandle; 4] {
-        let candidate = self
-            .candidate
-            .take()
-            .expect("demo column batch candidate remains live");
+    pub(crate) fn commit(self) -> [ColumnHandle; 4] {
+        let Self {
+            pool,
+            candidate,
+            mut abandon,
+            handles,
+        } = self;
+        abandon.committed = true;
         let ColumnPool {
             identity: _,
             primary,
@@ -473,35 +525,25 @@ impl ColumnBatchUpsert<'_> {
             allocation_epochs,
             allocation_epoch_counter,
             layout_generation,
-            backup,
+            // The constructor builds the candidate without a backup.
+            backup: _,
             defrag_policy: _,
             growth_policy: _,
             retired_bytes: _,
             peak_bytes: _,
             buffer_creations: _,
         } = candidate;
-        debug_assert!(backup.is_none());
-
-        let old_primary = std::mem::replace(&mut self.pool.primary, primary);
-        self.pool.slots = slots;
-        self.pool.free = free;
-        self.pool.generation = generation;
-        self.pool.allocation_epochs = allocation_epochs;
-        self.pool.allocation_epoch_counter = allocation_epoch_counter;
-        self.pool.layout_generation = layout_generation;
-        if let Some(superseded) = self.pool.backup.replace(old_primary) {
-            self.pool.note_buffer_retired(superseded.size());
+        let old_primary = std::mem::replace(&mut pool.primary, primary);
+        pool.slots = slots;
+        pool.free = free;
+        pool.generation = generation;
+        pool.allocation_epochs = allocation_epochs;
+        pool.allocation_epoch_counter = allocation_epoch_counter;
+        pool.layout_generation = layout_generation;
+        if let Some(superseded) = pool.backup.replace(old_primary) {
+            pool.note_buffer_retired(superseded.size());
         }
-        self.handles
-    }
-}
-
-impl Drop for ColumnBatchUpsert<'_> {
-    fn drop(&mut self) {
-        let Some(candidate) = self.candidate.take() else {
-            return;
-        };
-        self.pool.note_buffer_retired(candidate.primary.size());
+        handles
     }
 }
 
@@ -827,10 +869,9 @@ impl ColumnPool {
                     })?;
             planned_epochs.insert(
                 id.clone(),
-                *self
-                    .allocation_epochs
-                    .get(id)
-                    .expect("live column has an allocation epoch"),
+                *self.allocation_epochs.get(id).ok_or(AllocError::Internal {
+                    invariant: "live column has an allocation epoch",
+                })?,
             );
             planned_slots.insert(id.clone(), slot);
         }
@@ -934,9 +975,11 @@ impl ColumnPool {
             peak_bytes: 0,
             buffer_creations: 0,
         };
+        let abandon = CandidateAbandon::new(self, &candidate);
         Ok(StreamedColumnPromotion::Candidate(ColumnBatchCandidate {
             pool: self,
-            candidate: Some(candidate),
+            candidate,
+            abandon,
         }))
     }
 
@@ -1062,59 +1105,83 @@ impl ColumnPool {
             )?);
         }
 
-        // ── Nothing below can fail. ───────────────────────────────────────
+        // ── Staging writes. A failure here un-inserts every id of the batch
+        //    (each was new to the pool, step 1) and the reservation un-reserves.
         let mut epoch = first_epoch;
-        for (chunk, buffer) in chunks.iter().zip(&staging) {
-            let mut view = buffer
-                .slice(0..chunk.byte_size)
-                .get_mapped_range_mut()
-                .expect("batch staging is mapped at creation");
-            for index in chunk.columns.clone() {
-                let (id, source) = columns[index];
-                let raw_bytes = column_raw_bytes(source.len());
-                let byte_size = column_region_bytes(source.len()).expect("sized in step 2");
-                let local = chunk.column_offsets[index - chunk.columns.start];
-                let dst = view.slice(local..local + raw_bytes as usize);
-                let index_lanes = index_column == Some(index);
-                let mut step = crate::data::UniformStep::new();
-                let stats = if let Some(observe) = observe.as_mut() {
-                    let mut per_column = |row: usize, hi: f32, lo: f32| {
-                        step.record(row, hi, lo);
-                        (*observe)(index, row, hi, lo);
+        let written = (|| {
+            for (chunk, buffer) in chunks.iter().zip(&staging) {
+                let mut view = buffer
+                    .slice(0..chunk.byte_size)
+                    .get_mapped_range_mut()
+                    .map_err(|error| AllocError::Gpu {
+                        resource: "batch column staging buffer",
+                        reason: error.to_string(),
+                    })?;
+                for index in chunk.columns.clone() {
+                    let (id, source) = columns[index];
+                    let raw_bytes = column_raw_bytes(source.len());
+                    let byte_size =
+                        column_region_bytes(source.len()).ok_or(AllocError::Internal {
+                            invariant: "every batch column was sized in step 2",
+                        })?;
+                    let local = chunk.column_offsets[index - chunk.columns.start];
+                    let dst = view.slice(local..local + raw_bytes as usize);
+                    let index_lanes = index_column == Some(index);
+                    let mut step = crate::data::UniformStep::new();
+                    let out_of_range = std::cell::Cell::new(false);
+                    let stats = if let Some(observe) = observe.as_mut() {
+                        let mut per_column = |row: usize, hi: f32, lo: f32| {
+                            step.record(row, hi, lo);
+                            (*observe)(index, row, hi, lo);
+                        };
+                        write_scalar_source_as_pairs(
+                            source,
+                            ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
+                                .with_index_lanes(index_lanes),
+                        )
+                    } else {
+                        let mut per_column =
+                            |row: usize, hi: f32, lo: f32| step.record(row, hi, lo);
+                        write_scalar_source_as_pairs(
+                            source,
+                            ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
+                                .with_index_lanes(index_lanes),
+                        )
                     };
-                    write_scalar_source_as_pairs(
-                        source,
-                        ColumnPairWriter::new_observed(dst, &mut per_column)
-                            .with_index_lanes(index_lanes),
-                    )
-                } else {
-                    let mut per_column = |row: usize, hi: f32, lo: f32| step.record(row, hi, lo);
-                    write_scalar_source_as_pairs(
-                        source,
-                        ColumnPairWriter::new_observed(dst, &mut per_column)
-                            .with_index_lanes(index_lanes),
-                    )
-                };
-                epoch += 1;
-                self.allocation_epochs.insert(id.to_string(), epoch);
-                self.slots.insert(
-                    id.to_string(),
-                    ColumnSlot {
-                        id: id.to_string(),
-                        offset: region_offset + chunk.region_offset + local as u64,
-                        byte_size,
-                        len_values: source.len(),
-                        generation: self.generation,
-                        min: source.min(),
-                        max: source.max(),
-                        min_positive: stats.min_positive,
-                        uniform_step: step.finish(),
-                    },
-                );
+                    if out_of_range.get() {
+                        return Err(source_wrote_out_of_range());
+                    }
+                    epoch += 1;
+                    self.allocation_epochs.insert(id.to_string(), epoch);
+                    self.slots.insert(
+                        id.to_string(),
+                        ColumnSlot {
+                            id: id.to_string(),
+                            offset: region_offset + chunk.region_offset + local as u64,
+                            byte_size,
+                            len_values: source.len(),
+                            generation: self.generation,
+                            min: source.min(),
+                            max: source.max(),
+                            min_positive: stats.min_positive,
+                            uniform_step: step.finish(),
+                        },
+                    );
+                }
+                drop(view);
+                buffer.unmap();
             }
-            drop(view);
-            buffer.unmap();
+            Ok(())
+        })();
+        if let Err(error) = written {
+            for (id, _) in columns {
+                self.slots.remove(*id);
+                self.allocation_epochs.remove(*id);
+            }
+            return Err(error);
         }
+
+        // ── Nothing below can fail. ───────────────────────────────────────
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy batch column upload"),
@@ -1339,7 +1406,7 @@ impl ColumnPool {
             self.note_buffer_created(staged_bytes);
             let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, |dst| {
                 write_scalar_source_as_pairs(source, dst)
-            });
+            })?;
             staged.push(StagedColumn {
                 id,
                 len_values,
@@ -1429,10 +1496,9 @@ impl ColumnPool {
             slot.generation = next_generation;
             planned_allocation_epochs.insert(
                 id.clone(),
-                *self
-                    .allocation_epochs
-                    .get(id)
-                    .expect("live column has an allocation epoch"),
+                *self.allocation_epochs.get(id).ok_or(AllocError::Internal {
+                    invariant: "live column has an allocation epoch",
+                })?,
             );
             planned_slots.insert(id.clone(), slot);
             next_offset = end;
@@ -1540,9 +1606,9 @@ impl ColumnPool {
         queue.submit(std::iter::once(encoder.finish()));
         self.note_buffer_retired(staged_bytes);
 
-        let handles: [ColumnHandle; 4] = handles
-            .try_into()
-            .expect("demo batch always prepares exactly four handles");
+        let handles: [ColumnHandle; 4] = handles.try_into().map_err(|_| AllocError::Internal {
+            invariant: "demo batch always prepares exactly four handles",
+        })?;
         let candidate = ColumnPool {
             identity: self.identity.clone(),
             primary,
@@ -1565,9 +1631,11 @@ impl ColumnPool {
             peak_bytes: 0,
             buffer_creations: 0,
         };
+        let abandon = CandidateAbandon::new(self, &candidate);
         Ok(ColumnBatchUpsert {
             pool: self,
-            candidate: Some(candidate),
+            candidate,
+            abandon,
             handles,
         })
     }
@@ -1587,6 +1655,9 @@ impl ColumnPool {
             min,
             max,
         } = input;
+        if self.is_member_column(&id) {
+            return Err(AllocError::MemberColumn(id));
+        }
         if n == 0 {
             return Err(AllocError::EmptySource);
         }
@@ -1623,7 +1694,7 @@ impl ColumnPool {
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
         self.note_buffer_created(byte_size);
-        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs);
+        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
         let min_positive = stats.min_positive;
 
         let old_slot = self.slots.get(&id).cloned();
@@ -1677,7 +1748,9 @@ impl ColumnPool {
                 for column_id in &order {
                     let slot = planned_slots
                         .get_mut(column_id)
-                        .expect("planned survivor remains present");
+                        .ok_or(AllocError::Internal {
+                            invariant: "planned survivor remains present",
+                        })?;
                     slot.offset = next;
                     next = align_up(next + slot.byte_size, ALIGN);
                 }
@@ -1714,10 +1787,11 @@ impl ColumnPool {
                 if fresh_candidate.is_some() {
                     self.note_buffer_created(self.capacity.saturating_add(byte_size));
                 }
-                let candidate = fresh_candidate
-                    .as_ref()
-                    .or(self.backup.as_ref())
-                    .expect("atomic upsert candidate was prepared");
+                let candidate = fresh_candidate.as_ref().or(self.backup.as_ref()).ok_or(
+                    AllocError::Internal {
+                        invariant: "atomic upsert candidate was prepared",
+                    },
+                )?;
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("figgy column atomic upsert candidate"),
                 });
@@ -1777,20 +1851,16 @@ impl ColumnPool {
         };
         planned_allocation_epochs.insert(id.clone(), allocation_epoch);
         planned_slots.insert(id, slot);
-        command_encoder.copy_buffer_to_buffer(
-            &staging,
-            0,
-            match &target {
-                PreparedUpsertTarget::InPlace => &self.primary,
-                PreparedUpsertTarget::FreshCandidate(candidate) => candidate,
-                PreparedUpsertTarget::BackupCandidate => self
-                    .backup
-                    .as_ref()
-                    .expect("atomic upsert backup candidate remains available"),
-            },
-            new_offset,
-            byte_size,
-        );
+        let target_buffer = match &target {
+            PreparedUpsertTarget::InPlace => &self.primary,
+            PreparedUpsertTarget::FreshCandidate(candidate) => candidate,
+            PreparedUpsertTarget::BackupCandidate => {
+                self.backup.as_ref().ok_or(AllocError::Internal {
+                    invariant: "atomic upsert backup candidate remains available",
+                })?
+            }
+        };
+        command_encoder.copy_buffer_to_buffer(&staging, 0, target_buffer, new_offset, byte_size);
         let upload = command_encoder.finish();
 
         // queue.submit/device loss is deliberately outside the Result
@@ -1811,10 +1881,13 @@ impl ColumnPool {
                 }
             }
             PreparedUpsertTarget::BackupCandidate => {
-                let candidate = self
-                    .backup
-                    .take()
-                    .expect("submitted backup candidate remains available");
+                // Checked before the submission above, and nothing since
+                // touched the backup.
+                let Some(candidate) = self.backup.take() else {
+                    return Err(AllocError::Internal {
+                        invariant: "submitted backup candidate remains available",
+                    });
+                };
                 let old_primary = std::mem::replace(&mut self.primary, candidate);
                 UpsertBufferRollback::Candidate {
                     old_primary: Some(old_primary),
@@ -1962,7 +2035,7 @@ impl ColumnPool {
 
         // The source writes and collects stats while the write-only view lives.
         let staging = create_staging(byte_size)?;
-        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs);
+        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
         let min_positive = stats.min_positive;
 
         let slot = ColumnSlot {
@@ -2014,6 +2087,9 @@ impl ColumnPool {
         if !self.slots.contains_key(id) {
             return Ok(None);
         }
+        if self.is_member_column(id) {
+            return Err(AllocError::MemberColumn(id.to_owned()));
+        }
         Ok(Some(self.begin_remove_columns(&[id])?))
     }
 
@@ -2061,9 +2137,9 @@ impl ColumnPool {
                 reason: error.to_string(),
             })?;
         for id in ids {
-            let slot = planned_slots
-                .remove(*id)
-                .expect("validated resident column remains in removal plan");
+            let slot = planned_slots.remove(*id).ok_or(AllocError::Internal {
+                invariant: "validated resident column remains in removal plan",
+            })?;
             removed_regions.push(FreeRegion {
                 offset: slot.offset,
                 size: slot.byte_size,
@@ -2401,31 +2477,27 @@ impl ColumnPool {
         // column `i`.
         let token = self.member_token()?;
         let mut members: [Option<ColumnId>; MAX_RECORD_FIELDS] = Default::default();
-        let mut order = [0usize; MAX_RECORD_FIELDS];
-        let mut count = 0usize;
         for (slot, (name, _)) in schema.iter().enumerate() {
             if by_slot[slot].is_some() {
                 members[slot] = Some(format!(
                     "{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}{name}"
                 ));
+            }
+        }
+        // The batch columns are exactly the slots that have both a member id
+        // and a source; the loop above gives every present source an id.
+        let placeholder = source.fields[0].1;
+        let mut columns: [(&str, &dyn ColumnSource); MAX_RECORD_FIELDS] =
+            [("", placeholder); MAX_RECORD_FIELDS];
+        let mut order = [0usize; MAX_RECORD_FIELDS];
+        let mut count = 0usize;
+        for (slot, (member, field)) in members.iter().zip(by_slot).enumerate() {
+            if let (Some(member), Some(field)) = (member.as_deref(), field) {
+                columns[count] = (member, field);
                 order[count] = slot;
                 count += 1;
             }
         }
-        let placeholder = source.fields[0].1;
-        let columns: [(&str, &dyn ColumnSource); MAX_RECORD_FIELDS] = std::array::from_fn(|i| {
-            if i < count {
-                let slot = order[i];
-                (
-                    members[slot]
-                        .as_deref()
-                        .expect("a present field has a member id"),
-                    by_slot[slot].expect("a present field has a source"),
-                )
-            } else {
-                ("", placeholder)
-            }
-        });
 
         let old: [Option<ColumnId>; MAX_RECORD_FIELDS] = self
             .records
@@ -2453,10 +2525,13 @@ impl ColumnPool {
         let batch =
             self.begin_add_columns_observed(&columns[..count], ctx, Some(observer), None)?;
         let relocated = batch.pool.layout_generation != layout_before;
-        let epoch = batch
-            .pool
-            .allocation_epoch(columns[0].0)
-            .expect("a provisional member has an allocation epoch");
+        let epoch =
+            batch
+                .pool
+                .allocation_epoch(columns[0].0)
+                .ok_or(crate::FiggyError::internal(
+                    "a provisional member has an allocation epoch",
+                ))?;
         let value = finish_member_batch(batch, &old_members[..old_count], |pool| {
             prepare(pool, relocated)
         })?;
@@ -2644,7 +2719,9 @@ impl ColumnPool {
         let epoch = batch
             .pool
             .allocation_epoch(&values_id)
-            .expect("a provisional member has an allocation epoch");
+            .ok_or(crate::FiggyError::internal(
+                "a provisional member has an allocation epoch",
+            ))?;
         let value = finish_member_batch(batch, &old_members[..old_count], |pool| {
             prepare(pool, relocated)
         })?;

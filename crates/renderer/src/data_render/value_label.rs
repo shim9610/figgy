@@ -385,6 +385,19 @@ pub(crate) fn create_value_label_data(
             limit: u64::MAX / CELL as u64,
         },
     )?;
+    // The cells are one storage binding: the device must hold the buffer
+    // and bind it whole.
+    let limits = device.limits();
+    let cell_limit = limits
+        .max_buffer_size
+        .min(u64::from(limits.max_storage_buffer_binding_size));
+    if cell_bytes > cell_limit {
+        return Err(crate::FiggyError::GpuResourceLimit {
+            resource: "value label cells",
+            requested: cell_bytes,
+            limit: cell_limit,
+        });
+    }
     let cells = charged_buffer(
         &tally,
         device,
@@ -394,12 +407,14 @@ pub(crate) fn create_value_label_data(
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: true,
         },
-    );
+    )?;
     {
-        let mut view = cells
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("the value label cells are mapped at creation");
+        let mut view = cells.slice(..).get_mapped_range_mut().map_err(|error| {
+            crate::FiggyError::GpuValidation {
+                resource: "value label cells",
+                reason: error.to_string(),
+            }
+        })?;
         let mut written = 0usize;
         write(&mut |cell| {
             if written < count {
@@ -419,7 +434,7 @@ pub(crate) fn create_value_label_data(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,

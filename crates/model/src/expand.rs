@@ -2190,4 +2190,456 @@ mod tests {
         wrong.subplots[1].config.line_offsets = Some(offsets(&["flow"], 1.0, 0.0));
         assert!(wrong.validate_line_offset_layout().is_err());
     }
+
+    /// A document with `parent` overlays on the parent and one subplot per
+    /// entry of `subplots`, each with that many overlays of its own. Every
+    /// layer draws one series: `base`, `po{k}`, `s{i}`, `s{i}o{n}`.
+    fn layered(parent: usize, subplots: &[usize]) -> Config {
+        use crate::layer::Subplot;
+        let categories = || {
+            Some(
+                ["a", "b", "c"]
+                    .map(|id| crate::config::Category::new(id, id))
+                    .to_vec(),
+            )
+        };
+        let overlay = |id: String| {
+            let mut overlay = OverlayLayer::default();
+            overlay.y_axis.min = 0.0;
+            overlay.y_axis.max = 1.0;
+            overlay.y_axis.out_margin = 2.0;
+            overlay.series = vec![id];
+            overlay
+        };
+        let mut cfg = default_config();
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        });
+        cfg.bottom_x.categories = categories();
+        cfg.overlays = (0..parent).map(|k| overlay(format!("po{k}"))).collect();
+        cfg.subplots = subplots
+            .iter()
+            .enumerate()
+            .map(|(i, &count)| {
+                let mut subplot = Subplot::default();
+                subplot.config.chart_area = ChartArea(Rect {
+                    x: 200 * i as u32,
+                    y: 480,
+                    width: 200,
+                    height: 200,
+                });
+                subplot.config.bottom_x.categories = categories();
+                subplot.config.overlays =
+                    (0..count).map(|n| overlay(format!("s{i}o{n}"))).collect();
+                subplot.series = vec![format!("s{i}")];
+                subplot
+            })
+            .collect();
+        cfg
+    }
+
+    /// Every series id `layered` places, and one placed nowhere.
+    fn layered_ids(cfg: &Config) -> Vec<String> {
+        let mut ids = vec!["base".to_string(), "nowhere".to_string()];
+        ids.extend((0..cfg.overlays.len()).map(|k| format!("po{k}")));
+        for (i, subplot) in cfg.subplots.iter().enumerate() {
+            ids.push(format!("s{i}"));
+            ids.extend((0..subplot.config.overlays.len()).map(|n| format!("s{i}o{n}")));
+        }
+        ids
+    }
+
+    /// A category bar, box plot and range bar series named `id`.
+    fn indexed_series(id: &str) -> [crate::data_config::SeriesConfig; 3] {
+        use crate::data_config::{
+            BoxPlotSeriesLabels, BoxPlotStyle, CategoryBarLabelFormat, CategoryBarSeriesLabels,
+            CategoryBarStyle, DataRenderType, RangeColor, SeriesConfig,
+        };
+        let series = |render_type| SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "positions".into(),
+            y_column: format!("{id}.values"),
+            z_column: None,
+            render_type,
+        };
+        let color = crate::Color::from_rgb8(40, 120, 200);
+        [
+            series(DataRenderType::CategoryBars {
+                color,
+                style: CategoryBarStyle::default(),
+                labels: CategoryBarSeriesLabels::default(),
+                label_format: CategoryBarLabelFormat::Value,
+                overrides: None,
+            }),
+            series(DataRenderType::BoxPlot {
+                color,
+                style: BoxPlotStyle::default(),
+                labels: BoxPlotSeriesLabels::default(),
+                outliers: None,
+                overrides: None,
+                violin: None,
+                points: None,
+            }),
+            series(DataRenderType::RangeBars {
+                color,
+                style: CategoryBarStyle::default(),
+                start: format!("{id}.start"),
+                whiskers: None,
+                color_by: RangeColor::Single,
+                progress: None,
+                connector: None,
+                slot_width: None,
+                labels: CategoryBarSeriesLabels::default(),
+            }),
+        ]
+    }
+
+    /// LAYER_OF_SERIES_IN_RANGE over one document: every layer
+    /// `layer_of_series` names indexes the lists it names, the subplot
+    /// configs keep their overlays, and every reader of those indexes
+    /// (`panel_of_series`, `line_offset_of`, `expand`, the bar, box and range
+    /// validations) answers without panicking.
+    fn assert_layers_in_range(cfg: &Config) {
+        let layers = cfg.panel_layers();
+        for index in 0..cfg.subplots.len() {
+            let subplot = cfg.subplot_config(index).expect("in range");
+            assert_eq!(
+                subplot.overlays.len(),
+                cfg.subplots[index].config.overlays.len()
+            );
+        }
+        assert!(cfg.subplot_config(cfg.subplots.len()).is_none());
+        assert!(cfg.subplot_config(usize::MAX).is_none());
+        for id in layered_ids(cfg) {
+            match cfg.layer_of_series(&id) {
+                LayerRef::Overlay(i) => assert!(i < cfg.overlays.len(), "{id}"),
+                LayerRef::Subplot(i) => assert!(i < cfg.subplots.len(), "{id}"),
+                LayerRef::SubplotOverlay(i, n) => {
+                    assert!(i < cfg.subplots.len(), "{id}");
+                    assert!(n < cfg.subplots[i].config.overlays.len(), "{id}");
+                }
+                LayerRef::Base | LayerRef::Annotations => {}
+            }
+            assert!(cfg.panel_of_series(&id) < layers.len(), "{id}");
+            assert_eq!(cfg.line_offset_of(&id), None, "{id}");
+            for item in indexed_series(&id) {
+                let one = std::slice::from_ref(&item);
+                // Each answers `Ok` or names a rule; none panics.
+                let _bars = cfg.validate_category_bars(one);
+                let _boxes = cfg.validate_box_plots(one);
+                let _ranges = cfg.validate_range_bars(one);
+            }
+        }
+        let expansion = cfg.expand().expect("the document expands");
+        assert_eq!(
+            expansion
+                .panels
+                .iter()
+                .map(|panel| panel.layer)
+                .collect::<Vec<_>>(),
+            layers
+        );
+    }
+
+    // LAYER_OF_SERIES_IN_RANGE (#152): 0, 1 and 40 parent overlays, 0, 1
+    // and 5 subplots with 0 to 3 overlays each, before and after every
+    // mutation path (an out-of-range active layer, a removed overlay, a
+    // removed subplot, a removed subplot overlay).
+    #[test]
+    fn every_layer_of_a_series_indexes_its_lists() {
+        for parent in [0, 1, 40] {
+            for subplots in [&[][..], &[1][..], &[0, 1, 2, 3, 2][..]] {
+                let mut cfg = layered(parent, subplots);
+                assert_eq!(cfg.validate_overlays(), Ok(()));
+                assert_eq!(cfg.validate_subplots(), Ok(()));
+                assert_layers_in_range(&cfg);
+                for layer in [
+                    LayerRef::Overlay(parent),
+                    LayerRef::Overlay(usize::MAX),
+                    LayerRef::Subplot(subplots.len()),
+                    LayerRef::SubplotOverlay(subplots.len(), 0),
+                    LayerRef::SubplotOverlay(0, 99),
+                ] {
+                    let stored = cfg.set_active_layer(layer);
+                    assert_eq!(cfg.active_layer(), stored);
+                    assert_ne!(stored, layer, "{layer:?} is out of range");
+                    assert_layers_in_range(&cfg);
+                }
+                if parent > 0 {
+                    let mut fewer = cfg.clone();
+                    fewer.set_active_layer(LayerRef::Overlay(parent - 1));
+                    fewer.overlays.pop();
+                    assert_eq!(fewer.active_layer(), LayerRef::Base);
+                    assert_layers_in_range(&fewer);
+                }
+                if let Some(last) = subplots.len().checked_sub(1) {
+                    let mut fewer = cfg.clone();
+                    fewer.set_active_layer(LayerRef::Subplot(last));
+                    fewer.subplots.pop();
+                    assert_eq!(fewer.active_layer(), LayerRef::Base);
+                    assert_layers_in_range(&fewer);
+                    let mut fewer = cfg.clone();
+                    if fewer.subplots[last].config.overlays.pop().is_some() {
+                        assert_layers_in_range(&fewer);
+                    }
+                }
+            }
+        }
+        // A duplicated id is refused, and `layer_of_series` still names the
+        // first overlay listing it.
+        let mut twice = layered(3, &[1]);
+        twice.overlays[2].series.push("po0".into());
+        assert!(twice.validate_overlays().is_err());
+        assert!(twice.expand().is_err());
+        assert_eq!(twice.layer_of_series("po0"), LayerRef::Overlay(0));
+        let mut twice = layered(0, &[2, 1]);
+        twice.subplots[1].config.overlays[0]
+            .series
+            .push("s0o1".into());
+        assert!(twice.validate_subplots().is_err());
+        assert_eq!(
+            twice.layer_of_series("s0o1"),
+            LayerRef::SubplotOverlay(0, 1)
+        );
+    }
+
+    /// PANELS_MATCH_LAYERS (#152): `expand` gives one panel per entry of
+    /// `panel_layers`, in that order, or a layout error, for a single-layer
+    /// chart, overlays, line offset groups of 0, 1 and 200 members (past any
+    /// old cap), subplots with overlays and members of their own and a chart
+    /// area squeezed below its margins. `panel_layers` always starts with the
+    /// base, and a nested subplot is refused.
+    #[test]
+    fn expanded_panels_follow_the_panel_layers() {
+        use crate::layout::LayoutError;
+        let members =
+            |count: usize| -> Vec<String> { (0..count).map(|k| format!("m{k}")).collect() };
+        let with_members = |mut cfg: Config, count: usize| {
+            let ids = members(count);
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            cfg.line_offsets = Some(offsets(&refs, 0.5, 0.0));
+            cfg
+        };
+        let mut documents = vec![default_config(), layered(0, &[]), layered(1, &[])];
+        for count in [0, 1, 200] {
+            documents.push(with_members(layered(0, &[]), count));
+            documents.push(with_members(layered(3, &[]), count));
+        }
+        let mut subplots = with_members(layered(2, &[1, 0, 2]), 3);
+        subplots.subplots[0].series.push("sm0".into());
+        subplots.subplots[0].series.push("sm1".into());
+        subplots.subplots[0].config.line_offsets = Some(offsets(&["s0", "sm0", "sm1"], 1.0, 0.0));
+        documents.push(subplots.clone());
+        for (width, height) in [(40, 30), (1, 1)] {
+            let mut squeezed = with_members(layered(2, &[]), 5);
+            squeezed.chart_area = ChartArea(Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            });
+            documents.push(squeezed);
+        }
+        let mut expanded = 0;
+        for cfg in &documents {
+            let layers = cfg.panel_layers();
+            assert_eq!(layers.first(), Some(&LayerRef::Base));
+            match cfg.expand() {
+                Ok(expansion) => {
+                    assert_eq!(expansion.panels.len(), layers.len());
+                    for (panel, layer) in expansion.panels.iter().zip(&layers) {
+                        assert_eq!(panel.layer, *layer);
+                    }
+                    expanded += 1;
+                }
+                Err(
+                    LayoutError::OverflowHorizontal { .. }
+                    | LayoutError::OverflowVertical { .. }
+                    | LayoutError::EmptyDataArea,
+                ) => assert!(cfg.chart_area.0.width <= 40, "{:?}", cfg.chart_area),
+                Err(error) => panic!("{error:?} for {} layers", layers.len()),
+            }
+        }
+        assert_eq!(expanded, documents.len() - 2);
+        let with_200 = with_members(layered(3, &[]), 200);
+        assert_eq!(with_200.panel_layers().len(), 1 + 3 + 200);
+        // A subplot of a subplot is refused: `panel_layers` does not recurse.
+        let mut nested = layered(0, &[1]);
+        nested.subplots[0].config.subplots = layered(0, &[0]).subplots;
+        assert!(nested.validate_subplots().is_err());
+        assert!(nested.expand().is_err());
+    }
+
+    // OVERLAY_PANEL_INDEX (#152): `overlay_panel(i)` is `Some` exactly for
+    // `i < overlays.len()`, and a drag of an overlay axis through a hit map
+    // built before an overlay was removed is refused, not indexed.
+    #[test]
+    fn overlay_panels_exist_exactly_for_the_overlays() {
+        use crate::layout::{NudgeReject, NudgeResult};
+        use crate::select::HitMap;
+        use crate::text::{MeasureText, TextExtents};
+        struct Fixed;
+        impl MeasureText for Fixed {
+            fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+                TextExtents {
+                    width: rt.segments.len() as f32 * 7.0,
+                    ascent: 9.0,
+                    descent: 3.0,
+                }
+            }
+        }
+        for count in [0, 1, 40] {
+            let mut cfg = layered(count, &[]);
+            for index in 0..count {
+                assert!(cfg.overlay_panel(index).is_some(), "{index} of {count}");
+            }
+            assert!(cfg.overlay_panel(count).is_none());
+            assert!(cfg.overlay_panel(usize::MAX).is_none());
+            let Some(last) = count.checked_sub(1) else {
+                continue;
+            };
+            cfg.set_active_layer(LayerRef::Overlay(last));
+            let map = HitMap::for_active_layer(&cfg);
+            let axis = map
+                .find(&crate::select::Selectable::element_id(
+                    &crate::select::OverlayAxisElement { layer: last },
+                ))
+                .expect("the overlay axis element");
+            let drag = |cfg: &mut Config| {
+                map.get(axis)
+                    .and_then(|element| element.as_draggable())
+                    .expect("draggable")
+                    .drag_by(cfg, &Fixed, 3.0, 0.0)
+            };
+            let result = drag(&mut cfg);
+            assert!(
+                matches!(result, NudgeResult::Moved | NudgeResult::Rejected(_)),
+                "{result:?}"
+            );
+            // The map outlives the overlay it names: a stale layer is
+            // `overlays.len()` now.
+            let mut fewer = cfg.clone();
+            fewer.overlays.pop();
+            assert_eq!(
+                drag(&mut fewer),
+                NudgeResult::Rejected(NudgeReject::OutOfBounds)
+            );
+            let mut beyond = cfg.clone();
+            let element = crate::select::OverlayAxisElement { layer: usize::MAX };
+            assert_eq!(
+                crate::drag::Draggable::drag_by(&element, &mut beyond, &Fixed, 3.0, 0.0),
+                NudgeResult::Rejected(NudgeReject::OutOfBounds)
+            );
+            assert_eq!(beyond, cfg);
+        }
+    }
+
+    /// The link patterns `linked_documents` builds: subplot `i`'s target
+    /// for `n` subplots, `None` for no link.
+    fn link_patterns(n: usize) -> Vec<Vec<Option<CellRef>>> {
+        let all = |f: &dyn Fn(usize) -> Option<CellRef>| (0..n).map(f).collect();
+        vec![
+            all(&|_| None),
+            // A chain down to the parent.
+            all(&|i| Some(i.checked_sub(1).map_or(CellRef::Parent, CellRef::Subplot))),
+            all(&|i| Some(CellRef::Subplot(i))),
+            // Forward links, the last one past the list.
+            all(&|i| Some(CellRef::Subplot(i + 1))),
+            // 2-cycles (the odd last one links to itself).
+            all(&|i| Some(CellRef::Subplot(if i ^ 1 < n { i ^ 1 } else { i }))),
+            // One cycle through every subplot.
+            all(&|i| Some(CellRef::Subplot((i + 1) % n.max(1)))),
+            all(&|_| Some(CellRef::Subplot(n))),
+            all(&|_| Some(CellRef::Subplot(usize::MAX))),
+            // Every other subplot unlinked, the rest pointing past the list.
+            all(&|i| (i % 2 == 1).then_some(CellRef::Subplot(usize::MAX - i))),
+        ]
+    }
+
+    /// Documents with 0, 1 and 64 subplots and every pair of link
+    /// patterns on X and Y, validated or not.
+    fn linked_documents() -> Vec<Config> {
+        use crate::layer::Subplot;
+        let mut documents = Vec::new();
+        for n in [0, 1, 64] {
+            let patterns = link_patterns(n);
+            for (k, x) in patterns.iter().enumerate() {
+                // Y uses the next pattern, so the axes' chains differ.
+                let y = &patterns[(k + 1) % patterns.len()];
+                let mut cfg = default_config();
+                cfg.subplots = (0..n)
+                    .map(|i| Subplot {
+                        link_x: x[i],
+                        link_y: y[i],
+                        ..Default::default()
+                    })
+                    .collect();
+                documents.push(cfg);
+            }
+        }
+        documents
+    }
+
+    /// LINK_ROOT_IN_RANGE (#152): the root of any subplot's link chain is
+    /// the parent or a subplot in the list, for any index and any links (a
+    /// lower index, itself, forward, cycles, targets past the list), before
+    /// and after every path that edits the links' axes or reads them back
+    /// from JSON.
+    #[test]
+    fn a_link_root_is_the_parent_or_a_listed_subplot() {
+        let check = |cfg: &Config| {
+            let len = cfg.subplots.len();
+            for index in 0..len + 2 {
+                for x in [true, false] {
+                    match cfg.subplot_link_root(index, x) {
+                        CellRef::Parent => {}
+                        CellRef::Subplot(k) => {
+                            assert!(k < len, "root {k} of {index} (x {x}) past {len}")
+                        }
+                    }
+                }
+                if index < len {
+                    assert!(cfg.subplot_config(index).is_some());
+                } else {
+                    assert!(cfg.subplot_config(index).is_none());
+                }
+            }
+        };
+        for cfg in linked_documents() {
+            check(&cfg);
+            let mut synced = cfg.clone();
+            synced.sync_subplot_links(None);
+            check(&synced);
+            // A host edit of every linked axis is carried to its root.
+            let mut edited = synced.clone();
+            for subplot in &mut edited.subplots {
+                subplot.config.bottom_x.max += 7.0;
+                subplot.config.left_y.min -= 3.0;
+            }
+            edited.sync_subplot_links(Some(&synced));
+            check(&edited);
+            // An edit of the parent with no subplot edit.
+            let mut parent = synced.clone();
+            parent.bottom_x.min -= 1.0;
+            parent.sync_subplot_links(Some(&synced));
+            check(&parent);
+            // Removing subplots leaves links past the shorter list.
+            let mut fewer = edited.clone();
+            fewer.subplots.truncate(fewer.subplots.len() / 2);
+            fewer.sync_subplot_links(Some(&edited));
+            check(&fewer);
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_string(&cfg).unwrap();
+                let back: Config = serde_json::from_str(&json).unwrap();
+                assert_eq!(back.subplots.len(), cfg.subplots.len());
+                check(&back);
+            }
+        }
+    }
 }

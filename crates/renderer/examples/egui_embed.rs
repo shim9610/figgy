@@ -215,7 +215,7 @@ impl FiggyState {
 
 impl FiggyState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
         self.panels.clear();
     }
 }

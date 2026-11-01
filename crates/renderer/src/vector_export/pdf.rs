@@ -31,10 +31,20 @@ use crate::layout::Rect;
 use crate::renderer::RasterImage;
 use crate::sketch::PathSegment;
 
+/// `write!` into a `Vec<u8>`, which accepts every write: `Vec<u8>`'s
+/// `io::Write` never fails, and every argument written here is a
+/// number or a string, whose `Display` cannot fail. There is no error to
+/// report, so none is returned.
+fn put(out: &mut Vec<u8>, args: std::fmt::Arguments<'_>) {
+    if std::io::Write::write_fmt(out, args).is_err() {
+        // Unreachable, as above: nothing is lost.
+    }
+}
+
 /// Write `v` with at most three decimals, trailing zeros dropped.
 fn push_num(out: &mut Vec<u8>, v: f32) {
     let start = out.len();
-    let _ = write!(out, "{v:.3}");
+    put(out, format_args!("{v:.3}"));
     if out[start..].contains(&b'.') {
         while out.last() == Some(&b'0') {
             out.pop();
@@ -137,12 +147,16 @@ impl PdfOut {
 
     /// Start object `number` (the next one): record its offset.
     fn begin_object(&mut self, number: u32) -> Result<()> {
-        debug_assert_eq!(number as usize, self.offsets.len() + 1);
+        if number as usize != self.offsets.len() + 1 {
+            return Err(FiggyError::internal(
+                "pdf objects are written in number order",
+            ));
+        }
         let offset = u32::try_from(self.out.len()).map_err(|_| FiggyError::RasterWrapFailed {
             reason: "pdf output exceeds 4 GiB".into(),
         })?;
         self.offsets.push(offset);
-        let _ = write!(self.out, "{number} 0 obj\n");
+        put(&mut self.out, format_args!("{number} 0 obj\n"));
         Ok(())
     }
 
@@ -157,10 +171,12 @@ impl PdfOut {
         self.begin_object(number)?;
         self.out.extend_from_slice(b"<<");
         dict(&mut self.out);
-        let _ = write!(
-            self.out,
-            " /Filter /FlateDecode /Length {} 0 R >>\nstream\n",
-            number + 1
+        put(
+            &mut self.out,
+            format_args!(
+                " /Filter /FlateDecode /Length {} 0 R >>\nstream\n",
+                number + 1
+            ),
         );
         let start = self.out.len();
         let mut encoder = ZlibEncoder::new(&mut self.out, Compression::best());
@@ -169,7 +185,7 @@ impl PdfOut {
         let length = self.out.len() - start;
         self.out.extend_from_slice(b"\nendstream\nendobj\n");
         self.begin_object(number + 1)?;
-        let _ = write!(self.out, "{length}\nendobj\n");
+        put(&mut self.out, format_args!("{length}\nendobj\n"));
         Ok(())
     }
 
@@ -182,7 +198,7 @@ impl PdfOut {
         }
         self.alpha[self.depth] = byte;
         self.alphas[byte as usize] = true;
-        let _ = write!(self.content, "/A{byte} gs\n");
+        put(&mut self.content, format_args!("/A{byte} gs\n"));
     }
 
     fn save(&mut self) {
@@ -240,51 +256,61 @@ impl PdfOut {
         drop(stream);
 
         self.begin_object(page)?;
-        let _ = write!(
-            self.out,
-            "<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 "
+        put(
+            &mut self.out,
+            format_args!("<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 "),
         );
         let page_size = self.page;
         push_nums(&mut self.out, &page_size);
         self.out.extend_from_slice(b"] /Resources << /XObject <<");
         for k in 1..=self.images {
-            let _ = write!(self.out, " /Im{k} {} 0 R", k * OBJECTS_PER_IMAGE - 1);
+            put(
+                &mut self.out,
+                format_args!(" /Im{k} {} 0 R", k * OBJECTS_PER_IMAGE - 1),
+            );
         }
         self.out.extend_from_slice(b" >> /ExtGState <<");
         for (byte, used) in self.alphas.iter().enumerate() {
             if *used {
-                let _ = write!(self.out, " /A{byte} << /Type /ExtGState /ca ");
+                put(
+                    &mut self.out,
+                    format_args!(" /A{byte} << /Type /ExtGState /ca "),
+                );
                 push_num(&mut self.out, byte as f32 / 255.0);
                 self.out.extend_from_slice(b" /CA ");
                 push_num(&mut self.out, byte as f32 / 255.0);
                 self.out.extend_from_slice(b" >>");
             }
         }
-        let _ = write!(self.out, " >> >> /Contents {content} 0 R >>\nendobj\n");
+        put(
+            &mut self.out,
+            format_args!(" >> >> /Contents {content} 0 R >>\nendobj\n"),
+        );
         self.begin_object(pages)?;
-        let _ = write!(
-            self.out,
-            "<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>\nendobj\n"
+        put(
+            &mut self.out,
+            format_args!("<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>\nendobj\n"),
         );
         self.begin_object(catalog)?;
-        let _ = write!(
-            self.out,
-            "<< /Type /Catalog /Pages {pages} 0 R >>\nendobj\n"
+        put(
+            &mut self.out,
+            format_args!("<< /Type /Catalog /Pages {pages} 0 R >>\nendobj\n"),
         );
 
         let xref = self.out.len();
-        let _ = write!(
-            self.out,
-            "xref\n0 {}\n0000000000 65535 f \n",
-            self.offsets.len() + 1
+        put(
+            &mut self.out,
+            format_args!("xref\n0 {}\n0000000000 65535 f \n", self.offsets.len() + 1),
         );
         for offset in &self.offsets {
-            let _ = write!(self.out, "{offset:010} 00000 n \n");
+            put(&mut self.out, format_args!("{offset:010} 00000 n \n"));
         }
-        let _ = write!(
-            self.out,
-            "trailer\n<< /Size {} /Root {catalog} 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-            self.offsets.len() + 1
+        put(
+            &mut self.out,
+            format_args!(
+                "trailer\n<< /Size {} /Root {catalog} 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                self.offsets.len() + 1
+            ),
         );
         Ok(self.out)
     }
@@ -493,10 +519,12 @@ impl VectorOut for PdfOut {
 
     fn push_clip(&mut self, rect: Rect) {
         self.save();
-        let _ = write!(
-            self.content,
-            "{} {} {} {} re W n\n",
-            rect.x, rect.y, rect.width, rect.height
+        put(
+            &mut self.content,
+            format_args!(
+                "{} {} {} {} re W n\n",
+                rect.x, rect.y, rect.width, rect.height
+            ),
         );
     }
 
@@ -511,10 +539,12 @@ impl VectorOut for PdfOut {
         let number = self.images * OBJECTS_PER_IMAGE + 1;
         let (w, h) = (image.width, image.height);
         let header = |out: &mut Vec<u8>, colors: u32| {
-            let _ = write!(
+            put(
                 out,
-                " /Type /XObject /Subtype /Image /Width {w} /Height {h} /BitsPerComponent 8 \
+                format_args!(
+                    " /Type /XObject /Subtype /Image /Width {w} /Height {h} /BitsPerComponent 8 \
                  /DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {w} >>"
+                ),
             );
         };
         self.stream_object(
@@ -529,7 +559,10 @@ impl VectorOut for PdfOut {
             number + 2,
             |out| {
                 header(out, 3);
-                let _ = write!(out, " /ColorSpace /DeviceRGB /SMask {number} 0 R");
+                put(
+                    out,
+                    format_args!(" /ColorSpace /DeviceRGB /SMask {number} 0 R"),
+                );
             },
             |encoder| write_predicted(encoder, image, &[0, 1, 2]),
         )?;
@@ -546,8 +579,75 @@ impl VectorOut for PdfOut {
                 (origin[1] + h as i32) as f32,
             ],
         );
-        let _ = write!(self.content, "cm /Im{} Do\n", self.images);
+        put(
+            &mut self.content,
+            format_args!("cm /Im{} Do\n", self.images),
+        );
         self.restore();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vector_export::VectorFile;
+
+    /// PDF_DEPTH_BELOW_MAX (#152): the saved-state depth that indexes the
+    /// alpha table stays below `MAX_DEPTH` through more saves than the
+    /// table holds (directly and through clips and text blocks, each
+    /// setting an alpha and painting), more restores than saves, and the
+    /// paths, glyph blocks and images written at the deepest and the
+    /// shallowest state; the file then finishes.
+    #[test]
+    fn the_saved_state_depth_stays_within_the_alpha_table() {
+        let mut out = <PdfOut as VectorFile>::create((5, 3), [5.0, 3.0]);
+        assert!(out.depth < MAX_DEPTH);
+        let fill = |out: &mut PdfOut, a: f32| {
+            out.begin_path(PathPaint::Fill(Color::new(0.2, 0.4, 0.6, a)));
+            out.segment(crate::sketch::PathSegment::Move((0.0, 0.0)));
+            out.segment(crate::sketch::PathSegment::Line((2.0, 1.0)));
+            out.segment(crate::sketch::PathSegment::Close);
+            out.end_path();
+        };
+        let image = RasterImage {
+            width: 3,
+            height: 2,
+            rgba: vec![128; 3 * 2 * 4],
+        };
+        for _ in 0..MAX_DEPTH + 5 {
+            out.save();
+            assert!(out.depth < MAX_DEPTH);
+            out.set_alpha(0.5);
+            assert!(out.depth < MAX_DEPTH);
+        }
+        for k in 0..MAX_DEPTH + 5 {
+            out.push_clip(Rect {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 3,
+            });
+            out.begin_text([1.0, 1.0], (k % 2 == 0).then_some((90.0, [1.0, 1.0])));
+            assert!(out.depth < MAX_DEPTH);
+            fill(&mut out, 0.25 + k as f32 / 100.0);
+            assert!(out.depth < MAX_DEPTH);
+        }
+        out.image([1, 0], &image).unwrap();
+        for _ in 0..3 * MAX_DEPTH + 20 {
+            out.end_text();
+            assert!(out.depth < MAX_DEPTH);
+            out.pop_clip();
+            assert!(out.depth < MAX_DEPTH);
+            out.restore();
+            assert!(out.depth < MAX_DEPTH);
+        }
+        assert_eq!(out.depth, 0);
+        out.set_alpha(0.25);
+        fill(&mut out, 1.0);
+        out.image([-2, -2], &image).unwrap();
+        assert!(out.depth < MAX_DEPTH);
+        let pdf = out.finish_file().unwrap();
+        assert!(pdf.starts_with(b"%PDF-1.4\n") && pdf.ends_with(b"%%EOF\n"));
     }
 }

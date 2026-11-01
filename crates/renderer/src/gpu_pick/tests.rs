@@ -530,6 +530,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
         Arc::clone(&device),
         Arc::clone(&queue),
         Arc::new(GpuLedger::new()),
+        crate::renderer::DeviceHealth::default(),
         &mut |event| events.push(event),
     )
     .unwrap();
@@ -700,7 +701,8 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
                                     contents: bytemuck::cast_slice(&pairs),
                                     usage: wgpu::BufferUsages::STORAGE,
                                 },
-                            );
+                            )
+                            .unwrap();
                             let handle = |column| ColumnHandle {
                                 generation: 0,
                                 offset: (column * len * 8) as u64,
@@ -778,7 +780,8 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             contents: bytemuck::cast_slice(&pairs),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )
+    .unwrap();
     let columns = GpuStreamPickColumns {
         x: ColumnHandle {
             generation: 0,
@@ -800,6 +803,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         Arc::clone(&device),
         Arc::clone(&queue),
         Arc::new(GpuLedger::new()),
+        crate::renderer::DeviceHealth::default(),
         &mut |_| {},
     )
     .unwrap();
@@ -3426,7 +3430,21 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
 fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
     let mut used = std::collections::HashSet::new();
-    for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
+    let mut labels = std::collections::HashSet::new();
+    for (position, shader) in std::iter::once(PickShader::Gate)
+        .chain(PickShader::EXACT)
+        .enumerate()
+    {
+        // Every discriminant names its own `PICK_MODULES` entry, and an
+        // exact module's slot in `PickExactPipelines::modules` follows the
+        // gate's (#152).
+        assert_eq!(shader as usize, position, "{shader:?}");
+        assert!(labels.insert(shader.label()), "{shader:?}");
+        assert!(!shader.source().is_empty(), "{shader:?}");
+        match shader {
+            PickShader::Gate => assert!(shader.exact_index().is_err()),
+            _ => assert_eq!(shader.exact_index().unwrap(), position - 1),
+        }
         used.extend(shader.fragments().iter().copied());
         assert_eq!(shader.fragments()[0], "gpu_pick/core.wgsl", "{shader:?}");
         let last = *shader.fragments().last().unwrap();
@@ -3678,5 +3696,83 @@ fn pick_shader_compile_timings() {
                 );
             }
         }
+    }
+}
+
+/// PICK_READBACK_SIZED_BY_SUBMIT (#152): a pick's readback holds the final
+/// candidate and one per line offset member, and the ticket carries the
+/// same member count resolve reads by: `members` is clamped to the
+/// registered series. With 1 and 100 registered series, picks asking for 0,
+/// 1, every and five more than every member size their readback by the
+/// clamped count and resolve, and so do two picks taken across a registry
+/// that shrinks and one that grows between them.
+#[test]
+fn a_pick_readback_holds_one_candidate_per_clamped_member() {
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let ctx = || crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue);
+    let mut pool = ColumnPool::new(ctx(), 1024 * 1024).unwrap();
+    pool.add_column(
+        "readback-x".into(),
+        &f32_column((0..16).map(|i| i as f32).collect()),
+        ctx(),
+    )
+    .unwrap();
+    pool.add_column("readback-y".into(), &f32_column(vec![5.0; 16]), ctx())
+        .unwrap();
+    let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+    let query = test_query([50.0, 50.0]);
+    let submit = |engine: &GpuPickEngine, members: usize| {
+        let mut exact = PickExactPipelines::default();
+        for key in engine.exact_variants(&query) {
+            exact.ensure(engine.bundle(), key).unwrap();
+        }
+        let transform = query.transform;
+        engine
+            .pick_with_arcs(&pool, query, 1.0, &[], &[], members, &|_| transform, &exact)
+            .unwrap()
+    };
+    let sized = |ticket: &GpuPickTicket| match &ticket.state {
+        GpuPickTicketState::Pending {
+            readback, members, ..
+        } => (readback.size(), *members),
+        GpuPickTicketState::ReadyNone => panic!("a registered pick is submitted"),
+    };
+    let series =
+        |i: usize| scatter_descriptor(&format!("readback-{i}"), "readback-x", "readback-y");
+    for count in [1usize, 100] {
+        engine.clear_series();
+        for i in 0..count {
+            engine.add_series(&pool, series(i)).unwrap();
+        }
+        assert_eq!(engine.registered_series_count(), count);
+        for asked in [0, 1, count, count + 5] {
+            let ticket = submit(&engine, asked);
+            let members = asked.min(count);
+            assert_eq!(
+                sized(&ticket),
+                (CANDIDATE_BYTES * (1 + members as u64), members),
+                "{asked} members of {count}"
+            );
+            pollster::block_on(ticket.resolve()).unwrap();
+        }
+    }
+    // A shrinking and a growing registry between two picks: each ticket
+    // keeps the count it was sized by.
+    let before = submit(&engine, 100);
+    for index in (10..100).rev() {
+        engine.remove_series_at(index).unwrap();
+    }
+    let shrunk = submit(&engine, 100);
+    assert_eq!(sized(&before), (CANDIDATE_BYTES * 101, 100));
+    assert_eq!(sized(&shrunk), (CANDIDATE_BYTES * 11, 10));
+    for i in 10..40 {
+        engine.add_series(&pool, series(i)).unwrap();
+    }
+    let grown = submit(&engine, 100);
+    assert_eq!(sized(&grown), (CANDIDATE_BYTES * 41, 40));
+    for ticket in [before, shrunk, grown] {
+        pollster::block_on(ticket.resolve()).unwrap();
     }
 }

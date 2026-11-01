@@ -1,8 +1,9 @@
 //! Single error enum for all fallible figgy operations.
 //!
-//! Only variants meaningful to library users are exposed; internal invariant
-//! violations panic. `From` conversions propagate sub-errors (e.g.
-//! [`AllocError`] from the column pool).
+//! Every failure reaches the caller as a value: product code has no panic
+//! path (#152). An internal invariant that does not hold is a figgy bug and
+//! returns [`FiggyError::Internal`]. `From` conversions propagate sub-errors
+//! (e.g. [`AllocError`] from the column pool).
 
 use crate::data_render::AllocError;
 
@@ -136,6 +137,24 @@ pub enum FiggyError {
     StalePreparedFrame {
         reason: String,
     },
+
+    /// An internal invariant did not hold. This is a figgy bug; it is
+    /// reported instead of panicking so the host keeps running (#152).
+    Internal {
+        invariant: &'static str,
+    },
+
+    /// The GPU reported a validation or internal error for figgy's work.
+    GpuValidation {
+        resource: &'static str,
+        reason: String,
+    },
+
+    /// The wgpu device was lost. Every later GPU call on this renderer
+    /// returns this error; the host recreates the device and the renderer.
+    DeviceLost {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for FiggyError {
@@ -208,6 +227,13 @@ impl std::fmt::Display for FiggyError {
             Self::StalePreparedFrame { reason } => {
                 write!(f, "stale prepared frame: {reason}")
             }
+            Self::Internal { invariant } => {
+                write!(f, "internal invariant failed (figgy bug): {invariant}")
+            }
+            Self::GpuValidation { resource, reason } => {
+                write!(f, "{resource}: GPU error: {reason}")
+            }
+            Self::DeviceLost { reason } => write!(f, "wgpu device lost: {reason}"),
         }
     }
 }
@@ -231,6 +257,13 @@ impl From<AllocError> for FiggyError {
 impl From<crate::gpu_pick::GpuPickError> for FiggyError {
     fn from(error: crate::gpu_pick::GpuPickError) -> Self {
         Self::GpuPick(error)
+    }
+}
+
+impl FiggyError {
+    /// The error for an internal invariant that did not hold.
+    pub(crate) const fn internal(invariant: &'static str) -> Self {
+        Self::Internal { invariant }
     }
 }
 

@@ -110,9 +110,9 @@ pub fn create_point_value_map_bind_group(
     layout: &wgpu::BindGroupLayout,
     params: &PointValueMapParamsGpu,
     stops: &[Color],
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
-    let (buffers, charge) = create_point_value_map_buffers(device, ledger, params, stops);
-    (bind_point_value_map(device, layout, &buffers), charge)
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
+    let (buffers, charge) = create_point_value_map_buffers(device, ledger, params, stops)?;
+    Ok((bind_point_value_map(device, layout, &buffers), charge))
 }
 
 /// The value-map group over existing buffers (`create_point_value_map_buffers`).
@@ -144,7 +144,7 @@ pub fn create_point_value_map_buffers(
     ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
     params: &PointValueMapParamsGpu,
     stops: &[Color],
-) -> (PointValueMapBuffers, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(PointValueMapBuffers, crate::gpu_memory::SharedCharge)> {
     use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
     let tally = ChargeTally::new();
     let param_buf = charged_buffer_init(
@@ -155,7 +155,7 @@ pub fn create_point_value_map_buffers(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let stop_entries = stops.len().max(1) as u64;
     let stop_buf = charged_buffer(
         &tally,
@@ -166,12 +166,14 @@ pub fn create_point_value_map_buffers(
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: true,
         },
-    );
+    )?;
     {
-        let mut view = stop_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("a buffer mapped at creation is mappable");
+        let mut view = stop_buf.slice(..).get_mapped_range_mut().map_err(|error| {
+            crate::FiggyError::GpuValidation {
+                resource: "point value map ramp",
+                reason: error.to_string(),
+            }
+        })?;
         let mut bytes = view.slice(..);
         bytes.fill(0);
         for (index, color) in stops.iter().enumerate() {
@@ -187,11 +189,11 @@ pub fn create_point_value_map_buffers(
         ledger,
         crate::gpu_memory::GpuResourceKind::Uniform,
     );
-    (
+    Ok((
         PointValueMapBuffers {
             params: param_buf,
             stops: stop_buf,
         },
         charge,
-    )
+    ))
 }

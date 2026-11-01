@@ -2,15 +2,34 @@
 use super::*;
 use crate::data_render::stream_field::{self as field, Action, SourceRole};
 
+impl StreamDrawCursor {
+    /// The pick tile of a cursor whose field pick an earlier check found.
+    fn field_pick(&self) -> Result<&field::PickTile> {
+        self.field
+            .as_ref()
+            .and_then(|field| field.pick.as_ref())
+            .ok_or(FiggyError::internal(
+                "a field pick cursor keeps its pick tile",
+            ))
+    }
+
+    /// Mutable [`StreamDrawCursor::field_pick`].
+    fn field_pick_mut(&mut self) -> Result<&mut field::PickTile> {
+        self.field
+            .as_mut()
+            .and_then(|field| field.pick.as_mut())
+            .ok_or(FiggyError::internal(
+                "a field pick cursor keeps its pick tile",
+            ))
+    }
+}
+
 impl Renderer {
     pub(super) fn request_stream_field_pick(
         &mut self,
         job: StreamJob,
     ) -> StreamResult<StreamDrawRequestStatus> {
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -27,14 +46,7 @@ impl Renderer {
             {
                 return Err(StreamError::TooLarge.into());
             }
-            let draw = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap();
+            let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
             let query = draw
                 .auxiliary_pick
                 .as_ref()
@@ -52,32 +64,12 @@ impl Renderer {
             self.queue.submit([encoder.finish()]);
             tile.commit(step)?;
             state.pick = Some(tile);
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .field = Some(state);
         }
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let Action::Source(request) = draw
-            .field
-            .as_ref()
-            .unwrap()
-            .pick
-            .as_ref()
-            .unwrap()
-            .action()?
-        else {
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
+        let Action::Source(request) = draw.field_pick()?.action()? else {
             return Err(StreamError::WrongState.into());
         };
         let snapshot = draw.auto_snapshot().ok_or(StreamError::WrongState)?;
@@ -98,13 +90,8 @@ impl Renderer {
         )? {
             StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
             StreamRequestStatus::Ready(ticket) => {
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .pending = Some(ticket);
                 Ok(StreamDrawRequestStatus::Ready(ticket))
             }
@@ -124,10 +111,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -139,15 +123,7 @@ impl Renderer {
         {
             return Err(StreamError::Stale.into());
         }
-        let Action::Source(request) = draw
-            .field
-            .as_ref()
-            .unwrap()
-            .pick
-            .as_ref()
-            .unwrap()
-            .action()?
-        else {
+        let Action::Source(request) = draw.field_pick()?.action()? else {
             return Err(StreamError::WrongState.into());
         };
         self.validate_stream_supply_kind(ticket, supply)?;
@@ -177,35 +153,29 @@ impl Renderer {
         let recorded = (|| -> StreamResult<(field::RecordedStep, bool)> {
             let handle = chunk.column_handle(range)?;
             let budget = self.stream_field_budget(0)?;
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
+            let draw = live_runtime_mut(&mut self.stream_runtime)?
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
-                .unwrap();
-            let (step, complete) = draw
-                .field
-                .as_mut()
-                .unwrap()
-                .pick
-                .as_mut()
-                .unwrap()
-                .record_source(
-                    &self.device,
-                    &mut encoder,
-                    budget,
-                    request,
-                    &chunk.work,
-                    u32::try_from(handle.offset / 8).map_err(|_| StreamError::TooLarge)?,
-                    chunk.work.shared_charge(),
-                )?;
+                .ok_or(FiggyError::internal(
+                    "a recorded field pick ticket's cursor is live",
+                ))?;
+            let (step, complete) = draw.field_pick_mut()?.record_source(
+                &self.device,
+                &mut encoder,
+                budget,
+                request,
+                &chunk.work,
+                u32::try_from(handle.offset / 8).map_err(|_| StreamError::TooLarge)?,
+                chunk.work.shared_charge(),
+            )?;
             if complete {
                 draw.auxiliary_pick
                     .as_mut()
-                    .unwrap()
-                    .reduce_field(&mut encoder);
+                    .ok_or(FiggyError::internal(
+                        "a field pick keeps its auxiliary pick",
+                    ))?
+                    .reduce_field(&mut encoder)?;
             }
             Ok((step, complete))
         })();
@@ -220,39 +190,31 @@ impl Renderer {
         };
         let result = self.queue_stream_recording(ticket, encoder.finish());
         drop(chunk);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.job)
-            .unwrap();
+            .ok_or(FiggyError::internal(
+                "a recorded field pick ticket's cursor is live",
+            ))?;
         match result {
             Ok(submission) => {
-                draw.field
-                    .as_mut()
-                    .unwrap()
-                    .pick
-                    .as_mut()
-                    .unwrap()
-                    .commit(step)?;
+                draw.field_pick_mut()?.commit(step)?;
                 draw.pending = None;
                 if complete {
-                    draw.auxiliary_pick.as_mut().unwrap().commit_field();
+                    draw.auxiliary_pick
+                        .as_mut()
+                        .ok_or(FiggyError::internal(
+                            "a field pick keeps its auxiliary pick",
+                        ))?
+                        .commit_field()?;
                     draw.offset = 1;
                 }
                 self.end_gpu_frame();
                 Ok(submission)
             }
             Err(error) => {
-                draw.field
-                    .as_mut()
-                    .unwrap()
-                    .pick
-                    .as_mut()
-                    .unwrap()
-                    .discard(step)?;
+                draw.field_pick_mut()?.discard(step)?;
                 self.discard_stream_recording(ticket)?;
                 self.end_gpu_frame();
                 Err(error)

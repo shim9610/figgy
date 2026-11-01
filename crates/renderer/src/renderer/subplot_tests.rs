@@ -876,3 +876,153 @@ fn subplot_members_draw_shifted_in_their_own_area() {
         .expect("the shifted subplot member picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));
 }
+
+/// A 320 x 240 chart with `overlays` overlays (`o{k}`) and a line offset
+/// group of `members` base series (`m{k}`), for PANELS_MATCH_LAYERS.
+fn shaped(overlays: usize, members: usize) -> Config {
+    let mut c = chart(
+        Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        },
+        (0.0, 1.0),
+    );
+    c.overlays = (0..overlays)
+        .map(|k| {
+            let mut overlay = OverlayLayer::default();
+            overlay.y_axis.min = 0.0;
+            overlay.y_axis.max = 1.0;
+            overlay.y_axis.major_spacing = 0.5;
+            overlay.y_axis.out_margin = 18.0;
+            overlay.y_axis.label_style.font_size = 9.0;
+            overlay.y_axis.title_option.visible = false;
+            overlay.series = vec![format!("o{k}")];
+            overlay
+        })
+        .collect();
+    if members > 0 {
+        c.line_offsets = Some(crate::data_config::LineOffsets {
+            series: (0..members).map(|k| format!("m{k}")).collect(),
+            step_y: 0.002,
+            step_x: 0.0,
+        });
+    }
+    c
+}
+
+/// PANELS_MATCH_LAYERS (#152): `expand_for_render` gives at least one and
+/// at most `panel_layers().len()` panels (exactly that many unless the
+/// layout fell back to the base panel), `panel_places` one place per panel
+/// and `route_selection_boxes` one list per place, so every reader of those
+/// lists by panel index stays in range. Single-layer charts, overlays, line
+/// offset groups of 0, 1 and 200 members, subplots with overlays and
+/// members, a squeezed chart area and a nested subplot; then a registered
+/// chart grows and shrinks its overlays (0, 3, 1) and members (0, 200, 0)
+/// through `set_chart_config`, and after every edit the refreshed view
+/// holds one overlay view per extra panel, draws and exports.
+#[test]
+fn rendered_panels_match_the_panel_layers_through_every_edit() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = renderer();
+    let probe = Chart::new(shaped(0, 0));
+    let boxes: Vec<_> = r.selection_box(&probe, "data_area").into_iter().collect();
+    assert_eq!(boxes.len(), 1);
+
+    let mut members_in_subplot = document();
+    members_in_subplot.subplots[0].series.push("t1".into());
+    members_in_subplot.subplots[0].config.line_offsets = Some(crate::data_config::LineOffsets {
+        series: vec!["s1".into(), "t1".into()],
+        step_y: 5.0,
+        step_x: 0.0,
+    });
+    let mut squeezed = shaped(3, 5);
+    squeezed.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 30,
+        height: 20,
+    });
+    let documents = [
+        shaped(0, 0),
+        shaped(1, 0),
+        shaped(3, 0),
+        shaped(0, 1),
+        shaped(3, 1),
+        shaped(0, 200),
+        shaped(3, 200),
+        document(),
+        members_in_subplot,
+        squeezed,
+    ];
+    let mut fallbacks = 0;
+    for c in &documents {
+        let layers = c.panel_layers();
+        assert_eq!(layers.first(), Some(&LayerRef::Base));
+        let panels = expand_for_render(c).unwrap();
+        assert!(!panels.is_empty() && panels.len() <= layers.len());
+        if panels.len() != layers.len() {
+            assert_eq!(panels.len(), 1, "a partial expansion");
+            fallbacks += 1;
+        }
+        assert_eq!(render_panel_count(c).unwrap(), panels.len());
+        let rect = c.chart_area.0;
+        let places = panel_places(c, &panels, rect);
+        assert_eq!(places.len(), panels.len());
+        let routed = route_selection_boxes(&places, &boxes);
+        assert_eq!(routed.len(), places.len());
+        assert_eq!(routed.iter().map(Vec::len).sum::<usize>(), boxes.len());
+        // Placed far from the box, every place misses it: the topmost
+        // takes it.
+        let far = Rect {
+            x: rect.x + 100_000,
+            y: rect.y + 100_000,
+            ..rect
+        };
+        let routed = route_selection_boxes(&panel_places(c, &panels, far), &boxes);
+        assert_eq!(routed.len(), panels.len());
+        assert_eq!(routed.last().map(Vec::len), Some(boxes.len()));
+        for layer in &layers {
+            assert!(panel_index(c, panels.len(), *layer) < panels.len());
+        }
+        for id in ["s0", "s1", "s2", "t1", "o0", "o2", "m0", "m199", "nowhere"] {
+            assert!(series_panel_index(c, panels.len(), id) < panels.len());
+        }
+    }
+    assert_eq!(fallbacks, 1, "only the squeezed chart falls back");
+    let mut nested = document();
+    nested.subplots[0].config.subplots = document().subplots;
+    assert!(expand_for_render(&nested).is_err());
+
+    // The registry: one declaration per series any step names.
+    let mut declarations = vec![declaration("s0", "x", "a")];
+    declarations.extend((0..3).map(|k| declaration(&format!("o{k}"), "x", "b")));
+    declarations.extend((0..200).map(|k| declaration(&format!("m{k}"), "x", "c")));
+    let first = shaped(0, 0);
+    let id = r
+        .register_chart(first.clone(), declarations.clone())
+        .unwrap();
+    let mut view = r
+        .create_chart_view(&Chart::new(first.clone()), first.chart_area.0)
+        .unwrap();
+    for (overlays, members) in [(0, 0), (3, 0), (1, 0), (1, 200), (3, 200), (1, 0), (0, 0)] {
+        let config = shaped(overlays, members);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let chart = Chart::new(r.chart_config(id).unwrap().clone());
+        r.refresh_axis_with_selection(&mut view, &chart, config.chart_area.0, Some("legend"))
+            .unwrap();
+        let panels = expand_for_render(chart.config()).unwrap();
+        assert_eq!(panels.len(), 1 + overlays + members);
+        assert_eq!(view.overlay_count(), panels.len() - 1);
+        let pixels = frame_with_view(&mut r, id, &view);
+        assert!(pixels.chunks_exact(4).any(|p| p[3] != 0));
+        let png = r
+            .export_document_png_bytes(&chart, &declarations, 1.0)
+            .unwrap();
+        assert!(!png.is_empty());
+    }
+    drop(fonts);
+}

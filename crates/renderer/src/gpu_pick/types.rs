@@ -80,6 +80,22 @@ pub enum GpuPickError {
     },
     ForeignColumnPool,
     RegistryGenerationExhausted,
+    /// An internal invariant of the picker did not hold. This is a figgy
+    /// bug, reported as an error instead of a panic (#152).
+    Internal(&'static str),
+    /// The GPU reported an error during a pick.
+    Gpu(String),
+}
+
+impl GpuPickError {
+    /// A renderer error met during a pick, in the picker's error type: a
+    /// wrapped pick error is unwrapped, anything else is a GPU error.
+    pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
+        match error {
+            crate::FiggyError::GpuPick(error) => error,
+            other => Self::Gpu(other.to_string()),
+        }
+    }
 }
 
 impl fmt::Display for GpuPickError {
@@ -150,6 +166,10 @@ impl fmt::Display for GpuPickError {
             Self::RegistryGenerationExhausted => {
                 write!(f, "GPU pick registry generation is exhausted")
             }
+            Self::Internal(invariant) => {
+                write!(f, "GPU pick internal invariant failed: {invariant}")
+            }
+            Self::Gpu(reason) => write!(f, "GPU pick: GPU error: {reason}"),
         }
     }
 }
@@ -736,11 +756,14 @@ impl GpuStreamPick {
         readback
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
+                if sender.send(result).is_err() {
+                    // receiver dropped: the waiting call was cancelled
+                }
             });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
                 device: Arc::clone(&bundle.device),
+                health: bundle.health.clone(),
                 readback,
                 receiver,
                 identities: self.identities,

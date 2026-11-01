@@ -675,3 +675,135 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
         }
     }
 }
+
+/// The radial vector parts are recorded from a validated chart only, as the
+/// exports they mirror (#152): a split naming a slice past the chart's
+/// slices is refused with `RadialError::Invalid` and records nothing.
+#[test]
+fn the_radial_vector_parts_refuse_a_chart_that_does_not_validate() {
+    for slice_index in [scenes::radial::radial_chart().slices.len(), usize::MAX] {
+        let mut chart = scenes::radial::radial_chart();
+        chart.split = Some(RadialSplit {
+            slice_index,
+            children: vec![RadialSlice::new("A", 1.0, Color::BLACK)],
+            kind: RadialKind::Pie,
+        });
+        let mut written = 0usize;
+        let result = written_vector_parts(&chart, (800, 520), 1.0, &mut |_| written += 1);
+        assert!(
+            matches!(result, Err(renderer::radial::RadialError::Invalid(_))),
+            "split.slice_index {slice_index}: {result:?}"
+        );
+        assert_eq!(written, 0, "split.slice_index {slice_index}");
+    }
+}
+
+/// RASTER_IMAGE_RGBA_LEN (#152): every image the writers embed (a data
+/// group's crop of the panel readback, the Milkyway backdrop, the
+/// colourbar strip, the radial frame) has `width * height * 4` bytes. The
+/// document exports succeed in both formats at 1x and 2x for odd sizes
+/// (1x1, 3x5 and, when the device holds it, 4097x3), the subplot, offset
+/// spectra and field scenes and the Milkyway style; the radial exports at
+/// odd sizes from its smallest canvas up, and refuse a smaller one.
+#[test]
+fn odd_sizes_subplots_and_milkyway_export_their_images() {
+    let gpu = gpu();
+    let mut r = renderer(&gpu);
+    let max = gpu.device().limits().max_texture_dimension_2d;
+    let mut documents = Vec::new();
+    for (width, height) in [(1, 1), (3, 5), (4097, 3)] {
+        let mut config = renderer::default::default_config();
+        config.chart_area = renderer::layout::ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        let mut sky = config.clone();
+        sky.draw_style = DrawStyle::Milkyway(Default::default());
+        let name = format!("{width}x{height}");
+        documents.push((format!("Milkyway {name}"), sky, Vec::new()));
+        documents.push((name, config, Vec::new()));
+    }
+    for kind in [
+        SceneKind::Subplots,
+        SceneKind::OffsetSpectra,
+        SceneKind::Field,
+    ] {
+        let scene = scenes::build(&mut r, kind, 1000).unwrap();
+        let mut sky = scene.config.clone();
+        sky.draw_style = DrawStyle::Milkyway(Default::default());
+        for subplot in &mut sky.subplots {
+            subplot.config.draw_style = sky.draw_style;
+        }
+        documents.push((format!("{kind:?}"), scene.config, scene.series.clone()));
+        documents.push((format!("Milkyway {kind:?}"), sky, scene.series));
+    }
+    let mut exported = 0;
+    for (name, config, series) in &documents {
+        let area = config.document_area();
+        let chart = Chart::new(config.clone());
+        for scale in SCALES {
+            let fits = |n: u32| (n as f32 * scale).round() as u32 <= max;
+            if !(fits(area.width) && fits(area.height)) {
+                continue;
+            }
+            let context = format!("{name} at {scale}x");
+            let svg = r
+                .export_document_svg(&chart, series, scale)
+                .unwrap_or_else(|e| panic!("{context}: {e}"));
+            let file = svg_parts::read(&svg);
+            for (rect, png) in &file.images {
+                let image = decode_png(png);
+                assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
+                assert_eq!(
+                    (image.width, image.height),
+                    (rect.width, rect.height),
+                    "{context}"
+                );
+            }
+            pdf_structure::read(
+                &r.export_document_pdf(&chart, series, scale)
+                    .unwrap_or_else(|e| panic!("{context}: {e}")),
+            );
+            r.end_gpu_frame();
+            exported += 1;
+        }
+    }
+    assert!(exported >= documents.len());
+
+    let mut rr = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    for (name, chart) in radial_cases() {
+        for scale in SCALES {
+            for size in [(1, 1), (3, 5)] {
+                // Below the radial chart's smallest canvas: refused.
+                for result in [
+                    rr.export_svg(&chart, size, scale).map(|_| ()),
+                    rr.export_pdf(&chart, size, scale).map(|_| ()),
+                ] {
+                    assert!(
+                        matches!(result, Err(renderer::radial::RadialError::Invalid(_))),
+                        "{name} {size:?} at {scale}x: {result:?}"
+                    );
+                }
+            }
+        }
+        for size in [(801, 523), (1001, 641)] {
+            for scale in SCALES {
+                let context = format!("{name} {size:?} at {scale}x");
+                let svg = rr
+                    .export_svg(&chart, size, scale)
+                    .unwrap_or_else(|e| panic!("{context}: {e:?}"));
+                let file = svg_parts::read(&svg);
+                assert_eq!(file.images.len(), 1, "{context}");
+                let image = decode_png(&file.images[0].1);
+                assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
+                pdf_structure::read(
+                    &rr.export_pdf(&chart, size, scale)
+                        .unwrap_or_else(|e| panic!("{context}: {e:?}")),
+                );
+                rr.end_frame();
+            }
+        }
+    }
+}

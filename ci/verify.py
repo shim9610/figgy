@@ -62,6 +62,72 @@ def run(args, *, cwd=ROOT, env=None, capture=False, collect=False):
     return "\n".join(lines) if collect else None
 
 
+# Lints that keep product code free of panics and dropped errors (#152).
+# Only these run (`-A clippy::all` first). The assert family is listed in
+# the root `clippy.toml` (`disallowed_macros`); a derive's generated const
+# checks and `const _: () = assert!(..)` fail the build and never run, so
+# `panic_gate_findings` drops those.
+PANIC_GATE_LINTS = ("unwrap_used", "expect_used", "panic", "unreachable", "todo",
+                    "unimplemented", "disallowed_macros", "let_underscore_must_use",
+                    "let_underscore_future", "unused_result_ok")
+PANIC_GATE_TARGETS = (
+    ("--all-features",),
+    ("--target", "wasm32-unknown-unknown", "--features", "figgy-renderer/serde"),
+)
+
+
+def call_site(span):
+    """The span in figgy's source: a core macro's span resolved to its caller."""
+    while span["file_name"].startswith("/rustc") and span.get("expansion"):
+        span = span["expansion"]["span"]
+    return span
+
+
+def compile_time_assert(span, read=lambda name: Path(name).read_text().splitlines()):
+    """A derive expansion or a `const _` item: a build-time check, not a panic path."""
+    expansion = span.get("expansion")
+    while expansion:
+        if (expansion.get("macro_decl_name") or "").startswith("#[derive"):
+            return True
+        expansion = expansion["span"].get("expansion")
+    site = call_site(span)
+    try:
+        lines = read(site["file_name"])
+    except OSError:
+        return False
+    for index in range(site["line_start"] - 1, max(site["line_start"] - 5, -1), -1):
+        text = lines[index].strip()
+        if text.startswith("const _"):
+            return True
+        if index < site["line_start"] - 1 and text.endswith((";", "{", "}")):
+            return False
+    return False
+
+
+def panic_gate_findings(messages, read=lambda name: Path(name).read_text().splitlines()):
+    """`path:line lint` for every gate finding in cargo's JSON message stream."""
+    found = set()
+    for line in messages:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("reason") != "compiler-message":
+            continue
+        diagnostic = message["message"]
+        code = (diagnostic.get("code") or {}).get("code") or ""
+        if not code.startswith("clippy::"):
+            continue
+        for span in diagnostic["spans"]:
+            if not span["is_primary"]:
+                continue
+            if code == "clippy::disallowed_macros" and compile_time_assert(span, read):
+                continue
+            site = call_site(span)
+            found.add(f"{site['file_name']}:{site['line_start']} {code}")
+    return sorted(found)
+
+
 def static():
     # CI script and package-relative documentation checks run before any compilation.
     run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "ci", "-p", "test_*.py"])
@@ -71,6 +137,16 @@ def static():
     run(["cargo", "check", "--locked", "--workspace", "--all-targets"])
     run(["cargo", "check", "--locked", "--workspace", "--all-targets", "--all-features"])
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown"])
+    # No panic path and no dropped error in product code (#152), native and WASM.
+    lints = ["-A", "clippy::all", *(f for lint in PANIC_GATE_LINTS for f in ("-W", f"clippy::{lint}"))]
+    findings = []
+    for target in PANIC_GATE_TARGETS:
+        output = run(["cargo", "clippy", "--locked", "--workspace", "--lib", "--bins", *target,
+                      "--message-format=json", "--", *lints], capture=True)
+        findings += panic_gate_findings(output.splitlines())
+    if findings:
+        raise RuntimeError("product code has panic paths or dropped errors (#152):\n"
+                           + "\n".join(sorted(set(findings))))
     # Compile the browser tests too; running them needs a WebGPU browser.
     # Every WASM test target is named `*_browser`; the other tests are native.
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",

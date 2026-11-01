@@ -39,15 +39,17 @@ pub(super) struct StreamArcState {
 }
 
 impl StreamArcState {
-    fn leaf(&self) -> ArcReplayLeaf {
-        self.chunk.leaf(self.block).expect("checked canonical leaf")
+    fn leaf(&self) -> Result<ArcReplayLeaf> {
+        self.chunk
+            .leaf(self.block)
+            .ok_or(FiggyError::internal("checked canonical leaf"))
     }
 
-    fn advance(&mut self, supplied: u32, max_workgroups: u32) -> u64 {
+    fn advance(&mut self, supplied: u32, max_workgroups: u32) -> Result<u64> {
         self.filled += supplied;
-        let leaf = self.leaf();
+        let leaf = self.leaf()?;
         if self.filled != leaf.supply_len {
-            return 0;
+            return Ok(0);
         }
         self.filled = 0;
         let drawn = if self.drawing {
@@ -68,12 +70,12 @@ impl StreamArcState {
                         (self.n - start).min(self.cap),
                         max_workgroups,
                     )
-                    .expect("checked canonical successor");
+                    .ok_or(FiggyError::internal("checked canonical successor"))?;
                     self.drawing = false;
                 }
             }
         }
-        drawn
+        Ok(drawn)
     }
 }
 
@@ -139,18 +141,18 @@ impl Renderer {
             "stream canonical arc leaf pairs",
             sizes[0],
             storage | copy | wgpu::BufferUsages::VERTEX,
-        );
+        )?;
         let arc = Arc::new(buffer(
             "stream canonical arc leaf output",
             sizes[1],
             storage | copy | wgpu::BufferUsages::VERTEX,
-        ));
-        let sums = buffer("stream canonical arc leaf sum", pair, storage);
-        let top = buffer("stream canonical arc sums0", top_bytes, storage);
-        let upper = buffer("stream canonical arc sums1", upper_bytes, storage);
-        let sink = buffer("stream canonical arc sum sink", pair, storage);
-        let carry = buffer("stream canonical arc carry", pair, storage);
-        let predecessor = buffer("stream canonical arc predecessor", pair, copy);
+        )?);
+        let sums = buffer("stream canonical arc leaf sum", pair, storage)?;
+        let top = buffer("stream canonical arc sums0", top_bytes, storage)?;
+        let upper = buffer("stream canonical arc sums1", upper_bytes, storage)?;
+        let sink = buffer("stream canonical arc sum sink", pair, storage)?;
+        let carry = buffer("stream canonical arc carry", pair, storage)?;
+        let predecessor = buffer("stream canonical arc predecessor", pair, copy)?;
         let transform = charged_buffer_init(
             &tally,
             &self.device,
@@ -159,13 +161,17 @@ impl Renderer {
                 contents: bytemuck::bytes_of(&data_render::scatter_transform_from_config(config)),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let transform = self
             .arc_pipelines
             .as_ref()
-            .unwrap()
+            .ok_or(FiggyError::internal("arc pipelines were created above"))?
             .replay_transform_bind_group(&self.device, &transform);
-        debug_assert_eq!(tally.bytes(), bytes);
+        if tally.bytes() != bytes {
+            return Err(
+                FiggyError::internal("stream arc buffers charge their planned bytes").into(),
+            );
+        }
         let charge = shared_charge(tally, &self.gpu_ledger, GpuResourceKind::ArcScan);
         Ok(StreamArcState {
             buffers: Arc::new(ArcBuffers {
@@ -196,37 +202,22 @@ impl Renderer {
         names: &[String; 2],
         n: u64,
     ) -> StreamResult<StreamDrawRequestStatus> {
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
+            .live_draw(job)?
             .arc
             .is_none()
         {
             let arc = self.new_stream_arc(config, n)?;
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .arc = Some(arc);
         }
-        let draw = self
-            .stream_runtime
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
+        let arc = draw
+            .arc
             .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let arc = draw.arc.as_ref().unwrap();
-        let leaf = arc.leaf();
+            .ok_or(FiggyError::internal("the stream arc was created above"))?;
+        let leaf = arc.leaf()?;
         let offset = u64::from(leaf.supply_start + arc.filled);
         let len = u64::from(leaf.supply_len - arc.filled).min(draw.max_primitives);
         let ranges = names.each_ref().map(|column| StreamSourceRange {
@@ -238,13 +229,8 @@ impl Renderer {
         match self.request_stream_columns(job, &ranges[..count])? {
             StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
             StreamRequestStatus::Ready(ticket) => {
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .pending = Some(ticket);
                 Ok(StreamDrawRequestStatus::Ready(ticket))
             }
@@ -264,10 +250,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -283,7 +266,7 @@ impl Renderer {
         let series_index = draw.series;
         let arc = draw.arc.as_ref().ok_or(StreamError::WrongState)?;
         let buffers = Arc::clone(&arc.buffers);
-        let leaf = arc.leaf();
+        let leaf = arc.leaf()?;
         let canonical_chunk = arc.chunk;
         let filled = arc.filled;
         let drawing = arc.drawing;
@@ -392,44 +375,55 @@ impl Renderer {
             let leaf_params = params(
                 "stream arc leaf params",
                 bytemuck::bytes_of(&leaf.arc_params(0, (Y_OFFSET / 4) as u32)),
-            );
+            )?;
             let replay_params = params(
                 "stream arc leaf identity",
                 bytemuck::bytes_of(&leaf.replay_params()),
-            );
-            let top_params = (!drawing && last_leaf).then(|| {
-                params(
-                    "stream arc top params",
-                    bytemuck::bytes_of(&ArcParams {
-                        len: canonical_chunk.block_count(),
-                        x_base: 0,
-                        y_base: 0,
-                        start: 0,
-                        mode: 0,
-                        c_base: 0,
-                        flags: 0,
-                        _pad: 0,
-                    }),
-                )
-            });
-            let upper_params = (!drawing && last_leaf).then(|| {
-                params(
-                    "stream arc upper params",
-                    bytemuck::bytes_of(&ArcParams {
-                        len: canonical_chunk.block_count().div_ceil(WG),
-                        x_base: 0,
-                        y_base: 0,
-                        start: 0,
-                        mode: 0,
-                        c_base: 0,
-                        flags: 0,
-                        _pad: 0,
-                    }),
-                )
-            });
-            debug_assert_eq!(tally.bytes(), headroom);
+            )?;
+            let top_params = (!drawing && last_leaf)
+                .then(|| {
+                    params(
+                        "stream arc top params",
+                        bytemuck::bytes_of(&ArcParams {
+                            len: canonical_chunk.block_count(),
+                            x_base: 0,
+                            y_base: 0,
+                            start: 0,
+                            mode: 0,
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
+                        }),
+                    )
+                })
+                .transpose()?;
+            let upper_params = (!drawing && last_leaf)
+                .then(|| {
+                    params(
+                        "stream arc upper params",
+                        bytemuck::bytes_of(&ArcParams {
+                            len: canonical_chunk.block_count().div_ceil(WG),
+                            x_base: 0,
+                            y_base: 0,
+                            start: 0,
+                            mode: 0,
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
+                        }),
+                    )
+                })
+                .transpose()?;
+            if tally.bytes() != headroom {
+                return Err(
+                    FiggyError::internal("stream arc leaf uniforms charge their headroom").into(),
+                );
+            }
             let charge = shared_charge(tally, &self.gpu_ledger, GpuResourceKind::ArcScan);
-            let pipelines = self.arc_pipelines.as_ref().unwrap();
+            let pipelines = self
+                .arc_pipelines
+                .as_ref()
+                .ok_or(FiggyError::internal("a stream arc has its pipelines"))?;
             let storage = pipelines.replay_storage_bind_group(
                 &self.device,
                 &buffers.pool,
@@ -473,13 +467,14 @@ impl Renderer {
                     );
                 }
             }
-            if !drawing && last_leaf {
+            // Both exist exactly when `!drawing && last_leaf`.
+            if let (Some(top_params), Some(upper_params)) = (&top_params, &upper_params) {
                 let top = pipelines.replay_storage_bind_group(
                     &self.device,
                     &buffers.pool,
                     &buffers.top,
                     &buffers.upper,
-                    top_params.as_ref().unwrap(),
+                    top_params,
                     &buffers.carry,
                 );
                 let upper = pipelines.replay_storage_bind_group(
@@ -487,7 +482,7 @@ impl Renderer {
                     &buffers.pool,
                     &buffers.upper,
                     &buffers.sink,
-                    upper_params.as_ref().unwrap(),
+                    upper_params,
                     &buffers.carry,
                 );
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -511,23 +506,30 @@ impl Renderer {
                     data_render::line_arc::ARC_PAIR_BYTES,
                 );
                 let (states, preparation) = self.preparation_parts();
-                let (config, series, style) = snapshot.as_ref().map_or_else(
-                    || {
-                        let state = &states[&ticket.job.chart];
+                let (config, series, style) = match snapshot.as_ref() {
+                    Some(snapshot) => (
+                        &snapshot.config,
+                        &snapshot.series[series_index],
+                        &snapshot.styles.styles[series_index],
+                    ),
+                    None => {
+                        let state =
+                            states
+                                .get(&ticket.job.chart)
+                                .ok_or(FiggyError::UnknownChart {
+                                    id: ticket.job.chart,
+                                })?;
+                        let styles = state
+                            .prepared_styles
+                            .as_ref()
+                            .ok_or(FiggyError::internal("validated explicit stream styles"))?;
                         (
                             &state.config,
                             &state.series[series_index],
-                            &state.prepared_styles.as_ref().unwrap().styles[series_index],
+                            &styles.styles[series_index],
                         )
-                    },
-                    |snapshot| {
-                        (
-                            &snapshot.config,
-                            &snapshot.series[series_index],
-                            &snapshot.styles.styles[series_index],
-                        )
-                    },
-                );
+                    }
+                };
                 let handle = |offset| ColumnHandle {
                     generation: 0,
                     offset,
@@ -608,18 +610,19 @@ impl Renderer {
         drop((scratch, chunk, buffers));
         match result {
             Ok(submission) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
-                let drawn = draw.arc.as_mut().unwrap().advance(
-                    supplied,
-                    self.device.limits().max_compute_workgroups_per_dimension,
-                );
+                    .ok_or(FiggyError::internal("a submitted ticket's cursor is live"))?;
+                let drawn = draw
+                    .arc
+                    .as_mut()
+                    .ok_or(FiggyError::internal("a submitted arc ticket keeps its arc"))?
+                    .advance(
+                        supplied,
+                        self.device.limits().max_compute_workgroups_per_dimension,
+                    )?;
                 draw.offset += drawn;
                 draw.pending = None;
                 draw.display_dirty |= drawn != 0;

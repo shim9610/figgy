@@ -442,6 +442,8 @@ struct LayerSink {
     origin: [f32; 2],
     scale: f32,
     policy: FontPolicy,
+    /// The first text that could not be drawn; [`rasterize`] returns it.
+    text_error: Option<crate::FiggyError>,
 }
 
 impl LayerSink {
@@ -471,7 +473,17 @@ impl LayerSink {
 impl Sink for LayerSink {
     fn text(&mut self, slot: Slot, text: &model::sink::PlacedText<'_>) {
         self.ensure(slot);
-        self.canvas_sink().text(slot, text);
+        if self.text_error.is_some() {
+            return;
+        }
+        let drawn = {
+            let mut sink = self.canvas_sink();
+            sink.text(slot, text);
+            sink.finish()
+        };
+        if let Err(error) = drawn {
+            self.text_error = Some(error);
+        }
     }
 
     fn stroke(
@@ -529,7 +541,8 @@ impl Sink for LayerSink {
 /// hidden or unplaceable item is skipped and, when unplaceable, reported.
 /// Each item is placed once, through [`AnnotationElement::emit`]: the
 /// canvas sink paints the parts and the hit map's sinks read the same parts.
-pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
+/// A text that cannot be drawn (a glyph above `MAX_GLYPH_PX`) is an error.
+pub(crate) fn rasterize(request: &RasterRequest<'_>) -> crate::Result<AnnotationRaster> {
     let (w, h) = request.size;
     let scale = request.scale;
     let space = request.space;
@@ -537,11 +550,11 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     let mut map = AnnotationMap::empty(space);
     map.state = request.layer.clone();
     if w == 0 || h == 0 || scale <= 0.0 || !scale.is_finite() {
-        return AnnotationRaster {
+        return Ok(AnnotationRaster {
             underlay: None,
             overlay: None,
             map,
-        };
+        });
     }
     let mut sink = LayerSink {
         underlay: None,
@@ -550,6 +563,7 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
         origin,
         scale,
         policy: request.policy,
+        text_error: None,
     };
     let mut registered = Vec::new();
     emit_annotation_layer(request, &mut sink, &mut |placed| match placed {
@@ -569,11 +583,14 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
             crate::axis_render::draw_selection_box(c, &selection, origin, scale);
         }
     }
-    AnnotationRaster {
+    if let Some(error) = sink.text_error {
+        return Err(error);
+    }
+    Ok(AnnotationRaster {
         underlay: sink.underlay.map(Canvas::into_rgba),
         overlay: sink.overlay.map(Canvas::into_rgba),
         map,
-    }
+    })
 }
 
 /// Place every item of `request.layer` into `sink`, in index order, through
@@ -678,23 +695,27 @@ impl AnnotationPipeline {
         label: &str,
         size: (u32, u32),
         rgba: &[u8],
-    ) -> LayerTexture {
+    ) -> crate::Result<LayerTexture> {
         let device = gpu.device();
         // gpu-alloc: PanelTexture
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
+        let texture = crate::renderer::create_texture_checked(
+            device,
+            &wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
             },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+            "annotation texture",
+        )?;
         let texture = TrackedTexture::new(ledger, GpuResourceKind::PanelTexture, texture);
         gpu.queue().write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -721,10 +742,10 @@ impl AnnotationPipeline {
             &texture.create_view(&Default::default()),
             &self.sampler,
         );
-        LayerTexture {
+        Ok(LayerTexture {
             texture,
             bind_group,
-        }
+        })
     }
 }
 
@@ -945,18 +966,18 @@ impl RadialAnnotationCache {
         size: (u32, u32),
         scale: f32,
         selected: Option<usize>,
-    ) -> Arc<BoundedAnnotationFrame> {
+    ) -> crate::Result<Arc<BoundedAnnotationFrame>> {
         let key = Self::key(layer, space, size, scale, selected);
         if let Some((k, visible, frame)) = &self.frame
             && *k == key
             && *visible == layer.visible
         {
-            return Arc::clone(frame);
+            return Ok(Arc::clone(frame));
         }
         let rasters = match &self.rasters {
             Some((k, rasters)) if *k == key => Arc::clone(rasters),
             _ => {
-                let raster = rasterize(&key.request());
+                let raster = rasterize(&key.request())?;
                 // The fullscreen pipeline is compiled on the first frame that
                 // has an annotation to draw, not by the renderer constructor.
                 let mut upload = |rgba: Option<Vec<u8>>, label: &str| {
@@ -970,7 +991,7 @@ impl RadialAnnotationCache {
                 };
                 // The radial space has no value axes: a span is skipped
                 // with a warning and the raster has no underlay.
-                let overlay = upload(raster.overlay, "annotation overlay");
+                let overlay = upload(raster.overlay, "annotation overlay").transpose()?;
                 let rasters = Arc::new(AnnotationRasters {
                     overlay,
                     map: raster.map,
@@ -986,7 +1007,7 @@ impl RadialAnnotationCache {
             size,
         });
         self.frame = Some((key, layer.visible, Arc::clone(&frame)));
-        frame
+        Ok(frame)
     }
 }
 
@@ -1052,6 +1073,7 @@ mod tests {
             selected: None,
             policy: FontPolicy::Standard,
         })
+        .unwrap()
         .map;
         let span = map.find(0).unwrap();
         let inside = [80., 50.];
@@ -1167,7 +1189,8 @@ mod tests {
                 scale,
                 selected: Some(1),
                 policy: FontPolicy::Standard,
-            });
+            })
+            .unwrap();
             let underlay = raster.underlay.expect("span draws an underlay");
             let overlay = raster.overlay.expect("line and arrow draw an overlay");
             // The span covers x in 2..4 -> 68..96 logical px, every plot row.
@@ -1262,7 +1285,8 @@ mod tests {
             scale: 1.,
             selected: None,
             policy: FontPolicy::Standard,
-        });
+        })
+        .unwrap();
         assert!(raster.underlay.is_none());
         assert!(raster.overlay.is_some());
         assert_eq!(

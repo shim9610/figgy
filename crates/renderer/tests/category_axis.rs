@@ -478,3 +478,43 @@ fn a_subplot_axis_may_be_categorical() {
         assert_eq!(element_texts(&active, &map, name), expected, "{name}");
     }
 }
+
+/// LABEL_STRIDE_INDEX_LT_COUNT (#152): the label stride measures labels by
+/// index within the count it is given. A category axis of 0, 1 and 5000
+/// categories (every label crowding the last), and a one-decade adaptive
+/// log axis whose crowded labels are demoted through its ladders, draw
+/// their axis layers and export PNG at 1x and 2x.
+#[test]
+fn crowded_category_and_log_labels_draw_and_export() {
+    let mut r = Renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm, 16 << 20).unwrap();
+    let (base, series) = data_chart(&mut r);
+    let mut charts = Vec::new();
+    for n in [0usize, 1, 5000] {
+        let mut cfg = base.clone();
+        cfg.bottom_x.categories = digit_categories(n);
+        cfg.left_y.categories = digit_categories(n);
+        charts.push((format!("{n} categories"), cfg));
+    }
+    let mut log = base.clone();
+    log.bottom_x.categories = None;
+    log.bottom_x.scale = renderer::config::AxisScale::Logarithmic;
+    log.bottom_x.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    log.bottom_x.min = 2.0;
+    log.bottom_x.max = 9.0;
+    log.bottom_x.label_style.font_size = 40.0;
+    charts.push(("log ladder".into(), log));
+    for (name, cfg) in charts {
+        for scale in [1.0f32, 2.0] {
+            let scaled = cfg.scaled(scale);
+            for layer in [AxisLayerKind::Decoration, AxisLayerKind::All] {
+                let rgba = try_raster_chart_layer_to_rgba(&scaled, layer)
+                    .unwrap_or_else(|e| panic!("{name} at {scale}x: {e}"));
+                assert!(!rgba.is_empty(), "{name} at {scale}x");
+            }
+            let png = r
+                .export_document_png_bytes(&Chart::new(cfg.clone()), &series, scale)
+                .unwrap_or_else(|e| panic!("{name} at {scale}x: {e}"));
+            assert!(png.starts_with(b"\x89PNG"), "{name} at {scale}x");
+        }
+    }
+}

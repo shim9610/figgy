@@ -15,13 +15,26 @@ use super::*;
 pub struct RendererDevice {
     pub(super) device: Arc<wgpu::Device>,
     pub(super) queue: Arc<wgpu::Queue>,
+    /// Device-lost and uncaptured-error record, registered once here and
+    /// shared by every renderer built from this bundle (#152).
+    pub(super) health: DeviceHealth,
 }
 
 impl RendererDevice {
     /// Bundle a wgpu device and queue that came from the same `request_device`
     /// result or host render state.
+    ///
+    /// Registers the device's device-lost callback and uncaptured-error
+    /// handler, so figgy reports a lost device and every GPU error as a
+    /// [`FiggyError`] instead of wgpu's default panic. wgpu keeps one of each
+    /// per device: build one bundle per device and clone it.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-        Self { device, queue }
+        let health = DeviceHealth::watch(&device);
+        Self {
+            device,
+            queue,
+            health,
+        }
     }
 
     pub fn device(&self) -> &Arc<wgpu::Device> {
@@ -29,6 +42,12 @@ impl RendererDevice {
     }
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
+    }
+    /// The device's health record, shared by every user of this bundle.
+    /// Read by the native polls; the browser's device polls itself.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn health(&self) -> &DeviceHealth {
+        &self.health
     }
 }
 
@@ -207,6 +226,10 @@ pub(super) enum TernaryPipeline {
     RingMapped = 4,
 }
 
+// `TargetPipelines::ternary` is indexed by `kind as usize`: the last
+// discriminant is the last slot (#152).
+const _: () = assert!(TernaryPipeline::RingMapped as usize + 1 == TERNARY_PIPELINES);
+
 impl TernaryPipeline {
     pub(super) const ALL: [Self; TERNARY_PIPELINES] = [
         Self::Line,
@@ -319,6 +342,10 @@ pub(super) enum View3dPipeline {
     Line = 6,
     LinePick = 7,
 }
+
+// `TargetPipelines::view3d` is indexed by `kind as usize`: the last
+// discriminant is the last slot (#152).
+const _: () = assert!(View3dPipeline::LinePick as usize + 1 == VIEW3D_PIPELINES);
 
 impl View3dPipeline {
     pub(super) const ALL: [Self; VIEW3D_PIPELINES] = [
@@ -505,14 +532,16 @@ pub(super) struct TargetPipelines {
     /// the panel composite, the picked patch in the live slot and the ID
     /// pick. Compiled only when a 3D chart is drawn.
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
-    pub(super) surface: [Option<wgpu::RenderPipeline>; 5],
+    pub(super) surface:
+        [Option<wgpu::RenderPipeline>; data_render::surface_mesh::SurfacePass::ALL.len()],
     /// A ternary series' region fill: the module and its stencil and cover
     /// pipelines, indexed by
     /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
     /// panel composite's stencil attachment. Compiled only when a ternary
     /// chart with a region fill is drawn.
     pub(super) ternary_region_shader: Option<wgpu::ShaderModule>,
-    pub(super) ternary_region: [Option<wgpu::RenderPipeline>; 2],
+    pub(super) ternary_region:
+        [Option<wgpu::RenderPipeline>; data_render::ternary_region::TernaryRegionPass::ALL.len()],
     /// The ring-start scan the region draw and pick read (#49), from the
     /// same module.
     pub(super) ternary_region_scan:
@@ -2012,22 +2041,25 @@ impl TargetPipelines {
                 "figgy field contour pipeline",
             )
         );
-        ensure!(
-            contour_labelled,
-            "label-gapped contour field",
-            data_render::create_labelled_contour_pipeline(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                style_bgl,
-                field_bgl,
-                label_pipelines
-                    .expect("field preparation owns labels")
-                    .label_gap_bgl(),
-                surface_format,
-                self.sample_count,
-            )
-        );
+        // The labelled contour pipelines need the label engine. Only the
+        // Fields feature and the full prewarm include them, and both pass it;
+        // a feature without it does not include these fields.
+        if let Some(label_pipelines) = label_pipelines {
+            ensure!(
+                contour_labelled,
+                "label-gapped contour field",
+                data_render::create_labelled_contour_pipeline(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    style_bgl,
+                    field_bgl,
+                    label_pipelines.label_gap_bgl(),
+                    surface_format,
+                    self.sample_count,
+                )
+            );
+        }
         ensure!(
             field_selection,
             "selected field data",
@@ -2041,29 +2073,32 @@ impl TargetPipelines {
                 self.sample_count,
             )
         );
-        ensure!(
-            field_selection_labelled,
-            "selected labelled field data",
-            data_render::create_field_selection_labelled_pipeline_with_sample_count(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                data_selection_bgl,
-                field_bgl,
-                label_pipelines
-                    .expect("field preparation owns labels")
-                    .label_gap_bgl(),
-                surface_format,
-                self.sample_count,
-            )
-        );
-        ensure!(
-            contour_label,
-            "contour labels",
-            label_pipelines
-                .expect("field preparation owns labels")
-                .render_pipeline(device, transform_bgl, surface_format, self.sample_count,)
-        );
+        if let Some(label_pipelines) = label_pipelines {
+            ensure!(
+                field_selection_labelled,
+                "selected labelled field data",
+                data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    data_selection_bgl,
+                    field_bgl,
+                    label_pipelines.label_gap_bgl(),
+                    surface_format,
+                    self.sample_count,
+                )
+            );
+            ensure!(
+                contour_label,
+                "contour labels",
+                label_pipelines.render_pipeline(
+                    device,
+                    transform_bgl,
+                    surface_format,
+                    self.sample_count
+                )
+            );
+        }
 
         for (key, stage) in [
             (StyleKey::Sketch, "hand-drawn style"),
@@ -2333,32 +2368,214 @@ pub(super) fn validate_buffer_size(
     Ok(())
 }
 
-pub(super) fn create_texture_checked(
+pub(crate) fn create_texture_checked(
     device: &wgpu::Device,
     desc: &wgpu::TextureDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Texture> {
     // gpu-alloc: caller
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_texture(desc))).map_err(
-        |_| FiggyError::GpuResourceAllocationFailed {
-            resource,
-            reason: "wgpu Device::create_texture panicked".into(),
-        },
-    )
+    gpu_checked(device, resource, || device.create_texture(desc))
 }
 
-pub(super) fn create_buffer_checked(
+pub(crate) fn create_buffer_checked(
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::Buffer> {
     // gpu-alloc: caller
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
-        |_| FiggyError::GpuResourceAllocationFailed {
+    gpu_checked(device, resource, || device.create_buffer(desc))
+}
+
+// ---------------------------------------------------------------------------
+// GPU errors as values (#152)
+// ---------------------------------------------------------------------------
+
+/// Run `work` inside wgpu error scopes for out-of-memory, validation and
+/// internal errors, and return what they captured as an error.
+///
+/// Native wgpu resolves a popped scope at once (`wgpu_core` returns a ready
+/// future), so a synchronous call learns about its own failure before it
+/// returns. A browser scope resolves asynchronously, so there the error
+/// reaches the device's uncaptured-error handler instead, which
+/// [`DeviceHealth`] records and the next [`DeviceHealth::check`] returns.
+pub(crate) fn gpu_checked<T>(
+    device: &wgpu::Device,
+    resource: &'static str,
+    work: impl FnOnce() -> T,
+) -> Result<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let value = work();
+        // Popped in reverse push order, every one, before any is inspected.
+        let internal = resolve_ready(internal.pop());
+        let validation = resolve_ready(validation.pop());
+        let out_of_memory = resolve_ready(out_of_memory.pop());
+        for captured in [out_of_memory, validation, internal] {
+            match captured {
+                ScopeResult::Clear => {}
+                ScopeResult::Captured(error) => return Err(gpu_error(resource, error)),
+                ScopeResult::Unresolved => {
+                    return Err(FiggyError::internal(
+                        "a native wgpu error scope did not resolve when popped",
+                    ));
+                }
+            }
+        }
+        Ok(value)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _scoped_by_the_uncaptured_handler = (device, resource);
+        Ok(work())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum ScopeResult {
+    Clear,
+    Captured(wgpu::Error),
+    Unresolved,
+}
+
+/// Poll a popped native error scope once. `wgpu_core` hands back a ready
+/// future; anything else is reported, never waited on.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_ready(popped: impl std::future::Future<Output = Option<wgpu::Error>>) -> ScopeResult {
+    let mut popped = std::pin::pin!(popped);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match popped.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(None) => ScopeResult::Clear,
+        std::task::Poll::Ready(Some(error)) => ScopeResult::Captured(error),
+        std::task::Poll::Pending => ScopeResult::Unresolved,
+    }
+}
+
+/// One wgpu error as a figgy error: out of memory is an allocation failure,
+/// validation and internal errors are [`FiggyError::GpuValidation`].
+/// Native only: browser errors reach [`DeviceHealth`] as text.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyError {
+    match error {
+        wgpu::Error::OutOfMemory { .. } => FiggyError::GpuResourceAllocationFailed {
             resource,
-            reason: "wgpu Device::create_buffer panicked".into(),
+            reason: error.to_string(),
         },
-    )
+        other => FiggyError::GpuValidation {
+            resource,
+            reason: other.to_string(),
+        },
+    }
+}
+
+/// The health of one wgpu device: whether it was lost, and how many errors
+/// reached its uncaptured-error handler.
+///
+/// [`RendererDevice::new`] registers the device-lost callback and the
+/// uncaptured-error handler once; every renderer and engine built from that
+/// bundle shares the record. wgpu keeps one callback and one handler per
+/// device, so a host that registers its own after building the bundle
+/// replaces figgy's, and figgy then learns of a loss only from the failures
+/// it causes.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DeviceHealth {
+    state: Arc<DeviceHealthState>,
+}
+
+#[derive(Debug, Default)]
+struct DeviceHealthState {
+    lost: std::sync::OnceLock<String>,
+    errors: std::sync::atomic::AtomicU64,
+    reported: std::sync::atomic::AtomicU64,
+    first_error: std::sync::OnceLock<String>,
+}
+
+impl DeviceHealth {
+    pub(crate) fn watch(device: &wgpu::Device) -> Self {
+        let health = Self::default();
+        let lost = Arc::clone(&health.state);
+        device.set_device_lost_callback(move |reason, message| {
+            let text = format!("{reason:?}: {message}");
+            if lost.lost.set(text).is_err() {
+                // A second callback for the same device: the first reason
+                // already stands and is what every later call returns.
+            }
+        });
+        let errors = Arc::clone(&health.state);
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            errors
+                .errors
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            if errors.first_error.set(error.to_string()).is_err() {
+                // Not the first: the count above reports it, and the first
+                // error's text stays the one shown.
+            }
+        }));
+        health
+    }
+
+    /// `Err` once the device is lost, or when GPU errors reached the
+    /// uncaptured-error handler since the last check.
+    pub(crate) fn check(&self) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        if let Some(reason) = self.state.lost.get() {
+            return Err(FiggyError::DeviceLost {
+                reason: reason.clone(),
+            });
+        }
+        let errors = self.state.errors.load(Ordering::Acquire);
+        let reported = self.state.reported.fetch_max(errors, Ordering::AcqRel);
+        if errors > reported {
+            let first = self
+                .state
+                .first_error
+                .get()
+                .map(String::as_str)
+                .unwrap_or("no message recorded");
+            return Err(FiggyError::GpuValidation {
+                resource: "figgy GPU work",
+                reason: format!(
+                    "{} GPU error(s) reached the uncaptured-error handler; the first: {first}",
+                    errors - reported
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_lost(&self) -> bool {
+        self.state.lost.get().is_some()
+    }
+}
+
+/// `device.poll` that never runs on a lost device and returns every failure.
+///
+/// wgpu 30 turns a poll error on a lost device into a panic
+/// (`handle_error_fatal`), and the device-lost callback that tells figgy
+/// about the loss runs inside that same poll. On native the poll therefore
+/// runs under `catch_unwind`: this is the one place where wgpu offers no
+/// other signal, and the caught panic becomes [`FiggyError::DeviceLost`].
+pub(crate) fn gpu_poll(
+    health: &DeviceHealth,
+    device: &wgpu::Device,
+    poll: wgpu::PollType,
+) -> Result<wgpu::PollStatus> {
+    health.check()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(poll)))
+        .map_err(|_| FiggyError::DeviceLost {
+            reason: "wgpu Device::poll failed fatally (device lost during the poll)".into(),
+        });
+    #[cfg(target_arch = "wasm32")]
+    let polled: Result<_> = Ok(device.poll(poll));
+    let status = polled?.map_err(|error| FiggyError::GpuValidation {
+        resource: "device poll",
+        reason: error.to_string(),
+    })?;
+    health.check()?;
+    Ok(status)
 }
 
 /// Allocation context for one column-pool call.
@@ -2541,7 +2758,9 @@ impl BrowserErrorScopes {
     pub(super) fn request_pop(&mut self) -> std::result::Result<js_sys::Promise, String> {
         use wasm_bindgen::JsCast;
 
-        debug_assert!(self.active > 0);
+        if self.active == 0 {
+            return Err("no figgy error scope is left to pop".to_owned());
+        }
         let value = self
             .pop
             .call0(self.device.as_ref())
@@ -2576,7 +2795,12 @@ impl Drop for BrowserErrorScopes {
         // are discarded.
         while self.active > 0 {
             self.active -= 1;
-            let _ = self.pop.call0(self.device.as_ref());
+            if self.pop.call0(self.device.as_ref()).is_err() {
+                // Drop has no caller to report to, and a device that rejects
+                // one pop rejects the rest: its error stack is gone (the
+                // device was lost), so there is nothing left to pop.
+                break;
+            }
         }
     }
 }
@@ -2711,7 +2935,11 @@ impl Renderer {
         target_sample_count: u32,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
-        let RendererDevice { device, queue } = gpu;
+        let RendererDevice {
+            device,
+            queue,
+            health,
+        } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
         // Downlevel (GL-class) adapters report compute limits below what the
@@ -2763,7 +2991,7 @@ impl Renderer {
                 &gpu_ledger,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
-            );
+            )?;
         let neutral_point_value_map_bg = data_render::bind_point_value_map(
             &device,
             &point_value_map_bgl,
@@ -2811,6 +3039,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            health,
             caps,
             pool,
             chart_states: HashMap::new(),
@@ -2878,7 +3107,11 @@ impl Renderer {
         minimal: bool,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
-        let RendererDevice { device, queue } = gpu;
+        let RendererDevice {
+            device,
+            queue,
+            health,
+        } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
         if caps.max_compute_invocations_per_workgroup < data_render::line_arc::WG
@@ -2924,7 +3157,7 @@ impl Renderer {
                 &gpu_ledger,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
-            );
+            )?;
         let neutral_point_value_map_bg = data_render::bind_point_value_map(
             &device,
             &point_value_map_bgl,
@@ -2972,6 +3205,7 @@ impl Renderer {
         Ok(Self {
             device,
             queue,
+            health,
             caps,
             pool,
             chart_states: HashMap::new(),
@@ -3137,7 +3371,9 @@ impl Renderer {
             // browser buffer handles must stay on their owning JS thread.
             let (sender, receiver) = futures_channel::oneshot::channel();
             self.queue.on_submitted_work_done(move || {
-                let _ = sender.send(());
+                if sender.send(()).is_err() {
+                    // The receiver was dropped: the waiting task was cancelled.
+                }
             });
             wasm_bindgen_futures::spawn_local(async move {
                 if receiver.await.is_ok() {
@@ -3156,10 +3392,8 @@ impl Renderer {
     /// they need retired memory to become available without another submission.
     /// On WebGPU the browser delivers completion callbacks asynchronously.
     /// Polling errors are returned to the host rather than treated as completion.
-    pub fn service_gpu_completions(
-        &self,
-    ) -> std::result::Result<wgpu::PollStatus, wgpu::PollError> {
-        self.device.poll(wgpu::PollType::Poll)
+    pub fn service_gpu_completions(&self) -> Result<wgpu::PollStatus> {
+        gpu_poll(&self.health, &self.device, wgpu::PollType::Poll)
     }
 
     /// Handle onto the ledger, for resources this renderer creates but does
@@ -3178,6 +3412,7 @@ impl Renderer {
     /// not depend on the final color attachment format, so embedders can call
     /// this instead of tearing down the whole renderer state.
     pub fn ensure_target_format(&mut self, surface_format: wgpu::TextureFormat) -> Result<bool> {
+        self.health.check()?;
         self.ensure_target(surface_format, self.target_sample_count)
     }
 
@@ -3439,14 +3674,19 @@ impl Renderer {
     /// No-op on wasm: the browser drives the device, blocking waits don't
     /// exist there, and the shutdown races this guards against are native
     /// driver concerns.
-    pub fn wait_idle(&self) {
+    ///
+    /// Returns the poll's failure, such as [`FiggyError::DeviceLost`].
+    pub fn wait_idle(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = self.device.poll(wgpu::PollType::Wait {
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            });
-        }
+            },
+        )?;
+        Ok(())
     }
 
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -3502,6 +3742,7 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<()> {
+        self.health.check()?;
         if self.contour_label_pipelines.is_none() {
             #[cfg(target_arch = "wasm32")]
             crate::init::prewarm_compute_entries_js(
@@ -3655,20 +3896,34 @@ impl Renderer {
     /// This does not submit a frame. Hosts that have not drawn yet should call
     /// [`WindowedRenderer::first_frame_ready`] or draw first. On native the
     /// device is polled so the callback can resolve; on wasm the browser
-    /// delivers `onSubmittedWorkDone`.
-    pub async fn wait_submitted_work(&self) {
+    /// delivers `onSubmittedWorkDone`. A lost device, a failed poll or a
+    /// completion callback that never runs is returned as an error (#152).
+    pub async fn wait_submitted_work(&self) -> Result<()> {
+        self.health.check()?;
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.queue.on_submitted_work_done(move || {
-            let _ = sender.send(());
+            if sender.send(()).is_err() {
+                // Receiver dropped: the waiting call was cancelled.
+            }
         });
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = self.device.poll(wgpu::PollType::Wait {
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            });
+            },
+        )?;
+        if receiver.await.is_err() {
+            // wgpu drops the callback without running it when the device is
+            // lost; anything else is a broken completion contract.
+            self.health.check()?;
+            return Err(FiggyError::internal(
+                "the submitted-work callback was dropped without running",
+            ));
         }
-        let _ = receiver.await;
+        self.health.check()
     }
 
     pub fn sampler(&self) -> &wgpu::Sampler {

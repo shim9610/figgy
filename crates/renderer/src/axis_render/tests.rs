@@ -1124,7 +1124,7 @@ fn raster_produces_expected_size_and_nonzero() {
     let w = config.chart_area.0.width as usize;
     let h = config.chart_area.0.height as usize;
 
-    let rgba = raster_chart_to_rgba(&config);
+    let rgba = try_raster_chart_to_rgba(&config).unwrap();
     assert_eq!(rgba.len(), w * h * 4, "buffer size must be w*h*4");
 
     // Background is transparent, so any axis/label pixel must lift alpha above 0.
@@ -2733,4 +2733,115 @@ fn an_adaptive_colorbar_labels_its_ladder() {
     let mut decades = config.clone();
     decades.colorbar.as_mut().unwrap().axis.log_ticks = LogTickPolicy::Decades;
     assert_eq!(drawn(&decades).len(), 1);
+}
+
+/// CANVAS_RGBA_LEN (#152): a canvas holds `width * height * 4` bytes for
+/// any size (odd, one pixel wide or tall, wider than 2048), and the
+/// passes that index those bytes by `(y * width + x) * 4` from the canvas
+/// size (the space backdrop, the glow bloom over a fully opaque canvas so
+/// no block is skipped, and the quarter-turn mask blit at every turn and
+/// at offsets inside, at and past every edge) run without panicking and
+/// leave the length as it was.
+#[test]
+fn canvas_passes_index_within_width_times_height_pixels() {
+    use crate::raster::Canvas;
+    assert!(Canvas::new(0, 4).is_none() && Canvas::new(4, 0).is_none());
+    let mask = [255u8; 6];
+    for (w, h) in [(1, 1), (1, 7), (3, 5), (4, 4), (5, 3), (2049, 3)] {
+        let len = (w * h * 4) as usize;
+        let mut canvas = Canvas::new(w, h).unwrap();
+        assert_eq!(canvas.size(), (w, h));
+        assert_eq!(canvas.pixels_mut().len(), len);
+        draw_space_background(&mut canvas, 0, 2.0, 4.0);
+        assert_eq!(canvas.pixels_mut().len(), len);
+        canvas.pixels_mut().fill(255);
+        apply_decoration_glow(&mut canvas, 2.0);
+        assert_eq!(canvas.pixels_mut().len(), len);
+        let (wi, hi) = (w as i32, h as i32);
+        let offsets = |n: i32| [-n, -1, 0, n - 1, n, i32::MAX, i32::MIN];
+        for turn in 0..4 {
+            for ix in offsets(wi) {
+                for iy in offsets(hi) {
+                    canvas.blit_mask_orthogonal(ix, iy, 3, 2, &mask, &Color::WHITE, turn);
+                    canvas.blit_mask_orthogonal(ix, iy, w, h, &[200; 4], &Color::BLACK, turn);
+                }
+            }
+        }
+        assert_eq!(canvas.size(), (w, h));
+        assert_eq!(canvas.into_rgba().len(), len);
+    }
+}
+
+/// LABEL_STRIDE_INDEX_LT_COUNT (#152): `label_stride` asks for the bounds
+/// of label `index < count` only, for no, one, two and 10 000 labels, both
+/// when every label overlaps the last (the stride grows past the count)
+/// and when none does (stride 1). The numeric pruning that demotes a
+/// crowded adaptive log axis through its ladders and strides over the kept
+/// labels answers every label it keeps from its own list.
+#[test]
+fn label_stride_asks_for_labels_within_the_count_only() {
+    use crate::decoration_render::{label_stride, prune_numeric_labels};
+    let same = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 12.0,
+    };
+    for count in [0usize, 1, 2, 10_000] {
+        let asked = std::cell::Cell::new(0usize);
+        let crowded = label_stride(count, 12.0, |index| {
+            assert!(index < count, "label {index} of {count}");
+            asked.set(asked.get() + 1);
+            same
+        });
+        assert!(crowded >= 1);
+        assert!(count <= 1 || crowded >= count, "{count}: stride {crowded}");
+        let apart = label_stride(count, 12.0, |index| {
+            assert!(index < count, "label {index} of {count}");
+            RectF {
+                x: index as f32 * 100.0,
+                ..same
+            }
+        });
+        assert_eq!(apart, 1);
+    }
+
+    let mut axis = default_config().bottom_x;
+    axis.scale = AxisScale::Logarithmic;
+    axis.log_ticks = crate::config::LogTickPolicy::Adaptive;
+    // Within one decade the axis labels every mantissa, so a crowded axis
+    // is demoted through all three ladders.
+    axis.min = 2.0;
+    axis.max = 9.0;
+    assert_eq!(crate::tick::log_label_ladders(&axis).len(), 3);
+    let majors: Vec<f64> = (0..3)
+        .flat_map(|k| (1..10).map(move |m| m as f64 * 10f64.powi(k)))
+        .chain([1000.0])
+        .collect();
+    for spread in [0.0f32, 1.0, 40.0, 400.0] {
+        let kept = prune_numeric_labels(
+            &axis,
+            FontPolicy::Standard,
+            &majors,
+            |value| (value.log10() as f32 * spread, 0.0),
+            |(x, y), m| RectF {
+                x,
+                y,
+                width: m.width,
+                height: m.height(),
+            },
+        );
+        assert!(!kept.is_empty() && kept.len() <= majors.len(), "{spread}");
+        assert!(kept.iter().all(|label| majors.contains(&label.value)));
+    }
+    assert!(
+        prune_numeric_labels(
+            &axis,
+            FontPolicy::Standard,
+            &[],
+            |_| (0.0, 0.0),
+            |_, _| same
+        )
+        .is_empty()
+    );
 }

@@ -1426,4 +1426,242 @@ mod tests {
         );
         assert!(order.contains(&Pass::Above(0)));
     }
+
+    /// Documents for the pass tests: one panel with annotations shown and
+    /// hidden, the Milkyway style, and a layered document (two parent
+    /// overlays, 50 line offset members and a colourbar on the parent, three
+    /// subplots with two overlays each, the last with 5 members of its own),
+    /// in the precise and the Milkyway style.
+    fn pass_documents() -> Vec<Config> {
+        use crate::data_config::LineOffsets;
+        use crate::{OverlayLayer, Subplot};
+        let milkyway = DrawStyle::Milkyway(Default::default());
+        let area = |x: u32, y: u32, width: u32, height: u32| {
+            crate::layout::ChartArea(Rect {
+                x,
+                y,
+                width,
+                height,
+            })
+        };
+        let overlay = |id: String| {
+            let mut overlay = OverlayLayer::default();
+            overlay.y_axis.min = 0.0;
+            overlay.y_axis.max = 1.0;
+            overlay.y_axis.out_margin = 40.0;
+            overlay.series = vec![id];
+            overlay
+        };
+        let members = |prefix: &str, n: usize| LineOffsets {
+            series: (0..n).map(|i| format!("{prefix}{i}")).collect(),
+            step_y: 1.0,
+            step_x: 0.0,
+        };
+        let single = default_config();
+        let mut hidden = default_config();
+        hidden.annotations.visible = false;
+        let mut sky = default_config();
+        sky.draw_style = milkyway;
+        let mut layered = default_config();
+        layered.chart_area = area(0, 0, 640, 360);
+        layered.overlays = (0..2).map(|k| overlay(format!("po{k}"))).collect();
+        layered.line_offsets = Some(members("m", 50));
+        layered.colorbar = Some(crate::default::default_colorbar_options());
+        layered.subplots = (0..3)
+            .map(|i| {
+                let mut subplot = Subplot::default();
+                subplot.config.chart_area = area(220 * i, 360, 220, 220);
+                subplot.config.overlays = (0..2).map(|n| overlay(format!("s{i}o{n}"))).collect();
+                subplot.series = vec![format!("s{i}")];
+                if i == 2 {
+                    let offsets = members("k", 5);
+                    subplot.series.extend(offsets.series.iter().cloned());
+                    subplot.config.line_offsets = Some(offsets);
+                }
+                subplot
+            })
+            .collect();
+        let mut layered_sky = layered.clone();
+        layered_sky.draw_style = milkyway;
+        layered_sky.annotations.visible = false;
+        for subplot in &mut layered_sky.subplots {
+            subplot.config.draw_style = milkyway;
+        }
+        vec![single, hidden, sky, layered, layered_sky]
+    }
+
+    /// PASS_INDEX_IN_PANELS and RASTER_IMAGE_RGBA_LEN (#152): over the
+    /// expanded panels of every pass document at 1x and 2x (and over their
+    /// first panel, their first half and no panels), `Passes` names panels
+    /// below `panels.len()` only, its data ranges partition the panels in
+    /// order, and every panel has one `Above` pass. Each non-data pass
+    /// emits, clips and writes as SVG and PDF; each data pass's image area
+    /// lies in the target, and an image of the target's size cut to it by
+    /// `crop_in_place` holds `width * height * 4` bytes and writes. The
+    /// written parts read back for the same documents.
+    #[test]
+    fn every_pass_indexes_its_panels_and_the_data_passes_partition_them() {
+        for (w, h) in [(1, 1), (3, 5), (2049, 3)] {
+            let image = canvas_image(Canvas::new(w, h).unwrap());
+            assert_eq!((image.width, image.height), (w, h));
+            assert_eq!(image.rgba.len(), (w * h * 4) as usize);
+        }
+        for document in pass_documents() {
+            for scale in [1.0f32, 2.0] {
+                let orig = document.document_area();
+                let size = (
+                    ((orig.width as f32) * scale).round().max(1.0) as u32,
+                    ((orig.height as f32) * scale).round().max(1.0) as u32,
+                );
+                let target = Rect {
+                    x: 0,
+                    y: 0,
+                    width: size.0,
+                    height: size.1,
+                };
+                let placed = crate::renderer::place_document(&document, scale, target);
+                let panels = crate::renderer::expand_for_render(&placed).unwrap();
+                let expected = 1
+                    + placed.overlays.len()
+                    + placed.line_offsets.as_ref().map_or(0, |o| o.series.len())
+                    + placed
+                        .subplots
+                        .iter()
+                        .map(|s| {
+                            1 + s.config.overlays.len()
+                                + s.config.line_offsets.as_ref().map_or(0, |o| o.series.len())
+                        })
+                        .sum::<usize>();
+                assert_eq!(panels.len(), expected);
+                let slices: [&[Config]; 4] =
+                    [&panels, &panels[..1], &panels[..panels.len() / 2], &[]];
+                for slice in slices {
+                    let n = slice.len();
+                    let mut svg = SvgOut::new(size, page_points(size));
+                    let mut pdf = PdfOut::new(size, page_points(size));
+                    let mut passes = Passes::new();
+                    let (mut data_end, mut above) = (0, 0);
+                    while let Some(pass) = passes.next(&placed, slice) {
+                        match &pass {
+                            Pass::Below(i) => assert!(*i < n, "{pass:?} of {n}"),
+                            Pass::Above(i) => {
+                                assert_eq!(*i, above, "{pass:?} of {n}");
+                                above += 1;
+                            }
+                            Pass::Data(range) => {
+                                assert_eq!(range.start, data_end, "{pass:?} of {n}");
+                                assert!(range.start < range.end && range.end <= n);
+                                data_end = range.end;
+                                let Some(area) = group_image_area(slice, range.clone(), size)
+                                else {
+                                    continue;
+                                };
+                                assert!(area.width > 0 && area.height > 0);
+                                assert!(area.x + area.width <= size.0);
+                                assert!(area.y + area.height <= size.1);
+                                let mut image = RasterImage {
+                                    width: size.0,
+                                    height: size.1,
+                                    rgba: vec![96; (size.0 * size.1 * 4) as usize],
+                                };
+                                crop_in_place(&mut image, area);
+                                assert_eq!((image.width, image.height), (area.width, area.height));
+                                assert_eq!(
+                                    image.rgba.len(),
+                                    (area.width * area.height * 4) as usize
+                                );
+                                let origin = [area.x as i32, area.y as i32];
+                                svg.image(origin, &image).unwrap();
+                                pdf.image(origin, &image).unwrap();
+                                continue;
+                            }
+                            Pass::Underlay | Pass::Overlay => assert!(n > 0),
+                        }
+                        let clip = pass_clip(&placed, slice, &pass);
+                        assert!(clip.width > 0 && clip.height > 0, "{pass:?}");
+                        emit_pass(&placed, slice, &pass, &mut PaintCount::default());
+                        write_pass(&mut svg, &placed, slice, &pass).unwrap();
+                        write_pass(&mut pdf, &placed, slice, &pass).unwrap();
+                    }
+                    assert_eq!(data_end, n);
+                    assert_eq!(above, n);
+                    assert!(passes.next(&placed, slice).is_none());
+                    assert!(svg.finish().ends_with("</svg>\n"));
+                    pdf.finish().unwrap();
+                }
+                #[cfg(feature = "cpu-twin")]
+                {
+                    let chart = crate::chart::Chart::new(document.clone());
+                    let mut parts = 0usize;
+                    written_document_parts(&chart, scale, &mut |_| parts += 1).unwrap();
+                    assert!(parts > 0);
+                }
+            }
+        }
+    }
+
+    /// PASS_INDEX_IN_PANELS and RASTER_IMAGE_RGBA_LEN (#152), on the GPU:
+    /// the export frame's panels are the slice every pass of the document
+    /// loop indexes, and painting a data group does not change them; each
+    /// painted image is the target's size with `width * height * 4` bytes,
+    /// and cut to its group's area it keeps that relation. Every pass
+    /// document at 1x and 2x, then the SVG and PDF files of the same
+    /// frames.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_export_frame_keeps_its_panels_through_the_document_loop() {
+        let (device, queue) = crate::data_render::shared_device().unwrap();
+        let mut renderer = Renderer::try_new(
+            crate::RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
+        let clear = Color::new(0.0, 0.0, 0.0, 0.0);
+        for document in pass_documents() {
+            let chart = crate::chart::Chart::new(document);
+            for scale in [1.0f32, 2.0] {
+                let mut frame = renderer
+                    .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)
+                    .unwrap();
+                let n = frame.panels().len();
+                let size = frame.size;
+                let mut passes = Passes::new();
+                let mut painted = 0;
+                while let Some(pass) = passes.next(frame.chart.config(), frame.panels()) {
+                    let Pass::Data(range) = pass else {
+                        assert_eq!(frame.panels().len(), n);
+                        continue;
+                    };
+                    assert!(range.end <= n);
+                    let area = group_image_area(frame.panels(), range.clone(), size);
+                    let mut image =
+                        pollster::block_on(renderer.paint_export(&mut frame, range, false, clear))
+                            .unwrap();
+                    assert_eq!(frame.panels().len(), n, "a paint changed the panels");
+                    assert_eq!((image.width, image.height), size);
+                    assert_eq!(image.rgba.len(), (size.0 * size.1 * 4) as usize);
+                    if let Some(area) = area {
+                        crop_in_place(&mut image, area);
+                        assert_eq!(image.rgba.len(), (area.width * area.height * 4) as usize);
+                    }
+                    painted += 1;
+                }
+                assert!(painted > 0);
+                drop(frame);
+                renderer.end_gpu_frame();
+                let mut frame = renderer
+                    .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)
+                    .unwrap();
+                let svg = pollster::block_on(document_file::<SvgOut>(&renderer, &mut frame, clear));
+                assert!(svg.unwrap().ends_with("</svg>\n"));
+                assert_eq!(frame.panels().len(), n);
+                let pdf = pollster::block_on(document_file::<PdfOut>(&renderer, &mut frame, clear));
+                assert!(pdf.unwrap().ends_with(b"%%EOF\n"));
+                assert_eq!(frame.panels().len(), n);
+                drop(frame);
+                renderer.end_gpu_frame();
+            }
+        }
+    }
 }

@@ -2,38 +2,69 @@
 
 use super::*;
 
+/// The region params a ternary series' draw and its pick scan over: every
+/// column's f32 lane and the rows all three columns hold.
+fn ternary_region_params(
+    series_id: &str,
+    color_premul: [f32; 4],
+    x: ColumnHandle,
+    y: ColumnHandle,
+    c: ColumnHandle,
+) -> Result<data_render::ternary_region::TernaryRegionParamsGpu> {
+    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+        series_id: series_id.to_owned(),
+        reason: reason.into(),
+    };
+    let lane = |handle: ColumnHandle| -> Result<u32> {
+        if !handle.offset.is_multiple_of(4) {
+            return Err(invalid("region column byte offset is not f32-aligned"));
+        }
+        u32::try_from(handle.offset / 4)
+            .map_err(|_| invalid("region column lies past the 32-bit lane range"))
+    };
+    let count = x.len_values.min(y.len_values).min(c.len_values);
+    Ok(data_render::ternary_region::TernaryRegionParamsGpu {
+        color_premul,
+        x_base: lane(x)?,
+        y_base: lane(y)?,
+        c_base: lane(c)?,
+        count: u32::try_from(count)
+            .map_err(|_| invalid("region rows exceed the 32-bit row range"))?,
+    })
+}
+
+fn ring_scan_too_large(series_id: &str) -> FiggyError {
+    FiggyError::InvalidSeriesConfig {
+        series_id: series_id.to_owned(),
+        reason: "the region's rows exceed the adapter's dispatch grid".into(),
+    }
+}
+
 impl PrepareContext<'_> {
     /// A region series' ring starts for the pick (#49): the scan its draw
     /// runs, over the same rows. `None` for any other series, or when its
-    /// columns are not resident.
+    /// columns are not resident; a scan the draw would fail fails the pick
+    /// with the same error.
     pub(in crate::renderer) fn region_ring_starts(
         &mut self,
         config: &Config,
         series: &SeriesConfig,
-    ) -> Option<Arc<wgpu::Buffer>> {
-        series.render_type.ternary_region()?;
-        config.ternary.as_ref()?;
-        let c = series.render_type.ternary_c_column()?;
-        let handles = [
-            self.pool.handle_for(&series.x_column)?,
-            self.pool.handle_for(&series.y_column)?,
-            self.pool.handle_for(c)?,
-        ];
-        let lane = |handle: &ColumnHandle| {
-            handle
-                .offset
-                .is_multiple_of(4)
-                .then(|| u32::try_from(handle.offset / 4).ok())
-                .flatten()
+    ) -> Result<Option<Arc<wgpu::Buffer>>> {
+        let (Some(_), Some(_), Some(c)) = (
+            series.render_type.ternary_region(),
+            config.ternary.as_ref(),
+            series.render_type.ternary_c_column(),
+        ) else {
+            return Ok(None);
         };
-        let count = handles.iter().map(|h| h.len_values).min()?;
-        let params = data_render::ternary_region::TernaryRegionParamsGpu {
-            color_premul: [0.0; 4],
-            x_base: lane(&handles[0])?,
-            y_base: lane(&handles[1])?,
-            c_base: lane(&handles[2])?,
-            count: u32::try_from(count).unwrap_or(u32::MAX),
+        let (Some(x), Some(y), Some(c)) = (
+            self.pool.handle_for(&series.x_column),
+            self.pool.handle_for(&series.y_column),
+            self.pool.handle_for(c),
+        ) else {
+            return Ok(None);
         };
+        let params = ternary_region_params(&series.series_id, [0.0; 4], x, y, c)?;
         let scan = self.pipelines.ensure_ternary_region_scan(self.device);
         let (buffer, _charge) = data_render::ternary_region::scan_ring_starts(
             self.device,
@@ -43,8 +74,9 @@ impl PrepareContext<'_> {
             self.pool.buffer(),
             &params,
             self.caps.max_compute_workgroups_per_dimension,
-        )?;
-        Some(Arc::new(buffer))
+        )?
+        .ok_or_else(|| ring_scan_too_large(&series.series_id))?;
+        Ok(Some(Arc::new(buffer)))
     }
 
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
@@ -112,7 +144,7 @@ impl PrepareContext<'_> {
             &self.surface_bgl,
             &camera,
             &look,
-        );
+        )?;
         let surface = mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
@@ -157,7 +189,7 @@ impl PrepareContext<'_> {
                     &self.surface_bgl,
                     &camera,
                     &look,
-                );
+                )?;
                 let highlight = data_render::create_style_uniform_buffer(
                     &self.device,
                     &PrimitiveStyle::from_color(selection.highlight_color),
@@ -191,7 +223,7 @@ impl PrepareContext<'_> {
         pipelines: &'a TargetPipelines,
         scratch: &PreparedContourScratch,
         index: usize,
-    ) -> Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>> {
+    ) -> Option<Result<data_render::surface_mesh::ColumnSurfaceLayer<'a>>> {
         use data_render::surface_mesh::{self as mesh, SurfacePass};
         if !scratch.drawable {
             return None;
@@ -207,14 +239,17 @@ impl PrepareContext<'_> {
             .unwrap_or(u32::MAX - 1)
             .saturating_add(1);
         let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
-        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+        let (surface_bg, surface_charge) = match mesh::create_surface_bind_group(
             &self.gpu_ledger,
             &self.device,
             &self.surface_bgl,
             &camera,
             &look,
-        );
-        Some(mesh::ColumnSurfaceLayer {
+        ) {
+            Ok(group) => group,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
             style_bg: scratch.style_bg.clone(),
@@ -223,7 +258,7 @@ impl PrepareContext<'_> {
             quads: 1,
             charge: Arc::clone(&scratch.charge),
             surface_charge,
-        })
+        }))
     }
 
     pub(in crate::renderer) fn build_series_layers<'a>(
@@ -393,7 +428,7 @@ impl PrepareContext<'_> {
                 }
                 _ => None,
             };
-            let camera_binding = |mapped: bool| {
+            let camera_binding = |mapped: bool| -> Result<_> {
                 data_render::surface_mesh::create_view3d_binding(
                     &self.gpu_ledger,
                     &self.device,
@@ -404,7 +439,7 @@ impl PrepareContext<'_> {
                     },
                     camera_3d
                         .as_ref()
-                        .expect("a 3D series has its panel's camera"),
+                        .ok_or(FiggyError::internal("a 3D series has its panel's camera"))?,
                     series.style.display_scale,
                     0,
                     self.scatter_value_map_buffers(cfg, mapped),
@@ -430,12 +465,12 @@ impl PrepareContext<'_> {
                 let scratch = self
                     .field_cache
                     .get(cfg.series_id.as_str())
-                    .expect("prepare ensured this field's scratch");
+                    .ok_or(FiggyError::internal("prepare ensured this field's scratch"))?;
                 Some(data_render::ColumnFieldLayer {
                     pipeline: pipelines
                         .field
                         .as_ref()
-                        .expect("prepare ensured field pipeline"),
+                        .ok_or(FiggyError::internal("prepare ensured field pipeline"))?,
                     transform_bg: &view.transform_bg,
                     style_bg: scratch.style_bg.clone(),
                     field_bg: scratch.field_bg.clone(),
@@ -457,7 +492,7 @@ impl PrepareContext<'_> {
                     let scratch = self
                         .field_cache
                         .get(cfg.series_id.as_str())
-                        .expect("prepare ensured this field's scratch");
+                        .ok_or(FiggyError::internal("prepare ensured this field's scratch"))?;
                     let (surface, selected) = self.surface_layers(
                         view,
                         chart_config,
@@ -487,8 +522,11 @@ impl PrepareContext<'_> {
                     .contours
                     .get(idx)
                     .and_then(|series| series.scratch.as_ref())
-                    .expect("prepare captured this contour occurrence");
+                    .ok_or(FiggyError::internal(
+                        "prepare captured this contour occurrence",
+                    ))?;
                 self.floor_layer(view, chart_config, series, pipelines, scratch, idx)
+                    .transpose()?
             } else {
                 None
             };
@@ -498,7 +536,9 @@ impl PrepareContext<'_> {
                     .contours
                     .get(idx)
                     .and_then(|series| series.scratch.as_ref())
-                    .expect("prepare captured this contour occurrence");
+                    .ok_or(FiggyError::internal(
+                        "prepare captured this contour occurrence",
+                    ))?;
                 let label = scratch
                     .label
                     .as_ref()
@@ -511,12 +551,14 @@ impl PrepareContext<'_> {
                     pipelines
                         .contour_labelled
                         .as_ref()
-                        .expect("prepare ensured labelled contour pipeline")
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured labelled contour pipeline",
+                        ))?
                 } else {
                     pipelines
                         .contour
                         .as_ref()
-                        .expect("prepare ensured contour pipeline")
+                        .ok_or(FiggyError::internal("prepare ensured contour pipeline"))?
                 };
                 Some(data_render::ColumnContourLayer {
                     pipeline,
@@ -536,69 +578,70 @@ impl PrepareContext<'_> {
 
             // Arrows: the group-2 state was resolved in `ensure_vector_scratches`
             // and is reused whole while nothing it depends on changes.
-            let vector = if primitives.vector && phase.is_none() {
-                let scratch = self
-                    .vector_cache
-                    .get(cfg.series_id.as_str())
-                    .expect("prepare ensured this vector's scratch");
-                let pipeline = match scratch.input {
-                    data_render::vector::VectorInput::Points => pipelines.vector_points.as_ref(),
-                    data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
-                    data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
-                }
-                .expect("prepare ensured vector pipeline");
-                Some(data_render::vector::ColumnVectorLayer {
-                    pipeline,
-                    transform_bg: &view.transform_bg,
-                    style_bg: scratch.style_bg.clone(),
-                    vector_bg: scratch.vector_bg.clone(),
-                    charge: Arc::clone(&scratch.charge),
-                    count: scratch.count,
-                    indirect: None,
-                })
-            } else if primitives.line
-                && phase.is_none()
-                && rt
-                    .streamlines()
-                    .is_some_and(|streamlines| streamlines.arrows.is_some())
-            {
-                // Streamline arrowheads: the vector glyph on the arc slots of
-                // the line's arc scan, drawn indirect in the vector slot,
-                // under the stroke (#51, D5). A series too short to scan has
-                // no slots and draws no heads.
-                let scratch = self
-                    .vector_cache
-                    .get(cfg.series_id.as_str())
-                    .expect("prepare ensured this streamline's arrowhead scratch");
-                products
-                    .arcs
-                    .get(idx)
-                    .and_then(|series| series.arc.as_ref())
-                    .and_then(|arc| arc.star.as_ref())
-                    .map(|slots| data_render::vector::ColumnVectorLayer {
-                        pipeline: pipelines
-                            .vector_path
-                            .as_ref()
-                            .expect("prepare ensured the path vector pipeline"),
+            let vector =
+                if primitives.vector && phase.is_none() {
+                    let scratch = self.vector_cache.get(cfg.series_id.as_str()).ok_or(
+                        FiggyError::internal("prepare ensured this vector's scratch"),
+                    )?;
+                    let pipeline = match scratch.input {
+                        data_render::vector::VectorInput::Points => {
+                            pipelines.vector_points.as_ref()
+                        }
+                        data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
+                        data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
+                    }
+                    .ok_or(FiggyError::internal("prepare ensured vector pipeline"))?;
+                    Some(data_render::vector::ColumnVectorLayer {
+                        pipeline,
                         transform_bg: &view.transform_bg,
                         style_bg: scratch.style_bg.clone(),
                         vector_bg: scratch.vector_bg.clone(),
                         charge: Arc::clone(&scratch.charge),
                         count: scratch.count,
-                        indirect: Some((&slots.indirect, &slots.vs_bg)),
+                        indirect: None,
                     })
-            } else {
-                None
-            };
+                } else if primitives.line
+                    && phase.is_none()
+                    && rt
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.arrows.is_some())
+                {
+                    // Streamline arrowheads: the vector glyph on the arc slots of
+                    // the line's arc scan, drawn indirect in the vector slot,
+                    // under the stroke (#51, D5). A series too short to scan has
+                    // no slots and draws no heads.
+                    let scratch = self.vector_cache.get(cfg.series_id.as_str()).ok_or(
+                        FiggyError::internal("prepare ensured this streamline's arrowhead scratch"),
+                    )?;
+                    let pipeline = pipelines.vector_path.as_ref().ok_or(FiggyError::internal(
+                        "prepare ensured the path vector pipeline",
+                    ))?;
+                    products
+                        .arcs
+                        .get(idx)
+                        .and_then(|series| series.arc.as_ref())
+                        .and_then(|arc| arc.star.as_ref())
+                        .map(|slots| data_render::vector::ColumnVectorLayer {
+                            pipeline,
+                            transform_bg: &view.transform_bg,
+                            style_bg: scratch.style_bg.clone(),
+                            vector_bg: scratch.vector_bg.clone(),
+                            charge: Arc::clone(&scratch.charge),
+                            count: scratch.count,
+                            indirect: Some((&slots.indirect, &slots.vs_bg)),
+                        })
+                } else {
+                    None
+                };
 
             // Category bars: the group is this panel's category bar series;
             // the params and the override table are resolved against the
             // panel's categorical axis on every prepare, so a reordered axis
             // or an edited override is drawn at once. No streamed form.
             let category_bars = if primitives.category_bars && phase.is_none() {
-                let bars = rt
-                    .category_bars()
-                    .expect("the category bar primitive has a category bar config");
+                let bars = rt.category_bars().ok_or(FiggyError::internal(
+                    "the category bar primitive has a category bar config",
+                ))?;
                 let group = series_specs
                     .iter()
                     .filter(|s| {
@@ -620,7 +663,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     bars,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -635,19 +678,18 @@ impl PrepareContext<'_> {
                     data,
                     params.count,
                     data_render::CATEGORY_BAR_VERTICES,
-                    pipelines
-                        .bar_category
-                        .as_ref()
-                        .expect("prepare ensured category bar pipeline"),
+                    pipelines.bar_category.as_ref().ok_or(FiggyError::internal(
+                        "prepare ensured category bar pipeline",
+                    ))?,
                 ))
             } else if primitives.box_plot && phase.is_none() {
                 // Box plots: the group is this panel's box plot series; the
                 // params read the record's and the outlier column's member
                 // lanes, and the style map resolves the overrides against the
                 // panel's categorical axis on every prepare. No streamed form.
-                let boxes = rt
-                    .box_plot()
-                    .expect("the box plot primitive has a box plot config");
+                let boxes = rt.box_plot().ok_or(FiggyError::internal(
+                    "the box plot primitive has a box plot config",
+                ))?;
                 let (params, lanes, vertices) = box_plot_params(
                     chart_config,
                     series_specs
@@ -671,7 +713,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     boxes,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -692,7 +734,7 @@ impl PrepareContext<'_> {
                     pipelines
                         .bar_box_plot
                         .as_ref()
-                        .expect("prepare ensured box plot pipeline"),
+                        .ok_or(FiggyError::internal("prepare ensured box plot pipeline"))?,
                 ))
             } else if primitives.range_bars && phase.is_none() {
                 // Range bars: the group is this panel's range bar series; the
@@ -726,7 +768,7 @@ impl PrepareContext<'_> {
                     pipelines
                         .bar_range
                         .as_ref()
-                        .expect("prepare ensured range bar pipeline"),
+                        .ok_or(FiggyError::internal("prepare ensured range bar pipeline"))?,
                 ))
             } else {
                 None
@@ -757,13 +799,16 @@ impl PrepareContext<'_> {
                     &mut lookup,
                     points,
                 )
-                .map(|(data, count)| data_render::ColumnCategoryBarLayer {
-                    pipeline: pipeline.expect("prepare ensured the violin pipelines"),
-                    transform_bg: &view.transform_bg,
-                    style_bg: &series.style.bar_bg,
-                    data,
-                    count,
-                    vertices: data_render::VIOLIN_VERTICES,
+                .and_then(|(data, count)| {
+                    Ok(data_render::ColumnCategoryBarLayer {
+                        pipeline: pipeline
+                            .ok_or(FiggyError::internal("prepare ensured the violin pipelines"))?,
+                        transform_bg: &view.transform_bg,
+                        style_bg: &series.style.bar_bg,
+                        data,
+                        count,
+                        vertices: data_render::VIOLIN_VERTICES,
+                    })
                 })
             };
             let violin = (primitives.violin && phase.is_none())
@@ -779,52 +824,55 @@ impl PrepareContext<'_> {
             let bar = if primitives.bar
                 && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Histogram)
             {
-                let bar_cfg = extract_bar(rt).expect("primitives.bar implies a bar config");
+                let bar_cfg = extract_bar(rt)
+                    .ok_or(FiggyError::internal("primitives.bar implies a bar config"))?;
                 let (edges, values) = match bar_cfg.orientation {
                     crate::data_config::BarOrientation::Vertical => (x_h, y_h),
                     crate::data_config::BarOrientation::Horizontal => (y_h, x_h),
                 };
                 let style_map = series.style.bar_map.as_ref();
                 Some(data_render::ColumnBarLayer {
-                    envelope: phase.is_none().then(|| {
-                        pipelines
-                            .bar_envelope
+                    envelope: if phase.is_none() {
+                        Some(
+                            pipelines
+                                .bar_envelope
+                                .as_ref()
+                                .ok_or(FiggyError::internal(
+                                    "prepare ensured histogram envelope pipeline",
+                                ))?
+                                .prepare(
+                                    &self.device,
+                                    &self.queue,
+                                    &self.gpu_ledger,
+                                    column_buffer,
+                                    edges,
+                                    values,
+                                    match bar_cfg.orientation {
+                                        crate::data_config::BarOrientation::Vertical => {
+                                            view.panel_rect.width
+                                        }
+                                        crate::data_config::BarOrientation::Horizontal => {
+                                            view.panel_rect.height
+                                        }
+                                    },
+                                    &view.transform_bg,
+                                    &series.style.bar_bg,
+                                    style_map.map(|map| &map.bind_group),
+                                )?,
+                        )
+                    } else {
+                        None
+                    },
+                    pipeline: match style_map {
+                        None => pipelines
+                            .bar
                             .as_ref()
-                            .expect("prepare ensured histogram envelope pipeline")
-                            .prepare(
-                                &self.device,
-                                &self.queue,
-                                &self.gpu_ledger,
-                                column_buffer,
-                                edges,
-                                values,
-                                match bar_cfg.orientation {
-                                    crate::data_config::BarOrientation::Vertical => {
-                                        view.panel_rect.width
-                                    }
-                                    crate::data_config::BarOrientation::Horizontal => {
-                                        view.panel_rect.height
-                                    }
-                                },
-                                &view.transform_bg,
-                                &series.style.bar_bg,
-                                style_map.map(|map| &map.bind_group),
-                            )
-                    }),
-                    pipeline: style_map.map_or_else(
-                        || {
-                            pipelines
-                                .bar
-                                .as_ref()
-                                .expect("prepare ensured bar pipeline")
-                        },
-                        |_| {
-                            pipelines
-                                .bar_mapped
-                                .as_ref()
-                                .expect("prepare ensured mapped bar pipeline")
-                        },
-                    ),
+                            .ok_or(FiggyError::internal("prepare ensured bar pipeline"))?,
+                        Some(_) => pipelines
+                            .bar_mapped
+                            .as_ref()
+                            .ok_or(FiggyError::internal("prepare ensured mapped bar pipeline"))?,
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.bar_bg,
                     style_map_bg: style_map.map(|map| &map.bind_group),
@@ -846,7 +894,8 @@ impl PrepareContext<'_> {
             let line = if primitives.line
                 && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
             {
-                let line_pick = line_pick.expect("prepare ensured line pipeline");
+                let line_pick =
+                    line_pick.ok_or(FiggyError::internal("prepare ensured line pipeline"))?;
                 let arc = products
                     .arcs
                     .get(idx)
@@ -858,10 +907,11 @@ impl PrepareContext<'_> {
                 // streamed).
                 let value_map = match rt.streamlines().and_then(|s| s.color_map) {
                     Some(map) if styled.is_none() && phase.is_none() => {
-                        let scratch = self
-                            .value_map_cache
-                            .get(cfg.series_id.as_str())
-                            .expect("prepare ensured this streamline colour map's value map");
+                        let scratch = self.value_map_cache.get(cfg.series_id.as_str()).ok_or(
+                            FiggyError::internal(
+                                "prepare ensured this streamline colour map's value map",
+                            ),
+                        )?;
                         Some(data_render::LineValueMap {
                             column: lookup(&map.column)?,
                             neutral_bg: self.neutral_point_value_map_bg,
@@ -875,21 +925,25 @@ impl PrepareContext<'_> {
                 let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
                 // A 3D series' stroke: the 3D entry with its height and the
                 // panel's camera (#132).
-                let line_3d = z_3d.map(|z| (z, camera_binding(false)));
+                let line_3d = z_3d
+                    .map(|z| camera_binding(false).map(|binding| (z, binding)))
+                    .transpose()?;
                 Some(ColumnLineLayer {
                     pipeline: if line_3d.is_some() {
                         pipelines.view3d[View3dPipeline::Line as usize]
                             .as_ref()
-                            .expect("prepare ensured the 3D line pipeline")
+                            .ok_or(FiggyError::internal("prepare ensured the 3D line pipeline"))?
                     } else if value_map.is_some() {
                         pipelines
                             .line_mapped
                             .as_ref()
-                            .expect("prepare ensured mapped line pipeline")
+                            .ok_or(FiggyError::internal("prepare ensured mapped line pipeline"))?
                     } else if ternary_c.is_some() {
                         pipelines.ternary[TernaryPipeline::Line as usize]
                             .as_ref()
-                            .expect("prepare ensured the ternary line pipeline")
+                            .ok_or(FiggyError::internal(
+                                "prepare ensured the ternary line pipeline",
+                            ))?
                     } else {
                         line_pick.pipeline
                     },
@@ -961,7 +1015,7 @@ impl PrepareContext<'_> {
                     pipeline: pipelines
                         .area
                         .as_ref()
-                        .expect("prepare ensured line area pipeline"),
+                        .ok_or(FiggyError::internal("prepare ensured line area pipeline"))?,
                     transform_bg: &view.transform_bg,
                     style_bg: series.style.area_bg.as_ref().ok_or_else(|| {
                         FiggyError::InvalidSeriesConfig {
@@ -995,34 +1049,17 @@ impl PrepareContext<'_> {
             let region = match (rt.ternary_region(), rt.ternary_c_column()) {
                 (Some(style), Some(c)) if chart_config.ternary.is_some() && phase.is_none() => {
                     let c_h = lookup(c)?;
-                    let lane = |handle: ColumnHandle| -> Result<u32> {
-                        if !handle.offset.is_multiple_of(4) {
-                            return Err(FiggyError::InvalidSeriesConfig {
-                                series_id: cfg.series_id.clone(),
-                                reason: "region column byte offset is not f32-aligned".into(),
-                            });
-                        }
-                        u32::try_from(handle.offset / 4).map_err(|_| {
-                            FiggyError::InvalidSeriesConfig {
-                                series_id: cfg.series_id.clone(),
-                                reason: "region column lies past the 32-bit lane range".into(),
-                            }
-                        })
-                    };
-                    let count = x_h.len_values.min(y_h.len_values).min(c_h.len_values);
-                    let params = data_render::ternary_region::TernaryRegionParamsGpu {
-                        color_premul: style.color_premul(),
-                        x_base: lane(x_h)?,
-                        y_base: lane(y_h)?,
-                        c_base: lane(c_h)?,
-                        count: u32::try_from(count).unwrap_or(u32::MAX),
-                    };
+                    let params =
+                        ternary_region_params(&cfg.series_id, style.color_premul(), x_h, y_h, c_h)?;
                     // Each ring's first row, scanned before the draw reads it
                     // for the closing edges (#49).
-                    let scan = pipelines
-                        .ternary_region_scan
-                        .as_ref()
-                        .expect("prepare ensured the ternary region pipelines");
+                    let scan =
+                        pipelines
+                            .ternary_region_scan
+                            .as_ref()
+                            .ok_or(FiggyError::internal(
+                                "prepare ensured the ternary region pipelines",
+                            ))?;
                     let (ring_starts, ring_charge) = data_render::ternary_region::scan_ring_starts(
                         &self.device,
                         &self.queue,
@@ -1031,11 +1068,8 @@ impl PrepareContext<'_> {
                         column_buffer,
                         &params,
                         self.caps.max_compute_workgroups_per_dimension,
-                    )
-                    .ok_or_else(|| FiggyError::InvalidSeriesConfig {
-                        series_id: cfg.series_id.clone(),
-                        reason: "the region's rows exceed the adapter's dispatch grid".into(),
-                    })?;
+                    )?
+                    .ok_or_else(|| ring_scan_too_large(&cfg.series_id))?;
                     let (region_bg, charge) =
                         data_render::ternary_region::create_ternary_region_bind_group(
                             &self.gpu_ledger,
@@ -1044,15 +1078,15 @@ impl PrepareContext<'_> {
                             column_buffer,
                             &params,
                             &ring_starts,
-                        );
+                        )?;
                     let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
-                        pipelines.ternary_region[pass as usize]
-                            .as_ref()
-                            .expect("prepare ensured the ternary region pipelines")
+                        pipelines.ternary_region[pass as usize].as_ref().ok_or(
+                            FiggyError::internal("prepare ensured the ternary region pipelines"),
+                        )
                     };
                     Some(data_render::ternary_region::ColumnTernaryRegionLayer {
-                        stencil: pipeline(data_render::ternary_region::TernaryRegionPass::Stencil),
-                        cover: pipeline(data_render::ternary_region::TernaryRegionPass::Cover),
+                        stencil: pipeline(data_render::ternary_region::TernaryRegionPass::Stencil)?,
+                        cover: pipeline(data_render::ternary_region::TernaryRegionPass::Cover)?,
                         transform_bg: &view.transform_bg,
                         region_bg,
                         count: params.count,
@@ -1124,14 +1158,17 @@ impl PrepareContext<'_> {
                     x_h.len_values.min(y_h.len_values),
                     &mut lookup,
                 )?;
-                let scatter_pick = scatter_pick.expect("prepare ensured scatter pipeline");
+                let scatter_pick =
+                    scatter_pick.ok_or(FiggyError::internal("prepare ensured scatter pipeline"))?;
                 // A ternary series' markers: the ternary entries with its
                 // third component.
                 let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
                 let ternary = |kind: TernaryPipeline| {
                     pipelines.ternary[kind as usize]
                         .as_ref()
-                        .expect("prepare ensured the ternary scatter pipeline")
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured the ternary scatter pipeline",
+                        ))
                 };
                 // A 3D series' markers: the 3D entries with its height and
                 // the panel's camera, beside the value map when mapped
@@ -1139,19 +1176,29 @@ impl PrepareContext<'_> {
                 let view3d = |kind: View3dPipeline| {
                     pipelines.view3d[kind as usize]
                         .as_ref()
-                        .expect("prepare ensured the 3D scatter pipeline")
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured the 3D scatter pipeline",
+                        ))
                 };
-                let scatter_3d = z_3d.map(|z| (z, camera_binding(precise_style_map.is_some())));
+                let scatter_3d = z_3d
+                    .map(|z| {
+                        camera_binding(precise_style_map.is_some()).map(|binding| (z, binding))
+                    })
+                    .transpose()?;
                 Some(ColumnScatterLayer {
                     pipeline: match (precise_style_map, ternary_c, scatter_3d.is_some()) {
-                        (Some(_), _, true) => view3d(View3dPipeline::ScatterMapped),
-                        (None, _, true) => view3d(View3dPipeline::Scatter),
-                        (Some(_), Some(_), false) => ternary(TernaryPipeline::ScatterMapped),
-                        (None, Some(_), false) => ternary(TernaryPipeline::Scatter),
-                        (Some(_), None, false) => pipelines
-                            .scatter_mapped
-                            .as_ref()
-                            .expect("prepare ensured mapped scatter pipeline"),
+                        (Some(_), _, true) => view3d(View3dPipeline::ScatterMapped)?,
+                        (None, _, true) => view3d(View3dPipeline::Scatter)?,
+                        (Some(_), Some(_), false) => ternary(TernaryPipeline::ScatterMapped)?,
+                        (None, Some(_), false) => ternary(TernaryPipeline::Scatter)?,
+                        (Some(_), None, false) => {
+                            pipelines
+                                .scatter_mapped
+                                .as_ref()
+                                .ok_or(FiggyError::internal(
+                                    "prepare ensured mapped scatter pipeline",
+                                ))?
+                        }
                         (None, None, false) => scatter_pick.pipeline,
                     },
                     third: scatter_3d.as_ref().map(|(z, _)| *z).or(ternary_c),
@@ -1246,15 +1293,16 @@ impl PrepareContext<'_> {
                             _ => None,
                         };
                         Some(ColumnErrorBarDraw {
-                            pipeline: precise_errorbar_style_map.map_or(
-                                errorbar_pipe.expect("prepare ensured errorbar pipeline"),
-                                |_| {
-                                    pipelines
-                                        .errorbar_mapped
-                                        .as_ref()
-                                        .expect("prepare ensured mapped errorbar pipeline")
-                                },
-                            ),
+                            pipeline: match precise_errorbar_style_map {
+                                None => errorbar_pipe.ok_or(FiggyError::internal(
+                                    "prepare ensured errorbar pipeline",
+                                ))?,
+                                Some(_) => pipelines.errorbar_mapped.as_ref().ok_or(
+                                    FiggyError::internal(
+                                        "prepare ensured mapped errorbar pipeline",
+                                    ),
+                                )?,
+                            },
                             transform_bg: &view.transform_bg,
                             style_bg: &series.style.errorbar_bg,
                             style_map_bg: precise_errorbar_style_map.map(|m| &m.bind_group),
@@ -1299,14 +1347,15 @@ impl PrepareContext<'_> {
                         box_points: box_points.as_ref().map(|layer| layer.data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
-                        view3d: z_3d.filter(|_| primitives.scatter).map(|z| {
-                            (
-                                z,
+                        view3d: z_3d
+                            .filter(|_| primitives.scatter)
+                            .map(|z| {
                                 camera_binding(
                                     styled.is_none() && series.style.scatter_map.is_some(),
-                                ),
-                            )
-                        }),
+                                )
+                                .map(|binding| (z, binding))
+                            })
+                            .transpose()?,
                     },
                     products
                         .contours
@@ -1437,7 +1486,9 @@ impl PrepareContext<'_> {
                     pipeline: pipelines
                         .line_parallel
                         .as_ref()
-                        .expect("prepare ensured the parallel pipeline"),
+                        .ok_or(FiggyError::internal(
+                            "prepare ensured the parallel pipeline",
+                        ))?,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     data,

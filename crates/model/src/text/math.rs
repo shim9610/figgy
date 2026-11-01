@@ -1534,4 +1534,132 @@ mod tests {
         assert_eq!(math_alphanumeric('ı', false, true), '\u{1D6A4}');
         assert_eq!(math_alphanumeric('+', true, true), '+');
     }
+
+    // MATH_CURSOR_DEPTH (#152): the cursor's depth never passes
+    // `MAX_MATH_DEPTH`, which `open()` and the frame write rely on. Step a
+    // cursor through an empty list, a nest of exactly `MAX_MATH_DEPTH`
+    // nodes, a pop back to the root, a line break that closes every node, a
+    // second full nest and one node past it (`TooDeep`), checking the depth
+    // after every step, failed or not.
+    #[test]
+    fn the_cursor_depth_never_passes_the_limit() {
+        let chain = |segments: &mut Vec<RichSegment>, base: u32, count: u32| {
+            segments.push(node(Z, base, MathKind::Math(MathStyle::Text), None));
+            for k in 1..count {
+                let id = base + k;
+                segments.push(node(Z, id, MathKind::Sqrt, Some((id - 1, 0))));
+            }
+        };
+        let mut segments = Vec::new();
+        chain(&mut segments, 0, MAX_MATH_DEPTH as u32);
+        segments.push(leaf('x', MAX_MATH_DEPTH as u32 - 1, 0));
+        segments.push(leaf('y', 0, 0));
+        segments.push(RichSegment::plain('\n'));
+        chain(&mut segments, 0, MAX_MATH_DEPTH as u32 + 1);
+        let mut cursor = MathCursor::new();
+        assert!(cursor.open().is_empty(), "an empty list opens nothing");
+        let mut deepest = 0;
+        let mut failures = Vec::new();
+        for (at, seg) in segments.iter().enumerate() {
+            match cursor.step(at, seg) {
+                Ok(step) => {
+                    assert_eq!(step.depth, cursor.open().len(), "segment {at}");
+                }
+                Err(e) => failures.push((at, e.kind)),
+            }
+            assert!(cursor.open().len() <= MAX_MATH_DEPTH, "segment {at}");
+            deepest = deepest.max(cursor.open().len());
+            match at {
+                a if a == MAX_MATH_DEPTH + 1 => assert_eq!(cursor.open().len(), 1, "popped"),
+                a if a == MAX_MATH_DEPTH + 2 => assert!(cursor.open().is_empty(), "break"),
+                _ => {}
+            }
+        }
+        assert_eq!(deepest, MAX_MATH_DEPTH);
+        assert_eq!(
+            failures,
+            [(segments.len() - 1, MathErrorKind::TooDeep)],
+            "only the node past the limit fails"
+        );
+    }
+
+    /// Hand-built segment lists a host may send, valid or not: a node past
+    /// the depth limit, an unknown parent id, slot 7, a `Math` node as the
+    /// last segment, a parent cycle, ids that repeat, a node whose children
+    /// come before it, and leaves with no node at all.
+    fn adversarial_segments() -> Vec<Vec<RichSegment>> {
+        let math = || node(Z, 0, MathKind::Math(MathStyle::Text), None);
+        let mut deep = vec![math()];
+        for id in 1..MAX_MATH_DEPTH as u32 + 4 {
+            deep.push(node(Z, id, MathKind::Sqrt, Some((id - 1, 0))));
+        }
+        deep.push(leaf('x', MAX_MATH_DEPTH as u32 + 3, 0));
+        deep.push(leaf('y', 0, 0));
+        vec![
+            Vec::new(),
+            vec![math()],
+            vec![leaf('a', 0, 0)],
+            vec![RichSegment::plain('a'), math()],
+            vec![math(), leaf('a', 9, 0), leaf('b', 0, 0)],
+            vec![math(), leaf('a', 0, 7), leaf('b', 0, 255)],
+            vec![
+                math(),
+                node(Z, 1, MathKind::Sqrt, Some((2, 0))),
+                node(Z, 2, MathKind::Sqrt, Some((1, 0))),
+                leaf('a', 1, 0),
+                leaf('b', 2, 0),
+            ],
+            vec![
+                math(),
+                node(Z, 1, MathKind::Frac(FracStyle::Auto), Some((0, 0))),
+                node(Z, 1, MathKind::Frac(FracStyle::Auto), Some((1, 0))),
+                leaf('a', 1, 1),
+                math(),
+                leaf('c', 0, 0),
+            ],
+            vec![
+                leaf('a', 3, 0),
+                math(),
+                node(Z, 3, MathKind::Scripts, Some((0, 0))),
+            ],
+            vec![
+                math(),
+                node(Z, u32::MAX, MathKind::Scripts, Some((0, 0))),
+                leaf('a', u32::MAX, 2),
+                leaf('b', u32::MAX, 3),
+            ],
+            deep,
+        ]
+    }
+
+    /// MATH_RANGES_IN_SEGMENTS (#152): for every segment `j` of a list,
+    /// `subtree_end(segments, j)` lies in `(j, len]`, so the ranges the
+    /// formula layout walks from it stay inside the list, for parsed
+    /// formulas (nested fractions, scripts, delimiters with `\middle`, the
+    /// depth limit) and for hand-built lists a host may send.
+    #[test]
+    fn a_subtree_ends_after_its_start_and_within_the_list() {
+        let nest = |n: usize| format!("${}x{}$", r"\frac{".repeat(n), "}{y}".repeat(n));
+        let mut lists: Vec<Vec<RichSegment>> = [
+            r"$x^a_b + y_{i_j^k}$",
+            r"$\frac{\frac{a}{b}}{\frac{c}{\frac{d}{e}}}$",
+            r"$\left(\frac{a}{b}\middle|\frac{c}{d}\middle\|e\right)^2_k$",
+            r"$\sqrt[3]{\sum_{i=0}^{n} x_i^2}$ and $$\binom{n}{k}$$ text",
+            "$\\overbrace{a+b}^{n}\\underbrace{c}_{m}$\n$\\xrightarrow[b]{a}$",
+            &nest(MAX_MATH_DEPTH - 2),
+        ]
+        .iter()
+        .map(|tex| crate::text::tex::rich_segments_from_tex(tex).unwrap())
+        .collect();
+        assert!(crate::text::tex::rich_segments_from_tex(&nest(MAX_MATH_DEPTH + 1)).is_err());
+        lists.push(frac_example());
+        lists.extend(adversarial_segments());
+        for segments in &lists {
+            let len = segments.len();
+            for j in 0..len {
+                let end = subtree_end(segments, j);
+                assert!(j < end && end <= len, "subtree_end({j}) = {end} of {len}");
+            }
+        }
+    }
 }

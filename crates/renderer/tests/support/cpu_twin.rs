@@ -129,14 +129,11 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
         // precise mode, so it is picked only there.
         if let Some(style) = extract_vector_points(&cfg.render_type)
             && use_scatter_style_mapping
-        {
-            let DataRenderType::Vector {
+            && let DataRenderType::Vector {
                 components: crate::data_config::VectorComponents::Points { u, v },
                 ..
             } = &cfg.render_type
-            else {
-                unreachable!("extract_vector_points matched the points form");
-            };
+        {
             let us = columns.get_f32_column(u).unwrap_or(&[]);
             let vs = columns.get_f32_column(v).unwrap_or(&[]);
             // The vector shader draws as many arrows as its shortest column.

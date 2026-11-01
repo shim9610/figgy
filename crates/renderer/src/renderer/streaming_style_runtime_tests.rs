@@ -447,7 +447,7 @@ fn compare_isolated_stream_chunks(
                         streamed
                             .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
                             .unwrap();
-                        streamed.wait_idle();
+                        streamed.wait_idle().unwrap();
                         streamed.end_gpu_frame();
                         phases[phase_index] += 1;
                         continue;
@@ -687,7 +687,7 @@ fn compare_stream_phase_pairs(
             streamed
                 .submit_chart_stream_draw(ticket, &inputs, &stream_view, &target)
                 .unwrap();
-            streamed.wait_idle();
+            streamed.wait_idle().unwrap();
             streamed.end_gpu_frame();
         }
         let actual = read_draw_target(&streamed, &target);
@@ -1051,11 +1051,11 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
             match streamed.auto_stream_chart_step(chart, &bindings).unwrap() {
                 crate::AutoStreamingProgress::AllSubmitted { .. }
                 | crate::AutoStreamingProgress::Complete { .. } => break,
-                crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle().unwrap(),
                 _ => {}
             }
         }
-        streamed.wait_idle();
+        streamed.wait_idle().unwrap();
         drop(
             streamed
                 .prepare_registered(&[RegisteredChartDrawItem {
@@ -1099,7 +1099,9 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                         .submit_stream_operation_ranges(operation, &bindings)
                         .unwrap();
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    streamed.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted { .. }
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }

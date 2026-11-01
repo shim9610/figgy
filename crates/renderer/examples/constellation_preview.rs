@@ -161,6 +161,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         "{}: 1280x1024, {changed} data-dependent pixels; two ScatterLine series",
         output.display()
     );
-    r.wait_idle();
+    r.wait_idle().unwrap();
     Ok(())
 }

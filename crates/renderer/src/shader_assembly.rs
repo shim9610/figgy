@@ -94,16 +94,13 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ),
 ];
 
-/// The source of the assembled module called `name` in [`MODULES`].
-///
-/// # Panics
-///
-/// When no module has that name.
-pub fn module(name: &str) -> &'static str {
-    match MODULES.iter().find(|(n, _)| *n == name) {
-        Some((_, assembled)) => assembled.source,
-        None => panic!("no assembled WGSL module named `{name}`"),
-    }
+/// The source of the assembled module called `name` in [`MODULES`], or
+/// `None` when no module has that name.
+pub fn module(name: &str) -> Option<&'static str> {
+    MODULES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, assembled)| assembled.source)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -814,7 +811,7 @@ mod tests {
             ),
         ];
         for mirror in mirrors {
-            let source = super::module(mirror.module);
+            let source = super::module(mirror.module).unwrap();
             let module = parse(mirror.module, source);
             let (members, span) = module
                 .types

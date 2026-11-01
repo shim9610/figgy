@@ -6710,7 +6710,7 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                     if cancel {
                         r.cancel_streaming_chart(id).unwrap();
                         r.end_gpu_frame();
-                        r.wait_idle();
+                        r.wait_idle().unwrap();
                         r.service_stream_requests();
                         assert!(!r.progressive_replay_for_test(id));
                         assert_eq!(
@@ -6755,4 +6755,620 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
         }
     }
     drop(font);
+}
+
+/// The eight streamed columns of the ticket tests, eight rows each.
+const TICKET_COLUMNS: [&str; 8] = ["x", "y", "ex_lo", "ex_hi", "ey_lo", "ey_hi", "ps", "es"];
+
+/// A line, styled markers and styled asymmetric XY error bars: the
+/// errorbar phase names seven columns, the line two and the markers three.
+fn seven_column_declaration(id: &str) -> SeriesConfig {
+    let mut series = declaration(id, "x", "y");
+    let DataRenderType::Line { line } = series.render_type.clone() else {
+        unreachable!()
+    };
+    series.render_type = DataRenderType::LineScatterErrorbarXY {
+        scatter: DataScatterStyleConfig {
+            point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            point_shape: ScatterShape::CircleFilled,
+            point_size: 5.0,
+            point_style_table: Some(vec![Default::default(), Default::default()]),
+            point_style_index_column: Some("ps".into()),
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        },
+        line,
+        err_x: ErrorRef::Asymmetric {
+            lower: "ex_lo".into(),
+            upper: "ex_hi".into(),
+        },
+        err_y: ErrorRef::Asymmetric {
+            lower: "ey_lo".into(),
+            upper: "ey_hi".into(),
+        },
+        err_style: DataErrorBarStyleConfig {
+            error_bar_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            error_bar_width: 2.0,
+            error_bar_cap_size: 4.0,
+            cap_width: 2.0,
+            error_bar_style_table: Some(vec![Default::default(), Default::default()]),
+            error_bar_style_index_column: Some("es".into()),
+            error_bar_style_overrides: None,
+        },
+    };
+    series
+}
+
+/// A renderer with the eight ticket columns streamed (eight zero rows each,
+/// style indices 0) and a stream runtime of `slots` slots.
+fn ticket_renderer(slots: usize) -> Renderer {
+    let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4096,
+    )
+    .unwrap();
+    let mut budget = limits(slots);
+    budget.max_chunk_bytes = 256;
+    r.configure_streaming_runtime(budget).unwrap();
+    r.register_streamed_columns(TICKET_COLUMNS.map(|id| source(id, 1)).to_vec())
+        .unwrap();
+    r
+}
+
+/// STREAM_TICKET_COLUMNS_MATCH_REQUEST (#152): every ticket an explicit
+/// draw issues names exactly the ranges its scheduler slot reserved, one
+/// per column of its phase (1 for a line on one column, 7, 2 and 3 for the
+/// error bars, line and markers of the styled XY series); an empty request
+/// and one past `max_columns_per_request` are refused, as is a request past
+/// the chunk byte limit; a supply one input short or one long is refused
+/// and the ticket still takes the right supply.
+#[test]
+fn stream_tickets_name_the_ranges_their_slots_reserved() {
+    let mut r = ticket_renderer(2);
+    let series = vec![
+        declaration("same", "x", "x"),
+        seven_column_declaration("bars"),
+    ];
+    let config = crate::default::default_config();
+    let chart = r.register_chart(config.clone(), series).unwrap();
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+        .unwrap();
+    let target = draw_target(&r, 1);
+    let job = r.begin_chart_stream_draw(chart, &view, &target, 4).unwrap();
+
+    assert!(matches!(
+        r.request_stream_columns(job, &[]),
+        Err(StreamRequestError::Scheduler(StreamError::InvalidRange))
+    ));
+    let ranges = |count: usize, len: u64| -> Vec<StreamSourceRange<'static>> {
+        (0..count)
+            .map(|_| StreamSourceRange {
+                column: "x",
+                offset: 0,
+                len,
+            })
+            .collect()
+    };
+    assert!(matches!(
+        r.request_stream_columns(job, &ranges(33, 1)),
+        Err(StreamRequestError::Scheduler(StreamError::InvalidRange))
+    ));
+    let wide = ranges(32, 8);
+    assert!(matches!(
+        r.request_stream_columns(job, &wide),
+        Err(StreamRequestError::Scheduler(StreamError::TooLarge))
+    ));
+    assert_eq!(r.check_stream_tickets_for_test(), 0);
+
+    let zeros = [0u8; 64];
+    let mut seen = Vec::new();
+    loop {
+        wait_stream_slots(&mut r, 0);
+        let ticket = match r.request_chart_stream_draw(job).unwrap() {
+            StreamDrawRequestStatus::Ready(ticket) => ticket,
+            StreamDrawRequestStatus::AllSubmitted => break,
+            StreamDrawRequestStatus::Backpressure => panic!("completed slots were drained"),
+        };
+        assert_eq!(r.check_stream_tickets_for_test(), 1);
+        let columns: Vec<_> = r
+            .stream_request_columns(ticket)
+            .unwrap()
+            .iter()
+            .map(|column| (column.column.clone(), column.range))
+            .collect();
+        let count = columns.len();
+        if !seen.contains(&count) {
+            seen.push(count);
+        }
+        let inputs: Vec<_> = columns
+            .iter()
+            .map(|(id, range)| StreamInput {
+                column: id,
+                bytes: &zeros[..range.byte_len().unwrap() as usize],
+            })
+            .collect();
+        let short = r.submit_chart_stream_draw(ticket, &inputs[..count - 1], &view, &target);
+        assert!(
+            matches!(
+                short,
+                Err(StreamRequestError::Scheduler(StreamError::InvalidPayload))
+            ),
+            "{count} columns, one short: {short:?}"
+        );
+        let mut long: Vec<_> = columns
+            .iter()
+            .map(|(id, range)| StreamInput {
+                column: id,
+                bytes: &zeros[..range.byte_len().unwrap() as usize],
+            })
+            .collect();
+        long.push(StreamInput {
+            column: "x",
+            bytes: &zeros[..4],
+        });
+        let long = r.submit_chart_stream_draw(ticket, &long, &view, &target);
+        assert!(
+            matches!(
+                long,
+                Err(StreamRequestError::Scheduler(StreamError::InvalidPayload))
+            ),
+            "{count} columns, one long: {long:?}"
+        );
+        assert_eq!(r.check_stream_tickets_for_test(), 1);
+        let submission = r
+            .submit_chart_stream_draw(ticket, &inputs, &view, &target)
+            .unwrap();
+        r.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+    }
+    seen.sort_unstable();
+    assert_eq!(seen, [1, 2, 3, 7]);
+    r.cancel_chart_stream(chart).unwrap();
+}
+
+/// STAGING_SLOTS_NEVER_SHRINK (#152): a stream's staging slots are only
+/// appended, up to `max_slots`, so the index taken for a reused slot stays
+/// valid across the upload. Fifty one-point chunks supplied from column
+/// sources with 1 and 4 slots, one chunk's source failing its write: after
+/// every step the slot count has not shrunk and is within the limit, and
+/// with one slot the failed slot is the one the rest of the stream reuses.
+#[test]
+fn stream_staging_slots_only_grow_within_the_slot_limit() {
+    struct Source {
+        scale: f32,
+        fail_at: std::cell::Cell<Option<u64>>,
+    }
+    impl crate::ColumnSource for Source {
+        fn len(&self) -> usize {
+            50
+        }
+        fn min(&self) -> f64 {
+            0.0
+        }
+        fn max(&self) -> f64 {
+            f64::from(49.0 * self.scale)
+        }
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {
+            panic!("streaming must not invoke the full-column encoder")
+        }
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::ColumnPairWriter<'_>,
+        ) -> crate::ColumnUploadStats {
+            panic!("streaming must not invoke the full-column writer")
+        }
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            mut dst: crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
+        {
+            if self.fail_at.get() == Some(start) {
+                self.fail_at.set(None);
+                return Err(crate::ColumnRangeWriteError::SourceFailed);
+            }
+            for local in 0..dst.len() {
+                dst.write_pair(local, (start + local as u64) as f32 * self.scale, 0.0);
+            }
+            Ok(None)
+        }
+    }
+
+    for slots in [1usize, 4] {
+        let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
+        let mut columns = vec![source("x", 1), source("a", 1)];
+        for column in &mut columns {
+            column.len = 50;
+        }
+        r.register_streamed_columns(columns).unwrap();
+        let mut scatter = declaration("s", "x", "a");
+        scatter.render_type = DataRenderType::Scatter {
+            scatter: DataScatterStyleConfig {
+                point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                point_shape: ScatterShape::CircleFilled,
+                point_size: 4.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            },
+        };
+        let config = crate::default::default_config();
+        let chart_id = r.register_chart(config.clone(), vec![scatter]).unwrap();
+        r.configure_streaming_runtime(limits(slots)).unwrap();
+        let view = r
+            .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+            .unwrap();
+        r.begin_streaming_chart(
+            chart_id,
+            &view,
+            crate::StreamingChartOptions {
+                size: (config.chart_area.0.width, config.chart_area.0.height),
+                clear_color: Color::WHITE,
+                max_primitives_per_chunk: 1,
+            },
+        )
+        .unwrap();
+        let x = Source {
+            scale: 0.02,
+            fail_at: std::cell::Cell::new(Some(7)),
+        };
+        let y = Source {
+            scale: 0.01,
+            fail_at: std::cell::Cell::new(None),
+        };
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "x",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&x),
+            },
+            crate::StreamSourceBinding {
+                id: "a",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        let mut count = 0;
+        let mut failures = 0;
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            assert!(steps < 1000, "the stream did not finish");
+            let step = r.stream_chart_step(chart_id, &view, &bindings);
+            let now = r.staging_slot_count_for_test(chart_id).unwrap();
+            assert!(
+                now >= count,
+                "the staging slots shrank from {count} to {now}"
+            );
+            assert!(now <= slots, "{now} staging slots for {slots}");
+            count = now;
+            match step {
+                Err(FiggyError::InvalidStreamSource { id, .. }) => {
+                    assert_eq!(id, "x");
+                    failures += 1;
+                    // The failed slot is remapped; let its map callback
+                    // run before the same ticket is supplied again.
+                    r.wait_idle().unwrap();
+                }
+                Err(error) => panic!("slots {slots} step {steps} count {count}: {error:?}"),
+                Ok(crate::StreamingProgress::Submitted { .. }) => {}
+                Ok(crate::StreamingProgress::Backpressure { .. }) => wait_stream_slots(&mut r, 0),
+                Ok(crate::StreamingProgress::AllSubmitted { total_primitives }) => {
+                    assert_eq!(total_primitives, 50);
+                    break;
+                }
+            }
+        }
+        assert_eq!(failures, 1);
+        assert!(count >= 1, "the column sources were staged without a slot");
+        if slots == 1 {
+            assert_eq!(count, 1, "the failed slot was not reused");
+        }
+        r.cancel_streaming_chart(chart_id).unwrap();
+    }
+}
+
+/// Supply `ticket` with zero bytes of the lengths it names and wait for it.
+fn submit_zeros(r: &mut Renderer, ticket: StreamTicket, view: &ChartView, target: &wgpu::Texture) {
+    let columns: Vec<_> = r
+        .stream_request_columns(ticket)
+        .unwrap()
+        .iter()
+        .map(|column| (column.column.clone(), column.range))
+        .collect();
+    let zeros = vec![0u8; 4096];
+    let inputs: Vec<_> = columns
+        .iter()
+        .map(|(id, range)| StreamInput {
+            column: id,
+            bytes: &zeros[..range.byte_len().unwrap() as usize],
+        })
+        .collect();
+    let submission = r
+        .submit_chart_stream_draw(ticket, &inputs, view, target)
+        .unwrap();
+    r.device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .unwrap();
+}
+
+/// The last series of a STREAM_DRAW_SERIES_IN_RANGE chart: a scatter, a
+/// dashed line (an arc stream) or a heatmap (a field stream).
+fn last_stream_series(kind: &str) -> SeriesConfig {
+    let mut series = declaration("last", "x", "ps");
+    match kind {
+        "scatter" => {
+            series.render_type = DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                    point_shape: ScatterShape::CircleFilled,
+                    point_size: 5.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
+                },
+            }
+        }
+        "arc" => {
+            if let DataRenderType::Line { line } = &mut series.render_type {
+                line.line_style = LineStylePreset::Dash;
+            }
+        }
+        _ => {
+            series.y_column = "y".into();
+            series.render_type = DataRenderType::Heatmap {
+                matrix: crate::data_config::MatrixRef {
+                    columns: vec!["ex_lo".into(), "ex_hi".into()],
+                    orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: crate::data_config::GridLayout::Edges,
+                },
+                fill: crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: crate::data_config::Shading::Flat,
+                    opacity: 1.0,
+                },
+                surface: None,
+            };
+        }
+    }
+    series
+}
+
+/// STREAM_DRAW_SERIES_IN_RANGE and STREAM_STYLES_MATCH_SERIES (#152): an
+/// explicit stream holds one prepared style per series and its cursor
+/// indexes the chart's series; a series edit that changes the count prunes
+/// the job, so the ticket issued on the last series is refused as stale
+/// instead of indexing the shorter list. Charts of 1 and 300 series whose
+/// last series is a scatter, an arc line or a field, cut to 0 and 1 series
+/// or retyped in place while that ticket is pending; a style-only edit
+/// rebuilds the styles at the same length, and a new stream at the new
+/// length after the cut.
+#[test]
+fn a_pending_stream_ticket_never_indexes_a_shorter_series_list() {
+    for count in [1usize, 300] {
+        for kind in ["scatter", "arc", "field"] {
+            for edit in ["empty", "one", "retyped"] {
+                let mut r = ticket_renderer(2);
+                let mut series: Vec<SeriesConfig> = (0..count - 1)
+                    .map(|k| declaration(&format!("l{k}"), "x", "y"))
+                    .collect();
+                series.push(last_stream_series(kind));
+                let mut config = crate::default::default_config();
+                config.colorbar = Some(crate::default::default_colorbar_options());
+                let chart = r.register_chart(config.clone(), series.clone()).unwrap();
+                let view = r
+                    .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+                    .unwrap();
+                let target = draw_target(&r, 1);
+                let job = r.begin_chart_stream_draw(chart, &view, &target, 8).unwrap();
+                let styles = |r: &Renderer| {
+                    r.chart_states[&chart]
+                        .prepared_styles
+                        .as_ref()
+                        .map(|styles| styles.styles.len())
+                };
+                assert_eq!(styles(&r), Some(count));
+                let ticket = loop {
+                    let ticket = match r.request_chart_stream_draw(job).unwrap() {
+                        StreamDrawRequestStatus::Ready(ticket) => ticket,
+                        StreamDrawRequestStatus::Backpressure => {
+                            wait_stream_slots(&mut r, 0);
+                            continue;
+                        }
+                        StreamDrawRequestStatus::AllSubmitted => panic!("the last series drew"),
+                    };
+                    let cursor = r.stream_cursor_series_for_test(job).unwrap();
+                    assert!(cursor < count);
+                    if cursor == count - 1 {
+                        break ticket;
+                    }
+                    submit_zeros(&mut r, ticket, &view, &target);
+                    wait_stream_slots(&mut r, 0);
+                };
+                let edited = match edit {
+                    "empty" => Vec::new(),
+                    "one" => vec![declaration("only", "x", "y")],
+                    _ => {
+                        let mut retyped = series.clone();
+                        let last = retyped.last_mut().unwrap();
+                        *last = declaration("last", "x", "ps");
+                        if kind == "field" {
+                            last.y_column = "y".into();
+                        }
+                        retyped
+                    }
+                };
+                r.set_chart_series(chart, edited.clone()).unwrap();
+                let zeros = [0u8; 4096];
+                let stale = r.submit_chart_stream_draw(
+                    ticket,
+                    &[StreamInput {
+                        column: "x",
+                        bytes: &zeros[..32],
+                    }],
+                    &view,
+                    &target,
+                );
+                assert!(
+                    matches!(
+                        stale,
+                        Err(StreamRequestError::Scheduler(StreamError::Stale))
+                    ),
+                    "{count} {kind} {edit}: {stale:?}"
+                );
+                let request = r.request_chart_stream_draw(job);
+                assert!(
+                    matches!(
+                        request,
+                        Err(StreamRequestError::Scheduler(StreamError::Stale))
+                    ),
+                    "{count} {kind} {edit}: {request:?}"
+                );
+                if edit == "empty" {
+                    continue;
+                }
+                // A new stream draws the edited list with its styles.
+                r.cancel_chart_stream(chart).unwrap();
+                wait_stream_slots(&mut r, 0);
+                let job = r.begin_chart_stream_draw(chart, &view, &target, 8).unwrap();
+                assert_eq!(styles(&r), Some(edited.len()));
+                if edit == "retyped" {
+                    // A style-only edit keeps the count; a frame rebuilds the
+                    // styles at the same length.
+                    let mut recolored = edited.clone();
+                    if let DataRenderType::Line { line } = &mut recolored[0].render_type {
+                        line.line_color = Color::new(0.0, 0.0, 1.0, 1.0);
+                    }
+                    r.set_chart_series(chart, recolored).unwrap();
+                    assert_eq!(styles(&r).unwrap_or(edited.len()), edited.len());
+                }
+                loop {
+                    match r.request_chart_stream_draw(job) {
+                        Ok(StreamDrawRequestStatus::Ready(ticket)) => {
+                            assert!(r.stream_cursor_series_for_test(job).unwrap() < edited.len());
+                            submit_zeros(&mut r, ticket, &view, &target);
+                            wait_stream_slots(&mut r, 0);
+                        }
+                        Ok(StreamDrawRequestStatus::Backpressure) => wait_stream_slots(&mut r, 0),
+                        Ok(StreamDrawRequestStatus::AllSubmitted) => break,
+                        // The style-only edit restarted the stream.
+                        Err(StreamRequestError::Scheduler(StreamError::Stale)) => break,
+                        Err(error) => panic!("{count} {kind} {edit}: {error:?}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// STREAM_JOB_CHART_LIVE (#152): a stream's field and data requests read
+/// the chart's state only after `validate_stream_job`, so a chart removed
+/// while its field ticket is pending refuses the job and the ticket as
+/// stale instead of reading a missing chart, with 0 and 2 other charts
+/// registered, which keep streaming.
+#[test]
+fn a_removed_chart_refuses_its_pending_stream_ticket() {
+    for others in [0usize, 2] {
+        let mut r = ticket_renderer(4);
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let other_ids: Vec<ChartId> = (0..others)
+            .map(|k| {
+                r.register_chart(
+                    config.clone(),
+                    vec![declaration(&format!("o{k}"), "x", "y")],
+                )
+                .unwrap()
+            })
+            .collect();
+        let chart = r
+            .register_chart(config.clone(), vec![last_stream_series("field")])
+            .unwrap();
+        let view = r
+            .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+            .unwrap();
+        let target = draw_target(&r, 1);
+        let job = r.begin_chart_stream_draw(chart, &view, &target, 8).unwrap();
+        let StreamDrawRequestStatus::Ready(ticket) = r.request_chart_stream_draw(job).unwrap()
+        else {
+            panic!("a field ticket")
+        };
+        let other_targets: Vec<_> = other_ids.iter().map(|_| draw_target(&r, 1)).collect();
+        let other_views: Vec<_> = other_ids
+            .iter()
+            .map(|_| {
+                r.create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+                    .unwrap()
+            })
+            .collect();
+        let other_jobs: Vec<_> = other_ids
+            .iter()
+            .zip(other_views.iter().zip(&other_targets))
+            .map(|(id, (view, target))| r.begin_chart_stream_draw(*id, view, target, 8).unwrap())
+            .collect();
+        for job in &other_jobs {
+            let early = r.request_chart_stream_draw(*job);
+            assert!(early.is_ok(), "{early:?}");
+        }
+        assert!(r.request_chart_stream_draw(job).is_ok());
+        r.remove_chart(chart).unwrap();
+        let request = r.request_chart_stream_draw(job);
+        assert!(
+            matches!(
+                request,
+                Err(StreamRequestError::Scheduler(StreamError::Stale))
+            ),
+            "{request:?}"
+        );
+        let zeros = [0u8; 64];
+        let submit = r.submit_chart_stream_draw(
+            ticket,
+            &[StreamInput {
+                column: "x",
+                bytes: &zeros[..32],
+            }],
+            &view,
+            &target,
+        );
+        assert!(
+            matches!(
+                submit,
+                Err(StreamRequestError::Scheduler(StreamError::Stale))
+            ),
+            "{submit:?}"
+        );
+        assert!(r.stream_request_columns(ticket).is_err());
+        // The other charts' streams go on: their pending tickets submit.
+        for (job, (view, target)) in other_jobs
+            .into_iter()
+            .zip(other_views.iter().zip(&other_targets))
+        {
+            let StreamDrawRequestStatus::Ready(ticket) = r.request_chart_stream_draw(job).unwrap()
+            else {
+                panic!("another chart's pending ticket")
+            };
+            submit_zeros(&mut r, ticket, view, target);
+        }
+    }
 }

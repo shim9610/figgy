@@ -18,6 +18,15 @@ pub(in crate::renderer) use value_label::*;
 pub(in crate::renderer) use value_map::*;
 pub(in crate::renderer) use vector::*;
 
+/// A count or pool offset a shader addresses as a 32-bit lane index.
+pub(in crate::renderer) fn lane_u32(value: u64, resource: &'static str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| FiggyError::GpuResourceLimit {
+        resource,
+        requested: value,
+        limit: u64::from(u32::MAX),
+    })
+}
+
 /// Clear a per-series scratch cache that is about to exceed its bound.
 ///
 /// Same rule as `arc_cache`: a host cycling through thousands of series ids must
@@ -93,8 +102,13 @@ impl PrepareContext<'_> {
         let group_sizes = storage
             .as_ref()
             .map(|storage| storage.group_sizes(items))
+            .transpose()?
+            // No layered item: no groups to lift annotations across.
             .unwrap_or_default();
-        let expanded = storage.as_ref().map(|storage| storage.items(items));
+        let expanded = storage
+            .as_ref()
+            .map(|storage| storage.items(items))
+            .transpose()?;
         let items: &[ChartDrawItem<'_>] = match &expanded {
             Some(expanded) => expanded.as_slice(),
             None => items,
@@ -555,7 +569,8 @@ impl PrepareContext<'_> {
         if !mapped {
             return Ok((None, None, None));
         }
-        let scatter = extract_scatter(&cfg.render_type).expect("a mapped series has points");
+        let scatter = extract_scatter(&cfg.render_type)
+            .ok_or(FiggyError::internal("a mapped series has points"))?;
         if scatter.point_color_map.is_none() && scatter.point_size_map.is_none() {
             return Ok((None, None, Some(self.neutral_point_value_map_bg)));
         }

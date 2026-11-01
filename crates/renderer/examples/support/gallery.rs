@@ -136,7 +136,7 @@ pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
         16 * 1024 * 1024,
     )?;
     let result = render(&mut renderer);
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     result
 }
 

@@ -779,7 +779,7 @@ fn scalar_source_expands_to_pairs_without_changing_bits() {
 
     let stats = write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
     );
 
     assert_eq!(stats.min_positive, Some(f32::from_bits(0x3f80_0001) as f64));
@@ -796,7 +796,7 @@ fn scalar_source_expansion_accepts_empty_input() {
 
     let stats = write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
     );
 
     assert!(dst.is_empty());
@@ -3544,10 +3544,10 @@ fn a_ragged_column_uploads_with_offset_statistics() {
     assert_eq!(pool.ragged_stats("outliers"), Some(ragged.stats()));
     // The offsets are `u32` index lanes: the index, then 0.
     assert_eq!(
-        read_column_words(ctx(), &pool, ragged.offsets()),
+        read_column_words(ctx(), &pool, ragged.offsets().unwrap()),
         [0, 0, 2, 0, 2, 0, 5, 0]
     );
-    let read = read_column_values(ctx(), &pool, ragged.values());
+    let read = read_column_values(ctx(), &pool, ragged.values().unwrap());
     assert_eq!((read[0], read[1], read[3], read[4]), (4.0, -2.0, 9.0, 1.0));
     assert!(read[2].is_nan());
     assert_eq!(
@@ -3557,6 +3557,44 @@ fn a_ragged_column_uploads_with_offset_statistics() {
     assert_eq!(pool.composite_kind("outliers"), Some("a ragged column"));
     assert!(pool.is_member_column(&ragged.slot().offsets));
     assert_eq!(pool.used_bytes(), 2 * ALIGN);
+}
+
+/// A standalone pool refuses to remove or replace a ragged column's member
+/// through the plain column API, so the ragged column stays readable (#152).
+#[test]
+fn a_standalone_pool_rejects_member_column_removal_and_upsert() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = col_f64(vec![4.0, -2.0, 9.0]);
+    let offsets = col_f64(vec![0.0, 1.0, 3.0]);
+    pool.upsert_ragged(
+        "r",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let slot = pool.ragged("r").unwrap().slot().clone();
+
+    assert_eq!(
+        pool.remove_column(&slot.values),
+        Err(AllocError::MemberColumn(slot.values.clone()))
+    );
+    let replacement = col_f64(vec![1.0]);
+    assert!(matches!(
+        pool.upsert_column(slot.offsets.clone(), &replacement, ctx()),
+        Err(AllocError::MemberColumn(_))
+    ));
+
+    let ragged = pool.ragged("r").unwrap();
+    assert!(ragged.values().is_some());
+    assert!(ragged.offsets().is_some());
+    assert_eq!(ragged.values().unwrap().len_values, 3);
+    assert!(pool.remove_ragged("r").unwrap());
 }
 
 /// Offsets that decrease, do not start at 0, do not end at the value count
@@ -3626,7 +3664,7 @@ fn invalid_ragged_offsets_are_rejected_and_roll_the_batch_back() {
     assert_eq!(pool.ragged_stats("outliers"), Some(stats));
     let ragged = pool.ragged("outliers").unwrap();
     assert_eq!(
-        read_column_values(ctx(), &pool, ragged.values()),
+        read_column_values(ctx(), &pool, ragged.values().unwrap()),
         [1.0, 2.0, 3.0, 4.0, 5.0]
     );
 }
@@ -3838,8 +3876,8 @@ fn a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset() {
     let params: [u32; 8] = [
         lane(record.field("q3").unwrap()),
         2,
-        lane(ragged.values()),
-        lane(ragged.offsets()),
+        lane(ragged.values().unwrap()),
+        lane(ragged.offsets().unwrap()),
         2,
         0,
         0,
@@ -4056,7 +4094,8 @@ fn f64_columns_upload_their_exact_split() {
     let mut lanes = [0u8; 4 * COLUMN_VALUE_BYTES];
     write_scalar_source_as_pairs(
         &column,
-        ColumnPairWriter::from_bytes_for_test(&mut lanes).with_index_lanes(true),
+        ColumnPairWriter::from_bytes_for_test(&mut lanes, &std::cell::Cell::new(false))
+            .with_index_lanes(true),
     );
     let word =
         |bytes: &[u8], k: usize| u32::from_le_bytes(bytes[4 * k..4 * k + 4].try_into().unwrap());
@@ -4067,7 +4106,10 @@ fn f64_columns_upload_their_exact_split() {
     );
     assert_eq!(word(&lanes, 2), u32::MAX - 1);
     let mut pairs = [0u8; 4 * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(&column, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    write_scalar_source_as_pairs(
+        &column,
+        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
+    );
     let float = |k: usize| f32::from_bits(word(&pairs, k));
     // The split keeps about 48 significant bits: integers below 2^48 are
     // exact, any other value is within 2^-47 of itself, where an f32 alone
@@ -4097,7 +4139,8 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     let mut bytes = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
     write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(&mut bytes).with_index_lanes(true),
+        ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false))
+            .with_index_lanes(true),
     );
     let word = |bytes: &[u8], k: usize| {
         u32::from_le_bytes([
@@ -4128,7 +4171,10 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     );
 
     let mut pairs = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(&source, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    write_scalar_source_as_pairs(
+        &source,
+        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
+    );
     let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from((1u32 << 24) + 1));
     assert_eq!(
         (word(&pairs, 6), word(&pairs, 7)),
@@ -4190,4 +4236,171 @@ fn main() {
         "the f32 read loses 2^24 + 1 on the GPU: {:?}",
         &read[INDEX_LANE_PROBES.len()..]
     );
+}
+
+/// BATCH_CHUNK_PLAN (#152): for batches of 0, 1, 2 and 300 columns (past
+/// any former column cap) of 1, 2, 4097 and 100 000 values, under ceilings
+/// below one column, of exactly one column, of three columns and
+/// `u64::MAX`, the plan's chunks partition the columns in order, each with
+/// one offset per column starting at 0 and stepping by the column's
+/// region, ending at the chunk's size, and the chunks tile the region. A
+/// chunk passes the ceiling only when it is one column.
+#[test]
+fn the_staging_plan_partitions_any_batch_under_any_ceiling() {
+    let lengths = [1usize, 2, 4097];
+    let sources: Vec<Column<f64>> = (0..300)
+        .map(|i| {
+            let len = if i == 299 { 100_000 } else { lengths[i % 3] };
+            col_f64((0..len).map(|row| row as f64).collect())
+        })
+        .collect();
+    let names: Vec<String> = (0..300).map(|i| format!("c{i}")).collect();
+    for count in [0usize, 1, 2, 300] {
+        // The last column is the large one in every batch past one column.
+        let picks: Vec<usize> = (0..count)
+            .map(|i| if i + 1 == count && count > 1 { 299 } else { i })
+            .collect();
+        let columns: Vec<(&str, &dyn ColumnSource)> = picks
+            .iter()
+            .map(|&i| (names[i].as_str(), &sources[i] as &dyn ColumnSource))
+            .collect();
+        let region = |i: usize| column_region_bytes(columns[i].1.len()).unwrap();
+        let total: u64 = (0..count).map(region).sum();
+        let one = column_region_bytes(1).unwrap();
+        for ceiling in [one - 1, one, 3 * one, total.max(1), u64::MAX] {
+            let chunks = plan_batch_chunks(&columns, ceiling).unwrap();
+            assert!(!chunks.is_empty());
+            let (mut next, mut region_offset) = (0usize, 0u64);
+            for chunk in &chunks {
+                assert_eq!(chunk.columns.start, next, "{count} columns under {ceiling}");
+                assert!(count == 0 || chunk.columns.start < chunk.columns.end);
+                assert_eq!(chunk.column_offsets.len(), chunk.columns.len());
+                assert_eq!(chunk.region_offset, region_offset);
+                let mut offset = 0u64;
+                for (k, index) in chunk.columns.clone().enumerate() {
+                    assert_eq!(chunk.column_offsets[k] as u64, offset);
+                    offset += region(index);
+                }
+                assert_eq!(offset, chunk.byte_size);
+                assert!(chunk.byte_size <= ceiling || chunk.columns.len() == 1);
+                next = chunk.columns.end;
+                region_offset += chunk.byte_size;
+            }
+            assert_eq!(next, count);
+            assert_eq!(region_offset, total);
+            if total <= ceiling {
+                assert_eq!(chunks.len(), 1);
+            }
+        }
+    }
+}
+
+/// OBSERVER_INDEX_IN_BATCH (#152): the staging write's observer is called
+/// with the batch index of the column it writes, below the batch's
+/// length, for every column, over batches of 1, `MAX_RECORD_FIELDS` and
+/// 300 columns. A record upsert sorts what it observes into the fixed
+/// per-field tables: the full box schema (nine fields), the required five,
+/// a one-field schema and a replacement of a record by fewer fields each
+/// report exactly the fields supplied, and a record missing a required
+/// field is refused.
+#[test]
+fn the_batch_observer_sees_every_column_by_its_batch_index() {
+    let Some((device, queue, mut pool)) = mk_pool(1024 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    for count in [1usize, MAX_RECORD_FIELDS, 300] {
+        let sources: Vec<Column<f64>> = (0..count)
+            .map(|i| col_f64((0..1 + i % 5).map(|row| row as f64).collect()))
+            .collect();
+        let names: Vec<String> = (0..count).map(|i| format!("b{count}_{i}")).collect();
+        let columns: Vec<(&str, &dyn ColumnSource)> = names
+            .iter()
+            .zip(&sources)
+            .map(|(name, source)| (name.as_str(), source as &dyn ColumnSource))
+            .collect();
+        let mut rows = vec![0usize; count];
+        let mut past = 0usize;
+        let mut observe =
+            |column: usize, _row: usize, _hi: f32, _lo: f32| match rows.get_mut(column) {
+                Some(seen) => *seen += 1,
+                None => past += 1,
+            };
+        pool.begin_add_columns_observed(&columns, ctx(), Some(&mut observe), None)
+            .unwrap()
+            .commit();
+        assert_eq!(past, 0, "{count} columns: an index past the batch");
+        for (i, source) in sources.iter().enumerate() {
+            assert_eq!(rows[i], source.data.len(), "{count} columns: column {i}");
+        }
+    }
+
+    let present = |pool: &ColumnPool, id: &str| pool.record(id).unwrap().stats().present;
+    let expect = |names: &[&str], schema: &RecordSchema| {
+        let mut want = [false; MAX_RECORD_FIELDS];
+        for (slot, (name, _)) in schema.iter().enumerate() {
+            want[slot] = names.contains(name);
+        }
+        want
+    };
+    let nine: Vec<(&str, Column<f64>)> = BOX_PLOT_RECORD
+        .iter()
+        .enumerate()
+        .map(|(k, (name, _))| (*name, col_f64(vec![k as f64, 1.0 + k as f64, 2.0])))
+        .collect();
+    let all = box_fields(&nine);
+    // Supplied out of schema order: the tables are by schema slot.
+    let reversed: Vec<_> = all.iter().rev().copied().collect();
+    let required: Vec<_> = all.iter().take(5).copied().collect();
+    fn names<'a>(fields: &[(&'a str, &dyn ColumnSource)]) -> Vec<&'a str> {
+        fields.iter().map(|(name, _)| *name).collect()
+    }
+    for (id, fields) in [("full", &reversed), ("required", &required)] {
+        let source = RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields,
+        };
+        pool.upsert_record(id, &source, ctx()).unwrap();
+        assert_eq!(
+            present(&pool, id),
+            expect(&names(fields), BOX_PLOT_RECORD),
+            "{id}"
+        );
+    }
+    // Replace the full record by its required fields, then back.
+    for fields in [&required, &all] {
+        let source = RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields,
+        };
+        pool.upsert_record("full", &source, ctx()).unwrap();
+        assert_eq!(
+            present(&pool, "full"),
+            expect(&names(fields), BOX_PLOT_RECORD)
+        );
+    }
+    let lone = &all[..1];
+    assert!(
+        pool.upsert_record(
+            "lone",
+            &RecordSource {
+                schema: BOX_PLOT_RECORD,
+                fields: lone,
+            },
+            ctx(),
+        )
+        .is_err()
+    );
+    assert!(pool.record("lone").is_none());
+    const ONE: &RecordSchema = &[("median", true)];
+    pool.upsert_record(
+        "one",
+        &RecordSource {
+            schema: ONE,
+            fields: lone,
+        },
+        ctx(),
+    )
+    .unwrap();
+    assert_eq!(present(&pool, "one"), expect(&["median"], ONE));
 }

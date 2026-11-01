@@ -126,6 +126,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
                     &base_transform,
                     *base,
                 )
+                .unwrap()
             })
             .collect();
         assert_eq!(bytemuck::bytes_of(&base_transform), &original);
@@ -264,7 +265,8 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
                     transform_bgl,
                     &case.transform,
                     if include_global_base { start as u32 } else { 0 },
-                );
+                )
+                .unwrap();
                 (start, len, bg, charge)
             })
             .collect();

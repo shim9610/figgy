@@ -153,7 +153,7 @@ impl PrepareContext<'_> {
         {
             return Ok(());
         }
-        let scratch = self.build_value_map_scratch(signature);
+        let scratch = self.build_value_map_scratch(signature)?;
         evict_if_full(
             &mut self.value_map_cache,
             cfg.series_id.as_str(),
@@ -175,7 +175,7 @@ impl PrepareContext<'_> {
     /// cache compares signatures, so whatever the build could read beyond
     /// one would be a change the compare cannot see. Keeping the build to
     /// the signature makes the compare complete by construction.
-    fn build_value_map_scratch(&self, signature: ValueMapSignature) -> ValueMapScratch {
+    fn build_value_map_scratch(&self, signature: ValueMapSignature) -> Result<ValueMapScratch> {
         let stops: &[Color] = signature
             .colormap
             .as_ref()
@@ -185,15 +185,15 @@ impl PrepareContext<'_> {
             &self.gpu_ledger,
             &signature.params,
             stops,
-        );
+        )?;
         let bind_group =
             data_render::bind_point_value_map(&self.device, &self.point_value_map_bgl, &buffers);
-        ValueMapScratch {
+        Ok(ValueMapScratch {
             signature,
             bind_group,
             buffers,
             _charge: charge,
-        }
+        })
     }
 }
 

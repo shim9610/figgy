@@ -471,8 +471,12 @@ impl FiggyChart {
                 "memory_budget_bytes {memory_budget_bytes} is below current renderer usage {current}"
             )));
         }
-        let exceeded = self.renderer.set_memory_budget(Some(memory_budget_bytes));
-        debug_assert!(exceeded.is_none());
+        if let Some(usage) = self.renderer.set_memory_budget(Some(memory_budget_bytes)) {
+            return Err(js_err(format!(
+                "internal: renderer usage {usage} exceeds memory_budget_bytes \
+                 {memory_budget_bytes} after it was checked against it"
+            )));
+        }
         self.renderer
             .set_auto_resident_working_set_limit(Some(working_set_limit_bytes));
         Ok(())
@@ -487,7 +491,7 @@ impl FiggyChart {
     ) -> Result<AutoStreamingRequestResult, JsValue> {
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
-        let (display_config, _, display_scale) = self.display_config();
+        let (display_config, _, display_scale) = self.display_config()?;
         let result = self
             .renderer
             .request_auto_streaming_chart_with_display_scale(
@@ -720,7 +724,7 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache();
+        self.retire_series_extent_cache()?;
         Ok(())
     }
 
@@ -772,15 +776,15 @@ impl FiggyChart {
         source_ids.extend(columns.iter().map(|source| source.id.clone()));
         source_ids.sort_unstable();
         for id in &source_ids {
-            source_revisions.push(
-                columns
-                    .iter()
-                    .find(|source| &source.id == id)
-                    .expect("sorted handoff id came from the prepared metadata")
-                    .revision as f64,
-            );
+            let source = columns
+                .iter()
+                .find(|source| &source.id == id)
+                .ok_or_else(|| {
+                    js_err("internal: a sorted handoff id left the prepared metadata")
+                })?;
+            source_revisions.push(source.revision as f64);
         }
-        let (display_config, _, display_scale) = self.display_config();
+        let (display_config, _, display_scale) = self.display_config()?;
         let result = self
             .renderer
             .request_resident_stream_handoff_with_display_scale(
@@ -860,7 +864,7 @@ impl FiggyChart {
                     self.column_revisions.insert(id, revision);
                 }
                 self.next_column_revision = pending.next_column_revision;
-                self.retire_series_extent_cache();
+                self.retire_series_extent_cache()?;
             }
         }
         self.request_host_redraw();
@@ -1159,7 +1163,7 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache();
+        self.retire_series_extent_cache()?;
         Ok(())
     }
 
@@ -1215,7 +1219,7 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache();
+        self.retire_series_extent_cache()?;
         self.request_host_redraw();
         Ok(())
     }
@@ -1225,7 +1229,7 @@ impl FiggyChart {
     pub fn begin_streaming(&mut self, max_primitives_per_chunk: f64) -> Result<(), JsValue> {
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
-        let (display_config, _, _) = self.display_config();
+        let (display_config, _, _) = self.display_config()?;
         let display_chart = Chart::new(display_config);
         self.renderer
             .update_transform(&self.view, &display_chart)
@@ -1349,7 +1353,9 @@ impl FiggyChart {
     pub fn streaming_gpu_ready(&self) -> js_sys::Promise {
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.renderer.queue().on_submitted_work_done(move || {
-            let _ = sender.send(());
+            if sender.send(()).is_err() {
+                // Receiver dropped: the waiting call was cancelled.
+            }
         });
         wasm_bindgen_futures::future_to_promise(async move {
             receiver
@@ -1439,7 +1445,7 @@ impl FiggyChart {
     /// Synchronous fit request routing, allowing the facade to wait for
     /// renderer progress without holding a wasm mutable borrow.
     pub fn request_stream_auto_fit(&mut self, padding: f64) -> Result<bool, JsValue> {
-        let streamed = self.chart_series().iter().any(|series| {
+        let streamed = self.chart_series()?.iter().any(|series| {
             referenced_columns(series).into_iter().any(|id| {
                 matches!(
                     self.renderer.logical_column(id),

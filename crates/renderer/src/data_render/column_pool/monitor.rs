@@ -72,12 +72,22 @@ pub(super) fn create_buffer_checked(
     resource: &'static str,
 ) -> Result<Buffer, AllocError> {
     // gpu-alloc: ColumnPool
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.create_buffer(desc))).map_err(
-        |_| AllocError::AllocationFailed {
+    crate::renderer::gpu_checked(device, resource, || device.create_buffer(desc))
+        .map_err(|error| pool_gpu_error(resource, error))
+}
+
+/// A GPU failure the pool met, in the pool's error type: out of memory is an
+/// allocation failure, anything else [`AllocError::Gpu`].
+pub(super) fn pool_gpu_error(resource: &'static str, error: crate::FiggyError) -> AllocError {
+    match error {
+        crate::FiggyError::GpuResourceAllocationFailed { reason, .. } => {
+            AllocError::AllocationFailed { resource, reason }
+        }
+        other => AllocError::Gpu {
             resource,
-            reason: "wgpu Device::create_buffer panicked".into(),
+            reason: other.to_string(),
         },
-    )
+    }
 }
 
 /// A host-declared ceiling and the out-of-pool bytes it is measured against.

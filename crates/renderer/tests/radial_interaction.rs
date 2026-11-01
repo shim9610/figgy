@@ -528,3 +528,132 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         chart
     });
 }
+
+/// The frame's decoration methods take the host's chart, which may differ
+/// from the one the frame was prepared with (#152). A chart that does not
+/// validate (here 200 outside labels in one circle, past
+/// `MAX_RADIAL_SLICES`, about 100 on each side) cannot be laid out: every
+/// method answers nothing and leaves the chart unchanged instead of
+/// overflowing the per-side label table. A 64-slice chart (the most one
+/// circle holds) with 63 outside labels on one side, the most a full circle
+/// puts there, prepares, hit-tests, drags and exports at 1x and 2x.
+#[test]
+fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
+    let _guard = LOCK.lock().unwrap();
+    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let size = (800, 520);
+    let slice = |i: usize, value: f64| {
+        RadialSlice::new(
+            format!("S{i}"),
+            value,
+            Color::from_rgb8((i * 37 % 255) as u8, 90, 160),
+        )
+    };
+    let mut prepared = RadialChart {
+        title: "Prepared".into(),
+        kind: RadialKind::Pie,
+        labels: RadialLabels::Outside,
+        slices: (0..4).map(|i| slice(i, 1.0)).collect(),
+        ..Default::default()
+    };
+    prepared.format_labels();
+    let mut other = prepared.clone();
+    other.slices = (0..200).map(|i| slice(i, 1.0)).collect();
+    other.format_labels();
+    assert!(other.validate().is_err(), "the other chart is malformed");
+    let label = DecorationId::RadialLabel(RadialTarget::main(0));
+    for scale in [1.0, 2.0] {
+        let f = r.prepare(&prepared, size, scale).unwrap();
+        let hits = [
+            f.decoration(&label).expect("the prepared label"),
+            f.decoration(&DecorationId::DataArea)
+                .expect("the plot area"),
+            f.decoration(&DecorationId::ChartTitle).expect("the title"),
+        ];
+        for j in 0..=26 {
+            for i in 0..=40 {
+                let p = [i as f32 * 20.0, j as f32 * 20.0];
+                assert_eq!(f.decoration_at(&other, p), None, "hit at {p:?}");
+            }
+        }
+        let before = other.clone();
+        for hit in hits {
+            assert_eq!(f.decoration_bounds(&other, hit), None);
+            assert!(f.decoration_selection_box(&other, hit).is_none());
+            assert_eq!(
+                f.decoration_resize_handle(&other, hit, [400.0, 260.0]),
+                None
+            );
+            let dragged = f.drag_decoration(&mut other, hit, 12.0, -7.0);
+            assert_ne!(dragged, Some(NudgeResult::Moved), "{hit:?}");
+            let resized = f.resize_decoration(
+                &mut other,
+                hit,
+                ::renderer::resize::ResizeHandle::SE,
+                12.0,
+                -7.0,
+            );
+            assert_ne!(resized, Some(NudgeResult::Moved), "{hit:?}");
+            assert_eq!(other, before, "a refused edit changed the chart");
+        }
+        r.end_frame();
+    }
+
+    // 63 tiny slices cluster on the right of the start angle; the large
+    // one's label sits alone on the left.
+    let mut full = RadialChart {
+        title: "Crowded".into(),
+        kind: RadialKind::Pie,
+        labels: RadialLabels::Outside,
+        start_angle_degrees: -10.0,
+        slices: (0..::renderer::radial::MAX_RADIAL_SLICES)
+            .map(|i| {
+                slice(
+                    i,
+                    if i + 1 == ::renderer::radial::MAX_RADIAL_SLICES {
+                        1e4
+                    } else {
+                        1.0
+                    },
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    full.format_labels();
+    full.validate().unwrap();
+    for scale in [1.0, 2.0] {
+        let f = r.prepare(&full, size, scale).unwrap();
+        let mut hit_labels = 0;
+        for index in 0..::renderer::radial::MAX_RADIAL_SLICES {
+            let key = DecorationId::RadialLabel(RadialTarget::main(index));
+            let hit = f.decoration(&key).expect("every label is an element");
+            let bounds = f
+                .decoration_bounds(&full, hit)
+                .expect("every label is placed");
+            assert!(f.decoration_selection_box(&full, hit).is_some());
+            let centre = [
+                bounds.x + bounds.width * 0.5,
+                bounds.y + bounds.height * 0.5,
+            ];
+            if f.decoration_at(&full, centre) == Some(hit) {
+                hit_labels += 1;
+            }
+        }
+        assert!(hit_labels > 0, "no label hit-tests at {scale}x");
+        let mut dragged = full.clone();
+        let hit = f
+            .decoration(&DecorationId::RadialLabel(RadialTarget::main(0)))
+            .unwrap();
+        assert_eq!(
+            f.drag_decoration(&mut dragged, hit, 0.0, 6.0),
+            Some(NudgeResult::Moved)
+        );
+        r.end_frame();
+        let image = r.export_rgba(&full, size, scale).unwrap();
+        assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
+        assert!(!r.export_svg(&full, size, scale).unwrap().is_empty());
+        assert!(!r.export_pdf(&full, size, scale).unwrap().is_empty());
+        r.export_rgba(&dragged, size, scale).unwrap();
+    }
+}

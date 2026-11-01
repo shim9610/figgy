@@ -104,7 +104,7 @@ fn read_target(r: &Renderer, target: &wgpu::Texture, resolved: &wgpu::Texture) -
     );
     r.queue.submit([encoder.finish()]);
     readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let mapped = readback.slice(..).get_mapped_range().unwrap();
     let mut rgba = Vec::new();
     for bytes in mapped.chunks_exact(row as usize) {
@@ -258,7 +258,9 @@ fn pump_export(f: &mut Fixture, operation: StreamingOperation) {
                     .unwrap();
             }
             crate::AutoStreamingRangeRequest::Backpressure { .. }
-            | crate::AutoStreamingRangeRequest::AllSubmitted { .. } => f.renderer.wait_idle(),
+            | crate::AutoStreamingRangeRequest::AllSubmitted { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::Complete { .. } => return,
         }
     }

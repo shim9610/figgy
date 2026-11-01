@@ -12,11 +12,9 @@ use super::*;
 /// gamma-incorrect blend path pixel-for-pixel. Switching either side to an
 /// sRGB-aware format would break that parity (most visible at AA edges).
 ///
-/// Returns an error if the texture exceeds the cached device 2D texture limit.
-///
-/// # Panics
-/// If `rgba.len() != width * height * 4`; callers already own that CPU buffer
-/// and this remains an internal shape invariant rather than a hardware check.
+/// Returns an error if the texture exceeds the cached device 2D texture limit,
+/// or if `rgba.len() != width * height * 4` (a panel sized differently from
+/// the raster it is given, for example).
 pub fn upload_rgba_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -36,16 +34,15 @@ pub fn upload_rgba_texture(
             limit: max_texture_dimension_2d as u64,
         });
     }
-    let expected = (width as usize) * (height as usize) * 4;
-    assert_eq!(
-        rgba.len(),
-        expected,
-        "rgba buffer length mismatch: got {}, expected {} ({}x{} RGBA8)",
-        rgba.len(),
-        expected,
-        width,
-        height
-    );
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if expected != Some(rgba.len()) {
+        return Err(crate::FiggyError::InvalidConfig {
+            field: "rgba texture",
+            reason: "the RGBA8 buffer length is not width * height * 4",
+        });
+    }
 
     let size = wgpu::Extent3d {
         width,
@@ -63,14 +60,8 @@ pub fn upload_rgba_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     };
-    let texture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // gpu-alloc: caller
-        device.create_texture(&texture_desc)
-    }))
-    .map_err(|_| crate::FiggyError::GpuResourceAllocationFailed {
-        resource: "rgba texture",
-        reason: "wgpu Device::create_texture panicked".into(),
-    })?;
+    // gpu-alloc: caller
+    let texture = crate::renderer::create_texture_checked(device, &texture_desc, "rgba texture")?;
 
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {

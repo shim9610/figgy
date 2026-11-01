@@ -657,7 +657,12 @@ impl Config {
         if line_pos < lo || line_pos > hi {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
-        self.colorbar.as_mut().expect("colourbar").axis.line_offset = new_offset;
+        // Read above; a document without a colourbar rejects the nudge, the
+        // same answer the rule gives at its start.
+        let Some(bar) = self.colorbar.as_mut() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        bar.axis.line_offset = new_offset;
         NudgeResult::Moved
     }
 
@@ -728,14 +733,20 @@ impl Config {
             // beyond the base-panel expansion of a layered document).
             // Thickness and the outer-handle offset are one transaction: a
             // rejected resize must not leave the strip translated.
+            // The bar was read above; a document without one rejects the
+            // nudge, the same answer the rule gives at its start.
             {
-                let bar = self.colorbar.as_mut().expect("colourbar");
+                let Some(bar) = self.colorbar.as_mut() else {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                };
                 bar.thickness_px = new;
                 bar.offset_x = new_offset_x;
                 bar.offset_y = new_offset_y;
             }
             if self.data_area().is_err() {
-                let bar = self.colorbar.as_mut().expect("colourbar");
+                let Some(bar) = self.colorbar.as_mut() else {
+                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+                };
                 bar.thickness_px = old_thickness;
                 bar.offset_x = old_offset_x;
                 bar.offset_y = old_offset_y;
@@ -766,7 +777,10 @@ impl Config {
         if !(new > 0.0 && new <= 1.0) {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         }
-        self.colorbar.as_mut().expect("colourbar").length_frac = new;
+        let Some(bar) = self.colorbar.as_mut() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        bar.length_frac = new;
         NudgeResult::Moved
     }
 

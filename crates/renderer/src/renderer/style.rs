@@ -383,7 +383,7 @@ pub(super) fn category_bar_style_map(
     categories: &[crate::config::Category],
     bars: crate::data_config::CategoryBarsRef<'_>,
     scale: f32,
-) -> data_render::BarStyleMap {
+) -> Result<data_render::BarStyleMap> {
     const MASK_FILL: u32 = 1;
     const MASK_BORDER_COLOR: u32 = 2;
     const MASK_BORDER_WIDTH: u32 = 4;
@@ -445,7 +445,7 @@ pub(super) fn box_plot_style_map(
     categories: &[crate::config::Category],
     boxes: crate::data_config::BoxPlotRef<'_>,
     scale: f32,
-) -> data_render::BarStyleMap {
+) -> Result<data_render::BarStyleMap> {
     use data_render::{BOX_PLOT_PARTS, BarStyleOverrideGpu, BarStyleSlotGpu};
     let slots = box_plot_part_slots(boxes.style, scale);
     let capacity = boxes
@@ -522,7 +522,7 @@ pub(super) fn range_bar_style_map(
     layout: &wgpu::BindGroupLayout,
     bars: crate::data_config::RangeBarsRef<'_>,
     scale: f32,
-) -> data_render::BarStyleMap {
+) -> Result<data_render::BarStyleMap> {
     use crate::data_config::RangeColor;
     use data_render::{
         BAR_STYLE_MASK_FILL, BAR_STYLE_MASK_GAP, BAR_STYLE_MASK_WIDTH_RATIO, BarStyleSlotGpu,
@@ -596,7 +596,7 @@ pub(super) fn violin_style_map(
     boxes: crate::data_config::BoxPlotRef<'_>,
     violin: &crate::data_config::Violin,
     scale: f32,
-) -> data_render::BarStyleMap {
+) -> Result<data_render::BarStyleMap> {
     use data_render::{
         BAR_STYLE_MASK_BORDER_COLOR, BAR_STYLE_MASK_BORDER_WIDTH, BAR_STYLE_MASK_FILL,
         BarStyleOverrideGpu, BarStyleSlotGpu,
@@ -666,7 +666,7 @@ pub(super) fn box_points_style_map(
     layout: &wgpu::BindGroupLayout,
     points: &crate::data_config::BoxPoints,
     scale: f32,
-) -> data_render::BarStyleMap {
+) -> Result<data_render::BarStyleMap> {
     use crate::data_config::BoxOutlierShape;
     use data_render::{BAR_STYLE_MASK_FILL, BOX_POINTS_FILLED, BarStyleSlotGpu};
     let style = &points.style;
@@ -985,6 +985,7 @@ impl Renderer {
     /// or identity, recreate it before [`Self::prepare`]. That method does not
     /// update caller-owned styles. The registered-chart path manages its own cache.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
+        self.health.check()?;
         self.create_style_for_series_scaled(cfg, 1.0)
     }
 
@@ -996,6 +997,7 @@ impl Renderer {
         cfg: &SeriesConfig,
         scale: f32,
     ) -> Result<ChartStyle> {
+        self.health.check()?;
         self.create_style_for_series_scaled_inner(cfg, scale)
     }
 
@@ -1166,12 +1168,18 @@ impl Renderer {
         scatter.series_salt = series_salt;
         errorbar.series_salt = series_salt;
         bar.series_salt = series_salt;
-        let scatter_map = extract_scatter(render_type)
-            .and_then(|sc| self.create_scatter_style_map_for(&sc, scale));
-        let errorbar_map = extract_errorbar_style(render_type)
-            .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
-        let bar_map =
-            extract_bar(render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
+        let scatter_map = match extract_scatter(render_type) {
+            Some(sc) => self.create_scatter_style_map_for(&sc, scale)?,
+            None => None,
+        };
+        let errorbar_map = match extract_errorbar_style(render_type) {
+            Some(eb) => self.create_errorbar_style_map_for(eb, scale)?,
+            None => None,
+        };
+        let bar_map = match extract_bar(render_type) {
+            Some(bar) => self.create_bar_style_map_for(bar, scale)?,
+            None => None,
+        };
         Ok(self.create_style_from_primitives(
             line,
             area,
@@ -1331,7 +1339,7 @@ impl Renderer {
         &self,
         scatter: &DataScatterStyleConfig,
         scale: f32,
-    ) -> Option<data_render::ScatterStyleMap> {
+    ) -> Result<Option<data_render::ScatterStyleMap>> {
         use data_render::{STYLE_MASK_COLOR, STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 
         let has_index = scatter.point_style_index_column.is_some();
@@ -1377,9 +1385,9 @@ impl Renderer {
         // the per-point path even when no table or override exists.
         let has_value_map = scatter.point_color_map.is_some() || scatter.point_size_map.is_some();
         if !has_index && style_slots.is_empty() && overrides.is_empty() && !has_value_map {
-            return None;
+            return Ok(None);
         }
-        Some(data_render::create_scatter_style_map(
+        data_render::create_scatter_style_map(
             &self.device,
             &self.per_point_style_map_bgl,
             &style_slots,
@@ -1390,14 +1398,15 @@ impl Renderer {
                 has_index: u32::from(has_index),
                 _pad: 0,
             },
-        ))
+        )
+        .map(Some)
     }
 
     pub(super) fn create_errorbar_style_map_for(
         &self,
         errorbar: &DataErrorBarStyleConfig,
         scale: f32,
-    ) -> Option<data_render::ErrorBarStyleMap> {
+    ) -> Result<Option<data_render::ErrorBarStyleMap>> {
         const MASK_COLOR: u32 = 1;
         const MASK_STEM_WIDTH: u32 = 2;
         const MASK_CAP_HALF: u32 = 4;
@@ -1445,9 +1454,9 @@ impl Renderer {
             .collect();
 
         if !has_index && style_slots.is_empty() && overrides.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(data_render::create_errorbar_style_map(
+        data_render::create_errorbar_style_map(
             &self.device,
             &self.per_point_style_map_bgl,
             &style_slots,
@@ -1458,14 +1467,15 @@ impl Renderer {
                 has_index: u32::from(has_index),
                 _pad: 0,
             },
-        ))
+        )
+        .map(Some)
     }
 
     pub(super) fn create_bar_style_map_for(
         &self,
         bar: &DataBarStyleConfig,
         scale: f32,
-    ) -> Option<data_render::BarStyleMap> {
+    ) -> Result<Option<data_render::BarStyleMap>> {
         let overrides: Vec<data_render::BarStyleOverrideGpu> = bar
             .bar_style_overrides
             .as_deref()
@@ -1486,12 +1496,9 @@ impl Renderer {
             })
             .collect();
         if overrides.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(data_render::create_bar_style_map(
-            &self.device,
-            &self.per_point_style_map_bgl,
-            &overrides,
-        ))
+        data_render::create_bar_style_map(&self.device, &self.per_point_style_map_bgl, &overrides)
+            .map(Some)
     }
 }
