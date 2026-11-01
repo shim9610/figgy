@@ -157,9 +157,10 @@ impl FiggyChart {
     /// Each series contributes its exact original GPU primitive domain:
     /// valid adjacent segments for line-only mode, paired finite points
     /// for point-bearing modes, and enabled error endpoints. The reduction
-    /// is compiled on first fit (`createComputePipelineAsync` on wasm)
-    /// and cached by the normalized mode plus role-specific column
-    /// revisions. Matrix-backed series use the same engine to return the
+    /// is compiled on first fit (`createComputePipelineAsync` on wasm),
+    /// and the renderer reuses a series' extent while its columns are
+    /// unchanged (`begin_auto_fit_all`). Matrix-backed series use the same
+    /// engine to return the
     /// exact cell/sample-lattice bounds; only histograms remain a metadata
     /// union because their uploaded edge column already is their geometry.
     /// Series registration itself does not submit GPU work.
@@ -168,165 +169,23 @@ impl FiggyChart {
             self.request_host_redraw();
             return Ok(());
         }
-        // A ternary chart's axes span the whole triangle, not a data extent.
-        let ternary = {
-            let config = self.chart_config()?;
-            match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
-                renderer::LayerRef::Subplot(index)
-                | renderer::LayerRef::SubplotOverlay(index, _) => config
-                    .subplots
-                    .get(index)
-                    .is_some_and(|subplot| subplot.config.ternary.is_some()),
-                _ => config.ternary.is_some(),
+        let ticket = match self.renderer.begin_auto_fit_all(self.chart_id, padding) {
+            Err(renderer::GpuErrorbarError::EngineNotReady) => {
+                // The first fit that needs a reduction compiles the engine.
+                self.renderer
+                    .ensure_errorbar_extent_engine()
+                    .await
+                    .map_err(js_err)?;
+                self.renderer
+                    .begin_auto_fit_all(self.chart_id, padding)
+                    .map_err(js_err)?
             }
+            ticket => ticket.map_err(js_err)?,
         };
-        if ternary {
-            return Ok(());
-        }
-        // A parallel chart fits each axis to its columns' statistics (#141).
-        if self.chart_config()?.parallel.is_some() {
-            let series = self.chart_series()?.to_vec();
-            let mut chart = Chart::new(self.chart_config()?.clone());
-            chart
-                .auto_fit_parallel_axes(self.renderer.pool(), &series, padding)
-                .map_err(js_err)?;
-            self.replace_chart_config(chart.config().clone())?;
-            self.request_host_redraw();
-            return Ok(());
-        }
-        let series = self.chart_series()?.to_vec();
-        if series
-            .iter()
-            .any(|cfg| series_extent_mode(&cfg.render_type).is_some())
-        {
-            self.renderer
-                .ensure_errorbar_extent_engine()
-                .await
-                .map_err(js_err)?;
-        }
-        // The annotation layer draws on the base axes.
-        let layer = match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
-            renderer::LayerRef::Annotations => renderer::LayerRef::Base,
-            layer => layer,
-        };
-        let token = self
-            .renderer
-            .begin_fit_commit(self.chart_id)
+        let resolved = ticket.resolve().await.map_err(js_err)?;
+        self.renderer
+            .commit_auto_fit_all(resolved)
             .map_err(js_err)?;
-        let prepared = self.prepare_series_extent_cache(&series, &self.column_revisions, true)?;
-        // The cache keeps every series' extent job; only the series drawn
-        // against the fitted axes take part in this fit.
-        let config = self.chart_config()?;
-        let mut jobs = Vec::new();
-        jobs.try_reserve(series.len()).map_err(js_err)?;
-        jobs.extend(series.iter().filter_map(|cfg| {
-            let (x, y) = config.series_fit_roles(layer, &cfg.series_id);
-            if !(x || y) {
-                return None;
-            }
-            let request = crate::series_extent_request_from(&self.column_revisions, cfg)?;
-            Some((
-                prepared.extents.get(&request.key).cloned()?,
-                cfg.series_id.as_str(),
-                x,
-                y,
-            ))
-        }));
-        self.publish_series_extent_cache(prepared);
-
-        let mut x_ext = FitExtent::EMPTY;
-        let mut y_ext = FitExtent::EMPTY;
-        for (job, series_id, x, y) in jobs {
-            let extent = job.wait().await.map_err(js_err)?;
-            if let Some(extent) = extent {
-                // A line offset member fits where it is drawn.
-                let (extent_x, extent_y) = Chart::line_offset_fit_extents(
-                    self.chart_config()?,
-                    series_id,
-                    extent.x,
-                    extent.y,
-                );
-                if x {
-                    x_ext.union(&extent_x);
-                }
-                if y {
-                    y_ext.union(&extent_y);
-                }
-            }
-        }
-        let scalar_extent = |value: f64| FitExtent {
-            min: value,
-            max: value,
-            min_positive: (value > 0.0).then_some(value),
-        };
-        for cfg in &series {
-            let (x, y) = self.chart_config()?.series_fit_roles(layer, &cfg.series_id);
-            match &cfg.render_type {
-                DataRenderType::Histogram { bar } if x || y => {
-                    let (edge_column, count_column) =
-                        crate::histogram_fit_columns(cfg, &bar.orientation);
-                    let edge =
-                        Chart::slot_extent(self.renderer.pool(), edge_column).map_err(js_err)?;
-                    let mut count =
-                        Chart::slot_extent(self.renderer.pool(), count_column).map_err(js_err)?;
-                    count.union(&scalar_extent(bar.baseline));
-                    let (x_part, y_part) = if matches!(
-                        &bar.orientation,
-                        renderer::data_config::BarOrientation::Vertical
-                    ) {
-                        (edge, count)
-                    } else {
-                        (count, edge)
-                    };
-                    if x {
-                        x_ext.union(&x_part);
-                    }
-                    if y {
-                        y_ext.union(&y_part);
-                    }
-                }
-                _ => {}
-            }
-        }
-        if layer == renderer::LayerRef::Base {
-            self.renderer
-                .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
-                .map_err(js_err)?;
-        } else {
-            // The same staleness rule as the base commit: a range, scale,
-            // geometry or column change during the wait rejects the fit.
-            if self
-                .renderer
-                .begin_fit_commit(self.chart_id)
-                .map_err(js_err)?
-                != token
-            {
-                return Err(js_err(
-                    "axis range/scale, ordered fit geometry, or source column content changed",
-                ));
-            }
-            let mut chart = Chart::new(self.chart_config()?.clone());
-            chart.auto_fit_layer_extent(layer, &x_ext, &y_ext, padding);
-            self.replace_chart_config(chart.config().clone())?;
-        }
-        // A 3D chart's z axis fits to its height columns' statistics.
-        let config = self.chart_config()?;
-        let three_d = match layer {
-            renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
-                config
-                    .subplots
-                    .get(index)
-                    .is_some_and(|subplot| subplot.config.view_3d.is_some())
-            }
-            _ => config.view_3d.is_some(),
-        };
-        if three_d {
-            let mut chart = Chart::new(config.clone());
-            chart
-                .auto_fit_view_3d_z(self.renderer.pool(), layer, &series, padding)
-                .map_err(js_err)?;
-            self.replace_chart_config(chart.config().clone())?;
-        }
         self.request_host_redraw();
         Ok(())
     }

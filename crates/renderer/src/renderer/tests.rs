@@ -15034,3 +15034,192 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
         "a bar whose row does not paint picked"
     );
 }
+
+/// A whole-chart fit runs a reduction for every fitted series the first time,
+/// fits the axes to the union, and the next fit over unchanged columns reuses
+/// every extent instead of submitting again (#160).
+#[test]
+fn whole_chart_auto_fit_fits_the_union_and_reuses_unchanged_extents() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .add_column("ax", &col_f64(vec![0.0, 1.0, 2.0]))
+        .unwrap();
+    renderer
+        .add_column("ay", &col_f64(vec![5.0, 6.0, 7.0]))
+        .unwrap();
+    renderer
+        .add_column("bx", &col_f64(vec![-4.0, 3.0]))
+        .unwrap();
+    renderer.add_column("by", &col_f64(vec![1.0, 9.0])).unwrap();
+    let chart = renderer
+        .register_chart(
+            crate::default::default_config(),
+            vec![
+                state_test_line("a", "ax", "ay"),
+                state_test_line("b", "bx", "by"),
+            ],
+        )
+        .unwrap();
+    assert!(matches!(
+        renderer.begin_auto_fit_all(chart, 0.0),
+        Err(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
+    ));
+    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+
+    let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    assert!(
+        ticket
+            .series
+            .iter()
+            .all(|job| matches!(job.extent, fit::AutoFitSeriesExtent::Pending(_))),
+        "the first fit reduces every series"
+    );
+    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    renderer.commit_auto_fit_all(resolved).unwrap();
+    let config = renderer.chart_config(chart).unwrap();
+    assert_eq!((config.bottom_x.min, config.bottom_x.max), (-4.0, 3.0));
+    assert_eq!((config.left_y.min, config.left_y.max), (1.0, 9.0));
+
+    let again = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    assert_eq!(again.series.len(), 2);
+    assert!(
+        again
+            .series
+            .iter()
+            .all(|job| matches!(job.extent, fit::AutoFitSeriesExtent::Known(Some(_)))),
+        "unchanged columns reuse the committed extents"
+    );
+
+    // Replacing one column reduces that series again and keeps the other.
+    renderer
+        .upsert_column("by", &col_f64(vec![1.0, 20.0]))
+        .unwrap();
+    let changed = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    let pending: Vec<bool> = changed
+        .series
+        .iter()
+        .map(|job| matches!(job.extent, fit::AutoFitSeriesExtent::Pending(_)))
+        .collect();
+    assert_eq!(pending, [false, true]);
+    let resolved = pollster::block_on(changed.resolve()).unwrap();
+    renderer.commit_auto_fit_all(resolved).unwrap();
+    assert_eq!(renderer.chart_config(chart).unwrap().left_y.max, 20.0);
+}
+
+/// A fit whose columns change while it resolves is refused, and leaves the
+/// axes and the extent cache as they were.
+#[test]
+fn whole_chart_auto_fit_refuses_a_stale_resolution() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
+    renderer.add_column("y", &col_f64(vec![0.0, 1.0])).unwrap();
+    let chart = renderer
+        .register_chart(
+            crate::default::default_config(),
+            vec![state_test_line("s", "x", "y")],
+        )
+        .unwrap();
+    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    let before = renderer.chart_config(chart).unwrap().clone();
+    let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    renderer
+        .upsert_column("y", &col_f64(vec![0.0, 5.0]))
+        .unwrap();
+    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    assert!(matches!(
+        renderer.commit_auto_fit_all(resolved),
+        Err(FiggyError::StaleStateToken { .. })
+    ));
+    assert_eq!(
+        renderer.chart_config(chart).unwrap().bottom_x,
+        before.bottom_x
+    );
+    assert_eq!(renderer.chart_config(chart).unwrap().left_y, before.left_y);
+    assert!(renderer.chart_states[&chart].fit_extents.is_empty());
+}
+
+/// A histogram fits from its columns' statistics, with no reduction: the
+/// edges along the bars' run and the counts, with the baseline, along their
+/// length.
+#[test]
+fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .add_column("edges", &col_f64(vec![0.0, 1.0, 2.0]))
+        .unwrap();
+    renderer
+        .add_column("counts", &col_f64(vec![5.0, 8.0]))
+        .unwrap();
+    let mut series = state_test_line("hist", "edges", "counts");
+    series.render_type = DataRenderType::Histogram {
+        bar: crate::data_config::DataBarStyleConfig {
+            fill_color: Color::BLACK,
+            border_color: Color::BLACK,
+            border_width: 1.0,
+            baseline: 0.0,
+            gap_px: 2.0,
+            width_ratio: 1.0,
+            orientation: crate::data_config::BarOrientation::Vertical,
+            bar_style_overrides: None,
+        },
+    };
+    assert_eq!(
+        fit::histogram_fit_columns(&series, &crate::data_config::BarOrientation::Vertical),
+        ("edges", "counts")
+    );
+    assert_eq!(
+        fit::histogram_fit_columns(&series, &crate::data_config::BarOrientation::Horizontal),
+        ("counts", "edges")
+    );
+    let chart = renderer
+        .register_chart(crate::default::default_config(), vec![series])
+        .unwrap();
+    // No engine: a histogram needs none.
+    let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    assert!(ticket.series.is_empty());
+    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    renderer.commit_auto_fit_all(resolved).unwrap();
+    let config = renderer.chart_config(chart).unwrap();
+    assert_eq!((config.bottom_x.min, config.bottom_x.max), (0.0, 2.0));
+    assert_eq!((config.left_y.min, config.left_y.max), (0.0, 8.0));
+}
+
+/// Rule 10: a whole-chart fit over more series than any fixed table holds
+/// fits every one of them.
+#[test]
+fn whole_chart_auto_fit_takes_every_series() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    const SERIES: usize = 1100;
+    let mut series = Vec::new();
+    for i in 0..SERIES {
+        let (x, y) = (format!("x{i}"), format!("y{i}"));
+        renderer
+            .add_column(x.as_str(), &col_f64(vec![i as f64, i as f64 + 1.0]))
+            .unwrap();
+        renderer
+            .add_column(y.as_str(), &col_f64(vec![0.0, 1.0]))
+            .unwrap();
+        series.push(state_test_line(&format!("s{i}"), &x, &y));
+    }
+    let chart = renderer
+        .register_chart(crate::default::default_config(), series)
+        .unwrap();
+    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+    assert_eq!(ticket.series.len(), SERIES);
+    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    renderer.commit_auto_fit_all(resolved).unwrap();
+    let config = renderer.chart_config(chart).unwrap();
+    assert_eq!(
+        (config.bottom_x.min, config.bottom_x.max),
+        (0.0, SERIES as f64)
+    );
+}

@@ -679,13 +679,10 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn commit_auto_fit_all_if_current(
-        &mut self,
-        token: &FitCommitToken,
-        x_extent: &crate::chart::FitExtent,
-        y_extent: &crate::chart::FitExtent,
-        padding: f64,
-    ) -> Result<()> {
+    /// Refuse a fit token that no longer describes its chart: another
+    /// renderer's, a removed chart's, or one whose ranges, fit geometry or
+    /// source columns changed since it was taken.
+    fn require_current_fit(&self, token: &FitCommitToken) -> Result<()> {
         if token.renderer_identity != self.renderer_identity
             || !self.chart_states.contains_key(&token.chart_id)
         {
@@ -710,6 +707,17 @@ impl Renderer {
                     .to_string(),
             });
         }
+        Ok(())
+    }
+
+    pub fn commit_auto_fit_all_if_current(
+        &mut self,
+        token: &FitCommitToken,
+        x_extent: &crate::chart::FitExtent,
+        y_extent: &crate::chart::FitExtent,
+        padding: f64,
+    ) -> Result<()> {
+        self.require_current_fit(token)?;
 
         let state = self
             .chart_states
@@ -865,5 +873,306 @@ impl Renderer {
             &self.pool,
             series,
         )
+    }
+}
+
+/// What a whole-chart auto-fit does with the active layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AutoFitAllKind {
+    /// A ternary layer: its axes span the triangle, not a data extent.
+    Skip,
+    /// A parallel chart: each axis fits its columns' statistics (#141).
+    Parallel,
+    /// Every other layer: the union of its series' drawn extents.
+    Extents,
+}
+
+/// One series' extent for a whole-chart fit.
+pub(super) enum AutoFitSeriesExtent {
+    /// A reduction submitted for this fit.
+    Pending(crate::gpu_errorbar::GpuSeriesExtentTicket),
+    /// The extent the last committed fit found for the same stamp.
+    Known(Option<crate::gpu_errorbar::GpuSeriesExtent>),
+}
+
+pub(super) struct AutoFitSeries {
+    pub(super) stamp: FitSeriesStamp,
+    pub(super) x: bool,
+    pub(super) y: bool,
+    pub(super) extent: AutoFitSeriesExtent,
+}
+
+/// A whole-chart auto-fit in flight. [`Renderer::begin_auto_fit_all`] takes
+/// it; [`Self::resolve`] waits for its reductions without borrowing the
+/// renderer; [`Renderer::commit_auto_fit_all`] applies it, unless the chart
+/// changed in between.
+pub struct AutoFitAllTicket {
+    token: FitCommitToken,
+    layer: crate::LayerRef,
+    padding: f64,
+    kind: AutoFitAllKind,
+    /// One entry per series the fitted layer draws (#160).
+    pub(super) series: Vec<AutoFitSeries>,
+}
+
+/// A whole-chart auto-fit whose reductions have completed, ready for
+/// [`Renderer::commit_auto_fit_all`].
+pub struct ResolvedAutoFitAll {
+    token: FitCommitToken,
+    layer: crate::LayerRef,
+    padding: f64,
+    kind: AutoFitAllKind,
+    /// One entry per series the fitted layer draws, with its extent.
+    series: Vec<(
+        FitSeriesStamp,
+        bool,
+        bool,
+        Option<crate::gpu_errorbar::GpuSeriesExtent>,
+    )>,
+}
+
+impl AutoFitAllTicket {
+    /// Wait for every reduction this fit submitted.
+    pub async fn resolve(
+        self,
+    ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_errorbar::GpuErrorbarError> {
+        let mut series = Vec::new();
+        series.try_reserve(self.series.len()).map_err(|error| {
+            crate::gpu_errorbar::GpuErrorbarError::from_figgy(FiggyError::StateAllocationFailed {
+                resource: "auto-fit series extents",
+                reason: error.to_string(),
+            })
+        })?;
+        for job in self.series {
+            let extent = match job.extent {
+                AutoFitSeriesExtent::Pending(ticket) => ticket.resolve().await?,
+                AutoFitSeriesExtent::Known(extent) => extent,
+            };
+            series.push((job.stamp, job.x, job.y, extent));
+        }
+        Ok(ResolvedAutoFitAll {
+            token: self.token,
+            layer: self.layer,
+            padding: self.padding,
+            kind: self.kind,
+            series,
+        })
+    }
+}
+
+fn fit_extent_of(extent: crate::gpu_errorbar::GpuErrorbarExtent) -> crate::chart::FitExtent {
+    crate::chart::FitExtent {
+        min: extent.min,
+        max: extent.max,
+        min_positive: extent.min_positive,
+    }
+}
+
+/// The columns a histogram's fit reads, as (edges, counts): the edge column
+/// lies along the bars' run, the count column along their length.
+pub(super) fn histogram_fit_columns<'a>(
+    series: &'a SeriesConfig,
+    orientation: &crate::data_config::BarOrientation,
+) -> (&'a str, &'a str) {
+    if matches!(orientation, crate::data_config::BarOrientation::Vertical) {
+        (&series.x_column, &series.y_column)
+    } else {
+        (&series.y_column, &series.x_column)
+    }
+}
+
+/// The config a layer's axes live in: the chart's, or a subplot cell's.
+fn layer_config(config: &Config, layer: crate::LayerRef) -> Option<&Config> {
+    match layer {
+        crate::LayerRef::Subplot(index) | crate::LayerRef::SubplotOverlay(index, _) => {
+            config.subplots.get(index).map(|subplot| &subplot.config)
+        }
+        _ => Some(config),
+    }
+}
+
+impl Renderer {
+    /// Begin fitting the active layer's axes to the data it draws: a ternary
+    /// layer is left as it is, a parallel chart fits each axis to its columns,
+    /// and every other layer fits its x and y axes to the union of its series'
+    /// drawn extents (histograms from their columns' statistics, everything
+    /// else from a GPU reduction, reused when the series' columns are
+    /// unchanged since the last fit), and a 3D layer's z axis to its height
+    /// columns. The annotation layer fits the base axes.
+    ///
+    /// The ticket owns its reductions and does not borrow the renderer; await
+    /// [`AutoFitAllTicket::resolve`] and pass the result to
+    /// [`Self::commit_auto_fit_all`]. A series that needs a reduction requires
+    /// the extent engine: await [`Self::ensure_errorbar_extent_engine`] first.
+    /// A streamed source is refused with `ColumnNotResident`.
+    pub fn begin_auto_fit_all(
+        &self,
+        id: ChartId,
+        padding: f64,
+    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
+        use crate::gpu_errorbar::GpuErrorbarError;
+        if !padding.is_finite() || padding < 0.0 {
+            return Err(GpuErrorbarError::from_figgy(FiggyError::InvalidConfig {
+                field: "auto-fit padding",
+                reason: "padding must be finite and non-negative",
+            }));
+        }
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })
+            .map_err(GpuErrorbarError::from_figgy)?;
+        let layer = match self
+            .active_layer(id)
+            .map_err(GpuErrorbarError::from_figgy)?
+        {
+            crate::LayerRef::Annotations => crate::LayerRef::Base,
+            layer => layer,
+        };
+        let token = build_fit_token_from_state(
+            &self.pool,
+            &self.streaming_sources,
+            self.renderer_identity,
+            id,
+            state,
+        )
+        .map_err(GpuErrorbarError::from_figgy)?;
+        let kind = if layer_config(&state.config, layer).is_some_and(|c| c.ternary.is_some()) {
+            AutoFitAllKind::Skip
+        } else if state.config.parallel.is_some() {
+            AutoFitAllKind::Parallel
+        } else {
+            AutoFitAllKind::Extents
+        };
+        let mut series = Vec::new();
+        if kind == AutoFitAllKind::Extents {
+            series.try_reserve(state.series.len()).map_err(|error| {
+                GpuErrorbarError::from_figgy(FiggyError::StateAllocationFailed {
+                    resource: "auto-fit series extents",
+                    reason: error.to_string(),
+                })
+            })?;
+            for (item, stamp) in state.series.iter().zip(&token.series) {
+                let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                // A histogram fits from its columns' statistics at commit.
+                if !(x || y) || stamp.mode.is_none() {
+                    continue;
+                }
+                let extent = match state.fit_extents.get(stamp) {
+                    Some(known) => AutoFitSeriesExtent::Known(*known),
+                    None => match self.begin_series_fit_extent(item)? {
+                        Some(ticket) => AutoFitSeriesExtent::Pending(ticket),
+                        None => AutoFitSeriesExtent::Known(None),
+                    },
+                };
+                series.push(AutoFitSeries {
+                    stamp: stamp.clone(),
+                    x,
+                    y,
+                    extent,
+                });
+            }
+        }
+        Ok(AutoFitAllTicket {
+            token,
+            layer,
+            padding,
+            kind,
+            series,
+        })
+    }
+
+    /// Apply a resolved whole-chart auto-fit, unless an axis range or scale,
+    /// the fit geometry or a source column changed since it began
+    /// (`StaleStateToken`). Remembers each series' extent for the next fit.
+    pub fn commit_auto_fit_all(&mut self, resolved: ResolvedAutoFitAll) -> Result<()> {
+        self.require_current_fit(&resolved.token)?;
+        let id = resolved.token.chart_id;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let padding = resolved.padding;
+        let mut chart = crate::chart::Chart::new(state.config.clone());
+        match resolved.kind {
+            AutoFitAllKind::Skip => return Ok(()),
+            AutoFitAllKind::Parallel => {
+                chart.auto_fit_parallel_axes(&self.pool, &state.series, padding)?;
+            }
+            AutoFitAllKind::Extents => {
+                let layer = resolved.layer;
+                let mut x_extent = crate::chart::FitExtent::EMPTY;
+                let mut y_extent = crate::chart::FitExtent::EMPTY;
+                for (stamp, x, y, extent) in &resolved.series {
+                    let Some(extent) = extent else {
+                        continue;
+                    };
+                    // A line offset member fits where it is drawn.
+                    let (x_part, y_part) = crate::chart::Chart::line_offset_fit_extents(
+                        &state.config,
+                        &stamp.series_id,
+                        fit_extent_of(extent.x),
+                        fit_extent_of(extent.y),
+                    );
+                    if *x {
+                        x_extent.union(&x_part);
+                    }
+                    if *y {
+                        y_extent.union(&y_part);
+                    }
+                }
+                for item in &state.series {
+                    let DataRenderType::Histogram { bar } = &item.render_type else {
+                        continue;
+                    };
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    if !(x || y) {
+                        continue;
+                    }
+                    let (edge_column, count_column) = histogram_fit_columns(item, &bar.orientation);
+                    let edge = crate::chart::Chart::slot_extent(&self.pool, edge_column)?;
+                    let mut count = crate::chart::Chart::slot_extent(&self.pool, count_column)?;
+                    count.union(&crate::chart::FitExtent {
+                        min: bar.baseline,
+                        max: bar.baseline,
+                        min_positive: (bar.baseline > 0.0).then_some(bar.baseline),
+                    });
+                    let (x_part, y_part) = match &bar.orientation {
+                        crate::data_config::BarOrientation::Vertical => (edge, count),
+                        crate::data_config::BarOrientation::Horizontal => (count, edge),
+                    };
+                    if x {
+                        x_extent.union(&x_part);
+                    }
+                    if y {
+                        y_extent.union(&y_part);
+                    }
+                }
+                chart.auto_fit_layer_extent(layer, &x_extent, &y_extent, padding);
+                if layer_config(chart.config(), layer).is_some_and(|c| c.view_3d.is_some()) {
+                    chart.auto_fit_view_3d_z(&self.pool, layer, &state.series, padding)?;
+                }
+            }
+        }
+        let mut fit_extents = HashMap::new();
+        fit_extents
+            .try_reserve(resolved.series.len())
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "auto-fit extent cache",
+                reason: error.to_string(),
+            })?;
+        fit_extents.extend(
+            resolved
+                .series
+                .into_iter()
+                .map(|(stamp, _, _, extent)| (stamp, extent)),
+        );
+        self.set_chart_config(id, chart.config().clone())?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        state.fit_extents = fit_extents;
+        Ok(())
     }
 }

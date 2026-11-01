@@ -25,8 +25,6 @@
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod borrowed_column;
-#[cfg(any(target_arch = "wasm32", test))]
-mod scalar_job;
 
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,101 +200,6 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct RevisionedColumn {
-    id: String,
-    revision: u64,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-/// `None` only for metadata-backed histogram fitting. Paired primitives and
-/// matrix fields both produce a GPU request, with distinct normalized modes.
-fn series_extent_mode(
-    render_type: &renderer::DataRenderType,
-) -> Option<renderer::GpuSeriesFitMode> {
-    renderer::GpuSeriesFitMode::from_render_type(render_type)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum ErrorRefKind {
-    Symmetric,
-    Asymmetric,
-}
-
-/// Revision identity for one active error direction. The explicit kind keeps a
-/// symmetric ref distinct from an asymmetric ref even when both name the same
-/// physical column in both roles.
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ErrorDirectionKey {
-    kind: ErrorRefKind,
-    lower: RevisionedColumn,
-    upper: RevisionedColumn,
-}
-
-/// GPU fit-bound identity for one drawable series domain.
-///
-/// Inactive error directions are `None`; the renderer's internal filler
-/// binding is deliberately excluded from this data identity.
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct SeriesExtentKey {
-    mode: renderer::GpuSeriesFitMode,
-    x: RevisionedColumn,
-    y: RevisionedColumn,
-    x_error: Option<ErrorDirectionKey>,
-    y_error: Option<ErrorDirectionKey>,
-    /// Matrix value columns affect the usable grid dimensions even though the
-    /// fit reads only x/y coordinate values. Their ordered revisions therefore
-    /// belong to the job identity.
-    matrix: Vec<RevisionedColumn>,
-    /// Orientation decides which resolved matrix dimension belongs to x/y.
-    /// It is independent of the cell/sample lattice encoded by `mode`.
-    field_orientation: Option<u8>,
-    /// A hexagonal grid fits in the centres-cells mode plus its hexagons'
-    /// overhang (#134), so the layout is part of the identity beyond `mode`.
-    field_hexagonal: bool,
-    /// A `Data`-scaled point vector's tips are `anchor + factor * (u, v)`,
-    /// so the factor is part of the extent's identity; bits, so the key
-    /// stays `Eq`.
-    vector_factor_bits: Option<u64>,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Clone, Debug, PartialEq)]
-struct SeriesExtentRequest {
-    key: SeriesExtentKey,
-    series: renderer::SeriesConfig,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-type SeriesExtentJobMap =
-    std::collections::HashMap<SeriesExtentKey, std::rc::Rc<crate::scalar_job::SeriesExtentJob>>;
-
-#[cfg(any(target_arch = "wasm32", test))]
-type SeriesExtentJobSelection = (SeriesExtentJobMap, Vec<SeriesExtentRequest>);
-
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Debug)]
-enum SeriesExtentRequestError {
-    Allocation(std::collections::TryReserveError),
-    MissingLiveRevision,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-impl std::fmt::Display for SeriesExtentRequestError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Allocation(error) => write!(formatter, "{error}"),
-            Self::MissingLiveRevision => {
-                formatter.write_str("series references a column without a live revision")
-            }
-        }
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
 fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
     next.checked_add(1)
         .map(|successor| (next, successor))
@@ -305,324 +208,6 @@ fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
 
 #[cfg(any(target_arch = "wasm32", test))]
 const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn err_refs(
-    rt: &renderer::DataRenderType,
-) -> (
-    Option<&renderer::data_config::ErrorRef>,
-    Option<&renderer::data_config::ErrorRef>,
-) {
-    use renderer::DataRenderType;
-
-    match rt {
-        DataRenderType::Scatter { .. }
-        | DataRenderType::Line { .. }
-        | DataRenderType::ScatterLine { .. } => (None, None),
-        DataRenderType::ScatterErrorbarX { err_x, .. }
-        | DataRenderType::LineScatterErrorbarX { err_x, .. } => (Some(err_x), None),
-        DataRenderType::ScatterErrorbarY { err_y, .. }
-        | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
-        DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
-        | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => (Some(err_x), Some(err_y)),
-        // Bars, fields, vectors, radar polygons and streamlines carry no
-        // error columns.
-        DataRenderType::Histogram { .. }
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
-        | DataRenderType::Heatmap { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => (None, None),
-    }
-}
-
-/// (lower, upper) error column ids of one ref. Symmetric refs use one column.
-#[cfg(any(target_arch = "wasm32", test))]
-fn err_cols(errors: &renderer::data_config::ErrorRef) -> (&str, &str) {
-    use renderer::data_config::ErrorRef;
-
-    match errors {
-        ErrorRef::Symmetric { column } => (column, column),
-        ErrorRef::Asymmetric { lower, upper } => (lower, upper),
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn histogram_fit_columns<'a>(
-    cfg: &'a renderer::SeriesConfig,
-    orientation: &renderer::data_config::BarOrientation,
-) -> (&'a str, &'a str) {
-    if matches!(orientation, renderer::data_config::BarOrientation::Vertical) {
-        (&cfg.x_column, &cfg.y_column)
-    } else {
-        (&cfg.y_column, &cfg.x_column)
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn revisioned_column_from(
-    revisions: &std::collections::HashMap<String, u64>,
-    id: &str,
-) -> Option<RevisionedColumn> {
-    Some(RevisionedColumn {
-        id: id.to_string(),
-        revision: *revisions.get(id)?,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn error_direction_key_from(
-    revisions: &std::collections::HashMap<String, u64>,
-    errors: &renderer::data_config::ErrorRef,
-) -> Option<ErrorDirectionKey> {
-    use renderer::data_config::ErrorRef;
-
-    let (lower_id, upper_id) = err_cols(errors);
-    Some(ErrorDirectionKey {
-        kind: match errors {
-            ErrorRef::Symmetric { .. } => ErrorRefKind::Symmetric,
-            ErrorRef::Asymmetric { .. } => ErrorRefKind::Asymmetric,
-        },
-        lower: revisioned_column_from(revisions, lower_id)?,
-        upper: revisioned_column_from(revisions, upper_id)?,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn series_extent_request_from(
-    revisions: &std::collections::HashMap<String, u64>,
-    cfg: &renderer::SeriesConfig,
-) -> Option<SeriesExtentRequest> {
-    let (err_x, err_y) = err_refs(&cfg.render_type);
-    let x_error = err_x.and_then(|errors| error_direction_key_from(revisions, errors));
-    let y_error = err_y.and_then(|errors| error_direction_key_from(revisions, errors));
-    if err_x.is_some() != x_error.is_some() || err_y.is_some() != y_error.is_some() {
-        return None;
-    }
-
-    let (matrix, field_orientation) = match &cfg.render_type {
-        // An image's identity holds its three grids; its lattice is the
-        // red grid's, which the others match.
-        renderer::DataRenderType::RgbImage {
-            red, green, blue, ..
-        } => (
-            red.columns
-                .iter()
-                .chain(&green.columns)
-                .chain(&blue.columns)
-                .map(|id| revisioned_column_from(revisions, id))
-                .collect::<Option<Vec<_>>>()?,
-            Some(match &red.orientation {
-                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
-                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
-            }),
-        ),
-        renderer::DataRenderType::Heatmap { matrix, .. }
-        | renderer::DataRenderType::Contour { matrix, .. }
-        | renderer::DataRenderType::HeatmapContour { matrix, .. } => (
-            matrix
-                .columns
-                .iter()
-                .map(|id| revisioned_column_from(revisions, id))
-                .collect::<Option<Vec<_>>>()?,
-            Some(match &matrix.orientation {
-                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
-                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
-            }),
-        ),
-        // A grid vector fits its `u` grid's lattice; a Data-scaled point
-        // vector's tips depend on its u / v columns, which therefore join the
-        // identity in the matrix slot.
-        renderer::DataRenderType::Vector {
-            components: renderer::data_config::VectorComponents::Grid { u, .. },
-            ..
-        } => (
-            u.columns
-                .iter()
-                .map(|id| revisioned_column_from(revisions, id))
-                .collect::<Option<Vec<_>>>()?,
-            Some(match &u.orientation {
-                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
-                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
-            }),
-        ),
-        renderer::DataRenderType::Vector {
-            components: renderer::data_config::VectorComponents::Points { u, v },
-            style,
-        } => (
-            match style.scale {
-                renderer::data_config::VectorScale::Data { .. } => [u, v]
-                    .into_iter()
-                    .map(|id| revisioned_column_from(revisions, id))
-                    .collect::<Option<Vec<_>>>()?,
-                renderer::data_config::VectorScale::Pixels { .. } => Vec::new(),
-            },
-            None,
-        ),
-        renderer::DataRenderType::Scatter { .. }
-        | renderer::DataRenderType::Line { .. }
-        | renderer::DataRenderType::ScatterLine { .. }
-        | renderer::DataRenderType::ScatterErrorbarX { .. }
-        | renderer::DataRenderType::ScatterErrorbarY { .. }
-        | renderer::DataRenderType::ScatterErrorbarXY { .. }
-        | renderer::DataRenderType::LineScatterErrorbarX { .. }
-        | renderer::DataRenderType::LineScatterErrorbarY { .. }
-        | renderer::DataRenderType::LineScatterErrorbarXY { .. }
-        | renderer::DataRenderType::Histogram { .. }
-        | renderer::DataRenderType::CategoryBars { .. }
-        | renderer::DataRenderType::BoxPlot { .. }
-        | renderer::DataRenderType::RangeBars { .. }
-        | renderer::DataRenderType::Radar { .. }
-        // A ternary chart's axes are the triangle: the fit reads no column.
-        | renderer::DataRenderType::Ternary { .. }
-        // A parallel chart's axes fit from their columns' statistics
-        // (`Chart::auto_fit_parallel_axes`), not from this reducer.
-        | renderer::DataRenderType::Parallel { .. }
-        | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
-    };
-    let field_hexagonal = match &cfg.render_type {
-        renderer::DataRenderType::Heatmap { matrix, .. }
-        | renderer::DataRenderType::Contour { matrix, .. }
-        | renderer::DataRenderType::HeatmapContour { matrix, .. } => {
-            matrix.grid_layout == renderer::data_config::GridLayout::Hexagonal
-        }
-        renderer::DataRenderType::RgbImage { red, .. } => {
-            red.grid_layout == renderer::data_config::GridLayout::Hexagonal
-        }
-        renderer::DataRenderType::Vector {
-            components: renderer::data_config::VectorComponents::Grid { u, .. },
-            ..
-        } => u.grid_layout == renderer::data_config::GridLayout::Hexagonal,
-        _ => false,
-    };
-    let vector_factor_bits = match &cfg.render_type {
-        renderer::DataRenderType::Vector {
-            components: renderer::data_config::VectorComponents::Points { .. },
-            style,
-        } => match style.scale {
-            renderer::data_config::VectorScale::Data { factor } => Some(factor.to_bits()),
-            renderer::data_config::VectorScale::Pixels { .. } => None,
-        },
-        _ => None,
-    };
-    Some(SeriesExtentRequest {
-        key: SeriesExtentKey {
-            mode: series_extent_mode(&cfg.render_type)?,
-            x: revisioned_column_from(revisions, &cfg.x_column)?,
-            y: revisioned_column_from(revisions, &cfg.y_column)?,
-            x_error,
-            y_error,
-            matrix,
-            field_orientation,
-            field_hexagonal,
-            vector_factor_bits,
-        },
-        series: cfg.clone(),
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn active_series_extent_requests(
-    series_cfgs: &[renderer::SeriesConfig],
-    revisions: &std::collections::HashMap<String, u64>,
-) -> Result<Vec<SeriesExtentRequest>, SeriesExtentRequestError> {
-    use std::collections::HashSet;
-
-    let capacity = series_cfgs.len();
-    let mut active = HashSet::new();
-    active
-        .try_reserve(capacity)
-        .map_err(SeriesExtentRequestError::Allocation)?;
-    let mut ordered = Vec::new();
-    ordered
-        .try_reserve(capacity)
-        .map_err(SeriesExtentRequestError::Allocation)?;
-
-    for cfg in series_cfgs {
-        if series_extent_mode(&cfg.render_type).is_none() {
-            continue;
-        }
-        let request = series_extent_request_from(revisions, cfg)
-            .ok_or(SeriesExtentRequestError::MissingLiveRevision)?;
-        if active.insert(request.key.clone()) {
-            ordered.push(request);
-        }
-    }
-    Ok(ordered)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn series_extent_key_matches_config(
-    key: &SeriesExtentKey,
-    cfg: &renderer::SeriesConfig,
-    revisions: &std::collections::HashMap<String, u64>,
-) -> bool {
-    series_extent_request_from(revisions, cfg).is_some_and(|request| request.key == *key)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn select_series_extent_job_map(
-    ordered_requests: Vec<SeriesExtentRequest>,
-    existing: &SeriesExtentJobMap,
-    retry_failed: bool,
-) -> Result<SeriesExtentJobSelection, std::collections::TryReserveError> {
-    use std::collections::HashMap;
-
-    let mut selected = HashMap::new();
-    selected.try_reserve(ordered_requests.len())?;
-    let mut pending = Vec::new();
-    pending.try_reserve(ordered_requests.len())?;
-    for request in ordered_requests {
-        let value = match existing.get(&request.key) {
-            Some(job) if !series_extent_needs_submission(Some(job.status()), retry_failed) => {
-                std::rc::Rc::clone(job)
-            }
-            _ => {
-                pending.push(request.clone());
-                crate::scalar_job::SeriesExtentJob::pending()
-            }
-        };
-        selected.insert(request.key, value);
-    }
-    Ok((selected, pending))
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn retain_valid_series_extent_jobs(
-    series_cfgs: &[renderer::SeriesConfig],
-    revisions: &std::collections::HashMap<String, u64>,
-    existing: &SeriesExtentJobMap,
-) -> Result<SeriesExtentJobMap, SeriesExtentRequestError> {
-    use std::collections::HashMap;
-
-    let requests = active_series_extent_requests(series_cfgs, revisions)?;
-    let mut retained = HashMap::new();
-    retained
-        .try_reserve(requests.len())
-        .map_err(SeriesExtentRequestError::Allocation)?;
-    for request in requests {
-        if let Some(job) = existing.get(&request.key) {
-            retained.insert(request.key, std::rc::Rc::clone(job));
-        }
-    }
-    Ok(retained)
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn series_extent_needs_submission(
-    status: Option<crate::scalar_job::SeriesExtentStatus>,
-    retry_failed: bool,
-) -> bool {
-    status.is_none()
-        || retry_failed && status == Some(crate::scalar_job::SeriesExtentStatus::RetryableFailed)
-}
 
 #[cfg(any(target_arch = "wasm32", test))]
 struct PreparedColumnMetadata {
@@ -997,12 +582,9 @@ fn prepare_demo_declarations(
     })
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod series_extent_mutation_tests;
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     use renderer::data_config::{
         ContourConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
@@ -1015,16 +597,13 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, DEMO_COLUMN_IDS, ErrorRefKind, FrameDecision,
-        active_series_extent_requests, checked_column_revision, consume_successful_frame,
-        frame_decision, picked_data_json_string, picked_label_json_string,
-        picked_point_json_string, prepare_batch_column_metadata, prepare_column_metadata,
-        prepare_demo_column_metadata, prepare_demo_declarations, retain_valid_series_extent_jobs,
-        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
-        series_extent_needs_submission, series_extent_request_from, set_plain_chart_title,
-        validate_column_batch, validate_column_data_len, validate_column_registry_action,
+        ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, checked_column_revision,
+        consume_successful_frame, frame_decision, picked_data_json_string,
+        picked_label_json_string, picked_point_json_string, prepare_batch_column_metadata,
+        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
+        set_plain_chart_title, validate_column_batch, validate_column_data_len,
+        validate_column_registry_action,
     };
-    use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
     fn scatter_style() -> DataScatterStyleConfig {
         DataScatterStyleConfig {
@@ -1515,7 +1094,7 @@ mod tests {
 
         for (render_type, expected) in cases {
             assert_eq!(
-                series_extent_mode(&render_type),
+                GpuSeriesFitMode::from_render_type(&render_type),
                 Some(GpuSeriesFitMode::Paired(expected))
             );
         }
@@ -1581,441 +1160,10 @@ mod tests {
         ];
         for (render_type, expected) in field_cases {
             assert_eq!(
-                series_extent_mode(&render_type),
+                GpuSeriesFitMode::from_render_type(&render_type),
                 Some(GpuSeriesFitMode::Field(expected))
             );
         }
-    }
-
-    #[test]
-    fn series_extent_key_is_role_explicit_and_excludes_unrelated_columns() {
-        let revisions = HashMap::from([
-            ("x".to_string(), 1),
-            ("y".to_string(), 2),
-            ("err".to_string(), 3),
-            ("unrelated".to_string(), 4),
-        ]);
-        let plain = series_config(
-            "plain",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
-        );
-        let plain_request = series_extent_request_from(&revisions, &plain).unwrap();
-        assert_eq!(
-            plain_request.key.mode,
-            GpuSeriesFitMode::Paired(GpuSeriesExtentMode::Points)
-        );
-        assert!(plain_request.key.x_error.is_none());
-        assert!(plain_request.key.y_error.is_none());
-        assert!(!format!("{:?}", plain_request.key).contains("unrelated"));
-        let mut unrelated_changed = revisions.clone();
-        unrelated_changed.insert("unrelated".to_string(), 99);
-        assert_eq!(
-            series_extent_request_from(&unrelated_changed, &plain)
-                .unwrap()
-                .key,
-            plain_request.key
-        );
-
-        let symmetric = series_config(
-            "symmetric",
-            DataRenderType::ScatterErrorbarX {
-                scatter: scatter_style(),
-                err_x: ErrorRef::Symmetric {
-                    column: "err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        let asymmetric = series_config(
-            "asymmetric",
-            DataRenderType::ScatterErrorbarX {
-                scatter: scatter_style(),
-                err_x: ErrorRef::Asymmetric {
-                    lower: "err".to_string(),
-                    upper: "err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        let symmetric_key = series_extent_request_from(&revisions, &symmetric)
-            .unwrap()
-            .key;
-        let asymmetric_key = series_extent_request_from(&revisions, &asymmetric)
-            .unwrap()
-            .key;
-        assert_eq!(symmetric_key.x_error.as_ref().unwrap().lower.id, "err");
-        assert_eq!(symmetric_key.x_error.as_ref().unwrap().upper.id, "err");
-        assert!(symmetric_key.y_error.is_none());
-        assert_eq!(
-            symmetric_key.x_error.as_ref().unwrap().kind,
-            ErrorRefKind::Symmetric
-        );
-        assert_eq!(
-            asymmetric_key.x_error.as_ref().unwrap().kind,
-            ErrorRefKind::Asymmetric
-        );
-        assert_ne!(symmetric_key, asymmetric_key);
-    }
-
-    #[test]
-    fn series_extent_key_keeps_mode_and_every_named_role_distinct() {
-        let revisions = HashMap::from([
-            ("x".to_string(), 7),
-            ("y".to_string(), 7),
-            ("err".to_string(), 7),
-            ("lo".to_string(), 7),
-            ("hi".to_string(), 7),
-        ]);
-        let key_for = |cfg: &SeriesConfig| series_extent_request_from(&revisions, cfg).unwrap().key;
-
-        let x_only = series_config(
-            "x-only",
-            DataRenderType::ScatterErrorbarX {
-                scatter: scatter_style(),
-                err_x: ErrorRef::Symmetric {
-                    column: "err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        let y_only = series_config(
-            "y-only",
-            DataRenderType::ScatterErrorbarY {
-                scatter: scatter_style(),
-                err_y: ErrorRef::Symmetric {
-                    column: "err".to_string(),
-                },
-                err_style: errorbar_style(),
-            },
-        );
-        assert_ne!(key_for(&x_only), key_for(&y_only));
-
-        let points = series_config(
-            "points",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
-        );
-        let mut swapped = points.clone();
-        swapped.x_column = "y".to_string();
-        swapped.y_column = "x".to_string();
-        assert_ne!(key_for(&points), key_for(&swapped));
-
-        let asymmetric = |lower: &str, upper: &str| {
-            series_config(
-                "asymmetric",
-                DataRenderType::ScatterErrorbarX {
-                    scatter: scatter_style(),
-                    err_x: ErrorRef::Asymmetric {
-                        lower: lower.to_string(),
-                        upper: upper.to_string(),
-                    },
-                    err_style: errorbar_style(),
-                },
-            )
-        };
-        assert_ne!(
-            key_for(&asymmetric("lo", "hi")),
-            key_for(&asymmetric("hi", "lo"))
-        );
-
-        let line = series_config("line", DataRenderType::Line { line: line_style() });
-        assert_ne!(key_for(&line), key_for(&points));
-
-        let field = series_config(
-            "field",
-            DataRenderType::Heatmap {
-                matrix: MatrixRef {
-                    columns: vec!["z0".into(), "z1".into()],
-                    orientation: MatrixOrientation::ColumnsAreX,
-                    grid_layout: GridLayout::Centers,
-                },
-                fill: FieldFillConfig {
-                    mode: FillMode::Continuous,
-                    shading: Shading::Flat,
-                    opacity: 1.0,
-                },
-                surface: None,
-            },
-        );
-        let mut transposed = field.clone();
-        let DataRenderType::Heatmap { matrix, .. } = &mut transposed.render_type else {
-            unreachable!()
-        };
-        matrix.orientation = MatrixOrientation::ColumnsAreY;
-        let field_revisions = HashMap::from([
-            ("x".to_string(), 7),
-            ("y".to_string(), 7),
-            ("z0".to_string(), 7),
-            ("z1".to_string(), 7),
-        ]);
-        let field_key = |cfg: &SeriesConfig| {
-            series_extent_request_from(&field_revisions, cfg)
-                .unwrap()
-                .key
-        };
-        assert_ne!(field_key(&field), field_key(&transposed));
-        let mut changed_matrix_revision = field_revisions.clone();
-        changed_matrix_revision.insert("z1".to_string(), 8);
-        assert_ne!(
-            field_key(&field),
-            series_extent_request_from(&changed_matrix_revision, &field)
-                .unwrap()
-                .key
-        );
-        let mut reordered = field.clone();
-        let DataRenderType::Heatmap { matrix, .. } = &mut reordered.render_type else {
-            unreachable!()
-        };
-        matrix.columns.reverse();
-        assert_ne!(field_key(&field), field_key(&reordered));
-    }
-
-    #[test]
-    fn active_series_extent_requests_fail_closed_on_missing_revision() {
-        let revisions = HashMap::from([("x".to_string(), 1)]);
-        let series = series_config(
-            "missing-y",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
-        );
-
-        let error = active_series_extent_requests(&[series], &revisions).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "series references a column without a live revision"
-        );
-    }
-
-    #[test]
-    fn active_series_extent_requests_leave_histograms_to_metadata_fit() {
-        let revisions = HashMap::from([("x".to_string(), 1), ("y".to_string(), 2)]);
-        let series = series_config(
-            "histogram",
-            DataRenderType::Histogram {
-                bar: renderer::data_config::DataBarStyleConfig {
-                    fill_color: Color::BLACK,
-                    border_color: Color::BLACK,
-                    border_width: 1.0,
-                    baseline: 0.0,
-                    gap_px: 1.0,
-                    width_ratio: 1.0,
-                    orientation: renderer::data_config::BarOrientation::Vertical,
-                    bar_style_overrides: None,
-                },
-            },
-        );
-
-        assert!(
-            active_series_extent_requests(&[series], &revisions)
-                .unwrap()
-                .is_empty(),
-            "non-paired render types are fitted from upload metadata"
-        );
-    }
-
-    #[test]
-    fn histogram_fit_columns_follow_orientation_roles() {
-        let mut series = series_config(
-            "histogram",
-            DataRenderType::Histogram {
-                bar: renderer::data_config::DataBarStyleConfig {
-                    fill_color: Color::BLACK,
-                    border_color: Color::BLACK,
-                    border_width: 1.0,
-                    baseline: 0.0,
-                    gap_px: 1.0,
-                    width_ratio: 1.0,
-                    orientation: renderer::data_config::BarOrientation::Vertical,
-                    bar_style_overrides: None,
-                },
-            },
-        );
-        series.x_column = "edges".to_string();
-        series.y_column = "counts".to_string();
-        assert_eq!(
-            crate::histogram_fit_columns(&series, &renderer::data_config::BarOrientation::Vertical,),
-            ("edges", "counts"),
-        );
-
-        series.x_column = "counts".to_string();
-        series.y_column = "edges".to_string();
-        assert_eq!(
-            crate::histogram_fit_columns(
-                &series,
-                &renderer::data_config::BarOrientation::Horizontal,
-            ),
-            ("edges", "counts"),
-        );
-    }
-
-    #[test]
-    fn future_series_extent_map_reuses_only_identical_revision_keys() {
-        let old_revisions = HashMap::from([
-            ("stable-x".to_string(), 1),
-            ("stable-y".to_string(), 2),
-            ("changed-x".to_string(), 3),
-            ("changed-y".to_string(), 4),
-        ]);
-        let mut future_revisions = old_revisions.clone();
-        future_revisions.insert("changed-x".to_string(), 5);
-        let mut stable = series_config(
-            "stable",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
-        );
-        stable.x_column = "stable-x".to_string();
-        stable.y_column = "stable-y".to_string();
-        let mut changed = stable.clone();
-        changed.series_id = "changed".to_string();
-        changed.x_column = "changed-x".to_string();
-        changed.y_column = "changed-y".to_string();
-        let mut stable_alias = stable.clone();
-        stable_alias.series_id = "stable-alias".to_string();
-
-        let stable_request = series_extent_request_from(&future_revisions, &stable).unwrap();
-        let old_changed_request = series_extent_request_from(&old_revisions, &changed).unwrap();
-        let future_changed_request =
-            series_extent_request_from(&future_revisions, &changed).unwrap();
-        let stable_job = SeriesExtentJob::pending();
-        let old_changed_job = SeriesExtentJob::pending();
-        let existing = HashMap::from([
-            (stable_request.key.clone(), Rc::clone(&stable_job)),
-            (old_changed_request.key, Rc::clone(&old_changed_job)),
-        ]);
-
-        let active =
-            active_series_extent_requests(&[stable, stable_alias, changed], &future_revisions)
-                .unwrap();
-        assert_eq!(active.len(), 2);
-        let (selected, pending) = select_series_extent_job_map(active, &existing, false).unwrap();
-
-        assert!(Rc::ptr_eq(
-            selected.get(&stable_request.key).unwrap(),
-            &stable_job
-        ));
-        assert!(!Rc::ptr_eq(
-            selected.get(&future_changed_request.key).unwrap(),
-            &old_changed_job
-        ));
-        assert_eq!(pending, vec![future_changed_request]);
-    }
-
-    #[test]
-    fn series_extent_transitions_cover_add_set_remove_and_retry() {
-        let revisions = HashMap::from([
-            ("x".to_string(), 1),
-            ("y".to_string(), 2),
-            ("x2".to_string(), 3),
-            ("y2".to_string(), 4),
-        ]);
-        let a = series_config(
-            "a",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
-        );
-        let mut b = a.clone();
-        b.series_id = "b".to_string();
-        b.x_column = "x2".to_string();
-        b.y_column = "y2".to_string();
-        let a_request = series_extent_request_from(&revisions, &a).unwrap();
-        let b_request = series_extent_request_from(&revisions, &b).unwrap();
-        let a_job = SeriesExtentJob::pending();
-        a_job.complete_success(None);
-        let existing = HashMap::from([(a_request.key.clone(), Rc::clone(&a_job))]);
-
-        let add_requests =
-            active_series_extent_requests(&[a.clone(), b.clone()], &revisions).unwrap();
-        let (after_add, add_pending) =
-            select_series_extent_job_map(add_requests, &existing, false).unwrap();
-        assert!(Rc::ptr_eq(after_add.get(&a_request.key).unwrap(), &a_job));
-        assert_eq!(add_pending, vec![b_request.clone()]);
-        assert_eq!(
-            existing.len(),
-            1,
-            "future map must not publish into old state"
-        );
-
-        let mut with_unrelated_column = revisions.clone();
-        with_unrelated_column.insert("unrelated".to_string(), 99);
-        let unrelated_requests =
-            active_series_extent_requests(std::slice::from_ref(&a), &with_unrelated_column)
-                .unwrap();
-        let (after_unrelated_column, unrelated_pending) =
-            select_series_extent_job_map(unrelated_requests, &existing, false).unwrap();
-        assert!(unrelated_pending.is_empty());
-        assert!(Rc::ptr_eq(
-            after_unrelated_column.get(&a_request.key).unwrap(),
-            &a_job
-        ));
-
-        let line_a = series_config("a", DataRenderType::Line { line: line_style() });
-        let line_request = series_extent_request_from(&revisions, &line_a).unwrap();
-        let (after_set, set_pending) = select_series_extent_job_map(
-            active_series_extent_requests(&[line_a], &revisions).unwrap(),
-            &existing,
-            false,
-        )
-        .unwrap();
-        assert_eq!(set_pending, vec![line_request.clone()]);
-        assert!(!after_set.contains_key(&a_request.key));
-
-        let mut after_remove = after_add;
-        after_remove.retain(|key, _| series_extent_key_matches_config(key, &a, &revisions));
-        assert_eq!(after_remove.len(), 1);
-        assert!(after_remove.contains_key(&a_request.key));
-        assert!(!after_remove.contains_key(&b_request.key));
-
-        let retry_job = SeriesExtentJob::pending();
-        retry_job.complete_retryable_failure("readback failed".to_string());
-        let retry_existing = HashMap::from([(a_request.key.clone(), Rc::clone(&retry_job))]);
-        let retry_requests =
-            active_series_extent_requests(std::slice::from_ref(&a), &revisions).unwrap();
-        let (without_retry, pending) =
-            select_series_extent_job_map(retry_requests.clone(), &retry_existing, false).unwrap();
-        assert!(pending.is_empty());
-        assert!(Rc::ptr_eq(
-            without_retry.get(&a_request.key).unwrap(),
-            &retry_job
-        ));
-        let (with_retry, pending) =
-            select_series_extent_job_map(retry_requests, &retry_existing, true).unwrap();
-        assert_eq!(pending, vec![a_request.clone()]);
-        assert!(!Rc::ptr_eq(
-            with_retry.get(&a_request.key).unwrap(),
-            &retry_job
-        ));
-        assert_eq!(retry_existing.len(), 1);
-    }
-
-    #[test]
-    fn series_extent_retry_policy_replaces_only_retryable_failures() {
-        assert!(series_extent_needs_submission(None, false));
-        assert!(!series_extent_needs_submission(
-            Some(SeriesExtentStatus::RetryableFailed),
-            false
-        ));
-        assert!(series_extent_needs_submission(
-            Some(SeriesExtentStatus::RetryableFailed),
-            true
-        ));
-        assert!(!series_extent_needs_submission(
-            Some(SeriesExtentStatus::Pending),
-            true
-        ));
-        assert!(!series_extent_needs_submission(
-            Some(SeriesExtentStatus::Succeeded),
-            true
-        ));
-        assert!(!series_extent_needs_submission(
-            Some(SeriesExtentStatus::TerminalFailed),
-            true
-        ));
     }
 
     #[test]
@@ -2186,48 +1334,6 @@ mod tests {
     }
 
     #[test]
-    fn demo_extent_preparation_retains_stable_jobs_and_defers_changed_submits() {
-        let stable = line_series("stable", "stable-x", "stable-y");
-        let demo = line_series("demo", "demo_x", "demo_sin");
-        let old_revisions = HashMap::from([
-            ("stable-x".to_string(), 1),
-            ("stable-y".to_string(), 1),
-            ("demo_x".to_string(), 1),
-            ("demo_sin".to_string(), 1),
-        ]);
-        let stable_request = series_extent_request_from(&old_revisions, &stable).unwrap();
-        let old_demo_request = series_extent_request_from(&old_revisions, &demo).unwrap();
-        let stable_job = SeriesExtentJob::pending();
-        let demo_job = SeriesExtentJob::pending();
-        let existing = HashMap::from([
-            (stable_request.key.clone(), Rc::clone(&stable_job)),
-            (old_demo_request.key, demo_job),
-        ]);
-        let mut future_revisions = old_revisions;
-        future_revisions.insert("demo_x".to_string(), 2);
-        future_revisions.insert("demo_sin".to_string(), 2);
-
-        let retained = retain_valid_series_extent_jobs(
-            &[stable.clone(), demo.clone()],
-            &future_revisions,
-            &existing,
-        )
-        .unwrap();
-        assert_eq!(retained.len(), 1);
-        assert!(Rc::ptr_eq(
-            retained.get(&stable_request.key).unwrap(),
-            &stable_job
-        ));
-
-        let requests = active_series_extent_requests(&[stable, demo], &future_revisions).unwrap();
-        let (_lazy_map, pending) =
-            select_series_extent_job_map(requests, &retained, false).unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].series.x_column, "demo_x");
-        assert_eq!(pending[0].series.y_column, "demo_sin");
-    }
-
-    #[test]
     fn demo_precommit_abort_preserves_every_host_owned_authority() {
         let config = renderer::default::default_config();
         let series = vec![line_series("stable", "stable-x", "stable-y")];
@@ -2236,9 +1342,6 @@ mod tests {
         let labels = vec![Some("stable".to_string())];
         let styles = vec![7u32];
         let color_seq = 1usize;
-        let request = series_extent_request_from(&revisions, &series[0]).unwrap();
-        let job = SeriesExtentJob::pending();
-        let extents = HashMap::from([(request.key, Rc::clone(&job))]);
 
         let prepared_metadata =
             prepare_demo_column_metadata(&columns, &revisions, 2, [512; 4]).unwrap();
@@ -2250,13 +1353,7 @@ mod tests {
             color_seq,
         )
         .unwrap();
-        let prepared_extents = retain_valid_series_extent_jobs(
-            &prepared_declarations.series,
-            &prepared_metadata.revisions,
-            &extents,
-        )
-        .unwrap();
-        drop((prepared_metadata, prepared_declarations, prepared_extents));
+        drop((prepared_metadata, prepared_declarations));
 
         assert_eq!(config, renderer::default::default_config());
         assert_eq!(series, vec![line_series("stable", "stable-x", "stable-y")]);
@@ -2265,8 +1362,6 @@ mod tests {
         assert_eq!(styles, vec![7]);
         assert_eq!(labels, vec![Some("stable".to_string())]);
         assert_eq!(color_seq, 1);
-        assert_eq!(extents.len(), 1);
-        assert!(Rc::ptr_eq(extents.values().next().unwrap(), &job));
     }
 
     #[test]
@@ -2298,10 +1393,9 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::{cell::Cell, collections::HashMap, rc::Rc};
+    use std::{cell::Cell, collections::HashMap};
 
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::spawn_local;
     use web_sys::HtmlCanvasElement;
 
     use renderer::data_config::ErrorRef;
@@ -2325,18 +1419,14 @@ mod web {
         BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedSplitF64Column,
         JsStreamColumn,
     };
-    use crate::scalar_job::{SeriesExtentJob, SeriesFitExtent};
     use crate::{
-        ColumnRegistryAction, FrameDecision, PreparedDemoDeclarations, SeriesExtentKey,
-        active_series_extent_requests, consume_successful_frame, frame_decision,
-        prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
-        prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, set_plain_chart_title,
+        ColumnRegistryAction, FrameDecision, PreparedDemoDeclarations, consume_successful_frame,
+        frame_decision, prepare_batch_column_metadata, prepare_column_metadata,
+        prepare_demo_column_metadata, prepare_demo_declarations, set_plain_chart_title,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
     mod chart;
-    use chart::PreparedSeriesExtentCache;
     pub use chart::{
         FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
     };
@@ -2359,27 +1449,11 @@ mod web {
     #[cfg(test)]
     thread_local! {
         static LOAD_DEMO_ABORT_BEFORE_RENDERER_COMMIT: Cell<bool> = const { Cell::new(false) };
-        static SERIES_EXTENT_SUBMIT_COUNT: Cell<u64> = const { Cell::new(0) };
     }
 
     #[cfg(test)]
     fn set_load_demo_abort_before_renderer_commit(enabled: bool) {
         LOAD_DEMO_ABORT_BEFORE_RENDERER_COMMIT.with(|state| state.set(enabled));
-    }
-
-    #[cfg(test)]
-    fn record_series_extent_submit() {
-        SERIES_EXTENT_SUBMIT_COUNT.with(|count| count.set(count.get().wrapping_add(1)));
-    }
-
-    #[cfg(test)]
-    fn series_extent_submit_count() -> u64 {
-        SERIES_EXTENT_SUBMIT_COUNT.with(Cell::get)
-    }
-
-    #[cfg(test)]
-    fn reset_series_extent_submit_count() {
-        SERIES_EXTENT_SUBMIT_COUNT.with(|count| count.set(0));
     }
 
     #[cfg(test)]
@@ -2393,7 +1467,6 @@ mod web {
         use wasm_bindgen_test::*;
 
         use super::*;
-        use crate::scalar_job::SeriesExtentStatus;
 
         wasm_bindgen_test_configure!(run_in_browser);
 
@@ -2418,7 +1491,6 @@ mod web {
             labels: Vec<Option<String>>,
             legend_auto_managed: bool,
             color_seq: usize,
-            series_extents: HashMap<SeriesExtentKey, (usize, SeriesExtentStatus)>,
             chart_stamp: ChartRenderStamp,
             visual_revision: renderer::RenderRevision,
             picker_visible_selection: Option<HitId>,
@@ -2470,11 +1542,6 @@ mod web {
                     )
                 })
                 .collect();
-            let series_extents = chart
-                .series_extents
-                .iter()
-                .map(|(key, job)| (key.clone(), (Rc::as_ptr(job) as usize, job.status())))
-                .collect();
 
             FiggyAuthority {
                 config: chart.chart_config().unwrap().clone(),
@@ -2490,7 +1557,6 @@ mod web {
                 labels: chart.labels.clone(),
                 legend_auto_managed: chart.legend_auto_managed,
                 color_seq: chart.color_seq,
-                series_extents,
                 chart_stamp: chart.renderer.chart_render_stamp(chart.chart_id).unwrap(),
                 visual_revision: chart.renderer.visual_revision(),
                 picker_visible_selection: chart.renderer.chart_selection(chart.chart_id).unwrap(),
@@ -2525,7 +1591,6 @@ mod web {
         #[wasm_bindgen_test(async)]
         async fn real_load_demo_late_abort_preserves_every_authority_then_retries() {
             set_load_demo_abort_before_renderer_commit(false);
-            reset_series_extent_submit_count();
             let mut chart = chart_with_stable_extent().await;
             chart.renderer.enable_gpu_picking_async().await.unwrap();
             chart
@@ -2617,62 +1682,6 @@ mod web {
             let small: Vec<f64> = vec![0.0; 2 * N];
             assert!(chart.register_columns_f64(clash, &small, N).is_err());
             assert!(!chart.columns.contains_key("fresh"));
-        }
-
-        #[wasm_bindgen_test(async)]
-        async fn load_demo_defers_real_extent_submits_and_lazy_fit_retains_stable_job() {
-            set_load_demo_abort_before_renderer_commit(false);
-            reset_series_extent_submit_count();
-            let mut chart = chart_with_stable_extent().await;
-            assert_eq!(series_extent_submit_count(), 1);
-
-            let stable_key = crate::series_extent_request_from(
-                &chart.column_revisions,
-                &chart.chart_series().unwrap()[0],
-            )
-            .unwrap()
-            .key;
-            let stable_job = Rc::clone(chart.series_extents.get(&stable_key).unwrap());
-            let before_load_demo = series_extent_submit_count();
-
-            chart.load_demo().unwrap();
-            assert_eq!(series_extent_submit_count(), before_load_demo);
-            assert!(Rc::ptr_eq(
-                chart.series_extents.get(&stable_key).unwrap(),
-                &stable_job
-            ));
-
-            let demo_keys = chart
-                .chart_series()
-                .unwrap()
-                .iter()
-                .filter(|series| series.series_id == "sine" || series.series_id == "rc")
-                .map(|series| {
-                    crate::series_extent_request_from(&chart.column_revisions, series)
-                        .unwrap()
-                        .key
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(demo_keys.len(), 2);
-            assert!(
-                demo_keys
-                    .iter()
-                    .all(|key| !chart.series_extents.contains_key(key))
-            );
-
-            let before_lazy_fit = series_extent_submit_count();
-            chart.auto_fit_all(0.0).await.unwrap();
-            assert_eq!(series_extent_submit_count(), before_lazy_fit + 2);
-            assert!(Rc::ptr_eq(
-                chart.series_extents.get(&stable_key).unwrap(),
-                &stable_job
-            ));
-            for key in demo_keys {
-                assert_eq!(
-                    chart.series_extents.get(&key).unwrap().status(),
-                    SeriesExtentStatus::Succeeded
-                );
-            }
         }
 
         // ---- #152 index invariants at their producers ----
