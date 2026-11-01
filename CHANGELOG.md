@@ -869,6 +869,16 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Font lookups without a lock** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  Registered fonts are an immutable snapshot published through `arc-swap`:
+  `register_font_bytes` builds the successor under the registration mutex,
+  and family lookups, per-character fallback and `font_family_available`
+  read the current snapshot without a lock. A registered file is copied once
+  and its faces are parsed at registration; before, every resolved face of a
+  file leaked a second copy of the whole file. System faces are copied once
+  per font file on first use, so the faces of one collection (`.ttc`) share a
+  copy, and the shared system-face mutex is gone. A family lookup no longer
+  allocates a key on every character. No API change.
 - **A call reports its own GPU errors**
   ([#158](https://github.com/shim9610/figgy/issues/158)). Every
   `WindowedRenderer` call that records GPU work checks the device health at
