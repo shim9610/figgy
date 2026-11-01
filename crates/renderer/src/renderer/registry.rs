@@ -803,15 +803,22 @@ impl RendererColumnUpsert<'_> {
                 });
             }
         }
-        begin_errorbar_extent_from_pool(
-            prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
+        let engine = prepared_errorbar_extent_engine(self.errorbar_extent_engine)?;
+        let ticket = begin_errorbar_extent_from_pool(
+            engine,
             self.device,
             self.queue,
             self.pool(),
             value_id,
             lower_id,
             upper_id,
-        )
+        )?;
+        // The dispatch's own GPU error is this call's (#158).
+        engine
+            .health()
+            .check()
+            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+        Ok(ticket)
     }
 
     /// Begin a drawable-series fit-bound job against the provisional
@@ -842,14 +849,20 @@ impl RendererColumnUpsert<'_> {
                 });
             }
         }
-        begin_series_extent_from_pool(
-            prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
+        let engine = prepared_errorbar_extent_engine(self.errorbar_extent_engine)?;
+        let ticket = begin_series_extent_from_pool(
+            engine,
             self.device,
             self.queue,
             self.pool(),
             mode,
             columns,
-        )
+        )?;
+        engine
+            .health()
+            .check()
+            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+        Ok(ticket)
     }
 
     /// Begin the exact GPU fit domain for a complete series declaration against
@@ -867,13 +880,19 @@ impl RendererColumnUpsert<'_> {
         {
             return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident { id });
         }
-        begin_series_fit_extent_from_pool(
-            prepared_errorbar_extent_engine(self.errorbar_extent_engine)?,
+        let engine = prepared_errorbar_extent_engine(self.errorbar_extent_engine)?;
+        let ticket = begin_series_fit_extent_from_pool(
+            engine,
             self.device,
             self.queue,
             self.pool(),
             series,
-        )
+        )?;
+        engine
+            .health()
+            .check()
+            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+        Ok(ticket)
     }
 
     pub fn commit(self) -> ColumnHandle {

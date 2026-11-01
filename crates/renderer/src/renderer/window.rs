@@ -20,14 +20,34 @@ pub struct WindowedRenderer<'w> {
 }
 
 impl<'w> WindowedRenderer<'w> {
+    /// `result`, or the GPU error the call that produced it raised.
+    ///
+    /// Every call that records GPU work ends here (or with its own health
+    /// check), so a GPU error is reported by the call that raised it and none
+    /// is left for `Drop`, which has no caller to report to (#158).
+    fn reported<T>(&self, result: Result<T>) -> Result<T> {
+        self.inner.reported_as(result, std::convert::identity)
+    }
+
+    /// [`Self::reported`] for a call with its own error type.
+    fn reported_as<T, E>(
+        &self,
+        result: std::result::Result<T, E>,
+        convert: fn(FiggyError) -> E,
+    ) -> std::result::Result<T, E> {
+        self.inner.reported_as(result, convert)
+    }
+
     /// Publish an owned preparation without retaining a mutable borrow while it compiles.
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
-        self.inner.install_preparation(prepared)
+        let result = self.inner.install_preparation(prepared);
+        self.reported(result)
     }
 
     /// Allocate a budget-checked style for this surface's renderer.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
-        self.inner.create_style_for_series(cfg)
+        let result = self.inner.create_style_for_series(cfg);
+        self.reported(result)
     }
 
     /// High-DPI variant of [`Self::create_style_for_series`].
@@ -36,7 +56,8 @@ impl<'w> WindowedRenderer<'w> {
         cfg: &SeriesConfig,
         scale: f32,
     ) -> Result<ChartStyle> {
-        self.inner.create_style_for_series_scaled(cfg, scale)
+        let result = self.inner.create_style_for_series_scaled(cfg, scale);
+        self.reported(result)
     }
 
     /// Build a standalone renderer while reporting timestamp-free startup
@@ -61,18 +82,21 @@ impl<'w> WindowedRenderer<'w> {
     pub async fn ensure_errorbar_extent_engine(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
-        self.inner.ensure_errorbar_extent_engine().await
+        let result = self.inner.ensure_errorbar_extent_engine().await;
+        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
     }
 
     pub async fn prewarm_all_observed(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<()> {
-        self.inner.prewarm_all_observed(observer).await
+        let result = self.inner.prewarm_all_observed(observer).await;
+        self.reported(result)
     }
 
     pub async fn prewarm_all(&mut self) -> Result<()> {
-        self.inner.prewarm_all().await
+        let result = self.inner.prewarm_all().await;
+        self.reported(result)
     }
 
     pub fn add_column(
@@ -80,7 +104,8 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
-        self.inner.add_column(id, source)
+        let result = self.inner.add_column(id, source);
+        self.reported(result)
     }
 
     pub fn add_hilo_column(
@@ -88,7 +113,8 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
-        self.inner.add_hilo_column(id, source)
+        let result = self.inner.add_hilo_column(id, source);
+        self.reported(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -104,20 +130,34 @@ impl<'w> WindowedRenderer<'w> {
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
-        self.inner
-            .begin_load_demo(chart_id, demo_x, demo_sin, demo_t, demo_rc, prepare_state)
+        // The guard borrows the renderer, so the check uses a clone of the
+        // health record; a failed check drops the guard, which rolls back.
+        let health = self.inner.health.clone();
+        let demo = self.inner.begin_load_demo(
+            chart_id,
+            demo_x,
+            demo_sin,
+            demo_t,
+            demo_rc,
+            prepare_state,
+        )?;
+        health.check()?;
+        Ok(demo)
     }
 
     pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
-        self.inner.add_columns(columns)
+        let result = self.inner.add_columns(columns);
+        self.reported(result)
     }
 
     pub fn register_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
-        self.inner.register_streamed_columns(columns)
+        let result = self.inner.register_streamed_columns(columns);
+        self.reported(result)
     }
 
     pub fn replace_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
-        self.inner.replace_streamed_columns(columns)
+        let result = self.inner.replace_streamed_columns(columns);
+        self.reported(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -129,13 +169,14 @@ impl<'w> WindowedRenderer<'w> {
         transition_headroom_bytes: u64,
         working_set_limit_bytes: u64,
     ) -> Result<ResidentAdmission> {
-        self.inner.resident_admission_for_streamed_columns(
+        let result = self.inner.resident_admission_for_streamed_columns(
             sources,
             already_resident_working_set_bytes,
             derived_buffer_sizes,
             transition_headroom_bytes,
             working_set_limit_bytes,
-        )
+        );
+        self.reported(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -147,13 +188,14 @@ impl<'w> WindowedRenderer<'w> {
         transition_headroom_bytes: u64,
         working_set_limit_bytes: u64,
     ) -> Result<ResidentAdmission> {
-        self.inner.promote_streamed_columns_to_resident(
+        let result = self.inner.promote_streamed_columns_to_resident(
             sources,
             already_resident_working_set_bytes,
             derived_buffer_sizes,
             transition_headroom_bytes,
             working_set_limit_bytes,
-        )
+        );
+        self.reported(result)
     }
 
     pub fn demote_resident_columns_to_streamed(
@@ -162,12 +204,15 @@ impl<'w> WindowedRenderer<'w> {
         columns: Vec<crate::StreamColumn>,
         sources: &[crate::StreamSourceBinding<'_>],
     ) -> Result<()> {
-        self.inner
-            .demote_resident_columns_to_streamed(changed_ids, columns, sources)
+        let result = self
+            .inner
+            .demote_resident_columns_to_streamed(changed_ids, columns, sources);
+        self.reported(result)
     }
 
     pub fn configure_streaming(&mut self, limits: crate::StreamingLimits) -> Result<()> {
-        self.inner.configure_streaming(limits)
+        let result = self.inner.configure_streaming(limits);
+        self.reported(result)
     }
 
     pub fn begin_streaming_chart(
@@ -176,7 +221,8 @@ impl<'w> WindowedRenderer<'w> {
         view: &ChartView,
         options: crate::StreamingChartOptions,
     ) -> Result<()> {
-        self.inner.begin_streaming_chart(chart, view, options)
+        let result = self.inner.begin_streaming_chart(chart, view, options);
+        self.reported(result)
     }
 
     pub fn request_auto_streaming_chart(
@@ -185,8 +231,10 @@ impl<'w> WindowedRenderer<'w> {
         view: &ChartView,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner
-            .request_auto_streaming_chart(chart, view, options)
+        let result = self
+            .inner
+            .request_auto_streaming_chart(chart, view, options);
+        self.reported(result)
     }
 
     pub fn request_auto_streaming_chart_with_config(
@@ -196,8 +244,13 @@ impl<'w> WindowedRenderer<'w> {
         render_config: Config,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner
-            .request_auto_streaming_chart_with_config(chart, view, render_config, options)
+        let result = self.inner.request_auto_streaming_chart_with_config(
+            chart,
+            view,
+            render_config,
+            options,
+        );
+        self.reported(result)
     }
 
     pub fn request_resident_stream_handoff_with_config(
@@ -208,13 +261,14 @@ impl<'w> WindowedRenderer<'w> {
         columns: Vec<crate::StreamColumn>,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner.request_resident_stream_handoff_with_config(
+        let result = self.inner.request_resident_stream_handoff_with_config(
             chart,
             view,
             render_config,
             columns,
             options,
-        )
+        );
+        self.reported(result)
     }
 
     pub fn request_auto_streaming_chart_with_display_scale(
@@ -225,13 +279,14 @@ impl<'w> WindowedRenderer<'w> {
         display_scale: f32,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner.request_auto_streaming_chart_with_display_scale(
+        let result = self.inner.request_auto_streaming_chart_with_display_scale(
             chart,
             view,
             render_config,
             display_scale,
             options,
-        )
+        );
+        self.reported(result)
     }
 
     pub fn request_resident_stream_handoff_with_display_scale(
@@ -243,7 +298,8 @@ impl<'w> WindowedRenderer<'w> {
         columns: Vec<crate::StreamColumn>,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
-        self.inner
+        let result = self
+            .inner
             .request_resident_stream_handoff_with_display_scale(
                 chart,
                 view,
@@ -251,7 +307,8 @@ impl<'w> WindowedRenderer<'w> {
                 display_scale,
                 columns,
                 options,
-            )
+            );
+        self.reported(result)
     }
 
     pub fn auto_stream_chart_step(
@@ -259,14 +316,16 @@ impl<'w> WindowedRenderer<'w> {
         chart: ChartId,
         sources: &[crate::StreamSourceBinding<'_>],
     ) -> Result<crate::AutoStreamingProgress> {
-        self.inner.auto_stream_chart_step(chart, sources)
+        let result = self.inner.auto_stream_chart_step(chart, sources);
+        self.reported(result)
     }
 
     pub fn auto_stream_chart_request_ranges(
         &mut self,
         chart: ChartId,
     ) -> Result<crate::AutoStreamingRangeRequest> {
-        self.inner.auto_stream_chart_request_ranges(chart)
+        let result = self.inner.auto_stream_chart_request_ranges(chart);
+        self.reported(result)
     }
 
     pub fn auto_stream_chart_submit_ranges(
@@ -274,11 +333,13 @@ impl<'w> WindowedRenderer<'w> {
         chart: ChartId,
         sources: &[crate::StreamRangeSourceBinding<'_>],
     ) -> Result<crate::AutoStreamingProgress> {
-        self.inner.auto_stream_chart_submit_ranges(chart, sources)
+        let result = self.inner.auto_stream_chart_submit_ranges(chart, sources);
+        self.reported(result)
     }
 
     pub fn interrupt_render(&mut self, chart: ChartId) -> Result<crate::RenderInterruptStatus> {
-        self.inner.interrupt_render(chart)
+        let result = self.inner.interrupt_render(chart);
+        self.reported(result)
     }
 
     pub fn stream_chart_step(
@@ -287,20 +348,24 @@ impl<'w> WindowedRenderer<'w> {
         view: &ChartView,
         sources: &[crate::StreamSourceBinding<'_>],
     ) -> Result<crate::StreamingProgress> {
-        self.inner.stream_chart_step(chart, view, sources)
+        let result = self.inner.stream_chart_step(chart, view, sources);
+        self.reported(result)
     }
 
     pub fn cancel_streaming_chart(&mut self, chart: ChartId) -> Result<()> {
-        self.inner.cancel_streaming_chart(chart)
+        let result = self.inner.cancel_streaming_chart(chart);
+        self.reported(result)
     }
 
     pub fn set_stream_chunk_budget(&mut self, chart: ChartId, primitives: u64) -> Result<()> {
-        self.inner.set_stream_chunk_budget(chart, primitives)
+        let result = self.inner.set_stream_chunk_budget(chart, primitives);
+        self.reported(result)
     }
 
     #[cfg(target_arch = "wasm32")]
     pub async fn cancel_streaming_chart_and_wait(&mut self, chart: ChartId) -> Result<()> {
-        self.inner.cancel_streaming_chart_and_wait(chart).await
+        let result = self.inner.cancel_streaming_chart_and_wait(chart).await;
+        self.reported(result)
     }
 
     pub fn begin_upsert_column(
@@ -308,7 +373,12 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
-        self.inner.begin_upsert_column(id, source)
+        // See `begin_load_demo`: the upload is done; check before the guard
+        // is handed out.
+        let health = self.inner.health.clone();
+        let upsert = self.inner.begin_upsert_column(id, source)?;
+        health.check()?;
+        Ok(upsert)
     }
 
     pub fn begin_upsert_hilo_column(
@@ -316,7 +386,10 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
-        self.inner.begin_upsert_hilo_column(id, source)
+        let health = self.inner.health.clone();
+        let upsert = self.inner.begin_upsert_hilo_column(id, source)?;
+        health.check()?;
+        Ok(upsert)
     }
 
     pub fn upsert_column(
@@ -324,7 +397,8 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
-        self.inner.upsert_column(id, source)
+        let result = self.inner.upsert_column(id, source);
+        self.reported(result)
     }
 
     pub fn upsert_hilo_column(
@@ -332,11 +406,13 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
-        self.inner.upsert_hilo_column(id, source)
+        let result = self.inner.upsert_hilo_column(id, source);
+        self.reported(result)
     }
 
     pub fn remove_column(&mut self, id: &str) -> Result<bool> {
-        self.inner.remove_column(id)
+        let result = self.inner.remove_column(id);
+        self.reported(result)
     }
 
     pub fn upsert_record(
@@ -344,7 +420,8 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<RecordId>,
         source: &RecordSource<'_>,
     ) -> Result<RecordId> {
-        self.inner.upsert_record(id, source)
+        let result = self.inner.upsert_record(id, source);
+        self.reported(result)
     }
 
     pub fn upsert_ragged(
@@ -352,15 +429,18 @@ impl<'w> WindowedRenderer<'w> {
         id: impl Into<RaggedId>,
         source: &RaggedSource<'_>,
     ) -> Result<RaggedId> {
-        self.inner.upsert_ragged(id, source)
+        let result = self.inner.upsert_ragged(id, source);
+        self.reported(result)
     }
 
     pub fn remove_record(&mut self, id: &str) -> Result<bool> {
-        self.inner.remove_record(id)
+        let result = self.inner.remove_record(id);
+        self.reported(result)
     }
 
     pub fn remove_ragged(&mut self, id: &str) -> Result<bool> {
-        self.inner.remove_ragged(id)
+        let result = self.inner.remove_ragged(id);
+        self.reported(result)
     }
 
     pub fn remove_column_with_chart_config(
@@ -369,12 +449,15 @@ impl<'w> WindowedRenderer<'w> {
         chart_id: ChartId,
         next_config: Config,
     ) -> Result<bool> {
-        self.inner
-            .remove_column_with_chart_config(id, chart_id, next_config)
+        let result = self
+            .inner
+            .remove_column_with_chart_config(id, chart_id, next_config);
+        self.reported(result)
     }
 
     pub fn defragment(&mut self) -> Result<bool> {
-        self.inner.defragment()
+        let result = self.inner.defragment();
+        self.reported(result)
     }
 
     /// Set the allocation policy described by [`Renderer::set_memory_budget`],
@@ -402,14 +485,17 @@ impl<'w> WindowedRenderer<'w> {
     }
 
     pub fn process_pending_maintenance(&mut self) -> Result<bool> {
-        self.inner.process_pending_maintenance()
+        let result = self.inner.process_pending_maintenance();
+        self.reported(result)
     }
 
     /// See [`Renderer::release_unused_pool_memory`].
     pub async fn release_unused_pool_memory(&mut self, minimum_capacity: u64) -> Result<()> {
-        self.inner
+        let result = self
+            .inner
             .release_unused_pool_memory(minimum_capacity)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub fn set_defrag_policy(&mut self, policy: DefragPolicy) {
@@ -422,34 +508,39 @@ impl<'w> WindowedRenderer<'w> {
     }
 
     pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.inner.enable_gpu_picking()
+        let result = self.inner.enable_gpu_picking();
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     pub fn enable_gpu_picking_observed(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.inner.enable_gpu_picking_observed(observer)
+        let result = self.inner.enable_gpu_picking_observed(observer);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     pub async fn enable_gpu_picking_async(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.inner.enable_gpu_picking_async().await
+        let result = self.inner.enable_gpu_picking_async().await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     pub async fn enable_gpu_picking_observed_async(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.inner.enable_gpu_picking_observed_async(observer).await
+        let result = self.inner.enable_gpu_picking_observed_async(observer).await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     pub fn prepare_gpu_picking_for_chart(
         &mut self,
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
-        self.inner.prepare_gpu_picking_for_chart(id)
+        let result = self.inner.prepare_gpu_picking_for_chart(id);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     /// Pick one chart using this window's current physical surface size.
@@ -469,7 +560,7 @@ impl<'w> WindowedRenderer<'w> {
             (logical.width, logical.height),
             (self.surface_config.width, self.surface_config.height),
         );
-        self.inner.pick_chart(
+        let result = self.inner.pick_chart(
             id,
             GpuPickRequest {
                 canvas_position_px,
@@ -477,7 +568,8 @@ impl<'w> WindowedRenderer<'w> {
                 display_scale,
                 max_distance_px,
             },
-        )
+        );
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
     }
 
     /// Typed data pick using this window's current physical surface size.
@@ -497,7 +589,7 @@ impl<'w> WindowedRenderer<'w> {
             (logical.width, logical.height),
             (self.surface_config.width, self.surface_config.height),
         );
-        self.inner.pick_chart_data(
+        let result = self.inner.pick_chart_data(
             id,
             GpuPickRequest {
                 canvas_position_px,
@@ -505,23 +597,28 @@ impl<'w> WindowedRenderer<'w> {
                 display_scale,
                 max_distance_px,
             },
-        )
+        );
+        self.reported(result)
     }
 
     pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
-        self.inner.register_chart(config, series)
+        let result = self.inner.register_chart(config, series);
+        self.reported(result)
     }
 
     pub fn remove_chart(&mut self, id: ChartId) -> Result<()> {
-        self.inner.remove_chart(id)
+        let result = self.inner.remove_chart(id);
+        self.reported(result)
     }
 
     pub fn set_chart_config(&mut self, id: ChartId, config: Config) -> Result<()> {
-        self.inner.set_chart_config(id, config)
+        let result = self.inner.set_chart_config(id, config);
+        self.reported(result)
     }
 
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
-        self.inner.set_chart_series(id, series)
+        let result = self.inner.set_chart_series(id, series);
+        self.reported(result)
     }
 
     pub fn set_chart_state(
@@ -530,15 +627,18 @@ impl<'w> WindowedRenderer<'w> {
         config: Config,
         series: Vec<SeriesConfig>,
     ) -> Result<()> {
-        self.inner.set_chart_state(id, config, series)
+        let result = self.inner.set_chart_state(id, config, series);
+        self.reported(result)
     }
 
     pub fn set_chart_view_state(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
-        self.inner.set_chart_view_state(id, view)
+        let result = self.inner.set_chart_view_state(id, view);
+        self.reported(result)
     }
 
     pub fn set_chart_selection(&mut self, id: ChartId, selected: Option<HitId>) -> Result<()> {
-        self.inner.set_chart_selection(id, selected)
+        let result = self.inner.set_chart_selection(id, selected);
+        self.reported(result)
     }
 
     pub fn set_active_layer(
@@ -546,19 +646,23 @@ impl<'w> WindowedRenderer<'w> {
         id: ChartId,
         layer: crate::LayerRef,
     ) -> Result<crate::LayerRef> {
-        self.inner.set_active_layer(id, layer)
+        let result = self.inner.set_active_layer(id, layer);
+        self.reported(result)
     }
 
     pub fn active_layer(&self, id: ChartId) -> Result<crate::LayerRef> {
-        self.inner.active_layer(id)
+        let result = self.inner.active_layer(id);
+        self.reported(result)
     }
 
     pub fn sync_external_invalidations(&mut self) -> Result<bool> {
-        self.inner.sync_external_invalidations()
+        let result = self.inner.sync_external_invalidations();
+        self.reported(result)
     }
 
     pub fn request_stream_auto_fit(&mut self, id: ChartId, padding: f64) -> Result<()> {
-        self.inner.request_stream_auto_fit(id, padding)
+        let result = self.inner.request_stream_auto_fit(id, padding);
+        self.reported(result)
     }
 
     pub fn commit_auto_fit_all_if_current(
@@ -568,8 +672,10 @@ impl<'w> WindowedRenderer<'w> {
         y_extent: &crate::chart::FitExtent,
         padding: f64,
     ) -> Result<()> {
-        self.inner
-            .commit_auto_fit_all_if_current(token, x_extent, y_extent, padding)
+        let result = self
+            .inner
+            .commit_auto_fit_all_if_current(token, x_extent, y_extent, padding);
+        self.reported(result)
     }
 
     pub fn refresh_axis(
@@ -578,7 +684,8 @@ impl<'w> WindowedRenderer<'w> {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
-        self.inner.refresh_axis(view, chart, panel_rect)
+        let result = self.inner.refresh_axis(view, chart, panel_rect);
+        self.reported(result)
     }
 
     pub fn refresh_axis_with_selection(
@@ -588,8 +695,10 @@ impl<'w> WindowedRenderer<'w> {
         panel_rect: Rect,
         selected: Option<&str>,
     ) -> Result<()> {
-        self.inner
-            .refresh_axis_with_selection(view, chart, panel_rect, selected)
+        let result = self
+            .inner
+            .refresh_axis_with_selection(view, chart, panel_rect, selected);
+        self.reported(result)
     }
 
     /// [`Renderer::selection_box`].
@@ -608,23 +717,28 @@ impl<'w> WindowedRenderer<'w> {
         panel_rect: Rect,
         selected: Option<usize>,
     ) -> Result<()> {
-        self.inner
-            .refresh_annotations(view, chart, panel_rect, selected)
+        let result = self
+            .inner
+            .refresh_annotations(view, chart, panel_rect, selected);
+        self.reported(result)
     }
 
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
-        self.inner.update_transform(view, chart)
+        let result = self.inner.update_transform(view, chart);
+        self.reported(result)
     }
 
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
-        self.inner.prepare(items)
+        let result = self.inner.prepare(items);
+        self.reported(result)
     }
 
     pub fn prepare_registered(
         &mut self,
         items: &[RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {
-        self.inner.prepare_registered(items)
+        let result = self.inner.prepare_registered(items);
+        self.reported(result)
     }
 
     pub async fn export_panel_rgba_async(
@@ -633,9 +747,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<RasterImage> {
-        self.inner
+        let result = self
+            .inner
             .export_panel_rgba_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_panel_rgba_with_clear_async(
@@ -645,9 +761,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<RasterImage> {
-        self.inner
+        let result = self
+            .inner
             .export_panel_rgba_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_panel_png_bytes_async(
@@ -656,9 +774,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_panel_png_bytes_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -668,7 +788,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<RasterImage> {
-        self.inner.export_panel_rgba(chart, series, scale)
+        let result = self.inner.export_panel_rgba(chart, series, scale);
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -678,7 +799,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner.export_panel_png_bytes(chart, series, scale)
+        let result = self.inner.export_panel_png_bytes(chart, series, scale);
+        self.reported(result)
     }
 
     pub async fn export_panel_png_bytes_with_clear_async(
@@ -688,9 +810,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_panel_png_bytes_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_rgba_async(
@@ -699,9 +823,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<RasterImage> {
-        self.inner
+        let result = self
+            .inner
             .export_document_rgba_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_rgba_with_clear_async(
@@ -711,9 +837,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<RasterImage> {
-        self.inner
+        let result = self
+            .inner
             .export_document_rgba_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_png_bytes_async(
@@ -722,9 +850,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_document_png_bytes_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_png_bytes_with_clear_async(
@@ -734,9 +864,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_document_png_bytes_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -746,7 +878,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<RasterImage> {
-        self.inner.export_document_rgba(chart, series, scale)
+        let result = self.inner.export_document_rgba(chart, series, scale);
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -756,7 +889,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner.export_document_png_bytes(chart, series, scale)
+        let result = self.inner.export_document_png_bytes(chart, series, scale);
+        self.reported(result)
     }
 
     pub async fn export_document_svg_async(
@@ -765,9 +899,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<String> {
-        self.inner
+        let result = self
+            .inner
             .export_document_svg_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_svg_with_clear_async(
@@ -777,9 +913,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<String> {
-        self.inner
+        let result = self
+            .inner
             .export_document_svg_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_pdf_async(
@@ -788,9 +926,11 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_document_pdf_async(chart, series, scale)
-            .await
+            .await;
+        self.reported(result)
     }
 
     pub async fn export_document_pdf_with_clear_async(
@@ -800,9 +940,11 @@ impl<'w> WindowedRenderer<'w> {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<Vec<u8>> {
-        self.inner
+        let result = self
+            .inner
             .export_document_pdf_with_clear_async(chart, series, scale, clear)
-            .await
+            .await;
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -812,7 +954,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<String> {
-        self.inner.export_document_svg(chart, series, scale)
+        let result = self.inner.export_document_svg(chart, series, scale);
+        self.reported(result)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -822,7 +965,8 @@ impl<'w> WindowedRenderer<'w> {
         series: &[SeriesConfig],
         scale: f32,
     ) -> Result<Vec<u8>> {
-        self.inner.export_document_pdf(chart, series, scale)
+        let result = self.inner.export_document_pdf(chart, series, scale);
+        self.reported(result)
     }
 
     /// Reconfigure the swap chain after a window resize. The caller is then
@@ -857,7 +1001,8 @@ impl<'w> WindowedRenderer<'w> {
         self.inner
             .ensure_target(self.surface_config.format, target_sample_count)?;
         self.msaa_target = msaa_target;
-        Ok(())
+        // An error the reconfiguration sent to the uncaptured-error handler.
+        self.inner.health.check()
     }
 
     /// Draw one frame.
@@ -985,7 +1130,7 @@ impl<'w> WindowedRenderer<'w> {
             })?;
         #[cfg(not(target_arch = "wasm32"))]
         self.inner.wait_submitted_work().await?;
-        Ok(())
+        self.inner.health.check()
     }
 
     /// Alias for [`Self::first_frame_ready`].
@@ -1000,24 +1145,44 @@ impl<'w> WindowedRenderer<'w> {
 
 impl Drop for WindowedRenderer<'_> {
     fn drop(&mut self) {
-        // Drop has no caller to return an error to. A lost device has no work
-        // left to finish, and polling it would only fail, so the wait is
+        // Drop has no caller to return an error to, so no path may reach it
+        // with an unreported error: every call that records GPU work checks
+        // the device health at its end and returns its own GPU error (#158).
+        // What can still be seen here is a device lost after the last call (a
+        // driver reset, a removed GPU), and on the web a WebGPU error the
+        // browser delivered after the last call; a host that needs the latter
+        // awaits `wait_submitted_work` before dropping. A lost device has no
+        // work left to finish, and polling it would only fail, so the wait is
         // skipped then.
         if self.inner.health.is_lost() {
             return;
         }
         if self.inner.health.check().is_err() {
-            // A GPU error no call has reported yet: there is no caller left
-            // to report it to, and it must not stop the wait below.
+            // See above: only an error delivered after the last call; it must
+            // not stop the wait below.
         }
         if self.inner.wait_idle().is_err() {
-            // The device failed during the wait (`gpu_poll` never panics):
-            // nothing is left to wait for, and no caller to tell.
+            // The device was lost during the wait (`gpu_poll` never panics):
+            // nothing is left to wait for.
         }
     }
 }
 
 impl Renderer {
+    /// `result`, or the GPU error the call that produced it raised: an `Ok`
+    /// value is returned only when no GPU error is pending (#158). An `Err`
+    /// is returned as it is; a GPU error pending beside it stays counted for
+    /// the next check.
+    pub(crate) fn reported_as<T, E>(
+        &self,
+        result: std::result::Result<T, E>,
+        convert: fn(FiggyError) -> E,
+    ) -> std::result::Result<T, E> {
+        let value = result?;
+        self.health.check().map_err(convert)?;
+        Ok(value)
+    }
+
     /// Build base Cartesian resources and a surface from a window handle.
     /// The returned [`WindowedRenderer`] retains the instance, adapter and GPU
     /// handles, manages the surface and

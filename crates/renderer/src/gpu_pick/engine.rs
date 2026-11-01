@@ -2195,7 +2195,7 @@ impl GpuPickTicket {
     pub(crate) async fn resolve_indexed(self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
         let GpuPickTicketState::Pending {
             device: _device,
-            health: _health,
+            health,
             readback,
             receiver,
             identities,
@@ -2210,7 +2210,7 @@ impl GpuPickTicket {
 
         #[cfg(not(target_arch = "wasm32"))]
         crate::renderer::gpu_poll(
-            &_health,
+            &health,
             &_device,
             wgpu::PollType::Wait {
                 submission_index: None,
@@ -2244,6 +2244,9 @@ impl GpuPickTicket {
             .unwrap_or_else(|| candidate_at(0));
         drop(mapped);
         readback.unmap();
+        // The unmap is the ticket's last GPU call; its error is this
+        // resolve's, not a later call's (#158).
+        health.check().map_err(GpuPickError::from_figgy)?;
 
         match candidate.valid {
             0 => Ok(None),
