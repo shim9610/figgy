@@ -492,7 +492,7 @@ impl FiggyChart {
             .request_auto_streaming_chart_with_display_scale(
                 self.chart_id,
                 &self.view,
-                display_config,
+                display_config.into_owned(),
                 display_scale,
                 StreamingChartOptions {
                     size: self.surface_size,
@@ -726,7 +726,7 @@ impl FiggyChart {
             .request_resident_stream_handoff_with_display_scale(
                 self.chart_id,
                 &self.view,
-                display_config,
+                display_config.into_owned(),
                 display_scale,
                 columns,
                 StreamingChartOptions {
@@ -1098,7 +1098,7 @@ impl FiggyChart {
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
         let (display_config, _, _) = self.display_config()?;
-        let display_chart = Chart::new(display_config);
+        let display_chart = Chart::new(display_config.into_owned());
         self.renderer
             .update_transform(&self.view, &display_chart)
             .map_err(js_err)?;

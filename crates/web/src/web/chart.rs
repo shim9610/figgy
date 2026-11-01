@@ -337,11 +337,15 @@ impl FiggyChart {
         ))
     }
 
-    pub(super) fn display_config(&self) -> Result<(renderer::config::Config, Rect, f32), JsValue> {
-        Ok(renderer::display_config_for_surface(
-            self.chart_config()?,
-            self.surface_size,
-        ))
+    /// The config, panel rect and scale the canvas draws with: the
+    /// renderer's placed config for the display `create` and `resize` set,
+    /// borrowed while it is current.
+    pub(super) fn display_config(
+        &self,
+    ) -> Result<(std::borrow::Cow<'_, renderer::config::Config>, Rect, f32), JsValue> {
+        self.renderer
+            .chart_display_config(self.chart_id)
+            .map_err(js_err)
     }
 
     pub(super) fn display_delta_to_document(
@@ -1358,7 +1362,7 @@ impl FiggyChart {
         // stored chart remains the export SSoT; the live canvas renders a
         // scaled/letterboxed display chart derived from it.
         let (display_config, panel_rect, _) = self.display_config()?;
-        let display_chart = Chart::new(display_config);
+        let display_chart = Chart::new(display_config.into_owned());
         if refresh_raster {
             let selected_id: Option<String> = self
                 .chart_selection()?
