@@ -869,6 +869,18 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **A call reports its own GPU errors**
+  ([#158](https://github.com/shim9610/figgy/issues/158)). Every
+  `WindowedRenderer` call that records GPU work checks the device health at
+  its end, as `draw` already did. So does each `begin_*_extent` on a column
+  upsert guard, and each pick or extent ticket's `resolve` after its final
+  unmap. On native, a GPU error a call raised is returned by that call
+  rather than by the next one. None is left for `Drop`, which has no caller
+  to report to; it now ignores only a device lost after the last call. In a
+  browser, WebGPU reports errors asynchronously: a host that needs the last
+  call's error awaits `wait_submitted_work` before dropping the chart.
+  Behaviour change: an error that used to surface on the following call now
+  surfaces on the call that caused it. No API change.
 - **No panic paths**
   ([#152](https://github.com/shim9610/figgy/issues/152)). Product code has
   no `unwrap`, `expect`, `panic!`, `unreachable!` or assert macro, and

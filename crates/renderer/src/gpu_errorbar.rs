@@ -512,6 +512,12 @@ pub struct GpuErrorbarExtentEngine {
 }
 
 impl GpuErrorbarExtentEngine {
+    /// The device's health record, checked at the end of every `begin_*`
+    /// call that dispatches through this engine (#158).
+    pub(crate) fn health(&self) -> &crate::renderer::DeviceHealth {
+        &self.health
+    }
+
     /// Engine whose scratch is charged to a ledger only it can see.
     ///
     /// For callers with no renderer to report to (tests, standalone use). The
@@ -1152,7 +1158,7 @@ impl GpuExtentTicketCore {
         {
             // The browser device resolves the readback on its own; nothing
             // polls it here.
-            let (_device, _health, _submission) = (device, health, submission);
+            let (_device, _submission) = (device, submission);
         }
 
         receiver
@@ -1166,6 +1172,8 @@ impl GpuExtentTicketCore {
         let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
         drop(mapped);
         readback.unmap();
+        // The unmap is the ticket's last GPU call (#158).
+        health.check().map_err(GpuErrorbarError::from_figgy)?;
         Ok(state)
     }
 }

@@ -14305,6 +14305,97 @@ fn waits_on_a_destroyed_device_return_device_lost() {
     );
 }
 
+// A GPU error a call raised is returned by that call, so none is left for
+// `WindowedRenderer`'s `Drop`, which has no caller to report it to (#158).
+#[test]
+fn a_call_returns_the_gpu_error_it_raised() {
+    let (device, queue) = crate::test_gpu::device();
+    let device = Arc::new(device);
+    let renderer = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1024 * 1024,
+    )
+    .expect("required GPU test: renderer initialization failed");
+    renderer.wait_idle().unwrap();
+    renderer
+        .reported_as(Ok(()), std::convert::identity)
+        .expect("no GPU error is pending on a fresh renderer");
+
+    // GPU work outside any error scope that fails validation (a buffer
+    // cannot be mapped for both reading and writing) reaches the
+    // uncaptured-error handler while the call that recorded it runs.
+    let invalid = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("#158 invalid buffer"),
+        size: 16,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+        mapped_at_creation: false,
+    });
+    drop(invalid);
+    let result = renderer.reported_as(Ok(7), std::convert::identity);
+    assert!(
+        matches!(result, Err(FiggyError::GpuValidation { .. })),
+        "a call that raised a GPU error returned {result:?}"
+    );
+    // Reported once: the next call is not blamed for it.
+    assert_eq!(
+        renderer.reported_as(Ok(7), std::convert::identity).ok(),
+        Some(7)
+    );
+    // A call's own error is returned as it is, converted only when the GPU
+    // error is the one reported.
+    let own: std::result::Result<(), crate::gpu_pick::GpuPickError> =
+        Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+    assert!(matches!(
+        renderer.reported_as(own, crate::gpu_pick::GpuPickError::from_figgy),
+        Err(crate::gpu_pick::GpuPickError::InvalidGpuResult)
+    ));
+}
+
+// #158: every `WindowedRenderer` call that returns a `Result` ends with a
+// device health check (through `reported`, its own check, or a call that
+// does), so `Drop` is never reached with a GPU error the last call raised.
+#[test]
+fn every_windowed_call_reports_its_own_gpu_errors() {
+    let source = include_str!("window.rs");
+    let start = source
+        .find("impl<'w> WindowedRenderer<'w> {")
+        .expect("the WindowedRenderer impl");
+    let end = source
+        .find("impl Drop for WindowedRenderer")
+        .expect("the Drop impl");
+    let methods = &source[start..end];
+    // Calls that end with the check themselves.
+    let checked = [
+        "self.reported(",
+        "self.reported_as(",
+        "health.check()",
+        "self.draw_prepared(",
+        "self.first_frame_ready(",
+        "Renderer::for_window_async_observed(",
+    ];
+    let mut seen = 0;
+    for (index, _) in methods.match_indices("\n    pub ") {
+        let rest = &methods[index + 1..];
+        let body_end = rest.find("\n    }\n").expect("a method body end");
+        let method = &rest[..body_end];
+        let Some(signature_end) = method.find('{') else {
+            continue;
+        };
+        if !method[..signature_end].contains("Result<") {
+            continue;
+        }
+        seen += 1;
+        assert!(
+            checked
+                .iter()
+                .any(|call| method[signature_end..].contains(call)),
+            "this WindowedRenderer call does not end with a health check:\n{method}"
+        );
+    }
+    assert!(seen > 80, "only {seen} Result-returning calls were found");
+}
+
 /// PIPELINE_ENUM_FITS_ARRAY (#152): each pipeline enum used as
 /// `kind as usize` lists every variant once in `ALL`, and its discriminants
 /// are exactly `0..N` for the `N` slots of the `TargetPipelines` array it

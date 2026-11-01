@@ -1566,7 +1566,7 @@ impl DataPickTicket {
     ) -> Result<Option<RankedPickedData>, crate::gpu_pick::GpuPickError> {
         let DataPickTicketState::Pending {
             device: _poll_device,
-            health: _poll_health,
+            health: poll_health,
             readback,
             receiver,
             identities,
@@ -1582,7 +1582,7 @@ impl DataPickTicket {
 
         #[cfg(not(target_arch = "wasm32"))]
         crate::renderer::gpu_poll(
-            &_poll_health,
+            &poll_health,
             &_poll_device,
             wgpu::PollType::Wait {
                 submission_index: None,
@@ -1649,7 +1649,12 @@ impl DataPickTicket {
         drop(mapped);
         readback.unmap();
         drop((_scratch_charge, _readback_charge));
-        result
+        let picked = result?;
+        // The unmap is the ticket's last GPU call (#158).
+        poll_health
+            .check()
+            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
+        Ok(picked)
     }
 }
 
