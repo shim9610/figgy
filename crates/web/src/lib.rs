@@ -289,7 +289,6 @@ fn set_plain_chart_title(config: &mut renderer::Config, text: &str) {
 struct PreparedDemoDeclarations {
     config: renderer::Config,
     series: Vec<renderer::SeriesConfig>,
-    labels: Vec<Option<String>>,
     color_seq: usize,
 }
 
@@ -297,7 +296,6 @@ struct PreparedDemoDeclarations {
 fn prepare_demo_declarations(
     current_config: &renderer::Config,
     current_series: &[renderer::SeriesConfig],
-    current_labels: &[Option<String>],
     cycle: renderer::ColorCycle,
     color_seq: usize,
 ) -> Result<PreparedDemoDeclarations, String> {
@@ -310,11 +308,6 @@ fn prepare_demo_declarations(
         .try_reserve(current_series.len().saturating_add(2))
         .map_err(|error| error.to_string())?;
     series.extend(current_series.iter().cloned());
-    let mut labels = Vec::new();
-    labels
-        .try_reserve(current_labels.len().saturating_add(2))
-        .map_err(|error| error.to_string())?;
-    labels.extend(current_labels.iter().cloned());
     let mut next_color_seq = color_seq;
 
     for (series_id, x_column, y_column, label) in [
@@ -391,7 +384,6 @@ fn prepare_demo_declarations(
         };
         if let Some(index) = existing {
             series[index] = item.clone();
-            labels[index] = Some(label.to_string());
             renderer::config::set_legend_entry_label(
                 &mut config.legend.content,
                 index,
@@ -403,7 +395,6 @@ fn prepare_demo_declarations(
             );
         } else {
             series.push(item.clone());
-            labels.push(Some(label.to_string()));
             renderer::config::append_legend_entry_rich(
                 &mut config.legend.content,
                 renderer::config::series_symbol_segments(
@@ -422,7 +413,6 @@ fn prepare_demo_declarations(
     Ok(PreparedDemoDeclarations {
         config,
         series,
-        labels,
         color_seq: next_color_seq,
     })
 }
@@ -1036,7 +1026,7 @@ mod tests {
     fn demo_declarations_are_complete_and_stable_on_repeat() {
         let initial_config = renderer::default::default_config();
         let first =
-            prepare_demo_declarations(&initial_config, &[], &[], renderer::ColorCycle::Classic, 0)
+            prepare_demo_declarations(&initial_config, &[], renderer::ColorCycle::Classic, 0)
                 .unwrap();
         assert_eq!(
             first
@@ -1047,8 +1037,15 @@ mod tests {
             vec!["sine", "rc"]
         );
         assert_eq!(
-            first.labels,
-            vec![Some("sin(x)".into()), Some("RC charge".into())]
+            first
+                .series
+                .iter()
+                .map(|item| item.label.as_ref().map(|label| label.segments.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(renderer::text::rich_segments_from_text("sin(x)")),
+                Some(renderer::text::rich_segments_from_text("RC charge"))
+            ]
         );
         assert_eq!(first.color_seq, 2);
         assert_eq!(
@@ -1067,14 +1064,12 @@ mod tests {
         let repeated = prepare_demo_declarations(
             &first.config,
             &first.series,
-            &first.labels,
             renderer::ColorCycle::Classic,
             first.color_seq,
         )
         .unwrap();
         assert_eq!(repeated.config, first.config);
         assert_eq!(repeated.series, first.series);
-        assert_eq!(repeated.labels, first.labels);
         assert_eq!(repeated.color_seq, first.color_seq);
     }
 
@@ -1082,24 +1077,17 @@ mod tests {
     fn demo_precommit_abort_preserves_every_host_owned_authority() {
         let config = renderer::default::default_config();
         let series = vec![line_series("stable", "stable-x", "stable-y")];
-        let labels = vec![Some("stable".to_string())];
         let styles = vec![7u32];
         let color_seq = 1usize;
 
-        let prepared_declarations = prepare_demo_declarations(
-            &config,
-            &series,
-            &labels,
-            renderer::ColorCycle::Classic,
-            color_seq,
-        )
-        .unwrap();
+        let prepared_declarations =
+            prepare_demo_declarations(&config, &series, renderer::ColorCycle::Classic, color_seq)
+                .unwrap();
         drop(prepared_declarations);
 
         assert_eq!(config, renderer::default::default_config());
         assert_eq!(series, vec![line_series("stable", "stable-x", "stable-y")]);
         assert_eq!(styles, vec![7]);
-        assert_eq!(labels, vec![Some("stable".to_string())]);
         assert_eq!(color_seq, 1);
     }
 
@@ -1219,7 +1207,6 @@ mod web {
             config: renderer::Config,
             series: Vec<SeriesConfig>,
             column_revisions: Vec<(String, Option<u64>)>,
-            labels: Vec<Option<String>>,
             legend_auto_managed: bool,
             color_seq: usize,
             chart_stamp: ChartRenderStamp,
@@ -1286,7 +1273,6 @@ mod web {
                 config: chart.chart_config().unwrap().clone(),
                 series: chart.chart_series().unwrap().to_vec(),
                 column_revisions,
-                labels: chart.labels.clone(),
                 legend_auto_managed: chart.legend_auto_managed,
                 color_seq: chart.color_seq,
                 chart_stamp: chart.renderer.chart_render_stamp(chart.chart_id).unwrap(),
@@ -2110,13 +2096,6 @@ mod web {
             }
         }
 
-        /// LABELS_MATCH_SERIES (#152): the legacy labels hold one entry per
-        /// series. The GPU styles are the renderer's (#160).
-        fn assert_labels_match(chart: &FiggyChart, at: &str) {
-            let series = chart.chart_series().unwrap().len();
-            assert_eq!(chart.labels.len(), series, "{at}: labels");
-        }
-
         const CATEGORICAL_DOCUMENT: &str = r#"{
             "categories": [
                 {"id": "q1", "label": "Q1"},
@@ -2173,8 +2152,7 @@ mod web {
             "selected": {"series_id": "a", "category_id": "range"}
         }"#;
 
-        /// Remove every registered column of `chart` in turn, checking the
-        /// labels after each.
+        /// Remove every registered column of `chart` in turn.
         fn remove_every_column(chart: &mut FiggyChart, at: &str) {
             let mut ids = chart
                 .renderer
@@ -2183,14 +2161,15 @@ mod web {
                 .collect::<Vec<_>>();
             ids.sort();
             for id in ids {
-                chart.remove_column(&id).unwrap();
-                assert_labels_match(chart, &format!("{at}: remove_column {id}"));
+                chart
+                    .remove_column(&id)
+                    .unwrap_or_else(|error| panic!("{at}: remove_column {id}: {error:?}"));
             }
         }
 
-        /// LABELS_MATCH_SERIES (#152): `labels` and `styles` hold one entry
-        /// per series after every call that changes the series or the
-        /// labels, successful or rejected: line upserts, label edits,
+        /// Every call that changes the series or their labels either commits
+        /// or is rejected whole, and the chart's series and legend live only
+        /// in the renderer (#152, #160): line upserts, label edits,
         /// series removal, `set_series` with 0, 1 and 200 series, the three
         /// document loads, `load_demo` twice, and the removal of each column
         /// a series of every kind reads (a line's, a colour or size map's,
@@ -2198,33 +2177,23 @@ mod web {
         /// a range bar's extra columns, a matrix grid column, a vector
         /// component), its record and ragged columns.
         #[wasm_bindgen_test(async)]
-        async fn labels_and_styles_follow_every_series_change() {
+        async fn every_series_change_commits_or_rejects_whole() {
             let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
-            assert_labels_match(&chart, "create");
             chart.register_column_f64("lx", &[0.0, 1.0, 2.0]).unwrap();
             chart.register_column_f64("ly", &[2.0, 3.0, 4.0]).unwrap();
             chart.add_line_series("a", "lx", "ly", 2.0, "A").unwrap();
-            assert_labels_match(&chart, "add a");
             chart.add_line_series("a", "lx", "ly", 3.0, "").unwrap();
-            assert_labels_match(&chart, "update a");
             chart.add_line_series("b", "lx", "ly", 2.0, "B").unwrap();
-            assert_labels_match(&chart, "add b");
             assert!(
                 chart
                     .add_line_series("c", "lx", "missing", 2.0, "C")
                     .is_err()
             );
-            assert_labels_match(&chart, "rejected add");
             assert!(chart.set_series_label("a", "Alpha").unwrap());
-            assert_labels_match(&chart, "set label");
             assert!(chart.set_series_label("a", "").unwrap());
-            assert_labels_match(&chart, "clear label");
             assert!(!chart.set_series_label("nope", "x").unwrap());
-            assert_labels_match(&chart, "label of a missing series");
             assert!(chart.remove_series("b").unwrap());
-            assert_labels_match(&chart, "remove b");
             assert!(!chart.remove_series("nope").unwrap());
-            assert_labels_match(&chart, "remove a missing series");
 
             let lines = |ids: &mut dyn Iterator<Item = String>| -> String {
                 let series: Vec<SeriesConfig> = ids
@@ -2246,7 +2215,6 @@ mod web {
                 chart
                     .set_series(&lines(&mut (0..count).map(|i| format!("s{i}"))))
                     .unwrap();
-                assert_labels_match(&chart, &format!("set_series {count}"));
             }
             // Survivors keep their labels, new ids join.
             chart
@@ -2256,9 +2224,7 @@ mod web {
                         .chain((0..10).map(|i| format!("t{i}"))),
                 ))
                 .unwrap();
-            assert_labels_match(&chart, "set_series survivors");
             assert!(chart.set_series("not json").is_err());
-            assert_labels_match(&chart, "rejected set_series json");
             let mut unknown: Vec<SeriesConfig> =
                 serde_json::from_str(&chart.get_series().unwrap()).unwrap();
             unknown[0].y_column = "missing".into();
@@ -2267,41 +2233,30 @@ mod web {
                     .set_series(&serde_json::to_string(&unknown).unwrap())
                     .is_err()
             );
-            assert_labels_match(&chart, "rejected set_series column");
-            for round in 0..2 {
+            for _ in 0..2 {
                 chart.load_demo().unwrap();
-                assert_labels_match(&chart, &format!("load_demo {round}"));
             }
 
             chart
                 .set_categorical_document(CATEGORICAL_DOCUMENT)
                 .unwrap();
-            assert_labels_match(&chart, "categorical document");
             assert!(chart.set_categorical_document("{").is_err());
-            assert_labels_match(&chart, "rejected categorical document");
             remove_every_column(&mut chart, "categorical document");
             chart.set_boxplot_document(BOXPLOT_DOCUMENT).unwrap();
-            assert_labels_match(&chart, "box plot document");
             assert!(chart.set_boxplot_document("{").is_err());
-            assert_labels_match(&chart, "rejected box plot document");
             remove_every_column(&mut chart, "box plot document");
             chart.set_radar_document(RADAR_DOCUMENT).unwrap();
-            assert_labels_match(&chart, "radar document");
             assert!(chart.set_radar_document("{").is_err());
-            assert_labels_match(&chart, "rejected radar document");
             remove_every_column(&mut chart, "radar document");
             assert!(!chart.remove_column("missing").unwrap());
-            assert_labels_match(&chart, "remove a missing column");
 
             // Each column a series of every kind reads, removed and put
             // back: the series goes with it and comes back with it.
             for scene in selection_scenes() {
                 let mut chart = scene_chart(&scene).await;
-                assert_labels_match(&chart, scene.name);
                 let series_json = serde_json::to_string(&[scene.series.clone()]).unwrap();
                 for (id, data) in &scene.columns {
                     assert!(chart.remove_column(id).unwrap(), "{}: {id}", scene.name);
-                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
                     assert!(
                         chart.chart_series().unwrap().is_empty(),
                         "{}: a series reading {id} stays",
@@ -2309,7 +2264,6 @@ mod web {
                     );
                     chart.register_column_f64(id, data).unwrap();
                     chart.set_series(&series_json).unwrap();
-                    assert_labels_match(&chart, &format!("{}: restore {id}", scene.name));
                 }
                 let composites = scene
                     .record
@@ -2319,7 +2273,6 @@ mod web {
                 for id in composites {
                     // A record or ragged id is not a registry column.
                     let _removed = chart.remove_column(id);
-                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
                 }
             }
         }

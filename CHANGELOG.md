@@ -2045,6 +2045,12 @@ additive.
   pool's allocation epoch for its latest upload. It still changes on every
   upload, and a streamed column still reports the revision the host declared.
   The JS API is unchanged.
+- **No plain-text label mirror** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The wrapper no longer keeps a plain-text copy of every series label beside
+  `SeriesConfig::label`. Behaviour change: rebuilding the automatic legend,
+  and `set_series` with a series that has no `label`, take the label from the
+  series alone. A series whose new config drops its label no longer keeps
+  the label its earlier config had.
 - **The canvas draws through the renderer's registry** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `frame()` draws every chart with `draw_registered` at the canvas display
   (`set_chart_display`, kept current by `resize`) instead of copying the

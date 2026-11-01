@@ -542,15 +542,6 @@ impl FiggyChart {
                 .filter(|(_, keep)| **keep)
                 .map(|(series, _)| series.clone()),
         );
-        let mut next_labels = Vec::new();
-        next_labels.try_reserve(self.labels.len()).map_err(js_err)?;
-        next_labels.extend(
-            self.labels
-                .iter()
-                .zip(&keep)
-                .filter(|(_, keep)| **keep)
-                .map(|(label, _)| label.clone()),
-        );
         let mut next_config = self.chart_config()?.clone();
         if self.legend_auto_managed {
             for &index in removed.iter().rev() {
@@ -576,7 +567,6 @@ impl FiggyChart {
             return Ok(false);
         }
 
-        self.labels = next_labels;
         if self.renderer.pool().slot(id).is_some() {
             return Err(js_err(
                 "internal: the renderer reported a removed column that is still in the pool",
@@ -599,7 +589,6 @@ impl FiggyChart {
         let declarations = prepare_demo_declarations(
             self.chart_config()?,
             self.chart_series()?,
-            &self.labels,
             self.cycle,
             self.color_seq,
         )
@@ -622,7 +611,6 @@ impl FiggyChart {
         let PreparedDemoDeclarations {
             config,
             series,
-            labels,
             color_seq,
         } = declarations;
         let guard = self
@@ -648,7 +636,6 @@ impl FiggyChart {
         }
 
         guard.commit();
-        self.labels = labels;
         self.color_seq = color_seq;
         Ok(())
     }
