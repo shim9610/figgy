@@ -204,12 +204,14 @@ fn dropping_load_demo_preserves_public_pool_chart_and_gpu_bytes() {
 
     {
         let pending = renderer
-            .begin_load_demo(
+            .begin_replace_chart_columns(
                 chart,
-                &columns[0],
-                &columns[1],
-                &columns[2],
-                &columns[3],
+                [
+                    (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                    (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                    (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                    (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+                ],
                 |pool| final_state(pool, initial_config.clone()),
             )
             .unwrap();
@@ -249,12 +251,14 @@ fn all_new_demo_columns_publish_in_one_complete_state() {
     let columns = demo_columns();
 
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |pool| final_state(pool, renderer::default::default_config()),
         )
         .unwrap()
@@ -288,12 +292,14 @@ fn commit_from_fragmented_existing_backup_is_complete_and_repeatable() {
     let columns = demo_columns();
 
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |pool| final_state(pool, renderer::default::default_config()),
         )
         .unwrap()
@@ -319,12 +325,14 @@ fn commit_from_fragmented_existing_backup_is_complete_and_repeatable() {
     let first_config = renderer.chart_config(chart).unwrap().clone();
     let first_series = renderer.chart_series(chart).unwrap().to_vec();
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |pool| final_state(pool, first_config.clone()),
         )
         .unwrap()
@@ -387,12 +395,14 @@ fn staging_failure_at_each_demo_column_leaves_external_state_unchanged() {
         });
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = renderer.begin_load_demo(
+            let _ = renderer.begin_replace_chart_columns(
                 chart,
-                sources[0],
-                sources[1],
-                sources[2],
-                sources[3],
+                [
+                    (DEMO_IDS[0], sources[0] as &dyn ColumnSource),
+                    (DEMO_IDS[1], sources[1] as &dyn ColumnSource),
+                    (DEMO_IDS[2], sources[2] as &dyn ColumnSource),
+                    (DEMO_IDS[3], sources[3] as &dyn ColumnSource),
+                ],
                 |_| Ok((renderer::default::default_config(), Vec::new())),
             );
         }));
@@ -420,17 +430,19 @@ fn invalid_final_chart_state_aborts_after_candidate_preparation() {
     let columns = demo_columns();
 
     assert!(matches!(
-        renderer.begin_load_demo(
+        renderer.begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_IDS[3], &columns[3] as &dyn ColumnSource)
+            ],
             |_| {
                 let mut invalid = renderer::default::default_config();
                 invalid.chart_area.0.width = 0;
                 Ok((invalid, final_series()))
-            },
+            }
         ),
         Err(FiggyError::InvalidChartArea { width: 0, .. })
     ));

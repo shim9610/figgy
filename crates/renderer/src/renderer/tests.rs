@@ -1,4 +1,7 @@
 use super::*;
+
+/// The column ids the replacement tests upload, the browser demo's.
+const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
 use pollster::FutureExt as _;
 
 /// Wait until every retired GPU charge of `renderer` has completed. A
@@ -2161,38 +2164,47 @@ fn demo_load_rejects_invalid_spacing_without_publishing_candidate_state() {
     let column = col_f64(vec![0.0, 1.0, 2.0]);
     let before_visual = renderer.visual_revision();
     let before_generation = renderer.pool().generation();
-    let result = renderer.begin_load_demo(chart, &column, &column, &column, &column, |_| {
-        let mut config = crate::default::default_config();
-        config.colorbar = Some(crate::default::default_colorbar_options());
-        let mut series = state_test_contour(
-            "demo-label",
-            DEMO_COLUMN_IDS[0],
-            DEMO_COLUMN_IDS[1],
-            &[DEMO_COLUMN_IDS[2]],
-            1,
-        );
-        let DataRenderType::Field(crate::data_config::FieldSeries {
-            matrix: _,
-            fill: None,
-            contour: Some(contour),
-            ..
-        }) = &mut series.render_type
-        else {
-            unreachable!()
-        };
-        contour.labels = Some(crate::data_config::ContourLabelConfig {
-            visible: false,
-            font_size: 12.0,
-            color: Color::BLACK,
-            format: crate::format::LabelFormat::Decimal,
-            significant_digits: 3,
-            spacing_px: f32::NAN,
-            anchors: Vec::new(),
-            bg_color: None,
-            bg_padding_px: 0.0,
-        });
-        Ok((config, vec![series]))
-    });
+    let result = renderer.begin_replace_chart_columns(
+        chart,
+        [
+            (DEMO_COLUMN_IDS[0], &column as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[1], &column as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[2], &column as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[3], &column as &dyn ColumnSource),
+        ],
+        |_| {
+            let mut config = crate::default::default_config();
+            config.colorbar = Some(crate::default::default_colorbar_options());
+            let mut series = state_test_contour(
+                "demo-label",
+                DEMO_COLUMN_IDS[0],
+                DEMO_COLUMN_IDS[1],
+                &[DEMO_COLUMN_IDS[2]],
+                1,
+            );
+            let DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix: _,
+                fill: None,
+                contour: Some(contour),
+                ..
+            }) = &mut series.render_type
+            else {
+                unreachable!()
+            };
+            contour.labels = Some(crate::data_config::ContourLabelConfig {
+                visible: false,
+                font_size: 12.0,
+                color: Color::BLACK,
+                format: crate::format::LabelFormat::Decimal,
+                significant_digits: 3,
+                spacing_px: f32::NAN,
+                anchors: Vec::new(),
+                bg_color: None,
+                bg_padding_px: 0.0,
+            });
+            Ok((config, vec![series]))
+        },
+    );
     assert_contour_spacing_error(result, false);
     assert!(renderer.chart_series(chart).unwrap().is_empty());
     assert_eq!(renderer.visual_revision(), before_visual);
@@ -2634,19 +2646,28 @@ fn demo_load_covers_both_contour_variants_at_the_level_boundary() {
         let mut config = crate::default::default_config();
         config.colorbar = Some(crate::default::default_colorbar_options());
         renderer
-            .begin_load_demo(chart, &column, &column, &column, &column, |_| {
-                Ok((
-                    config,
-                    vec![state_test_contour_variant(
-                        heatmap,
-                        "accepted",
-                        DEMO_COLUMN_IDS[0],
-                        DEMO_COLUMN_IDS[1],
-                        &[DEMO_COLUMN_IDS[2]],
-                        crate::data_config::MAX_CONTOUR_LEVELS,
-                    )],
-                ))
-            })
+            .begin_replace_chart_columns(
+                chart,
+                [
+                    (DEMO_COLUMN_IDS[0], &column as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[1], &column as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[2], &column as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[3], &column as &dyn ColumnSource),
+                ],
+                |_| {
+                    Ok((
+                        config,
+                        vec![state_test_contour_variant(
+                            heatmap,
+                            "accepted",
+                            DEMO_COLUMN_IDS[0],
+                            DEMO_COLUMN_IDS[1],
+                            &[DEMO_COLUMN_IDS[2]],
+                            crate::data_config::MAX_CONTOUR_LEVELS,
+                        )],
+                    ))
+                },
+            )
             .unwrap()
             .commit();
         assert_eq!(
@@ -2662,19 +2683,28 @@ fn demo_load_covers_both_contour_variants_at_the_level_boundary() {
         let before_epochs = DEMO_COLUMN_IDS.map(|id| renderer.pool().allocation_epoch(id).unwrap());
         let mut rejected_config = crate::default::default_config();
         rejected_config.colorbar = Some(crate::default::default_colorbar_options());
-        let result = renderer.begin_load_demo(chart, &column, &column, &column, &column, |_| {
-            Ok((
-                rejected_config,
-                vec![state_test_contour_variant(
-                    heatmap,
-                    "rejected",
-                    DEMO_COLUMN_IDS[0],
-                    DEMO_COLUMN_IDS[1],
-                    &[DEMO_COLUMN_IDS[2]],
-                    crate::data_config::MAX_CONTOUR_LEVELS + 1,
-                )],
-            ))
-        });
+        let result = renderer.begin_replace_chart_columns(
+            chart,
+            [
+                (DEMO_COLUMN_IDS[0], &column as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &column as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &column as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &column as &dyn ColumnSource),
+            ],
+            |_| {
+                Ok((
+                    rejected_config,
+                    vec![state_test_contour_variant(
+                        heatmap,
+                        "rejected",
+                        DEMO_COLUMN_IDS[0],
+                        DEMO_COLUMN_IDS[1],
+                        &[DEMO_COLUMN_IDS[2]],
+                        crate::data_config::MAX_CONTOUR_LEVELS + 1,
+                    )],
+                ))
+            },
+        );
         assert_contour_limit_error(result);
         assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
         assert_eq!(renderer.visual_revision(), before_revision);
@@ -3654,12 +3684,14 @@ fn load_demo_guard_drop_preserves_renderer_authority_and_retry_commits() {
     )];
     {
         let pending = renderer
-            .begin_load_demo(
+            .begin_replace_chart_columns(
                 chart,
-                &columns[0],
-                &columns[1],
-                &columns[2],
-                &columns[3],
+                [
+                    (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource),
+                ],
                 |_| Ok((final_config.clone(), final_series.clone())),
             )
             .unwrap();
@@ -3690,12 +3722,14 @@ fn load_demo_guard_drop_preserves_renderer_authority_and_retry_commits() {
     assert_eq!(active_picker(&renderer).descriptors, picker_descriptors);
 
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |_| Ok((final_config.clone(), final_series.clone())),
         )
         .unwrap()
@@ -3751,12 +3785,14 @@ fn load_demo_rebuilds_changed_slots_for_a_different_active_chart() {
     let target_series = vec![state_test_line("demo", "demo_t", "demo_rc")];
 
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             target,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |_| Ok((crate::default::default_config(), target_series.clone())),
         )
         .unwrap()
@@ -3806,13 +3842,15 @@ fn load_demo_picker_failure_preserves_pool_chart_and_picker_then_retries() {
     let columns = demo_test_columns();
 
     assert!(matches!(
-        renderer.begin_load_demo(
+        renderer.begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
-            |_| Ok((crate::default::default_config(), initial_series.clone())),
+            [
+                (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource)
+            ],
+            |_| Ok((crate::default::default_config(), initial_series.clone()))
         ),
         Err(FiggyError::GpuPick(
             crate::gpu_pick::GpuPickError::AllocationFailed {
@@ -3830,12 +3868,14 @@ fn load_demo_picker_failure_preserves_pool_chart_and_picker_then_retries() {
     );
 
     renderer
-        .begin_load_demo(
+        .begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
+            [
+                (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource),
+            ],
             |_| Ok((crate::default::default_config(), initial_series.clone())),
         )
         .unwrap()
@@ -3867,13 +3907,15 @@ fn load_demo_revision_failure_happens_before_publication() {
     let columns = demo_test_columns();
 
     assert!(matches!(
-        renderer.begin_load_demo(
+        renderer.begin_replace_chart_columns(
             chart,
-            &columns[0],
-            &columns[1],
-            &columns[2],
-            &columns[3],
-            |_| Ok((crate::default::default_config(), Vec::new())),
+            [
+                (DEMO_COLUMN_IDS[0], &columns[0] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[1], &columns[1] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[2], &columns[2] as &dyn ColumnSource),
+                (DEMO_COLUMN_IDS[3], &columns[3] as &dyn ColumnSource)
+            ],
+            |_| Ok((crate::default::default_config(), Vec::new()))
         ),
         Err(FiggyError::CounterExhausted {
             counter: "chart desired revision"
@@ -4742,9 +4784,16 @@ fn typecheck_windowed_load_demo_forwarding<'surface>(
     chart_id: ChartId,
     source: &dyn ColumnSource,
 ) -> Result<()> {
-    let guard = renderer.begin_load_demo(chart_id, source, source, source, source, |_| {
-        Ok((crate::default::default_config(), Vec::new()))
-    })?;
+    let guard = renderer.begin_replace_chart_columns(
+        chart_id,
+        [
+            (DEMO_COLUMN_IDS[0], source as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[1], source as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[2], source as &dyn ColumnSource),
+            (DEMO_COLUMN_IDS[3], source as &dyn ColumnSource),
+        ],
+        |_| Ok((crate::default::default_config(), Vec::new())),
+    )?;
     drop(guard);
     Ok(())
 }

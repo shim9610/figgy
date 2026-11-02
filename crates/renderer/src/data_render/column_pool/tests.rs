@@ -1011,7 +1011,7 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
         }
         let sources: [&dyn ColumnSource; 4] = [&columns[0], &columns[1], &columns[2], &columns[3]];
         assert!(matches!(
-            pool.begin_demo_batch_upsert(
+            pool.begin_batch_upsert(
                 demo_batch_columns(sources),
                 GpuAllocCtx::new(&device, &queue, &ledger),
             ),
@@ -1039,7 +1039,7 @@ fn demo_batch_epoch_failures_at_each_replacement_preserve_live_pool() {
         pool.allocation_epoch_counter = u64::MAX - failed_index as u64;
         let before = full_pool_state(&pool);
         let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
-        let error = match pool.begin_demo_batch_upsert(
+        let error = match pool.begin_batch_upsert(
             demo_batch_columns(sources),
             GpuAllocCtx::new(&device, &queue, &ledger),
         ) {
@@ -1078,7 +1078,7 @@ fn demo_batch_generation_and_layout_overflow_preserve_live_pool() {
         }
         let before = full_pool_state(&pool);
         let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
-        let error = match pool.begin_demo_batch_upsert(
+        let error = match pool.begin_batch_upsert(
             demo_batch_columns(sources),
             GpuAllocCtx::new(&device, &queue, &ledger),
         ) {
@@ -1130,7 +1130,7 @@ fn demo_batch_drop_preserves_fragmented_pool_with_existing_backup() {
             &replacements[3],
         ];
         let pending = pool
-            .begin_demo_batch_upsert(
+            .begin_batch_upsert(
                 demo_batch_columns(sources),
                 GpuAllocCtx::new(&device, &queue, &ledger),
             )
@@ -1193,7 +1193,7 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
         &replacements[3],
     ];
     let handles = pool
-        .begin_demo_batch_upsert(
+        .begin_batch_upsert(
             demo_batch_columns(sources),
             GpuAllocCtx::new(&device, &queue, &ledger),
         )

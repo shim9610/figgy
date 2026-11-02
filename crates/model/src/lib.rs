@@ -14,7 +14,13 @@ pub mod default;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;
+/// How a document expands into the panels the renderer draws (overlays,
+/// subplots, line offsets). Public because the renderer crate reads it; it
+/// is the renderer's machinery, not a host API, and carries no
+/// compatibility promise (#160).
+#[doc(hidden)]
 pub mod expand;
+#[doc(hidden)]
 pub use expand::{ExpandedPanel, Expansion};
 pub mod layer;
 pub use annotation::{

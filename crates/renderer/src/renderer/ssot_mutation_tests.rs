@@ -19,6 +19,9 @@
 //! not tested here; the single-property matrix in the parent module does
 //! that for the classified fields.
 use super::*;
+
+/// The column ids the replacement uploads, the browser demo's.
+const DEMO_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
 use crate::renderer::config_mutation::{Outcome, Tally, run};
 
 /// The series id, the column ids and a bundled font family other than the
@@ -332,12 +335,14 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
             let mut next = config.clone();
             next.annotations = layer;
             let before = host.r.chart_states[&host.id].revisions;
-            let committed = match host.r.begin_load_demo(
+            let committed = match host.r.begin_replace_chart_columns(
                 host.id,
-                &columns[0],
-                &columns[1],
-                &columns[2],
-                &columns[3],
+                [
+                    (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                    (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                    (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                    (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+                ],
                 |_| Ok((next.clone(), series.clone())),
             ) {
                 Ok(guard) => {
@@ -371,12 +376,14 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
             };
             // Back to the baseline document, through the same loader.
             host.r
-                .begin_load_demo(
+                .begin_replace_chart_columns(
                     host.id,
-                    &columns[0],
-                    &columns[1],
-                    &columns[2],
-                    &columns[3],
+                    [
+                        (DEMO_IDS[0], &columns[0] as &dyn ColumnSource),
+                        (DEMO_IDS[1], &columns[1] as &dyn ColumnSource),
+                        (DEMO_IDS[2], &columns[2] as &dyn ColumnSource),
+                        (DEMO_IDS[3], &columns[3] as &dyn ColumnSource),
+                    ],
                     |_| Ok((config.clone(), series.clone())),
                 )
                 .unwrap()

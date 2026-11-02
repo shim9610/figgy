@@ -439,12 +439,14 @@ impl FiggyChart {
         } = declarations;
         let guard = self
             .renderer
-            .begin_load_demo(
+            .begin_replace_chart_columns(
                 self.chart_id,
-                &demo_x,
-                &demo_sin,
-                &demo_t,
-                &demo_rc,
+                [
+                    (DEMO_COLUMN_IDS[0], &demo_x as &dyn ColumnSource),
+                    (DEMO_COLUMN_IDS[1], &demo_sin),
+                    (DEMO_COLUMN_IDS[2], &demo_t),
+                    (DEMO_COLUMN_IDS[3], &demo_rc),
+                ],
                 move |pool| {
                     let mut chart = Chart::new(config);
                     chart.auto_fit_x(pool, "demo_x", 0.02)?;

@@ -18,6 +18,9 @@ pub mod data;
 #[doc(hidden)]
 pub mod data_render;
 mod decoration_render;
+/// Sample data for the examples and the browser demo. Not part of the API
+/// (#160).
+#[doc(hidden)]
 pub mod demo;
 pub mod error;
 mod gpu_compile;
@@ -79,7 +82,7 @@ pub use ::model::bounded_sources::{BoxColumn, BoxField};
 pub use ::model::{ConfigError, Coordinates, SeriesUpload, UploadValues};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config,
-    default, drag, expand, format, layout, legend, line, preset, resize, select, sink, text, tick,
+    default, drag, format, layout, legend, line, preset, resize, select, sink, text, tick,
     validate,
 };
 
@@ -125,14 +128,14 @@ pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
 };
 pub use renderer::{
-    AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView,
-    ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource, FitCommitToken,
-    GpuPickRequest, MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature, PreparedFrame,
-    PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer,
-    RendererDevice, RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo,
-    StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer,
-    clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
-    fit_display_panel, place_document,
+    AxisViewState, ChartColumnsReplacement, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle,
+    ChartView, ChartViewLayerStamps, ChartViewState, ExportOptions, ExportScope, ExportSource,
+    FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature,
+    PreparedFrame, PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision,
+    Renderer, RendererDevice, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
+    StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer, clamp_export_scale,
+    display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png, fit_display_panel,
+    place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

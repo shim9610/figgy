@@ -25,6 +25,10 @@ pub const MIN_RADAR_CATEGORIES: usize = 3;
 
 /// One vertex of one series (`category_id` set) or a whole series polygon
 /// (`category_id` absent): what hover, selection and hit testing address.
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the RadarChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarTarget {
@@ -56,6 +60,10 @@ impl RadarTarget {
 
 /// The grid behind the series: rings as regular polygons through the spokes
 /// (the classic spider web) or as circles.
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the RadarChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarGridShape {
@@ -68,6 +76,10 @@ pub enum RadarGridShape {
 
 /// The chart-wide appearance: spoke layout, grid, and the series defaults a
 /// `RadarSeriesStyle` can override.
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the RadarChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -117,6 +129,10 @@ impl Default for RadarStyle {
 }
 
 /// One series: a closed polygon with one value per category.
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the RadarChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadarSeries {

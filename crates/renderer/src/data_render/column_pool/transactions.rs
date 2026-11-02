@@ -447,18 +447,18 @@ impl Drop for ColumnUpsert<'_> {
 }
 
 #[must_use = "dropping a ColumnBatchUpsert leaves the live pool unchanged"]
-pub(crate) struct ColumnBatchUpsert<'a> {
+pub(crate) struct ColumnBatchUpsert<'a, const N: usize> {
     pub(super) pool: &'a mut ColumnPool,
     pub(super) candidate: ColumnPool,
-    pub(super) handles: [ColumnHandle; 4],
+    pub(super) handles: [ColumnHandle; N],
 }
 
-impl ColumnBatchUpsert<'_> {
+impl<const N: usize> ColumnBatchUpsert<'_, N> {
     pub(crate) fn pool(&self) -> &ColumnPool {
         &self.candidate
     }
 
-    pub(crate) fn commit(self) -> [ColumnHandle; 4] {
+    pub(crate) fn commit(self) -> [ColumnHandle; N] {
         let Self {
             pool,
             candidate,
@@ -1271,11 +1271,11 @@ impl ColumnPool {
         )
     }
 
-    pub(crate) fn begin_demo_batch_upsert<'a>(
+    pub(crate) fn begin_batch_upsert<'a, const N: usize>(
         &'a mut self,
-        columns: [(ColumnId, &dyn ColumnSource); 4],
+        columns: [(ColumnId, &dyn ColumnSource); N],
         ctx: GpuAllocCtx<'_>,
-    ) -> Result<ColumnBatchUpsert<'a>, AllocError> {
+    ) -> Result<ColumnBatchUpsert<'a, N>, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
         struct StagedColumn {
@@ -1305,7 +1305,7 @@ impl ColumnPool {
         staged
             .try_reserve_exact(columns.len())
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo column staging registry",
+                resource: "batch column staging registry",
                 reason: error.to_string(),
             })?;
         for (id, source) in columns {
@@ -1337,12 +1337,12 @@ impl ColumnPool {
                 device,
                 ctx.ledger,
                 &BufferDescriptor {
-                    label: Some("figgy demo column staging"),
+                    label: Some("figgy batch column staging"),
                     size: byte_size,
                     usage: BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 },
-                "demo column staging buffer",
+                "batch column staging buffer",
             )?;
             staged_bytes = staged_bytes.saturating_add(byte_size);
             let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, |dst| {
@@ -1367,7 +1367,7 @@ impl ColumnPool {
         replacement_epochs
             .try_reserve_exact(staged.len())
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo allocation epochs",
+                resource: "batch allocation epochs",
                 reason: error.to_string(),
             })?;
         for _ in &staged {
@@ -1391,14 +1391,14 @@ impl ColumnPool {
             survivor_count
                 .checked_add(staged.len())
                 .ok_or(AllocError::AllocationFailed {
-                    resource: "demo column registry",
+                    resource: "batch column registry",
                     reason: "column count overflow".into(),
                 })?;
         let mut survivor_ids = Vec::new();
         survivor_ids
             .try_reserve_exact(survivor_count)
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo survivor order",
+                resource: "batch survivor order",
                 reason: error.to_string(),
             })?;
         survivor_ids.extend(
@@ -1413,14 +1413,14 @@ impl ColumnPool {
         planned_slots
             .try_reserve(final_count)
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo column registry",
+                resource: "batch column registry",
                 reason: error.to_string(),
             })?;
         let mut planned_allocation_epochs = HashMap::new();
         planned_allocation_epochs
             .try_reserve(final_count)
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo allocation epoch registry",
+                resource: "batch allocation epoch registry",
                 reason: error.to_string(),
             })?;
         let mut next_offset = 0u64;
@@ -1449,7 +1449,7 @@ impl ColumnPool {
         handles
             .try_reserve_exact(staged.len())
             .map_err(|error| AllocError::AllocationFailed {
-                resource: "demo column handles",
+                resource: "batch column handles",
                 reason: error.to_string(),
             })?;
         for (column, allocation_epoch) in staged.iter().zip(replacement_epochs) {
@@ -1497,7 +1497,7 @@ impl ColumnPool {
             planned_free
                 .try_reserve_exact(1)
                 .map_err(|error| AllocError::AllocationFailed {
-                    resource: "demo free list",
+                    resource: "batch free list",
                     reason: error.to_string(),
                 })?;
             planned_free.push(FreeRegion {
@@ -1510,7 +1510,7 @@ impl ColumnPool {
             device,
             ctx.ledger,
             &BufferDescriptor {
-                label: Some("figgy demo column pool candidate"),
+                label: Some("figgy batch column pool candidate"),
                 size: self.capacity,
                 usage: BufferUsages::VERTEX
                     | BufferUsages::STORAGE
@@ -1518,10 +1518,10 @@ impl ColumnPool {
                     | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
-            "demo column pool candidate",
+            "batch column pool candidate",
         )?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("figgy demo column batch"),
+            label: Some("figgy batch column batch"),
         });
         for id in &survivor_ids {
             let old = &self.slots[id];
@@ -1546,8 +1546,8 @@ impl ColumnPool {
         }
         queue.submit(std::iter::once(encoder.finish()));
 
-        let handles: [ColumnHandle; 4] = handles.try_into().map_err(|_| AllocError::Internal {
-            invariant: "demo batch always prepares exactly four handles",
+        let handles: [ColumnHandle; N] = handles.try_into().map_err(|_| AllocError::Internal {
+            invariant: "a batch prepares one handle per column",
         })?;
         let candidate = ColumnPool {
             identity: self.identity.clone(),
