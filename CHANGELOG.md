@@ -31,6 +31,24 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **One coordinate system per chart** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Config`'s four optional systems (`polar`, `ternary`, `view_3d`,
+  `parallel`), whose exclusivity three validators checked, are one field,
+  `Config::coordinates: Coordinates` (`Cartesian`, `Polar`, `Ternary`,
+  `View3d`, `Parallel`). `Config::polar()` / `polar_mut()` /
+  `set_polar(Option<..>)` and their `ternary`, `view_3d` and `parallel`
+  siblings read and set one system; `set_*(None)` makes a chart of that
+  system rectangular and leaves another system alone. On the wire nothing
+  changes: the system is written as the one key it always was, at its
+  place among the chart's keys; a document naming two systems, which no
+  renderer drew, is now refused when it is read. Migration:
+  - `config.polar` → `config.polar()` (an `Option<&PolarOptions>`);
+    `config.polar.as_mut()` → `config.polar_mut()`;
+  - `config.polar = Some(p)` → `config.set_polar(Some(p))` or
+    `config.coordinates = Coordinates::Polar(p)`;
+  - a `Config { .. }` literal names `coordinates` instead of the four
+    fields; `Coordinates::from_options(polar, ternary, view_3d, parallel)`
+    builds it from the four options.
 - **Composed render types** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The nine marker / line / error-bar combinations of `DataRenderType`
   (`Scatter`, `Line`, `ScatterLine`, `ScatterErrorbarX`, `ScatterErrorbarY`,

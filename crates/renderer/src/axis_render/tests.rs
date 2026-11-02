@@ -1925,7 +1925,7 @@ fn a_polar_tick_label_selection_boxes_each_label() {
     use crate::text_render::CpuTextMeasure;
 
     let mut cfg = default_config();
-    cfg.polar = Some(crate::polar::PolarOptions::default());
+    cfg.set_polar(Some(crate::polar::PolarOptions::default()));
     let mut chart = crate::Chart::new(cfg);
     chart.set_x_range(0.0, 360.0);
     chart.set_y_range(0.0, 3.0);

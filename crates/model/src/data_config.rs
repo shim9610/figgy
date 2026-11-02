@@ -3136,7 +3136,7 @@ impl crate::config::Config {
             if offsets.series.is_empty() {
                 continue;
             }
-            if chart.polar.is_some() {
+            if chart.polar().is_some() {
                 return Err("polar charts have no line offsets");
             }
             for id in &offsets.series {
@@ -3359,7 +3359,7 @@ impl crate::config::Config {
                 LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
             };
             let chart = subplot.as_ref().unwrap_or(self);
-            if horizontal && chart.polar.is_some() {
+            if horizontal && chart.polar().is_some() {
                 return Err(
                     "a rose fans its bars around the centre: the group direction on a polar chart \
                      is vertical",
@@ -4211,7 +4211,7 @@ impl crate::config::Config {
         if boxes().next().is_none() {
             return Ok(());
         }
-        if self.polar.is_some() {
+        if self.polar().is_some() {
             return Err("box plots are not drawn on polar axes");
         }
         for layer in self.panel_layers() {
@@ -4605,7 +4605,7 @@ impl crate::config::Config {
         if ranges().next().is_none() {
             return Ok(());
         }
-        if self.polar.is_some() {
+        if self.polar().is_some() {
             return Err("range bars are not drawn on polar axes");
         }
         for layer in self.panel_layers() {
@@ -5047,7 +5047,7 @@ impl crate::config::Config {
             if *shading != Shading::Flat {
                 return Err("a hexagonal grid is shaded flat");
             }
-            if self.view_3d.is_some() {
+            if self.view_3d().is_some() {
                 return Err("a hexagonal grid draws flat: not on a 3D chart");
             }
             if self.bottom_x.scale != AxisScale::Linear || self.left_y.scale != AxisScale::Linear {
@@ -5095,7 +5095,7 @@ impl crate::config::Config {
             if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
                 return Err("an image's opacity is 0..=1");
             }
-            if self.view_3d.is_some() {
+            if self.view_3d().is_some() {
                 return Err("an image draws flat: not on a 3D chart");
             }
         }
@@ -5120,7 +5120,7 @@ impl crate::config::Config {
                 LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
             };
             let chart = subplot.as_ref().unwrap_or(self);
-            let Some(polar) = &chart.polar else {
+            let Some(polar) = chart.polar() else {
                 return Err("radar series are drawn on a polar chart (Config.polar)");
             };
             let Some(categories) = chart.bottom_x.categories.as_deref() else {
@@ -6775,7 +6775,7 @@ mod category_bar_tests {
     #[test]
     fn polar_charts_draw_vertical_roses_only() {
         let mut config = chart(3);
-        config.polar = Some(Default::default());
+        config.set_polar(Some(Default::default()));
         assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
@@ -7250,7 +7250,7 @@ mod box_plot_tests {
             Err("box plots need a linear numeric value axis")
         );
         let mut polar = chart(3);
-        polar.polar = Some(Default::default());
+        polar.set_polar(Some(Default::default()));
         assert_eq!(
             polar.validate_box_plots(&[boxes("a")]),
             Err("box plots are not drawn on polar axes")
@@ -7765,7 +7765,7 @@ mod radar_tests {
 
     fn polar_config(n: usize) -> Config {
         let mut config = crate::default::default_config();
-        config.polar = Some(PolarOptions::default());
+        config.set_polar(Some(PolarOptions::default()));
         config.bottom_x.categories = Some(categories(n));
         config
     }
@@ -7794,7 +7794,7 @@ mod radar_tests {
             "a chart without radar series passes"
         );
         let mut rectangular = config.clone();
-        rectangular.polar = None;
+        rectangular.set_polar(None);
         assert!(
             rectangular
                 .validate_radar(&[radar("a")])
@@ -7810,15 +7810,15 @@ mod radar_tests {
                 .contains("categorical angle axis")
         );
         let mut arcs = config.clone();
-        arcs.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 4 };
+        arcs.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 4 };
         assert!(
             arcs.validate_radar(&[radar("a")])
                 .unwrap_err()
                 .contains("Chord")
         );
         let mut sector = config.clone();
-        sector.polar.as_mut().unwrap().sector = Some([0.0, 180.0]);
-        sector.polar.as_mut().unwrap().inner_radius_fraction = 0.2;
+        sector.polar_mut().unwrap().sector = Some([0.0, 180.0]);
+        sector.polar_mut().unwrap().inner_radius_fraction = 0.2;
         assert_eq!(sector.validate_radar(&[radar("a")]), Ok(()));
     }
 
@@ -8542,7 +8542,7 @@ mod step_selection_tests {
         );
         assert!(
             rejected(group(&["a"]), |c| {
-                c.polar = Some(crate::polar::PolarOptions::default())
+                c.set_polar(Some(crate::polar::PolarOptions::default()))
             }),
             "polar"
         );
@@ -8839,7 +8839,7 @@ mod range_bar_tests {
         let config = chart();
         // Polar charts draw none.
         let mut polar = config.clone();
-        polar.polar = Some(Default::default());
+        polar.set_polar(Some(Default::default()));
         assert!(polar.validate_range_bars(&[ranges("one")]).is_err());
         // The group stands side by side.
         let mut stacked = config.clone();
@@ -9230,7 +9230,7 @@ mod hexagonal_tests {
             Err("a hexagonal grid needs linear x and y axes: its lattice is uniform")
         );
         let mut three_d = config.clone();
-        three_d.view_3d = Some(View3d::default());
+        three_d.set_view_3d(Some(View3d::default()));
         let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];
         assert_eq!(
             three_d.validate_hexagonal_series(&hex),
@@ -9333,7 +9333,7 @@ mod image_tests {
             );
         }
         let mut three_d = config.clone();
-        three_d.view_3d = Some(View3d::default());
+        three_d.set_view_3d(Some(View3d::default()));
         let flat = [image([0.0, 1.0], 1.0)];
         assert_eq!(
             three_d.validate_rgb_image_series(&flat),

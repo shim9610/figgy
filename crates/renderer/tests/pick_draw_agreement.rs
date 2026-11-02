@@ -686,7 +686,7 @@ pub fn bare_polar_chart(polar: renderer::polar::PolarOptions) -> Chart {
         axis.line_visible = false;
         axis.tick = renderer::config::TickVisibility::None;
     }
-    config.polar = Some(polar);
+    config.set_polar(Some(polar));
     chart.set_x_range(0.0, 360.0);
     chart.set_y_range(0.0, 1.0);
     chart
@@ -4316,7 +4316,7 @@ fn value_labels_pick_where_they_paint() {
             .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
             .collect(),
     );
-    config.polar = Some(renderer::polar::PolarOptions::default());
+    config.set_polar(Some(renderer::polar::PolarOptions::default()));
     chart.set_y_range(0.0, 1.0);
     cases.push((
         "radar".into(),

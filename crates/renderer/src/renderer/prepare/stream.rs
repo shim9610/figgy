@@ -55,7 +55,7 @@ impl PrepareContext<'_> {
             });
         }
         // Streaming is not extended to polar charts.
-        if config.polar.is_some() {
+        if config.polar().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 reason: "polar charts require GPU-resident columns; streamed sources are \
@@ -136,7 +136,7 @@ impl PrepareContext<'_> {
         }
         // Nor to 3D charts: a surface and its floor read their grid from the
         // resident pool through the camera of the panel composite.
-        if config.view_3d.is_some() {
+        if config.view_3d().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 reason: "3D chart series require GPU-resident columns; streamed sources are not \

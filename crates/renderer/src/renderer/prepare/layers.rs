@@ -52,7 +52,7 @@ impl PrepareContext<'_> {
     ) -> Result<Option<wgpu::Buffer>> {
         let (Some(_), Some(_), Some(c)) = (
             series.render_type.ternary_region(),
-            config.ternary.as_ref(),
+            config.ternary(),
             series.render_type.ternary_c_column(),
         ) else {
             return Ok(None);
@@ -401,7 +401,7 @@ impl PrepareContext<'_> {
 
         // A 3D chart's camera for this panel (#132): the scatter and line
         // series with a height column draw through the 3D entries with it.
-        let camera_3d = chart_config.view_3d.as_ref().and_then(|_| {
+        let camera_3d = chart_config.view_3d().and_then(|_| {
             let panel = view.panel_rect;
             let target = (
                 (f64::from(panel.x), f64::from(panel.y)),
@@ -486,7 +486,7 @@ impl PrepareContext<'_> {
             // camera and look as group 3.
             let (field, surface, selected_surface) = match field {
                 Some(flat)
-                    if chart_config.view_3d.is_some()
+                    if chart_config.view_3d().is_some()
                         && crate::renderer::device::draws_surface(rt) =>
                 {
                     let scratch = self
@@ -509,7 +509,7 @@ impl PrepareContext<'_> {
 
             // A contour on a 3D chart draws on the box floor
             // (`vs_floor`), never as flat isolines over the box.
-            let floor_only = chart_config.view_3d.is_some();
+            let floor_only = chart_config.view_3d().is_some();
 
             // Contour lines: the same quad the field draws, through
             // `fs_contour`. The group-2 tables were resolved in
@@ -961,7 +961,7 @@ impl PrepareContext<'_> {
                         line_pick.verts,
                         crate::line_step::mode_word(
                             interpolation,
-                            crate::line_step::arc_pieces(chart_config.polar.as_ref()),
+                            crate::line_step::arc_pieces(chart_config.polar()),
                         ),
                     ),
                     texture_bg: line_pick.texture_bg,
@@ -1033,7 +1033,7 @@ impl PrepareContext<'_> {
                         data_render::LINE_PRECISE_VERTICES_PER_INSTANCE,
                         crate::line_step::mode_word(
                             interpolation,
-                            crate::line_step::arc_pieces(chart_config.polar.as_ref()),
+                            crate::line_step::arc_pieces(chart_config.polar()),
                         ),
                     ),
                     closed: closed_fill,
@@ -1047,7 +1047,7 @@ impl PrepareContext<'_> {
             // every series' fill and body. Resident only (streamed ternary
             // sources are rejected).
             let region = match (rt.ternary_region(), rt.ternary_c_column()) {
-                (Some(style), Some(c)) if chart_config.ternary.is_some() && phase.is_none() => {
+                (Some(style), Some(c)) if chart_config.ternary().is_some() && phase.is_none() => {
                     let c_h = lookup(c)?;
                     let params =
                         ternary_region_params(&cfg.series_id, style.color_premul(), x_h, y_h, c_h)?;

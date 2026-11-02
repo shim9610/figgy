@@ -1270,7 +1270,7 @@ fn streamed_series_reject_line_offsets() {
 fn polar_rejects_line_offsets() {
     let mut r = renderer();
     let mut polar = offset_config();
-    polar.polar = Some(crate::polar::PolarOptions::default());
+    polar.set_polar(Some(crate::polar::PolarOptions::default()));
     assert!(matches!(
         r.register_chart(polar, offset_series(false)),
         Err(FiggyError::InvalidConfig { .. })

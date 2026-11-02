@@ -861,7 +861,7 @@ impl Renderer {
         for (input, item) in inputs.iter().zip(prepared.iter_mut()) {
             let panel = item.view.panel_rect;
             let (w, h) = (panel.width, panel.height);
-            let needs_attachment = input.chart_config.view_3d.is_some()
+            let needs_attachment = input.chart_config.view_3d().is_some()
                 || super::prepare::panel_stencil(input.chart_config, input.series);
             if !needs_attachment || item.series.is_empty() || w == 0 || h == 0 || w > max || h > max
             {

@@ -383,7 +383,7 @@ fn the_hit_region_is_the_selection_box() {
 #[test]
 fn polar_tick_labels_hit_each_drawn_label() {
     let mut cfg = bare_config(false);
-    cfg.polar = Some(renderer::polar::PolarOptions::default());
+    cfg.set_polar(Some(renderer::polar::PolarOptions::default()));
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     for side in [Side::Bottom, Side::Left] {
         let element = renderer::layout::Element::AxisLabel(side.clone());

@@ -684,10 +684,7 @@ pub(super) fn radar_columns_fit(
 /// outline still closes. The draw (`ColumnAreaLayer::closed`) and the pick
 /// (the filled segment count) read this one answer.
 pub(super) fn polar_fill_closes(config: &Config) -> bool {
-    config
-        .polar
-        .as_ref()
-        .is_some_and(|polar| polar.sector.is_none())
+    config.polar().is_some_and(|polar| polar.sector.is_none())
 }
 
 /// The categories a category bar series of `config` (one panel) draws
@@ -793,8 +790,7 @@ pub(super) fn build_parallel_data(
         series_id: series.series_id.clone(),
         reason: reason.to_owned(),
     };
-    let (Some(parallel), Some(options)) = (series.render_type.parallel(), config.parallel.as_ref())
-    else {
+    let (Some(parallel), Some(options)) = (series.render_type.parallel(), config.parallel()) else {
         return Err(invalid(
             "a parallel series is drawn on a parallel chart (Config.parallel)",
         ));
@@ -947,7 +943,7 @@ pub(super) fn category_bar_params<'c>(
     params.scale = display_scale;
     params.seed = crate::sketch::fnv1a(&series.series_id);
     params.slot_half = data_render::CATEGORY_SLOT_HALF;
-    params.wedge = u32::from(config.polar.is_some());
+    params.wedge = u32::from(config.polar().is_some());
     Ok(params)
 }
 

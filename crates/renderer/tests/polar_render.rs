@@ -93,7 +93,7 @@ fn bare_chart(polar: PolarOptions) -> Chart {
         axis.line_visible = false;
         axis.tick = renderer::config::TickVisibility::None;
     }
-    config.polar = Some(polar);
+    config.set_polar(Some(polar));
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 360.0);
     chart.set_y_range(0.0, 1.0);
@@ -164,7 +164,7 @@ fn upload(renderer: &mut Renderer, theta: Vec<f64>, r: Vec<f64>) {
 /// The pixel a (θ, r) sample lands on: the same circle the renderer draws
 /// against, with the axis fractions of the chart's own axes.
 fn polar_px(config: &Config, theta: f64, r: f64) -> (f64, f64) {
-    let polar = config.polar.as_ref().expect("polar chart");
+    let polar = config.polar().expect("polar chart");
     let geometry = config.polar_geometry().expect("geometry");
     let axis = &config.left_y;
     let t = match axis.scale {
@@ -797,7 +797,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     upload(&mut renderer, vec![0.0, 90.0, 180.0], vec![1.0, 0.5, 1.0]);
     // A rectangular parent on the left, a polar subplot on the right.
     let mut parent = bare_chart(PolarOptions::default());
-    parent.config_mut().polar = None;
+    parent.config_mut().set_polar(None);
     parent.set_x_range(0.0, 360.0);
     parent.set_y_range(0.0, 1.0);
     let plain = export(&mut renderer, &parent, &[scatter("points", 8.0)]);

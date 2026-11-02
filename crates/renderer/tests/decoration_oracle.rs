@@ -1137,11 +1137,11 @@ fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
         }
     };
     let parallel = match layer {
-        LayerRef::Base => cfg.parallel.as_ref().map(|p| (String::new(), p.axes.len())),
+        LayerRef::Base => cfg.parallel().map(|p| (String::new(), p.axes.len())),
         LayerRef::Subplot(i) => cfg
             .subplots
             .get(i)
-            .and_then(|s| s.config.parallel.as_ref())
+            .and_then(|s| s.config.parallel())
             .map(|p| (format!("subplot_{i}:"), p.axes.len())),
         _ => None,
     };
@@ -1534,7 +1534,7 @@ impl Painter {
     /// The elements of one chart: its four axes with their labels and
     /// titles, the chart title, the legend and the colourbar chrome.
     fn chart(&mut self, cfg: &mut Config, prefix: &str, panel: LayerRef) {
-        let parallel = cfg.parallel.is_some();
+        let parallel = cfg.parallel().is_some();
         for (side, axis) in [
             ("top", &mut cfg.top_x),
             ("bottom", &mut cfg.bottom_x),
@@ -2815,7 +2815,7 @@ fn overlap_pairs(cfg: &Config, prefix: &str) -> Vec<(String, String)> {
             }
         }
     }
-    if cfg.polar.is_some() {
+    if cfg.polar().is_some() {
         pairs.push((n("tick_labels_bottom"), n("tick_labels_left")));
     }
     pairs
@@ -3054,10 +3054,10 @@ fn chart_of(doc: &Config, name: &str) -> Config {
 /// labels move in the edge's orthonormal frame, so by the whole drag.
 fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
     let (dx, dy) = DRAG;
-    let polar = chart.polar.is_some();
+    let polar = chart.polar().is_some();
     match element {
         Element::Axis(_) | Element::AxisLabel(_) if polar => None,
-        Element::Axis(side) if chart.ternary.is_some() => {
+        Element::Axis(side) if chart.ternary().is_some() => {
             let k = renderer::ternary::side_component(side)?;
             let n = chart.ternary_geometry()?.outward_normal(k);
             let d = dx * n[0] + dy * n[1];
@@ -3066,13 +3066,13 @@ fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
         // A 3D box axis moves by the drag's component on its edge's outward
         // screen normal; a data-area drag orbits the camera, which moves
         // the box, not the data area.
-        Element::Axis(side) if chart.view_3d.is_some() => {
+        Element::Axis(side) if chart.view_3d().is_some() => {
             let k = renderer::ternary::side_component(side)?;
             let n = chart.box_axis_edge(k)?.normal;
             let d = dx * n[0] + dy * n[1];
             Some((n[0] * d, n[1] * d))
         }
-        Element::DataArea if chart.view_3d.is_some() => None,
+        Element::DataArea if chart.view_3d().is_some() => None,
         Element::Axis(Side::Top | Side::Bottom) => Some((0.0, dy)),
         Element::Axis(_) => Some((dx, 0.0)),
         Element::ColorBarAxis => match chart.colorbar.as_ref().map(|b| &b.side) {

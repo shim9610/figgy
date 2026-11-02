@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions::default());
+            config.set_polar(Some(PolarOptions::default()));
             config.bottom_x.major_spacing = 30.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 0.25;
@@ -85,13 +85,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 zero_angle_degrees: 90.0,
                 clockwise: true,
                 interpolation: PolarInterpolation::Arc { pieces: 6 },
                 radial_label_angle_degrees: 45.0,
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = 45.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
@@ -122,10 +122,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 interpolation: PolarInterpolation::Arc { pieces: 16 },
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = 45.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
@@ -161,13 +161,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 angle_unit: AngleUnit::Radians,
                 sector: Some([-PI / 2.0, PI / 2.0]),
                 inner_radius_fraction: 0.2,
                 radial_label_angle_degrees: 90.0,
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = PI / 4.0;
             config.bottom_x.label_style.format = LabelFormat::Radians;
             config.left_y.major_spacing = 0.5;

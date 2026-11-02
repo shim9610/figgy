@@ -125,7 +125,7 @@ impl Config {
                 )
             }
             Element::ParallelAxisLabel(i) => {
-                let axis = self.parallel.as_ref()?.axes.get(*i)?;
+                let axis = self.parallel()?.axes.get(*i)?;
                 (axis.label_offset[0], axis.label_offset[1])
             }
             Element::Axis(_)
@@ -177,7 +177,7 @@ impl Config {
                 }
             }
             Element::ParallelAxisLabel(i) => {
-                if let Some(axis) = self.parallel.as_mut().and_then(|p| p.axes.get_mut(*i)) {
+                if let Some(axis) = self.parallel_mut().and_then(|p| p.axes.get_mut(*i)) {
                     axis.label_offset = [offset.0, offset.1];
                 }
             }
@@ -196,7 +196,9 @@ impl Config {
         Some(match element {
             // A ternary title is placed along its edge with its offset in
             // screen space (`Config::ternary_title_placement`).
-            Element::AxisTitle(_) if self.ternary.is_some() || self.view_3d.is_some() => (dx, dy),
+            Element::AxisTitle(_) if self.ternary().is_some() || self.view_3d().is_some() => {
+                (dx, dy)
+            }
             Element::AxisTitle(side) => screen_offset_to_axis_title(side.clone(), (dx, dy)),
             Element::ColorBarTitle => {
                 let side = self.colorbar.as_ref()?.side.clone();
@@ -239,7 +241,7 @@ impl Config {
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
-        if self.polar.is_some() {
+        if self.polar().is_some() {
             match &element {
                 Element::Axis(side) => return self.nudge_polar_axis(side.clone(), at, dx, dy),
                 Element::AxisLabel(side) => {
@@ -248,7 +250,7 @@ impl Config {
                 _ => {}
             }
         }
-        if self.view_3d.is_some() {
+        if self.view_3d().is_some() {
             match &element {
                 Element::Axis(side) => return self.nudge_box_axis(side, measure, dx, dy),
                 Element::AxisLabel(side) => {
@@ -257,7 +259,7 @@ impl Config {
                 _ => {}
             }
         }
-        if self.ternary.is_some() {
+        if self.ternary().is_some() {
             match &element {
                 Element::Axis(side) => return self.nudge_ternary_axis(side, measure, dx, dy),
                 Element::AxisLabel(side) => {
@@ -280,7 +282,7 @@ impl Config {
         // A 3D chart's data area is grabbed to orbit the camera; its edges
         // still resize it.
         if let Element::DataArea = element
-            && self.view_3d.is_some()
+            && self.view_3d().is_some()
         {
             return if self.orbit_view(dx, dy) {
                 NudgeResult::Moved
@@ -364,7 +366,7 @@ impl Config {
         let Some(geometry) = self.polar_geometry() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        let Some(polar) = self.polar.as_mut() else {
+        let Some(polar) = self.polar_mut() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
         let turned = at
@@ -410,7 +412,7 @@ impl Config {
         let Some(geometry) = self.polar_geometry() else {
             return reject;
         };
-        let Some(polar) = self.polar.as_ref() else {
+        let Some(polar) = self.polar() else {
             return reject;
         };
         let element = Element::AxisLabel(side.clone());

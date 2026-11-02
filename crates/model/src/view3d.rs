@@ -370,7 +370,7 @@ impl Config {
     /// area less a band for the axes' ticks, labels and titles, centred; the
     /// camera's distance then zooms.
     pub fn view_matrix(&self) -> Option<ViewMatrix> {
-        let view = self.view_3d.as_ref()?;
+        let view = self.view_3d()?;
         let area = self.data_area().ok()?.0;
         let band = f64::from(
             (0..3)
@@ -418,7 +418,7 @@ impl Config {
     /// camera: x and y on the floor edges nearest the eye, z on the
     /// vertical edge left-most on screen.
     pub fn box_axis_edge(&self, k: usize) -> Option<BoxEdge> {
-        let view = self.view_3d.as_ref()?;
+        let view = self.view_3d()?;
         let m = self.view_matrix()?;
         let d = view.eye_direction();
         let front = |i: usize| if d[i] >= 0.0 { 1.0 } else { 0.0 };
@@ -499,7 +499,7 @@ impl Config {
     /// the coordinate (0 or 1) of the pane across it. The grid is drawn on
     /// them.
     pub fn box_back_panes(&self) -> Option<[f64; 3]> {
-        let d = self.view_3d.as_ref()?.eye_direction();
+        let d = self.view_3d()?.eye_direction();
         Some([0, 1, 2].map(|i| if d[i] >= 0.0 { 0.0 } else { 1.0 }))
     }
 
@@ -513,7 +513,7 @@ impl Config {
     /// with `dx` and the elevation with `dy`, clamped to the poles.
     /// Returns whether anything changed.
     pub fn orbit_view(&mut self, dx: f32, dy: f32) -> bool {
-        let Some(view) = self.view_3d.as_mut() else {
+        let Some(view) = self.view_3d_mut() else {
             return false;
         };
         let before = (view.azimuth_degrees, view.elevation_degrees);
@@ -527,7 +527,7 @@ impl Config {
     /// `factor` and clamped to [`DISTANCE_RANGE`]. Returns whether it
     /// changed.
     pub fn zoom_view(&mut self, factor: f64) -> bool {
-        let Some(view) = self.view_3d.as_mut() else {
+        let Some(view) = self.view_3d_mut() else {
             return false;
         };
         if !(factor.is_finite() && factor > 0.0) {
@@ -541,7 +541,7 @@ impl Config {
 
     /// Validate `view_3d` against the axes it reads; `None` always passes.
     pub fn validate_view_3d(&self) -> Result<(), &'static str> {
-        let Some(view) = &self.view_3d else {
+        let Some(view) = self.view_3d() else {
             return Ok(());
         };
         view.validate()?;
@@ -553,9 +553,6 @@ impl Config {
             if !matches!(axis.scale, AxisScale::Linear | AxisScale::Logarithmic) {
                 return Err("3D chart axes must be linear or logarithmic");
             }
-        }
-        if self.polar.is_some() || self.ternary.is_some() {
-            return Err("a 3D chart is neither polar nor ternary");
         }
         if !self.overlays.is_empty() {
             return Err("3D charts have no overlay layers");
@@ -585,7 +582,7 @@ impl Config {
         for item in series {
             let (surface, matrix, fill, contour) = match &item.render_type {
                 DataRenderType::Xy(crate::data_config::XySeries { errors: None, .. })
-                    if self.view_3d.is_some() =>
+                    if self.view_3d().is_some() =>
                 {
                     if item.z_column.as_deref().is_none_or(str::is_empty) {
                         return Err(
@@ -611,10 +608,10 @@ impl Config {
                     }
                     continue;
                 }
-                DataRenderType::RgbImage { .. } if self.view_3d.is_some() => {
+                DataRenderType::RgbImage { .. } if self.view_3d().is_some() => {
                     return Err("an image draws flat: not on a 3D chart");
                 }
-                DataRenderType::Parallel { .. } if self.view_3d.is_some() => {
+                DataRenderType::Parallel { .. } if self.view_3d().is_some() => {
                     return Err("a parallel series draws flat: not on a 3D chart");
                 }
                 DataRenderType::Field(crate::data_config::FieldSeries {
@@ -635,7 +632,7 @@ impl Config {
                     contour: Some(contour),
                     ..
                 }) => (&None, matrix, None, Some(contour)),
-                _ if self.view_3d.is_some() => {
+                _ if self.view_3d().is_some() => {
                     return Err(
                         "a 3D chart draws only heatmaps, contours, heatmap contours and the \
                          scatter and line series that name a z_column",
@@ -646,7 +643,7 @@ impl Config {
             if let Some(style) = surface {
                 validate_surface_style(style, matrix)?;
             }
-            if self.view_3d.is_none() {
+            if self.view_3d().is_none() {
                 continue;
             }
             if matrix.grid_layout == GridLayout::Hexagonal {
@@ -722,7 +719,7 @@ mod tests {
 
     fn chart() -> Config {
         let mut config = crate::default::default_config();
-        config.view_3d = Some(View3d::default());
+        config.set_view_3d(Some(View3d::default()));
         config
     }
 
@@ -759,9 +756,9 @@ mod tests {
     fn the_box_fits_the_data_area_and_the_nearest_corner_is_nearest() {
         for projection in [Projection3d::Orthographic, Projection3d::Perspective] {
             let mut config = chart();
-            config.view_3d.as_mut().unwrap().projection = projection;
+            config.view_3d_mut().unwrap().projection = projection;
             let area = config.data_area().unwrap().0;
-            let view = config.view_3d.clone().unwrap();
+            let view = config.view_3d().cloned().unwrap();
             let d = view.eye_direction();
             let h = view.half_extents();
             let mut nearest = (f64::MIN, 0.0);
@@ -820,7 +817,7 @@ mod tests {
         let reach = |p: [f64; 3]| (p[0] - centre[0]).hypot(p[1] - centre[1]);
         assert!(reach(after) > reach(before) * 1.5, "zooming in magnifies");
         assert!(config.zoom_view(1000.0));
-        assert_eq!(config.view_3d.as_ref().unwrap().distance, 1.2);
+        assert_eq!(config.view_3d().unwrap().distance, 1.2);
         assert!(!config.zoom_view(1000.0), "clamped: nothing changes");
         assert!(!config.zoom_view(0.0));
 
@@ -830,10 +827,10 @@ mod tests {
             orbit.nudge(Element::DataArea, &measure, 10.0, 0.0),
             NudgeResult::Moved
         );
-        let view = orbit.view_3d.as_ref().unwrap();
+        let view = orbit.view_3d().unwrap();
         assert_eq!(view.azimuth_degrees, -65.0);
         assert!(orbit.orbit_view(0.0, 1000.0));
-        assert_eq!(orbit.view_3d.as_ref().unwrap().elevation_degrees, 90.0);
+        assert_eq!(orbit.view_3d().unwrap().elevation_degrees, 90.0);
         assert!(!orbit.orbit_view(0.0, 10.0), "clamped at the pole");
         // The view stays well defined at the pole.
         assert!(orbit.project_3d([1.0, 0.0, 0.0]).is_some());
@@ -852,21 +849,15 @@ mod tests {
             config.validate_view_3d().unwrap_err()
         };
         assert!(
-            reject(&|c| c.view_3d.as_mut().unwrap().elevation_degrees = 91.0).contains("elevation")
+            reject(&|c| c.view_3d_mut().unwrap().elevation_degrees = 91.0).contains("elevation")
         );
         assert!(
-            reject(&|c| c.view_3d.as_mut().unwrap().azimuth_degrees = f64::NAN).contains("azimuth")
+            reject(&|c| c.view_3d_mut().unwrap().azimuth_degrees = f64::NAN).contains("azimuth")
         );
-        assert!(reject(&|c| c.view_3d.as_mut().unwrap().distance = 1.0).contains("distance"));
+        assert!(reject(&|c| c.view_3d_mut().unwrap().distance = 1.0).contains("distance"));
         assert!(
-            reject(&|c| c.view_3d.as_mut().unwrap().box_aspect = Some([1.0, 0.0, 1.0]))
+            reject(&|c| c.view_3d_mut().unwrap().box_aspect = Some([1.0, 0.0, 1.0]))
                 .contains("box_aspect")
-        );
-        assert!(
-            reject(&|c| c.polar = Some(crate::polar::PolarOptions::default())).contains("polar")
-        );
-        assert!(
-            reject(&|c| c.ternary = Some(crate::ternary::TernaryOptions {})).contains("ternary")
         );
         assert!(
             reject(&|c| c.overlays.push(crate::layer::OverlayLayer::default())).contains("overlay")
@@ -1043,7 +1034,7 @@ mod tests {
         assert!(json.contains("\"view_3d\":{"), "{json}");
         assert!(!json.contains("box_aspect"), "{json}");
         let back: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.view_3d, config.view_3d);
+        assert_eq!(back.view_3d(), config.view_3d());
         let flat = crate::default::default_config();
         assert!(!serde_json::to_string(&flat).unwrap().contains("view_3d"));
         let plain = heatmap(None);

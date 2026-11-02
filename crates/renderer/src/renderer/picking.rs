@@ -758,7 +758,7 @@ impl PickChartPlan {
             // A ternary region fill is picked where it paints, with or
             // without markers and a line.
             let ternary_region =
-                config.ternary.is_some() && series.render_type.ternary_region().is_some();
+                config.ternary().is_some() && series.render_type.ternary_region().is_some();
             if !primitives.line && !primitives.scatter && !vector_points && !ternary_region {
                 continue;
             }
@@ -1953,7 +1953,7 @@ impl Renderer {
         if self
             .chart_states
             .get(&id)
-            .is_some_and(|state| state.config.view_3d.is_some())
+            .is_some_and(|state| state.config.view_3d().is_some())
         {
             self.ensure_registered_styles(id)?;
         }
@@ -2010,7 +2010,7 @@ impl Renderer {
         // A 3D chart's surfaces, markers and strokes are picked by their ID
         // render: the draw's own rasterizer and depth test, so a hidden
         // quad or point never answers.
-        if display_config.view_3d.is_some() {
+        if display_config.view_3d().is_some() {
             return self.pick_surface(&display_config, &series, &styles, &request);
         }
         // Submit the established point/line query first. It stays point-only,

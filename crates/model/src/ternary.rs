@@ -214,9 +214,6 @@ impl TernaryOptions {
                  positive max (1 or 100)",
             );
         }
-        if config.polar.is_some() {
-            return Err("a chart is either polar or ternary");
-        }
         if !config.overlays.is_empty() {
             return Err("ternary charts have no overlay layers");
         }
@@ -248,7 +245,7 @@ impl Config {
     /// it, centred with its bands. The GPU transform, the grid and axes, the decoration hit
     /// regions and drags all read this triangle.
     pub fn ternary_geometry(&self) -> Option<TernaryGeometry> {
-        self.ternary.as_ref()?;
+        self.ternary()?;
         let area = self.data_area().ok()?.0;
         // One band per edge, the widest of the three.
         let band = (0..3)
@@ -316,7 +313,7 @@ impl Config {
 
     /// Validate `ternary` against the axes it reads; `None` always passes.
     pub fn validate_ternary(&self) -> Result<(), &'static str> {
-        match &self.ternary {
+        match self.ternary() {
             Some(ternary) => ternary.validate(self),
             None => Ok(()),
         }
@@ -329,7 +326,7 @@ impl Config {
     /// line is linear (no step modes) and has no fill.
     pub fn validate_ternary_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
-            match (&item.render_type, self.ternary.is_some()) {
+            match (&item.render_type, self.ternary().is_some()) {
                 (DataRenderType::Ternary { .. }, false) => {
                     return Err("a ternary series is drawn on a ternary chart (Config.ternary)");
                 }
@@ -410,7 +407,7 @@ mod tests {
             axis.min = 0.0;
             axis.max = 100.0;
         }
-        config.ternary = Some(TernaryOptions {});
+        config.set_ternary(Some(TernaryOptions {}));
         config
     }
 
@@ -491,7 +488,7 @@ mod tests {
         assert!(g.outward_normal(1)[0] < 0.0 && g.outward_normal(2)[0] > 0.0);
         // No triangle without the switch.
         let mut plain = config.clone();
-        plain.ternary = None;
+        plain.set_ternary(None);
         assert!(plain.ternary_geometry().is_none());
     }
 
@@ -517,10 +514,6 @@ mod tests {
         assert!(reject(&|c| c.right_y.inverted = true).contains("inverted"));
         assert!(reject(&|c| c.bottom_x.min = 10.0).contains("min 0"));
         assert!(reject(&|c| c.right_y.max = 1.0).contains("same"));
-        assert!(
-            reject(&|c| c.polar = Some(crate::polar::PolarOptions::default()))
-                .contains("polar or ternary")
-        );
         assert!(reject(&|c| c.overlays.push(OverlayLayer::default())).contains("overlay"));
         assert!(
             reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
@@ -579,7 +572,7 @@ mod tests {
         );
         assert!(err(plain).contains("only ternary series"));
         let mut rectangular = config.clone();
-        rectangular.ternary = None;
+        rectangular.set_ternary(None);
         assert!(
             rectangular
                 .validate_ternary_series(&[ok])
@@ -627,9 +620,9 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"ternary\":{}"), "{json}");
         let back: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.ternary, Some(TernaryOptions {}));
+        assert_eq!(back.ternary().cloned(), Some(TernaryOptions {}));
         let mut plain = config.clone();
-        plain.ternary = None;
+        plain.set_ternary(None);
         let json = serde_json::to_string(&plain).unwrap();
         assert!(
             !json.contains("ternary"),

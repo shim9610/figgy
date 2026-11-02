@@ -128,7 +128,7 @@ fn chart_3d() -> Config {
     bar.axis.min = 0.0;
     bar.axis.max = 1.0;
     config.colorbar = Some(bar);
-    config.view_3d = Some(View3d::default());
+    config.set_view_3d(Some(View3d::default()));
     config
 }
 
@@ -611,7 +611,7 @@ fn a_perspective_camera_draws_the_surface() {
     let mut r = renderer();
     upload_grid(&mut r, 21, 17, ridge);
     let mut config = chart_3d();
-    config.view_3d.as_mut().unwrap().projection = renderer::view3d::Projection3d::Perspective;
+    config.view_3d_mut().unwrap().projection = renderer::view3d::Projection3d::Perspective;
     let series = [surface_series(21, Shading::Interpolated, None)];
     let img = export(&mut r, &config, &series, 1.0);
     save("surface-perspective", &img);

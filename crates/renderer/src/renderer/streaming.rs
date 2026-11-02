@@ -151,7 +151,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
         && left.line_offsets == right.line_offsets
         && left.draw_style == right.draw_style
         // The coordinate system maps every sample to its pixel.
-        && left.polar == right.polar
+        && left.polar() == right.polar()
         // Z mapping changes the accumulated field pixels, unlike the bar's
         // border, labels or position. XY-only charts do not consume this map.
         && (!series.iter().any(|s| match &s.render_type {

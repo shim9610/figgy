@@ -51,11 +51,12 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
     // A polar, ternary or 3D chart has no separable axes: data anchors,
     // reference lines and spans are reported as `NoValueAxis` skips, and
     // ratio anchors stay relative to the data area.
-    let (x, y) = if config.polar.is_some() || config.ternary.is_some() || config.view_3d.is_some() {
-        (AxisSpace::NONE, AxisSpace::NONE)
-    } else {
-        (axis_space(&config.bottom_x), axis_space(&config.left_y))
-    };
+    let (x, y) =
+        if config.polar().is_some() || config.ternary().is_some() || config.view_3d().is_some() {
+            (AxisSpace::NONE, AxisSpace::NONE)
+        } else {
+            (axis_space(&config.bottom_x), axis_space(&config.left_y))
+        };
     PixelSpace { panel, plot, x, y }
 }
 

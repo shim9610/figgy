@@ -140,7 +140,7 @@ fn angle_drawn(map: &AngleMap, value: f64, earlier: &[f64]) -> bool {
 /// options: `*_y` fields are rings, `*_x` fields are spokes. Below the data.
 pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
     let (Some(polar), Some(geometry), Some(map)) = (
-        &config.polar,
+        config.polar(),
         config.polar_geometry(),
         config.polar_angle_map(),
     ) else {
@@ -336,7 +336,7 @@ pub(super) fn emit_polar_axes(config: &Config, da: &DataArea, fp: FontPolicy, si
 /// (the angle axis is not selectable).
 fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
     let (Some(polar), Some(geometry), Some(map)) = (
-        &config.polar,
+        config.polar(),
         config.polar_geometry(),
         config.polar_angle_map(),
     ) else {
@@ -428,7 +428,7 @@ pub(super) fn emit_polar_radius_strokes(
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+    let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
         return;
     };
     let axis = &config.left_y;
@@ -460,7 +460,7 @@ pub(super) fn emit_polar_radius_labels(
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+    let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
         return;
     };
     let axis = &config.left_y;

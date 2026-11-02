@@ -626,7 +626,7 @@ impl HitMap<Config> {
             let mut map = Self::standard_chart();
             // A parallel chart's axes (#141), each its own label band, over
             // the shared elements.
-            if let Some(parallel) = &cfg.parallel {
+            if let Some(parallel) = cfg.parallel() {
                 for axis in 0..parallel.axes.len() {
                     map.register(ParallelAxisLabelElement { axis });
                 }
@@ -738,10 +738,7 @@ impl SubplotElement {
                 picked_data,
                 colorbar,
                 draw_style,
-                polar,
-                ternary,
-                view_3d,
-                parallel,
+                coordinates,
                 overlays,
                 subplots,
                 // `subplot_config` resets these two; the stored ones stay.
@@ -763,10 +760,7 @@ impl SubplotElement {
                 picked_data,
                 colorbar,
                 draw_style,
-                polar,
-                ternary,
-                view_3d,
-                parallel,
+                coordinates,
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,
@@ -1098,7 +1092,7 @@ pub fn emit_chart_title_in(
 /// its three edges along them, a 3D chart those of its three box axes, and
 /// neither draws a top title.
 fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &mut dyn Sink) {
-    if cfg.polar.is_some() && matches!(side, Side::Top | Side::Right) {
+    if cfg.polar().is_some() && matches!(side, Side::Top | Side::Right) {
         return;
     }
     let axis = axis_of(cfg, side);
@@ -1112,13 +1106,13 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
     let m = measure.measure_rich(&to.text);
     let slanted = crate::ternary::side_component(side).and_then(|k| {
         let offset = (to.offset_x, to.offset_y);
-        if cfg.ternary.is_some() {
+        if cfg.ternary().is_some() {
             cfg.ternary_title_placement(k, offset, m)
         } else {
             cfg.box_title_placement(k, offset, m)
         }
     });
-    if (cfg.ternary.is_some() || cfg.view_3d.is_some()) && slanted.is_none() {
+    if (cfg.ternary().is_some() || cfg.view_3d().is_some()) && slanted.is_none() {
         return;
     }
     let ternary = slanted;
@@ -1244,7 +1238,7 @@ impl Selectable for AxisElement {
     /// polar chart's angle axis is the outer ring, which is the data boundary
     /// and not selectable, and its radius ray hits on each stroke.
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
-        if cfg.polar.is_some() && self.side != Side::Left {
+        if cfg.polar().is_some() && self.side != Side::Left {
             return true;
         }
         on_drawn_panel(cfg, |panel| {
@@ -1253,7 +1247,7 @@ impl Selectable for AxisElement {
     }
 
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some() || cfg.ternary.is_some() || cfg.view_3d.is_some()
+        cfg.polar().is_some() || cfg.ternary().is_some() || cfg.view_3d().is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1276,7 +1270,7 @@ impl Selectable for AxisLabelElement {
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
     /// each label is outlined and hit where it is drawn.
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some() || cfg.ternary.is_some() || cfg.view_3d.is_some()
+        cfg.polar().is_some() || cfg.ternary().is_some() || cfg.view_3d().is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1794,7 +1788,7 @@ pub(crate) mod tests {
     }
 
     fn lay_out_polar(cfg: &Config, element: &Element, sink: &mut dyn Sink) {
-        let (Some(polar), Some(g)) = (cfg.polar.as_ref(), cfg.polar_geometry()) else {
+        let (Some(polar), Some(g)) = (cfg.polar(), cfg.polar_geometry()) else {
             return;
         };
         let c = g.center;
@@ -1844,7 +1838,7 @@ pub(crate) mod tests {
         fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
             match element {
                 Element::AxisLabel(side) | Element::Axis(side) => {
-                    if cfg.polar.is_some() {
+                    if cfg.polar().is_some() {
                         lay_out_polar(cfg, element, sink);
                         return true;
                     }

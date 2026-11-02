@@ -635,7 +635,7 @@ pub(super) fn panel_camera(
 /// Whether a panel's composite needs the stencil attachment: a ternary
 /// chart with a region fill among its series.
 pub(super) fn panel_stencil(config: &Config, series: &[Series<'_>]) -> bool {
-    config.ternary.is_some()
+    config.ternary().is_some()
         && series
             .iter()
             .any(|series| series.config.render_type.ternary_region().is_some())

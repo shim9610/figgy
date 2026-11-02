@@ -661,7 +661,7 @@ impl PrepareContext<'_> {
                     // (`surface_layers`), not the flat cell outline.
                     PickedDataRef::MatrixCell {
                         x_index, y_index, ..
-                    } if primitives.field && chart_config.view_3d.is_none() => {
+                    } if primitives.field && chart_config.view_3d().is_none() => {
                         let (Some(x_index), Some(y_index)) =
                             (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
                         else {

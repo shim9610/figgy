@@ -348,8 +348,7 @@ impl PrepareContext<'_> {
         // follow the height columns in the same table (`color_base` is the
         // height column count), so the surface reads both through one group.
         let color_matrix = chart_config
-            .view_3d
-            .as_ref()
+            .view_3d()
             .and(rt.surface_style())
             .and_then(|style| style.color_matrix.as_ref());
         if let Some(color) = color_matrix {

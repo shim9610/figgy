@@ -55,7 +55,7 @@ values, style inheritance and picking identities are documented in its module.
 Radial targets use group/index positions, so a host that reorders slices must
 update interaction targets too.
 
-A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
+A polar plot is not a renderer of its own: `config.set_polar(Some(PolarOptions))`
 makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
 with `bottom_x` as the angle axis and `left_y` as the radius axis. One turn
 always spans 360° (or 2π) from `zero_angle_degrees`: the angle mapping ignores

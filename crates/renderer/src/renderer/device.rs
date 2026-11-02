@@ -681,7 +681,7 @@ impl TargetPipelines {
         items: &[ChartDrawItem<'_>],
     ) {
         let needed = items.iter().any(|item| {
-            item.chart_config.view_3d.is_some()
+            item.chart_config.view_3d().is_some()
                 && item.series.iter().any(|series| {
                     draws_surface(&series.config.render_type)
                         || draws_floor(&series.config.render_type)
@@ -711,7 +711,7 @@ impl TargetPipelines {
         items: &[ChartDrawItem<'_>],
     ) {
         let needed = items.iter().any(|item| {
-            item.chart_config.ternary.is_some()
+            item.chart_config.ternary().is_some()
                 && item
                     .series
                     .iter()
@@ -1070,7 +1070,7 @@ impl TargetPipelines {
                 }
                 // A scatter or line series on a 3D chart draws through the
                 // 3D entries (#132); its picks compile when it is picked.
-                if item.chart_config.view_3d.is_some() && series.config.z_column.is_some() {
+                if item.chart_config.view_3d().is_some() && series.config.z_column.is_some() {
                     let mapped = series.style.scatter_map.is_some();
                     let ring = item.chart_config.picked_points.is_some() || typed_point;
                     need_view3d[View3dPipeline::Line as usize] |= primitives.line;

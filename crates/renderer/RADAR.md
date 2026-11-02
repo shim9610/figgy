@@ -45,12 +45,12 @@ config.bottom_x.categories = Some(
         .map(|c| Category::new(c.to_lowercase(), *c))
         .collect(),
 );
-config.polar = Some(PolarOptions {
+config.set_polar(Some(PolarOptions {
     zero_angle_degrees: 90.0,
     clockwise: true,
     grid_shape: Some(GridShape::Polygon),
     ..PolarOptions::default()
-});
+}));
 r.add_column("categories", &column(vec![0.0, 1.0, 2.0, 3.0, 4.0]))?;
 r.add_column("release1", &column(vec![6.0, 8.0, 4.0, 5.0, 7.0]))?;
 let series = vec![SeriesConfig {

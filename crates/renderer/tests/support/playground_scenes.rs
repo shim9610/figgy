@@ -993,11 +993,11 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.left_y.min = 0.0;
     config.left_y.max = 3.0;
     config.left_y.major_spacing = 0.5;
-    config.polar = Some(PolarOptions {
+    config.set_polar(Some(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 6 },
         radial_label_angle_degrees: 90.0,
         ..PolarOptions::default()
-    });
+    }));
     rebuild_legends(&mut config, &series);
     Ok(CartesianScene { config, series })
 }
@@ -2885,7 +2885,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         right.title_option.text.font.clone(),
     );
     config.right_y = right;
-    config.ternary = Some(TernaryOptions {});
+    config.set_ternary(Some(TernaryOptions {}));
     for axis in [
         &mut config.bottom_x,
         &mut config.left_y,
@@ -3016,7 +3016,7 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     );
     right.label_style.label_visible = true;
     config.right_y = right;
-    config.view_3d = Some(View3d::default());
+    config.set_view_3d(Some(View3d::default()));
     for axis in [&mut config.bottom_x, &mut config.left_y] {
         axis.min = -2.0;
         axis.max = 2.0;
@@ -3389,12 +3389,12 @@ fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             .map(|d| Category::new(d.to_lowercase(), *d))
             .collect(),
     );
-    config.polar = Some(PolarOptions {
+    config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
         radial_label_angle_degrees: 90.0,
         ..PolarOptions::default()
-    });
+    }));
     config.bar_groups = Some(BarGroups {
         mode: CategoryBarMode::Stacked,
         group_width: 0.9,
@@ -3600,7 +3600,7 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
     // Each axis spans its measurement with a little room past the data.
-    config.parallel = Some(ParallelOptions {
+    config.set_parallel(Some(ParallelOptions {
         axes: ranges
             .iter()
             .map(|(lo, hi)| {
@@ -3610,7 +3610,7 @@ fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 ParallelAxis::new(lo, hi)
             })
             .collect(),
-    });
+    }));
     let mut bar = default::default_colorbar_options();
     bar.colormap = ColorMap::Viridis;
     bar.axis.min = 0.0;

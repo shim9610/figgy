@@ -29,7 +29,7 @@ fn axis_plot(config: &Config, plot: &RectF, i: usize) -> RectF {
 /// The axis options of parallel axis `i`: the left axis' look over the
 /// axis's own range and label offset.
 fn axis_options(config: &Config, i: usize) -> Option<AxisOptions> {
-    let parallel = config.parallel.as_ref()?;
+    let parallel = config.parallel()?;
     parallel
         .axes
         .get(i)
@@ -44,7 +44,7 @@ pub(super) fn emit_parallel_axes(
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
-    let Some(parallel) = config.parallel.as_ref() else {
+    let Some(parallel) = config.parallel() else {
         return;
     };
     for i in 0..parallel.axes.len() {

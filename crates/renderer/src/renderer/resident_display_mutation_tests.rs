@@ -384,12 +384,12 @@ fn radar_config() -> Config {
     ]);
     c.left_y.min = 0.0;
     c.left_y.max = 1.0;
-    c.polar = Some(crate::polar::PolarOptions {
+    c.set_polar(Some(crate::polar::PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
         grid_shape: Some(crate::polar::GridShape::Polygon),
         ..Default::default()
-    });
+    }));
     c
 }
 

@@ -129,7 +129,7 @@ impl Config {
             .map_err(|reason| ConfigError::chart("subplots", reason))?;
         // The parallel axis count is checked with the chart, so a series
         // checked against it sees at least two axes.
-        if let Some(parallel) = &self.parallel {
+        if let Some(parallel) = self.parallel() {
             parallel
                 .validate_axis_count()
                 .map_err(|reason| ConfigError::chart("parallel", reason))?;
@@ -276,7 +276,7 @@ impl Config {
     /// bars (as a rose, #133) are; a polar arc interpolation needs a
     /// linearly interpolated line, since a step draws chords.
     pub fn validate_series_on_polar(&self, item: &SeriesConfig) -> Result<(), &'static str> {
-        let Some(polar) = &self.polar else {
+        let Some(polar) = self.polar() else {
             return Ok(());
         };
         let line = match &item.render_type {
@@ -383,7 +383,7 @@ mod tests {
         let mut config = default_config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
-        config.polar = Some(PolarOptions::default());
+        config.set_polar(Some(PolarOptions::default()));
         let mut vector = scatter("v");
         vector.render_type = DataRenderType::Streamlines {
             line: crate::data_config::DataLineStyleConfig::default(),

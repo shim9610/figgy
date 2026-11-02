@@ -375,7 +375,7 @@ impl Config {
     /// ([`PolarOptions::angle_map`] of `bottom_x`), `None` for a rectangular
     /// chart.
     pub fn polar_angle_map(&self) -> Option<AngleMap> {
-        Some(self.polar.as_ref()?.angle_map(&self.bottom_x))
+        Some(self.polar()?.angle_map(&self.bottom_x))
     }
 
     /// The polar circle of this chart, when the chart is polar and has a
@@ -384,7 +384,7 @@ impl Config {
     /// The annotation layer does not: its ratio anchors stay relative to the
     /// data area and its data anchors are skipped.
     pub fn polar_geometry(&self) -> Option<PolarGeometry> {
-        self.polar.as_ref()?;
+        self.polar()?;
         let area = self.data_area().ok()?.0;
         let center = [
             area.x as f32 + area.width as f32 * 0.5,
@@ -411,13 +411,13 @@ impl Config {
         Some(PolarGeometry {
             center,
             radius,
-            inner_radius: radius * self.polar.as_ref()?.inner_radius_fraction,
+            inner_radius: radius * self.polar()?.inner_radius_fraction,
         })
     }
 
     /// Validate `polar` against the axes it reads; `None` always passes.
     pub fn validate_polar(&self) -> Result<(), &'static str> {
-        match &self.polar {
+        match self.polar() {
             Some(polar) => polar.validate(self),
             None => Ok(()),
         }
@@ -435,7 +435,7 @@ mod tests {
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.polar = Some(PolarOptions::default());
+        config.set_polar(Some(PolarOptions::default()));
         config
     }
 
@@ -462,21 +462,21 @@ mod tests {
         let config = polar_config();
         assert_eq!(config.validate_polar(), Ok(()));
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().inner_radius_fraction = 0.95;
+        c.polar_mut().unwrap().inner_radius_fraction = 0.95;
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([10.0, 10.0]);
+        c.polar_mut().unwrap().sector = Some([10.0, 10.0]);
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([0.0, 400.0]);
+        c.polar_mut().unwrap().sector = Some([0.0, 400.0]);
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().sector = Some([-90.0, 90.0]);
+        c.polar_mut().unwrap().sector = Some([-90.0, 90.0]);
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 0 };
+        c.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 0 };
         assert!(c.validate_polar().is_err());
-        c.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 65 };
+        c.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 65 };
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
         c.bottom_x.scale = AxisScale::Logarithmic;
@@ -493,16 +493,16 @@ mod tests {
             Ok(()),
             "a categorical angle axis is valid"
         );
-        c.polar.as_mut().unwrap().grid_shape = Some(GridShape::Polygon);
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon);
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().grid_shape = Some(GridShape::Polygon);
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon);
         assert!(
             c.validate_polar()
                 .unwrap_err()
                 .contains("needs a categorical angle axis")
         );
-        c.polar.as_mut().unwrap().grid_shape = Some(GridShape::Circle);
+        c.polar_mut().unwrap().grid_shape = Some(GridShape::Circle);
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
         c.left_y.categories = category();
@@ -514,10 +514,10 @@ mod tests {
         c.overlays.push(crate::layer::OverlayLayer::default());
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
-        c.polar.as_mut().unwrap().zero_angle_degrees = f64::NAN;
+        c.polar_mut().unwrap().zero_angle_degrees = f64::NAN;
         assert!(c.validate_polar().is_err());
         let mut plain = default_config();
-        plain.polar = None;
+        plain.set_polar(None);
         plain.bottom_x.inverted = true;
         assert_eq!(plain.validate_polar(), Ok(()));
     }
@@ -610,7 +610,7 @@ mod tests {
         hidden.bottom_x.label_style.visible = false;
         assert!(hidden.polar_geometry().unwrap().radius > geometry.radius);
         let mut plain = config;
-        plain.polar = None;
+        plain.set_polar(None);
         assert_eq!(plain.polar_geometry(), None);
     }
 
@@ -680,7 +680,7 @@ mod tests {
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, plain);
         let mut polar = polar_config();
-        polar.polar = Some(PolarOptions {
+        polar.set_polar(Some(PolarOptions {
             zero_angle_degrees: 90.0,
             clockwise: true,
             angle_unit: AngleUnit::Radians,
@@ -689,7 +689,7 @@ mod tests {
             interpolation: PolarInterpolation::Arc { pieces: 12 },
             radial_label_angle_degrees: 45.0,
             grid_shape: Some(GridShape::Polygon),
-        });
+        }));
         let text = serde_json::to_string(&polar).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(back, polar);

@@ -49,7 +49,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 640 });
-    config.view_3d = Some(View3d::default());
+    config.set_view_3d(Some(View3d::default()));
     for axis in [&mut config.bottom_x, &mut config.left_y, &mut config.right_y] {
         axis.min = 0.0;
         axis.max = 1.0;

@@ -266,7 +266,7 @@ this:
 ```rust,ignore
 use renderer::{format::LabelFormat, polar::PolarOptions};
 
-config.polar = Some(PolarOptions::default()); // 0° right, counter-clockwise
+config.set_polar(Some(PolarOptions::default())); // 0° right, counter-clockwise
 let mut chart = Chart::new(config);
 chart.set_x_range(0.0, 360.0); // which angle ticks and spokes are drawn
 chart.set_y_range(0.0, 1.0); // radius axis

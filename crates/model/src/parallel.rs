@@ -186,9 +186,6 @@ impl ParallelOptions {
                 "a parallel chart's left_y spans the normalized band: linear 0..1, not inverted",
             );
         }
-        if config.polar.is_some() || config.ternary.is_some() || config.view_3d.is_some() {
-            return Err("a chart is parallel, polar, ternary or 3D: one of them");
-        }
         if !config.overlays.is_empty() {
             return Err("parallel charts have no overlay layers");
         }
@@ -216,7 +213,7 @@ impl ParallelOptions {
 impl Config {
     /// Validate `parallel` against the axes it reads; `None` always passes.
     pub fn validate_parallel(&self) -> Result<(), &'static str> {
-        match &self.parallel {
+        match self.parallel() {
             Some(parallel) => parallel.validate(self),
             None => Ok(()),
         }
@@ -231,7 +228,7 @@ impl Config {
     /// without a fill; a colour column maps through `Config.colorbar`.
     pub fn validate_parallel_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
-            match (&item.render_type, &self.parallel) {
+            match (&item.render_type, self.parallel()) {
                 (DataRenderType::Parallel { .. }, None) => {
                     return Err("a parallel series is drawn on a parallel chart (Config.parallel)");
                 }
@@ -327,7 +324,7 @@ mod tests {
         );
         config.left_y.min = 0.0;
         config.left_y.max = 1.0;
-        config.parallel = Some(ParallelOptions {
+        config.set_parallel(Some(ParallelOptions {
             axes: vec![
                 ParallelAxis::new(0.0, 10.0),
                 ParallelAxis {
@@ -339,13 +336,13 @@ mod tests {
                     ..ParallelAxis::new(1.0, 1000.0)
                 },
             ],
-        });
+        }));
         config
     }
 
     #[test]
     fn fractions_place_values_linearly_inverted_and_logarithmically() {
-        let axes = chart().parallel.unwrap().axes;
+        let axes = chart().parallel().unwrap().axes.clone();
         assert_eq!(axes[0].fraction(2.5), Some(0.25));
         assert_eq!(
             axes[0].fraction(12.0),
@@ -376,15 +373,15 @@ mod tests {
             c.validate_parallel().unwrap_err()
         };
         assert_eq!(
-            reject(&|c| c.parallel.as_mut().unwrap().axes.truncate(1)),
+            reject(&|c| c.parallel_mut().unwrap().axes.truncate(1)),
             "a parallel chart has at least two axes"
         );
         assert_eq!(
-            reject(&|c| c.parallel.as_mut().unwrap().axes[0].max = 0.0),
+            reject(&|c| c.parallel_mut().unwrap().axes[0].max = 0.0),
             "a parallel axis's range is finite with a smaller min"
         );
         assert_eq!(
-            reject(&|c| c.parallel.as_mut().unwrap().axes[2].min = 0.0),
+            reject(&|c| c.parallel_mut().unwrap().axes[2].min = 0.0),
             "a logarithmic parallel axis's range is positive"
         );
         assert_eq!(
@@ -405,14 +402,6 @@ mod tests {
         assert_eq!(
             reject(&|c| c.left_y.max = 2.0),
             "a parallel chart's left_y spans the normalized band: linear 0..1, not inverted"
-        );
-        assert_eq!(
-            reject(&|c| c.polar = Some(Default::default())),
-            "a chart is parallel, polar, ternary or 3D: one of them"
-        );
-        assert_eq!(
-            reject(&|c| c.view_3d = Some(Default::default())),
-            "a chart is parallel, polar, ternary or 3D: one of them"
         );
         assert_eq!(
             reject(&|c| c.overlays.push(Default::default())),
@@ -485,7 +474,7 @@ mod tests {
     fn a_series_on_fewer_than_two_axes_is_refused_without_panicking() {
         for count in [0usize, 1] {
             let mut config = chart();
-            config.parallel.as_mut().unwrap().axes.truncate(count);
+            config.parallel_mut().unwrap().axes.truncate(count);
             assert_eq!(
                 config.validate_parallel(),
                 Err("a parallel chart has at least two axes")
@@ -520,9 +509,9 @@ mod tests {
     fn scaling_keeps_each_axis_label_gap_proportional() {
         use crate::layout::LABEL_GAP;
         let mut config = chart();
-        config.parallel.as_mut().unwrap().axes[1].label_offset = [3.0, 5.0];
+        config.parallel_mut().unwrap().axes[1].label_offset = [3.0, 5.0];
         let scaled = config.scaled(2.0);
-        let axes = &scaled.parallel.as_ref().unwrap().axes;
+        let axes = &scaled.parallel().unwrap().axes;
         assert_eq!(axes[0].label_offset, [-LABEL_GAP, 0.0]);
         assert_eq!(axes[1].label_offset, [6.0 - LABEL_GAP, 10.0]);
     }
