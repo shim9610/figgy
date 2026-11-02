@@ -74,7 +74,10 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
     let image = r
-        .export_panel_rgba_async(&Chart::new(config), &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(config), &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()?;
     std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
     println!("{name}: {}x{}", image.width, image.height);

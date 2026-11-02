@@ -289,7 +289,10 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
             pump(&mut f, Some(operation));
             let actual = pollster::block_on(f.renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
-                .export_panel_rgba_async(&f.chart, &f.series, scale)
+                .export_rgba(
+                    crate::ExportSource::chart(&f.chart, &f.series),
+                    crate::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             assert_eq!(

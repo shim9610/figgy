@@ -165,7 +165,10 @@ fn heatmap_selection_matches_resident_with_bounded_axis_neighbours() {
             pump_with_selection(&mut f, op);
             let actual = pollster::block_on(f.renderer.finish_stream_export(op)).unwrap();
             let expected = resident
-                .export_panel_rgba_async(&f.chart, &f.series, scale)
+                .export_rgba(
+                    crate::ExportSource::chart(&f.chart, &f.series),
+                    crate::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             assert_eq!(

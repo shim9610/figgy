@@ -6,7 +6,7 @@ image.
 [`readme_gallery.rs`](examples/readme_gallery.rs) runs the `error_bars`,
 `histogram`, `heatmap_contours` and `animated_lines` examples with one shared
 device. They use the native `Renderer` with an offscreen RGBA target, upload columns through
-the resident pool, and export through `export_panel_rgba_with_clear_async` and
+the resident pool, and export through `export_rgba` and
 `encode_png`. No browser or window is needed. Axes, text, grid and legends follow
 the same CPU-raster/GPU-compositing path as other figgy charts.
 
@@ -59,7 +59,7 @@ in each example.
 | `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
 
 `twin_axes` and `small_multiples` export with
-`export_document_rgba_with_clear_async`: the panel export draws the base panel
+`export_rgba`: the panel export draws the base panel
 only, without overlay layers or subplots.
 
 The same examples also write plain feature checks that are not in the README:

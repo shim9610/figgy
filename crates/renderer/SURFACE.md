@@ -82,7 +82,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             surface: None, // every surface option takes its default
         },
     }];
-    let image = pollster::block_on(renderer.export_panel_rgba_async(&chart, &series, 1.0))?;
+    let image = pollster::block_on(renderer.export_rgba(ExportSource::chart(&chart, &series), ExportOptions::panel(1.0)))?;
     std::fs::write("surface.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

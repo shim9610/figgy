@@ -1,6 +1,6 @@
 //! End-to-end pixel verification of radar series (`DataRenderType::Radar`)
 //! on a polar chart with a categorical angle axis, through the public
-//! renderer API and the headless `export_panel_rgba`: the closed outline
+//! renderer API and the headless `export_rgba`: the closed outline
 //! with its closing segment, the fill to the centre or the hole, the vertex
 //! markers, a NaN vertex, a sector, several series, the polygon and circle
 //! grids with the category spokes and labels, the picked vertex's ring, the
@@ -215,9 +215,12 @@ fn count(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> usize {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba_async(chart, series, scale)
-        .block_on()
-        .unwrap()
+    r.export_rgba(
+        renderer::ExportSource::chart(chart, series),
+        renderer::ExportOptions::panel(scale),
+    )
+    .block_on()
+    .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -578,8 +581,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let mut rectangular = chart(up_clockwise());
     rectangular.config_mut().polar = None;
     let reason = invalid(
-        r.export_panel_rgba_async(&rectangular, &series, 1.0)
-            .block_on(),
+        r.export_rgba(
+            renderer::ExportSource::chart(&rectangular, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on(),
         "rectangular",
     );
     assert!(reason.contains("polar"), "{reason}");
@@ -587,7 +593,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
     let reason = invalid(
-        r.export_panel_rgba_async(&numeric, &series, 1.0).block_on(),
+        r.export_rgba(
+            renderer::ExportSource::chart(&numeric, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on(),
         "numeric",
     );
     assert!(reason.contains("categorical angle axis"), "{reason}");
@@ -597,7 +607,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         ..up_clockwise()
     });
     let reason = invalid(
-        r.export_panel_rgba_async(&arcs, &series, 1.0).block_on(),
+        r.export_rgba(
+            renderer::ExportSource::chart(&arcs, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on(),
         "arcs",
     );
     assert!(reason.contains("Chord"), "{reason}");
@@ -605,8 +619,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     r.add_column("short", &col(vec![0.5, 0.5, 0.5])).unwrap();
     let short = [radar("short", "short", RED, outline_and_fill())];
     let reason = invalid(
-        r.export_panel_rgba_async(&chart(up_clockwise()), &short, 1.0)
-            .block_on(),
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart(up_clockwise()), &short),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on(),
         "short",
     );
     assert!(reason.contains("one value per category"), "{reason}");
@@ -617,8 +634,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         labels.text = vec!["1".into(); 4];
     }
     let reason = invalid(
-        r.export_panel_rgba_async(&chart(up_clockwise()), &[labelled], 1.0)
-            .block_on(),
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart(up_clockwise()), &[labelled]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on(),
         "labels",
     );
     assert!(reason.contains("one string per category"), "{reason}");
@@ -629,9 +649,12 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     });
     polygon.config_mut().bottom_x.categories = None;
     assert!(
-        r.export_panel_rgba_async(&polygon, &[], 1.0)
-            .block_on()
-            .is_err()
+        r.export_rgba(
+            renderer::ExportSource::chart(&polygon, &[]),
+            renderer::ExportOptions::panel(1.0)
+        )
+        .block_on()
+        .is_err()
     );
     // A stylized draw style draws no radar series, and says so.
     assert!(!renderer::draw_style_supports(
@@ -711,7 +734,10 @@ fn a_polar_subplot_draws_its_own_radar_series() {
     let series = [radar("one", "one", RED, outline_and_fill())];
     for scale in [1.0, 2.0] {
         let img = r
-            .export_document_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         save(&format!("radar-subplot-{scale}x"), &img);

@@ -479,7 +479,7 @@ impl shader::Primitive for FiggyPrimitive {
             let dpi = EXPORT_DPI.load(Ordering::Relaxed) as f32;
             let scale = dpi_to_scale(dpi);
             for (i, p) in pipeline.panels.iter().enumerate() {
-                match renderer.export_panel_png_bytes(&p.chart, &p.series, scale) {
+                match renderer.export_png(&p.chart, &p.series, scale) {
                     Ok(bytes) => {
                         let path = format!("/tmp/figgy_iced_panel_{i}.png");
                         match std::fs::write(&path, &bytes) {

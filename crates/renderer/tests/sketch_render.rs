@@ -1,5 +1,5 @@
 //! End-to-end pixel verification of the hand-drawn ("sketch") render mode
-//! using only the public renderer API and the headless `export_panel_rgba`
+//! using only the public renderer API and the headless `export_rgba`
 //! path.
 //!
 //! House pattern (mirrors the in-crate GPU tests): every test builds its own
@@ -328,12 +328,18 @@ fn sketch_diverges_from_precise() {
     let (mut chart, series) = build_combined(&mut r);
 
     let img_p = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let img_s = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -401,12 +407,18 @@ fn sketch_diverges_from_precise() {
         chart.set_y_range(-1.2, 1.2);
         let one = [cfg];
         let p = r
-            .export_panel_rgba_async(&chart, &one, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
         let s = r
-            .export_panel_rgba_async(&chart, &one, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &one),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         let (cp, cs) = (count_class(&p, pred), count_class(&s, pred));
@@ -431,11 +443,17 @@ fn sketch_is_deterministic() {
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
 
     let a = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let b = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_bytes_eq(&a, &b, "same renderer, repeated sketch export");
@@ -444,7 +462,10 @@ fn sketch_is_deterministic() {
     let (mut chart2, series2) = build_combined(&mut r2);
     chart2.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let c = r2
-        .export_panel_rgba_async(&chart2, &series2, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart2, &series2),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_bytes_eq(&a, &c, "fresh renderer instance, identical inputs");
@@ -463,7 +484,10 @@ fn sketch_seed_separates() {
         ..SketchOptions::default()
     });
     let s0 = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions {
@@ -471,7 +495,10 @@ fn sketch_seed_separates() {
         ..SketchOptions::default()
     });
     let s1 = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -514,7 +541,10 @@ fn sketch_amplitude_is_bounded() {
     let series = [line_series("h", "hx", "hy", RED, LineStylePreset::Solid)];
 
     let img_p = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let da = chart.config().data_area().unwrap().0;
@@ -544,7 +574,10 @@ fn sketch_amplitude_is_bounded() {
         ..SketchOptions::default()
     });
     let img_s = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let (smin, smax) = red_rows(&img_s).expect("sketch horizontal line drew no ink");
@@ -593,7 +626,10 @@ fn sketch_preserves_nan_gaps() {
     chart.config_mut().draw_style = DrawStyle::Sketch(SketchOptions::default());
     let series = [line_series("gap", "gx", "gy", RED, LineStylePreset::Solid)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -647,12 +683,18 @@ fn sketch_composes_with_dash() {
 
     let solid = [line_series("ds", "dx", "dy", RED, LineStylePreset::Solid)];
     let img_solid = r
-        .export_panel_rgba_async(&chart, &solid, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &solid),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let dashed = [line_series("dd", "dx", "dy", RED, LineStylePreset::Dash)];
     let img_dash = r
-        .export_panel_rgba_async(&chart, &dashed, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &dashed),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -725,11 +767,17 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                     series
                 };
                 let actual = r
-                    .export_panel_rgba_async(&chart, &[series("noisy")], 1.0)
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
                     .block_on()
                     .unwrap();
                 let expected = r
-                    .export_panel_rgba_async(&chart, &[series("masked")], 1.0)
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[series("masked")]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
                     .block_on()
                     .unwrap();
                 assert_bytes_eq(
@@ -738,7 +786,10 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                     "logarithmic noise must leave a masked gap",
                 );
                 let blank = r
-                    .export_panel_rgba_async(&chart, &[], 1.0)
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &[]),
+                        renderer::ExportOptions::panel(1.0),
+                    )
                     .block_on()
                     .unwrap();
                 assert!(
@@ -801,16 +852,25 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                 series
             };
             let actual = r
-                .export_panel_rgba_async(&chart, &[series("noisy")], 1.0)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[series("noisy")]),
+                    renderer::ExportOptions::panel(1.0),
+                )
                 .block_on()
                 .unwrap();
             let expected = r
-                .export_panel_rgba_async(&chart, &[series("masked")], 1.0)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[series("masked")]),
+                    renderer::ExportOptions::panel(1.0),
+                )
                 .block_on()
                 .unwrap();
             assert_bytes_eq(&actual, &expected, "nonpositive log markers must be masked");
             let blank = r
-                .export_panel_rgba_async(&chart, &[], 1.0)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[]),
+                    renderer::ExportOptions::panel(1.0),
+                )
                 .block_on()
                 .unwrap();
             assert!(

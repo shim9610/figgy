@@ -987,11 +987,9 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         );
         return;
     }
-    let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-        &Chart::new(config.clone()),
-        &series,
-        1.0,
-        Color::WHITE,
+    let expected = pollster::block_on(resident.export_rgba(
+        crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+        crate::ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))
     .unwrap();
     let chunks = if std::env::var_os("FIGGY_STYLE_EXPORT_UNSPLIT").is_some() {

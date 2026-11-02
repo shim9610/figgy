@@ -2470,7 +2470,7 @@ fn check_owners(
 
 /// The CPU composite of the panel rasters is what the product exports:
 /// every opaque decoration pixel of `ink` has the same colour in the
-/// renderer's `export_document_rgba` of the palette document (annotation
+/// renderer's `export_rgba` of the palette document (annotation
 /// layer hidden, so nothing is drawn over the decoration). The renderer
 /// draws every panel's data before any panel's decoration
 /// (`composite::FRAME_SLOTS`), so the decoration rasters composited alone,
@@ -2487,7 +2487,10 @@ fn check_export(
     let mut doc = palette_1x.clone();
     doc.annotations.visible = false;
     let image = match r
-        .export_document_rgba_async(&Chart::new(doc), series, at.scale)
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(doc), series),
+            renderer::ExportOptions::document(at.scale),
+        )
         .block_on()
     {
         Ok(image) => image,
@@ -3275,7 +3278,7 @@ impl Radial {
     fn export(&mut self, c: &RadialChart, scale: f32) -> Result<RasterImage, String> {
         let image = self
             .0
-            .export_rgba_async(c, RADIAL_SIZE, scale)
+            .export_rgba(c, RADIAL_SIZE, renderer::ExportOptions::document(scale))
             .block_on()
             .map_err(|e| e.to_string());
         self.0.end_frame();
@@ -3966,9 +3969,12 @@ fn export_annotations(
         Some(i) => doc.annotations.items[i].visible = false,
         None => {}
     }
-    r.export_document_rgba_async(&Chart::new(doc), series, scale)
-        .block_on()
-        .map_err(|e| e.to_string())
+    r.export_rgba(
+        renderer::ExportSource::chart(&Chart::new(doc), series),
+        renderer::ExportOptions::document(scale),
+    )
+    .block_on()
+    .map_err(|e| e.to_string())
 }
 
 /// The annotation map of `cfg` (already at its scale), from a chart view.

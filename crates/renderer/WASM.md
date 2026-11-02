@@ -57,10 +57,7 @@ Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 
 | `data_render::request_adapter` | `request_adapter_async` | |
 | `data_render::request_adapter_for_surface` | `request_adapter_for_surface_async` | |
 | `data_render::request_device` | `request_device_async` | |
-| `Renderer::export_panel_rgba` | `export_panel_rgba_async` | GPU→CPU readback |
-| `Renderer::export_panel_png_bytes` | `export_panel_png_bytes_async` | |
-| `Renderer::export_document_rgba` | `export_document_rgba_async` | 기본 레이어와 모든 오버레이 레이어를 한 이미지로 합성 |
-| `Renderer::export_document_png_bytes` | `export_document_png_bytes_async` | |
+| — | `Renderer::export_rgba` / `export_png` / `export_svg` / `export_pdf` | GPU→CPU readback. `ExportOptions`의 `scope`로 패널 하나 또는 모든 레이어를 합성한 문서를 고른다. 네이티브에서는 `pollster::block_on` 등으로 기다린다 |
 | — | `Renderer::wait_idle`(동기, 모든 플랫폼) | 네이티브에서는 장치 작업이 끝날 때까지 대기하고, 웹에서는 아무 작업도 하지 않는다 |
 | — | `Renderer::wait_submitted_work` / `WindowedRenderer::first_frame_ready` / `warm_up` | 첫 `queue.submit()` 이후 GPU 작업 완료 대기 |
 
@@ -356,12 +353,7 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
         .map_err(js_err)?
         .to_vec();
     let bytes = self.renderer
-        .export_document_png_bytes_with_clear_async(
-            &export_chart,
-            &series,
-            scale,
-            self.clear_color,
-        )
+        .export_png(ExportSource::chart(&export_chart, &series), ExportOptions::document(scale).with_clear(self.clear_color))
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(js_sys::Uint8Array::from(bytes.as_slice()))
@@ -371,7 +363,7 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
 ```
 
 `export_png`는 문서 출력이다. `overlays`가 있으면 기본 레이어와 오버레이 레이어를 캔버스와
-같은 순서로 한 이미지에 합성하고, 없으면 패널 출력(`export_panel_png_bytes_with_clear_async`)과
+같은 순서로 한 이미지에 합성하고, 없으면 패널 출력(`export_png`)과
 바이트 단위로 같은 결과를 낸다. `subplots`가 있으면 이미지는 모든 차트 영역의 합집합 크기이고,
 캔버스도 그 합집합을 표면에 맞춰 그린다.
 

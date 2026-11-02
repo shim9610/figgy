@@ -1,6 +1,6 @@
 //! End-to-end pixel verification of box plot violins and raw points
 //! (`BoxPlot.violin`, `BoxPlot.points`) through the public renderer API and
-//! the headless `export_panel_rgba`: symmetric and split bodies in both
+//! the headless `export_rgba`: symmetric and split bodies in both
 //! directions at 1x and 2x, the density scale, the narrowed and hidden
 //! box, a box override restyling its category's violin, NaN breaks,
 //! the jittered raw points, every pick and highlight, value labels past the
@@ -410,7 +410,10 @@ fn a_symmetric_violin_mirrors_its_density_in_both_directions_and_scales() {
         )];
         for scale in [1.0f32, 2.0] {
             let img = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             for k in 0..3 {
@@ -482,7 +485,10 @@ fn a_split_violin_draws_each_half_on_its_side() {
             0.0,
         )];
         let img = r
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         for k in 0..3 {
@@ -537,11 +543,17 @@ fn raincloud_points_sit_jittered_beside_their_half() {
         0.4,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let again = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!(img.rgba, again.rgba, "the jitter is the same on every draw");
@@ -588,7 +600,10 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         0.4,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     // The violin body of category b, right of its centre at 65.
@@ -650,7 +665,10 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         ..Default::default()
     });
     let ringed = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let mut magenta = 0;
@@ -673,7 +691,10 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
         ..Default::default()
     });
     let ringed = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let (centre, full) = member(&chart, direction, 1, 1.0);
@@ -705,7 +726,10 @@ fn a_box_override_restyles_its_categorys_violin() {
     o.color = Some(BLUE);
     *overrides = Some(vec![o]);
     let img = r
-        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(span_at(&img, &chart, direction, 0, 50.0, 1.0, is_red).is_some());
@@ -728,7 +752,10 @@ fn a_violin_alone_draws_without_a_record_and_outlines_its_body() {
     let mut series = violin_series("v", ViolinBody::Symmetric(h), 0.25);
     series.y_column.clear();
     let img = r
-        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     for k in 0..3 {
@@ -780,7 +807,10 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
     r.remove_column("sym.density").unwrap();
     upload_curve(&mut r, "sym", &[&low, &low, &low]);
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!(span_at(&img, &chart, direction, 0, 60.0, 1.0, is_red), None);
@@ -790,7 +820,10 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
     r.add_column("sym.density", &col(vec![0.5; 3 * 81 - 1]))
         .unwrap();
     let err = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .err()
         .expect("an error");
@@ -800,7 +833,10 @@ fn the_fit_covers_curves_and_points_and_mismatched_columns_are_errors() {
     r.remove_column("sym.density").unwrap();
     upload_curve(&mut r, "sym", &[&sym, &sym]);
     let err = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .err()
         .expect("an error");
@@ -830,7 +866,10 @@ fn a_nan_breaks_the_body() {
         0.0,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!(span_at(&img, &chart, direction, 0, 50.0, 1.0, is_red), None);
@@ -855,7 +894,10 @@ fn value_labels_clear_the_curve() {
     labels.placement = renderer::data_config::BoxPlotLabels::Median;
     labels.text = vec!["A".into(), "B".into(), "C".into()];
     let img = r
-        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let top = along(&chart, direction, 90.0, 1.0);
@@ -924,7 +966,10 @@ fn overlays_and_subplots_draw_their_violins_and_points() {
         0.3,
     );
     let img = r
-        .export_document_rgba_async(&parent, &[base, over, sub], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&parent, &[base, over, sub]),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let rows = |pred: fn(&[u8]) -> bool, y0: u32, y1: u32| {
@@ -968,11 +1013,17 @@ fn a_2x_export_is_the_1x_layout_doubled() {
     let parts: [(fn(&[u8]) -> bool, &str); 3] =
         [(is_red, "low"), (is_blue, "high"), (is_cyan, "box")];
     let one = r
-        .export_panel_rgba_async(&chart, &[body.clone()], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[body.clone()]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let two = r
-        .export_panel_rgba_async(&chart, &[body.clone()], 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[body.clone()]),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     for (pred, name) in parts {
@@ -984,11 +1035,17 @@ fn a_2x_export_is_the_1x_layout_doubled() {
     // orange ink is the 1x one doubled.
     let points = [with_points(body, 0.0, 0.6)];
     let one = r
-        .export_panel_rgba_async(&chart, &points, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &points),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let two = r
-        .export_panel_rgba_async(&chart, &points, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &points),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     let centroid = |img: &RasterImage| {
@@ -1063,7 +1120,10 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
     series.y_column.clear();
     let series = [series];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let da = chart.config().data_area().unwrap();
@@ -1134,7 +1194,10 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         let series = [series];
         let started = std::time::Instant::now();
         let img = r
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         let draw = started.elapsed();
@@ -1252,7 +1315,10 @@ fn a_split_violin_picks_and_highlights_each_half() {
         // box.
         chart.config_mut().picked_data = Some(select(Some(ViolinSide::Low)));
         let ringed = r
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         assert!(
@@ -1278,7 +1344,10 @@ fn a_split_violin_picks_and_highlights_each_half() {
         // The whole category: both halves.
         chart.config_mut().picked_data = Some(select(None));
         let ringed = r
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         assert!(span_at(&ringed, &chart, direction, 2, 35.0, 1.0, is_magenta).is_some());

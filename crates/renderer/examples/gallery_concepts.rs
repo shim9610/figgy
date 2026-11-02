@@ -74,7 +74,10 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
         ));
         chart = chart.with_legend_entry(label, color, 3.5, LegendEntryKind::Line);
     }
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    let image = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::panel(1.).with_clear(bg),
+    ))?;
     save(&image, bg, &out.join("concept-observability.png"))
 }
 
@@ -124,7 +127,10 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
         ));
         chart = chart.with_legend_entry(label, color, 3., LegendEntryKind::Line);
     }
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    let image = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::panel(1.).with_clear(bg),
+    ))?;
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
@@ -194,8 +200,10 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
     r.add_columns(&columns)?;
     let mut cartesian = renderer::Chart::new(config);
     cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
-    let image =
-        pollster::block_on(r.export_panel_rgba_with_clear_async(&cartesian, &specs, 1., bg))?;
+    let image = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&cartesian, &specs),
+        renderer::ExportOptions::panel(1.).with_clear(bg),
+    ))?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }
 
@@ -236,7 +244,9 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         ..Default::default()
     };
     chart.format_labels();
-    let image = r.export_rgba_async(&chart, SIZE, 1.).block_on()?;
+    let image = r
+        .export_rgba(&chart, SIZE, renderer::ExportOptions::document(1.))
+        .block_on()?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
@@ -266,7 +276,9 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         ..Default::default()
     };
     chart.format_labels();
-    let image = r.export_rgba_async(&chart, SIZE, 1.).block_on()?;
+    let image = r
+        .export_rgba(&chart, SIZE, renderer::ExportOptions::document(1.))
+        .block_on()?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();
     Ok(())
@@ -348,7 +360,10 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.label_style.font_size = 18.;
     bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
-    let image = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    let image = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::panel(1.).with_clear(bg),
+    ))?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }
 

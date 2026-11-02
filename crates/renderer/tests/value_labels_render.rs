@@ -1,6 +1,6 @@
 //! End-to-end verification of the value labels of category bar, box plot
 //! and radar series through the public renderer API and the headless
-//! `export_panel_rgba`, at 1x and 2x: where each label sits against the
+//! `export_rgba`, at 1x and 2x: where each label sits against the
 //! bar end, the top of the box or the radar vertex (the former charts'
 //! placement), that the drawn pixels are the SSOT string's own raster, that
 //! an empty string draws nothing, that a drag offset moves the label by
@@ -390,7 +390,10 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
         ];
         for scale in SCALES {
             let img = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             for k in 0..3 {
@@ -450,7 +453,10 @@ fn bar_labels_sit_at_the_bar_ends_as_the_former_chart_placed_them() {
     ];
     for scale in SCALES {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         for k in [0usize, 1] {
@@ -507,7 +513,10 @@ fn a_label_draws_its_own_string_and_an_empty_one_draws_nothing() {
     let (family, size) = face(&chart, direction);
     for scale in SCALES {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let region = slot(&chart, direction, 0, scale);
@@ -572,11 +581,17 @@ fn a_dragged_label_moves_by_its_offset_at_1x_and_2x() {
     assert_eq!(dragged[0].value_label_offset(1), [12.0, -8.0]);
     for scale in SCALES {
         let before = r
-            .export_panel_rgba_async(&chart, &still, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let after = r
-            .export_panel_rgba_async(&chart, &dragged, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &dragged),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let everywhere = (0, 0, before.width, before.height);
@@ -677,7 +692,10 @@ fn box_labels_sit_past_the_top_of_the_box() {
         let series = [boxes(direction, &["30", "45", "25"])];
         for scale in SCALES {
             let img = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             for (k, top) in [(0usize, 85.0), (1, 70.0), (2, 45.0)] {
@@ -787,7 +805,10 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     let series = [radar(RadarLabels::Values)];
     for scale in SCALES {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let slack = 2.0 * scale + 1.0;
@@ -857,7 +878,10 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     let mut emphasized = [radar(RadarLabels::Emphasized)];
     let all = (0, 0, WIDTH, HEIGHT);
     let img = r
-        .export_panel_rgba_async(&chart, &emphasized, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &emphasized),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!(bbox(&img, all, is_label), None);
@@ -871,13 +895,19 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
         ..DataSelectionsConfig::default()
     });
     let img = r
-        .export_panel_rgba_async(&selected, &emphasized, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&selected, &emphasized),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(bbox(&img, all, is_label).is_some());
     emphasized[0].series_id = "other".into();
     let img = r
-        .export_panel_rgba_async(&selected, &emphasized, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&selected, &emphasized),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!(bbox(&img, all, is_label), None);
@@ -903,7 +933,10 @@ fn the_selected_label_is_outlined_by_its_frame() {
     for scale in SCALES {
         chart.config_mut().picked_data = None;
         let plain = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         chart.config_mut().picked_data = Some(DataSelectionsConfig {
@@ -915,7 +948,10 @@ fn the_selected_label_is_outlined_by_its_frame() {
             ..DataSelectionsConfig::default()
         });
         let selected = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         // The content box: the string's measured size around its ink.
@@ -1035,7 +1071,10 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
     ];
     for scale in SCALES {
         let img = r
-            .export_document_rgba_async(&parent, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let (w, h) = (img.width, img.height);
@@ -1121,7 +1160,10 @@ fn a_label_picks_with_its_series_and_category_over_the_data_under_it() {
     ];
     for scale in SCALES {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let id = r
@@ -1279,13 +1321,19 @@ fn an_edge_bar_label_flips_inside_its_end() {
         for scale in SCALES {
             let case = format!("{direction:?} {scale}x");
             let roomy_img = r
-                .export_panel_rgba_async(&roomy, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&roomy, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let want = bbox(&roomy_img, slot(&roomy, direction, 0, scale), is_ink_core)
                 .expect("the label with room");
             let img = r
-                .export_panel_rgba_async(&edge, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&edge, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let bar = bbox(&img, slot(&edge, direction, 0, scale), is_blue).unwrap();
@@ -1351,13 +1399,19 @@ fn an_edge_box_label_flips_below_its_top() {
         for scale in SCALES {
             let case = format!("{direction:?} {scale}x");
             let roomy_img = r
-                .export_panel_rgba_async(&roomy, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&roomy, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let want = bbox(&roomy_img, slot(&roomy, direction, 0, scale), is_ink_core)
                 .expect("the label with room");
             let img = r
-                .export_panel_rgba_async(&edge, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&edge, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let ink = bbox(&img, slot(&edge, direction, 0, scale), is_ink_core)
@@ -1424,11 +1478,17 @@ fn an_edge_radar_label_flips_inward() {
     let font = edge.config().left_y.label_style.font_size;
     for scale in SCALES {
         let roomy_img = r
-            .export_panel_rgba_async(&roomy, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&roomy, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let img = r
-            .export_panel_rgba_async(&edge, &edge_series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&edge, &edge_series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let area = data_area_px(&edge, scale);
@@ -1543,7 +1603,10 @@ fn three_hundred_value_labels_draw_pick_and_drag() {
     let sampled = [0, 63, 64, 150, N - 1];
     for scale in SCALES {
         let img = r
-            .export_panel_rgba_async(&chart, &still, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         for k in sampled {
@@ -1590,11 +1653,17 @@ fn three_hundred_value_labels_draw_pick_and_drag() {
     );
     for scale in SCALES {
         let before = r
-            .export_panel_rgba_async(&chart, &still, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &still),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let after = r
-            .export_panel_rgba_async(&chart, &dragged, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &dragged),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let band = |k: usize| region(k, scale);

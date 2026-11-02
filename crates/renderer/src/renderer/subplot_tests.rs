@@ -455,15 +455,24 @@ fn a_subplot_document_exports_every_chart() {
     let mut r = renderer();
     let chart = Chart::new(document());
     let document_image = r
-        .export_document_rgba_async(&chart, &series(), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let panel = r
-        .export_panel_rgba_async(&chart, &series(), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let large = r
-        .export_document_rgba_async(&chart, &series(), 2.0)
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::document(2.0),
+        )
         .block_on()
         .unwrap();
     let mut side = document();
@@ -474,7 +483,10 @@ fn a_subplot_document_exports_every_chart() {
         height: 120,
     };
     let wide = r
-        .export_document_rgba_async(&Chart::new(side), &series(), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(side), &series()),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     drop(fonts);
@@ -765,7 +777,10 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         (document(), "s2", lower_left),
     ] {
         let base = r
-            .export_document_rgba_async(&Chart::new(plain.clone()), &series(), 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&Chart::new(plain.clone()), &series()),
+                crate::ExportOptions::document(1.0),
+            )
             .block_on()
             .unwrap();
         let mut picked = plain.clone();
@@ -778,7 +793,10 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
             ..Default::default()
         });
         let image = r
-            .export_document_rgba_async(&Chart::new(picked), &series(), 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&Chart::new(picked), &series()),
+                crate::ExportOptions::document(1.0),
+            )
             .block_on()
             .unwrap();
         let mut inside = 0;
@@ -832,11 +850,17 @@ fn subplot_members_draw_shifted_in_their_own_area() {
     offset.line_offsets = Some(group(&["s0", "s3"], 0.3));
     offset.subplots[0].config.line_offsets = Some(group(&["s1", "t1"], 20.0));
     let drawn = r
-        .export_document_rgba_async(&Chart::new(offset.clone()), &host(false), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(offset.clone()), &host(false)),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let expected = r
-        .export_document_rgba_async(&Chart::new(plain.clone()), &host(true), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(plain.clone()), &host(true)),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     drop(fonts);
@@ -858,10 +882,13 @@ fn subplot_members_draw_shifted_in_their_own_area() {
     );
     assert_ne!(
         drawn.rgba,
-        r.export_document_rgba_async(&Chart::new(plain), &host(false), 1.0)
-            .block_on()
-            .unwrap()
-            .rgba
+        r.export_rgba(
+            crate::ExportSource::chart(&Chart::new(plain), &host(false)),
+            crate::ExportOptions::document(1.0)
+        )
+        .block_on()
+        .unwrap()
+        .rgba
     );
     let view = r
         .create_chart_view(&Chart::new(offset.clone()), UPPER)
@@ -1036,7 +1063,10 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
         let pixels = frame_with_view(&mut r, id, &view);
         assert!(pixels.chunks_exact(4).any(|p| p[3] != 0));
         let png = r
-            .export_document_png_bytes_async(&chart, &declarations, 1.0)
+            .export_png(
+                crate::ExportSource::chart(&chart, &declarations),
+                crate::ExportOptions::document(1.0),
+            )
             .block_on()
             .unwrap();
         assert!(!png.is_empty());

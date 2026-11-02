@@ -782,7 +782,10 @@ impl App {
         };
         for (i, panel) in self.panels.iter().enumerate() {
             match renderer
-                .export_panel_png_bytes_async(&panel.chart, &panel.series, EXPORT_SCALE)
+                .export_png(
+                    renderer::ExportSource::chart(&panel.chart, &panel.series),
+                    renderer::ExportOptions::panel(EXPORT_SCALE),
+                )
                 .block_on()
             {
                 Ok(bytes) => {
@@ -796,7 +799,7 @@ impl App {
                 Err(e) => eprintln!("[export] panel {i} failed: {e}"),
             }
         }
-        // encode_png can also be called on an export_panel_rgba result (e.g. RGBA-only for clipboard).
+        // encode_png can also be called on an export_rgba result (e.g. RGBA-only for clipboard).
         let _ = encode_png;
     }
 

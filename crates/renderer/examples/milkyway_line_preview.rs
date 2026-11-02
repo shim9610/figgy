@@ -137,8 +137,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }
-    let img = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &series, 1.0, bg))?;
-    let empty = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &[], 1.0, bg))?;
+    let img = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &series),
+        renderer::ExportOptions::panel(1.0).with_clear(bg),
+    ))?;
+    let empty = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &[]),
+        renderer::ExportOptions::panel(1.0).with_clear(bg),
+    ))?;
     let changed = img
         .rgba
         .chunks_exact(4)

@@ -36,7 +36,10 @@ fn over_white(img: &mut RasterImage) {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
     let mut img = r
-        .export_panel_rgba_async(chart, series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .expect("export");
     over_white(&mut img);

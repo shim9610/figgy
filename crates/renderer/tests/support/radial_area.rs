@@ -37,10 +37,16 @@ pub async fn check(gpu: RendererDevice) {
             .expect("RadialRenderer omitted data area");
         let bounds = original.bounds(&shown, hit).unwrap();
         assert_eq!(original.selection(&shown, hit).unwrap().handles().len(), 8);
-        let before = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
+        let before = r
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
+            .await
+            .unwrap();
         r.end_frame();
         c.decorations.selected = Some(key.clone());
-        let selected = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
+        let selected = r
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
+            .await
+            .unwrap();
         assert_selection_only(
             &before,
             &selected,
@@ -50,7 +56,7 @@ pub async fn check(gpu: RendererDevice) {
         );
         c.decorations.selected = None;
         assert_eq!(
-            r.export_rgba_async(&c, (800, 520), scale)
+            r.export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                 .await
                 .unwrap()
                 .rgba,
@@ -184,7 +190,10 @@ pub async fn check(gpu: RendererDevice) {
                 assert!((new.height - (old.height - height_delta)).abs() < 0.01);
             }
         }
-        let resized = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
+        let resized = r
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
+            .await
+            .unwrap();
         assert_ne!(before.rgba, resized.rgba, "area edit reused stale pixels");
         for handle in smaller.selection(&sshown, sh).unwrap().handles() {
             let mut blue = 0;
@@ -212,7 +221,10 @@ pub async fn check(gpu: RendererDevice) {
         let moved = r.prepare(&c, (800, 520), scale).unwrap();
         let mh = moved.id_of(&c, &key);
         assert_eq!(moved.bounds(&c, mh).unwrap(), sb.translated(20., 15.));
-        let image = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
+        let image = r
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
+            .await
+            .unwrap();
         assert_ne!(image.rgba, resized.rgba);
         // Actual red data pixels, not selection boxes or labels, must
         // continue to pick from the newly prepared logical geometry.
@@ -260,7 +272,7 @@ pub async fn check(gpu: RendererDevice) {
         c.decorations.reset(&key);
         c.decorations.selected = None;
         assert_eq!(
-            r.export_rgba_async(&c, (800, 520), scale)
+            r.export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                 .await
                 .unwrap()
                 .rgba,

@@ -1178,18 +1178,18 @@ impl CartesianHost {
             let exported = if ui.button("Export document PNG").clicked() {
                 Some((
                     "png",
-                    r.export_document_png_bytes_async(&chart, &series, self.export_scale).block_on(),
+                    r.export_png(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on(),
                 ))
             } else if ui.button("Export document SVG").clicked() {
                 Some((
                     "svg",
-                    r.export_document_svg_async(&chart, &series, self.export_scale).block_on()
+                    r.export_svg(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on()
                         .map(String::into_bytes),
                 ))
             } else if ui.button("Export document PDF").clicked() {
                 Some((
                     "pdf",
-                    r.export_document_pdf_async(&chart, &series, self.export_scale).block_on(),
+                    r.export_pdf(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on(),
                 ))
             } else {
                 None
@@ -2585,7 +2585,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             .map_err(|e| format!("{name}: {e}"))?;
         let chart = Chart::new(r.chart_config(id).unwrap().clone());
         let png = r
-            .export_document_png_bytes_async(&chart, &series, 1.0).block_on()
+            .export_png(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(1.0)).block_on()
             .map_err(|e| format!("{name} export: {e}"))?;
         step += 1;
         let path = dir.join(format!("{step:02}_{name}.png"));
@@ -2643,7 +2643,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             }
         }
         let png = r
-            .export_document_png_bytes_async(&Chart::new(scene.config), &scene.series, 2.0).block_on()
+            .export_png(renderer::ExportSource::chart(&Chart::new(scene.config), &scene.series), renderer::ExportOptions::document(2.0)).block_on()
             .map_err(e)?;
         std::fs::write(dir.join("scene_field_clean_2x.png"), png).map_err(|e| e.to_string())?;
         println!("ok  field without box / level 0");
@@ -2655,17 +2655,17 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {
             let png = r
-                .export_document_png_bytes_async(&chart, &scene.series, scale).block_on()
+                .export_png(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
             let svg = r
-                .export_document_svg_async(&chart, &scene.series, scale).block_on()
+                .export_svg(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
             std::fs::write(&path, svg).map_err(|e| e.to_string())?;
             let pdf = r
-                .export_document_pdf_async(&chart, &scene.series, scale).block_on()
+                .export_pdf(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
             std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
@@ -2693,7 +2693,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             r.set_chart_config(id, c.clone())
                 .map_err(|e| format!("{name}: {e}"))?;
             let png = r
-                .export_document_png_bytes_async(&Chart::new(c.clone()), &scene.series, 1.0).block_on()
+                .export_png(renderer::ExportSource::chart(&Chart::new(c.clone()), &scene.series), renderer::ExportOptions::document(1.0)).block_on()
                 .map_err(e)?;
             std::fs::write(dir.join(format!("{name}.png")), png).map_err(|e| e.to_string())?;
         }
@@ -2725,7 +2725,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         let chart = Chart::new(r.chart_config(id).map_err(e)?.clone());
         for scale in [1.0f32, 2.0] {
             let png = r
-                .export_document_png_bytes_async(&chart, &scene.series, scale).block_on()
+                .export_png(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_longlabels_auto_layout_{scale}x.png"));
             std::fs::write(&path, png).map_err(|e| e.to_string())?;

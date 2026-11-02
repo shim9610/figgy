@@ -307,7 +307,10 @@ fn cells_paint_their_channels_at_1x_and_2x() {
     let series = [flat("img", &ids)];
     for scale in [1.0f64, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale as f32)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale as f32),
+            )
             .block_on()
             .unwrap();
         save(&format!("image-cells-{scale}x"), &img);
@@ -400,7 +403,10 @@ fn a_byte_range_maps_128_to_mid_grey() {
         Shading::Flat,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("image-bytes", &img);
@@ -426,7 +432,10 @@ fn a_byte_range_maps_128_to_mid_grey() {
         Shading::Flat,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_colour_at(
@@ -475,7 +484,10 @@ fn interpolated_shading_blends_each_channel_between_sample_points() {
         Shading::Interpolated,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("image-interpolated", &img);
@@ -542,7 +554,10 @@ fn columns_are_y_reads_the_grid_transposed() {
         Shading::Flat,
     )];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let background = pixel(&img, data_to_px(&chart, 0.3, 1.0, 1.0));
@@ -586,7 +601,10 @@ fn a_hexagonal_lattice_paints_its_centres() {
         }
     }
     let img = r
-        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("image-hexagonal", &img);
@@ -734,7 +752,10 @@ fn the_picked_highlight_outlines_the_cell() {
     });
     let series = [flat("img", &ids)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("image-selected", &img);
@@ -919,9 +940,12 @@ fn registration_names_what_an_image_cannot_read() {
         .register_chart(chart.config().clone(), vec![flat("img", &ids)])
         .unwrap();
     r.remove_chart(id).unwrap();
-    r.export_panel_rgba_async(&chart, &[flat("img", &ids)], 1.0)
-        .block_on()
-        .unwrap();
+    r.export_rgba(
+        renderer::ExportSource::chart(&chart, &[flat("img", &ids)]),
+        renderer::ExportOptions::panel(1.0),
+    )
+    .block_on()
+    .unwrap();
 }
 
 /// The big image's channel `k` at column `c`, row `r`: constant over 128 by
@@ -974,7 +998,10 @@ fn a_two_thousand_square_image_draws_and_picks() {
     );
     let started = std::time::Instant::now();
     let img = r
-        .export_panel_rgba_async(&chart, &[series.clone()], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series.clone()]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     eprintln!(

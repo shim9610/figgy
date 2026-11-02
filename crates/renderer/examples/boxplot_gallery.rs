@@ -76,7 +76,12 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
         chart
     };
-    let image = r.export_panel_rgba_async(&chart, &series, 1.0).block_on()?;
+    let image = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()?;
     let colored = image
         .rgba
         .chunks_exact(4)

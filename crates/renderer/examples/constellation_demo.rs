@@ -38,7 +38,10 @@ fn over_space(img: &mut RasterImage) {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
     let mut img = r
-        .export_panel_rgba_async(chart, series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .expect("export");
     over_space(&mut img);
@@ -253,7 +256,10 @@ fn main() {
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
     let mut img = r
-        .export_panel_rgba_async(&spec_chart(), &spec_distinct, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&spec_chart(), &spec_distinct),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .expect("export");
     over_space(&mut img);

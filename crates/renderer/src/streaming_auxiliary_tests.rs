@@ -228,7 +228,10 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
             pump(&mut renderer, operation, &x, &y);
             let actual = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    crate::ExportSource::chart(&chart, &series),
+                    crate::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             assert_eq!(
@@ -278,7 +281,10 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
     let old_expected = resident
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(
@@ -291,7 +297,10 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     pump(&mut renderer, second, &x, &y);
     let new_export = pollster::block_on(renderer.finish_stream_export(second)).unwrap();
     let new_expected = resident
-        .export_panel_rgba_async(&Chart::new(latest), &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(latest), &series),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(
@@ -470,11 +479,9 @@ fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_re
     .unwrap();
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
-    let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-        &chart,
-        &series,
-        2.0,
-        Color::WHITE,
+    let expected = pollster::block_on(resident.export_rgba(
+        crate::ExportSource::chart(&chart, &series),
+        crate::ExportOptions::panel(2.0).with_clear(Color::WHITE),
     ))
     .unwrap();
     assert_eq!(actual.rgba, expected.rgba);

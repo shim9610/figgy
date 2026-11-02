@@ -203,7 +203,10 @@ fn each_node_is_its_colour_on_its_ring_over_its_span() {
     let mut r = renderer();
     let c = chart();
     for scale in [1.0f32, 2.0] {
-        let img = r.export_rgba_async(&c, SIZE, scale).block_on().unwrap();
+        let img = r
+            .export_rgba(&c, SIZE, renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
         save(&format!("sunburst-{scale}x"), &img);
         let (center, radius) = circle(&c, &img, scale);
         assert!(radius > 200.0, "radius {radius} at {scale}x");
@@ -269,7 +272,10 @@ fn a_donut_sunburst_keeps_its_hole() {
     let mut r = renderer();
     let mut c = chart();
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
-    let img = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let img = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     save("sunburst-donut", &img);
     let (center, radius) = circle(&c, &img, 1.0);
     let px = |f: f64, rr: f32| {
@@ -295,7 +301,10 @@ fn the_pick_answers_the_ring_and_the_position() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let c = chart();
-    let img = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let img = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let (center, radius) = circle(&c, &img, 1.0);
     let frame = r.prepare(&c, SIZE, 1.0).unwrap();
     let pick = |p: (f32, f32)| {
@@ -353,14 +362,20 @@ fn step_selection_walks_the_rings_outward_and_emphasizes_one_node() {
     c.style.outline.emphasis = true;
     c.style.outline.width = 3.0;
     c.style.hover_brightness = 0.3;
-    let rest = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let rest = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let frame = r.prepare(&c, SIZE, 1.0).unwrap();
     let expected: Vec<RadialTarget> = nodes().iter().map(|n| n.target).collect();
     for want in expected.iter().chain(&expected[..1]) {
         c.step_selection(false);
         let target = c.interaction.selected.unwrap();
         assert_eq!(target, *want);
-        let image = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+        let image = r
+            .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+            .block_on()
+            .unwrap();
         let mut changed = 0usize;
         for (i, (a, b)) in rest
             .rgba
@@ -395,12 +410,18 @@ fn hover_brightens_one_node() {
     let mut r = renderer();
     let mut c = chart();
     c.style.hover_brightness = 0.3;
-    let rest = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let rest = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     let frame = r.prepare(&c, SIZE, 1.0).unwrap();
     let target = RadialTarget { group: 2, index: 1 };
     c.interaction.hovered = Some(target);
     c.interaction.hover_progress = 1.0;
-    let image = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let image = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     save("sunburst-hover", &image);
     let mut changed = 0usize;
     for (i, (a, b)) in rest
@@ -444,7 +465,10 @@ fn outside_labels_are_the_last_rings_and_inner_labels_sit_inside() {
     c.labels = RadialLabels::Outside;
     c.label_format = RadialLabelFormat::Name;
     c.format_labels();
-    let img = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let img = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     save("sunburst-labels", &img);
     let frame = r.prepare(&c, SIZE, 1.0).unwrap();
     let (center, radius) = circle(&c, &img, 1.0);
@@ -574,7 +598,10 @@ fn eight_rings_of_sixty_four_nodes_draw_and_pick() {
     assert_eq!(c.group_count(), MAX_SUNBURST_DEPTH);
     assert_eq!(c.node_count(), MAX_SUNBURST_DEPTH * MAX_RADIAL_SLICES);
     let started = std::time::Instant::now();
-    let img = r.export_rgba_async(&c, SIZE, 1.0).block_on().unwrap();
+    let img = r
+        .export_rgba(&c, SIZE, renderer::ExportOptions::document(1.0))
+        .block_on()
+        .unwrap();
     eprintln!("8 x 64 sunburst exported in {:?}", started.elapsed());
     save("sunburst-8x64", &img);
     let (center, radius) = circle(&c, &img, 1.0);

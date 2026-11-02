@@ -1,5 +1,5 @@
 //! End-to-end pixel verification of the field (heatmap / band) render path,
-//! through the public renderer API and the headless `export_panel_rgba`.
+//! through the public renderer API and the headless `export_rgba`.
 //!
 //! House pattern (mirrors `histogram_render.rs`): each test builds its own
 //! instance/adapter/device and early-returns when no usable adapter exists.
@@ -324,7 +324,10 @@ fn every_cell_carries_its_own_value_colour() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save_probe("flat-continuous", &img);
@@ -368,7 +371,10 @@ fn selected_matrix_cell_outlines_the_canonical_xy_cell() {
     )];
 
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let (x0, y1) = data_to_px(&chart, 1.0, 0.0);
@@ -425,7 +431,10 @@ fn selected_contour_level_is_redrawn_from_the_same_field_snapshot() {
     )];
 
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let selected = img
@@ -462,7 +471,10 @@ fn nothing_is_painted_outside_the_grid() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -520,7 +532,10 @@ fn a_nan_cell_takes_the_nan_colour() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -559,7 +574,10 @@ fn columns_are_y_reads_the_grid_transposed() {
         )
     }];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -621,7 +639,10 @@ fn centers_layout_puts_the_cell_around_its_coordinate() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -686,7 +707,10 @@ fn interpolated_shading_blends_between_sample_points() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save_probe("interpolated-continuous", &img);
@@ -756,7 +780,10 @@ fn bands_quantize_the_ramp_into_flat_steps() {
         vec![2.5],
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save_probe("flat-bands", &img);
@@ -811,7 +838,10 @@ fn interpolated_finite_pairs_that_overflow_reconstruction_take_nan_colour() {
         Vec::new(),
     )];
     let image = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -848,22 +878,27 @@ fn nonfinite_coordinate_boundaries_leave_flat_field_unpainted() {
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
     let image = renderer
-        .export_panel_rgba_async(
-            &chart,
-            &[heatmap(
-                &["z0"],
-                MatrixOrientation::ColumnsAreX,
-                GridLayout::Edges,
-                Shading::Flat,
-                FillMode::Continuous,
-                Vec::new(),
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &chart,
+                &[heatmap(
+                    &["z0"],
+                    MatrixOrientation::ColumnsAreX,
+                    GridLayout::Edges,
+                    Shading::Flat,
+                    FillMode::Continuous,
+                    Vec::new(),
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
     let empty = renderer
-        .export_panel_rgba_async(&chart, &[], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let center = data_to_px(&chart, 0.5, 0.5);
@@ -899,7 +934,10 @@ fn a_1024_level_banded_fill_counts_unsorted_duplicates_by_value() {
         levels.clone(),
     )];
     let image = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 
@@ -959,7 +997,10 @@ fn a_logarithmic_colourbar_maps_z_by_its_logarithm() {
         Vec::new(),
     )];
     let img = renderer
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
 

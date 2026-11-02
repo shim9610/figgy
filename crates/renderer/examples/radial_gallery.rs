@@ -162,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The drawn label strings are written once each case is edited.
         chart.format_labels();
         let img = renderer
-            .export_rgba_async(&chart, (900, 620), 1.0)
+            .export_rgba(&chart, (900, 620), renderer::ExportOptions::document(1.0))
             .block_on()?;
         std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
         renderer.end_frame();
