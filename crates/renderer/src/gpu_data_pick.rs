@@ -18,9 +18,9 @@ use crate::gpu_memory::{
     ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer,
     charged_buffer_init, shared_charge,
 };
+use crate::gpu_readback::GpuReadback;
 use crate::init::{InitEvent, finished, observe_value, started};
 use crate::pick::PickedData;
-use futures_channel::oneshot;
 
 const INIT_SCOPE: &str = "renderer.gpu_data_pick";
 const DATA_PICK_CANDIDATE_BYTES: u64 = 32;
@@ -540,23 +540,16 @@ impl GpuStreamDataPick {
                 });
         encoder.copy_buffer_to_buffer(&self.best, 0, &readback, 0, DATA_PICK_CANDIDATE_BYTES);
         self.bundle.queue.submit([encoder.finish()]);
-        let (sender, receiver) = oneshot::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                if sender.send(result).is_err() {
-                    // receiver dropped: the waiting call was cancelled
-                }
-            });
         Ok(GpuDataPickTicket {
             state: GpuDataPickTicketState::Stream(DataPickTicket {
                 state: DataPickTicketState::Pending {
-                    device: self.bundle.device.clone(),
-                    health: self.bundle.health.clone(),
-                    readback,
-                    receiver,
+                    readback: GpuReadback::map(
+                        &self.bundle.device,
+                        &self.bundle.health,
+                        &readback,
+                        Some(DATA_PICK_CANDIDATE_BYTES),
+                    ),
                     identities: self.identities,
-                    byte_len: DATA_PICK_CANDIDATE_BYTES,
                     gpu_reduced: true,
                     _field_charges: vec![FieldPickHold {
                         _charge: self.charge,
@@ -1494,21 +1487,15 @@ impl DataPickPipelineBundle {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = readback.slice(..candidate_bytes);
-        let (sender, receiver) = oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            if sender.send(result).is_err() {
-                // receiver dropped: the waiting call was cancelled
-            }
-        });
         Ok(DataPickTicket {
             state: DataPickTicketState::Pending {
-                device: self.device.clone(),
-                health: self.health.clone(),
-                readback,
-                receiver,
+                readback: GpuReadback::map(
+                    &self.device,
+                    &self.health,
+                    &readback,
+                    Some(candidate_bytes),
+                ),
                 identities: identities.into(),
-                byte_len: candidate_bytes,
                 gpu_reduced: false,
                 _field_charges: field_charges,
                 _scratch_charge: scratch_tally
@@ -1531,13 +1518,9 @@ fn lane_base(handle: ColumnHandle) -> Result<u32, crate::gpu_pick::GpuPickError>
 enum DataPickTicketState {
     ReadyNone,
     Pending {
-        device: wgpu::Device,
-        /// The device's health record, checked by the readback poll.
-        health: crate::renderer::DeviceHealth,
-        readback: wgpu::Buffer,
-        receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+        /// The candidates' `MAP_READ` buffer, mapped once the pick completes.
+        readback: GpuReadback,
         identities: Arc<[DataPickIdentity]>,
-        byte_len: u64,
         gpu_reduced: bool,
         _field_charges: Vec<FieldPickHold>,
         _scratch_charge: GpuByteCharge,
@@ -1565,12 +1548,8 @@ impl DataPickTicket {
         self,
     ) -> Result<Option<RankedPickedData>, crate::gpu_pick::GpuPickError> {
         let DataPickTicketState::Pending {
-            device: _poll_device,
-            health: poll_health,
             readback,
-            receiver,
             identities,
-            byte_len,
             gpu_reduced,
             _field_charges,
             _scratch_charge,
@@ -1580,81 +1559,62 @@ impl DataPickTicket {
             return Ok(None);
         };
 
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            &poll_health,
-            &_poll_device,
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        receiver
-            .await
-            .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
-            .map_err(crate::gpu_pick::GpuPickError::MapFailed)?;
-        let slice = readback.slice(..byte_len);
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?;
-        let result = (|| {
-            let records: &[DataPickCandidateGpu] = bytemuck::cast_slice(&mapped);
-            if gpu_reduced {
-                let [candidate] = records else {
-                    return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
-                };
-                if candidate.valid == 0 {
-                    return Ok(None);
-                }
-                if candidate.valid != 1
-                    || !candidate.distance_px.is_finite()
-                    || candidate.distance_px < 0.0
-                {
-                    return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
-                }
-                let identity = identities
-                    .get(candidate.paint_order as usize)
-                    .ok_or(crate::gpu_pick::GpuPickError::InvalidGpuResult)?;
-                return decode_candidate(identity, *candidate).map(Some);
-            }
-            if records.len() != identities.len() {
-                return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
-            }
+        // The unmap is the ticket's last GPU call, so the read checks the
+        // device health after it (#158).
+        let result = readback
+            .read_checked(
+                |mapped| -> Result<Option<RankedPickedData>, crate::gpu_pick::GpuPickError> {
+                    let records: &[DataPickCandidateGpu] = bytemuck::cast_slice(mapped);
+                    if gpu_reduced {
+                        let [candidate] = records else {
+                            return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+                        };
+                        if candidate.valid == 0 {
+                            return Ok(None);
+                        }
+                        if candidate.valid != 1
+                            || !candidate.distance_px.is_finite()
+                            || candidate.distance_px < 0.0
+                        {
+                            return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+                        }
+                        let identity = identities
+                            .get(candidate.paint_order as usize)
+                            .ok_or(crate::gpu_pick::GpuPickError::InvalidGpuResult)?;
+                        return decode_candidate(identity, *candidate).map(Some);
+                    }
+                    if records.len() != identities.len() {
+                        return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+                    }
 
-            let mut best: Option<(usize, DataPickCandidateGpu)> = None;
-            for (index, candidate) in records.iter().copied().enumerate() {
-                if candidate.valid == 0 {
-                    continue;
-                }
-                if candidate.valid != 1
-                    || !candidate.distance_px.is_finite()
-                    || candidate.distance_px < 0.0
-                    || identities[index].paint_order != candidate.paint_order
-                {
-                    return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
-                }
-                let replace = best.as_ref().is_none_or(|(_, incumbent)| {
-                    candidate.distance_px < incumbent.distance_px
-                        || (candidate.distance_px == incumbent.distance_px
-                            && candidate.paint_order > incumbent.paint_order)
-                });
-                if replace {
-                    best = Some((index, candidate));
-                }
-            }
-            best.map(|(index, candidate)| decode_candidate(&identities[index], candidate))
-                .transpose()
-        })();
-        drop(mapped);
-        readback.unmap();
+                    let mut best: Option<(usize, DataPickCandidateGpu)> = None;
+                    for (index, candidate) in records.iter().copied().enumerate() {
+                        if candidate.valid == 0 {
+                            continue;
+                        }
+                        if candidate.valid != 1
+                            || !candidate.distance_px.is_finite()
+                            || candidate.distance_px < 0.0
+                            || identities[index].paint_order != candidate.paint_order
+                        {
+                            return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult);
+                        }
+                        let replace = best.as_ref().is_none_or(|(_, incumbent)| {
+                            candidate.distance_px < incumbent.distance_px
+                                || (candidate.distance_px == incumbent.distance_px
+                                    && candidate.paint_order > incumbent.paint_order)
+                        });
+                        if replace {
+                            best = Some((index, candidate));
+                        }
+                    }
+                    best.map(|(index, candidate)| decode_candidate(&identities[index], candidate))
+                        .transpose()
+                },
+            )
+            .await?;
         drop((_scratch_charge, _readback_charge));
-        let picked = result?;
-        // The unmap is the ticket's last GPU call (#158).
-        poll_health
-            .check()
-            .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        Ok(picked)
+        result
     }
 }
 
@@ -1768,40 +1728,21 @@ pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
 
 /// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
 pub(crate) struct SurfacePickTicket {
-    /// Polled for the readback on native; the browser's device polls itself.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) device: wgpu::Device,
-    /// The device's health record, checked by the readback poll.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    pub(crate) health: crate::renderer::DeviceHealth,
-    pub(crate) readback: wgpu::Buffer,
-    pub(crate) receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    /// The 16 bytes the 1×1 render wrote, mapped once the render completes.
+    pub(crate) readback: GpuReadback,
     pub(crate) identities: Vec<SurfacePickIdentity>,
     pub(crate) _charges: Vec<crate::gpu_memory::SharedCharge>,
 }
 
 impl SurfacePickTicket {
     async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            &self.health,
-            &self.device,
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )
-        .map_err(crate::gpu_pick::GpuPickError::from_figgy)?;
-        self.receiver
-            .await
-            .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
-            .map_err(crate::gpu_pick::GpuPickError::MapFailed)?;
-        let slice = self.readback.slice(..16);
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?;
-        let words: &[u32] = bytemuck::cast_slice(&mapped);
-        let [word, b, c, r] = [words[0], words[1], words[2], words[3]];
+        let [word, b, c, r] = self
+            .readback
+            .read(|mapped| {
+                let words: &[u32] = bytemuck::cast_slice(mapped);
+                [words[0], words[1], words[2], words[3]]
+            })
+            .await?;
         // The top bit marks a floor contour: `b` its level, `(c, r)` its
         // cell in x / y order. Otherwise `(c, r)` is a surface sample.
         let floor = word & 0x8000_0000 != 0;

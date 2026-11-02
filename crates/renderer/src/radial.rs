@@ -3,6 +3,7 @@
 //! materials. No Cartesian columns, auto-fit jobs, or stream replay are involved.
 //! `prepare` returns an immutable frame; repeated identical snapshots reuse it.
 use crate::gpu_memory::{GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture};
+use crate::gpu_readback::{GpuReadback, ReadbackError};
 use crate::{RasterImage, RendererDevice};
 pub use model::radial::*;
 use std::sync::Arc;
@@ -57,6 +58,15 @@ fn gpu_created<T>(
 
 fn radial_gpu_error(error: crate::FiggyError) -> RadialError {
     RadialError::Gpu(error.to_string())
+}
+/// A readback failure as the radial chart has always reported it.
+fn radial_readback_error(error: ReadbackError) -> RadialError {
+    match error {
+        ReadbackError::Poll(error) | ReadbackError::Health(error) => radial_gpu_error(error),
+        ReadbackError::Canceled(error) => RadialError::Gpu(error.to_string()),
+        ReadbackError::Map(error) => RadialError::Gpu(error.to_string()),
+        ReadbackError::Range(error) => RadialError::Gpu(error.to_string()),
+    }
 }
 /// One sector as the radial modules read it (`radial_sector.wgsl`).
 #[repr(C)]
@@ -385,17 +395,11 @@ impl RadialFrame {
         }
         encoder.copy_buffer_to_buffer(&result, 0, &readback, 0, RADIAL_PICK_RESULT_BYTES);
         self.gpu.queue().submit([encoder.finish()]);
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            if sender.send(r).is_err() {
-                // receiver dropped: the waiting call was cancelled
-            }
-        });
         Ok(RadialPickTicket {
             pending: Some(PendingRadialPick {
                 frame: Arc::clone(self),
-                readback,
-                receiver,
+                readback: GpuReadback::map(self.gpu.device(), self.gpu.health(), &readback, None),
+                _readback: readback,
                 _scratch: [query, result],
             }),
         })
@@ -439,8 +443,10 @@ pub struct RadialPickTicket {
 }
 struct PendingRadialPick {
     frame: Arc<RadialFrame>,
-    readback: TrackedBuffer,
-    receiver: futures_channel::oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    /// The result, mapped once the pick completes.
+    readback: GpuReadback,
+    /// The `MAP_READ` buffer's charge, credited when the pick resolves.
+    _readback: TrackedBuffer,
     /// The query and result buffers, credited when the pick resolves.
     _scratch: [TrackedBuffer; 2],
 }
@@ -453,29 +459,11 @@ impl RadialPickTicket {
         let Some(pending) = self.pending else {
             return Ok(None);
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            pending.frame.gpu.health(),
-            pending.frame.gpu.device(),
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )
-        .map_err(radial_gpu_error)?;
-        pending
-            .receiver
+        let result = pending
+            .readback
+            .read(|mapped| *bytemuck::from_bytes::<RadialPickResultGpu>(mapped))
             .await
-            .map_err(|e| RadialError::Gpu(e.to_string()))?
-            .map_err(|e| RadialError::Gpu(e.to_string()))?;
-        let result = {
-            let mapped = pending
-                .readback
-                .get_mapped_range(..)
-                .map_err(|e| RadialError::Gpu(e.to_string()))?;
-            *bytemuck::from_bytes::<RadialPickResultGpu>(&mapped)
-        };
-        pending.readback.unmap();
+            .map_err(radial_readback_error)?;
         if result.hit == 0 {
             return Ok(None);
         }
@@ -1234,34 +1222,16 @@ impl RadialRenderer {
             },
         );
         self.gpu.queue().submit([encoder.finish()]);
-        let (tx, rx) = futures_channel::oneshot::channel();
-        buffer.map_async(wgpu::MapMode::Read, .., move |r| {
-            if tx.send(r).is_err() {
-                // receiver dropped: the waiting call was cancelled
-            }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            self.gpu.health(),
-            device,
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )
-        .map_err(radial_gpu_error)?;
-        rx.await
-            .map_err(|e| RadialError::Gpu(e.to_string()))?
-            .map_err(|e| RadialError::Gpu(e.to_string()))?;
-        let data = buffer
-            .get_mapped_range(..)
-            .map_err(|e| RadialError::Gpu(e.to_string()))?;
-        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
-        for row in data.chunks_exact(stride as usize) {
-            rgba.extend_from_slice(&row[..width as usize * 4]);
-        }
-        drop(data);
-        buffer.unmap();
+        let mut rgba = GpuReadback::map(device, self.gpu.health(), &buffer, None)
+            .read(|data| {
+                let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+                for row in data.chunks_exact(stride as usize) {
+                    rgba.extend_from_slice(&row[..width as usize * 4]);
+                }
+                rgba
+            })
+            .await
+            .map_err(radial_readback_error)?;
         for pixel in rgba.chunks_exact_mut(4) {
             if matches!(
                 self.format,

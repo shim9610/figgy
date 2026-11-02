@@ -3765,7 +3765,7 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
     let sized = |ticket: &GpuPickTicket| match &ticket.state {
         GpuPickTicketState::Pending {
             readback, members, ..
-        } => (readback.size(), *members),
+        } => (readback.buffer_size(), *members),
         GpuPickTicketState::ReadyNone => panic!("a registered pick is submitted"),
     };
     let series =

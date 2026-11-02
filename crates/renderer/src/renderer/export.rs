@@ -2,6 +2,7 @@
 //! render path and the per-panel draw storage it uses.
 
 use super::*;
+use crate::gpu_readback::{GpuReadback, ReadbackError};
 
 /// Lower bound for export scale. 1.0 is screen-equivalent (96 DPI baseline,
 /// `scale = dpi / 96`); 0.25 corresponds to ~24 DPI (thumbnails).
@@ -1097,76 +1098,47 @@ impl Renderer {
             );
             self.queue.submit(std::iter::once(copy_encoder.finish()));
 
-            let slice = readback.slice(..chunk_size);
-            let (tx, rx) = futures_channel::oneshot::channel();
-            slice.map_async(wgpu::MapMode::Read, move |r| {
-                if tx.send(r).is_err() {
-                    // The receiver was dropped: the waiting export was cancelled.
-                }
-            });
+            let chunk = GpuReadback::map(&self.device, &self.health, &readback, Some(chunk_size));
 
             #[cfg(target_arch = "wasm32")]
             browser_scopes.request_all().finish().await?;
 
-            // Native: drive the device to completion so the await below
-            // resolves immediately. On wasm the browser polls the device and
-            // the await yields to the JS event loop instead.
-            #[cfg(not(target_arch = "wasm32"))]
-            gpu_poll(
-                &self.health,
-                &self.device,
-                wgpu::PollType::Wait {
-                    submission_index: None,
-                    timeout: None,
-                },
-            )?;
-            rx.await
-                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export readback mapping",
-                    reason: format!("map_async sender dropped: {e}"),
-                })?
-                .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export readback mapping",
-                    reason: format!("map_async: {e:?}"),
-                })?;
-            let mapped =
-                slice
-                    .get_mapped_range()
-                    .map_err(|e| FiggyError::GpuResourceAllocationFailed {
-                        resource: "figgy export readback mapping",
-                        reason: format!("get_mapped_range: {e:?}"),
-                    })?;
-
-            for local_y in 0..rows {
-                let src_off = (local_y * padded_bpr) as usize;
-                let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
-                let row = &mapped[src_off..src_off + unpadded_bpr as usize];
-                for i in 0..(w as usize) {
-                    let p = i * 4;
-                    let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                    let (r, g, b, a) = if bgra {
-                        (b2, b1, b0, b3)
-                    } else {
-                        (b0, b1, b2, b3)
-                    };
-                    let (or, og, ob) = if a == 0 || a == 255 {
-                        (r, g, b)
-                    } else {
-                        let a_f = a as f32 / 255.0;
-                        (
-                            ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                            ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                            ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                        )
-                    };
-                    rgba[dst_off + p] = or;
-                    rgba[dst_off + p + 1] = og;
-                    rgba[dst_off + p + 2] = ob;
-                    rgba[dst_off + p + 3] = a;
-                }
-            }
-            drop(mapped);
-            readback.unmap();
+            // Native: the read drives the device to completion, so the map
+            // resolves at once. On wasm the browser polls the device and the
+            // read yields to the JS event loop instead.
+            chunk
+                .read(|mapped| {
+                    for local_y in 0..rows {
+                        let src_off = (local_y * padded_bpr) as usize;
+                        let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
+                        let row = &mapped[src_off..src_off + unpadded_bpr as usize];
+                        for i in 0..(w as usize) {
+                            let p = i * 4;
+                            let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
+                            let (r, g, b, a) = if bgra {
+                                (b2, b1, b0, b3)
+                            } else {
+                                (b0, b1, b2, b3)
+                            };
+                            let (or, og, ob) = if a == 0 || a == 255 {
+                                (r, g, b)
+                            } else {
+                                let a_f = a as f32 / 255.0;
+                                (
+                                    ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                                    ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                                    ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                                )
+                            };
+                            rgba[dst_off + p] = or;
+                            rgba[dst_off + p + 1] = og;
+                            rgba[dst_off + p + 2] = ob;
+                            rgba[dst_off + p + 3] = a;
+                        }
+                    }
+                })
+                .await
+                .map_err(export_readback_error)?;
             y0 += rows;
         }
 
@@ -1201,5 +1173,19 @@ impl Renderer {
             .export_panel_rgba_with_clear_async(chart, series, scale, clear)
             .await?;
         encode_png(&img)
+    }
+}
+
+/// A readback failure as an export has always reported it.
+fn export_readback_error(error: ReadbackError) -> FiggyError {
+    let reason = match error {
+        ReadbackError::Poll(error) | ReadbackError::Health(error) => return error,
+        ReadbackError::Canceled(error) => format!("map_async sender dropped: {error}"),
+        ReadbackError::Map(error) => format!("map_async: {error:?}"),
+        ReadbackError::Range(error) => format!("get_mapped_range: {error:?}"),
+    };
+    FiggyError::GpuResourceAllocationFailed {
+        resource: "figgy export readback mapping",
+        reason,
     }
 }
