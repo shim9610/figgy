@@ -643,7 +643,7 @@ fn below_places(document: &Config, panels: &[Config], index: usize) -> bool {
     let mut count = PaintCount::default();
     emit_chart_chrome(
         panel,
-        FontPolicy::for_style(&panel.draw_style),
+        &crate::text_render::CpuTextMeasure::for_style(&panel.draw_style),
         &mut SlotFilter {
             slot: Slot::Below,
             inner: &mut count,
@@ -879,7 +879,7 @@ pub(crate) fn emit_pass(document: &Config, panels: &[Config], pass: &Pass, sink:
             }
             emit_chart_chrome(
                 panel,
-                FontPolicy::for_style(&panel.draw_style),
+                &crate::text_render::CpuTextMeasure::for_style(&panel.draw_style),
                 &mut SlotFilter { slot, inner: sink },
             );
         }

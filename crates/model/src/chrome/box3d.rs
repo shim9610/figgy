@@ -11,14 +11,14 @@ use super::*;
 use crate::sink::{Sink, Slot, StrokeStyle};
 use crate::view3d::box_axis;
 
-pub(super) use crate::ternary::side_component;
+pub use crate::ternary::side_component;
 
 /// The axis fraction of `value` on `axis`, `0..=1` inside its range, read
 /// as the GPU reads it: logarithmic and inverted axes included.
 fn fraction(axis: &AxisOptions, value: f64) -> Option<f64> {
     let f = match axis.scale {
         AxisScale::Logarithmic => {
-            let (lo, hi) = crate::chart::guarded_log_range(axis.min, axis.max);
+            let (lo, hi) = crate::layout::guarded_log_range(axis.min, axis.max);
             crate::layout::span_fraction(value, lo, hi, true)
         }
         _ => {
@@ -34,7 +34,12 @@ fn fraction(axis: &AxisOptions, value: f64) -> Option<f64> {
 /// value at each major tick of the pane's two axes, from edge to edge,
 /// pane borders included. The x family takes the grid's x styles, y and z
 /// its y styles.
-pub(super) fn emit_box_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+pub fn emit_box_grid(
+    config: &Config,
+    da: &DataArea,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
     let Some(panes) = config.box_back_panes() else {
         return;
     };
@@ -60,7 +65,7 @@ pub(super) fn emit_box_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink
             continue;
         }
         let axis = box_axis(config, k);
-        let values = major_tick_values_for_axis(axis, box_side(k), &plot, fp);
+        let values = major_tick_values_for_axis(axis, box_side(k), &plot, measure);
         for (i, value) in values.into_iter().enumerate() {
             let Some(f) = fraction(axis, value) else {
                 continue;
@@ -103,22 +108,27 @@ fn box_side(k: usize) -> Side {
 
 /// The box chrome above the data: each axis edge with its ticks, then each
 /// axis' tick labels.
-pub(super) fn emit_box_axes(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+pub fn emit_box_axes(
+    config: &Config,
+    da: &DataArea,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
     for k in 0..3 {
-        emit_box_axis_strokes(config, da, k, fp, sink);
+        emit_box_axis_strokes(config, da, k, measure, sink);
     }
     for k in 0..3 {
-        emit_box_labels(config, da, k, fp, sink);
+        emit_box_labels(config, da, k, measure, sink);
     }
 }
 
 /// Axis `k`'s edge and ticks (`Element::Axis` of its side): the edge moved
 /// out by `line_offset` along its normal, the ticks along the normal.
-pub(super) fn emit_box_axis_strokes(
+pub fn emit_box_axis_strokes(
     config: &Config,
     da: &DataArea,
     k: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(edge) = config.box_axis_edge(k) else {
@@ -129,7 +139,7 @@ pub(super) fn emit_box_axis_strokes(
         axis,
         box_side(k),
         da,
-        fp,
+        measure,
         sink,
         (edge.a, edge.b),
         |value| fraction(axis, value).map(|f| f as f32),
@@ -141,11 +151,11 @@ pub(super) fn emit_box_axis_strokes(
 /// the tick ends along the edge's normal, upright, moved by the label
 /// offsets read along the edge (`label_offset_x`) and along the normal
 /// (`label_offset_y`).
-pub(super) fn emit_box_labels(
+pub fn emit_box_labels(
     config: &Config,
     da: &DataArea,
     k: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(edge) = config.box_axis_edge(k) else {
@@ -156,7 +166,7 @@ pub(super) fn emit_box_labels(
     if !ls.visible || !ls.label_visible {
         return;
     }
-    let majors = major_tick_values_for_axis(axis, box_side(k), &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, box_side(k), &data_area_rect(da), measure);
     let n = edge.normal;
     let along = edge.direction();
     let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;
@@ -172,7 +182,7 @@ pub(super) fn emit_box_labels(
         else {
             continue;
         };
-        let (text, m) = super::polar::tick_text(axis, value, fp);
+        let (text, m) = super::polar::tick_text(axis, value, measure);
         let half = n[0].abs() * m.width * 0.5 + n[1].abs() * (m.ascent + m.descent) * 0.5;
         let at = edge.point(f as f32, gap + half);
         let center = (

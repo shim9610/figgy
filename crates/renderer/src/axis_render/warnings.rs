@@ -1,88 +1,6 @@
-//! Tick planning: the major spacing an axis walks, its major and minor tick
-//! values, the log decade step, the timestamp plan, and the warnings for the
-//! tick settings the walkers replace.
+//! The tick settings the axis raster replaces, reported as warnings.
 
 use super::*;
-
-// The spacing guards and walk limits are the model's (`crate::tick`), so
-// every axis family walks the same grid.
-pub(crate) use crate::tick::effective_major_spacing;
-pub(super) use crate::tick::{
-    drawn_minor_count, effective_log_decade_step, major_spacing_rejection, walkable_range,
-};
-
-pub(super) fn major_tick_values_for_axis(
-    axis: &AxisOptions,
-    side: Side,
-    plot: &RectF,
-    fp: FontPolicy,
-) -> Vec<f64> {
-    if let Some(plan) = timestamp_tick_plan(axis, side, plot, fp) {
-        return plan.majors.into_iter().map(|tick| tick.value).collect();
-    }
-    major_tick_values(axis)
-}
-
-pub(super) fn minor_tick_values_for_axis(
-    axis: &AxisOptions,
-    side: Side,
-    plot: &RectF,
-    fp: FontPolicy,
-) -> Vec<f64> {
-    if let Some(plan) = timestamp_tick_plan(axis, side, plot, fp) {
-        return plan.minor_values;
-    }
-    minor_tick_values(axis)
-}
-
-pub(crate) const LABEL_COLLISION_GAP: f32 = 8.0;
-
-pub(crate) fn timestamp_tick_plan(
-    axis: &AxisOptions,
-    side: Side,
-    plot: &RectF,
-    fp: FontPolicy,
-) -> Option<crate::time_axis::TimestampTickPlan> {
-    // A categorical axis ignores its label format: its ticks are the
-    // category positions.
-    if axis.categories.is_some() {
-        return None;
-    }
-    let ls = &axis.label_style;
-    crate::time_axis::build_timestamp_tick_plan(
-        axis,
-        axis_pixel_len(side.clone(), plot),
-        LABEL_COLLISION_GAP,
-        |text| {
-            let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
-            match side {
-                Side::Top | Side::Bottom => m.width,
-                Side::Left | Side::Right => m.height(),
-            }
-        },
-    )
-}
-
-pub(super) fn axis_pixel_len(side: Side, plot: &RectF) -> f32 {
-    match side {
-        Side::Top | Side::Bottom => plot.width,
-        Side::Left | Side::Right => plot.height,
-    }
-}
-
-/// The major tick values the numeric walker draws: [`crate::tick::major_ticks`],
-/// anchored to absolute multiples of the spacing (or whole decades), so tick
-/// values stay round whatever the range ends are.
-pub(crate) fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
-    crate::tick::major_ticks(axis).collect()
-}
-
-/// The minor tick values on the majors' absolute grid, including the partial
-/// intervals before the first and after the last major:
-/// [`crate::tick::minor_ticks`].
-pub(super) fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
-    crate::tick::minor_ticks(axis).collect()
-}
 
 // Tick-guard warnings.
 //
@@ -110,7 +28,7 @@ pub(crate) fn tick_warnings(config: &Config) -> Vec<RenderWarning> {
         return out;
     };
     let plot = data_area_rect(&da);
-    let fp = FontPolicy::for_style(&config.draw_style);
+    let measure = CpuTextMeasure::for_style(&config.draw_style);
     for (which, axis, side) in [
         (WarningAxis::BottomX, &config.bottom_x, Side::Bottom),
         (WarningAxis::TopX, &config.top_x, Side::Top),
@@ -119,7 +37,7 @@ pub(crate) fn tick_warnings(config: &Config) -> Vec<RenderWarning> {
     ] {
         // The plan the raster uses: calendar ticks walk neither
         // `major_spacing` nor `minor_count`.
-        if timestamp_tick_plan(axis, side, &plot, fp).is_some() {
+        if timestamp_tick_plan(axis, side, &plot, &measure).is_some() {
             continue;
         }
         push_walker_warnings(&mut out, which, axis);

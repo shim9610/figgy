@@ -11,9 +11,10 @@
 //! categories.
 
 use super::*;
+use crate::color::Color;
+use crate::line::LineStylePreset;
 use crate::polar::{AngleMap, GridShape, PolarGeometry, PolarOptions};
 use crate::sink::{PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text_render::TextMetrics;
 
 /// Arcs are flattened into chords of about this length in pixels.
 const ARC_CHORD_PX: f32 = 3.0;
@@ -138,7 +139,12 @@ fn angle_drawn(map: &AngleMap, value: f64, earlier: &[f64]) -> bool {
 
 /// Rings at the radius ticks and spokes at the angle ticks, from the grid
 /// options: `*_y` fields are rings, `*_x` fields are spokes. Below the data.
-pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+pub fn emit_polar_grid(
+    config: &Config,
+    da: &DataArea,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
     let (Some(polar), Some(geometry), Some(map)) = (
         config.polar(),
         config.polar_geometry(),
@@ -207,7 +213,12 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_minor_x {
         spokes(
             sink,
-            minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
+            minor_tick_values_for_axis(
+                &config.bottom_x,
+                Side::Bottom,
+                &data_area_rect(da),
+                measure,
+            ),
             &g.minor_x_color,
             g.minor_x_width,
             &g.minor_x_style,
@@ -217,7 +228,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_minor_y {
         rings(
             sink,
-            minor_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
+            minor_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), measure),
             &g.minor_y_color,
             g.minor_y_width,
             &g.minor_y_style,
@@ -227,7 +238,12 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_major_x {
         spokes(
             sink,
-            major_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
+            major_tick_values_for_axis(
+                &config.bottom_x,
+                Side::Bottom,
+                &data_area_rect(da),
+                measure,
+            ),
             &g.major_x_color,
             g.major_x_width,
             &g.major_x_style,
@@ -237,7 +253,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_major_y {
         rings(
             sink,
-            major_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
+            major_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), measure),
             &g.major_y_color,
             g.major_y_width,
             &g.major_y_style,
@@ -247,15 +263,15 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
 }
 
 /// One tick label's text and extents, in the axis' label format.
-pub(super) fn tick_text(
+pub fn tick_text(
     axis: &AxisOptions,
     value: f64,
-    fp: FontPolicy,
-) -> (NumericTickText, TextMetrics) {
+    measure: &dyn MeasureText,
+) -> (NumericTickText, TextExtents) {
     let ls = &axis.label_style;
     if matches!(ls.format, LabelFormat::Power) {
         let text = format_tick_power(value, ls.significant_digits, ls);
-        let metrics = measure_rich_text(&text, fp);
+        let metrics = measure.measure_rich(&text);
         (NumericTickText::Power(text), metrics)
     } else {
         let text = format_tick_value(
@@ -267,14 +283,14 @@ pub(super) fn tick_text(
             axis.min,
             axis.max,
         );
-        let metrics = measure_plain_text(&text, &ls.label_font, ls.font_size, false, false, fp);
+        let metrics = measure.measure_plain(&text, &ls.label_font, ls.font_size);
         (NumericTickText::Plain(text), metrics)
     }
 }
 
 /// The baseline origin of `text` centred on `center`: the one formula the
 /// polar labels are placed, boxed and pruned with.
-fn centered_origin(center: (f32, f32), m: TextMetrics) -> (f32, f32) {
+fn centered_origin(center: (f32, f32), m: TextExtents) -> (f32, f32) {
     (
         center.0 - m.width * 0.5,
         center.1 + (m.ascent - m.descent) * 0.5,
@@ -282,18 +298,18 @@ fn centered_origin(center: (f32, f32), m: TextMetrics) -> (f32, f32) {
 }
 
 /// The box of `text` centred on `center` ([`label_rect`] at its origin).
-fn centered_rect(center: (f32, f32), m: TextMetrics) -> RectF {
+fn centered_rect(center: (f32, f32), m: TextExtents) -> RectF {
     label_rect(centered_origin(center, m), m)
 }
 
 /// Place `text` centred on `center`: the label offset fields are read in
 /// polar frames (`PolarOptions::angle_label_offset`,
 /// `PolarOptions::radius_label_offset`) by the walks, not as screen x / y.
-pub(super) fn place_centered(
+pub fn place_centered(
     sink: &mut dyn Sink,
     text: TickText<'_>,
     center: (f32, f32),
-    m: TextMetrics,
+    m: TextExtents,
     ls: &LabelStyle,
 ) {
     let placed = PlacedText {
@@ -315,7 +331,7 @@ pub(super) fn place_centered(
 
 /// The outward tick extent of an axis: how far its ticks reach past the
 /// line, which is where its labels start.
-pub(super) fn outward_tick(axis: &AxisOptions) -> f32 {
+pub fn outward_tick(axis: &AxisOptions) -> f32 {
     match axis.tick {
         TickVisibility::None | TickVisibility::Inside => 0.0,
         TickVisibility::Outside | TickVisibility::Both => axis.major_tick_length.max(0.0),
@@ -325,16 +341,21 @@ pub(super) fn outward_tick(axis: &AxisOptions) -> f32 {
 /// The polar chrome above the data: the angle axis (`bottom_x`) as the outer
 /// ring with its ticks, its labels, then the radius axis (`left_y`) as the
 /// ray at the radial label angle with its ticks and labels.
-pub(super) fn emit_polar_axes(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
-    emit_polar_ring(config, da, fp, sink);
-    emit_polar_angle_labels(config, da, fp, sink);
-    emit_polar_radius_strokes(config, da, fp, sink);
-    emit_polar_radius_labels(config, da, fp, sink);
+pub fn emit_polar_axes(
+    config: &Config,
+    da: &DataArea,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
+    emit_polar_ring(config, da, measure, sink);
+    emit_polar_angle_labels(config, da, measure, sink);
+    emit_polar_radius_strokes(config, da, measure, sink);
+    emit_polar_radius_labels(config, da, measure, sink);
 }
 
 /// The outer ring and its ticks: the data boundary, which no element owns
 /// (the angle axis is not selectable).
-fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+fn emit_polar_ring(config: &Config, da: &DataArea, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     let (Some(polar), Some(geometry), Some(map)) = (
         config.polar(),
         config.polar_geometry(),
@@ -360,8 +381,8 @@ fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dy
             },
         );
     }
-    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
-    let minors = minor_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), measure);
+    let minors = minor_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), measure);
     if axis.tick != TickVisibility::None {
         for (i, (value, length)) in majors
             .iter()
@@ -403,72 +424,94 @@ fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dy
 }
 
 /// The angle axis' tick labels (`Element::AxisLabel(Side::Bottom)`).
-pub(super) fn emit_polar_angle_labels(
+pub fn emit_polar_angle_labels(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let (Some(geometry), Some(map)) = (config.polar_geometry(), config.polar_angle_map()) else {
         return;
     };
     let axis = &config.bottom_x;
-    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), measure);
     let ls = &axis.label_style;
-    each_angle_label(&map, &geometry, axis, &majors, fp, |text, center, m| {
-        place_centered(sink, text, center, m, ls);
-    });
+    each_angle_label(
+        &map,
+        &geometry,
+        axis,
+        &majors,
+        measure,
+        |text, center, m| {
+            place_centered(sink, text, center, m, ls);
+        },
+    );
 }
 
 /// The radius axis' ray and ticks (`Element::Axis(Side::Left)`), from the
 /// walk [`each_radius_axis_stroke`] reports.
-pub(super) fn emit_polar_radius_strokes(
+pub fn emit_polar_radius_strokes(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
         return;
     };
     let axis = &config.left_y;
-    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), measure);
     let dash = axis.line_style.pattern();
-    each_radius_axis_stroke(polar, &geometry, axis, da, fp, &majors, |tick, a, b| {
-        let tag = match tick {
-            None => "axis_left".to_string(),
-            Some(i) => format!("tick_left_{i}"),
-        };
-        sink.stroke(
-            Slot::Above,
-            [a.0, a.1],
-            [b.0, b.1],
-            &StrokeStyle {
-                width: axis.line_width,
-                color: axis.line_color,
-                dash,
-                tag: &tag,
-            },
-        );
-    });
+    each_radius_axis_stroke(
+        polar,
+        &geometry,
+        axis,
+        da,
+        measure,
+        &majors,
+        |tick, a, b| {
+            let tag = match tick {
+                None => "axis_left".to_string(),
+                Some(i) => format!("tick_left_{i}"),
+            };
+            sink.stroke(
+                Slot::Above,
+                [a.0, a.1],
+                [b.0, b.1],
+                &StrokeStyle {
+                    width: axis.line_width,
+                    color: axis.line_color,
+                    dash,
+                    tag: &tag,
+                },
+            );
+        },
+    );
 }
 
 /// The radius axis' tick labels (`Element::AxisLabel(Side::Left)`).
-pub(super) fn emit_polar_radius_labels(
+pub fn emit_polar_radius_labels(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
         return;
     };
     let axis = &config.left_y;
-    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), measure);
     let ls = &axis.label_style;
-    each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
-        place_centered(sink, text.as_tick_text(), center, m, ls);
-    });
+    each_radius_label(
+        polar,
+        &geometry,
+        axis,
+        &majors,
+        measure,
+        |text, center, m| {
+            place_centered(sink, text.as_tick_text(), center, m, ls);
+        },
+    );
 }
 
 /// The text of the angle-axis label at `value`, with its extents: the
@@ -477,17 +520,17 @@ pub(super) fn emit_polar_radius_labels(
 fn angle_label_text<'a>(
     axis: &'a AxisOptions,
     value: f64,
-    fp: FontPolicy,
-) -> Option<(AngleLabelText<'a>, TextMetrics)> {
+    measure: &dyn MeasureText,
+) -> Option<(AngleLabelText<'a>, TextExtents)> {
     let ls = &axis.label_style;
     match axis.categories.as_deref() {
         Some(categories) => {
             let label = categories.get(value as usize)?.label.as_str();
-            let m = measure_plain_text(label, &ls.label_font, ls.font_size, false, false, fp);
+            let m = measure.measure_plain(label, &ls.label_font, ls.font_size);
             Some((AngleLabelText::Category(label), m))
         }
         None => {
-            let (text, m) = tick_text(axis, value, fp);
+            let (text, m) = tick_text(axis, value, measure);
             Some((AngleLabelText::Numeric(text), m))
         }
     }
@@ -519,8 +562,8 @@ fn each_angle_label(
     geometry: &PolarGeometry,
     axis: &AxisOptions,
     majors: &[f64],
-    fp: FontPolicy,
-    mut place: impl FnMut(TickText<'_>, (f32, f32), TextMetrics),
+    measure: &dyn MeasureText,
+    mut place: impl FnMut(TickText<'_>, (f32, f32), TextExtents),
 ) {
     let ls = &axis.label_style;
     if !(ls.visible && ls.label_visible) {
@@ -535,7 +578,7 @@ fn each_angle_label(
     let mut count = 0usize;
     for (i, value) in majors.iter().enumerate() {
         if angle_drawn(map, *value, &majors[..i])
-            && let Some((_, m)) = angle_label_text(axis, *value, fp)
+            && let Some((_, m)) = angle_label_text(axis, *value, measure)
         {
             total += m.width + gap;
             count += 1;
@@ -557,7 +600,7 @@ fn each_angle_label(
         if !angle_drawn(map, *value, &majors[..i]) {
             continue;
         }
-        let Some((text, m)) = angle_label_text(axis, *value, fp) else {
+        let Some((text, m)) = angle_label_text(axis, *value, measure) else {
             continue;
         };
         drawn += 1;
@@ -588,8 +631,8 @@ fn each_radius_label(
     geometry: &PolarGeometry,
     axis: &AxisOptions,
     majors: &[f64],
-    fp: FontPolicy,
-    mut place: impl FnMut(&NumericTickText, (f32, f32), TextMetrics),
+    measure: &dyn MeasureText,
+    mut place: impl FnMut(&NumericTickText, (f32, f32), TextExtents),
 ) {
     let inner = geometry.inner_radius;
     let ray = polar.radial_label_angle_degrees.to_radians();
@@ -605,7 +648,7 @@ fn each_radius_label(
     let band = outward_tick(axis) + 4.0;
     // Where a label is drawn: beside its tick and half a line inward, so the
     // outermost label stays clear of the angle label on the same spoke.
-    let center = |position: (f32, f32), m: TextMetrics| {
+    let center = |position: (f32, f32), m: TextExtents| {
         let reach = band + side.0.abs() * m.width * 0.5 + side.1.abs() * m.height() * 0.5;
         let inward = m.height() * 0.5;
         (
@@ -617,7 +660,7 @@ fn each_radius_label(
     // not change which labels stay.
     let labels = prune_numeric_labels(
         axis,
-        fp,
+        measure,
         majors,
         |value| point(geometry, ray, ring_radius(polar, geometry, axis, value)),
         |position, m| centered_rect(center(position, m), m),
@@ -631,7 +674,7 @@ fn each_radius_label(
         if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
             continue;
         }
-        let m = extents(&label.text, ls, fp);
+        let m = extents(&label.text, ls, measure);
         place(&label.text, center(label.position, m), m);
     }
 }
@@ -644,7 +687,7 @@ fn each_radius_axis_stroke(
     geometry: &crate::polar::PolarGeometry,
     axis: &crate::config::AxisOptions,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     mut each: impl FnMut(Option<usize>, (f32, f32), (f32, f32)),
 ) {
@@ -664,7 +707,7 @@ fn each_radius_axis_stroke(
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
+    let minors = minor_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), measure);
     for (i, (value, length)) in majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))
@@ -690,11 +733,9 @@ fn each_radius_axis_stroke(
     }
 }
 
-fn extents(text: &NumericTickText, ls: &LabelStyle, fp: FontPolicy) -> TextMetrics {
+fn extents(text: &NumericTickText, ls: &LabelStyle, measure: &dyn MeasureText) -> TextExtents {
     match text {
-        NumericTickText::Plain(text) => {
-            measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp)
-        }
-        NumericTickText::Power(text) => measure_rich_text(text, fp),
+        NumericTickText::Plain(text) => measure.measure_plain(text, &ls.label_font, ls.font_size),
+        NumericTickText::Power(text) => measure.measure_rich(text),
     }
 }

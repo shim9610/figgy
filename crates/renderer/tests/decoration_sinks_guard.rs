@@ -4,41 +4,24 @@
 //! direct text, rectangle or line draw in one of these files is a second
 //! placement the hit geometry cannot see (#38, #46).
 
+/// The renderer files whose every text, rectangle and line goes through a
+/// sink. The axis, tick and polar placement moved to `model::chrome` (#160),
+/// a crate with no canvas at all, so it cannot draw past the sink.
+///
 /// The files whose every text, rectangle and line goes through a sink, with
 /// the direct draws each may keep (the colourbar's ramp bands), listed so a
 /// new one is a decision here.
 const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ("axis_render.rs", include_str!("../src/axis_render.rs"), &[]),
     (
-        "axis_render/grid.rs",
-        include_str!("../src/axis_render/grid.rs"),
-        &[],
-    ),
-    (
-        "axis_render/line.rs",
-        include_str!("../src/axis_render/line.rs"),
-        &[],
-    ),
-    ("polar_axes.rs", include_str!("../src/polar_axes.rs"), &[]),
-    (
         "decoration_render.rs",
         include_str!("../src/decoration_render.rs"),
-        &[],
-    ),
-    (
-        "decoration_render/tick_labels.rs",
-        include_str!("../src/decoration_render/tick_labels.rs"),
         &[],
     ),
     (
         "decoration_render/colorbar.rs",
         include_str!("../src/decoration_render/colorbar.rs"),
         &["draw_rect"],
-    ),
-    (
-        "decoration_render/axis_titles.rs",
-        include_str!("../src/decoration_render/axis_titles.rs"),
-        &[],
     ),
     ("annotation.rs", include_str!("../src/annotation.rs"), &[]),
     ("decoration.rs", include_str!("../src/decoration.rs"), &[]),

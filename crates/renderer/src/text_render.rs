@@ -1702,15 +1702,15 @@ impl crate::text::MeasureText for CpuTextMeasure {
         measure_rich_text(rt, self.policy)
     }
 
-    /// The tick labels, axis lines and ticks the axis raster draws, from the
-    /// same emit it draws them with.
-    fn emit(
-        &self,
-        cfg: &crate::config::Config,
-        element: &crate::layout::Element,
-        sink: &mut dyn crate::sink::Sink,
-    ) -> bool {
-        crate::axis_render::emit_part_of(cfg, element, self.policy, sink)
+    /// A tick label's extents as the raster draws plain text: per glyph,
+    /// in this measure's font policy.
+    fn measure_plain(&self, text: &str, family: &str, size: f32) -> crate::text::TextExtents {
+        let m = measure_plain_text(text, family, size, false, false, self.policy);
+        crate::text::TextExtents {
+            width: m.width,
+            ascent: m.ascent,
+            descent: m.descent,
+        }
     }
 }
 

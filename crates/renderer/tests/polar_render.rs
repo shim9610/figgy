@@ -1090,17 +1090,17 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     // above the ray, at the ink's height, and the hit map answers there.
     let geometry = chart.config().polar_geometry().unwrap();
     let mut outer: Option<renderer::layout::RectF> = None;
-    assert!(renderer::MeasureText::emit(
-        &measure,
+    assert!(renderer::chrome::emit_part_of(
         chart.config(),
         &renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
+        &measure,
         &mut renderer::sink::Parts(&mut |part| {
             if let renderer::layout::DrawnPart::Text(r) = part
                 && outer.is_none_or(|o| r.x > o.x)
             {
                 outer = Some(r);
             }
-        }),
+        })
     ));
     let label = outer.expect("the ray draws labels");
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
@@ -1125,8 +1125,8 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
 // they do not fit, the kept ones never overlap at any angle.
 #[test]
 fn radius_labels_survive_rotating_the_ray() {
+    use renderer::CpuTextMeasure;
     use renderer::layout::{DrawnPart, Element, RectF, Side};
-    use renderer::{CpuTextMeasure, MeasureText};
     let labels = |angle: f64, max: f64, font_size: f32| {
         let mut chart = bare_chart(PolarOptions {
             radial_label_angle_degrees: angle,
@@ -1143,9 +1143,10 @@ fn radius_labels_survive_rotating_the_ray() {
         let config = chart.config().clone();
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut boxes: Vec<RectF> = Vec::new();
-        assert!(measure.emit(
+        assert!(renderer::chrome::emit_part_of(
             &config,
             &Element::AxisLabel(Side::Left),
+            &measure,
             &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(rect) = part {
                     boxes.push(rect);
@@ -1179,9 +1180,9 @@ fn radius_labels_survive_rotating_the_ray() {
 // The same rings are drawn at 2x.
 #[test]
 fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
+    use renderer::CpuTextMeasure;
     use renderer::config::LogTickPolicy;
     use renderer::layout::{DrawnPart, Element, Side};
-    use renderer::{CpuTextMeasure, MeasureText};
     let mut renderer = renderer();
     upload(&mut renderer, vec![0.0], vec![1e4]);
     let chart_for = |policy: LogTickPolicy, min: f64, max: f64| {
@@ -1206,9 +1207,10 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
     let ray_labels = |config: &Config| {
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut count = 0;
-        assert!(measure.emit(
+        assert!(renderer::chrome::emit_part_of(
             config,
             &Element::AxisLabel(Side::Left),
+            &measure,
             &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(_) = part {
                     count += 1;

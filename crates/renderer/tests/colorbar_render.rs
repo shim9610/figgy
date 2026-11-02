@@ -442,8 +442,8 @@ fn issue_6_title_margin_reproduction_returns_promptly() {
 /// at 1x and 2x, and its ticks and labels change the raster.
 #[test]
 fn an_adaptive_log_colorbar_labels_its_ladder() {
+    use renderer::CpuTextMeasure;
     use renderer::layout::{DrawnPart, Element};
-    use renderer::{CpuTextMeasure, MeasureText};
     let config = probes()
         .into_iter()
         .find(|(name, _)| *name == "right-log-adaptive")
@@ -452,9 +452,10 @@ fn an_adaptive_log_colorbar_labels_its_ladder() {
     let labels = |config: &renderer::Config| {
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut count = 0;
-        assert!(measure.emit(
+        assert!(renderer::chrome::emit_part_of(
             config,
             &Element::ColorBarLabel,
+            &measure,
             &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(_) = part {
                     count += 1;

@@ -7,7 +7,7 @@
 use renderer::axis_render::try_raster_chart_to_rgba;
 use renderer::layout::{ChartArea, DrawnPart, Element, Rect, RectF, Side};
 use renderer::sink::Parts;
-use renderer::{Config, CpuTextMeasure, HitMap, MeasureText, SelectionGeometry};
+use renderer::{Config, CpuTextMeasure, HitMap, SelectionGeometry};
 
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
@@ -86,9 +86,10 @@ fn bounds(cfg: &Config, name: &str) -> RectF {
 fn drawn_labels(cfg: &Config, element: &Element) -> usize {
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     let mut count = 0;
-    assert!(measure.emit(
+    assert!(renderer::chrome::emit_part_of(
         cfg,
         element,
+        &measure,
         &mut Parts(&mut |part| {
             if let DrawnPart::Text(_) = part {
                 count += 1;

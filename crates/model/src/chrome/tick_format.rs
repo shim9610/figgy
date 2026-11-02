@@ -9,7 +9,7 @@ use crate::text::{MathKind, MathNode, MathSlot};
 /// not force six decimals when the label style requests three significant
 /// digits. A decimal rounding quantum no larger than the step prevents two
 /// adjacent ticks from collapsing to the same label.
-pub(crate) fn decimals_from_spacing(spacing: f64) -> usize {
+pub fn decimals_from_spacing(spacing: f64) -> usize {
     if !spacing.is_finite() || spacing <= 0.0 {
         return 0;
     }
@@ -20,11 +20,7 @@ pub(crate) fn decimals_from_spacing(spacing: f64) -> usize {
 /// mixing a different precision at every tick. The largest magnitude in the
 /// label set chooses one shared decimal count; spacing may raise it further so
 /// adjacent values can never collapse to the same string.
-pub(super) fn decimals_from_significant_digits(
-    sig_digits: u8,
-    range_min: f64,
-    range_max: f64,
-) -> usize {
+pub fn decimals_from_significant_digits(sig_digits: u8, range_min: f64, range_max: f64) -> usize {
     let sig = sig_digits.clamp(1, 15) as i32;
     let max_abs = range_min.abs().max(range_max.abs());
     if !max_abs.is_finite() || max_abs == 0.0 {
@@ -34,7 +30,7 @@ pub(super) fn decimals_from_significant_digits(
     (sig - 1 - order).clamp(0, 15) as usize
 }
 
-pub(crate) fn format_tick_value(
+pub fn format_tick_value(
     value: f64,
     format: &LabelFormat,
     sig_digits: u8,
@@ -74,7 +70,7 @@ pub(crate) fn format_tick_value(
 
     match format {
         LabelFormat::Scientific => format!("{:.*e}", sig.saturating_sub(1), value),
-        LabelFormat::Timestamp(cfg) => crate::time_axis::format_timestamp_numeric_tick(
+        LabelFormat::Timestamp(cfg) => crate::chrome::time::format_timestamp_numeric_tick(
             value,
             cfg,
             value - major_spacing,
@@ -110,7 +106,7 @@ pub(crate) fn format_tick_value(
 /// `value` as a multiple of π: `0`, `π`, `-π`, `π/2`, `3π/2`, `0.4π`. Halves
 /// and quarters use the fraction form; other multiples a decimal factor
 /// rounded to `sig` significant digits.
-pub(super) fn format_radians(value: f64, sig: usize) -> String {
+pub fn format_radians(value: f64, sig: usize) -> String {
     let factor = value / std::f64::consts::PI;
     if factor == 0.0 {
         return "0".into();
@@ -146,7 +142,7 @@ pub(super) fn format_radians(value: f64, sig: usize) -> String {
 
 // Power format (RichText with superscript exponent).
 
-pub(super) fn trim_trailing_fraction_zeros(s: &str) -> String {
+pub fn trim_trailing_fraction_zeros(s: &str) -> String {
     if !s.contains('.') {
         return s.to_string();
     }
@@ -163,7 +159,7 @@ pub(super) fn trim_trailing_fraction_zeros(s: &str) -> String {
 /// out through `text_render::script_placement` exactly as the former
 /// `superscript` segments did, so the pixels, bounds and parts are the same;
 /// nothing here restates the script size or shift.
-pub(crate) fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
+pub fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     let style_from = |segments: Vec<RichSegment>| RichText {
         segments,
         color: ls.color,
@@ -218,65 +214,4 @@ pub(crate) fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> 
     }
 
     style_from(segs)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::raster::Canvas;
-    use crate::text_render::{FontPolicy, draw_rich_text, measure_rich_text};
-
-    /// The label as the superscript flags wrote it before D3: the node
-    /// dropped, its exponent slot flagged.
-    fn as_flags(rt: &RichText) -> RichText {
-        RichText {
-            segments: rt
-                .segments
-                .iter()
-                .filter(|s| s.math_node.is_none())
-                .map(|s| RichSegment {
-                    superscript: s.math_parent.is_some_and(|p| p.slot == 1),
-                    math_parent: None,
-                    ..s.clone()
-                })
-                .collect(),
-            ..rt.clone()
-        }
-    }
-
-    fn pixels(rt: &RichText, policy: FontPolicy) -> Vec<u8> {
-        let mut canvas = Canvas::new(120, 48).unwrap();
-        draw_rich_text(&mut canvas, rt, (6.3, 30.6), policy).unwrap();
-        canvas.into_rgba()
-    }
-
-    // D3: the Power label is a text-mode `Scripts` node, and it measures and
-    // draws exactly as the superscript flags it replaces.
-    #[test]
-    fn power_labels_are_a_scripts_node_with_the_flags_pixels() {
-        let mut ls = crate::default::default_axis_options_x().label_style;
-        for size in [11.0, 14.0, 28.0] {
-            ls.font_size = size;
-            for value in [1.0e-3, 1.5e-3, -2.0e5, 1.0e10, 7.25e-12, -1.0e-1] {
-                let label = format_tick_power(value, 3, &ls);
-                assert_eq!(label.validate_math(), Ok(()));
-                let node = label
-                    .segments
-                    .iter()
-                    .find_map(|s| s.math_node)
-                    .expect("a Scripts node");
-                assert_eq!(node.kind, MathKind::Scripts);
-                let flags = as_flags(&label);
-                assert!(flags.segments.iter().any(|s| s.superscript));
-                for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
-                    assert_eq!(
-                        measure_rich_text(&label, policy),
-                        measure_rich_text(&flags, policy),
-                        "{value} at {size}"
-                    );
-                    assert_eq!(pixels(&label, policy), pixels(&flags, policy), "{value}");
-                }
-            }
-        }
-    }
 }
