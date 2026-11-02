@@ -14605,6 +14605,9 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         "self.draw_prepared(",
         "self.first_frame_ready(",
         "Renderer::for_window_async_observed(",
+        // `Renderer` calls that run the check themselves (#160).
+        "self.inner.pick_chart(",
+        "self.inner.pick_chart_data(",
     ];
     let mut seen = 0;
     for (index, _) in methods.match_indices("\n    pub ") {
@@ -14625,7 +14628,54 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
             "this WindowedRenderer call does not end with a health check:\n{method}"
         );
     }
-    assert!(seen > 80, "only {seen} Result-returning calls were found");
+    assert!(seen >= 8, "only {seen} Result-returning calls were found");
+    // Every other call is the `Renderer`'s (#160): each public method that
+    // records GPU work wraps its body (`*_unreported`) with the check.
+    let renderer_sources = [
+        include_str!("registry.rs"),
+        include_str!("picking.rs"),
+        include_str!("fit.rs"),
+        include_str!("frame.rs"),
+        include_str!("streaming.rs"),
+        include_str!("style.rs"),
+        include_str!("preparation.rs"),
+        include_str!("device.rs"),
+        include_str!("../streaming_runtime.rs"),
+    ];
+    let mut wrapped = 0;
+    for source in renderer_sources {
+        let source = source.replace("\r\n", "\n");
+        for (index, _) in source.match_indices("_unreported(") {
+            let start = source[..index]
+                .rfind("fn ")
+                .expect("an inner function name");
+            let name = &source[start + 3..index];
+            if name.contains(char::is_whitespace) {
+                continue;
+            }
+            let Some(public) = source
+                .find(&format!("pub fn {name}("))
+                .or_else(|| source.find(&format!("pub async fn {name}(")))
+            else {
+                continue;
+            };
+            let body_end = source[public..]
+                .find("\n    }\n")
+                .expect("a method body end");
+            let method = &source[public..public + body_end];
+            if method.contains(&format!("{name}_unreported(")) {
+                assert!(
+                    method.contains("self.reported") || method.contains("health.check()"),
+                    "this Renderer call does not end with a health check:\n{method}"
+                );
+                wrapped += 1;
+            }
+        }
+    }
+    assert!(
+        wrapped >= 70,
+        "only {wrapped} wrapped Renderer calls were found"
+    );
 }
 
 /// PIPELINE_ENUM_FITS_ARRAY (#152): each pipeline enum used as

@@ -572,16 +572,39 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
 
-        // The model's series rules, as at registration (#160): a chart the
-        // caller holds is checked here, since nothing registered it.
-        chart
-            .config()
-            .validate_series(series)
-            .map_err(config_error)?;
+        // The rules an export of a held chart has always checked, read from
+        // the model (#160). The full series rules run per panel where the
+        // chart is registered; a document's subplots and line offsets are
+        // the expansion's.
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
             validate_line_fill(&self.pool, series.iter(), config)?;
+            chart
+                .config()
+                .validate_series_on_polar(config)
+                .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                    series_id: config.series_id.clone(),
+                    reason: reason.to_string(),
+                })?;
         }
+        chart.config().validate_radar(series).map_err(|reason| {
+            FiggyError::InvalidSeriesConfig {
+                series_id: series
+                    .iter()
+                    .find(|s| s.render_type.radar().is_some())
+                    .map_or_else(String::new, |s| s.series_id.clone()),
+                reason: reason.to_string(),
+            }
+        })?;
+        chart
+            .config()
+            .validate_view3d_series(series)
+            .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                series_id: series
+                    .first()
+                    .map_or_else(String::new, |s| s.series_id.clone()),
+                reason: reason.into(),
+            })?;
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
         let orig = match scope {

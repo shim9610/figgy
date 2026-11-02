@@ -353,7 +353,7 @@ pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsV
         .map_err(js_err)?
         .to_vec();
     let bytes = self.renderer
-        .export_png(ExportSource::chart(&export_chart, &series), ExportOptions::document(scale).with_clear(self.clear_color))
+        .export_png(renderer::ExportSource::chart(&export_chart, &series), renderer::ExportOptions::document(scale).with_clear(self.clear_color))
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(js_sys::Uint8Array::from(bytes.as_slice()))

@@ -74,7 +74,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         },
     }];
     // The background stays transparent; `export_rgba` fills it.
-    let image = pollster::block_on(renderer.export_rgba(ExportSource::chart(&chart, &series), ExportOptions::panel(1.0)))?;
+    let image = pollster::block_on(renderer.export_rgba(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0)))?;
     std::fs::write("antenna.png", renderer::encode_png(&image)?)?;
     Ok(())
 }

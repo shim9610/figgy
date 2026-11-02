@@ -544,13 +544,13 @@ The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 
 ```rust
 let bytes = renderer
-    .export_png(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
+    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // or clipboard / network / wherever.
 
 // If you only need RGBA:
 let img = renderer
-    .export_rgba(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
+    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
@@ -577,10 +577,10 @@ higher pixel density (or a lower one below 1.0).
 
 ```rust
 let svg: String = renderer
-    .export_svg(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
+    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_pdf(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
+    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;
@@ -1053,13 +1053,13 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ```rust
 let bytes = renderer
-    .export_png(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
+    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:
 let img = renderer
-    .export_rgba(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
+    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
@@ -1080,10 +1080,10 @@ the panel export (`ExportScope::Panel`)는 기본 차트 영역만 그린다. `o
 
 ```rust
 let svg: String = renderer
-    .export_svg(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
+    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_pdf(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
+    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;

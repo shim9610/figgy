@@ -64,7 +64,7 @@ chart.format_labels();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
-let image = pollster::block_on(renderer.export_rgba(&chart, (1000, 600), ExportOptions::document(2.0)))?;
+let image = pollster::block_on(renderer.export_rgba(&chart, (1000, 600), renderer::ExportOptions::document(2.0)))?;
 std::fs::write("donut.png", encode_png(&image)?)?;
 renderer.end_frame();
 # Ok(())
@@ -346,7 +346,7 @@ GPU에서 고르는 요청을 제출하고 `RadialPickTicket`을 돌려준다. `
 # -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 // 현재 선택과 호버 진행도를 포함한 스냅샷을 잡는다.
 let snapshot = chart.clone();
-let image = renderer.export_rgba(&snapshot, (1000, 600), ExportOptions::document(2.0)).await?;
+let image = renderer.export_rgba(&snapshot, (1000, 600), renderer::ExportOptions::document(2.0)).await?;
 let png = renderer::encode_png(&image)?;
 # Ok(png)
 # }
