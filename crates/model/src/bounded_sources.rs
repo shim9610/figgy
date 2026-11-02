@@ -213,28 +213,6 @@ impl BoxColumn<'_> {
         });
         out
     }
-
-    /// The smallest finite value, `+inf` when there is none.
-    pub fn min(&self) -> f64 {
-        let mut min = f64::INFINITY;
-        self.for_each(|_, v| {
-            if v.is_finite() {
-                min = min.min(v);
-            }
-        });
-        min
-    }
-
-    /// The largest finite value, `-inf` when there is none.
-    pub fn max(&self) -> f64 {
-        let mut max = f64::NEG_INFINITY;
-        self.for_each(|_, v| {
-            if v.is_finite() {
-                max = max.max(v);
-            }
-        });
-        max
-    }
 }
 
 fn outlier_count(summaries: &[Option<BoxSummary>]) -> usize {
@@ -318,22 +296,6 @@ impl UploadValues<'_> {
             UploadValues::Dense(values) => values.get(index).copied().unwrap_or(f64::NAN),
             UploadValues::BoxRecord(_) | UploadValues::BoxOutliers(_) => f64::NAN,
         }
-    }
-
-    /// The smallest finite value, `+inf` when there is none.
-    pub fn min(&self) -> f64 {
-        (0..self.len())
-            .map(|i| self.value(i))
-            .filter(|v| v.is_finite())
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    /// The largest finite value, `-inf` when there is none.
-    pub fn max(&self) -> f64 {
-        (0..self.len())
-            .map(|i| self.value(i))
-            .filter(|v| v.is_finite())
-            .fold(f64::NEG_INFINITY, f64::max)
     }
 }
 
@@ -1138,6 +1100,16 @@ mod tests {
     use crate::layer::LayerRef;
     use crate::{CategoricalChart, Material};
 
+    /// The finite extent of an upload's values.
+    pub(super) fn extent(values: &UploadValues<'_>) -> (f64, f64) {
+        (0..values.len())
+            .map(|i| values.value(i))
+            .filter(|v| v.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            })
+    }
+
     fn chart() -> CategoricalChart {
         CategoricalChart {
             categories: vec![Category::new("a", "Alpha"), Category::new("b", "Beta")],
@@ -1204,14 +1176,8 @@ mod tests {
             ),
             (2.0, true)
         );
-        assert_eq!(
-            (uploads[2].values.min(), uploads[2].values.max()),
-            (1.5, 3.0)
-        );
-        assert_eq!(
-            (uploads[0].values.min(), uploads[0].values.max()),
-            (0.0, 1.0)
-        );
+        assert_eq!(extent(&uploads[2].values), (1.5, 3.0));
+        assert_eq!(extent(&uploads[0].values), (0.0, 1.0));
         assert_eq!(
             series
                 .iter()
@@ -1682,8 +1648,6 @@ mod box_tests {
             assert!(same(&values(column), &expected[k]), "{}", names[k]);
             assert!(same(&[column.value(1)], &[nan]));
         }
-        assert_eq!((fields[0].min(), fields[0].max()), (3.0, 4.0));
-        assert_eq!(fields[6].min(), 42.0);
     }
 
     #[test]
@@ -1696,7 +1660,6 @@ mod box_tests {
         assert_eq!(offsets.len(), 4);
         // The missing box is an empty group.
         assert_eq!(values(&offsets), [0.0, 2.0, 2.0, 3.0]);
-        assert_eq!((values_column.min(), values_column.max()), (-1.0, 9.0));
         assert_eq!(offsets.value(3), 3.0);
         assert!(offsets.value(9).is_nan());
     }
@@ -1876,6 +1839,7 @@ mod radar_tests {
     use crate::decoration::DecorationOffset;
     use crate::layer::LayerRef;
     use crate::radar::{RadarSeries, RadarTarget};
+    use tests::extent;
 
     fn chart() -> RadarChart {
         RadarChart {
@@ -1940,10 +1904,7 @@ mod radar_tests {
         assert_eq!(uploads[1].values.value(0), 4.0);
         assert!(uploads[1].values.value(1).is_nan());
         assert!(uploads[1].values.value(3).is_nan());
-        assert_eq!(
-            (uploads[1].values.min(), uploads[1].values.max()),
-            (2.5, 4.0)
-        );
+        assert_eq!(extent(&uploads[1].values), (2.5, 4.0));
         assert_eq!(
             series
                 .iter()

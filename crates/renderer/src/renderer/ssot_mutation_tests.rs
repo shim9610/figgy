@@ -316,8 +316,6 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
     let series = vec![declaration("s", "x", "a")];
     let demo = |values: [f32; 3]| crate::Column {
         data: values.to_vec(),
-        min: values[0],
-        max: values[2],
     };
     let columns = [
         demo([0.0, 1.0, 2.0]),

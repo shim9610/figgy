@@ -24,22 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let x: Vec<f64> = (0..=100).map(|i| i as f64 / 10.0).collect();
     let y: Vec<f64> = x.iter().map(|x| x.sin()).collect();
-    renderer.add_column(
-        "x",
-        &Column {
-            data: x,
-            min: 0.0,
-            max: 10.0,
-        },
-    )?;
-    renderer.add_column(
-        "y",
-        &Column {
-            data: y,
-            min: -1.0,
-            max: 1.0,
-        },
-    )?;
+    renderer.add_column("x", &Column { data: x })?;
+    renderer.add_column("y", &Column { data: y })?;
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect {

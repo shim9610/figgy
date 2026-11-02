@@ -181,16 +181,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "x",
         &Column {
             data: x,
-            min: 0.0,
-            max: 10.0,
         },
     )?;
     renderer.add_column(
         "y",
         &Column {
             data: y,
-            min: -1.0,
-            max: 1.0,
         },
     )?;
 

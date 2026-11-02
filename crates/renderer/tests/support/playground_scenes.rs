@@ -303,12 +303,7 @@ fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) -> Result<(), FiggyError> 
     if r.handle_for(id).is_ok() {
         return Ok(());
     }
-    let (min, max) = data
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-            (lo.min(*v), hi.max(*v))
-        });
-    r.add_column(id, &Column { data, min, max }).map(|_| ())
+    r.add_column(id, &Column { data }).map(|_| ())
 }
 
 /// Deterministic pseudo-random numbers in [-1, 1] (no rand dependency).
@@ -866,18 +861,11 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             .iter()
             .map(|x| {
                 let data: Vec<f64> = coords.iter().map(|y| z(*x, *y)).collect();
-                let (min, max) = data
-                    .iter()
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
-                        (l.min(*v), h.max(*v))
-                    });
-                Column { data, min, max }
+                Column { data }
             })
             .collect();
         let coord = Column {
             data: coords.clone(),
-            min: 0.0,
-            max: 1.0,
         };
         let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("fld_x", &coord), ("fld_y", &coord)];
         for (id, column) in ids.iter().zip(&grid) {
@@ -1035,14 +1023,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             })
     };
     if r.handle_for("vf_x").is_err() {
-        let column = |data: Vec<f64>| {
-            let (min, max) = data
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
-                    (l.min(*v), h.max(*v))
-                });
-            Column { data, min, max }
-        };
+        let column = |data: Vec<f64>| Column { data };
         let mut grids = Vec::new();
         for x in &xs {
             let samples: Vec<(f64, f64)> = ys.iter().map(|y| flow(*x, *y)).collect();
@@ -1205,19 +1186,11 @@ fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ys.push(f64::NAN);
         speed.push(f64::NAN);
     }
-    let finite = |data: &[f64]| {
-        data.iter()
-            .filter(|v| v.is_finite())
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-                (lo.min(*v), hi.max(*v))
-            })
-    };
     for (id, data) in [("sl_x", xs), ("sl_y", ys), ("sl_speed", speed)] {
         if r.handle_for(id).is_ok() {
             continue;
         }
-        let (min, max) = finite(&data);
-        r.add_column(id, &Column { data, min, max })?;
+        r.add_column(id, &Column { data })?;
     }
     let field_lines = series(
         "field lines",
@@ -1895,9 +1868,7 @@ pub mod big_data {
     use renderer::config::Config;
     use renderer::data::split_f64_to_f32_pair;
     use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
-    use renderer::{
-        Chart, Color, ColumnPairWriter, ColumnUploadStats, FiggyError, HiLoColumnSource, Renderer,
-    };
+    use renderer::{Chart, Color, ColumnPairWriter, FiggyError, HiLoColumnSource, Renderer};
 
     use super::CartesianScene;
 
@@ -1930,33 +1901,17 @@ pub mod big_data {
     struct Generated {
         len: usize,
         y: bool,
-        min: f64,
-        max: f64,
     }
 
     impl Generated {
         fn x(len: usize) -> Self {
-            Self {
-                len,
-                y: false,
-                min: 0.0,
-                max: X_SPAN,
-            }
+            Self { len, y: false }
         }
 
-        /// The Y bounds are the exact extremes of the generated values: one pass
-        /// that evaluates the signal and keeps two scalars.
+        /// The renderer measures the bounds while the values are written, so
+        /// the signal is evaluated once.
         fn y(len: usize) -> Self {
-            let (min, max) = (0..len).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), i| {
-                let v = y_at(len, i);
-                (lo.min(v), hi.max(v))
-            });
-            Self {
-                len,
-                y: true,
-                min,
-                max,
-            }
+            Self { len, y: true }
         }
 
         fn value(&self, i: usize) -> f64 {
@@ -1983,36 +1938,11 @@ pub mod big_data {
         fn len(&self) -> usize {
             self.len
         }
-        fn min(&self) -> f64 {
-            self.min
-        }
-        fn max(&self) -> f64 {
-            self.max
-        }
 
-        fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-            for (i, pair) in dst.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-                let (hi, lo) = split_f64_to_f32_pair(self.value(i));
-                pair[..4].copy_from_slice(&hi.to_le_bytes());
-                pair[4..].copy_from_slice(&lo.to_le_bytes());
-            }
-        }
-
-        fn write_f32_pair_le_into_with_stats(
-            &self,
-            mut dst: ColumnPairWriter<'_>,
-        ) -> ColumnUploadStats {
-            let mut min_positive = f64::INFINITY;
+        fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
             for i in 0..self.len {
                 let (hi, lo) = split_f64_to_f32_pair(self.value(i));
                 dst.write_pair(i, hi, lo);
-                let v = f64::from(hi) + f64::from(lo);
-                if v > 0.0 && v.is_finite() {
-                    min_positive = min_positive.min(v);
-                }
-            }
-            ColumnUploadStats {
-                min_positive: min_positive.is_finite().then_some(min_positive),
             }
         }
     }
@@ -2536,14 +2466,7 @@ fn upload_distribution(
         }
         offsets.push(values.len() as f64);
     }
-    let column = |data: Vec<f64>| {
-        let (min, max) = data
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-                (lo.min(*v), hi.max(*v))
-            });
-        Column { data, min, max }
-    };
+    let column = |data: Vec<f64>| Column { data };
     let columns = stats.map(column);
     let names = ["median", "q1", "q3", "whisker_low", "whisker_high"];
     let fields: [(&str, &dyn ColumnSource); 5] =
@@ -3465,27 +3388,9 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 counts[best.0 as usize][best.1 as usize] += 1.0;
             }
         }
-        let grid: Vec<Column<f64>> = counts
-            .into_iter()
-            .map(|data| {
-                let max = data.iter().copied().fold(0.0f64, f64::max);
-                Column {
-                    data,
-                    min: 0.0,
-                    max,
-                }
-            })
-            .collect();
-        let x = Column {
-            data: xs.clone(),
-            min: xs[0],
-            max: xs[COLS - 1],
-        };
-        let y = Column {
-            data: ys.clone(),
-            min: ys[0],
-            max: ys[ROWS - 1],
-        };
+        let grid: Vec<Column<f64>> = counts.into_iter().map(|data| Column { data }).collect();
+        let x = Column { data: xs.clone() };
+        let y = Column { data: ys.clone() };
         let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("hexbin_x", &x), ("hexbin_y", &y)];
         for (id, column) in ids.iter().zip(&grid) {
             batch.push((id.as_str(), column as &dyn ColumnSource));
@@ -3674,34 +3579,24 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             (0..W)
                 .map(|c| Column {
                     data: (0..H).map(|row| card(c, row)[k]).collect(),
-                    min: 0.0,
-                    max: 255.0,
                 })
                 .collect()
         };
         let grids = [channel(0), channel(1), channel(2)];
         let x = Column {
             data: (0..=W).map(|v| v as f64).collect(),
-            min: 0.0,
-            max: W as f64,
         };
         let y = Column {
             data: (0..=H).map(|v| v as f64).collect(),
-            min: 0.0,
-            max: H as f64,
         };
         // Markers at the centre of each colour bar and along the hue sweep.
         let mx = Column {
             data: (0..8).map(|i| (i as f64 + 0.5) * W as f64 / 8.0).collect(),
-            min: W as f64 / 16.0,
-            max: W as f64 * 15.0 / 16.0,
         };
         let my = Column {
             data: (0..8)
                 .map(|i| H as f64 * (5.0 + (i % 2) as f64) / 6.0 - H as f64 / 12.0)
                 .collect(),
-            min: H as f64 * 4.0 / 6.0 + H as f64 / 12.0 - H as f64 / 6.0,
-            max: H as f64 * 5.0 / 6.0 + H as f64 / 12.0,
         };
         let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
             ("img_x", &x),

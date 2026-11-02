@@ -45,9 +45,7 @@ impl Drop for Counting {
 }
 
 fn column(data: Vec<f64>) -> renderer::data::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::data::Column { data, min, max }
+    renderer::data::Column { data }
 }
 
 #[wasm_bindgen_test(async)]

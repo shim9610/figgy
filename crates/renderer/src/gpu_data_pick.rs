@@ -2008,8 +2008,6 @@ mod stream_tests {
                 "edges".into(),
                 &Column {
                     data: edges.to_vec(),
-                    min: edges[0],
-                    max: edges[4],
                 },
                 GpuAllocCtx::new(&device, &queue, &ledger),
             )
@@ -2018,8 +2016,6 @@ mod stream_tests {
                 "values".into(),
                 &Column {
                     data: values.to_vec(),
-                    min: 6.0,
-                    max: 8.0,
                 },
                 GpuAllocCtx::new(&device, &queue, &ledger),
             )

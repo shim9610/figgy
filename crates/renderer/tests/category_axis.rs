@@ -150,12 +150,7 @@ fn gpu() -> RendererDevice {
 }
 
 fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
-    let (min, max) = data
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-            (lo.min(*v), hi.max(*v))
-        });
-    r.add_column(id, &Column { data, min, max }).unwrap();
+    r.add_column(id, &Column { data }).unwrap();
 }
 
 fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {

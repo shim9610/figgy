@@ -165,8 +165,6 @@ fn resident_and_streamed_ids_cannot_shadow_each_other() {
     let mut renderer = renderer();
     let values = Column {
         data: vec![1.0f32, 2.0],
-        min: 1.0,
-        max: 2.0,
     };
     renderer.add_column("resident", &values).unwrap();
     renderer

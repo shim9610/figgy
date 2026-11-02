@@ -226,17 +226,18 @@ GPU 풀은 논리값 하나를 **항상 f32 두 개**로 저장한다. 일반 �
 ```rust
 // 일반 컬럼과 hi/lo 컬럼이 같은 호출을 사용한다.
 let mut view = staging.slice(..).get_mapped_range_mut();
-let writer = ColumnPairWriter::new(view.slice(..)); // renderer pool 내부, crate-private
+let mut writer = ColumnPairWriter::new(view.slice(..)); // renderer pool 내부, crate-private
 // ColumnSource는 `(value as f32, 0)`, HiLoColumnSource는 `(hi, lo)` 쌍을 기록한다.
-let stats = source.write_f32_pair_le_into_with_stats(writer);
+source.write_pairs(&mut writer);
+let stats = writer.bounds(); // 기록된 값에서 계산한 최솟값·최댓값·최소 양수
 drop(view);
 staging.unmap();
 enc.copy_buffer_to_buffer(&staging, 0, &pool, offset, None);  // 이후는 GPU 내부 복사
 ```
 
-네이티브에서는 원본 참조를 빌려 변환 결과를 매핑된 업로드 버퍼에 직접 쓴다. 데이터 소스는 값을 기록하는 같은 반복문에서 `ColumnUploadStats`도 계산하므로 렌더러가 쓰기 전용 영역을 다시 읽지 않는다. 최소 양수 값은 일반 컬럼의 실제 `value as f32`, hi/lo 컬럼의 `hi as f64 + lo as f64`를 기준으로 하며 유한한 양수만 포함한다.
+네이티브에서는 원본 참조를 빌려 변환 결과를 매핑된 업로드 버퍼에 직접 쓴다. 통계는 값을 기록하는 같은 반복에서 writer가 계산하므로 렌더러가 쓰기 전용 영역을 다시 읽지 않고, 소스가 데이터를 따로 한 번 더 훑을 필요도 없다. 통계는 일반 컬럼의 실제 `value as f32`, hi/lo 컬럼의 `hi as f64 + lo as f64`를 기준으로 하며 유한한 값만 포함한다.
 
-사용자 정의 `ColumnSource` / `HiLoColumnSource`도 값 기록과 통계 계산을 함께 하는 메서드를 구현해야 한다. 구현이 빠지면 컴파일 오류가 난다. 매핑된 바이트를 다시 읽거나 부정확한 대체 경로로 처리하지 않는다.
+사용자 정의 `ColumnSource` / `HiLoColumnSource`는 값을 기록하는 `write_pairs`를 구현해야 한다. 구현이 빠지면 컴파일 오류가 난다. 소스는 통계를 넘기지 않으므로 통계가 데이터와 어긋날 수 없다.
 
 WASM에서는 다음과 같은 메모리 경계 복사가 추가된다.
 

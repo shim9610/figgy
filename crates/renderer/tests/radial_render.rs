@@ -257,8 +257,6 @@ fn renderers_on_one_device_bundle_share_the_ledger_and_the_budget() {
     let values = 32 * 1024;
     let big = renderer::Column {
         data: (0..values).map(f64::from).collect::<Vec<_>>(),
-        min: 0.0,
-        max: f64::from(values - 1),
     };
     assert!(
         second.add_column("big", &big).is_err(),

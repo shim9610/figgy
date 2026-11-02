@@ -34,6 +34,13 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **`Column` holds values only** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Column<T>` loses its `min` and `max` fields: the renderer measures a
+  column's statistics while it uploads the values, so a stored copy could
+  only disagree with them. The upload helpers `UploadValues::min`/`max` and
+  `BoxColumn::min`/`max`, which existed to supply them, are removed.
+  Migration: write `Column { data }`; drop the code that computed the two
+  bounds.
 - **The model places the axis chrome** ([#160](https://github.com/shim9610/figgy/issues/160)).
   Tick planning, formatting and label pruning, the timestamp ticks, and the
   placement of the grid, the axes with their ticks and tick labels and the
@@ -999,6 +1006,26 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **The renderer owns the column statistics** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `ColumnSource` and `HiLoColumnSource` no longer ask the host for `min()`
+  and `max()`. The upload's `ColumnPairWriter` records the finite minimum,
+  maximum and smallest positive value from the pairs as they are written, in
+  the pass that already wrote them, so a source cannot report statistics
+  that disagree with its values (a wrong `min` used to reach auto-fit and the
+  bar validation's refusal of negative shares). A streamed source is measured
+  the same way, one chunk at a time. The statistics are of the value the GPU
+  reads (`hi + lo`), as the smallest positive already was. Each trait is now
+  `len`, `is_empty`, `write_pairs(&self, &mut ColumnPairWriter)` and
+  `write_pair_range(&self, start, &mut ColumnPairWriter) -> Result<(),
+  ColumnRangeWriteError>` (default `Unsupported`). Removed: `min`, `max`, the
+  legacy byte encoders `write_f32_le_into`, `write_f32_zero_lo_pair_le_into`
+  and `write_f32_pair_le_into`, and `ColumnUploadStats`. Migration: rename
+  `write_f32_pair_le_into_with_stats` to `write_pairs` and
+  `write_f32_pair_range_into_with_stats` to `write_pair_range`, take the
+  writer as `&mut`, and delete the statistics code, `min`, `max` and the
+  legacy encoders. The browser wrapper no longer scans each array for its
+  bounds before an upload, and the playground's 100-million-point column no
+  longer evaluates its signal once more for them.
 - **Names that say what they serve** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The `gpu_errorbar` module, which computes every series' GPU extents and
   not only error bars', is `gpu_extent`, and its error `GpuErrorbarError`

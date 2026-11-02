@@ -344,8 +344,6 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
     let rows = 519;
     let x = crate::Column {
         data: (0..rows).map(|i| i as f32 / (rows - 1) as f32).collect(),
-        min: 0.0,
-        max: 1.0,
     };
     let y = crate::Column {
         data: (0..rows)
@@ -357,8 +355,6 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
                 }
             })
             .collect(),
-        min: 0.0,
-        max: 1.0,
     };
     let bindings = [
         crate::StreamSourceBinding {

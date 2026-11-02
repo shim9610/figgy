@@ -9,13 +9,14 @@
 /// renderer's GPU column pool). Plain `String` — interning is the store's job.
 pub type ColumnId = String;
 
-/// A single column: data + cached min/max.
+/// A single column of owned values: one ready-made implementation of the
+/// renderer's `ColumnSource`. A host may implement that trait over its own
+/// storage instead. The renderer measures the statistics (minimum, maximum,
+/// smallest positive) while it uploads the values, so none is stored here.
 ///
 /// The role (axis or errorbar) is not encoded here — `SeriesConfig.x_column /
 /// y_column` and `DataRenderType`'s `ErrorRef` reference columns by id.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Column<T> {
     pub data: Vec<T>,
-    pub min: T,
-    pub max: T,
 }

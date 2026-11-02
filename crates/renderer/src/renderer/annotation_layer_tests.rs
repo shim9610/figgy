@@ -97,8 +97,6 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
         "x",
         &crate::Column {
             data: vec![0.0f32, 2.0],
-            min: 0.0,
-            max: 2.0,
         },
     )
     .unwrap();
@@ -106,8 +104,6 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
         "a",
         &crate::Column {
             data: vec![0.5f32, 0.5],
-            min: 0.5,
-            max: 0.5,
         },
     )
     .unwrap();

@@ -44,9 +44,7 @@ const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 // Use light foreground for axes / labels / titles so they read on dark egui backgrounds.

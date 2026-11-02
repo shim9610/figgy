@@ -1398,29 +1398,11 @@ mod tests {
     use crate::data_render::ColumnPool;
 
     fn f32_column(values: Vec<f32>) -> Column<f32> {
-        let finite: Vec<_> = values
-            .iter()
-            .copied()
-            .filter(|value| value.is_finite())
-            .collect();
-        Column {
-            data: values,
-            min: finite.iter().copied().fold(f32::INFINITY, f32::min),
-            max: finite.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-        }
+        Column { data: values }
     }
 
     fn f64_column(values: Vec<f64>) -> Column<f64> {
-        let finite: Vec<_> = values
-            .iter()
-            .copied()
-            .filter(|value| value.is_finite())
-            .collect();
-        Column {
-            data: values,
-            min: finite.iter().copied().fold(f64::INFINITY, f64::min),
-            max: finite.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        }
+        Column { data: values }
     }
 
     fn add_f32(

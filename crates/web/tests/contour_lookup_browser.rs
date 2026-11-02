@@ -18,9 +18,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 const SIZE: u32 = 400;
 
 fn column(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 async fn renderer() -> Renderer {

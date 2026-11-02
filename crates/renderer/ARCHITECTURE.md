@@ -217,7 +217,9 @@ token must be submitted before one of those mutations.
 
 For resident `add_column`, `ColumnSource` data is borrowed only during upload.
 The long-lived records are the GPU-pool column and the scalar stats cached for
-auto-fit (min / max / smallest-positive); source references and CPU-side
+auto-fit (min / max / smallest-positive), which the upload's `ColumnPairWriter`
+records from the values as they are written (the source supplies no
+statistics; a streamed source is measured per chunk); source references and CPU-side
 per-point geometry are not kept. Per-point geometry such as the arc prefixes of
 dashed, sketch and Milkyway lines is derived from the GPU pool by compute scans.
 Nonresident registration instead retains logical source metadata and bounded

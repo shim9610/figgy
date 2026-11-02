@@ -151,8 +151,6 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 1023.0,
                 data: (0..1024).map(|i| i as f32).collect(),
             },
         )
@@ -173,8 +171,6 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
         // The caller's buffer is built before the baseline: it is the host's
         // own data, and counting it would hide whether the renderer copies it.
         let column = Column {
-            min: 0.0f32,
-            max: (values - 1) as f32,
             data: (0..values).map(|i| i as f32).collect(),
         };
         settle_gpu(&renderer);
@@ -363,8 +359,6 @@ fn prepare_cost_is_independent_of_series_length() {
             .add_column(
                 id,
                 &Column {
-                    min: 0.0f32,
-                    max: (len - 1) as f32,
                     data: (0..len).map(|i| i as f32).collect(),
                 },
             )
@@ -450,8 +444,6 @@ fn pool_growth_allocates_a_bounded_amount() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 255.0,
                 data: (0..256).map(|i| i as f32).collect(),
             },
         )
@@ -461,8 +453,6 @@ fn pool_growth_allocates_a_bounded_amount() {
 
     let values = 1 << 18;
     let column = Column {
-        min: 0.0f32,
-        max: (values - 1) as f32,
         data: (0..values).map(|i| i as f32).collect(),
     };
     let capacity_before = renderer.pool().capacity();
@@ -523,8 +513,6 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 1023.0,
                 data: (0..1024).map(|i| i as f32).collect(),
             },
         )
@@ -543,8 +531,6 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         // buffer, and counting it would hide whether the renderer copies it.
         let sources: Vec<Column<f32>> = (0..COLUMNS)
             .map(|c| Column {
-                min: 0.0f32,
-                max: (values - 1) as f32,
                 data: (0..values).map(|i| (i + c) as f32).collect(),
             })
             .collect();

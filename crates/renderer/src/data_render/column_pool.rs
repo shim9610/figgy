@@ -66,8 +66,7 @@ use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer};
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
 use crate::data::{
-    COLUMN_VALUE_BYTES, ColumnPairWriter, ColumnSource, ColumnUploadStats, HiLoColumnSource,
-    StreamColumnSource,
+    COLUMN_VALUE_BYTES, ColumnPairWriter, ColumnSource, HiLoColumnSource, StreamColumnSource,
 };
 
 // Defined in the model crate (`model::data`); re-exported here so
@@ -100,11 +99,13 @@ pub struct ColumnSlot {
     pub byte_size: u64,
     pub len_values: usize,
     pub generation: u32,
-    /// Captured from `ColumnSource::min/max` at `add_column` time so auto-fit
-    /// can read the range without rescanning data that lives on the GPU.
+    /// The finite range of the values written, recorded by the upload's
+    /// `ColumnPairWriter` while they were written (`+inf` / `-inf` when none
+    /// was finite), so auto-fit reads it without rescanning data that lives
+    /// on the GPU. The source supplies values only, never these statistics.
     pub min: f64,
     pub max: f64,
-    /// Smallest strictly-positive value, collected during upload — the
+    /// Smallest strictly-positive value, recorded the same way — the
     /// log-axis auto-fit lower bound when the data contains zeros or
     /// negatives. `None` when no positive value exists.
     ///

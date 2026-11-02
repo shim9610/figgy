@@ -62,8 +62,6 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
             "browser-edges",
             &Column {
                 data: (0..17).map(|i| i as f32 * 0.25).collect(),
-                min: 0.0,
-                max: 4.0,
             },
         )
         .expect("edge upload failed");
@@ -72,8 +70,6 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
             "browser-values",
             &Column {
                 data: vec![2.0; 16],
-                min: 2.0,
-                max: 2.0,
             },
         )
         .expect("value upload failed");

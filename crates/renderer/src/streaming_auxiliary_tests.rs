@@ -2,11 +2,7 @@ use super::*;
 use pollster::FutureExt as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    crate::Column {
-        min: data.iter().copied().fold(f32::INFINITY, f32::min),
-        max: data.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 fn setup(

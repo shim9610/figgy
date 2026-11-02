@@ -183,8 +183,6 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
                 &resident_id,
                 &crate::Column {
                     data: values(id).to_vec(),
-                    min: 0.0,
-                    max: 1.0,
                 },
             )
             .unwrap();
@@ -817,15 +815,8 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                 r.register_streamed_columns(vec![edge_source, value_source])
                     .unwrap();
                 for (id, data) in [("redge", &edges), ("rvalue", &values)] {
-                    r.add_column(
-                        id,
-                        &crate::Column {
-                            data: data.clone(),
-                            min: 0.0,
-                            max: 12.0,
-                        },
-                    )
-                    .unwrap();
+                    r.add_column(id, &crate::Column { data: data.clone() })
+                        .unwrap();
                 }
                 let mut config = crate::default::default_config();
                 config.chart_area = crate::layout::ChartArea(Rect {
@@ -893,8 +884,6 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                     "pedge",
                     &crate::Column {
                         data: edges[..5].to_vec(),
-                        min: 0.0,
-                        max: 1.0,
                     },
                 )
                 .unwrap();
@@ -902,8 +891,6 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                     "pvalue",
                     &crate::Column {
                         data: values[..4].to_vec(),
-                        min: 0.0,
-                        max: 10.0,
                     },
                 )
                 .unwrap();
@@ -1027,8 +1014,6 @@ fn streamed_histogram_same_id_edges_and_values_match_resident() {
         "rsame",
         &crate::Column {
             data: values.clone(),
-            min: 0.0,
-            max: 4.0,
         },
     )
     .unwrap();
@@ -1292,13 +1277,9 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
     .unwrap();
     let x = crate::Column {
         data: (0..8).map(|i| i as f32 / 8.0).collect(),
-        min: 0.0,
-        max: 0.875,
     };
     let y = crate::Column {
         data: (0..8).map(|i| i as f32 / 16.0).collect(),
-        min: 0.0,
-        max: 0.4375,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -1444,13 +1425,9 @@ fn packed_view_pick_reduces_across_bounded_submission_batches() {
     r.set_chart_series(chart_id, series).unwrap();
     let x = crate::Column {
         data: (0..8).map(|index| index as f32 / 10.0).collect(),
-        min: 0.0,
-        max: 0.7,
     };
     let y = crate::Column {
         data: (0..8).map(|index| index as f32 / 10.0).collect(),
-        min: 0.0,
-        max: 0.7,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -1498,13 +1475,9 @@ fn packed_view_redraw_matches_exact_stream_pixels_after_zoom() {
         .unwrap();
     let x = crate::Column {
         data: [0.3, 0.3, -5.0, -5.0, 0.7, 0.7, 0.8, 0.8].to_vec(),
-        min: -5.0,
-        max: 0.8,
     };
     let y = crate::Column {
         data: [0.5, 2.0, 2.0, -5.0, -5.0, 0.5, 0.5, 2.0].to_vec(),
-        min: -5.0,
-        max: 2.0,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -1621,14 +1594,8 @@ fn zero_configured_view_limit_disables_candidate_without_changing_stream_draw() 
     let config = r.chart_config(chart_id).unwrap().clone();
     let x = crate::Column {
         data: vec![0.25; 8],
-        min: 0.25,
-        max: 0.25,
     };
-    let y = crate::Column {
-        data: vec![0.5; 8],
-        min: 0.5,
-        max: 0.5,
-    };
+    let y = crate::Column { data: vec![0.5; 8] };
     let bindings = [
         crate::StreamSourceBinding {
             id: "x",
@@ -1665,18 +1632,12 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
         .unwrap();
     let x = crate::Column {
         data: vec![0.3, 0.4, -0.1, 0.6, 0.7, 0.8, 0.9, 1.0],
-        min: -0.1,
-        max: 1.0,
     };
     let y = crate::Column {
         data: vec![0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-        min: 0.3,
-        max: 1.0,
     };
     let e = crate::Column {
         data: vec![0.1, 0.1, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1],
-        min: 0.1,
-        max: 0.5,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -2083,22 +2044,13 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     id,
                     &crate::Column {
                         data: values.to_vec(),
-                        min: 0.08,
-                        max: 0.93,
                     },
                 )
                 .unwrap();
             }
             for (id, value) in [("px", x[0]), ("py", y[0])] {
-                r.add_column(
-                    id,
-                    &crate::Column {
-                        data: vec![value],
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
-                .unwrap();
+                r.add_column(id, &crate::Column { data: vec![value] })
+                    .unwrap();
             }
             let panel_a = Rect {
                 x: 0,
@@ -2266,8 +2218,6 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                         id,
                         &crate::Column {
                             data: values.to_vec(),
-                            min: 0.0,
-                            max: 1.0,
                         },
                     )
                     .unwrap();
@@ -2418,8 +2368,6 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     id,
                     &crate::Column {
                         data: values.to_vec(),
-                        min: 0.1,
-                        max: 0.9,
                     },
                 )
                 .unwrap();
@@ -4089,28 +4037,15 @@ fn public_column_source_step_owns_cursor_and_never_requires_encoded_payloads() {
         fn len(&self) -> usize {
             self.len
         }
-        fn min(&self) -> f64 {
-            0.0
-        }
-        fn max(&self) -> f64 {
-            (self.len.saturating_sub(1) as f32 * self.scale) as f64
-        }
-        fn write_f32_le_into(&self, _dst: &mut [u8]) {
-            panic!("streaming must not invoke the full-column encoder")
-        }
-        fn write_f32_pair_le_into_with_stats(
-            &self,
-            _dst: crate::ColumnPairWriter<'_>,
-        ) -> crate::ColumnUploadStats {
+        fn write_pairs(&self, _dst: &mut crate::ColumnPairWriter<'_>) {
             panic!("streaming must not invoke the full-column writer")
         }
-        fn write_f32_pair_range_into_with_stats(
+        fn write_pair_range(
             &self,
             start: u64,
-            mut dst: crate::ColumnPairWriter<'_>,
-        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
-        {
-            let end = start
+            dst: &mut crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
+            start
                 .checked_add(dst.len() as u64)
                 .filter(|end| *end <= self.len as u64)
                 .ok_or(crate::ColumnRangeWriteError::InvalidRange)?;
@@ -4127,16 +4062,7 @@ fn public_column_source_step_owns_cursor_and_never_requires_encoded_payloads() {
                 let value = (start + local as u64) as f32 * self.scale;
                 dst.write_pair(local, value, 0.0);
             }
-            let first = start as f32 * self.scale;
-            let last = end.saturating_sub(1) as f32 * self.scale;
-            Ok(Some(crate::StreamBounds {
-                min: first.min(last) as f64,
-                max: first.max(last) as f64,
-                min_positive: (end > start)
-                    .then_some(if first > 0.0 { first } else { self.scale.abs() })
-                    .filter(|value| value.is_finite() && *value > 0.0)
-                    .map(f64::from),
-            }))
+            Ok(())
         }
     }
 
@@ -4454,13 +4380,9 @@ fn automatic_stream_becomes_terminal_only_after_receipts_and_final_display() {
     let original_job = r.active_stream_job(chart_id).unwrap();
     let x = crate::Column {
         data: (0..8).map(|value| value as f32 / 8.0).collect(),
-        min: 0.0,
-        max: 0.875,
     };
     let y = crate::Column {
         data: (0..8).map(|value| value as f32 / 16.0).collect(),
-        min: 0.0,
-        max: 0.4375,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -4578,13 +4500,9 @@ fn automatic_range_request_is_stable_until_submit_advances_the_cpu_cursor() {
 
     let x = crate::Column {
         data: (0..3).map(|value| value as f32 / 8.0).collect(),
-        min: 0.0,
-        max: 0.25,
     };
     let y = crate::Column {
         data: (0..3).map(|value| value as f32 / 16.0).collect(),
-        min: 0.0,
-        max: 0.125,
     };
     let bindings = [
         crate::StreamRangeSourceBinding {
@@ -4642,8 +4560,6 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
         "handoff-x",
         &crate::Column {
             data: x_values.clone(),
-            min: 0.0,
-            max: 7.0,
         },
     )
     .unwrap();
@@ -4651,8 +4567,6 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
         "handoff-y",
         &crate::Column {
             data: y_values.clone(),
-            min: 0.0,
-            max: 49.0,
         },
     )
     .unwrap();
@@ -4704,13 +4618,9 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
                 let y_start = y_range.offset as usize;
                 let x_chunk = crate::Column {
                     data: x_values[x_start..x_start + x_range.len as usize].to_vec(),
-                    min: 0.0,
-                    max: 0.0,
                 };
                 let y_chunk = crate::Column {
                     data: y_values[y_start..y_start + y_range.len as usize].to_vec(),
-                    min: 0.0,
-                    max: 0.0,
                 };
                 r.auto_stream_chart_submit_ranges(
                     chart_id,
@@ -4782,11 +4692,7 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
 #[test]
 fn resident_handoff_decoration_coalesces_without_replacing_pending_ranges() {
     let (mut r, _, _) = renderer(2);
-    let values = crate::Column {
-        data: vec![0.0; 8],
-        min: 0.0,
-        max: 0.0,
-    };
+    let values = crate::Column { data: vec![0.0; 8] };
     r.add_column("resident-x", &values).unwrap();
     r.add_column("resident-y", &values).unwrap();
     let config = crate::default::default_config();
@@ -4853,8 +4759,6 @@ fn cancelling_resident_range_handoff_discards_only_the_candidate_stream() {
     .unwrap();
     let values = crate::Column {
         data: (0..8).map(|value| value as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     r.add_column("cancel-x", &values).unwrap();
     r.add_column("cancel-y", &values).unwrap();
@@ -4912,8 +4816,6 @@ fn newer_resident_range_handoff_replaces_only_the_automatic_candidate() {
     .unwrap();
     let values = crate::Column {
         data: (0..8).map(|value| value as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     r.add_column("replace-x", &values).unwrap();
     r.add_column("replace-y", &values).unwrap();
@@ -4996,8 +4898,6 @@ fn mixed_closure_handoff_keeps_both_old_authorities_until_one_stream_commit() {
         .unwrap();
     let values = crate::Column {
         data: (0..8).map(|value| value as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     r.add_column("mixed-y", &values).unwrap();
     let y_epoch = r.pool.allocation_epoch("mixed-y").unwrap();
@@ -5100,8 +5000,6 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
     .unwrap();
     let original = crate::Column {
         data: (0..8).map(|value| value as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     r.add_column("stale-x", &original).unwrap();
     r.add_column("stale-y", &original).unwrap();
@@ -5136,8 +5034,6 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
     let old_epoch = r.pool.allocation_epoch("stale-y").unwrap();
     let replacement = crate::Column {
         data: (0..8).map(|value| -(value as f32)).collect(),
-        min: -7.0,
-        max: 0.0,
     };
     r.upsert_column("stale-y", &replacement).unwrap();
     let new_epoch = r.pool.allocation_epoch("stale-y").unwrap();
@@ -5213,13 +5109,9 @@ fn automatic_stream_terminalizes_an_already_presented_display_after_receipts_com
     .unwrap();
     let x = crate::Column {
         data: (0..8).map(|value| value as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     let y = crate::Column {
         data: (0..8).map(|value| -(value as f32)).collect(),
-        min: -7.0,
-        max: 0.0,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -5283,13 +5175,9 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
         .unwrap();
     let x = crate::Column {
         data: (10..18).map(|n| n as f32).collect(),
-        min: 10.0,
-        max: 17.0,
     };
     let y = crate::Column {
         data: (-20..-12).map(|n| n as f32).collect(),
-        min: -20.0,
-        max: -13.0,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -5309,8 +5197,6 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
         "rx",
         &crate::Column {
             data: x.data[..3].to_vec(),
-            min: 10.0,
-            max: 12.0,
         },
     )
     .unwrap();
@@ -5318,8 +5204,6 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
         "ry",
         &crate::Column {
             data: y.data[..3].to_vec(),
-            min: -20.0,
-            max: -18.0,
         },
     )
     .unwrap();
@@ -5423,13 +5307,9 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
         .unwrap();
     let x = crate::Column {
         data: (10..18).map(|value| value as f32).collect(),
-        min: 10.0,
-        max: 17.0,
     };
     let y = crate::Column {
         data: (-20..-12).map(|value| value as f32).collect(),
-        min: -20.0,
-        max: -13.0,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -5593,8 +5473,6 @@ fn streaming_status_is_read_only_and_adaptive_budget_preserves_pending_range_and
     assert_eq!(r.stream_status(chart).unwrap().job_id, initial.job_id);
     let values = crate::Column {
         data: (0..8).map(|v| v as f32).collect(),
-        min: 0.0,
-        max: 7.0,
     };
     let bindings = [
         crate::StreamSourceBinding {
@@ -5640,11 +5518,7 @@ fn streaming_cancel_retains_counts_and_drains_only_own_reservations() {
         max_primitives_per_chunk: 2,
     };
     r.request_auto_streaming_chart(a, &view, options).unwrap();
-    let values = crate::Column {
-        data: vec![0.0; 8],
-        min: 0.0,
-        max: 0.0,
-    };
+    let values = crate::Column { data: vec![0.0; 8] };
     let bindings = [
         crate::StreamSourceBinding {
             id: "x",
@@ -5718,13 +5592,9 @@ fn automatic_stream_does_not_publish_old_statistics_into_a_new_source_revision()
         .unwrap();
     let old_x = crate::Column {
         data: (10..18).map(|value| value as f32).collect(),
-        min: 10.0,
-        max: 17.0,
     };
     let old_y = crate::Column {
         data: (-20..-12).map(|value| value as f32).collect(),
-        min: -20.0,
-        max: -13.0,
     };
     let old_bindings = [
         crate::StreamSourceBinding {
@@ -5920,13 +5790,9 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
     };
     let x = crate::Column {
         data: (0..rows).map(|i| i as f32).collect(),
-        min: 0.0,
-        max: (rows - 1) as f32,
     };
     let y = crate::Column {
         data: (0..rows).map(|i| i as f32 * 2.0).collect(),
-        min: 0.0,
-        max: (rows - 1) as f32 * 2.0,
     };
     let mut post_cancel = None;
     for revision in 3..6 {
@@ -6047,29 +5913,16 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
         fn len(&self) -> usize {
             self.column.data.len()
         }
-        fn min(&self) -> f64 {
-            self.column.min as f64
-        }
-        fn max(&self) -> f64 {
-            self.column.max as f64
-        }
-        fn write_f32_le_into(&self, _: &mut [u8]) {
+        fn write_pairs(&self, _: &mut crate::ColumnPairWriter<'_>) {
             panic!("stream must request ranges");
         }
-        fn write_f32_pair_le_into_with_stats(
-            &self,
-            _: crate::ColumnPairWriter<'_>,
-        ) -> crate::ColumnUploadStats {
-            panic!("stream must request ranges");
-        }
-        fn write_f32_pair_range_into_with_stats(
+        fn write_pair_range(
             &self,
             start: u64,
-            dst: crate::ColumnPairWriter<'_>,
-        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
-        {
+            dst: &mut crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
             self.offsets.borrow_mut().push(start);
-            crate::ColumnSource::write_f32_pair_range_into_with_stats(&self.column, start, dst)
+            crate::ColumnSource::write_pair_range(&self.column, start, dst)
         }
     }
     for (samples, histogram) in [(1, false), (4, false), (1, true), (4, true)] {
@@ -6128,16 +5981,12 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
         let x = Observed {
             column: crate::Column {
                 data: (0..rows).map(|i| 10.0 + i as f32).collect(),
-                min: 10.0,
-                max: 138.0,
             },
             offsets: RefCell::new(Vec::new()),
         };
         let y = Observed {
             column: crate::Column {
                 data: (0..rows).map(|i| -20.0 + i as f32 * 2.0).collect(),
-                min: -20.0,
-                max: 236.0,
             },
             offsets: RefCell::new(Vec::new()),
         };
@@ -6318,13 +6167,9 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
             .unwrap();
         let x = crate::Column {
             data: vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0],
-            min: 1.0,
-            max: 128.0,
         };
         let y = crate::Column {
             data: vec![1.0, 4.0, 2.0, 8.0, 16.0, 64.0, 32.0, 128.0],
-            min: 1.0,
-            max: 128.0,
         };
         let bindings = [
             crate::StreamSourceBinding {
@@ -6489,13 +6334,9 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
         // Includes offscreen connections, a run near the left edge, and a gap.
         let x = crate::Column {
             data: vec![-2.0, 0.5, 2.0, f32::NAN, -0.005, -0.005, 0.5, 2.0],
-            min: -2.0,
-            max: 2.0,
         };
         let y = crate::Column {
             data: vec![0.1, 0.5, 0.9, f32::NAN, 0.3, 0.7, 0.7, 0.7],
-            min: 0.1,
-            max: 0.9,
         };
         let bindings = [
             crate::StreamSourceBinding {
@@ -6634,8 +6475,6 @@ fn completed_stream_grid_toggle_recomposes_without_source_replay() {
         let _ = r.set_auto_resident_working_set_limit(Some(if cache { 500_000_000 } else { 0 }));
         let values = crate::Column {
             data: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-            min: 0.1,
-            max: 0.8,
         };
         let bindings = [
             crate::StreamSourceBinding {
@@ -6744,13 +6583,9 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                 .unwrap();
             let x = crate::Column {
                 data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-                min: 1.0,
-                max: 8.0,
             };
             let y = crate::Column {
                 data: vec![0.2, 0.8, 0.3, 0.7, 0.4, 0.6, 0.5, 1.2],
-                min: 0.2,
-                max: 1.2,
             };
             let bindings = [
                 crate::StreamSourceBinding {
@@ -7047,27 +6882,14 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
         fn len(&self) -> usize {
             50
         }
-        fn min(&self) -> f64 {
-            0.0
-        }
-        fn max(&self) -> f64 {
-            f64::from(49.0 * self.scale)
-        }
-        fn write_f32_le_into(&self, _dst: &mut [u8]) {
-            panic!("streaming must not invoke the full-column encoder")
-        }
-        fn write_f32_pair_le_into_with_stats(
-            &self,
-            _dst: crate::ColumnPairWriter<'_>,
-        ) -> crate::ColumnUploadStats {
+        fn write_pairs(&self, _dst: &mut crate::ColumnPairWriter<'_>) {
             panic!("streaming must not invoke the full-column writer")
         }
-        fn write_f32_pair_range_into_with_stats(
+        fn write_pair_range(
             &self,
             start: u64,
-            mut dst: crate::ColumnPairWriter<'_>,
-        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
-        {
+            dst: &mut crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
             if self.fail_at.get() == Some(start) {
                 self.fail_at.set(None);
                 return Err(crate::ColumnRangeWriteError::SourceFailed);
@@ -7075,7 +6897,7 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
             for local in 0..dst.len() {
                 dst.write_pair(local, (start + local as u64) as f32 * self.scale, 0.0);
             }
-            Ok(None)
+            Ok(())
         }
     }
 
