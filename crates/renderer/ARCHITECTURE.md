@@ -9,10 +9,11 @@ those charts by the deprecated readers `Config::from_categorical`,
 `Config::from_boxplot` and `Config::from_radar`, which are removed in the next
 milestone. The radial chart (`RadialRenderer`), the DataLess chart, is a
 separate renderer: it
-returns immutable prepared frames, keeps its own GPU ledger
-(`gpu_memory_usage()`) and budget (`set_memory_budget(bytes)`), and uses no
-column pool, auto-fit jobs or streaming. A host that reports total GPU memory
-adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md).
+returns immutable prepared frames, charges the GPU ledger of the
+`RendererDevice` it is built from and spends that bundle's budget, as every
+renderer built from the bundle does (`gpu_memory_usage()`,
+`set_memory_budget(Option<u64>)`), and uses no column pool, auto-fit jobs or
+streaming. Any renderer on the bundle reports the bundle's total. See [RADIAL.md](RADIAL.md).
 For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
 | Component | Role |
@@ -517,7 +518,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 모든 렌더러가 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓴다. 컬럼 풀·자동 범위 맞춤 작업·스트리밍은 사용하지 않는다. 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 

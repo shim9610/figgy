@@ -232,7 +232,6 @@ async fn chrome_stream_surface_matches_direct_render_all_formats_and_samples() {
                     sample_count: samples,
                 },
                 16 * 1024 * 1024,
-                0,
             )
             .expect("production surface");
             let direct = texture(&device, format, samples);

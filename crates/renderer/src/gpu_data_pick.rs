@@ -2043,6 +2043,7 @@ mod stream_tests {
 
     #[test]
     fn streamed_histogram_matches_resident_global_bin_ties_and_mapped_styles() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = data_render::shared_device() else {
             return;
         };
@@ -2060,7 +2061,8 @@ mod stream_tests {
             }
             .map(|x| x + origin);
             let values = [f64::NAN, 6.0, 7.0, 8.0];
-            let mut pool = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), 4096).unwrap();
+            let mut pool =
+                ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 4096).unwrap();
             pool.add_hilo_column(
                 "edges".into(),
                 &Column {
@@ -2068,7 +2070,7 @@ mod stream_tests {
                     min: edges[0],
                     max: edges[4],
                 },
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
             pool.add_hilo_column(
@@ -2078,7 +2080,7 @@ mod stream_tests {
                     min: 6.0,
                     max: 8.0,
                 },
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
             let config = config(logarithmic);

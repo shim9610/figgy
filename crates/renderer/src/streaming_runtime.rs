@@ -1460,8 +1460,7 @@ impl Renderer {
         mapping: &[f32; 8],
         clip: [u32; 4],
     ) -> StreamResult<()> {
-        let pool_bytes = self.pool.gpu_bytes() + self.pool.retired_bytes();
-        let budget = self.memory_budget.unwrap_or(u64::MAX);
+        let budget = self.gpu_ledger.budget_limit();
         let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let draw = runtime
             .draws
@@ -1479,7 +1478,6 @@ impl Renderer {
             mapping,
             clip,
             budget,
-            pool_bytes,
         )?;
         Ok(())
     }
@@ -1493,12 +1491,11 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         clear: wgpu::Color,
     ) -> StreamResult<()> {
-        let pool_bytes = self.pool.gpu_bytes() + self.pool.retired_bytes();
         let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         // Keep the upload executor's headroom.
         let budget = self
-            .memory_budget
-            .unwrap_or(u64::MAX)
+            .gpu_ledger
+            .budget_limit()
             .saturating_sub(runtime.scheduler.limits().max_in_flight_bytes);
         let draw = runtime
             .draws
@@ -1542,7 +1539,6 @@ impl Renderer {
                 }
             },
             budget,
-            pool_bytes,
         );
         match began {
             // The viewport snapshots do not fit the budget: retain the
@@ -1791,7 +1787,7 @@ impl Renderer {
             draw.view_rejection = Some(reason);
             return Ok(());
         }
-        let Some(budget) = self.memory_budget else {
+        let Some(budget) = self.gpu_ledger.budget() else {
             draw.view_rejection = Some(view_residency::PackReject::MemoryBudgetUnset);
             return Ok(());
         };
@@ -3521,11 +3517,6 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.chart_config(chart)?;
-        let pool_bytes = self
-            .pool
-            .gpu_bytes()
-            .checked_add(self.pool.retired_bytes())
-            .ok_or(StreamError::Overflow)?;
         let runtime = self
             .stream_runtime
             .as_mut()
@@ -3547,16 +3538,14 @@ impl Renderer {
                 format: self.surface_format,
                 sample_count: self.target_sample_count,
             },
-            self.memory_budget.unwrap_or(u64::MAX),
-            pool_bytes,
+            self.gpu_ledger.budget_limit(),
         )?;
         if fit_preview {
             surface.prepare_rescale(
                 &self.device,
                 &self.gpu_ledger,
                 transfer,
-                self.memory_budget.unwrap_or(u64::MAX),
-                pool_bytes,
+                self.gpu_ledger.budget_limit(),
             )?;
         }
         let display_view = surface.resolved().create_view(&Default::default());
@@ -4639,11 +4628,6 @@ impl Renderer {
             if existing.is_some() && prior_hist_series != Some(series_index) {
                 return Err(StreamError::WrongState.into());
             }
-            let pool_bytes = self
-                .pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?;
             let envelope = match existing {
                 Some(envelope) => Arc::clone(envelope),
                 None => Arc::new(data_render::bar_envelope::Persistent::new(
@@ -4657,8 +4641,7 @@ impl Renderer {
                     &self.device,
                     &self.gpu_ledger,
                     pixels,
-                    self.memory_budget.unwrap_or(u64::MAX),
-                    pool_bytes,
+                    self.gpu_ledger.budget_limit(),
                     execution_style.bar_map.as_ref().map(|map| &map.bind_group),
                 )?),
             };
@@ -4678,7 +4661,6 @@ impl Renderer {
                 existing.is_none() || fit_preview,
                 final_chunk,
                 global_start,
-                pool_bytes,
             ))
         } else {
             None
@@ -4719,7 +4701,7 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("figgy stream chunk draw"),
             });
-        if let Some((envelope, true, _, _, _)) = &histogram {
+        if let Some((envelope, true, _, _)) = &histogram {
             envelope.record_clear(&mut encoder);
         }
         let capture_enabled = live_runtime(&self.stream_runtime)?
@@ -4934,7 +4916,7 @@ impl Renderer {
                 return Err(error);
             }
         }
-        let histogram_chunk = if let Some((envelope, _, _, global_start, pool_bytes)) = &histogram {
+        let histogram_chunk = if let Some((envelope, _, _, global_start)) = &histogram {
             let recorded = (|| -> std::result::Result<_, StreamError> {
                 let layers = packet.layers();
                 let bar = layers.bar.as_ref().ok_or(StreamError::WrongState)?;
@@ -4949,8 +4931,7 @@ impl Renderer {
                         &self.device,
                         &mut encoder,
                         &self.gpu_ledger,
-                        self.memory_budget.unwrap_or(u64::MAX),
-                        *pool_bytes,
+                        self.gpu_ledger.budget_limit(),
                         envelope,
                         &chunk.work,
                         bar.edges,
@@ -5083,7 +5064,7 @@ impl Renderer {
             }
             // Preview envelopes belong to this chunk's pixel window. Bake
             // them into the data image so future rescaling moves them too.
-            if let Some((envelope, _, final_chunk, _, _)) = &histogram
+            if let Some((envelope, _, final_chunk, _)) = &histogram
                 && (*final_chunk || fit_preview)
             {
                 envelope.draw(&mut pass, &view.transform_bg, &execution_style.bar_bg);
@@ -5115,14 +5096,14 @@ impl Renderer {
                         &self.device,
                         &self.queue,
                         &self.gpu_ledger,
-                        self.memory_budget,
+                        self.gpu_ledger.budget(),
                         current_gpu_bytes,
                     );
                 }
                 draw.offset += primitives;
                 draw.pending = None;
                 draw.display_dirty = true;
-                if let Some((envelope, _, final_chunk, _, _)) = histogram {
+                if let Some((envelope, _, final_chunk, _)) = histogram {
                     if final_chunk {
                         draw.hist_envelope = None;
                         draw.hist_series = None;
@@ -5748,15 +5729,10 @@ impl Renderer {
             max_work_buffer_bytes: self.device.limits().max_buffer_size,
             max_upload_bytes: limits.max_in_flight_bytes,
             renderer_budget_bytes: self
-                .memory_budget
-                .unwrap_or(u64::MAX)
+                .gpu_ledger
+                .budget_limit()
                 .checked_sub(headroom_bytes)
                 .ok_or(StreamError::TooLarge)?,
-            pool_bytes: self
-                .pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?,
         })
     }
 

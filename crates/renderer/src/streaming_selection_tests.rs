@@ -532,11 +532,11 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
     r.set_chart_config(id, chart.config().clone()).unwrap();
     r.wait_idle().unwrap();
     let bytes = r.gpu_memory_usage().total_bytes();
-    r.memory_budget = Some(bytes);
+    let _ = r.set_memory_budget(Some(bytes));
     assert!(r.request_stream_selection_ranges(id).is_err());
     assert_eq!(r.gpu_memory_usage().total_bytes(), bytes);
     assert_eq!(screen(&mut r, id, &view), before);
-    r.memory_budget = None;
+    let _ = r.set_memory_budget(None);
     chart
         .config_mut()
         .picked_data

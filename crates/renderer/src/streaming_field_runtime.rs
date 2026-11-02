@@ -81,12 +81,7 @@ pub(super) fn preflight<'a>(
 impl Renderer {
     pub(super) fn stream_field_budget(&self, headroom_bytes: u64) -> StreamResult<field::Budget> {
         Ok(field::Budget {
-            max_renderer_bytes: self.memory_budget.unwrap_or(u64::MAX),
-            pool_bytes: self
-                .pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?,
+            max_renderer_bytes: self.gpu_ledger.budget_limit(),
             headroom_bytes,
         })
     }
@@ -201,8 +196,8 @@ impl Renderer {
                     * std::mem::size_of::<data_render::ContourLookupMetadataGpu>())
                 as u64;
         let available = self
-            .memory_budget
-            .unwrap_or(u64::MAX)
+            .gpu_ledger
+            .budget_limit()
             .checked_sub(self.gpu_memory_usage().total_bytes())
             .and_then(|n| n.checked_sub(metadata))
             .and_then(|n| n.checked_sub(upload))

@@ -225,7 +225,7 @@ pub(crate) struct StreamSurface {
 }
 
 impl StreamSurface {
-    /// `pool_bytes` includes ALL live and retired pool bytes outside the ledger.
+    /// The ledger holds every renderer GPU byte, the column pool included.
     /// The caller checks adapter format capabilities before allocating targets.
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -233,7 +233,6 @@ impl StreamSurface {
         transfer: &StreamTransfer,
         spec: StreamSurfaceSpec,
         renderer_budget_bytes: u64,
-        pool_bytes: u64,
     ) -> Result<Self, StreamSurfaceError> {
         let bytes = spec.charged_bytes()?;
         if transfer.format != spec.format || transfer.sample_count != spec.sample_count {
@@ -245,8 +244,7 @@ impl StreamSurface {
         }
         let total = ledger
             .total_bytes()
-            .checked_add(pool_bytes)
-            .and_then(|total| total.checked_add(bytes))
+            .checked_add(bytes)
             .ok_or(StreamSurfaceError::Overflow)?;
         if total > renderer_budget_bytes {
             return Err(StreamSurfaceError::TooLarge);
@@ -329,10 +327,9 @@ impl StreamSurface {
         ledger: &Arc<GpuLedger>,
         transfer: &StreamTransfer,
         budget: u64,
-        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         if self.rescale.is_none() {
-            self.rescale = Some(self.create_rescale(device, ledger, transfer, budget, pool_bytes)?);
+            self.rescale = Some(self.create_rescale(device, ledger, transfer, budget)?);
         }
         Ok(())
     }
@@ -343,14 +340,8 @@ impl StreamSurface {
         ledger: &Arc<GpuLedger>,
         transfer: &StreamTransfer,
         budget: u64,
-        pool_bytes: u64,
     ) -> Result<(TrackedBuffer, wgpu::BindGroup, wgpu::BindGroup), StreamSurfaceError> {
-        if ledger
-            .total_bytes()
-            .saturating_add(pool_bytes)
-            .saturating_add(32)
-            > budget
-        {
+        if ledger.total_bytes().saturating_add(32) > budget {
             return Err(StreamSurfaceError::TooLarge);
         }
         crate::renderer::gpu_checked(device, "stream preview rescale", || {
@@ -402,11 +393,10 @@ impl StreamSurface {
         mapping: &[f32; 8],
         clip: [u32; 4],
         budget: u64,
-        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         let rescale = match self.rescale.take() {
             Some(rescale) => rescale,
-            None => self.create_rescale(device, ledger, transfer, budget, pool_bytes)?,
+            None => self.create_rescale(device, ledger, transfer, budget)?,
         };
         let (buffer, source, scratch) = &*self.rescale.insert(rescale);
         let mut bytes = [0u8; 32];

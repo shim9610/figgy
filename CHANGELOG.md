@@ -869,6 +869,35 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **One GPU ledger and budget per device bundle** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `RendererDevice::new` creates the ledger, and every `Renderer`,
+  `WindowedRenderer` and `RadialRenderer` built from the bundle or its clones
+  charges it and spends its one budget. `RendererDevice::ledger` returns it.
+  The column pool charges its slab, backup, growth candidates and upload
+  staging to the ledger as it creates them, instead of counting its own
+  bytes beside it, so a budget check sees every pool on the device.
+  `RadialRenderer::end_frame` retires through the same path as
+  `Renderer::end_gpu_frame`. Behaviour changes: `gpu_memory_usage` and the
+  budget cover the whole bundle, so two renderers built from one bundle report
+  the same total; `RadialRenderer` starts with no budget instead of 256 MiB.
+  Migration:
+  - `GpuAllocCtx` is `{ device, queue, ledger }`, built with
+    `GpuAllocCtx::new(device, queue, ledger)`; pass `gpu.ledger()` or an
+    `Arc<GpuLedger>` of your own. `GpuBudget` and `GpuAllocCtx::unbudgeted`
+    are removed: the pool reads the budget from the ledger.
+  - `ColumnPool::retired_bytes`, `clear_retired_bytes`, `peak_bytes`,
+    `reset_peak_bytes` and `buffer_creations` are removed. Read the
+    `GpuResourceKind::ColumnPool` row of `GpuLedger::snapshot()` and
+    `GpuLedger::peak_bytes` / `reset_peak`.
+  - `GpuMemoryUsage::with_kind`, `with_creations` and `with_peak_at_least`
+    are removed; build a report from a `GpuLedger`.
+  - `RadialRenderer::set_memory_budget` takes `Option<u64>` and returns the
+    current total when the new ceiling is already below it, as
+    `Renderer::set_memory_budget` does; `RadialRenderer::memory_budget` reads it.
+  - `GpuErrorbarExtentEngine::new` and `new_observed` take a
+    `&RendererDevice` and use its ledger and health record;
+    `new_tracked` and `new_observed_tracked` are no longer public.
+  - `GpuLedger` gains `budget`, `budget_limit` and `set_budget`.
 - **The column registry is readable** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Renderer::logical_column_ids` lists every column a host registered,
   streamed or resident (record and ragged member columns excepted), and

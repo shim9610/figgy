@@ -458,14 +458,19 @@ Do not retain every historical frame in a live-edit loop.
 
 ## GPU memory accounting and budget scope
 
-`Renderer::gpu_memory_usage()` combines the column pool's byte counts with the
-renderer ledger's tracked allocations. Live and retired bytes both count.
+`gpu_memory_usage()` reports the ledger of the device bundle a renderer was
+built from. Every `Renderer`, `WindowedRenderer` and `RadialRenderer` built from
+one `RendererDevice` or its clones charges that one ledger, column pools
+included, so each of them reports the same total. Live and retired bytes both
+count.
 Dropping the final tracked owner retires its resources; a submission boundary
 captures them, and GPU completion releases their handles and byte credits.
 `end_gpu_frame()` alone does not make those bytes available for reuse.
 
-`set_memory_budget` sets an allocation policy used by checked allocation and
-admission paths, including pool growth. It is **not a hard ceiling on all GPU
+`set_memory_budget` sets the device bundle's budget: one allocation policy,
+shared by every renderer built from the bundle, used by checked allocation and
+admission paths, including pool growth. `RadialRenderer::set_memory_budget`
+sets the same budget. It is **not a hard ceiling on all GPU
 memory** or an interception of every device allocation. The initial pool is
 created before a budget is set. Lowering the budget does not shrink or evict
 resources: the setter applies the policy and returns `Some(current_total)` if
@@ -474,12 +479,13 @@ the tracked total already exceeds it, otherwise `None` (also when disabling it).
 The regular ledger excludes the lazy `DrawStyle::Milkyway` / `DrawStyle::Constellation`
 textures (PSF, planet atlas, blackbody LUT and ring strip); streaming export admission separately
 checks their known payload size. CPU allocations, final RGBA/PNG bytes, host-owned
-GPU targets, other renderers' resources and shader/pipeline/driver internals are
+GPU targets, renderers built from another `RendererDevice` and shader/pipeline/driver internals are
 also outside this report. Counts describe requested tracked bytes, not measured
 physical VRAM residency. Admission checks do not reserve future allocations.
 
-For a shared device, combine renderer budgets with host allocations and leave
-headroom for untracked resources. Device limits and a passing budget check do not
+Build one `RendererDevice` per device and clone it for every renderer, so one
+budget bounds them all. When a device also serves other bundles or host
+allocations, leave headroom for them and for untracked resources. Device limits and a passing budget check do not
 guarantee driver allocation success; handle allocation failure and device loss.
 
 ## Render targets, coordinates and output

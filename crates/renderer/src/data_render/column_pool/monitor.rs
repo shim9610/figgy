@@ -1,5 +1,5 @@
-//! Pool identity, device ceilings, the host budget and the byte, peak and
-//! buffer-creation accounting.
+//! Pool identity, device ceilings, the allocation context and the pool's
+//! footprint. The bytes, peak and creations are the device ledger's (#160).
 
 use super::*;
 
@@ -66,13 +66,18 @@ pub(super) fn buffer_ceiling_from(
     max_buffer_size.min(max_storage_buffer_binding_size)
 }
 
+/// Create a pool buffer charged to `ledger` as [`GpuResourceKind::ColumnPool`]
+/// for as long as it lives: the slab, a defragmentation or growth candidate,
+/// or upload staging. Dropping it retires its bytes until queue completion.
 pub(super) fn create_buffer_checked(
     device: &Device,
+    ledger: &Arc<GpuLedger>,
     desc: &BufferDescriptor<'_>,
     resource: &'static str,
-) -> Result<Buffer, AllocError> {
+) -> Result<TrackedBuffer, AllocError> {
     // gpu-alloc: ColumnPool
     crate::renderer::gpu_checked(device, resource, || device.create_buffer(desc))
+        .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::ColumnPool, buffer))
         .map_err(|error| pool_gpu_error(resource, error))
 }
 
@@ -90,52 +95,26 @@ pub(super) fn pool_gpu_error(resource: &'static str, error: crate::FiggyError) -
     }
 }
 
-/// A host-declared ceiling and the out-of-pool bytes it is measured against.
-///
-/// The two travel together because neither means anything alone. Held as
-/// separate fields they could disagree — and they did: the caller summed the
-/// out-of-pool total on every pool call even with no ceiling set, where the
-/// pool never reads it, so the choice was between wasted work and passing a
-/// fabricated zero that a future reader outside the budget check would take at
-/// face value. As one value there is no zero to fabricate and nothing to
-/// compute when there is no ceiling.
-#[derive(Clone, Copy, Debug)]
-pub struct GpuBudget {
-    /// Ceiling for all renderer GPU bytes, pool included.
-    pub ceiling_bytes: u64,
-    /// GPU bytes held outside this pool (panel textures, MSAA, export targets,
-    /// derived buffers), summed by the caller **just before this call** — never
-    /// cached inside the pool, because a copy the caller forgets to refresh
-    /// diverges silently.
-    pub external_bytes: u64,
-}
-
 /// Everything an allocating pool call needs from the caller.
 ///
 /// The pool owns its buffers but not the device, so GPU access arrives as an
-/// argument. The budget rides along in the same argument so the **allocation
-/// site itself** can compare limit, current usage, and ceiling before creating
-/// a buffer.
-///
-/// `plan_relayout_capacity` charges a growth's peak as
-/// `external_bytes + old capacity + new capacity` — the two pool buffers
-/// coexist across the copy — and refuses the growth when that crosses the
-/// ceiling.
+/// argument. The ledger is the device bundle's (#160): [`ColumnPool::new`]
+/// charges every buffer the pool creates to it, and its budget bounds pool
+/// growth against everything the device holds, other renderers' pools
+/// included.
 #[derive(Clone, Copy)]
 pub struct GpuAllocCtx<'a> {
     pub device: &'a Device,
     pub queue: &'a Queue,
-    /// `None` = device limits are the only bound.
-    pub budget: Option<GpuBudget>,
+    pub ledger: &'a Arc<GpuLedger>,
 }
 
 impl<'a> GpuAllocCtx<'a> {
-    /// Context with no host ceiling. Device limits still apply.
-    pub fn unbudgeted(device: &'a Device, queue: &'a Queue) -> Self {
+    pub fn new(device: &'a Device, queue: &'a Queue, ledger: &'a Arc<GpuLedger>) -> Self {
         Self {
             device,
             queue,
-            budget: None,
+            ledger,
         }
     }
 }
@@ -165,10 +144,8 @@ impl ColumnPool {
         let Some(backup) = self.backup.take() else {
             return 0;
         };
-        let bytes = backup.size();
-        drop(backup);
-        self.note_buffer_retired(bytes);
-        bytes
+        // Dropping the tracked buffer retires its bytes in the ledger.
+        backup.size()
     }
 
     /// GPU bytes this pool holds right now: the live slab plus the ping-pong
@@ -189,59 +166,6 @@ impl ColumnPool {
     /// footprint from the buffers themselves rather than trusting the report.
     #[cfg(test)]
     pub(crate) fn backup_buffer_for_test(&self) -> Option<&Buffer> {
-        self.backup.as_ref()
-    }
-
-    /// Bytes released by this pool that the device may still be holding.
-    pub fn retired_bytes(&self) -> u64 {
-        self.retired_bytes.total()
-    }
-
-    /// Compatibility helper: call only after GPU completion of every pending
-    /// retirement, not merely submission. Already submitted batches are left
-    /// to their completion callbacks. Renderer hosts use `end_gpu_frame`.
-    pub fn clear_retired_bytes(&mut self) {
-        self.retired_bytes
-            .complete(self.retired_bytes.take_pending());
-    }
-
-    pub(crate) fn take_retirement(&self) -> (Arc<RetiredBytes>, u64) {
-        (
-            Arc::clone(&self.retired_bytes),
-            self.retired_bytes.take_pending(),
-        )
-    }
-
-    /// Highest footprint seen, transients included.
-    pub fn peak_bytes(&self) -> u64 {
-        self.peak_bytes
-    }
-
-    /// Forget the recorded peak; the next allocation starts a fresh mark.
-    pub fn reset_peak_bytes(&mut self) {
-        self.peak_bytes = self.gpu_bytes().saturating_add(self.retired_bytes());
-    }
-
-    /// Device buffers this pool has created since construction.
-    pub fn buffer_creations(&self) -> u64 {
-        self.buffer_creations
-    }
-
-    /// Charge a buffer this pool just created whose bytes coexist with
-    /// [`Self::gpu_bytes`] — a staging buffer, a candidate primary, or the
-    /// larger slab a growth is copying into.
-    pub(super) fn note_buffer_created(&mut self, transient_bytes: u64) {
-        self.buffer_creations = self.buffer_creations.saturating_add(1);
-        let total = self
-            .gpu_bytes()
-            .saturating_add(self.retired_bytes())
-            .saturating_add(transient_bytes);
-        self.peak_bytes = self.peak_bytes.max(total);
-    }
-
-    /// Credit a buffer this pool just dropped. The bytes stay in
-    /// [`Self::retired_bytes`] until the corresponding queue completion.
-    pub(super) fn note_buffer_retired(&mut self, bytes: u64) {
-        self.retired_bytes.retire(bytes);
+        self.backup.as_deref()
     }
 }

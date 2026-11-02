@@ -8,13 +8,12 @@ use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The shared test device in a bundle of its own per call, so each renderer
+/// a test builds charges its own ledger and budget (#160).
 fn gpu() -> RendererDevice {
-    static GPU: OnceLock<RendererDevice> = OnceLock::new();
-    GPU.get_or_init(|| {
-        let (d, q) = test_gpu::device();
-        RendererDevice::new(d, q)
-    })
-    .clone()
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(test_gpu::device);
+    RendererDevice::new(d.clone(), q.clone())
 }
 fn chart() -> RadialChart {
     RadialChart {
@@ -195,7 +194,7 @@ fn radial_budget_validation_and_retirement_are_transactional() {
     invalid.slices[0].value = f64::NAN;
     assert!(r.prepare(&invalid, (320, 320), 1.0).is_err());
     assert_eq!(r.gpu_memory_usage(), before);
-    r.set_memory_budget(before.total_bytes());
+    let _ = r.set_memory_budget(Some(before.total_bytes()));
     let mut edit = c.clone();
     edit.style.material = Material::Paper;
     assert!(matches!(
@@ -208,6 +207,53 @@ fn radial_budget_validation_and_retirement_are_transactional() {
     drop(good);
     drain(&r);
     assert_eq!(r.gpu_memory_usage().total_bytes(), 0);
+}
+/// Every renderer built from one device bundle charges one ledger and spends
+/// one budget: two Cartesian renderers and a radial renderer report the same
+/// usage, both column pools included, and a budget set through one bounds a
+/// pool growth in another (#160).
+#[test]
+fn renderers_on_one_device_bundle_share_the_ledger_and_the_budget() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let gpu = gpu();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let pool_bytes = 64 * 1024;
+    let cartesian = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
+    let alone = cartesian.gpu_memory_usage().total_bytes();
+    let mut radial = RadialRenderer::new(gpu.clone(), format).unwrap();
+    let _frame = radial.prepare(&chart(), (320, 320), 1.0).unwrap();
+    let mut second = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
+
+    let usage = cartesian.gpu_memory_usage();
+    assert!(
+        usage.total_bytes() > alone,
+        "the radial frame and the second renderer are on the first one's ledger"
+    );
+    assert_eq!(radial.gpu_memory_usage(), usage);
+    assert_eq!(second.gpu_memory_usage(), usage);
+    assert!(
+        usage.pool_bytes() >= 2 * pool_bytes,
+        "both column pools are charged to the one ledger"
+    );
+
+    // One budget: set through the radial renderer, it is the Cartesian
+    // renderers' budget too, and it refuses a pool growth in the second.
+    let ceiling = usage.total_bytes();
+    assert_eq!(radial.set_memory_budget(Some(ceiling)), None);
+    assert_eq!(cartesian.memory_budget(), Some(ceiling));
+    assert_eq!(second.memory_budget(), Some(ceiling));
+    let values = 32 * 1024;
+    let big = renderer::Column {
+        data: (0..values).map(f64::from).collect::<Vec<_>>(),
+        min: 0.0,
+        max: f64::from(values - 1),
+    };
+    assert!(
+        second.add_column("big", &big).is_err(),
+        "a growth past the shared budget is refused"
+    );
+    assert_eq!(second.pool().capacity(), pool_bytes);
+    assert_eq!(radial.set_memory_budget(None), None);
 }
 #[test]
 fn radial_export_formats_preserve_straight_alpha_and_png_dimensions() {

@@ -74,11 +74,13 @@ pub(super) struct StagedStreamedColumn {
 
 pub(super) fn stage_streamed_columns(
     device: &Device,
+    ledger: &Arc<GpuLedger>,
     columns: &[StreamedColumnUpload<'_>],
     total: u64,
-) -> Result<(Buffer, Vec<StagedStreamedColumn>), AllocError> {
+) -> Result<(TrackedBuffer, Vec<StagedStreamedColumn>), AllocError> {
     let staging = create_buffer_checked(
         device,
+        ledger,
         &BufferDescriptor {
             label: Some("figgy streamed promotion staging"),
             size: total,
@@ -187,8 +189,8 @@ pub(super) enum UpsertBufferRollback {
     /// backup are retained until commit so dropping the guard can restore the
     /// exact pre-transaction pool.
     Candidate {
-        old_primary: Option<Buffer>,
-        old_backup: Option<Buffer>,
+        old_primary: Option<TrackedBuffer>,
+        old_backup: Option<TrackedBuffer>,
         candidate_was_backup: bool,
     },
 }
@@ -205,7 +207,7 @@ pub(super) struct UpsertRollback {
 
 pub(super) enum PreparedUpsertTarget {
     InPlace,
-    FreshCandidate(Buffer),
+    FreshCandidate(TrackedBuffer),
     BackupCandidate,
 }
 
@@ -254,18 +256,11 @@ impl ColumnUpsert<'_> {
             } = &mut rollback.buffer
         {
             // Keep the displaced primary as the next defragmentation target.
-            // Replacing an Option and dropping the superseded backup cannot
-            // allocate or return an error.
-            let mut released = self
-                .pool
-                .backup
-                .take()
-                .map_or(0, |superseded| superseded.size());
-            released = released.saturating_add(old_backup.take().map_or(0, |backup| backup.size()));
+            // Replacing an Option and dropping the superseded backups cannot
+            // allocate or return an error; the drops retire their bytes in
+            // the ledger.
+            drop(old_backup.take());
             self.pool.backup = old_primary.take();
-            if released > 0 {
-                self.pool.note_buffer_retired(released);
-            }
         }
         self.handle
     }
@@ -333,34 +328,6 @@ impl StreamedColumnPromotion<'_> {
 pub(crate) struct ColumnBatchCandidate<'a> {
     pub(super) pool: &'a mut ColumnPool,
     pub(super) candidate: ColumnPool,
-    pub(super) abandon: CandidateAbandon,
-}
-
-/// Notes an uncommitted candidate slab as retired on the live pool when the
-/// guard that owns it is dropped. The guards themselves have no `Drop`, so
-/// `commit` can move the candidate out by value.
-pub(super) struct CandidateAbandon {
-    retired: Arc<RetiredBytes>,
-    bytes: u64,
-    committed: bool,
-}
-
-impl CandidateAbandon {
-    pub(super) fn new(pool: &ColumnPool, candidate: &ColumnPool) -> Self {
-        Self {
-            retired: Arc::clone(&pool.retired_bytes),
-            bytes: candidate.primary.size(),
-            committed: false,
-        }
-    }
-}
-
-impl Drop for CandidateAbandon {
-    fn drop(&mut self) {
-        if !self.committed {
-            self.retired.retire(self.bytes);
-        }
-    }
 }
 
 impl ColumnBatchCandidate<'_> {
@@ -369,12 +336,7 @@ impl ColumnBatchCandidate<'_> {
     }
 
     pub(super) fn commit(self) {
-        let Self {
-            pool,
-            candidate,
-            mut abandon,
-        } = self;
-        abandon.committed = true;
+        let Self { pool, candidate } = self;
         let ColumnPool {
             identity: _,
             primary,
@@ -391,9 +353,6 @@ impl ColumnBatchCandidate<'_> {
             backup: _,
             defrag_policy: _,
             growth_policy: _,
-            retired_bytes: _,
-            peak_bytes: _,
-            buffer_creations: _,
         } = candidate;
         let old_primary = std::mem::replace(&mut pool.primary, primary);
         let old_capacity = pool.capacity;
@@ -405,15 +364,11 @@ impl ColumnBatchCandidate<'_> {
         pool.allocation_epoch_counter = allocation_epoch_counter;
         pool.layout_generation = layout_generation;
 
+        // A superseded slab retires in the ledger when it drops.
         if old_capacity == capacity {
-            if let Some(superseded) = pool.backup.replace(old_primary) {
-                pool.note_buffer_retired(superseded.size());
-            }
+            pool.backup = Some(old_primary);
         } else {
-            let mut released = old_primary.size();
-            released =
-                released.saturating_add(pool.backup.take().map_or(0, |buffer| buffer.size()));
-            pool.note_buffer_retired(released);
+            pool.backup = None;
         }
     }
 }
@@ -486,7 +441,6 @@ impl Drop for ColumnUpsert<'_> {
                 self.pool.backup = Some(candidate);
             } else {
                 self.pool.backup = old_backup.take();
-                self.pool.note_buffer_retired(candidate.size());
             }
         }
     }
@@ -496,7 +450,6 @@ impl Drop for ColumnUpsert<'_> {
 pub(crate) struct ColumnBatchUpsert<'a> {
     pub(super) pool: &'a mut ColumnPool,
     pub(super) candidate: ColumnPool,
-    pub(super) abandon: CandidateAbandon,
     pub(super) handles: [ColumnHandle; 4],
 }
 
@@ -509,10 +462,8 @@ impl ColumnBatchUpsert<'_> {
         let Self {
             pool,
             candidate,
-            mut abandon,
             handles,
         } = self;
-        abandon.committed = true;
         let ColumnPool {
             identity: _,
             primary,
@@ -529,9 +480,6 @@ impl ColumnBatchUpsert<'_> {
             backup: _,
             defrag_policy: _,
             growth_policy: _,
-            retired_bytes: _,
-            peak_bytes: _,
-            buffer_creations: _,
         } = candidate;
         let old_primary = std::mem::replace(&mut pool.primary, primary);
         pool.slots = slots;
@@ -540,9 +488,8 @@ impl ColumnBatchUpsert<'_> {
         pool.allocation_epochs = allocation_epochs;
         pool.allocation_epoch_counter = allocation_epoch_counter;
         pool.layout_generation = layout_generation;
-        if let Some(superseded) = pool.backup.replace(old_primary) {
-            pool.note_buffer_retired(superseded.size());
-        }
+        // The superseded backup retires in the ledger when it drops.
+        pool.backup = Some(old_primary);
         handles
     }
 }
@@ -727,23 +674,24 @@ impl ColumnPool {
                     limit: ceiling.min(capacity_after),
                 });
             }
-            if let Some(budget) = ctx.budget {
-                let peak = budget
-                    .external_bytes
-                    .checked_add(self.gpu_bytes())
-                    .and_then(|bytes| bytes.checked_add(self.retired_bytes()))
-                    .and_then(|bytes| bytes.checked_add(total))
+            if let Some(limit) = ctx.ledger.budget() {
+                // The ledger already holds the live slab and every retired
+                // buffer; the staging and the candidate slab come on top.
+                let peak = ctx
+                    .ledger
+                    .total_bytes()
+                    .checked_add(total)
                     .and_then(|bytes| bytes.checked_add(capacity_after))
                     .ok_or(AllocError::BudgetExceeded {
                         resource: "streamed promotion transition",
                         requested: u64::MAX,
-                        limit: budget.ceiling_bytes,
+                        limit,
                     })?;
-                if peak > budget.ceiling_bytes {
+                if peak > limit {
                     return Err(AllocError::BudgetExceeded {
                         resource: "streamed promotion transition",
                         requested: peak,
-                        limit: budget.ceiling_bytes,
+                        limit,
                     });
                 }
             }
@@ -758,7 +706,7 @@ impl ColumnPool {
             .ok_or(AllocError::CounterExhausted {
                 counter: "allocation epoch",
             })?;
-        let (staging, staged) = stage_streamed_columns(ctx.device, columns, total)?;
+        let (staging, staged) = stage_streamed_columns(ctx.device, ctx.ledger, columns, total)?;
 
         if in_place {
             self.slots.try_reserve(columns.len()).map_err(|error| {
@@ -804,8 +752,6 @@ impl ColumnPool {
             ctx.queue.submit(std::iter::once(encoder.finish()));
             let undo = reservation.into_undo();
             self.allocation_epoch_counter = last_epoch;
-            self.note_buffer_created(total);
-            self.note_buffer_retired(total);
             return Ok(StreamedColumnPromotion::InPlace(ColumnBatchInsert {
                 pool: self,
                 rollback: Some(BatchInsertRollback {
@@ -923,6 +869,7 @@ impl ColumnPool {
 
         let primary = create_buffer_checked(
             ctx.device,
+            ctx.ledger,
             &BufferDescriptor {
                 label: Some("figgy streamed promotion candidate"),
                 size: capacity_after,
@@ -952,9 +899,6 @@ impl ColumnPool {
         }
         encoder.copy_buffer_to_buffer(&staging, 0, &primary, promoted_offset, total);
         ctx.queue.submit(std::iter::once(encoder.finish()));
-        self.note_buffer_created(total);
-        self.note_buffer_created(total.saturating_add(capacity_after));
-        self.note_buffer_retired(total);
 
         let candidate = ColumnPool {
             identity: self.identity.clone(),
@@ -971,15 +915,12 @@ impl ColumnPool {
             backup: None,
             defrag_policy: self.defrag_policy,
             growth_policy: self.growth_policy,
-            retired_bytes: Arc::default(),
-            peak_bytes: 0,
-            buffer_creations: 0,
         };
-        let abandon = CandidateAbandon::new(self, &candidate);
+        // Dropping an uncommitted candidate drops its tracked slab, which
+        // retires the bytes in the device ledger.
         Ok(StreamedColumnPromotion::Candidate(ColumnBatchCandidate {
             pool: self,
             candidate,
-            abandon,
         }))
     }
 
@@ -1095,6 +1036,7 @@ impl ColumnPool {
         for chunk in &chunks {
             staging.push(create_buffer_checked(
                 device,
+                ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy batch column staging"),
                     size: chunk.byte_size,
@@ -1205,12 +1147,9 @@ impl ColumnPool {
         // together is `total`; the creation count stays truthful by charging
         // once per buffer actually made (one, unless the ceiling forced a
         // split).
-        for _ in &staging {
-            self.note_buffer_created(total);
-        }
+        for _ in &staging {}
         // CPU handles are dropped on return, but the submitted copy keeps the
         // staging allocation device-resident until queue completion.
-        self.note_buffer_retired(total);
         Ok(ColumnBatchInsert {
             pool: self,
             rollback: Some(BatchInsertRollback {
@@ -1286,6 +1225,7 @@ impl ColumnPool {
             |byte_size| {
                 create_buffer_checked(
                     device,
+                    ctx.ledger,
                     &BufferDescriptor {
                         label: Some("figgy column upsert staging"),
                         size: byte_size,
@@ -1318,6 +1258,7 @@ impl ColumnPool {
             |byte_size| {
                 create_buffer_checked(
                     device,
+                    ctx.ledger,
                     &BufferDescriptor {
                         label: Some("figgy column upsert staging"),
                         size: byte_size,
@@ -1345,7 +1286,7 @@ impl ColumnPool {
             max: f64,
             min_positive: Option<f64>,
             uniform_step: Option<f64>,
-            staging: Buffer,
+            staging: TrackedBuffer,
         }
 
         for index in 0..columns.len() {
@@ -1394,6 +1335,7 @@ impl ColumnPool {
 
             let staging = create_buffer_checked(
                 device,
+                ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy demo column staging"),
                     size: byte_size,
@@ -1403,7 +1345,6 @@ impl ColumnPool {
                 "demo column staging buffer",
             )?;
             staged_bytes = staged_bytes.saturating_add(byte_size);
-            self.note_buffer_created(staged_bytes);
             let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, |dst| {
                 write_scalar_source_as_pairs(source, dst)
             })?;
@@ -1567,6 +1508,7 @@ impl ColumnPool {
 
         let primary = create_buffer_checked(
             device,
+            ctx.ledger,
             &BufferDescriptor {
                 label: Some("figgy demo column pool candidate"),
                 size: self.capacity,
@@ -1578,7 +1520,6 @@ impl ColumnPool {
             },
             "demo column pool candidate",
         )?;
-        self.note_buffer_created(self.capacity.saturating_add(staged_bytes));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("figgy demo column batch"),
         });
@@ -1604,7 +1545,6 @@ impl ColumnPool {
             );
         }
         queue.submit(std::iter::once(encoder.finish()));
-        self.note_buffer_retired(staged_bytes);
 
         let handles: [ColumnHandle; 4] = handles.try_into().map_err(|_| AllocError::Internal {
             invariant: "demo batch always prepares exactly four handles",
@@ -1624,18 +1564,12 @@ impl ColumnPool {
             backup: None,
             defrag_policy: self.defrag_policy,
             growth_policy: self.growth_policy,
-            // The candidate is a shell that only carries the new buffer and
-            // layout across to `commit`. Its allocations are charged to the
-            // real pool at the creation site, so the shell meters nothing.
-            retired_bytes: Arc::default(),
-            peak_bytes: 0,
-            buffer_creations: 0,
         };
-        let abandon = CandidateAbandon::new(self, &candidate);
+        // The candidate carries the new tracked slab and layout across to
+        // `commit`; dropping it uncommitted retires the slab in the ledger.
         Ok(ColumnBatchUpsert {
             pool: self,
             candidate,
-            abandon,
             handles,
         })
     }
@@ -1645,7 +1579,7 @@ impl ColumnPool {
         input: ColumnInputMeta,
         ctx: GpuAllocCtx<'_>,
         write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
-        create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
+        create_staging: impl FnOnce(u64) -> Result<TrackedBuffer, AllocError>,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
@@ -1693,7 +1627,6 @@ impl ColumnPool {
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
-        self.note_buffer_created(byte_size);
         let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
         let min_positive = stats.min_positive;
 
@@ -1770,6 +1703,7 @@ impl ColumnPool {
                 let fresh_candidate = if self.backup.is_none() {
                     Some(create_buffer_checked(
                         device,
+                        ctx.ledger,
                         &BufferDescriptor {
                             label: Some("figgy column pool atomic upsert candidate"),
                             size: self.capacity,
@@ -1784,9 +1718,7 @@ impl ColumnPool {
                 } else {
                     None
                 };
-                if fresh_candidate.is_some() {
-                    self.note_buffer_created(self.capacity.saturating_add(byte_size));
-                }
+                if fresh_candidate.is_some() {}
                 let candidate = fresh_candidate.as_ref().or(self.backup.as_ref()).ok_or(
                     AllocError::Internal {
                         invariant: "atomic upsert candidate was prepared",
@@ -1867,7 +1799,6 @@ impl ColumnPool {
         // rollback boundary.  Every Result-returning and allocating operation
         // is complete; only ownership moves follow this submission.
         queue.submit(std::iter::once(upload));
-        self.note_buffer_retired(byte_size);
 
         let buffer_rollback = match target {
             PreparedUpsertTarget::InPlace => UpsertBufferRollback::InPlace,
@@ -1975,6 +1906,7 @@ impl ColumnPool {
         self.try_add_column_pairs_with(input, ctx, write_pairs, |byte_size| {
             create_buffer_checked(
                 device,
+                ctx.ledger,
                 &BufferDescriptor {
                     label: Some("figgy column staging"),
                     size: byte_size,
@@ -1991,7 +1923,7 @@ impl ColumnPool {
         input: ColumnInputMeta,
         ctx: GpuAllocCtx<'_>,
         write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
-        create_staging: impl FnOnce(u64) -> Result<Buffer, AllocError>,
+        create_staging: impl FnOnce(u64) -> Result<TrackedBuffer, AllocError>,
     ) -> Result<ColumnHandle, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
@@ -2074,8 +2006,6 @@ impl ColumnPool {
         // Charged here rather than at the `create_staging` call because the
         // reservation borrows the free list until it commits. `staging` is
         // still alive at this point, so the peak it contributes to is real.
-        self.note_buffer_created(byte_size);
-        self.note_buffer_retired(byte_size);
         Ok(handle)
     }
 

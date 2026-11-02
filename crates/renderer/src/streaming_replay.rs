@@ -112,13 +112,11 @@ impl StreamSurface {
         clear: wgpu::Color,
         mut background: impl FnMut(&mut wgpu::RenderPass<'_>),
         budget: u64,
-        pool_bytes: u64,
     ) -> Result<(), StreamSurfaceError> {
         let bytes = replay_bytes(self.spec)?;
         if ledger
             .total_bytes()
-            .checked_add(pool_bytes)
-            .and_then(|n| n.checked_add(bytes))
+            .checked_add(bytes)
             .filter(|n| *n <= budget)
             .is_none()
         {

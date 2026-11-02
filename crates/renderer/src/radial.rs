@@ -2,9 +2,7 @@
 //! Resident categorical charts with analytic sector surfaces and procedural
 //! materials. No Cartesian columns, auto-fit jobs, or stream replay are involved.
 //! `prepare` returns an immutable frame; repeated identical snapshots reuse it.
-use crate::gpu_memory::{
-    GpuLedger, GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture,
-};
+use crate::gpu_memory::{GpuMemoryUsage, GpuResourceKind, TrackedBuffer, TrackedTexture};
 use crate::{RasterImage, RendererDevice};
 pub use model::radial::*;
 use std::sync::Arc;
@@ -123,7 +121,6 @@ const RADIAL_PICK_RESULT_BYTES: u64 = std::mem::size_of::<RadialPickResultGpu>()
 pub struct RadialFrame {
     decorations: crate::HitMap<RadialChart>,
     gpu: RendererDevice,
-    ledger: Arc<GpuLedger>,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
@@ -335,7 +332,7 @@ impl RadialFrame {
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         })?;
-        let query = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, query);
+        let query = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::PickScratch, query);
         // gpu-alloc: PickScratch
         let result = gpu_created(device, "radial pick result", || {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -345,7 +342,7 @@ impl RadialFrame {
                 mapped_at_creation: false,
             })
         })?;
-        let result = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, result);
+        let result = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::PickScratch, result);
         // gpu-alloc: Readback
         let readback = gpu_created(device, "radial pick readback", || {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -355,7 +352,7 @@ impl RadialFrame {
                 mapped_at_creation: false,
             })
         })?;
-        let readback = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, readback);
+        let readback = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::Readback, readback);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("radial pick"),
             layout: &self.pick_layout,
@@ -501,8 +498,6 @@ pub struct RadialRenderer {
     pipeline: wgpu::RenderPipeline,
     pick_layout: wgpu::BindGroupLayout,
     pick_pipeline: wgpu::ComputePipeline,
-    ledger: Arc<GpuLedger>,
-    budget: u64,
     annotations_cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
     /// The dedicated annotation layer, drawn over the frame by its own pass.
     annotation_layer: crate::annotation::RadialAnnotationCache,
@@ -542,7 +537,8 @@ impl RadialRenderer {
     }
 
     /// Share the host device/queue. Supports RGBA8/BGRA8, linear or sRGB targets.
-    /// Starts with a separate 256 MiB resource budget, not the Cartesian ledger.
+    /// Charges the bundle's ledger and spends its budget, which every renderer
+    /// built from `gpu` shares (#160).
     pub fn new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, RadialError> {
         if !matches!(
             format,
@@ -715,9 +711,6 @@ impl RadialRenderer {
             pipeline,
             pick_layout,
             pick_pipeline,
-            // host-alloc: W1-a
-            ledger: Arc::new(GpuLedger::new()),
-            budget: 256 * 1024 * 1024,
             cached: None,
             annotations_cached: None,
             annotation_layer: crate::annotation::RadialAnnotationCache::new(format),
@@ -760,7 +753,7 @@ impl RadialRenderer {
         self.annotation_layer
             .prepare(
                 &self.gpu,
-                &self.ledger,
+                self.gpu.ledger(),
                 &chart.annotations,
                 space,
                 frame.size,
@@ -769,21 +762,33 @@ impl RadialRenderer {
             )
             .map_err(|error| RadialError::Gpu(error.to_string()))
     }
-    /// Accounted live resources plus resources awaiting submission completion.
+    /// Accounted live resources plus resources awaiting submission
+    /// completion, for every renderer built from this device bundle.
     pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
-        self.ledger.snapshot()
+        self.gpu.ledger().snapshot()
     }
-    /// Set the admission limit in bytes. Does not evict existing frames/resources.
-    pub fn set_memory_budget(&mut self, bytes: u64) {
-        self.budget = bytes;
+    /// The device bundle's memory budget, if any.
+    pub fn memory_budget(&self) -> Option<u64> {
+        self.gpu.ledger().budget()
+    }
+    /// Set the device bundle's memory budget, as
+    /// [`crate::Renderer::set_memory_budget`] does: `None` leaves device
+    /// limits as the only bound. Never evicts existing frames or resources.
+    /// Returns the current total when the new ceiling is already below it.
+    #[must_use = "a returned total means the new ceiling is already exceeded"]
+    pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
+        let ledger = self.gpu.ledger();
+        ledger.set_budget(budget);
+        let ceiling = budget?;
+        let current = ledger.total_bytes();
+        (current > ceiling).then_some(current)
     }
     fn admit(&self, extra: u64) -> Result<(), RadialError> {
-        let needed = self.ledger.total_bytes().saturating_add(extra);
-        if needed > self.budget {
-            Err(RadialError::Budget {
-                needed,
-                limit: self.budget,
-            })
+        let ledger = self.gpu.ledger();
+        let needed = ledger.total_bytes().saturating_add(extra);
+        let limit = ledger.budget_limit();
+        if needed > limit {
+            Err(RadialError::Budget { needed, limit })
         } else {
             Ok(())
         }
@@ -853,8 +858,11 @@ impl RadialRenderer {
                 "radial label texture",
             )
             .map_err(radial_gpu_error)?;
-            let annotations =
-                TrackedTexture::new(&self.ledger, GpuResourceKind::PanelTexture, annotations);
+            let annotations = TrackedTexture::new(
+                self.gpu.ledger(),
+                GpuResourceKind::PanelTexture,
+                annotations,
+            );
             self.gpu.queue().write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &annotations,
@@ -881,7 +889,6 @@ impl RadialRenderer {
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
             gpu: self.gpu.clone(),
-            ledger: Arc::clone(&self.ledger),
             size: (width, height),
             pipeline: self.pipeline.clone(),
             bind_group,
@@ -943,7 +950,7 @@ impl RadialRenderer {
             "radial export label texture",
         )
         .map_err(radial_gpu_error)?;
-        let labels = TrackedTexture::new(&self.ledger, GpuResourceKind::PanelTexture, labels);
+        let labels = TrackedTexture::new(self.gpu.ledger(), GpuResourceKind::PanelTexture, labels);
         let (_uniform, _sectors, bind_group) =
             self.bind_frame(chart, &l, (width, height), &labels)?;
         let image = self
@@ -1076,7 +1083,7 @@ impl RadialRenderer {
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         })?;
-        let uniform = TrackedBuffer::new(&self.ledger, GpuResourceKind::Uniform, uniform);
+        let uniform = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::Uniform, uniform);
         // gpu-alloc: FieldTable
         let sectors = gpu_created(device, "radial sectors", || {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1085,7 +1092,7 @@ impl RadialRenderer {
                 usage: wgpu::BufferUsages::STORAGE,
             })
         })?;
-        let sectors = TrackedBuffer::new(&self.ledger, GpuResourceKind::FieldTable, sectors);
+        let sectors = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::FieldTable, sectors);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("radial frame"),
             layout: &self.layout,
@@ -1119,29 +1126,7 @@ impl RadialRenderer {
     /// Call after submitting/discarding ALL recorded frames, including old
     /// snapshots. Completion credits are asynchronous, as in Renderer.
     pub fn end_frame(&self) {
-        let batch = self.ledger.take_retirement();
-        if batch.is_empty() {
-            return;
-        }
-        let ledger = Arc::clone(&self.ledger);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.gpu
-            .queue()
-            .on_submitted_work_done(move || ledger.complete_retirement(batch));
-        #[cfg(target_arch = "wasm32")]
-        {
-            let (tx, rx) = futures_channel::oneshot::channel();
-            self.gpu.queue().on_submitted_work_done(move || {
-                if tx.send(()).is_err() {
-                    // receiver dropped: the waiting task was cancelled
-                }
-            });
-            wasm_bindgen_futures::spawn_local(async move {
-                if rx.await.is_ok() {
-                    ledger.complete_retirement(batch);
-                }
-            });
-        }
+        crate::renderer::retire_on_completion(self.gpu.ledger(), self.gpu.queue());
     }
     /// Render at the requested resolution and read back straight-alpha RGBA8.
     /// Available on native and WASM; includes the model's current hover/selection.
@@ -1198,7 +1183,7 @@ impl RadialRenderer {
             "radial export target",
         )
         .map_err(radial_gpu_error)?;
-        let target = TrackedTexture::new(&self.ledger, GpuResourceKind::ExportTarget, target);
+        let target = TrackedTexture::new(self.gpu.ledger(), GpuResourceKind::ExportTarget, target);
         // gpu-alloc: Readback
         let buffer = gpu_created(device, "radial readback", || {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -1208,7 +1193,7 @@ impl RadialRenderer {
                 mapped_at_creation: false,
             })
         })?;
-        let buffer = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, buffer);
+        let buffer = TrackedBuffer::new(self.gpu.ledger(), GpuResourceKind::Readback, buffer);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let view = target.create_view(&Default::default());

@@ -29,7 +29,7 @@
 //!    snapshot does not reserve bytes for a future allocation.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Number of rows in a [`GpuMemoryUsage`] report.
 pub const GPU_RESOURCE_KIND_COUNT: usize = 14;
@@ -133,8 +133,9 @@ impl ResidentAdmission {
 /// subsystem that caused it instead of a single opaque total.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum GpuResourceKind {
-    /// The column pool's `primary` (+ `backup` while one exists). Reported by
-    /// the pool itself, not charged through the ledger.
+    /// The column pool's slab and defragmentation backup, its growth
+    /// candidates and its upload staging, charged to the ledger as the pool
+    /// creates them (#160).
     ColumnPool,
     /// Per-panel grid and decoration textures.
     PanelTexture,
@@ -347,7 +348,8 @@ impl RetirementBatch {
     }
 }
 
-/// Running GPU byte counts, shared by every renderer subsystem.
+/// Running GPU byte counts and the memory budget of one device bundle
+/// ([`crate::RendererDevice`]), shared by every renderer built from it (#160).
 ///
 /// Counters remain atomic. Final tracked owners queue physical resources for
 /// destruction at the host's submission/completion boundary. Ownership crosses
@@ -360,6 +362,12 @@ pub struct GpuLedger {
     retired: [RetiredBytes; GPU_RESOURCE_KIND_COUNT],
     creations: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
     peak_bytes: AtomicU64,
+    /// The host's ceiling for [`Self::total_bytes`], read only while
+    /// `budget_set` is true. Two atomics rather than a sentinel, so a budget
+    /// of `u64::MAX` bytes stays distinct from no budget: resident admission
+    /// refuses a promotion when none is set.
+    budget: AtomicU64,
+    budget_set: AtomicBool,
 }
 
 /// Fixed-size, generation-free accounting for pending and submitted retirements.
@@ -426,6 +434,36 @@ impl GpuLedger {
             retired: std::array::from_fn(|_| RetiredBytes::default()),
             creations: std::array::from_fn(|_| AtomicU64::new(0)),
             peak_bytes: AtomicU64::new(0),
+            budget: AtomicU64::new(u64::MAX),
+            budget_set: AtomicBool::new(false),
+        }
+    }
+
+    /// The device's memory budget: `None` when device limits are the only
+    /// bound.
+    pub fn budget(&self) -> Option<u64> {
+        // Acquire pairs with the Release in `set_budget`, so a set flag is
+        // never read beside the value it replaced.
+        self.budget_set
+            .load(Ordering::Acquire)
+            .then(|| self.budget.load(Ordering::Relaxed))
+    }
+
+    /// The device's memory budget as the bound a check compares against:
+    /// `u64::MAX` when there is none.
+    pub fn budget_limit(&self) -> u64 {
+        self.budget().unwrap_or(u64::MAX)
+    }
+
+    /// Set the device's memory budget for every renderer that shares this
+    /// ledger. Never evicts what is held.
+    pub fn set_budget(&self, budget: Option<u64>) {
+        match budget {
+            Some(bytes) => {
+                self.budget.store(bytes, Ordering::Relaxed);
+                self.budget_set.store(true, Ordering::Release);
+            }
+            None => self.budget_set.store(false, Ordering::Release),
         }
     }
 
@@ -569,31 +607,6 @@ pub struct GpuMemoryUsage {
 }
 
 impl GpuMemoryUsage {
-    /// Overwrite one row.
-    ///
-    /// The renderer grafts the [`GpuResourceKind::ColumnPool`] row in from the
-    /// pool's own capacity: the pool is the authority on its bytes, and
-    /// charging them twice (once at its `create_buffer`, once from capacity)
-    /// would double-count exactly the term the memory-scaling curve measures.
-    pub fn with_kind(mut self, kind: GpuResourceKind, live: u64, retired: u64) -> Self {
-        let i = kind.index();
-        self.live[i] = live;
-        self.retired[i] = retired;
-        self
-    }
-
-    /// Add `count` creations to one row (the pool reports its own).
-    pub fn with_creations(mut self, kind: GpuResourceKind, count: u64) -> Self {
-        self.creations[kind.index()] = count;
-        self
-    }
-
-    /// Raise the reported peak to at least `bytes`.
-    pub fn with_peak_at_least(mut self, bytes: u64) -> Self {
-        self.peak_bytes = self.peak_bytes.max(bytes);
-        self
-    }
-
     pub fn live_bytes(&self) -> u64 {
         self.live.iter().fold(0u64, |a, b| a.saturating_add(*b))
     }
@@ -621,11 +634,6 @@ impl GpuMemoryUsage {
     }
 
     /// Everything that is not the pool.
-    ///
-    /// This is the value that rides into the pool as
-    /// `GpuAllocCtx::external_bytes`: the pool adds its own current capacity
-    /// and the capacity it is about to allocate, so counting pool bytes here
-    /// too would charge them twice.
     pub fn external_bytes(&self) -> u64 {
         self.total_bytes().saturating_sub(self.pool_bytes())
     }
@@ -1330,10 +1338,11 @@ mod tests {
 
     #[test]
     fn external_bytes_exclude_the_pool_row() {
-        let usage = GpuMemoryUsage::default()
-            .with_kind(GpuResourceKind::ColumnPool, 8 * 1024 * 1024, 0)
-            .with_kind(GpuResourceKind::PanelTexture, 2 * 1024 * 1024, 0)
-            .with_kind(GpuResourceKind::MsaaTarget, 1024 * 1024, 0);
+        let ledger = GpuLedger::new();
+        ledger.record_alloc(GpuResourceKind::ColumnPool, 8 * 1024 * 1024);
+        ledger.record_alloc(GpuResourceKind::PanelTexture, 2 * 1024 * 1024);
+        ledger.record_alloc(GpuResourceKind::MsaaTarget, 1024 * 1024);
+        let usage = ledger.snapshot();
         assert_eq!(usage.pool_bytes(), 8 * 1024 * 1024);
         assert_eq!(usage.external_bytes(), 3 * 1024 * 1024);
         assert_eq!(usage.total_bytes(), 11 * 1024 * 1024);

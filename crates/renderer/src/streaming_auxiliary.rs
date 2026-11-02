@@ -650,11 +650,11 @@ impl Renderer {
             .total_bytes()
             .checked_add(bytes)
             .ok_or_else(|| StreamRequestError::from(StreamError::Overflow).into_figgy())?;
-        if total > self.memory_budget.unwrap_or(u64::MAX) {
+        if total > self.gpu_ledger.budget_limit() {
             return Err(FiggyError::GpuResourceLimit {
                 resource: "stream auxiliary GPU memory",
                 requested: total,
-                limit: self.memory_budget.unwrap_or(u64::MAX),
+                limit: self.gpu_ledger.budget_limit(),
             });
         }
         Ok(())
@@ -1127,7 +1127,7 @@ impl Renderer {
         tally.add(untracked_style_bytes);
         let styles_charge =
             crate::gpu_memory::shared_charge(tally, &self.gpu_ledger, GpuResourceKind::Uniform);
-        if self.gpu_memory_usage().total_bytes() > self.memory_budget.unwrap_or(u64::MAX) {
+        if self.gpu_memory_usage().total_bytes() > self.gpu_ledger.budget_limit() {
             return Err(StreamError::TooLarge.into());
         }
         let mut pipelines = create_target_pipelines(
@@ -1185,11 +1185,7 @@ impl Renderer {
             &self.gpu_ledger,
             &transfer,
             surface_spec,
-            self.memory_budget.unwrap_or(u64::MAX),
-            self.pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?,
+            self.gpu_ledger.budget_limit(),
         )?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
             requested_config: config.clone(),
@@ -1606,8 +1602,8 @@ impl Renderer {
         let padded = row.div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
             * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let remaining = self
-            .memory_budget
-            .unwrap_or(u64::MAX)
+            .gpu_ledger
+            .budget_limit()
             .saturating_sub(self.gpu_memory_usage().total_bytes());
         let rows =
             (self.caps.max_buffer_size.min(remaining) / padded).min(u64::from(height)) as u32;

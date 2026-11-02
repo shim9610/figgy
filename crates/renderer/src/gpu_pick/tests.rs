@@ -561,6 +561,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
 
 #[test]
 fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -625,26 +626,26 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
         config.bottom_x.inverted = logarithmic;
         config.left_y.inverted = logarithmic;
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             4096,
         )
         .unwrap();
         pool.add_hilo_column(
             "x".into(),
             &f64_column(xs.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         pool.add_hilo_column(
             "y".into(),
             &f64_column(ys.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         pool.add_column(
             "style".into(),
             &f32_column(style.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         for scatter in [false, true] {
@@ -891,24 +892,25 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
 
 #[test]
 fn prepared_registry_drop_preserves_exact_state() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "transition-drop-x".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "transition-drop-y".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -943,24 +945,25 @@ fn prepared_registry_drop_preserves_exact_state() {
 
 #[test]
 fn source_identity_transition_reuses_every_gpu_resource() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "identity-x".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "identity-y".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -999,25 +1002,26 @@ fn source_identity_transition_reuses_every_gpu_resource() {
 
 #[test]
 fn foreign_pool_with_matching_numeric_stamps_is_rejected() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let make_pool = || {
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
         pool.add_column(
             "foreign-x".into(),
             &f32_column(vec![5.0]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         pool.add_column(
             "foreign-y".into(),
             &f32_column(vec![5.0]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         pool
@@ -1061,24 +1065,25 @@ fn foreign_pool_with_matching_numeric_stamps_is_rejected() {
 
 #[test]
 fn reduce_resources_grow_only_when_live_count_exceeds_capacity() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "grow-x".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "grow-y".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -1130,6 +1135,7 @@ fn reduce_resources_grow_only_when_live_count_exceeds_capacity() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1144,7 +1150,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
     ]);
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -1156,7 +1162,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
         pool.add_column(
             id.into(),
             &f32_column(values.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -1301,6 +1307,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1311,7 +1318,7 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
     let cpu_columns = CpuColumns::new(&[("size-x", &xs), ("size-y", &ys), ("size-s", &sizes)]);
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -1323,7 +1330,7 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
         pool.add_column(
             id.into(),
             &f32_column(values.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -1412,6 +1419,7 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
 
 #[test]
 fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1425,7 +1433,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
     let line_y = [2.0, 2.0];
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -1441,7 +1449,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
         pool.add_column(
             id.into(),
             &f32_column(values.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -1631,24 +1639,25 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
 
 #[test]
 fn invalid_display_scales_fail_closed_without_gpu_submission() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "invalid-scale-x".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "invalid-scale-y".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -1669,6 +1678,7 @@ fn invalid_display_scales_fail_closed_without_gpu_submission() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1686,20 +1696,20 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
     )];
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "parity-lx".into(),
         &f32_column(xs),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "parity-ly".into(),
         &f32_column(ys),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -1745,6 +1755,7 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1764,20 +1775,20 @@ fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
     )];
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "gate-line-x".into(),
         &f32_column(xs.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "gate-line-y".into(),
         &f32_column(ys.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -1813,6 +1824,7 @@ fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
 
 #[test]
 fn two_dimensional_gate_dispatch_returns_the_original_index() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -1830,20 +1842,20 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
         (1.0 - ys[target_index] / axis_max) * 100.0,
     ];
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         2 * 1024 * 1024,
     )
     .unwrap();
     pool.add_column(
         "gate-2d-x".into(),
         &f32_column(xs),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "gate-2d-y".into(),
         &f32_column(ys),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -1917,25 +1929,26 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
 
 #[test]
 fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let point_count = GPU_PICK_DIRECT_SCAN_POINTS as usize + 1;
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         2 * 1024 * 1024,
     )
     .unwrap();
     pool.add_column(
         "overlap-x".into(),
         &f32_column((0..point_count).map(|index| index as f32).collect()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "overlap-y".into(),
         &f32_column(vec![5.0; point_count]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
 
@@ -2013,6 +2026,7 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -2041,20 +2055,20 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
     )];
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "parity-log-x".into(),
         &f32_column(xs.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "parity-log-y".into(),
         &f32_column(ys.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -2127,6 +2141,7 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     use crate::data_config::LineInterpolation;
 
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -2140,20 +2155,20 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
         ("parity-step-y", ys.as_slice()),
     ]);
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "parity-step-x".into(),
         &f32_column(xs.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "parity-step-y".into(),
         &f32_column(ys.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
 
@@ -2322,6 +2337,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
 #[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -2381,7 +2397,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
     );
 
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -2394,7 +2410,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
         pool.add_column(
             id.into(),
             &f32_column(values.to_vec()),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -2481,6 +2497,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
 
 #[test]
 fn exact_gpu_f64_residual_selects_point_index() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
@@ -2494,20 +2511,20 @@ fn exact_gpu_f64_residual_selects_point_index() {
 
     let config = parity_config(100, 100, (epoch, epoch + 1.0), (0.0, 1.0));
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_hilo_column(
         "parity-f64-x".into(),
         &f64_column(xs.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_hilo_column(
         "parity-f64-y".into(),
         &f64_column(ys.to_vec()),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let mut engine = GpuPickEngine::new(device, queue).unwrap();
@@ -2548,24 +2565,25 @@ fn exact_gpu_f64_residual_selects_point_index() {
 
 #[test]
 fn registry_transition_failure_at_each_build_position_preserves_state_and_queries() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "pick-batch-x".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "pick-batch-y".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
 
@@ -2611,11 +2629,12 @@ fn registry_transition_failure_at_each_build_position_preserves_state_and_querie
 
 #[test]
 fn registry_transition_rejects_foreign_pool_before_installing_replacement() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut old_pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -2629,12 +2648,12 @@ fn registry_transition_rejects_foreign_pool_before_installing_replacement() {
             .add_column(
                 id.into(),
                 &f32_column(vec![value]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
     }
     let mut provisional_pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -2647,7 +2666,7 @@ fn registry_transition_rejects_foreign_pool_before_installing_replacement() {
             .add_column(
                 id.into(),
                 &f32_column(vec![value]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
     }
@@ -2689,11 +2708,12 @@ fn registry_transition_rejects_foreign_pool_before_installing_replacement() {
 
 #[test]
 fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut old_pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -2701,7 +2721,7 @@ fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
         .add_column(
             "pick-success-layout-prefix".into(),
             &f32_column(vec![0.0]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     for index in 0..5 {
@@ -2709,14 +2729,14 @@ fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
             .add_column(
                 format!("pick-success-x{index}"),
                 &f32_column(vec![index as f32 + 1.0]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         old_pool
             .add_column(
                 format!("pick-success-y{index}"),
                 &f32_column(vec![5.0]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
     }
@@ -2755,21 +2775,23 @@ fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
     );
     assert!(
         old_pool
-            .defragment(crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue))
+            .defragment(crate::data_render::GpuAllocCtx::new(
+                &device, &queue, &ledger
+            ))
             .unwrap()
     );
     old_pool
         .upsert_column(
             "pick-success-x0".into(),
             &f32_column(vec![1.5]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     old_pool
         .upsert_column(
             "pick-success-x2".into(),
             &f32_column(vec![3.5]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
 
@@ -2907,24 +2929,25 @@ fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
 
 #[test]
 fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "pick-ix".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "pick-iy".into(),
         &f32_column(vec![5.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
 
@@ -3003,11 +3026,12 @@ fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
 
 #[test]
 fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
@@ -3022,7 +3046,7 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
         pool.add_column(
             id.into(),
             &f32_column(values),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -3085,18 +3109,19 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
 
 #[test]
 fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         64 * 1024,
     )
     .unwrap();
     pool.add_column(
         "pick-hole".into(),
         &f32_column(vec![0.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     for (id, values) in [
@@ -3107,7 +3132,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
         pool.add_column(
             id.into(),
             &f32_column(values),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -3176,8 +3201,10 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
 
     assert!(pool.remove_column("pick-hole").unwrap());
     assert!(
-        pool.defragment(crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap()
+        pool.defragment(crate::data_render::GpuAllocCtx::new(
+            &device, &queue, &ledger
+        ))
+        .unwrap()
     );
     assert!(matches!(
         engine.pick(&pool, test_query([40.0, 40.0])),
@@ -3208,7 +3235,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
         .add_column(
             "pick-rstyle".into(),
             &f32_column(vec![1.0]),
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(new_style_handle.offset, old_style_handle.offset);
@@ -3338,11 +3365,12 @@ fn style_cross_product_extent_is_conservative() {
 
 #[test]
 fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
     let mut pool = ColumnPool::new(
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         4 * 256,
     )
     .unwrap();
@@ -3352,20 +3380,20 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
         .add_column(
             "epoch-pick-x".into(),
             &values,
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     let original_x_epoch = pool.allocation_epoch("epoch-pick-x").unwrap();
     pool.add_column(
         "epoch-pick-y".into(),
         &values,
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "epoch-pick-unrelated".into(),
         &f32_column(vec![0.0]),
-        crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+        crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
 
@@ -3400,7 +3428,7 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
         .add_column(
             "epoch-pick-x".into(),
             &values,
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(replacement_x.offset, original_x.offset);
@@ -3708,10 +3736,11 @@ fn pick_shader_compile_timings() {
 /// that shrinks and one that grows between them.
 #[test]
 fn a_pick_readback_holds_one_candidate_per_clamped_member() {
+    let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;
     };
-    let ctx = || crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger);
     let mut pool = ColumnPool::new(ctx(), 1024 * 1024).unwrap();
     pool.add_column(
         "readback-x".into(),

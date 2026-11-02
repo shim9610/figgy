@@ -27,12 +27,12 @@ fn equal_ceilings_are_that_value() {
 
 #[test]
 fn resident_batch_capacity_plan_is_pure_and_obeys_fragmentation_policy() {
-    let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(3 * ALIGN) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
     pool.growth_policy = GrowthPolicy::Fixed;
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     for id in ["a", "b", "c"] {
         pool.add_column(id.into(), &col_f64(vec![1.0]), ctx)
             .unwrap();
@@ -67,10 +67,10 @@ fn resident_batch_capacity_plan_is_pure_and_obeys_fragmentation_policy() {
 
 #[test]
 fn growth_preserves_every_byte_and_republishes_capacity() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let values = vec![1.5_f64, -2.5, 3.0, 0.25];
     pool.add_column("x".into(), &col_f64(values.clone()), ctx)
         .expect("first column fits");
@@ -90,10 +90,10 @@ fn growth_preserves_every_byte_and_republishes_capacity() {
 
 #[test]
 fn growth_invalidates_old_handles_and_requires_refetch() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let stale = pool
         .add_column("x".into(), &col_f64(vec![1.0, 2.0]), ctx)
         .expect("first column fits");
@@ -117,10 +117,10 @@ fn growth_invalidates_old_handles_and_requires_refetch() {
 
 #[test]
 fn growth_releases_the_old_buffer_instead_of_keeping_it_as_backup() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     // A backup only appears when a defrag actually relocates, so leave a
     // gap first: an already-packed pool returns early without allocating.
     pool.add_column("a".into(), &col_f64(vec![1.0]), ctx)
@@ -143,29 +143,24 @@ fn growth_releases_the_old_buffer_instead_of_keeping_it_as_backup() {
 
 #[test]
 fn growth_beyond_the_budget_is_refused_and_leaves_the_pool_intact() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let unbudgeted = GpuAllocCtx::unbudgeted(&device, &queue);
-    pool.add_column("x".into(), &col_f64(vec![1.0, 2.0]), unbudgeted)
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
+    pool.add_column("x".into(), &col_f64(vec![1.0, 2.0]), ctx)
         .expect("first column fits");
-    let before = read_column_values(unbudgeted, &pool, pool.handle_for("x").expect("x present"));
+    let before = read_column_values(ctx, &pool, pool.handle_for("x").expect("x present"));
     let capacity_before = pool.capacity();
     let layout_before = pool.layout_generation();
 
-    // Peak is old + new; a budget just under that must refuse.
+    // Peak is everything the ledger holds (the old slab and the retired
+    // upload staging) plus the new slab; a budget just under that must
+    // refuse.
     let target = 8 * ALIGN;
-    let budget = capacity_before + target - 1;
-    let budgeted = GpuAllocCtx {
-        device: &device,
-        queue: &queue,
-        budget: Some(GpuBudget {
-            ceiling_bytes: budget,
-            external_bytes: 0,
-        }),
-    };
+    let budget = ledger.total_bytes() + target - 1;
+    ledger.set_budget(Some(budget));
     let error = pool
-        .grow_to(budgeted, target)
+        .grow_to(ctx, target)
         .expect_err("growth past the budget must be refused");
     match error {
         AllocError::BudgetExceeded {
@@ -183,81 +178,70 @@ fn growth_beyond_the_budget_is_refused_and_leaves_the_pool_intact() {
         "a refused growth must not advance the layout"
     );
     assert_eq!(
-        read_column_values(unbudgeted, &pool, pool.handle_for("x").expect("x present")),
+        read_column_values(ctx, &pool, pool.handle_for("x").expect("x present")),
         before,
         "data survives a refused growth"
     );
 }
 
 #[test]
-fn external_bytes_count_against_the_same_budget() {
-    let Some((device, queue, pool)) = mk_pool(2 * ALIGN) else {
+fn bytes_held_elsewhere_on_the_device_count_against_the_same_budget() {
+    let Some((device, queue, ledger, pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let target = 8 * ALIGN;
-    let peak = pool.capacity() + target;
-    // Exactly enough for the buffers alone...
-    let tight = GpuAllocCtx {
-        device: &device,
-        queue: &queue,
-        budget: Some(GpuBudget {
-            ceiling_bytes: peak,
-            external_bytes: 0,
-        }),
-    };
+    // Exactly enough for the slab and the new buffer alone...
+    ledger.set_budget(Some(pool.capacity() + target));
     assert!(
-        pool.plan_relayout_capacity(tight, target).is_ok(),
+        pool.plan_relayout_capacity(ctx, target).is_ok(),
         "peak equal to the budget is allowed"
     );
-    // ...but one byte held outside the pool tips it over.
-    let with_external = GpuAllocCtx {
-        device: &device,
-        queue: &queue,
-        budget: Some(GpuBudget {
-            ceiling_bytes: peak,
-            external_bytes: 1,
-        }),
-    };
+    // ...but one byte charged anywhere else on the device bundle (another
+    // renderer's resource, another pool) tips it over (#160).
+    ledger.record_alloc(GpuResourceKind::Uniform, 1);
     assert!(
-        pool.plan_relayout_capacity(with_external, target).is_err(),
+        pool.plan_relayout_capacity(ctx, target).is_err(),
         "bytes held outside the pool must count against the budget"
     );
 }
 
 #[test]
 fn pool_retirement_is_budgeted_until_its_exact_batch_completes() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     let target = 8 * ALIGN;
-    let ctx = GpuAllocCtx {
-        device: &device,
-        queue: &queue,
-        budget: Some(GpuBudget {
-            ceiling_bytes: pool.gpu_bytes() + target,
-            external_bytes: 0,
-        }),
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
+    ledger.set_budget(Some(pool.gpu_bytes() + target));
+    let retired = || {
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool)
     };
-    pool.note_buffer_retired(ALIGN);
-    let (counter, first) = pool.take_retirement();
-    assert_eq!(pool.retired_bytes(), ALIGN);
+    // A pool buffer released and handed to the queue's completion.
+    ledger.record_alloc(GpuResourceKind::ColumnPool, ALIGN);
+    ledger.record_retire(GpuResourceKind::ColumnPool, ALIGN);
+    let first = ledger.take_retirement();
+    assert_eq!(retired(), ALIGN);
     assert!(pool.plan_relayout_capacity(ctx, target).is_err());
-    pool.note_buffer_retired(2 * ALIGN);
-    counter.complete(first);
-    assert_eq!(pool.retired_bytes(), 2 * ALIGN);
+    ledger.record_alloc(GpuResourceKind::ColumnPool, 2 * ALIGN);
+    ledger.record_retire(GpuResourceKind::ColumnPool, 2 * ALIGN);
+    ledger.complete_retirement(first);
+    assert_eq!(retired(), 2 * ALIGN);
     assert!(pool.plan_relayout_capacity(ctx, target).is_err());
-    let (counter, second) = pool.take_retirement();
-    counter.complete(second);
-    assert_eq!(pool.retired_bytes(), 0);
+    let second = ledger.take_retirement();
+    ledger.complete_retirement(second);
+    assert_eq!(retired(), 0);
     assert!(pool.plan_relayout_capacity(ctx, target).is_ok());
 }
 
 #[test]
 fn dropping_a_growth_guard_restores_capacity_and_the_old_buffer() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.add_column("x".into(), &col_f64(vec![1.0, 2.0]), ctx)
         .expect("first column fits");
     let handle_before = pool.handle_for("x").expect("x present");
@@ -296,10 +280,10 @@ fn dropping_a_growth_guard_restores_capacity_and_the_old_buffer() {
 
 #[test]
 fn growth_beyond_the_device_ceiling_is_refused_and_leaves_the_pool_intact() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let handle = pool
         .add_column("keep".into(), &col_f64(vec![1.0, 2.0, 3.0]), ctx)
         .expect("first column fits");
@@ -338,10 +322,10 @@ fn growth_beyond_the_device_ceiling_is_refused_and_leaves_the_pool_intact() {
 
 #[test]
 fn growth_peak_is_the_old_and_new_buffers_and_settles_to_the_new_one() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.add_column("keep".into(), &col_f64(vec![1.0, 2.0]), ctx)
         .expect("first column fits");
     let before = pool.capacity();
@@ -350,7 +334,7 @@ fn growth_peak_is_the_old_and_new_buffers_and_settles_to_the_new_one() {
         before,
         "no backup yet, so the footprint is the slab"
     );
-    pool.reset_peak_bytes();
+    ledger.reset_peak();
 
     pool.grow_to(ctx, 8 * ALIGN)
         .expect("growth fits the device");
@@ -366,32 +350,36 @@ fn growth_peak_is_the_old_and_new_buffers_and_settles_to_the_new_one() {
         "the old buffer must be gone once the growth committed"
     );
     assert_eq!(
-        pool.peak_bytes(),
+        ledger.peak_bytes(),
         ALIGN + before + after,
         "peak must include submitted staging plus old and new slabs"
     );
+    let retired = || {
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool)
+    };
     assert_eq!(
-        pool.retired_bytes(),
+        retired(),
         ALIGN + before,
         "submitted staging and the old slab count until queue completion"
     );
-    let (retired, bytes) = pool.take_retirement();
-    queue.on_submitted_work_done(move || retired.complete(bytes));
+    crate::renderer::retire_on_completion(&ledger, &queue);
     device
         .poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: None,
         })
         .expect("retired pool copy completes");
-    assert_eq!(pool.retired_bytes(), 0);
+    assert_eq!(retired(), 0);
 }
 
 #[test]
 fn relayout_shrinks_without_changing_live_values() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let source = col_f64(vec![1.0, 2.0, 3.0]);
     pool.add_column("keep".into(), &source, ctx).unwrap();
     let stale = pool.handle_for("keep").unwrap();
@@ -407,29 +395,27 @@ fn relayout_shrinks_without_changing_live_values() {
         read_column_values(ctx, &pool, pool.handle_for("keep").unwrap()),
         source.data
     );
-    assert!(pool.retired_bytes() >= 8 * ALIGN);
+    assert!(
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool)
+            >= 8 * ALIGN
+    );
 }
 
 #[test]
 fn refused_shrink_preserves_primary_and_handle() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     let source = col_f64(vec![7.0, 8.0]);
     pool.add_column("keep".into(), &source, ctx).unwrap();
     let handle = pool.handle_for("keep").unwrap();
     let target = 2 * ALIGN;
-    let budgeted = GpuAllocCtx {
-        device: &device,
-        queue: &queue,
-        budget: Some(GpuBudget {
-            ceiling_bytes: pool.gpu_bytes() + target - 1,
-            external_bytes: 0,
-        }),
-    };
+    ledger.set_budget(Some(ledger.total_bytes() + target - 1));
     assert!(matches!(
-        pool.begin_relayout(budgeted, target),
+        pool.begin_relayout(ctx, target),
         Err(AllocError::BudgetExceeded { .. })
     ));
     assert_eq!(pool.capacity(), 8 * ALIGN);
@@ -439,10 +425,10 @@ fn refused_shrink_preserves_primary_and_handle() {
 
 #[test]
 fn same_capacity_relayout_is_the_existing_defragment() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.add_column("a".into(), &col_f64(vec![1.0]), ctx)
         .unwrap();
     pool.add_column("b".into(), &col_f64(vec![2.0]), ctx)
@@ -459,10 +445,10 @@ fn same_capacity_relayout_is_the_existing_defragment() {
 
 #[test]
 fn fixed_growth_policy_keeps_out_of_space_final() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     assert_eq!(
         pool.growth_policy,
         GrowthPolicy::OnAllocFailure,
@@ -484,10 +470,10 @@ fn fixed_growth_policy_keeps_out_of_space_final() {
 
 #[test]
 fn upsert_path_growth_makes_an_oversized_upload_fit() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.growth_policy = GrowthPolicy::OnAllocFailure;
     let n = (4 * ALIGN / COLUMN_VALUE_BYTES as u64) as usize;
     let values: Vec<f64> = (0..n).map(|i| i as f64).collect();
@@ -507,10 +493,10 @@ fn upsert_path_growth_makes_an_oversized_upload_fit() {
 
 #[test]
 fn upsert_growth_stays_out_of_the_way_when_packing_is_enough() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.growth_policy = GrowthPolicy::OnAllocFailure;
     let per_column = (ALIGN / COLUMN_VALUE_BYTES as u64) as usize;
     let block: Vec<f64> = (0..per_column).map(|i| i as f64).collect();
@@ -547,10 +533,10 @@ fn upsert_growth_stays_out_of_the_way_when_packing_is_enough() {
 
 #[test]
 fn growth_policy_on_alloc_failure_makes_the_upload_fit() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
     pool.growth_policy = GrowthPolicy::OnAllocFailure;
     let n = (4 * ALIGN / COLUMN_VALUE_BYTES as u64) as usize;
     let values: Vec<f64> = (0..n).map(|i| i as f64).collect();
@@ -573,11 +559,12 @@ fn pool_refuses_capacity_above_the_device_ceiling() {
         eprintln!("no GPU adapter; skipping device ceiling check");
         return;
     };
+    let ledger = Arc::new(GpuLedger::new());
     let ceiling = buffer_ceiling(&device);
     let over = ceiling
         .checked_add(ALIGN)
         .expect("ceiling + ALIGN fits u64");
-    let Err(error) = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), over) else {
+    let Err(error) = ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), over) else {
         panic!("capacity above the ceiling must be refused, not created");
     };
     match error {
@@ -803,12 +790,15 @@ fn scalar_source_expansion_accepts_empty_input() {
     assert_eq!(stats.min_positive, None);
 }
 
-fn mk_pool(cap: u64) -> Option<(wgpu::Device, wgpu::Queue, ColumnPool)> {
+/// A pool on the shared test device, charged to a ledger of its own: one
+/// device bundle per test, so no test reads another's bytes.
+fn mk_pool(cap: u64) -> Option<(wgpu::Device, wgpu::Queue, Arc<GpuLedger>, ColumnPool)> {
     // Shared device across the test binary — see `data_render::shared_device`.
     let (device, queue) = crate::data_render::shared_device()?;
-    let pool = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), cap)
+    let ledger = Arc::new(GpuLedger::new());
+    let pool = ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), cap)
         .expect("required GPU test: pool initialization failed");
-    Some((device, queue, pool))
+    Some((device, queue, ledger, pool))
 }
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
@@ -819,10 +809,10 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
 
 #[test]
 fn independently_created_pools_have_distinct_identities() {
-    let Some((device, queue, pool_a)) = mk_pool(ALIGN) else {
+    let Some((device, queue, ledger, pool_a)) = mk_pool(ALIGN) else {
         return;
     };
-    let pool_b = ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
+    let pool_b = ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), ALIGN).unwrap();
 
     let identity_a = pool_a.identity();
     assert_eq!(identity_a, identity_a.clone());
@@ -831,13 +821,17 @@ fn independently_created_pools_have_distinct_identities() {
 
 #[test]
 fn pool_identity_survives_upsert_drop_commit_and_defragmentation() {
-    let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(3 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     for id in ["identity-a", "identity-b", "identity-c"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     let identity = pool.identity();
 
@@ -847,7 +841,7 @@ fn pool_identity_survives_upsert_drop_commit_and_defragmentation() {
             .begin_upsert_column(
                 "identity-a".into(),
                 &replacement,
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert_eq!(pending.pool().identity(), identity);
@@ -859,7 +853,7 @@ fn pool_identity_survives_upsert_drop_commit_and_defragmentation() {
         .begin_upsert_column(
             "identity-a".into(),
             &replacement,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(pending.pool().identity(), identity);
@@ -868,7 +862,7 @@ fn pool_identity_survives_upsert_drop_commit_and_defragmentation() {
 
     assert!(pool.remove_column("identity-b").unwrap());
     assert!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap()
     );
     assert_eq!(pool.identity(), identity);
@@ -930,7 +924,7 @@ fn pool_state(pool: &ColumnPool, id: &str) -> PoolState {
 
     PoolState {
         buffer: buffer_identity(pool.buffer()),
-        backup: pool.backup.as_ref().map(buffer_identity),
+        backup: pool.backup.as_deref().map(buffer_identity),
         generation: pool.generation(),
         layout_generation: pool.layout_generation(),
         allocation_epoch_counter: pool.allocation_epoch_counter,
@@ -999,12 +993,12 @@ fn demo_batch_columns(sources: [&dyn ColumnSource; 4]) -> [(ColumnId, &dyn Colum
 
 #[test]
 fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
-    let Some((device, queue, _)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, _)) = mk_pool(4 * ALIGN) else {
         return;
     };
     for failed_index in 0..4 {
         let mut pool =
-            ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), 4 * ALIGN).unwrap();
+            ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 4 * ALIGN).unwrap();
         let before = full_pool_state(&pool);
         let mut columns = Vec::new();
         for index in 0..4 {
@@ -1019,7 +1013,7 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
         assert!(matches!(
             pool.begin_demo_batch_upsert(
                 demo_batch_columns(sources),
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             ),
             Err(AllocError::OutOfSpace { .. })
         ));
@@ -1029,17 +1023,17 @@ fn demo_batch_capacity_failures_at_each_replacement_preserve_live_pool() {
 
 #[test]
 fn demo_batch_epoch_failures_at_each_replacement_preserve_live_pool() {
-    let Some((device, queue, _)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, _)) = mk_pool(8 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0, 2.0]);
     for failed_index in 0..4 {
         let mut pool =
-            ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), 8 * ALIGN).unwrap();
+            ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 8 * ALIGN).unwrap();
         pool.add_column(
             "survivor".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         pool.allocation_epoch_counter = u64::MAX - failed_index as u64;
@@ -1047,7 +1041,7 @@ fn demo_batch_epoch_failures_at_each_replacement_preserve_live_pool() {
         let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
         let error = match pool.begin_demo_batch_upsert(
             demo_batch_columns(sources),
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         ) {
             Ok(_) => panic!("replacement {failed_index} epoch must fail"),
             Err(error) => error,
@@ -1064,17 +1058,17 @@ fn demo_batch_epoch_failures_at_each_replacement_preserve_live_pool() {
 
 #[test]
 fn demo_batch_generation_and_layout_overflow_preserve_live_pool() {
-    let Some((device, queue, _)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, _)) = mk_pool(8 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0, 2.0]);
     for counter in ["public generation", "layout generation"] {
         let mut pool =
-            ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), 8 * ALIGN).unwrap();
+            ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 8 * ALIGN).unwrap();
         pool.add_column(
             "survivor".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
         if counter == "public generation" {
@@ -1086,7 +1080,7 @@ fn demo_batch_generation_and_layout_overflow_preserve_live_pool() {
         let sources: [&dyn ColumnSource; 4] = [&values, &values, &values, &values];
         let error = match pool.begin_demo_batch_upsert(
             demo_batch_columns(sources),
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         ) {
             Ok(_) => panic!("{counter} must reject overflow"),
             Err(error) => error,
@@ -1098,25 +1092,27 @@ fn demo_batch_generation_and_layout_overflow_preserve_live_pool() {
 
 #[test]
 fn demo_batch_drop_preserves_fragmented_pool_with_existing_backup() {
-    let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(10 * ALIGN) else {
         return;
     };
     let old = col_f64(vec![1.0, 2.0]);
     for id in ["survivor-a", "demo_x", "hole", "demo_rc", "survivor-b"] {
-        pool.add_column(id.into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.add_column(id.into(), &old, GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap();
     }
     assert!(pool.remove_column("hole").unwrap());
     assert!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap()
     );
     assert!(pool.backup.is_some());
     assert!(pool.remove_column("demo_x").unwrap());
     let before = full_pool_state(&pool);
-    let retired_before = pool.retired_bytes();
+    let retired_before = ledger
+        .snapshot()
+        .retired_bytes_of(GpuResourceKind::ColumnPool);
     let survivor_a = read_column_values(
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
         &pool,
         pool.handle_for("survivor-a").unwrap(),
     );
@@ -1136,20 +1132,22 @@ fn demo_batch_drop_preserves_fragmented_pool_with_existing_backup() {
         let pending = pool
             .begin_demo_batch_upsert(
                 demo_batch_columns(sources),
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert_ne!(buffer_identity(pending.pool().buffer()), before.base.buffer);
     }
     assert_eq!(full_pool_state(&pool), before);
     assert_eq!(
-        pool.retired_bytes(),
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
         retired_before + pool.capacity() + 4 * ALIGN,
         "abandoned candidate and four submitted staging buffers stay budgeted"
     );
     assert_eq!(
         read_column_values(
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             &pool,
             pool.handle_for("survivor-a").unwrap(),
         ),
@@ -1159,25 +1157,27 @@ fn demo_batch_drop_preserves_fragmented_pool_with_existing_backup() {
 
 #[test]
 fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epochs() {
-    let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(10 * ALIGN) else {
         return;
     };
     let old = col_f64(vec![1.0, 2.0]);
     for id in ["survivor", "demo_x", "hole", "demo_sin"] {
-        pool.add_column(id.into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.add_column(id.into(), &old, GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap();
     }
     assert!(pool.remove_column("hole").unwrap());
     assert!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap()
     );
     let before = full_pool_state(&pool);
     let primary = buffer_identity(pool.buffer());
-    let old_backup = pool.backup.as_ref().map(buffer_identity);
+    let old_backup = pool.backup.as_deref().map(buffer_identity);
     let generation = pool.generation();
     let layout_generation = pool.layout_generation();
-    let retired_before = pool.retired_bytes();
+    let retired_before = ledger
+        .snapshot()
+        .retired_bytes_of(GpuResourceKind::ColumnPool);
     let survivor_epoch = pool.allocation_epoch("survivor").unwrap();
     let old_demo_x_epoch = pool.allocation_epoch("demo_x").unwrap();
     let replacements = [
@@ -1195,7 +1195,7 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
     let handles = pool
         .begin_demo_batch_upsert(
             demo_batch_columns(sources),
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap()
         .commit();
@@ -1204,10 +1204,12 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
     assert_eq!(committed.identity, before.identity);
     assert_eq!(pool.generation(), generation + 1);
     assert_eq!(pool.layout_generation(), layout_generation + 1);
-    assert_eq!(pool.backup.as_ref().map(buffer_identity), Some(primary));
-    assert_ne!(pool.backup.as_ref().map(buffer_identity), old_backup);
+    assert_eq!(pool.backup.as_deref().map(buffer_identity), Some(primary));
+    assert_ne!(pool.backup.as_deref().map(buffer_identity), old_backup);
     assert_eq!(
-        pool.retired_bytes(),
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
         retired_before + pool.capacity() + 4 * ALIGN,
         "the superseded backup and four staging buffers stay budgeted"
     );
@@ -1225,7 +1227,7 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
         assert_eq!(pool.handle_for(id).unwrap().offset, handles[index].offset);
         assert_eq!(
             read_column_values(
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
                 &pool,
                 handles[index]
             ),
@@ -1234,7 +1236,7 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
     }
     assert_eq!(
         read_column_values(
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             &pool,
             pool.handle_for("survivor").unwrap(),
         ),
@@ -1244,7 +1246,7 @@ fn demo_batch_commit_publishes_complete_packed_pool_and_preserves_survivor_epoch
 
 #[test]
 fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let per_region = (ALIGN / COLUMN_VALUE_BYTES as u64) as usize;
@@ -1253,7 +1255,7 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
         pool.add_column(
             id.into(),
             &resident,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     }
@@ -1274,14 +1276,16 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
         },
     ];
     let before = full_pool_state(&pool);
-    let retired_before = pool.retired_bytes();
+    let retired_before = ledger
+        .snapshot()
+        .retired_bytes_of(GpuResourceKind::ColumnPool);
 
     {
         let pending = pool
             .begin_streamed_promotion(
                 &uploads,
                 4 * ALIGN,
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert!(pending.relocated());
@@ -1290,7 +1294,9 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
     }
     assert_eq!(full_pool_state(&pool), before);
     assert_eq!(
-        pool.retired_bytes(),
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
         retired_before + 6 * ALIGN,
         "candidate slab and the two-column staging stay retired after rollback"
     );
@@ -1298,7 +1304,7 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
     pool.begin_streamed_promotion(
         &uploads,
         4 * ALIGN,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap()
     .commit();
@@ -1307,7 +1313,7 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
     assert_eq!(pool.layout_generation(), before.base.layout_generation + 1);
     assert_eq!(
         read_column_values(
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             &pool,
             pool.handle_for("stream-scalar").unwrap(),
         ),
@@ -1315,7 +1321,7 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
     );
     assert_eq!(
         read_column_values(
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             &pool,
             pool.handle_for("stream-hilo").unwrap(),
         ),
@@ -1325,20 +1331,20 @@ fn mixed_streamed_promotion_candidate_rolls_back_then_commits_as_one_pool() {
 
 #[test]
 fn column_removal_guard_drop_restores_exact_pool_state() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     pool.add_column(
         "remove-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "remove-b".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let identity = pool.identity();
@@ -1362,13 +1368,17 @@ fn column_removal_guard_drop_restores_exact_pool_state() {
 
 #[test]
 fn batch_removal_guard_validates_rolls_back_and_commits_all_ids_together() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     for id in ["batch-a", "batch-b", "batch-c"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     let before = full_pool_state(&pool);
     assert!(matches!(
@@ -1401,14 +1411,14 @@ fn batch_removal_guard_validates_rolls_back_and_commits_all_ids_together() {
 
 #[test]
 fn column_removal_guard_commit_publishes_without_changing_identity() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     pool.add_column(
         "remove-commit".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let identity = pool.identity();
@@ -1427,24 +1437,30 @@ fn column_removal_guard_commit_publishes_without_changing_identity() {
 
 #[test]
 fn defragment_guard_fresh_candidate_drop_restores_primary_and_no_backup() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     for id in ["fresh-a", "fresh-b", "fresh-c"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     pool.remove_column("fresh-b").unwrap();
     let identity = pool.identity();
     let before_a = pool_state(&pool, "fresh-a");
     let before_c = pool_state(&pool, "fresh-c");
-    let retired_before = pool.retired_bytes();
+    let retired_before = ledger
+        .snapshot()
+        .retired_bytes_of(GpuResourceKind::ColumnPool);
     assert!(pool.backup.is_none());
 
     {
         let defrag = pool
-            .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+            .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap();
         assert!(defrag.changed());
         assert!(defrag.relocated());
@@ -1458,7 +1474,9 @@ fn defragment_guard_fresh_candidate_drop_restores_primary_and_no_backup() {
     assert_eq!(pool_state(&pool, "fresh-a"), before_a);
     assert_eq!(pool_state(&pool, "fresh-c"), before_c);
     assert_eq!(
-        pool.retired_bytes(),
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
         retired_before + pool.capacity(),
         "abandoned submitted candidate stays budgeted"
     );
@@ -1466,17 +1484,21 @@ fn defragment_guard_fresh_candidate_drop_restores_primary_and_no_backup() {
 
 #[test]
 fn defragment_guard_existing_backup_drop_restores_both_buffers() {
-    let Some((device, queue, mut pool)) = mk_pool(5 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(5 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
     for id in ["reuse-a", "reuse-b", "reuse-c", "reuse-d"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     pool.remove_column("reuse-b").unwrap();
     assert!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap()
     );
     assert!(pool.backup.is_some());
@@ -1485,11 +1507,11 @@ fn defragment_guard_existing_backup_drop_restores_both_buffers() {
     let before_a = pool_state(&pool, "reuse-a");
     let before_d = pool_state(&pool, "reuse-d");
     let primary_before = buffer_identity(pool.buffer());
-    let backup_before = pool.backup.as_ref().map(buffer_identity);
+    let backup_before = pool.backup.as_deref().map(buffer_identity);
 
     {
         let defrag = pool
-            .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+            .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap();
         assert!(defrag.changed());
         assert!(defrag.relocated());
@@ -1501,20 +1523,20 @@ fn defragment_guard_existing_backup_drop_restores_both_buffers() {
     }
 
     assert_eq!(buffer_identity(pool.buffer()), primary_before);
-    assert_eq!(pool.backup.as_ref().map(buffer_identity), backup_before);
+    assert_eq!(pool.backup.as_deref().map(buffer_identity), backup_before);
     assert_eq!(pool_state(&pool, "reuse-a"), before_a);
     assert_eq!(pool_state(&pool, "reuse-d"), before_d);
 }
 
 #[test]
 fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let identity = pool.identity();
 
     let no_op = pool
-        .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert!(!no_op.changed());
     assert!(!no_op.relocated());
@@ -1533,7 +1555,7 @@ fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
     let empty_before = pool_state(&pool, "missing");
     {
         let normalized = pool
-            .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+            .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap();
         assert!(normalized.changed());
         assert!(!normalized.relocated());
@@ -1543,7 +1565,7 @@ fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
     assert_eq!(pool_state(&pool, "missing"), empty_before);
 
     let normalized = pool
-        .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert!(normalized.changed());
     assert!(!normalized.relocated());
@@ -1555,7 +1577,7 @@ fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
     pool.add_column(
         "packed".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.free = vec![
@@ -1571,7 +1593,7 @@ fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
     let generation = pool.generation();
     let layout_generation = pool.layout_generation();
     let normalized = pool
-        .begin_defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        .begin_defragment(GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert!(normalized.changed());
     assert!(!normalized.relocated());
@@ -1583,7 +1605,7 @@ fn defragment_guard_distinguishes_noop_normalization_and_relocation() {
 
 #[test]
 fn legacy_staging_failure_restores_allocator_and_allows_retry() {
-    let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(ALIGN) else {
         return;
     };
     let column = col_f64(vec![1.0, 2.0, 3.0]);
@@ -1597,7 +1619,7 @@ fn legacy_staging_failure_restores_allocator_and_allows_retry() {
                 min: column.min,
                 max: column.max,
             },
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             |dst| write_scalar_source_as_pairs(&column, dst),
             |_| {
                 Err(AllocError::AllocationFailed {
@@ -1615,7 +1637,7 @@ fn legacy_staging_failure_restores_allocator_and_allows_retry() {
         .add_column(
             "x".into(),
             &column,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(handle.offset, 0);
@@ -1624,7 +1646,7 @@ fn legacy_staging_failure_restores_allocator_and_allows_retry() {
 
 #[test]
 fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
-    let Some((device, queue, mut scalar_pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut scalar_pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     let scalar_before = pool_state(&scalar_pool, "scalar");
@@ -1632,7 +1654,7 @@ fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
         let _ = scalar_pool.add_column(
             "scalar".into(),
             &PanickingScalarSource,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(scalar_result.is_err());
@@ -1643,19 +1665,19 @@ fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
         .add_column(
             "scalar".into(),
             &retry,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(scalar_handle.offset, 0);
 
     let mut hilo_pool =
-        ColumnPool::new(GpuAllocCtx::unbudgeted(&device, &queue), 2 * ALIGN).unwrap();
+        ColumnPool::new(GpuAllocCtx::new(&device, &queue, &ledger), 2 * ALIGN).unwrap();
     let hilo_before = pool_state(&hilo_pool, "hilo");
     let hilo_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = hilo_pool.add_hilo_column(
             "hilo".into(),
             &PanickingHiLoSource,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(hilo_result.is_err());
@@ -1665,7 +1687,7 @@ fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
         .add_hilo_column(
             "hilo".into(),
             &retry,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(hilo_handle.offset, 0);
@@ -1680,15 +1702,15 @@ fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
 /// described.
 #[test]
 fn a_column_batch_uploads_into_one_region_for_one_buffer() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let a = col_f64(vec![1.0, 2.0, 3.0]);
     let b = col_f64(vec![10.0, 20.0]);
     let c = col_f64(vec![-5.0, 0.0, 5.0, 7.5]);
 
-    let before_creations = pool.buffer_creations();
+    let before_creations = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
     pool.add_columns(
         &[
             ("a", &a as &dyn ColumnSource),
@@ -1701,7 +1723,7 @@ fn a_column_batch_uploads_into_one_region_for_one_buffer() {
 
     // One staging buffer for the batch, not one per column.
     assert_eq!(
-        pool.buffer_creations() - before_creations,
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - before_creations,
         1,
         "a batch must create one staging buffer"
     );
@@ -1731,13 +1753,13 @@ fn a_column_batch_uploads_into_one_region_for_one_buffer() {
     );
 
     // The same columns added one at a time cost one staging buffer each.
-    let singles_before = pool.buffer_creations();
+    let singles_before = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
     for (id, source) in [("single-a", &a), ("single-b", &b), ("single-c", &c)] {
         pool.add_column(id.into(), source, ctx())
             .expect("single add");
     }
     assert_eq!(
-        pool.buffer_creations() - singles_before,
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - singles_before,
         3,
         "one staging buffer per single add"
     );
@@ -1747,12 +1769,12 @@ fn a_column_batch_uploads_into_one_region_for_one_buffer() {
 /// byte-identical — the single reservation rolled back.
 #[test]
 fn a_rejected_batch_leaves_the_pool_untouched() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * ALIGN) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
     pool.growth_policy = GrowthPolicy::Fixed;
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let a = col_f64(vec![1.0, 2.0]);
     let empty: Column<f64> = Column {
         data: Vec::new(),
@@ -1835,13 +1857,22 @@ fn a_rejected_batch_leaves_the_pool_untouched() {
 /// An empty batch is a no-op, not an error.
 #[test]
 fn an_empty_batch_does_nothing() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
-    let before = (pool.slots.len(), pool.buffer_creations());
-    pool.add_columns(&[], GpuAllocCtx::unbudgeted(&device, &queue))
+    let before = (
+        pool.slots.len(),
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool),
+    );
+    pool.add_columns(&[], GpuAllocCtx::new(&device, &queue, &ledger))
         .expect("empty batch");
-    assert_eq!((pool.slots.len(), pool.buffer_creations()), before);
+    assert_eq!(
+        (
+            pool.slots.len(),
+            ledger.snapshot().creations_of(GpuResourceKind::ColumnPool)
+        ),
+        before
+    );
 }
 
 /// Chunking is only about the device's staging ceiling: the plan splits at
@@ -1901,10 +1932,10 @@ fn a_column_over_the_device_ceiling_is_refused_in_a_batch_too() {
 /// byte-for-byte what it was — without the batch ever cloning a registry.
 #[test]
 fn an_abandoned_batch_guard_un_inserts_every_column() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let live = col_f64(vec![1.0, 2.0]);
     let a = col_f64(vec![3.0, 4.0, 5.0]);
     let b = col_f64(vec![6.0]);
@@ -1957,10 +1988,10 @@ fn an_abandoned_batch_guard_un_inserts_every_column() {
 /// committed batch behaves like `add_columns` did.
 #[test]
 fn a_committed_batch_guard_publishes_every_column() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let a = col_f64(vec![1.5, 2.5]);
     let b = col_f64(vec![-1.0, 0.0, 1.0]);
     pool.begin_add_columns(
@@ -1989,10 +2020,10 @@ fn a_committed_batch_guard_publishes_every_column() {
 /// observable outcome is what is asserted.
 #[test]
 fn a_batch_compacts_when_fragmentation_is_the_only_obstacle() {
-    let Some((device, queue, mut pool)) = mk_pool(6 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(6 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     pool.defrag_policy = DefragPolicy::OnAllocFailure;
     let one = col_f64(vec![1.0; 32]); // exactly one ALIGN
     for id in ["a", "b", "c", "d", "e", "f"] {
@@ -2028,12 +2059,12 @@ fn a_batch_compacts_when_fragmentation_is_the_only_obstacle() {
 /// so — and stays exactly as it was.
 #[test]
 fn a_batch_too_big_for_a_fixed_pool_is_refused_without_compacting() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
     pool.growth_policy = GrowthPolicy::Fixed;
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     pool.defrag_policy = DefragPolicy::OnAllocFailure;
     let one = col_f64(vec![1.0; 32]);
     for id in ["a", "b", "c"] {
@@ -2056,10 +2087,10 @@ fn a_batch_too_big_for_a_fixed_pool_is_refused_without_compacting() {
 /// A batch bigger than the pool grows it, once, under `OnAllocFailure`.
 #[test]
 fn a_batch_grows_the_pool_when_compaction_is_not_enough() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     pool.growth_policy = GrowthPolicy::OnAllocFailure;
     let one = col_f64(vec![1.0; 32]);
     pool.add_column("seed".into(), &one, ctx()).expect("seed");
@@ -2140,19 +2171,19 @@ fn read_column_words(ctx: GpuAllocCtx<'_>, pool: &ColumnPool, handle: ColumnHand
 
 #[test]
 fn upsert_prepare_failures_leave_old_state_and_retry() {
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
     pool.growth_policy = GrowthPolicy::Fixed;
     let old = col_f64(vec![1.0, 2.0, 3.0]);
-    pool.add_column("x".into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("x".into(), &old, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let blocker = col_f64(vec![10.0, 11.0, 12.0]);
     pool.add_column(
         "blocker".into(),
         &blocker,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let before = pool_state(&pool, "x");
@@ -2165,7 +2196,7 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
             min: replacement.min,
             max: replacement.max,
         },
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
         |dst| write_scalar_source_as_pairs(&replacement, dst),
         |_| {
             Err(AllocError::AllocationFailed {
@@ -2184,7 +2215,7 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
     let validation_error = match pool.begin_upsert_column(
         "x".into(),
         &empty,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Ok(_) => panic!("empty replacement unexpectedly succeeded"),
         Err(error) => error,
@@ -2196,7 +2227,7 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
     let capacity_error = match pool.begin_upsert_column(
         "x".into(),
         &too_large,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Ok(_) => panic!("oversized replacement unexpectedly succeeded"),
         Err(error) => error,
@@ -2208,7 +2239,7 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
         .upsert_column(
             "x".into(),
             &replacement,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(handle.len_values, replacement.data.len());
@@ -2217,15 +2248,17 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
 
 #[test]
 fn dropped_upsert_restores_old_mapping_stats_and_bytes() {
-    let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(ALIGN) else {
         return;
     };
     let old = col_f64(vec![1.25, 2.5, 4.75]);
     let old_handle = pool
-        .add_column("x".into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("x".into(), &old, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let before = pool_state(&pool, "x");
-    let retired_before = pool.retired_bytes();
+    let retired_before = ledger
+        .snapshot()
+        .retired_bytes_of(GpuResourceKind::ColumnPool);
 
     {
         let replacement = col_f64(vec![100.0, 200.0, 300.0]);
@@ -2233,7 +2266,7 @@ fn dropped_upsert_restores_old_mapping_stats_and_bytes() {
             .begin_upsert_column(
                 "x".into(),
                 &replacement,
-                GpuAllocCtx::unbudgeted(&device, &queue),
+                GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert_ne!(pending.handle().generation, old_handle.generation);
@@ -2242,25 +2275,31 @@ fn dropped_upsert_restores_old_mapping_stats_and_bytes() {
 
     assert_eq!(pool_state(&pool, "x"), before);
     assert_eq!(
-        pool.retired_bytes(),
+        ledger
+            .snapshot()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
         retired_before + 2 * ALIGN,
         "abandoned candidate and submitted staging stay budgeted"
     );
     assert!(pool.is_valid_handle(&old_handle));
     assert_eq!(
-        read_column_values(GpuAllocCtx::unbudgeted(&device, &queue), &pool, old_handle),
+        read_column_values(
+            GpuAllocCtx::new(&device, &queue, &ledger),
+            &pool,
+            old_handle
+        ),
         old.data
     );
 }
 
 #[test]
 fn same_size_replacement_reuses_full_capacity_and_updates_stats() {
-    let Some((device, queue, mut pool)) = mk_pool(ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(ALIGN) else {
         return;
     };
     let old = col_f64(vec![-4.0, -2.0, 8.0]);
     let old_handle = pool
-        .add_column("x".into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("x".into(), &old, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert_eq!(pool.free_bytes(), 0);
 
@@ -2269,7 +2308,7 @@ fn same_size_replacement_reuses_full_capacity_and_updates_stats() {
         .begin_upsert_column(
             "x".into(),
             &replacement,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert!(pending.replaced_existing());
@@ -2287,19 +2326,27 @@ fn same_size_replacement_reuses_full_capacity_and_updates_stats() {
         (-10.0, 3.5, Some(3.5))
     );
     assert_eq!(
-        read_column_values(GpuAllocCtx::unbudgeted(&device, &queue), &pool, new_handle),
+        read_column_values(
+            GpuAllocCtx::new(&device, &queue, &ledger),
+            &pool,
+            new_handle
+        ),
         replacement.data
     );
 }
 
 #[test]
 fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let small = col_f64((0..20).map(|value| value as f64).collect());
     let inserted = pool
-        .upsert_column("x".into(), &small, GpuAllocCtx::unbudgeted(&device, &queue))
+        .upsert_column(
+            "x".into(),
+            &small,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
         .unwrap();
     assert_eq!(inserted.byte_size, ALIGN);
 
@@ -2308,7 +2355,7 @@ fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
         .upsert_hilo_column(
             "x".into(),
             &larger,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(larger_handle.byte_size, 2 * ALIGN);
@@ -2320,7 +2367,7 @@ fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
         .upsert_column(
             "x".into(),
             &smaller,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(smaller_handle.byte_size, ALIGN);
@@ -2328,7 +2375,7 @@ fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
     assert_eq!(pool.free_bytes(), 3 * ALIGN);
     assert_eq!(
         read_column_values(
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
             &pool,
             smaller_handle
         ),
@@ -2338,7 +2385,7 @@ fn upsert_inserts_and_replaces_larger_and_smaller_columns() {
 
 #[test]
 fn pool_basic_add_lookup_remove() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * 1024) else {
         println!("no adapter — skipping");
         return;
     };
@@ -2348,7 +2395,7 @@ fn pool_basic_add_lookup_remove() {
         .add_column(
             "x".to_string(),
             &c,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
 
@@ -2369,7 +2416,7 @@ fn pool_basic_add_lookup_remove() {
 
 #[test]
 fn pool_sequential_alloc_offsets() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * 1024) else {
         return;
     };
     let a = col_f64((0..25).map(|i| i as f64).collect()); // 200 -> 256
@@ -2377,13 +2424,13 @@ fn pool_sequential_alloc_offsets() {
     let c = col_f64((0..10).map(|i| i as f64).collect()); // 80 -> 256
 
     let ha = pool
-        .add_column("a".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("a".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let hb = pool
-        .add_column("b".into(), &b, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("b".into(), &b, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let hc = pool
-        .add_column("c".into(), &c, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("c".into(), &c, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
 
     assert_eq!(ha.offset, 0);
@@ -2394,18 +2441,18 @@ fn pool_sequential_alloc_offsets() {
 
 #[test]
 fn pool_coalesce_after_remove() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * 1024) else {
         return;
     };
     let a = col_f64((0..25).map(|i| i as f64).collect()); // 256
     let b = col_f64((0..25).map(|i| i as f64).collect()); // 256
     let c = col_f64((0..25).map(|i| i as f64).collect()); // 256
 
-    pool.add_column("a".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("a".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
-    pool.add_column("b".into(), &b, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("b".into(), &b, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
-    pool.add_column("c".into(), &c, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("c".into(), &c, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
 
     // Remove middle b → free = [256..512] + [768..end] (not adjacent).
@@ -2427,24 +2474,24 @@ fn pool_coalesce_after_remove() {
 
 #[test]
 fn pool_duplicate_id() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * 1024) else {
         return;
     };
     let a = col_f64((0..10).map(|i| i as f64).collect());
-    pool.add_column("dup".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("dup".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
-    let res = pool.add_column("dup".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue));
+    let res = pool.add_column("dup".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger));
     assert!(matches!(res, Err(AllocError::DuplicateId(_))));
 }
 
 #[test]
 fn pool_handle_byte_range() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * 1024) else {
         return;
     };
     let c = col_f64((0..50).map(|i| i as f64).collect());
     let h = pool
-        .add_column("x".into(), &c, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("x".into(), &c, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let r = h.byte_range();
     assert_eq!(r.start, 0);
@@ -2453,7 +2500,7 @@ fn pool_handle_byte_range() {
 
 #[test]
 fn pool_defragment_compacts_after_remove() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * 1024) else {
         return;
     };
     let a = col_f64((0..25).map(|i| i as f64).collect()); // 256
@@ -2461,13 +2508,13 @@ fn pool_defragment_compacts_after_remove() {
     let c = col_f64((0..25).map(|i| i as f64).collect()); // 256
 
     let _ = pool
-        .add_column("a".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("a".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let _ = pool
-        .add_column("b".into(), &b, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("b".into(), &b, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let hc_before = pool
-        .add_column("c".into(), &c, GpuAllocCtx::unbudgeted(&device, &queue))
+        .add_column("c".into(), &c, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let gen_before = pool.generation();
 
@@ -2480,7 +2527,7 @@ fn pool_defragment_compacts_after_remove() {
 
     // After defrag → a@0, c@256, free is a single tail region.
     let moved = pool
-        .defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        .defragment(GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert!(moved);
     assert_eq!(pool.slots["a"].offset, 0);
@@ -2501,19 +2548,19 @@ fn pool_defragment_compacts_after_remove() {
 
 #[test]
 fn pool_defragment_no_op_when_packed() {
-    let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(8 * 1024) else {
         return;
     };
     let a = col_f64((0..25).map(|i| i as f64).collect());
     let b = col_f64((0..25).map(|i| i as f64).collect());
-    pool.add_column("a".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("a".into(), &a, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
-    pool.add_column("b".into(), &b, GpuAllocCtx::unbudgeted(&device, &queue))
+    pool.add_column("b".into(), &b, GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     let g0 = pool.generation();
 
     let moved = pool
-        .defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        .defragment(GpuAllocCtx::new(&device, &queue, &ledger))
         .unwrap();
     assert!(!moved);
     assert_eq!(pool.generation(), g0); // no-op leaves generation alone.
@@ -2524,7 +2571,7 @@ fn pool_on_alloc_failure_auto_defrag_then_succeed() {
     // Capacity = 4 * 256 = 1024. After three 256-byte slots and the
     // middle one removed, fragmentation makes first-fit for a 512-byte
     // slot fail; OnAllocFailure should defrag and the retry should win.
-    let Some((device, queue, mut pool)) = mk_pool(4 * 256) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * 256) else {
         return;
     };
     pool.defrag_policy = DefragPolicy::OnAllocFailure;
@@ -2537,26 +2584,30 @@ fn pool_on_alloc_failure_auto_defrag_then_succeed() {
     pool.add_column(
         "a".into(),
         &small_a,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "b".into(),
         &small_b,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "c".into(),
         &small_c,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     // free = [768..1024]. Remove b → free = [256..512] + [768..1024].
     pool.remove_column("b").unwrap();
     // big needs 512 contiguous. First-fit fails (largest free is 256),
     // defrag fuses the hole and tail into [512..1024], retry succeeds.
-    let res = pool.add_column("big".into(), &big, GpuAllocCtx::unbudgeted(&device, &queue));
+    let res = pool.add_column(
+        "big".into(),
+        &big,
+        GpuAllocCtx::new(&device, &queue, &ledger),
+    );
     assert!(
         res.is_ok(),
         "auto defrag retry should have succeeded: {res:?}"
@@ -2567,7 +2618,7 @@ fn pool_on_alloc_failure_auto_defrag_then_succeed() {
 
 #[test]
 fn pool_manual_policy_does_not_auto_defrag() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * 256) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * 256) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
@@ -2581,30 +2632,34 @@ fn pool_manual_policy_does_not_auto_defrag() {
     pool.add_column(
         "a".into(),
         &small_a,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "b".into(),
         &small_b,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "c".into(),
         &small_c,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.remove_column("b").unwrap();
     // Manual policy: no retry → OutOfSpace.
-    let res = pool.add_column("big".into(), &big, GpuAllocCtx::unbudgeted(&device, &queue));
+    let res = pool.add_column(
+        "big".into(),
+        &big,
+        GpuAllocCtx::new(&device, &queue, &ledger),
+    );
     assert!(matches!(res, Err(AllocError::OutOfSpace { .. })));
 }
 
 #[test]
 fn remove_epochs_prevent_offset_reuse_aba() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
@@ -2613,7 +2668,7 @@ fn remove_epochs_prevent_offset_reuse_aba() {
         .add_column(
             "epoch-a".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     let a_epoch = pool.allocation_epoch("epoch-a").unwrap();
@@ -2621,7 +2676,7 @@ fn remove_epochs_prevent_offset_reuse_aba() {
         .add_column(
             "epoch-b".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     let b_epoch = pool.allocation_epoch("epoch-b").unwrap();
@@ -2638,7 +2693,7 @@ fn remove_epochs_prevent_offset_reuse_aba() {
         .add_column(
             "epoch-c".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(c_handle.offset, a_handle.offset);
@@ -2650,7 +2705,7 @@ fn remove_epochs_prevent_offset_reuse_aba() {
         .add_column(
             "epoch-a".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(a_readded.offset, a_handle.offset);
@@ -2660,7 +2715,7 @@ fn remove_epochs_prevent_offset_reuse_aba() {
 
 #[test]
 fn defragment_preserves_allocation_epochs_and_bumps_layout() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
@@ -2668,19 +2723,19 @@ fn defragment_preserves_allocation_epochs_and_bumps_layout() {
     pool.add_column(
         "layout-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "layout-b".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "layout-c".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     assert!(pool.remove_column("layout-b").unwrap());
@@ -2692,7 +2747,7 @@ fn defragment_preserves_allocation_epochs_and_bumps_layout() {
     let layout_generation = pool.layout_generation();
 
     assert!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap()
     );
     assert_eq!(pool.generation(), generation.checked_add(1).unwrap());
@@ -2708,7 +2763,7 @@ fn defragment_preserves_allocation_epochs_and_bumps_layout() {
 
 #[test]
 fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let values = col_f64(vec![1.0]);
@@ -2717,7 +2772,7 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
         .add_column(
             "clear-a".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     let old_epoch = pool.allocation_epoch("clear-a").unwrap();
@@ -2736,7 +2791,7 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
     pool.add_column(
         "clear-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     assert!(pool.allocation_epoch("clear-a").unwrap() > old_epoch);
@@ -2763,7 +2818,7 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
     let replacement_error = match pool.begin_upsert_column(
         "clear-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Err(error) => error,
         Ok(_) => panic!("replacement must fail when public generation is exhausted"),
@@ -2776,13 +2831,13 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
     );
     assert_eq!(pool_state(&pool, "clear-a"), before_public_exhaustion);
 
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     pool.add_column(
         "epoch-full-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.allocation_epoch_counter = u64::MAX;
@@ -2791,7 +2846,7 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
         pool.add_column(
             "epoch-full-b".into(),
             &values,
-            GpuAllocCtx::unbudgeted(&device, &queue)
+            GpuAllocCtx::new(&device, &queue, &ledger)
         )
         .unwrap_err(),
         AllocError::CounterExhausted {
@@ -2800,26 +2855,26 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
     );
     assert_eq!(pool_state(&pool, "epoch-full-a"), before_epoch_exhaustion);
 
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     pool.add_column(
         "layout-prefix".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "layout-live".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     assert!(pool.remove_column("layout-prefix").unwrap());
     pool.layout_generation = u64::MAX;
     let before_layout_exhaustion = pool_state(&pool, "layout-live");
     assert_eq!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap_err(),
         AllocError::CounterExhausted {
             counter: "layout generation"
@@ -2839,13 +2894,13 @@ fn clear_and_counter_exhaustion_preserve_stamp_contracts() {
 fn every_relocating_counter_failure_is_fail_closed() {
     let values = col_f64(vec![1.0]);
 
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     pool.add_column(
         "epoch-upsert-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.allocation_epoch_counter = u64::MAX;
@@ -2853,7 +2908,7 @@ fn every_relocating_counter_failure_is_fail_closed() {
     let epoch_error = match pool.begin_upsert_column(
         "epoch-upsert-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Err(error) => error,
         Ok(_) => panic!("upsert must fail when allocation epoch is exhausted"),
@@ -2866,12 +2921,16 @@ fn every_relocating_counter_failure_is_fail_closed() {
     );
     assert_eq!(pool_state(&pool, "epoch-upsert-a"), before_epoch_upsert);
 
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     for id in ["public-compact-a", "public-compact-b"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     pool.generation = u32::MAX;
     for slot in pool.slots.values_mut() {
@@ -2881,7 +2940,7 @@ fn every_relocating_counter_failure_is_fail_closed() {
     let public_compaction_error = match pool.begin_upsert_column(
         "public-compact-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Err(error) => error,
         Ok(_) => panic!("compacting upsert must fail when public generation is exhausted"),
@@ -2897,19 +2956,23 @@ fn every_relocating_counter_failure_is_fail_closed() {
         before_public_compaction
     );
 
-    let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
     for id in ["layout-compact-a", "layout-compact-b"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     pool.layout_generation = u64::MAX;
     let before_layout_compaction = pool_state(&pool, "layout-compact-a");
     let layout_compaction_error = match pool.begin_upsert_column(
         "layout-compact-a".into(),
         &values,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     ) {
         Err(error) => error,
         Ok(_) => panic!("compacting upsert must fail when layout generation is exhausted"),
@@ -2925,12 +2988,16 @@ fn every_relocating_counter_failure_is_fail_closed() {
         before_layout_compaction
     );
 
-    let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(3 * ALIGN) else {
         return;
     };
     for id in ["public-defrag-a", "public-defrag-b", "public-defrag-c"] {
-        pool.add_column(id.into(), &values, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &values,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     assert!(pool.remove_column("public-defrag-a").unwrap());
     pool.generation = u32::MAX;
@@ -2939,7 +3006,7 @@ fn every_relocating_counter_failure_is_fail_closed() {
     }
     let before_public_defrag = pool_state(&pool, "public-defrag-b");
     assert_eq!(
-        pool.defragment(GpuAllocCtx::unbudgeted(&device, &queue))
+        pool.defragment(GpuAllocCtx::new(&device, &queue, &ledger))
             .unwrap_err(),
         AllocError::CounterExhausted {
             counter: "public generation"
@@ -2950,7 +3017,7 @@ fn every_relocating_counter_failure_is_fail_closed() {
 
 #[test]
 fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     let first = col_f64(vec![1.0]);
@@ -2958,13 +3025,13 @@ fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
     pool.add_column(
         "direct-target".into(),
         &first,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     pool.add_column(
         "direct-survivor".into(),
         &first,
-        GpuAllocCtx::unbudgeted(&device, &queue),
+        GpuAllocCtx::new(&device, &queue, &ledger),
     )
     .unwrap();
     let old_target_handle = pool.handle_for("direct-target").unwrap();
@@ -2978,7 +3045,7 @@ fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
         .upsert_column(
             "direct-target".into(),
             &replacement,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
 
@@ -2997,12 +3064,16 @@ fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
     assert!(pool.is_valid_handle(&new_target_handle));
     assert!(pool.is_valid_handle(&pool.handle_for("direct-survivor").unwrap()));
 
-    let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
     for id in ["relocate-a", "relocate-b", "relocate-c", "relocate-d"] {
-        pool.add_column(id.into(), &first, GpuAllocCtx::unbudgeted(&device, &queue))
-            .unwrap();
+        pool.add_column(
+            id.into(),
+            &first,
+            GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
     }
     assert!(pool.remove_column("relocate-b").unwrap());
     assert!(pool.remove_column("relocate-d").unwrap());
@@ -3019,7 +3090,7 @@ fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
         .upsert_column(
             "relocate-new".into(),
             &large,
-            GpuAllocCtx::unbudgeted(&device, &queue),
+            GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
 
@@ -3075,14 +3146,14 @@ fn invalid_reason(result: crate::Result<impl std::fmt::Debug>) -> String {
 /// schema slots, and carry the statistics the write observer measured.
 #[test]
 fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let mut columns = five_fields(3, 1.0);
     columns.push(("mean", col_f64(vec![2.0, f64::NAN, f64::INFINITY])));
     let fields = box_fields(&columns);
-    let creations = pool.buffer_creations();
+    let creations = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
 
     let id = pool
         .upsert_record(
@@ -3096,7 +3167,7 @@ fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
         .expect("record upsert");
     assert_eq!(id, "box");
     assert_eq!(
-        pool.buffer_creations() - creations,
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
         1,
         "a record is one staging buffer"
     );
@@ -3164,10 +3235,10 @@ fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
 /// the old ones, bumps the epoch and leaves only the new bytes resident.
 #[test]
 fn a_record_replacement_takes_a_new_length_and_a_new_epoch() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let first = five_fields(3, 1.0);
     let fields = box_fields(&first);
     let source = RecordSource {
@@ -3217,10 +3288,10 @@ fn a_record_replacement_takes_a_new_length_and_a_new_epoch() {
 /// region; deleting it again reports `false`.
 #[test]
 fn removing_a_record_or_ragged_column_frees_its_members() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let columns = five_fields(4, 0.0);
     let fields = box_fields(&columns);
     pool.upsert_record(
@@ -3266,10 +3337,10 @@ fn removing_a_record_or_ragged_column_frees_its_members() {
 /// pool exactly as it was.
 #[test]
 fn record_schema_and_length_errors_are_explicit_and_change_nothing() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let other = col_f64(vec![1.0]);
     pool.add_column("taken".into(), &other, ctx()).unwrap();
     let values = col_f64(vec![1.0]);
@@ -3348,10 +3419,10 @@ fn record_schema_and_length_errors_are_explicit_and_change_nothing() {
 /// `MAX_RECORD_FIELDS` bounds both the schema and the source.
 #[test]
 fn a_record_holds_at_most_max_record_fields() {
-    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     const NAMES: [&str; 13] = [
         "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
     ];
@@ -3420,12 +3491,12 @@ fn a_record_holds_at_most_max_record_fields() {
 /// the previous record, its values and the allocator exactly as they were.
 #[test]
 fn a_failed_record_upsert_rolls_the_batch_back() {
-    let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(10 * ALIGN) else {
         return;
     };
     // A fixed pool: this test is about what a pool that cannot grow does.
     pool.growth_policy = GrowthPolicy::Fixed;
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let first = five_fields(3, 1.0);
     let fields = box_fields(&first);
     pool.upsert_record(
@@ -3500,13 +3571,13 @@ fn a_failed_record_upsert_rolls_the_batch_back() {
 /// longest group in the same pass.
 #[test]
 fn a_ragged_column_uploads_with_offset_statistics() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let values = col_f64(vec![4.0, -2.0, f64::NAN, 9.0, 1.0]);
     let offsets = col_f64(vec![0.0, 2.0, 2.0, 5.0]);
-    let creations = pool.buffer_creations();
+    let creations = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
     let id = pool
         .upsert_ragged(
             "outliers",
@@ -3518,7 +3589,11 @@ fn a_ragged_column_uploads_with_offset_statistics() {
         )
         .unwrap();
     assert_eq!(id, "outliers");
-    assert_eq!(pool.buffer_creations() - creations, 1, "one staging buffer");
+    assert_eq!(
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
+        1,
+        "one staging buffer"
+    );
 
     let ragged = pool.ragged("outliers").unwrap();
     assert_eq!((ragged.slot().groups, ragged.slot().total), (3, 5));
@@ -3557,10 +3632,10 @@ fn a_ragged_column_uploads_with_offset_statistics() {
 /// through the plain column API, so the ragged column stays readable (#152).
 #[test]
 fn a_standalone_pool_rejects_member_column_removal_and_upsert() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let values = col_f64(vec![4.0, -2.0, 9.0]);
     let offsets = col_f64(vec![0.0, 1.0, 3.0]);
     pool.upsert_ragged(
@@ -3597,10 +3672,10 @@ fn a_standalone_pool_rejects_member_column_removal_and_upsert() {
 /// included.
 #[test]
 fn invalid_ragged_offsets_are_rejected_and_roll_the_batch_back() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let values = col_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
     let good = col_f64(vec![0.0, 5.0]);
     pool.upsert_ragged(
@@ -3667,10 +3742,10 @@ fn invalid_ragged_offsets_are_rejected_and_roll_the_batch_back() {
 /// the old members; a record and a ragged column cannot share an id.
 #[test]
 fn a_ragged_replacement_takes_new_groups_and_a_new_epoch() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let values = col_f64(vec![1.0, 2.0]);
     let offsets = col_f64(vec![0.0, 1.0, 2.0]);
     pool.upsert_ragged(
@@ -3741,11 +3816,11 @@ fn a_ragged_replacement_takes_new_groups_and_a_new_epoch() {
 /// and the freed bytes after removal.
 #[test]
 fn the_monitor_accounts_records_and_ragged_columns() {
-    let Some((device, queue, mut pool)) = mk_pool(32 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(32 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
-    let creations = pool.buffer_creations();
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let creations = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
     let columns = five_fields(40, 0.0);
     let fields = box_fields(&columns);
     pool.upsert_record(
@@ -3760,9 +3835,12 @@ fn the_monitor_accounts_records_and_ragged_columns() {
     let record_bytes = 5 * 2 * ALIGN;
     assert_eq!(pool.used_bytes(), record_bytes);
     assert_eq!(pool.free_bytes(), 32 * ALIGN - record_bytes);
-    assert_eq!(pool.buffer_creations() - creations, 1);
+    assert_eq!(
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
+        1
+    );
     assert!(
-        pool.peak_bytes() >= pool.gpu_bytes() + record_bytes,
+        ledger.peak_bytes() >= pool.gpu_bytes() + record_bytes,
         "the staging buffer of the whole record coexists with the pool"
     );
 
@@ -3779,7 +3857,10 @@ fn the_monitor_accounts_records_and_ragged_columns() {
     .unwrap();
     let ragged_bytes = 2 * ALIGN + ALIGN;
     assert_eq!(pool.used_bytes(), record_bytes + ragged_bytes);
-    assert_eq!(pool.buffer_creations() - creations, 2);
+    assert_eq!(
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
+        2
+    );
     assert_eq!(
         pool.gpu_bytes(),
         32 * ALIGN,
@@ -3792,7 +3873,7 @@ fn the_monitor_accounts_records_and_ragged_columns() {
     assert_eq!(pool.used_bytes(), 0);
     assert_eq!(pool.free_bytes(), 32 * ALIGN);
     assert_eq!(
-        pool.buffer_creations() - creations,
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
         2,
         "removal creates no buffer"
     );
@@ -3802,10 +3883,10 @@ fn the_monitor_accounts_records_and_ragged_columns() {
 /// ragged column follow because they name their members, not offsets.
 #[test]
 fn records_and_ragged_columns_survive_defragmentation_and_clear() {
-    let Some((device, queue, mut pool)) = mk_pool(32 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(32 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let filler = col_f64(vec![0.0; 100]);
     pool.add_column("filler".into(), &filler, ctx()).unwrap();
     let columns = five_fields(3, 1.0);
@@ -3837,10 +3918,10 @@ fn records_and_ragged_columns_survive_defragmentation_and_clear() {
 /// `SHADER_COMMON.md` states for records and ragged columns.
 #[test]
 fn a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let columns = five_fields(3, 1.5);
     let fields = box_fields(&columns);
     pool.upsert_record(
@@ -4184,10 +4265,10 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
 /// control: that read loses 2^24 + 1.
 #[test]
 fn a_shader_reads_index_lanes_exactly_past_2_pow_24() {
-    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let values = INDEX_LANE_PROBES.map(f64::from);
     let source = SplitPairSource(&values);
     let columns: [(&str, &dyn ColumnSource); 2] = [("lanes", &source), ("pairs", &source)];
@@ -4299,10 +4380,10 @@ fn the_staging_plan_partitions_any_batch_under_any_ceiling() {
 /// field is refused.
 #[test]
 fn the_batch_observer_sees_every_column_by_its_batch_index() {
-    let Some((device, queue, mut pool)) = mk_pool(1024 * ALIGN) else {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(1024 * ALIGN) else {
         return;
     };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     for count in [1usize, MAX_RECORD_FIELDS, 300] {
         let sources: Vec<Column<f64>> = (0..count)
             .map(|i| col_f64((0..1 + i % 5).map(|row| row as f64).collect()))

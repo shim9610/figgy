@@ -62,7 +62,7 @@
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
-use crate::gpu_memory::RetiredBytes;
+use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedBuffer};
 use wgpu::{Buffer, BufferDescriptor, BufferUsages, Device, Queue};
 
 use crate::data::{
@@ -82,8 +82,8 @@ pub use alloc::{ColumnDefragment, DefragPolicy, FreeRegion, GrowthPolicy};
 use alloc::{RegionUndo, align_up, alloc_region, alloc_region_from, batch_region_bytes};
 use alloc::{coalesce_regions, column_raw_bytes, column_region_bytes, out_of_space};
 use alloc::{plan_batch_chunks, streamed_batch_region_bytes, try_align_up};
+pub use monitor::GpuAllocCtx;
 pub(crate) use monitor::PoolIdentity;
-pub use monitor::{GpuAllocCtx, GpuBudget};
 use monitor::{buffer_ceiling, create_buffer_checked};
 pub(crate) use transactions::StreamedColumnUpload;
 pub use transactions::{ColumnBatchInsert, ColumnRemoval, ColumnUpsert};
@@ -440,7 +440,7 @@ impl std::error::Error for AllocError {}
 /// GPU column slab + CPU-side offset table.
 pub struct ColumnPool {
     identity: PoolIdentity,
-    primary: Buffer,
+    primary: TrackedBuffer,
     capacity: u64,
     slots: HashMap<ColumnId, ColumnSlot>,
     /// Resident records; their member columns are in `slots`.
@@ -455,26 +455,12 @@ pub struct ColumnPool {
     layout_generation: u64,
     /// Ping-pong target for defrag. Lazily created on the first defrag,
     /// then alternates with `primary`.
-    backup: Option<Buffer>,
+    backup: Option<TrackedBuffer>,
     /// Whether to auto-defrag on alloc failure. Default `Manual`.
     pub defrag_policy: DefragPolicy,
     /// Whether an upload that does not fit may enlarge the pool.
     /// Default `OnAllocFailure`: the pool grows to the device's limit (#107).
     pub growth_policy: GrowthPolicy,
-    /// Bytes whose buffer handle this pool has already dropped but whose
-    /// device memory the queue may not have released yet. A budget must keep
-    /// counting them until the corresponding queue completion.
-    retired_bytes: Arc<RetiredBytes>,
-    /// High-water mark of [`Self::gpu_bytes`] plus whatever transient buffer
-    /// coexisted with it (upload staging, candidate primary, the new slab
-    /// during a growth copy). Live bytes are derived from the buffers this
-    /// pool holds and so cannot drift, but a derivation can never see a
-    /// transient that lives and dies inside one call — and that transient is
-    /// exactly what an upload or growth peak is made of.
-    peak_bytes: u64,
-    /// Device buffers created since construction. Counts objects, not bytes,
-    /// so a scenario can assert how many allocations it caused.
-    buffer_creations: u64,
 }
 
 impl ColumnPool {
@@ -507,7 +493,8 @@ impl ColumnPool {
                 | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         };
-        let primary = create_buffer_checked(device, &primary_desc, "column pool buffer")?;
+        let primary =
+            create_buffer_checked(device, ctx.ledger, &primary_desc, "column pool buffer")?;
         Ok(Self {
             identity: PoolIdentity::new(),
             primary,
@@ -526,9 +513,6 @@ impl ColumnPool {
             backup: None,
             defrag_policy: DefragPolicy::Manual,
             growth_policy: GrowthPolicy::OnAllocFailure,
-            retired_bytes: Arc::default(),
-            peak_bytes: capacity,
-            buffer_creations: 1,
         })
     }
 

@@ -21,13 +21,12 @@ use std::sync::OnceLock;
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The shared test device in a bundle of its own per call, so each renderer
+/// a test builds charges its own ledger and budget (#160).
 fn gpu() -> RendererDevice {
-    static GPU: OnceLock<RendererDevice> = OnceLock::new();
-    GPU.get_or_init(|| {
-        let (d, q) = test_gpu::device();
-        RendererDevice::new(d, q)
-    })
-    .clone()
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(test_gpu::device);
+    RendererDevice::new(d.clone(), q.clone())
 }
 fn renderer() -> RadialRenderer {
     RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()

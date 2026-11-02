@@ -415,13 +415,13 @@ fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
     .unwrap();
     let config = crate::default::default_config();
     let before = renderer.gpu_memory_usage().total_bytes();
-    renderer.memory_budget = Some(before);
+    let _ = renderer.set_memory_budget(Some(before));
     assert!(matches!(
         renderer.new_stream_arc(&config, u64::from(u32::MAX)),
         Err(StreamRequestError::Scheduler(StreamError::TooLarge))
     ));
     assert_eq!(renderer.gpu_memory_usage().total_bytes(), before);
-    renderer.memory_budget = None;
+    let _ = renderer.set_memory_budget(None);
     let state = renderer
         .new_stream_arc(&config, u64::from(u32::MAX))
         .unwrap();

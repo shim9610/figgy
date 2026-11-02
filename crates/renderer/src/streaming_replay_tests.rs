@@ -128,7 +128,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 };
                 let mut transfer = StreamTransfer::new(&r.device, spec.format, samples).unwrap();
                 let mut surface =
-                    StreamSurface::new(&r.device, &r.gpu_ledger, &transfer, spec, u64::MAX, 0)
+                    StreamSurface::new(&r.device, &r.gpu_ledger, &transfer, spec, u64::MAX)
                         .unwrap();
                 let color = if opaque {
                     wgpu::Color::WHITE
@@ -149,7 +149,6 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 let preview = display(&r, &surface, &transfer, Some(color), false);
                 let usage = r.gpu_memory_usage();
                 let mut e = r.device.create_command_encoder(&Default::default());
-                let pool = r.pool.gpu_bytes() + r.pool.retired_bytes();
                 assert!(matches!(
                     surface.begin_replay(
                         &r.device,
@@ -159,7 +158,6 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                         color,
                         |_| {},
                         usage.total_bytes() + replay_bytes(spec).unwrap() - 1,
-                        pool
                     ),
                     Err(StreamSurfaceError::TooLarge)
                 ));
@@ -178,7 +176,6 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                         color,
                         |_| {},
                         u64::MAX,
-                        pool,
                     )
                     .unwrap();
                 r.queue.submit([e.finish()]);
