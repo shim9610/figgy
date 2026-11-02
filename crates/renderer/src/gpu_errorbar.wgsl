@@ -204,33 +204,12 @@ fn field_axis_bound(offset: u32, len: u32, cells: u32, high: bool) -> FieldBound
     ));
 }
 
-// Error-free addition for finite, non-overflowing f32 inputs. The returned
-// pair carries the rounded sum in x and its residual in y.
-fn rounded_add(a: f32, b: f32) -> f32 {
-    return fma(1.0, a, b);
-}
-
-fn rounded_subtract(a: f32, b: f32) -> f32 {
-    return fma(1.0, a, -b);
-}
-
-fn two_sum(a: f32, b: f32) -> vec2<f32> {
-    // The bitcasts make each f32 rounding boundary observable and prevent a
-    // backend from reassociating the compensation terms back into `a + b`.
-    let sum = rounded_add(a, b);
-    let b_virtual = rounded_subtract(sum, a);
-    let a_virtual = rounded_subtract(sum, b_virtual);
-    let b_roundoff = rounded_subtract(b, b_virtual);
-    let a_roundoff = rounded_subtract(a, a_virtual);
-    return vec2<f32>(sum, rounded_add(a_roundoff, b_roundoff));
-}
-
 // Keep a fit bound in the same compact `(hi, lo)` form the axis SSoT already
 // consumes. The overflow fallback deliberately keeps the two dominant finite
 // lanes instead of manufacturing infinity; the CPU can still reconstruct a
 // finite f64 bound such as `f32::MAX + f32::MAX`.
 fn add_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    let high_sum = rounded_add(a.x, b.x);
+    let high_sum = grid_rounded_add(a.x, b.x);
     if (!lane_is_finite(high_sum)) {
         if (abs(a.x) >= abs(b.x)) {
             return vec2<f32>(a.x, b.x);
@@ -243,15 +222,15 @@ fn add_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     // both slower and less portable.
     if (bitcast<u32>(high_sum) == bitcast<u32>(a.x)
         && bitcast<u32>(a.x) != bitcast<u32>(b.x)) {
-        return vec2<f32>(a.x, rounded_add(a.y, rounded_add(b.x, b.y)));
+        return vec2<f32>(a.x, grid_rounded_add(a.y, grid_rounded_add(b.x, b.y)));
     }
     if (bitcast<u32>(high_sum) == bitcast<u32>(b.x)
         && bitcast<u32>(a.x) != bitcast<u32>(b.x)) {
-        return vec2<f32>(b.x, rounded_add(b.y, rounded_add(a.x, a.y)));
+        return vec2<f32>(b.x, grid_rounded_add(b.y, grid_rounded_add(a.x, a.y)));
     }
-    let high = two_sum(a.x, b.x);
-    let low = rounded_add(rounded_add(a.y, b.y), high.y);
-    let normalized = two_sum(high.x, low);
+    let high = normalize_grid_pair(vec2<f32>(a.x, b.x));
+    let low = grid_rounded_add(grid_rounded_add(a.y, b.y), high.y);
+    let normalized = normalize_grid_pair(vec2<f32>(high.x, low));
     if (pair_is_finite(normalized)) {
         return normalized;
     }

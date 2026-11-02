@@ -401,6 +401,69 @@ pub(crate) fn emit_part_of(
     true
 }
 
+/// The stroke of an axis line or tick of `axis`.
+fn axis_stroke_style<'t>(axis: &AxisOptions, tag: &'t str) -> StrokeStyle<'t> {
+    StrokeStyle {
+        width: axis.line_width,
+        color: axis.line_color,
+        dash: axis.line_style.pattern(),
+        tag,
+    }
+}
+
+/// An axis drawn along an edge that is not a side of the plot rectangle (a
+/// ternary triangle edge, a 3D box edge): the edge `line` when the axis line
+/// is visible, then the major and minor ticks along the edge's outward
+/// normal. `fraction` places a tick value on the edge (`None` skips it) and
+/// `point(f, offset)` is the pixel point at fraction `f` of the edge, moved
+/// `offset` pixels along its normal.
+#[allow(clippy::too_many_arguments)]
+fn emit_edge_axis_strokes(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+    line: ([f32; 2], [f32; 2]),
+    fraction: impl Fn(f64) -> Option<f32>,
+    point: impl Fn(f32, f32) -> [f32; 2],
+) {
+    let tag_side = side_tag(&side);
+    if axis.line_visible {
+        let tag = format!("axis_{tag_side}");
+        sink.stroke(Slot::Above, line.0, line.1, &axis_stroke_style(axis, &tag));
+    }
+    if axis.tick == TickVisibility::None {
+        return;
+    }
+    let plot = data_area_rect(da);
+    let majors = major_tick_values_for_axis(axis, side.clone(), &plot, fp);
+    let minors = minor_tick_values_for_axis(axis, side, &plot, fp);
+    for (i, (value, length)) in majors
+        .iter()
+        .map(|v| (*v, axis.major_tick_length))
+        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)))
+        .enumerate()
+    {
+        let Some(f) = fraction(value) else {
+            continue;
+        };
+        let (from, to) = match axis.tick {
+            TickVisibility::None => continue,
+            TickVisibility::Outside => (0.0, length),
+            TickVisibility::Inside => (-length, 0.0),
+            TickVisibility::Both => (-length, length),
+        };
+        let tag = format!("tick_{tag_side}_{i}");
+        sink.stroke(
+            Slot::Above,
+            point(f, from),
+            point(f, to),
+            &axis_stroke_style(axis, &tag),
+        );
+    }
+}
+
 #[path = "polar_axes.rs"]
 mod polar;
 #[path = "ternary_axes.rs"]
