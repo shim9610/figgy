@@ -2061,6 +2061,11 @@ impl Renderer {
     /// Install bounded streaming resources once. This does not retain a source
     /// reference or start a chart.
     pub fn configure_streaming(&mut self, limits: crate::StreamingLimits) -> Result<()> {
+        let result = self.configure_streaming_unreported(limits);
+        self.reported(result)
+    }
+
+    fn configure_streaming_unreported(&mut self, limits: crate::StreamingLimits) -> Result<()> {
         self.configure_streaming_runtime(limits.into())
             .map_err(StreamRequestError::into_figgy)
     }
@@ -2069,6 +2074,16 @@ impl Renderer {
     /// accumulation surface. Partial output is shown by normal
     /// `prepare_registered` calls.
     pub fn begin_streaming_chart(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        options: crate::StreamingChartOptions,
+    ) -> Result<()> {
+        let result = self.begin_streaming_chart_unreported(chart, view, options);
+        self.reported(result)
+    }
+
+    fn begin_streaming_chart_unreported(
         &mut self,
         chart: ChartId,
         view: &ChartView,
@@ -2103,6 +2118,16 @@ impl Renderer {
         view: &ChartView,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
+        let result = self.request_auto_streaming_chart_unreported(chart, view, options);
+        self.reported(result)
+    }
+
+    fn request_auto_streaming_chart_unreported(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
         let render_config = self.chart_config(chart)?.clone();
         self.request_auto_streaming_chart_with_config(chart, view, render_config, options)
     }
@@ -2111,6 +2136,22 @@ impl Renderer {
     /// chart remains the document/export authority; only the owned execution
     /// snapshot uses this scaled configuration.
     pub fn request_auto_streaming_chart_with_config(
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        let result = self.request_auto_streaming_chart_with_config_unreported(
+            chart,
+            _view,
+            render_config,
+            options,
+        );
+        self.reported(result)
+    }
+
+    fn request_auto_streaming_chart_with_config_unreported(
         &mut self,
         chart: ChartId,
         _view: &ChartView,
@@ -2127,6 +2168,24 @@ impl Renderer {
     }
 
     pub fn request_auto_streaming_chart_with_display_scale(
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        let result = self.request_auto_streaming_chart_with_display_scale_unreported(
+            chart,
+            _view,
+            render_config,
+            display_scale,
+            options,
+        );
+        self.reported(result)
+    }
+
+    fn request_auto_streaming_chart_with_display_scale_unreported(
         &mut self,
         chart: ChartId,
         _view: &ChartView,
@@ -2506,6 +2565,24 @@ impl Renderer {
         columns: Vec<crate::StreamColumn>,
         options: crate::StreamingChartOptions,
     ) -> Result<crate::AutoStreamingRequest> {
+        let result = self.request_resident_stream_handoff_with_config_unreported(
+            chart,
+            _view,
+            render_config,
+            columns,
+            options,
+        );
+        self.reported(result)
+    }
+
+    fn request_resident_stream_handoff_with_config_unreported(
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        columns: Vec<crate::StreamColumn>,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
         self.request_resident_stream_handoff_with_display_scale(
             chart,
             _view,
@@ -2517,6 +2594,26 @@ impl Renderer {
     }
 
     pub fn request_resident_stream_handoff_with_display_scale(
+        &mut self,
+        chart: ChartId,
+        _view: &ChartView,
+        render_config: Config,
+        display_scale: f32,
+        columns: Vec<crate::StreamColumn>,
+        options: crate::StreamingChartOptions,
+    ) -> Result<crate::AutoStreamingRequest> {
+        let result = self.request_resident_stream_handoff_with_display_scale_unreported(
+            chart,
+            _view,
+            render_config,
+            display_scale,
+            columns,
+            options,
+        );
+        self.reported(result)
+    }
+
+    fn request_resident_stream_handoff_with_display_scale_unreported(
         &mut self,
         chart: ChartId,
         _view: &ChartView,
@@ -2741,6 +2838,15 @@ impl Renderer {
         chart: ChartId,
         sources: &[crate::StreamSourceBinding<'_>],
     ) -> Result<crate::AutoStreamingProgress> {
+        let result = self.auto_stream_chart_step_unreported(chart, sources);
+        self.reported(result)
+    }
+
+    fn auto_stream_chart_step_unreported(
+        &mut self,
+        chart: ChartId,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<crate::AutoStreamingProgress> {
         self.service_stream_requests();
         let job = self
             .active_stream_job(chart)
@@ -2826,6 +2932,14 @@ impl Renderer {
     /// `auto_stream_chart_submit_ranges`. Use `stream_status` for a read-only
     /// query that never submits work or advances the cursor.
     pub fn auto_stream_chart_request_ranges(
+        &mut self,
+        chart: ChartId,
+    ) -> Result<crate::AutoStreamingRangeRequest> {
+        let result = self.auto_stream_chart_request_ranges_unreported(chart);
+        self.reported(result)
+    }
+
+    fn auto_stream_chart_request_ranges_unreported(
         &mut self,
         chart: ChartId,
     ) -> Result<crate::AutoStreamingRangeRequest> {
@@ -2937,6 +3051,15 @@ impl Renderer {
         chart: ChartId,
         sources: &[crate::StreamRangeSourceBinding<'_>],
     ) -> Result<crate::AutoStreamingProgress> {
+        let result = self.auto_stream_chart_submit_ranges_unreported(chart, sources);
+        self.reported(result)
+    }
+
+    fn auto_stream_chart_submit_ranges_unreported(
+        &mut self,
+        chart: ChartId,
+        sources: &[crate::StreamRangeSourceBinding<'_>],
+    ) -> Result<crate::AutoStreamingProgress> {
         self.service_stream_requests();
         let job = self
             .active_stream_job(chart)
@@ -3007,6 +3130,14 @@ impl Renderer {
     /// Queue interruption only for the automatic streaming path. Resident
     /// rendering and the legacy explicit streaming controls are untouched.
     pub fn interrupt_render(&mut self, chart: ChartId) -> Result<crate::RenderInterruptStatus> {
+        let result = self.interrupt_render_unreported(chart);
+        self.reported(result)
+    }
+
+    fn interrupt_render_unreported(
+        &mut self,
+        chart: ChartId,
+    ) -> Result<crate::RenderInterruptStatus> {
         self.chart_config(chart)?;
         self.service_stream_requests();
         let Some(job) = self.active_stream_job(chart) else {
@@ -3032,6 +3163,16 @@ impl Renderer {
     /// ranges directly into mapped staging through `ColumnPairWriter`; neither
     /// encoded payloads nor source references survive this call.
     pub fn stream_chart_step(
+        &mut self,
+        chart: ChartId,
+        view: &ChartView,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<crate::StreamingProgress> {
+        let result = self.stream_chart_step_unreported(chart, view, sources);
+        self.reported(result)
+    }
+
+    fn stream_chart_step_unreported(
         &mut self,
         chart: ChartId,
         view: &ChartView,
@@ -3147,6 +3288,11 @@ impl Renderer {
     /// Cancel new work immediately. Already submitted GPU owners retire only
     /// after queue completion and remain included in the renderer budget.
     pub fn cancel_streaming_chart(&mut self, chart: ChartId) -> Result<()> {
+        let result = self.cancel_streaming_chart_unreported(chart);
+        self.reported(result)
+    }
+
+    fn cancel_streaming_chart_unreported(&mut self, chart: ChartId) -> Result<()> {
         self.cancel_chart_stream(chart)
             .map_err(StreamRequestError::into_figgy)
     }
@@ -3312,6 +3458,15 @@ impl Renderer {
     /// Adjust only subsequent range sizes. An already-issued range remains
     /// unchanged; the initial preflight cap and execution identity are retained.
     pub fn set_stream_chunk_budget(&mut self, chart: ChartId, primitives: u64) -> Result<()> {
+        let result = self.set_stream_chunk_budget_unreported(chart, primitives);
+        self.reported(result)
+    }
+
+    fn set_stream_chunk_budget_unreported(
+        &mut self,
+        chart: ChartId,
+        primitives: u64,
+    ) -> Result<()> {
         self.chart_config(chart)?;
         let draw = self
             .stream_runtime
@@ -3340,6 +3495,12 @@ impl Renderer {
     /// No new work is submitted; this fence excludes future queue submissions.
     #[cfg(target_arch = "wasm32")]
     pub async fn cancel_streaming_chart_and_wait(&mut self, chart: ChartId) -> Result<()> {
+        let result = self.cancel_streaming_chart_and_wait_unreported(chart).await;
+        self.reported(result)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn cancel_streaming_chart_and_wait_unreported(&mut self, chart: ChartId) -> Result<()> {
         self.cancel_streaming_chart(chart)?;
         self.end_gpu_frame();
         self.wait_submitted_work().await?;

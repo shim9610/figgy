@@ -3732,6 +3732,14 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<()> {
+        let result = self.prewarm_all_observed_unreported(observer).await;
+        self.reported(result)
+    }
+
+    async fn prewarm_all_observed_unreported(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<()> {
         self.health.check()?;
         if self.contour_label_pipelines.is_none() {
             #[cfg(target_arch = "wasm32")]
@@ -3877,6 +3885,11 @@ impl Renderer {
     /// Prepare the resident Cartesian groups described by [`Self::prewarm_all_observed`]
     /// without progress callbacks.
     pub async fn prewarm_all(&mut self) -> Result<()> {
+        let result = self.prewarm_all_unreported().await;
+        self.reported(result)
+    }
+
+    async fn prewarm_all_unreported(&mut self) -> Result<()> {
         let mut noop = |_| {};
         self.prewarm_all_observed(&mut noop).await
     }

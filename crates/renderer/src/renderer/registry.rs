@@ -2395,7 +2395,12 @@ impl Renderer {
 
     /// Register one renderer-owned chart. The id issuer and visual revision
     /// are checked before any state is published.
-    pub fn register_chart(
+    pub fn register_chart(&mut self, config: Config, series: Vec<SeriesConfig>) -> Result<ChartId> {
+        let result = self.register_chart_unreported(config, series);
+        self.reported(result)
+    }
+
+    fn register_chart_unreported(
         &mut self,
         mut config: Config,
         series: Vec<SeriesConfig>,
@@ -2455,6 +2460,11 @@ impl Renderer {
     }
 
     pub fn remove_chart(&mut self, id: ChartId) -> Result<()> {
+        let result = self.remove_chart_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_chart_unreported(&mut self, id: ChartId) -> Result<()> {
         if !self.chart_states.contains_key(&id) {
             return Err(FiggyError::UnknownChart { id });
         }
@@ -2473,7 +2483,12 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn set_chart_config(&mut self, id: ChartId, mut config: Config) -> Result<()> {
+    pub fn set_chart_config(&mut self, id: ChartId, config: Config) -> Result<()> {
+        let result = self.set_chart_config_unreported(id, config);
+        self.reported(result)
+    }
+
+    fn set_chart_config_unreported(&mut self, id: ChartId, mut config: Config) -> Result<()> {
         crate::chart::validate_renderer_config(&config)?;
         let state = self
             .chart_states
@@ -2585,6 +2600,15 @@ impl Renderer {
         id: ChartId,
         layer: crate::LayerRef,
     ) -> Result<crate::LayerRef> {
+        let result = self.set_active_layer_unreported(id, layer);
+        self.reported(result)
+    }
+
+    fn set_active_layer_unreported(
+        &mut self,
+        id: ChartId,
+        layer: crate::LayerRef,
+    ) -> Result<crate::LayerRef> {
         let state = self
             .chart_states
             .get(&id)
@@ -2600,6 +2624,11 @@ impl Renderer {
     /// The layer that receives pointer interaction, with the out-of-range
     /// fallback applied.
     pub fn active_layer(&self, id: ChartId) -> Result<crate::LayerRef> {
+        let result = self.active_layer_unreported(id);
+        self.reported(result)
+    }
+
+    fn active_layer_unreported(&self, id: ChartId) -> Result<crate::LayerRef> {
         Ok(self.chart_config(id)?.active_layer())
     }
 
@@ -2643,6 +2672,15 @@ impl Renderer {
     }
 
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
+        let result = self.set_chart_series_unreported(id, series);
+        self.reported(result)
+    }
+
+    fn set_chart_series_unreported(
+        &mut self,
+        id: ChartId,
+        series: Vec<SeriesConfig>,
+    ) -> Result<()> {
         let state = self
             .chart_states
             .get(&id)
@@ -2714,6 +2752,16 @@ impl Renderer {
     /// both declarations, such as an auto-managed legend update. Validation
     /// and every revision successor complete before either value is replaced.
     pub fn set_chart_state(
+        &mut self,
+        id: ChartId,
+        config: Config,
+        series: Vec<SeriesConfig>,
+    ) -> Result<()> {
+        let result = self.set_chart_state_unreported(id, config, series);
+        self.reported(result)
+    }
+
+    fn set_chart_state_unreported(
         &mut self,
         id: ChartId,
         mut config: Config,
@@ -2822,6 +2870,15 @@ impl Renderer {
     /// next prepared, and again only when the config, the series or the scale
     /// change (#160).
     pub fn set_chart_display(&mut self, id: ChartId, surface: Option<(u32, u32)>) -> Result<()> {
+        let result = self.set_chart_display_unreported(id, surface);
+        self.reported(result)
+    }
+
+    fn set_chart_display_unreported(
+        &mut self,
+        id: ChartId,
+        surface: Option<(u32, u32)>,
+    ) -> Result<()> {
         let state = self
             .chart_states
             .get(&id)
@@ -2992,6 +3049,11 @@ impl Renderer {
     }
 
     pub fn set_chart_view_state(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
+        let result = self.set_chart_view_state_unreported(id, view);
+        self.reported(result)
+    }
+
+    fn set_chart_view_state_unreported(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
         validate_chart_view_state(&view)?;
         let state = self
             .chart_states
@@ -3062,6 +3124,15 @@ impl Renderer {
     }
 
     pub fn set_chart_selection(&mut self, id: ChartId, selected: Option<HitId>) -> Result<()> {
+        let result = self.set_chart_selection_unreported(id, selected);
+        self.reported(result)
+    }
+
+    fn set_chart_selection_unreported(
+        &mut self,
+        id: ChartId,
+        selected: Option<HitId>,
+    ) -> Result<()> {
         let state = self
             .chart_states
             .get(&id)
@@ -3106,6 +3177,11 @@ impl Renderer {
     /// raster hot paths. All chart revision successors are preflighted before
     /// any state is changed.
     pub fn sync_external_invalidations(&mut self) -> Result<bool> {
+        let result = self.sync_external_invalidations_unreported();
+        self.reported(result)
+    }
+
+    fn sync_external_invalidations_unreported(&mut self) -> Result<bool> {
         let generation = crate::text_render::font_generation();
         if generation == self.observed_font_generation {
             return Ok(false);
@@ -3461,6 +3537,34 @@ impl Renderer {
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
+        // The guard borrows the renderer, so the check uses a clone of the
+        // health record; a failed check drops the guard, which rolls back.
+        let health = self.health.clone();
+        let guard = self.begin_load_demo_unreported(
+            chart_id,
+            demo_x,
+            demo_sin,
+            demo_t,
+            demo_rc,
+            prepare_state,
+        )?;
+        health.check()?;
+        Ok(guard)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_load_demo_unreported<F>(
+        &mut self,
+        chart_id: ChartId,
+        demo_x: &dyn ColumnSource,
+        demo_sin: &dyn ColumnSource,
+        demo_t: &dyn ColumnSource,
+        demo_rc: &dyn ColumnSource,
+        prepare_state: F,
+    ) -> Result<RendererLoadDemo<'_>>
+    where
+        F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
+    {
         self.health.check()?;
         for id in DEMO_COLUMN_IDS {
             self.reject_streamed_id(id)?;
@@ -3534,6 +3638,15 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
+        let result = self.add_column_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn add_column_unreported(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<ColumnHandle> {
         self.health.check()?;
         let id = id.into();
         if self.pool.slot(&id).is_some() {
@@ -3543,6 +3656,15 @@ impl Renderer {
     }
 
     pub fn add_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        let result = self.add_hilo_column_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn add_hilo_column_unreported(
         &mut self,
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
@@ -3580,6 +3702,11 @@ impl Renderer {
     /// [`Self::defragment`], and an active picker reports `StaleColumn` until it
     /// is prepared again.
     pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
+        let result = self.add_columns_unreported(columns);
+        self.reported(result)
+    }
+
+    fn add_columns_unreported(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
         self.health.check()?;
         for (id, _) in columns {
             self.reject_streamed_id(id)?;
@@ -3625,6 +3752,19 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
+        // The guard borrows the renderer, so the check uses a clone of the
+        // health record; a failed check drops the guard, which rolls back.
+        let health = self.health.clone();
+        let guard = self.begin_upsert_column_unreported(id, source)?;
+        health.check()?;
+        Ok(guard)
+    }
+
+    fn begin_upsert_column_unreported(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
         self.health.check()?;
         let id = id.into();
         self.reject_streamed_id(&id)?;
@@ -3654,6 +3794,19 @@ impl Renderer {
 
     /// Begin a failure-atomic hi/lo insert or same-id replacement.
     pub fn begin_upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<RendererColumnUpsert<'_>> {
+        // The guard borrows the renderer, so the check uses a clone of the
+        // health record; a failed check drops the guard, which rolls back.
+        let health = self.health.clone();
+        let guard = self.begin_upsert_hilo_column_unreported(id, source)?;
+        health.check()?;
+        Ok(guard)
+    }
+
+    fn begin_upsert_hilo_column_unreported(
         &mut self,
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
@@ -3694,12 +3847,30 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
+        let result = self.upsert_column_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_column_unreported(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn ColumnSource,
+    ) -> Result<ColumnHandle> {
         Ok(self.begin_upsert_column(id, source)?.commit())
     }
 
     /// Failure-atomic hi/lo upsert without an intermediate batch-preparation
     /// step.
     pub fn upsert_hilo_column(
+        &mut self,
+        id: impl Into<ColumnId>,
+        source: &dyn HiLoColumnSource,
+    ) -> Result<ColumnHandle> {
+        let result = self.upsert_hilo_column_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_hilo_column_unreported(
         &mut self,
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
@@ -3714,6 +3885,15 @@ impl Renderer {
     /// or a ragged column. Failure-atomic, as [`Self::add_columns`]; the
     /// active picker is prepared against the final pool before publication.
     pub fn upsert_record(
+        &mut self,
+        id: impl Into<RecordId>,
+        source: &RecordSource<'_>,
+    ) -> Result<RecordId> {
+        let result = self.upsert_record_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_record_unreported(
         &mut self,
         id: impl Into<RecordId>,
         source: &RecordSource<'_>,
@@ -3768,6 +3948,15 @@ impl Renderer {
         id: impl Into<RaggedId>,
         source: &RaggedSource<'_>,
     ) -> Result<RaggedId> {
+        let result = self.upsert_ragged_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_ragged_unreported(
+        &mut self,
+        id: impl Into<RaggedId>,
+        source: &RaggedSource<'_>,
+    ) -> Result<RaggedId> {
         self.health.check()?;
         let id = id.into();
         self.reject_streamed_composite(&id, "a ragged column")?;
@@ -3807,6 +3996,11 @@ impl Renderer {
     /// Delete the record `id` and free its member columns. `false` when no
     /// such record is resident.
     pub fn remove_record(&mut self, id: &str) -> Result<bool> {
+        let result = self.remove_record_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_record_unreported(&mut self, id: &str) -> Result<bool> {
         self.health.check()?;
         let Some(record) = self.pool.record(id) else {
             return Ok(false);
@@ -3839,6 +4033,11 @@ impl Renderer {
     /// Delete the ragged column `id` and free its two member columns.
     /// `false` when no such ragged column is resident.
     pub fn remove_ragged(&mut self, id: &str) -> Result<bool> {
+        let result = self.remove_ragged_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_ragged_unreported(&mut self, id: &str) -> Result<bool> {
         self.health.check()?;
         let Some(ragged) = self.pool.ragged(id) else {
             return Ok(false);
@@ -3894,6 +4093,11 @@ impl Renderer {
     /// policy belongs to the host. The web wrapper removes rows for its
     /// auto-managed legend and preserves freely edited legend text.
     pub fn remove_column(&mut self, id: &str) -> Result<bool> {
+        let result = self.remove_column_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_column_unreported(&mut self, id: &str) -> Result<bool> {
         self.health.check()?;
         self.remove_column_impl(id, None)
     }
@@ -3910,6 +4114,16 @@ impl Renderer {
         chart_id: ChartId,
         next_config: Config,
     ) -> Result<bool> {
+        let result = self.remove_column_with_chart_config_unreported(id, chart_id, next_config);
+        self.reported(result)
+    }
+
+    fn remove_column_with_chart_config_unreported(
+        &mut self,
+        id: &str,
+        chart_id: ChartId,
+        next_config: Config,
+    ) -> Result<bool> {
         self.health.check()?;
         self.remove_column_impl(id, Some((chart_id, next_config)))
     }
@@ -3917,6 +4131,11 @@ impl Renderer {
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
     pub fn defragment(&mut self) -> Result<bool> {
+        let result = self.defragment_unreported();
+        self.reported(result)
+    }
+
+    fn defragment_unreported(&mut self) -> Result<bool> {
         self.health.check()?;
         let defragment = self.pool.begin_defragment(pool_alloc_ctx(
             &self.device,
@@ -3960,6 +4179,13 @@ impl Renderer {
     /// still reference the old pool. A failed candidate leaves live columns
     /// and picker bindings on the previous primary.
     pub async fn release_unused_pool_memory(&mut self, minimum_capacity: u64) -> Result<()> {
+        let result = self
+            .release_unused_pool_memory_unreported(minimum_capacity)
+            .await;
+        self.reported(result)
+    }
+
+    async fn release_unused_pool_memory_unreported(&mut self, minimum_capacity: u64) -> Result<()> {
         self.wait_submitted_work().await?;
         self.pool.release_backup();
         self.end_gpu_frame();
@@ -4017,6 +4243,11 @@ impl Renderer {
     /// whether compaction changed the pool; stream retirement may also occur
     /// when it is false.
     pub fn process_pending_maintenance(&mut self) -> Result<bool> {
+        let result = self.process_pending_maintenance_unreported();
+        self.reported(result)
+    }
+
+    fn process_pending_maintenance_unreported(&mut self) -> Result<bool> {
         self.health.check()?;
         self.service_stream_requests();
         if !self.pending_defrag {

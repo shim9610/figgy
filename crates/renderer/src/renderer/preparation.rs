@@ -381,6 +381,11 @@ impl Renderer {
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
+        let result = self.install_preparation_unreported(prepared);
+        self.reported(result)
+    }
+
+    fn install_preparation_unreported(&mut self, prepared: PreparedPipelines) -> Result<()> {
         let PreparedPipelines {
             job,
             contour,

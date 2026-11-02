@@ -2070,6 +2070,17 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<usize>,
     ) -> Result<()> {
+        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected);
+        self.reported(result)
+    }
+
+    fn refresh_annotations_unreported(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<usize>,
+    ) -> Result<()> {
         self.health.check()?;
         view.annotation_selected = selected;
         if view.panel_rect != panel_rect {
@@ -2134,6 +2145,11 @@ impl Renderer {
     /// layers and let [`Self::prepare`] write the transform from the same config;
     /// no separate call to this method is needed.
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
+        let result = self.update_transform_unreported(view, chart);
+        self.reported(result)
+    }
+
+    fn update_transform_unreported(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
         self.health.check()?;
         let panels = expand_for_render(chart.config())?;
         let views = layer_views(view, panels.len())?;
@@ -2162,6 +2178,16 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
+        let result = self.refresh_axis_unreported(view, chart, panel_rect);
+        self.reported(result)
+    }
+
+    fn refresh_axis_unreported(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+    ) -> Result<()> {
         self.refresh_axis_with_selection(view, chart, panel_rect, None)
     }
 
@@ -2174,6 +2200,17 @@ impl Renderer {
     /// [`Self::selection_box`] returns for host UI. An id no element of the
     /// active layer has draws nothing.
     pub fn refresh_axis_with_selection(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<&str>,
+    ) -> Result<()> {
+        let result = self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected);
+        self.reported(result)
+    }
+
+    fn refresh_axis_with_selection_unreported(
         &mut self,
         view: &mut ChartView,
         chart: &Chart,
@@ -2550,6 +2587,11 @@ impl Renderer {
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        let result = self.prepare_unreported(items);
+        self.reported(result)
+    }
+
+    fn prepare_unreported(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
         self.health.check()?;
         for item in items {
             for series in item.series {
@@ -2567,6 +2609,14 @@ impl Renderer {
     /// Mutating or removing a captured chart makes its token stale. Changes to
     /// unrelated charts do not invalidate the captured chart stamps.
     pub fn prepare_registered(
+        &mut self,
+        items: &[RegisteredChartDrawItem<'_>],
+    ) -> Result<PreparedFrame> {
+        let result = self.prepare_registered_unreported(items);
+        self.reported(result)
+    }
+
+    fn prepare_registered_unreported(
         &mut self,
         items: &[RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {

@@ -650,6 +650,11 @@ impl Renderer {
     /// execution. The request is renderer-owned and does not affect explicit
     /// streaming or resident drawing.
     pub fn request_stream_auto_fit(&mut self, id: ChartId, padding: f64) -> Result<()> {
+        let result = self.request_stream_auto_fit_unreported(id, padding);
+        self.reported(result)
+    }
+
+    fn request_stream_auto_fit_unreported(&mut self, id: ChartId, padding: f64) -> Result<()> {
         if !padding.is_finite() || padding < 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "stream auto-fit padding",
@@ -717,6 +722,18 @@ impl Renderer {
         y_extent: &crate::chart::FitExtent,
         padding: f64,
     ) -> Result<()> {
+        let result =
+            self.commit_auto_fit_all_if_current_unreported(token, x_extent, y_extent, padding);
+        self.reported(result)
+    }
+
+    fn commit_auto_fit_all_if_current_unreported(
+        &mut self,
+        token: &FitCommitToken,
+        x_extent: &crate::chart::FitExtent,
+        y_extent: &crate::chart::FitExtent,
+        padding: f64,
+    ) -> Result<()> {
         self.require_current_fit(token)?;
 
         let state = self
@@ -760,6 +777,13 @@ impl Renderer {
     /// wasm it first awaits `GPUDevice.createComputePipelineAsync`; a failed
     /// warmup leaves the engine unpublished.
     pub async fn ensure_errorbar_extent_engine(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
+        let result = self.ensure_errorbar_extent_engine_unreported().await;
+        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
+    }
+
+    async fn ensure_errorbar_extent_engine_unreported(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
         if self.errorbar_extent_engine.is_some() {
@@ -1010,6 +1034,15 @@ impl Renderer {
         id: ChartId,
         padding: f64,
     ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
+        let result = self.begin_auto_fit_all_unreported(id, padding);
+        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
+    }
+
+    fn begin_auto_fit_all_unreported(
+        &self,
+        id: ChartId,
+        padding: f64,
+    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
         use crate::gpu_errorbar::GpuErrorbarError;
         if !padding.is_finite() || padding < 0.0 {
             return Err(GpuErrorbarError::from_figgy(FiggyError::InvalidConfig {
@@ -1086,6 +1119,11 @@ impl Renderer {
     /// the fit geometry or a source column changed since it began
     /// (`StaleStateToken`). Remembers each series' extent for the next fit.
     pub fn commit_auto_fit_all(&mut self, resolved: ResolvedAutoFitAll) -> Result<()> {
+        let result = self.commit_auto_fit_all_unreported(resolved);
+        self.reported(result)
+    }
+
+    fn commit_auto_fit_all_unreported(&mut self, resolved: ResolvedAutoFitAll) -> Result<()> {
         self.require_current_fit(&resolved.token)?;
         let id = resolved.token.chart_id;
         let state = self
