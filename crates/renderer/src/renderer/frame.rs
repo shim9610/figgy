@@ -779,8 +779,11 @@ pub(super) fn column_fingerprint<'a>(pairs: impl Iterator<Item = (&'a str, u64)>
 /// equations (additive, max) depend on what is under them, so those panels
 /// keep drawing directly.
 pub(super) struct ResidentDisplay {
-    /// The panel view's content-revision cell. Its address names the panel;
-    /// once the view and every token holding it are gone, the entry retires.
+    /// The panel view's content-revision cell. Its address names the panel
+    /// (allocation identity): this `Weak` keeps the allocation, so the address
+    /// cannot be reused by another panel while the entry exists. Once the view
+    /// and every token holding it are gone, `strong_count()` is 0 and the
+    /// entry retires. See "Identity and staleness checks" in `ARCHITECTURE.md`.
     pub(super) view: std::sync::Weak<std::sync::atomic::AtomicU64>,
     pub(super) key: ResidentDisplayKey,
     pub(super) serial: u64,
@@ -1365,6 +1368,10 @@ pub struct ChartView {
     pub(super) layer_stamps: ChartViewLayerStamps,
     pub(super) transform_buffer: TrackedBuffer,
     pub(super) transform_bg: wgpu::BindGroup,
+    /// Moves on every content change, so a prepared token can tell it is
+    /// stale. The cell's allocation is also the panel's identity (the
+    /// resident display cache keys on it), so it is created once and never
+    /// replaced. See "Identity and staleness checks" in `ARCHITECTURE.md`.
     pub(super) content_revision: Arc<std::sync::atomic::AtomicU64>,
     /// Changes only when the streamed data prefix's coordinate space changes.
     /// Decoration texture rewrites deliberately leave this revision untouched.

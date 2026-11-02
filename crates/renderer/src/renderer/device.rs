@@ -116,6 +116,10 @@ pub(super) fn effective_pool_capacity(requested: u64, caps: RendererDeviceCaps) 
         .min(caps.max_buffer_size)
 }
 
+/// The next renderer identity: an issued number from one process-wide counter,
+/// incremented with a check and never wrapped, so no two renderers share one.
+/// `ChartId` and `RenderRevision` carry it. See "Identity and staleness
+/// checks" in `ARCHITECTURE.md`.
 pub(super) fn issue_renderer_identity() -> Result<u64> {
     static NEXT_RENDERER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     NEXT_RENDERER_ID
