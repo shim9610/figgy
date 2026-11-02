@@ -100,9 +100,15 @@ follow-up.
   fragment per block, spliced into each module by `wgsl_module!`
   (`shader_assembly.rs`); `SHADER_COMMON.md` documents the contracts. A CPU
   twin of a shader function is test support, never product code.
-- New serialized fields are additive: `Option` or defaulted, with
-  `skip_serializing_if`, so older documents parse and re-serialize
-  byte-identically. Breaking Rust literals get a CHANGELOG migration note.
+- Older documents keep working. A document written by an earlier release
+  parses, reads back as the same model value after a save, and exports the
+  same image (PNG at 1x and 2x) before and after the save
+  (`tests/released_documents.rs`, `tests/released_documents_render.rs`). Its
+  JSON may be written in a newer form, for example where a fact stored
+  twice gets one owner; once saved, it re-serializes unchanged. New
+  serialized fields are `Option` or defaulted, with `skip_serializing_if`. A
+  changed wire form and breaking Rust literals get a CHANGELOG migration
+  note.
 - Check external facts at the source. Publication state comes from the
   crates.io index, not from wording in the docs.
 - Telling objects apart and detecting stale tokens reuse one of the patterns
