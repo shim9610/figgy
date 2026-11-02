@@ -1130,16 +1130,10 @@ mod title_tests {
             ],
             ..Default::default()
         };
-        c.title = "Independent title".into();
+        c.set_title_text("Independent title");
         c.format_labels();
         for scale in [1., 2.] {
-            let legacy = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
-            c.normalize_title();
             let original = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
-            assert_eq!(
-                legacy.annotations, original.annotations,
-                "normalization must preserve appearance"
-            );
             let tb = bounds(&original, &c, true).unwrap();
             let lb = bounds(&original, &c, false).unwrap();
             let title_ink = crop(&original.annotations, tb, scale);

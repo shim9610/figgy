@@ -30,7 +30,7 @@ macro_rules! released_documents {
                 let written = serde_json::to_string(&parsed).expect("serialize");
                 let mut expected: serde_json::Value =
                     serde_json::from_str(fixture).expect("fixture is JSON");
-                if !migrate(&mut expected) {
+                if !migrate($file, &mut expected) {
                     assert_same_document($file, fixture, &written);
                     return;
                 }
@@ -92,11 +92,45 @@ released_documents! {
 
 /// Rewrite a released document into the form 0.19 writes, the way the
 /// CHANGELOG's migration notes describe it. `false` when nothing changed.
-fn migrate(document: &mut serde_json::Value) -> bool {
+fn migrate(file: &str, document: &mut serde_json::Value) -> bool {
     let Some(object) = document.as_object_mut() else {
         return false;
     };
+    if file.contains("-radial-") {
+        return migrate_radial_title(object);
+    }
     migrate_picked_points(object)
+}
+
+/// A radial chart's plain `title` becomes its `chart_title` (#160): drawn in
+/// the document's font at 1.5 × `font_size` and in `label_color` when the
+/// document has no `chart_title`, dropped beside one, and removed when it is
+/// empty.
+fn migrate_radial_title(chart: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    use serde_json::json;
+    let Some(title) = chart.remove("title") else {
+        return false;
+    };
+    let title = title.as_str().expect("a plain title").to_owned();
+    if chart.get("chart_title").is_none_or(|t| t.is_null()) && !title.is_empty() {
+        let color: renderer::Color =
+            serde_json::from_value(chart["label_color"].clone()).expect("label colour");
+        let plain = renderer::config::ChartTitleOptions::from_legacy_plain(
+            &title,
+            chart["font_family"].as_str().expect("font family"),
+            chart["font_size"].as_f64().expect("font size") as f32,
+            color,
+        );
+        // Through the JSON text, as the chart writes its `f32` fields.
+        let text: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&plain.text).expect("serialize"))
+                .expect("JSON");
+        chart.insert(
+            "chart_title".into(),
+            json!({"visible": plain.visible, "text": text}),
+        );
+    }
+    true
 }
 
 /// `picked_points` joins `picked_data` (#160): its refs become `point` refs

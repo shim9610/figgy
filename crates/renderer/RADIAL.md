@@ -49,7 +49,6 @@ let mut renderer = RadialRenderer::try_new(
     wgpu::TextureFormat::Rgba8Unorm,
 )?;
 let mut chart = RadialChart {
-    title: "Regional share".into(),
     slices: vec![
         RadialSlice::new("A", 30.0, Color::from_rgb8(28, 179, 155)),
         RadialSlice::new("B", 70.0, Color::from_rgb8(251, 128, 74)),
@@ -58,6 +57,8 @@ let mut chart = RadialChart {
     labels: RadialLabels::Outside,
     ..Default::default()
 };
+// 일반 텍스트 제목은 지금의 차트 글꼴, `font_size`의 1.5배, `label_color`로 만든다.
+chart.set_title_text("Regional share");
 chart.style = renderer::RadialStyle::three_dimensional();
 // 렌더러는 라벨 문자열을 그리기만 한다. 값이나 표시 형식을 바꾼 뒤에는 다시 기록한다.
 chart.format_labels();
@@ -424,6 +425,7 @@ async fn update_hover(
 기본값으로 읽고, 기본값일 때는 저장하지 않는다. `chart_title`은 공통 차트 제목
 `ChartTitleOptions`이지만 이전과 같은 `{ "visible", "text" }` 객체로 저장한다. 위치는
 `decorations`에 있으므로 `offset_x`·`offset_y`·`top_margin`은 0이어야 한다. `RadialStyle`의 빠진 필드도 기본값을 사용한다.
+0.19 이전 문서에는 일반 문자열 `title`도 있다. `chart_title`이 없으면 이 문자열을 문서의 `font_family`, `font_size`의 1.5배, `label_color`로 된 `chart_title`로 읽고, `chart_title`이 있으면 무시한다. 저장할 때는 `chart_title`만 쓴다.
 저장된 모델과 복원한 모델은 모두 `validate`로 확인한다. 일시적인 호버·선택을 저장하지
 않으려면 저장용 복사본의 `interaction`을 초기화한다.
 

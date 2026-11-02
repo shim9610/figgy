@@ -134,7 +134,7 @@ macro_rules! family_contract {
                     cached == fresh(&empty, 1.),
                     "empty layer: cached export differs from fresh"
                 );
-                empty.title = "Edited".into();
+                empty.set_title_text("Edited");
                 assert!(!Arc::ptr_eq(&f, &r.prepare(&empty, SIZE, 1.).unwrap()));
                 assert!(
                     r.export_rgba(&empty, SIZE, renderer::ExportOptions::document(1.))
@@ -301,7 +301,7 @@ macro_rules! family_contract {
                 }
                 // A title edit still rebuilds the frame.
                 let mut retitled = edited.clone();
-                retitled.title = "Edited".into();
+                retitled.set_title_text("Edited");
                 assert!(!Arc::ptr_eq(
                     &f,
                     &r.prepare(&retitled, SIZE, scale).unwrap()
@@ -315,7 +315,6 @@ macro_rules! family_contract {
 
 fn annotated_radial() -> RadialChart {
     let mut chart = RadialChart {
-        title: "Annotated donut".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
             RadialSlice::new("High", 35., Color::from_rgb8(100, 145, 185)),
@@ -335,6 +334,7 @@ fn annotated_radial() -> RadialChart {
         },
         ..Default::default()
     };
+    chart.set_title_text("Annotated donut");
     chart.format_labels();
     chart
 }

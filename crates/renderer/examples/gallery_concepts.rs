@@ -214,7 +214,6 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
 fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
     let mut r = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut chart = RadialChart {
-        title: "Studio time / a creative week".into(),
         slices: vec![
             RadialSlice::new("Design", 38., rgb(245, 103, 87)),
             RadialSlice::new("Build", 32., rgb(111, 126, 241)),
@@ -246,6 +245,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         },
         ..Default::default()
     };
+    chart.set_title_text("Studio time / a creative week");
     chart.format_labels();
     let image = r
         .export_rgba(&chart, SIZE, renderer::ExportOptions::document(1.))
@@ -253,10 +253,10 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
-    chart.title = "Portfolio / a different perspective".into();
     chart.kind = RadialKind::Donut { inner_radius: 0.57 };
     chart.background = rgb(19, 22, 39);
     chart.label_color = rgb(218, 224, 241);
+    chart.set_title_text("Portfolio / a different perspective");
     chart.slices = vec![
         RadialSlice::new("Equities", 42., rgb(145, 159, 244)),
         RadialSlice::new("Bonds", 28., rgb(99, 204, 192)),

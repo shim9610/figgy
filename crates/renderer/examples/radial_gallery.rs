@@ -10,7 +10,6 @@ use renderer::{
 use std::path::PathBuf;
 fn base() -> RadialChart {
     let mut chart = RadialChart {
-        title: "Regional share".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         labels: RadialLabels::Outside,
         label_format: RadialLabelFormat::NamePercent,
@@ -23,6 +22,7 @@ fn base() -> RadialChart {
         ],
         ..Default::default()
     };
+    chart.set_title_text("Regional share");
     chart.style = RadialStyle {
         material: Material::Matte,
         // Match the approved oblique mockup; 0 degrees is straight overhead.
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("pearl", Material::Pearl),
     ] {
         let mut c = base();
-        c.title = name.to_uppercase();
+        c.set_title_text(&name.to_uppercase());
         c.style.material = material;
         if material == Material::Toon {
             c.style.outline.rim = true;
@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cases.push((name.to_owned(), c));
     }
     let mut outlined = base();
-    outlined.title = "Raised pie / visible rim and separators".into();
+    outlined.set_title_text("Raised pie / visible rim and separators");
     outlined.kind = RadialKind::Pie;
     outlined.style.material = Material::Flat;
     outlined.style.depth = 0.3;
@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(("outlined-raised-pie".into(), outlined));
     for (name, amount) in [("corners-sharp", 0.0), ("corners-rounded", 0.12)] {
         let mut c = base();
-        c.title = name.into();
+        c.set_title_text(name);
         c.style.inner_corner = amount;
         c.style.outer_corner = amount;
         c.style.depth = 0.0;
@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cases.push((name.into(), c));
     }
     let mut edited = base();
-    edited.title = "Selected slice / individual edits".into();
+    edited.set_title_text("Selected slice / individual edits");
     edited.interaction.selected = Some(RadialTarget::main(0));
     let style = RadialStyle {
         material: Material::Ceramic,
@@ -130,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     edited.value_suffix = " units".into();
     cases.push(("individual-edit".into(), edited));
     let mut split = base();
-    split.title = "Regional share / Video breakdown".into();
+    split.set_title_text("Regional share / Video breakdown");
     split.labels = RadialLabels::Inside;
     split.label_format = RadialLabelFormat::Percent;
     split.split = Some(RadialSplit {
@@ -144,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(("pie-of-pie".into(), split));
     // Deterministic time samples: host calls the same model transition on pointer events.
     let mut hover = base();
-    hover.title = "Hover lift / Search".into();
+    hover.set_title_text("Hover lift / Search");
     hover.style.material = Material::Ceramic;
     for frame in 0..20 {
         hover.interaction.animate_hover(

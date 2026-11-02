@@ -56,7 +56,6 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
         .await
         .unwrap();
     let mut c = RadialChart {
-        title: "Radial".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
             RadialSlice::new("High", 35., Color::from_rgb8(110, 90, 170)),
@@ -64,6 +63,7 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
         ],
         ..Default::default()
     };
+    c.set_title_text("Radial");
     c.format_labels();
     let frame = r.prepare(&c, (800, 520), 2.).unwrap();
     let before = r

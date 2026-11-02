@@ -85,7 +85,6 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
     let _guard = LOCK.lock().unwrap();
     let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
-        title: "Editable donut labels".into(),
         style: RadialStyle::three_dimensional(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
@@ -94,6 +93,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         ],
         ..Default::default()
     };
+    c.set_title_text("Editable donut labels");
     c.format_labels();
     for scale in [1., 2.] {
         c.decorations = Default::default();
@@ -478,7 +478,7 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         r.end_frame();
                     }
                 }
-                c.title.clear();
+                c.set_title_text("");
                 let hidden = r.prepare(&c, (800, 600), 1.0).unwrap();
                 assert!(
                     !hidden
@@ -495,7 +495,6 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
         RadialRenderer,
         [{
             let mut chart = RadialChart {
-                title: "Editable donut title".into(),
                 kind: RadialKind::Donut { inner_radius: 0.5 },
                 slices: vec![
                     RadialSlice::new("A", 35.0, color),
@@ -503,6 +502,7 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                 ],
                 ..Default::default()
             };
+            chart.set_title_text("Editable donut title");
             chart.format_labels();
             chart
         }],
@@ -522,8 +522,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         ($renderer:ty, $chart:expr) => {{
             let mut r = <$renderer>::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c = $chart;
-            c.title = "Title H2O".into();
-            c.normalize_title();
+            c.set_title_text("Title H2O");
             for scale in [1., 2.] {
                 let original = c.clone();
                 let first = r.prepare(&c, (800, 520), scale).unwrap();
@@ -639,12 +638,12 @@ fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
         )
     };
     let mut prepared = RadialChart {
-        title: "Prepared".into(),
         kind: RadialKind::Pie,
         labels: RadialLabels::Outside,
         slices: (0..4).map(|i| slice(i, 1.0)).collect(),
         ..Default::default()
     };
+    prepared.set_title_text("Prepared");
     prepared.format_labels();
     let mut other = prepared.clone();
     other.slices = (0..200).map(|i| slice(i, 1.0)).collect();
@@ -691,7 +690,6 @@ fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
     // 63 tiny slices cluster on the right of the start angle; the large
     // one's label sits alone on the left.
     let mut full = RadialChart {
-        title: "Crowded".into(),
         kind: RadialKind::Pie,
         labels: RadialLabels::Outside,
         start_angle_degrees: -10.0,
@@ -709,6 +707,7 @@ fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
             .collect(),
         ..Default::default()
     };
+    full.set_title_text("Crowded");
     full.format_labels();
     full.validate().unwrap();
     for scale in [1.0, 2.0] {

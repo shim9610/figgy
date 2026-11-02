@@ -2383,7 +2383,6 @@ pub mod radial {
                 ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
             };
         let mut chart = RadialChart {
-            title: "Budget by department, team and project".into(),
             kind: RadialKind::Donut { inner_radius: 0.18 },
             labels: RadialLabels::Outside,
             label_format: RadialLabelFormat::NamePercent,
@@ -2443,13 +2442,13 @@ pub mod radial {
             ],
             ..Default::default()
         };
+        chart.set_title_text("Budget by department, team and project");
         chart.format_labels();
         chart
     }
 
     pub fn radial_chart() -> RadialChart {
         let mut chart = RadialChart {
-            title: "Traffic sources".into(),
             kind: RadialKind::Donut { inner_radius: 0.5 },
             slices: vec![
                 RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
@@ -2460,6 +2459,7 @@ pub mod radial {
             ],
             ..Default::default()
         };
+        chart.set_title_text("Traffic sources");
         chart.style = RadialStyle::three_dimensional();
         chart.format_labels();
         chart

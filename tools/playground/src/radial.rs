@@ -565,7 +565,18 @@ const RADIAL_FORMATS: &[RadialLabelFormat] = &[
 fn inspector(ui: &mut egui::Ui, c: &mut RadialChart) {
     ui.horizontal(|ui| {
         ui.label("Title");
-        ui.text_edit_singleline(&mut c.title);
+        // The title as plain text; an edit sets it again in the chart's
+        // font.
+        let mut title: String = c
+            .resolved_title()
+            .text
+            .segments
+            .iter()
+            .map(|segment| segment.text)
+            .collect();
+        if ui.text_edit_singleline(&mut title).changed() {
+            c.set_title_text(&title);
+        }
     });
     let mut donut = matches!(c.kind, RadialKind::Donut { .. });
     if ui.checkbox(&mut donut, "Donut").changed() {

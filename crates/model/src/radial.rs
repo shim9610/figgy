@@ -424,15 +424,21 @@ pub struct RadialSplit {
 
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "radial_wire::RadialChartWire"))]
 pub struct RadialChart {
     /// Editable decoration positions and selection, in logical pixels.
     #[cfg_attr(feature = "serde", serde(default))]
     pub decorations: crate::DecorationLayout,
-    /// Legacy plain title, used only when `chart_title` is absent.
-    pub title: String,
-    /// Independent rich title, the shared chart title. Its position remains
-    /// in `decorations`: the offsets and `top_margin` must be 0, and the wire
-    /// form is the `{"visible", "text"}` object of a [`BoundedTitleOptions`](crate::BoundedTitleOptions).
+    /// The chart's title, the shared rich chart title; `None` draws none.
+    /// Its position remains in `decorations`: the offsets and `top_margin`
+    /// must be 0, and the wire form is the `{"visible", "text"}` object of a
+    /// [`BoundedTitleOptions`](crate::BoundedTitleOptions).
+    /// [`Self::set_title_text`] sets a plain title.
+    ///
+    /// A document written before 0.19 also carries `title`, a plain string
+    /// drawn in the chart's font when `chart_title` is absent. It is read
+    /// into this field in the document's `font_family`, `font_size` and
+    /// `label_color`, as it was drawn; only `chart_title` is written (#160).
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -479,7 +485,6 @@ impl Default for RadialChart {
     fn default() -> Self {
         Self {
             decorations: Default::default(),
-            title: String::new(),
             chart_title: None,
             active_layer: Default::default(),
             annotations: Default::default(),
@@ -504,6 +509,100 @@ impl Default for RadialChart {
 #[cfg(feature = "serde")]
 fn default_decimals() -> usize {
     1
+}
+
+/// The document form a [`RadialChart`] is read from: its own fields, and
+/// the plain `title` documents wrote before 0.19 (#160).
+#[cfg(feature = "serde")]
+mod radial_wire {
+    use super::*;
+
+    /// Every field of [`RadialChart`] with the same keys and defaults, and
+    /// the legacy `title`.
+    #[derive(serde::Deserialize)]
+    pub(super) struct RadialChartWire {
+        #[serde(default)]
+        decorations: crate::DecorationLayout,
+        /// The plain title of a document written before 0.19.
+        #[serde(default)]
+        title: String,
+        #[serde(default, with = "crate::bounded_title::bounded_title_wire")]
+        chart_title: Option<crate::config::ChartTitleOptions>,
+        #[serde(default)]
+        active_layer: crate::LayerRef,
+        #[serde(default)]
+        annotations: crate::AnnotationLayer,
+        slices: Vec<RadialSlice>,
+        kind: RadialKind,
+        start_angle_degrees: f32,
+        split: Option<RadialSplit>,
+        style: RadialStyle,
+        labels: RadialLabels,
+        #[serde(default)]
+        label_format: RadialLabelFormat,
+        #[serde(default = "default_decimals")]
+        label_decimals: usize,
+        #[serde(default)]
+        value_suffix: String,
+        #[serde(default)]
+        interaction: RadialInteraction,
+        font_family: String,
+        font_size: f32,
+        label_color: Color,
+        background: Color,
+    }
+
+    impl From<RadialChartWire> for RadialChart {
+        fn from(wire: RadialChartWire) -> Self {
+            let RadialChartWire {
+                decorations,
+                title,
+                chart_title,
+                active_layer,
+                annotations,
+                slices,
+                kind,
+                start_angle_degrees,
+                split,
+                style,
+                labels,
+                label_format,
+                label_decimals,
+                value_suffix,
+                interaction,
+                font_family,
+                font_size,
+                label_color,
+                background,
+            } = wire;
+            let mut chart = RadialChart {
+                decorations,
+                chart_title,
+                active_layer,
+                annotations,
+                slices,
+                kind,
+                start_angle_degrees,
+                split,
+                style,
+                labels,
+                label_format,
+                label_decimals,
+                value_suffix,
+                interaction,
+                font_family,
+                font_size,
+                label_color,
+                background,
+            };
+            // The legacy title was drawn only without a rich one, in the
+            // chart's font as the document set it.
+            if chart.chart_title.is_none() {
+                chart.set_title_text(&title);
+            }
+            chart
+        }
+    }
 }
 
 fn range(x: f32, lo: f32, hi: f32) -> bool {
@@ -598,24 +697,40 @@ impl RadialChart {
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
+    /// The title as it is drawn: [`Self::chart_title`], or an empty title in
+    /// the chart's font without one.
     pub fn resolved_title(&self) -> crate::config::ChartTitleOptions {
-        self.chart_title.clone().unwrap_or_else(|| {
-            crate::config::ChartTitleOptions::from_legacy_plain(
-                &self.title,
-                &self.font_family,
-                self.font_size,
-                self.label_color,
-            )
-        })
+        self.chart_title
+            .clone()
+            .unwrap_or_else(|| self.plain_title(""))
     }
-    /// Copy the legacy `title` into `chart_title` in the current chart font
-    /// and colour, so later edits to `font_family`, `font_size` or
-    /// `label_color` no longer change the title. Does nothing when
-    /// `chart_title` is already set.
-    pub fn normalize_title(&mut self) {
-        if self.chart_title.is_none() {
-            self.chart_title = Some(self.resolved_title());
+
+    /// Make the title `text` in plain characters, in the chart's font at
+    /// 1.5 × `font_size` and in `label_color` as they are now; an existing
+    /// title keeps its visibility. A later edit of the chart's font leaves
+    /// the title as it is: call this again to follow it. An empty `text`
+    /// removes the title.
+    pub fn set_title_text(&mut self, text: &str) {
+        if text.is_empty() {
+            self.chart_title = None;
+            return;
         }
+        let mut plain = self.plain_title(text);
+        if let Some(title) = &self.chart_title {
+            plain.visible = title.visible;
+        }
+        self.chart_title = Some(plain);
+    }
+
+    /// A plain title in the chart's font, the way a title without its own
+    /// style is drawn.
+    fn plain_title(&self, text: &str) -> crate::config::ChartTitleOptions {
+        crate::config::ChartTitleOptions::from_legacy_plain(
+            text,
+            &self.font_family,
+            self.font_size,
+            self.label_color,
+        )
     }
 
     /// Whether the chart is a sunburst (#140): a slice has children, so the
@@ -757,8 +872,7 @@ impl RadialChart {
     /// Fill the drawn text of every slice and detail child that has none, as
     /// [`Self::format_labels`] writes it, and keep the texts that are set:
     /// the step that makes a document written before `text` existed draw
-    /// the labels it drew then. Like [`Self::normalize_title`], run it once
-    /// when a document is loaded.
+    /// the labels it drew then. Run it once when a document is loaded.
     pub fn normalize_labels(&mut self) {
         self.write_labels(false);
     }
@@ -860,9 +974,6 @@ impl RadialChart {
         if !range(self.font_size, 8.0, 64.0) || !color(self.label_color) || !color(self.background)
         {
             return Err("invalid radial text or background");
-        }
-        if self.title.chars().count() > 160 || self.title.contains(['\n', '\r']) {
-            return Err("title must be single-line, at most 160 characters");
         }
         validate_style(&self.style)?;
         if self.label_decimals > 6
@@ -1537,10 +1648,11 @@ mod editing_contract {
     #[test]
     fn the_title_is_the_shared_chart_title_positioned_by_decorations() {
         let mut chart = split_chart();
-        chart.title = "Plain".into();
-        let legacy = chart.resolved_title();
+        assert_eq!(chart.chart_title, None);
+        chart.set_title_text("Plain");
+        let plain = chart.resolved_title();
         assert_eq!(
-            legacy,
+            plain,
             crate::config::ChartTitleOptions::from_legacy_plain(
                 "Plain",
                 &chart.font_family,
@@ -1548,10 +1660,20 @@ mod editing_contract {
                 chart.label_color
             )
         );
-        assert_eq!(legacy.text.font_size, chart.font_size * 1.5);
+        assert_eq!(plain.text.font_size, chart.font_size * 1.5);
         assert_eq!(chart.validate(), Ok(()));
-        chart.normalize_title();
-        assert_eq!(chart.chart_title, Some(legacy));
+        assert_eq!(chart.chart_title, Some(plain.clone()));
+        // A new text keeps the title's visibility; an empty one removes it.
+        chart.chart_title.as_mut().unwrap().visible = false;
+        chart.set_title_text("Other");
+        let other = chart.chart_title.clone().unwrap();
+        assert!(!other.visible);
+        assert_eq!(other.text.segments.len(), 5);
+        assert_eq!(other.text.font_size, plain.text.font_size);
+        let mut cleared = chart.clone();
+        cleared.set_title_text("");
+        assert_eq!(cleared.chart_title, None);
+        chart.chart_title = Some(plain);
         for edit in [
             |t: &mut crate::config::ChartTitleOptions| t.offset_x = 4.0,
             |t: &mut crate::config::ChartTitleOptions| t.offset_y = -1.0,
@@ -1572,8 +1694,7 @@ mod editing_contract {
     #[test]
     fn the_title_keeps_the_bounded_wire_form() {
         let mut chart = split_chart();
-        chart.title = "T".into();
-        chart.normalize_title();
+        chart.set_title_text("T");
         let json = serde_json::to_value(&chart).unwrap();
         let title = json["chart_title"].as_object().unwrap();
         assert_eq!(title.len(), 2, "no offsets or band are written");

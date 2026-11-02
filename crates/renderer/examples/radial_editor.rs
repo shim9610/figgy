@@ -100,7 +100,6 @@ impl Editor {
             wgpu::TextureFormat::Rgba8Unorm,
         )?;
         let mut chart = RadialChart {
-            title: "Select a slice to edit".into(),
             kind: RadialKind::Donut { inner_radius: 0.5 },
             slices: vec![
                 RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
@@ -111,6 +110,7 @@ impl Editor {
             ],
             ..Default::default()
         };
+        chart.set_title_text("Select a slice to edit");
         chart.style = RadialStyle::three_dimensional();
         Ok(Self {
             state,
@@ -266,7 +266,19 @@ impl eframe::App for Editor {
                             style(ui, s);
                         }
                     } else {
-                        ui.text_edit_singleline(&mut self.chart.title);
+                        // The title as plain text; an edit sets it again in
+                        // the chart's font.
+                        let mut title: String = self
+                            .chart
+                            .resolved_title()
+                            .text
+                            .segments
+                            .iter()
+                            .map(|segment| segment.text)
+                            .collect();
+                        if ui.text_edit_singleline(&mut title).changed() {
+                            self.chart.set_title_text(&title);
+                        }
                         choice(
                             ui,
                             "placement",

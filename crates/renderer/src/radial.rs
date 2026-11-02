@@ -1468,7 +1468,6 @@ struct FrameKey {
     /// The decoration selection the frame highlights: an annotation's is
     /// drawn on the annotation overlay instead.
     selected: Option<model::DecorationId>,
-    title: String,
     chart_title: Option<model::config::ChartTitleOptions>,
     slices: Vec<RadialSlice>,
     kind: RadialKind,
@@ -1492,7 +1491,6 @@ impl FrameKey {
     fn of(chart: &RadialChart) -> Self {
         let RadialChart {
             decorations,
-            title,
             chart_title,
             // Routes pointer interaction only; no pixel depends on it.
             active_layer: _,
@@ -1524,7 +1522,6 @@ impl FrameKey {
             data_area: *data_area,
             offsets: offsets.clone(),
             selected: frame_selection(selected).cloned(),
-            title: title.clone(),
             chart_title: chart_title.clone(),
             slices: slices.clone(),
             kind: *kind,
@@ -1544,7 +1541,6 @@ impl FrameKey {
     fn matches(&self, chart: &RadialChart) -> bool {
         let RadialChart {
             decorations,
-            title,
             chart_title,
             active_layer: _,
             annotations: _,
@@ -1571,7 +1567,6 @@ impl FrameKey {
         self.data_area == *data_area
             && self.offsets == *offsets
             && self.selected.as_ref() == frame_selection(selected)
-            && self.title == *title
             && self.chart_title == *chart_title
             && self.slices == *slices
             && self.kind == *kind
@@ -1737,7 +1732,6 @@ mod frame_key_tests {
         // Exhaustive, like `FrameKey::of`: a new field must get a row here.
         let RadialChart {
             decorations: _,
-            title: _,
             chart_title: _,
             active_layer: _,
             annotations: _,
@@ -1775,8 +1769,7 @@ mod frame_key_tests {
             ("decorations.selected", |c| {
                 c.decorations.selected = Some(DecorationId::ChartTitle)
             }),
-            ("title", |c| c.title = "T".into()),
-            ("chart_title", |c| c.normalize_title()),
+            ("chart_title", |c| c.set_title_text("T")),
             ("slices", |c| c.slices[0].explode = 0.1),
             ("slices.text", |c| c.slices[0].text = Some("x".into())),
             ("kind", |c| c.kind = RadialKind::Donut { inner_radius: 0.5 }),
@@ -1866,7 +1859,7 @@ mod layer_cache_key_tests {
         assert!(FrameKey::of(&base).matches(&layered));
         assert_eq!(annotation_key(&base), annotation_key(&layered));
         let mut edited = base.clone();
-        edited.title = "x".into();
+        edited.set_title_text("x");
         assert_ne!(FrameKey::of(&base), FrameKey::of(&edited));
         assert!(!FrameKey::of(&base).matches(&edited));
         assert_ne!(annotation_key(&base), annotation_key(&edited));
