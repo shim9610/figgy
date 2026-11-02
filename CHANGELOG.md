@@ -2645,8 +2645,11 @@ entries above describe the changes.
   document (configs, radial charts, and the categorical, box plot and radar
   documents through their readers) at 1x and 2x before and after the save
   and requires identical pixels; an empty default document must be refused
-  for the same reason on both sides, and an edited one must draw. CLAUDE.md
-  states the rule.
+  for the same reason on both sides, and an edited one must draw. The edited
+  radial documents' explicit plot area starts above the 70 px title band
+  every release has used, so no release draws them as written: they must
+  be refused alike, and their pixels are compared with the automatic plot
+  area. CLAUDE.md states the rule.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `vector_render` places the heads at fixed arc spacing along the tangent,

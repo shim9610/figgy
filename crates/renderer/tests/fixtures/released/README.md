@@ -38,3 +38,11 @@ every chart document here at 1x and 2x before and after that save and requires
 the same pixels. The current JSON may differ from these bytes where a later
 release gave a fact one owner (the CHANGELOG's migration notes say where). Do
 not edit or regenerate these files: they record what was published.
+
+The edited radial documents set `decorations.data_area` to start at y = 60
+under a title. Every release since 0.16.1 makes a titled radial chart's title
+band at least 70 px tall and refuses an explicit plot area outside the
+measured plot region, so no release draws these three documents as written
+(`validate()`, which the generator checked, does not know the canvas). The
+render test therefore checks that they are refused for the same reason before
+and after a save, and compares pixels with the automatic plot area.
