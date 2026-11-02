@@ -405,7 +405,7 @@ async fn edit_and_export(
     chart.interaction.selected = displayed.pick(pointer)?.resolve().await?;
     chart.slices[0].color = Color::from_rgb8(50, 180, 150);
     // Export prepares the edited model at the requested resolution (1600 x 1200).
-    let image = renderer.export_rgba(&chart, (800, 600), ExportOptions::document(2.0)).await?;
+    let image = renderer.export_rgba(&chart, (800, 600), renderer::ExportOptions::document(2.0)).await?;
     drop(displayed);
     renderer.end_frame();
     Ok(renderer::encode_png(&image)?)

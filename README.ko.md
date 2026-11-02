@@ -207,7 +207,7 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let image = pollster::block_on(renderer.export_rgba(ExportSource::chart(&Chart::new(config), &series), ExportOptions::panel(1.0)))?;
+let image = pollster::block_on(renderer.export_rgba(renderer::ExportSource::chart(&Chart::new(config), &series), renderer::ExportOptions::panel(1.0)))?;
 std::fs::write("radar.png", encode_png(&image)?)?;
 ```
 
