@@ -66,7 +66,6 @@ mod streaming;
 pub mod streaming_source;
 mod streaming_upload;
 pub mod text_render;
-mod time_axis;
 mod vector_export;
 /// Test support: the parts the vector export writes (`cpu-twin` only).
 #[cfg(feature = "cpu-twin")]
@@ -79,6 +78,11 @@ pub use vector_export::{WrittenPart, written_document_parts};
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::bounded_sources::{BoxColumn, BoxField};
+/// The chart chrome's placement, from the model (#160): where every grid
+/// line, axis, tick and tick label goes. The renderer's machinery, public
+/// for its own tests.
+#[doc(hidden)]
+pub use ::model::chrome;
 pub use ::model::{ConfigError, Coordinates, SeriesUpload, UploadValues};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config,

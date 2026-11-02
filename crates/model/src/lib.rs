@@ -2,6 +2,11 @@
 
 pub mod bounded_sources;
 pub mod categorical;
+/// Where the chart's chrome goes: the grid, axes, ticks and tick labels,
+/// placed through a [`sink::Sink`] (#160). The renderer's machinery, not a
+/// host API.
+#[doc(hidden)]
+pub mod chrome;
 pub mod color;
 pub mod colormap;
 pub mod config;

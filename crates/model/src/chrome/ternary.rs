@@ -11,7 +11,7 @@
 use super::*;
 use crate::sink::{Sink, Slot, StrokeStyle};
 use crate::ternary::{TernaryGeometry, ternary_axis};
-pub(super) use crate::ternary::{component_side, side_component};
+pub use crate::ternary::{component_side, side_component};
 
 /// The fraction of the triangle value `value` of `axis` stands for.
 fn fraction(axis: &AxisOptions, value: f64) -> Option<f32> {
@@ -34,10 +34,10 @@ fn edge_point(g: &TernaryGeometry, k: usize, f: f32, offset: f32) -> (f32, f32) 
 /// value at each tick of its axis, from edge to edge (minor ticks first, so
 /// major lines paint over them). The x family takes the grid's x styles, y
 /// and c its y styles.
-pub(super) fn emit_ternary_grid(
+pub fn emit_ternary_grid(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(g) = config.ternary_geometry() else {
@@ -79,9 +79,9 @@ pub(super) fn emit_ternary_grid(
             }
             let side = component_side(k);
             let values = if major {
-                major_tick_values_for_axis(axis, side, &plot, fp)
+                major_tick_values_for_axis(axis, side, &plot, measure)
             } else {
-                minor_tick_values_for_axis(axis, side, &plot, fp)
+                minor_tick_values_for_axis(axis, side, &plot, measure)
             };
             let prefix = match (k, major) {
                 (_, true) => "grid_major",
@@ -124,28 +124,28 @@ pub(super) fn emit_ternary_grid(
 
 /// The ternary chrome above the data: each edge with its ticks, then each
 /// edge's tick labels.
-pub(super) fn emit_ternary_axes(
+pub fn emit_ternary_axes(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     for k in 0..3 {
-        emit_ternary_axis_strokes(config, da, k, fp, sink);
+        emit_ternary_axis_strokes(config, da, k, measure, sink);
     }
     for k in 0..3 {
-        emit_ternary_labels(config, da, k, fp, sink);
+        emit_ternary_labels(config, da, k, measure, sink);
     }
 }
 
 /// Edge `k` and its ticks (`Element::Axis` of its side): the edge moved out
 /// by the axis' `line_offset` along its outward normal, the ticks along the
 /// normal (outside, inside or both).
-pub(super) fn emit_ternary_axis_strokes(
+pub fn emit_ternary_axis_strokes(
     config: &Config,
     da: &DataArea,
     k: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(g) = config.ternary_geometry() else {
@@ -161,7 +161,7 @@ pub(super) fn emit_ternary_axis_strokes(
         axis,
         component_side(k),
         da,
-        fp,
+        measure,
         sink,
         (point(0.0, 0.0), point(1.0, 0.0)),
         |value| fraction(axis, value),
@@ -174,11 +174,11 @@ pub(super) fn emit_ternary_axis_strokes(
 /// outside the tick ends along the edge's outward normal, upright, moved by
 /// the label offsets read along the edge (`label_offset_x`) and along the
 /// normal (`label_offset_y`).
-pub(super) fn emit_ternary_labels(
+pub fn emit_ternary_labels(
     config: &Config,
     da: &DataArea,
     k: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(g) = config.ternary_geometry() else {
@@ -190,7 +190,7 @@ pub(super) fn emit_ternary_labels(
         return;
     }
     let side = component_side(k);
-    let majors = major_tick_values_for_axis(axis, side, &data_area_rect(da), fp);
+    let majors = major_tick_values_for_axis(axis, side, &data_area_rect(da), measure);
     let n = g.outward_normal(k);
     let along = g.edge_direction(k);
     // A third of the font as clearance past the tick, as the polar ring's
@@ -202,7 +202,7 @@ pub(super) fn emit_ternary_labels(
         let Some(f) = fraction(axis, value).filter(|f| *f > 1e-6) else {
             continue;
         };
-        let (text, m) = super::polar::tick_text(axis, value, fp);
+        let (text, m) = super::polar::tick_text(axis, value, measure);
         // Half the label's extent along the normal, so its nearest edge
         // keeps the gap whatever the edge's slope.
         let half = n[0].abs() * m.width * 0.5 + n[1].abs() * (m.ascent + m.descent) * 0.5;

@@ -2,27 +2,26 @@
 //! placed, and how it is drawn.
 
 use super::*;
-use crate::axis_render::*;
 
 // Tick labels.
 
-pub(crate) enum NumericTickText {
+pub enum NumericTickText {
     Plain(String),
     Power(RichText),
 }
 
-pub(crate) struct NumericTickLabel {
+pub struct NumericTickLabel {
     /// The major tick value the label shows.
-    pub(crate) value: f64,
-    pub(crate) position: (f32, f32),
+    pub value: f64,
+    pub position: (f32, f32),
     /// The box the label is drawn in, which decides whether it collides
     /// with its neighbours.
-    pub(crate) bounds: RectF,
-    pub(crate) text: NumericTickText,
+    pub bounds: RectF,
+    pub text: NumericTickText,
 }
 
 impl NumericTickText {
-    pub(crate) fn as_tick_text(&self) -> TickText<'_> {
+    pub fn as_tick_text(&self) -> TickText<'_> {
         match self {
             NumericTickText::Plain(text) => TickText::Plain(text),
             NumericTickText::Power(text) => TickText::Power(text),
@@ -33,15 +32,15 @@ impl NumericTickText {
 /// Keep numeric labels readable at the current scale without changing the
 /// document's requested ticks/grid or shrinking the font. The same placement
 /// and glyph metrics are used for measuring and drawing, including exponents.
-pub(crate) fn visible_numeric_labels(
+pub fn visible_numeric_labels(
     axis: &AxisOptions,
     side: Side,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     position: impl Fn(f64) -> (f32, f32),
 ) -> Vec<NumericTickLabel> {
     let ls = &axis.label_style;
-    prune_numeric_labels(axis, fp, majors, position, |position, metrics| {
+    prune_numeric_labels(axis, measure, majors, position, |position, metrics| {
         label_rect(
             label_origin(
                 side.clone(),
@@ -66,12 +65,12 @@ pub(crate) fn visible_numeric_labels(
 /// labels are first demoted to the next sparser ladder, {1..9} → {1, 2, 5}
 /// → {1} × 10^k, as long as that keeps at least two labels; the stride then
 /// thins the ladder that is left, every n-th decade on the decade ladder.
-pub(crate) fn prune_numeric_labels(
+pub fn prune_numeric_labels(
     axis: &AxisOptions,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     position: impl Fn(f64) -> (f32, f32),
-    bounds: impl Fn((f32, f32), crate::text_render::TextMetrics) -> RectF,
+    bounds: impl Fn((f32, f32), TextExtents) -> RectF,
 ) -> Vec<NumericTickLabel> {
     let ls = &axis.label_style;
     let labels: Vec<_> = majors
@@ -79,7 +78,7 @@ pub(crate) fn prune_numeric_labels(
         .filter_map(|&value| {
             let (text, metrics) = if matches!(ls.format, LabelFormat::Power) {
                 let text = format_tick_power(value, ls.significant_digits, ls);
-                let metrics = measure_rich_text(&text, fp);
+                let metrics = measure.measure_rich(&text);
                 (NumericTickText::Power(text), metrics)
             } else {
                 let text = format_tick_value(
@@ -91,8 +90,7 @@ pub(crate) fn prune_numeric_labels(
                     axis.min,
                     axis.max,
                 );
-                let metrics =
-                    measure_plain_text(&text, &ls.label_font, ls.font_size, false, false, fp);
+                let metrics = measure.measure_plain(&text, &ls.label_font, ls.font_size);
                 (NumericTickText::Plain(text), metrics)
             };
             let position = position(value);
@@ -156,7 +154,7 @@ pub(crate) fn prune_numeric_labels(
 /// the first of 1, 2, 5, 10, 20, 50... at which every kept label's box
 /// (`bounds(index)`) stays half an em of `font_size` clear of the previous
 /// kept one, either across or along the screen.
-pub(crate) fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) -> RectF) -> usize {
+pub fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) -> RectF) -> usize {
     // Half an em also scales with HiDPI/PNG export, unlike a fixed pixel gap.
     let gap = font_size * 0.5;
     let mut stride = 1;
@@ -191,11 +189,11 @@ pub(crate) fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) 
 /// [`label_stride`] rule when neighbours crowd. An empty label keeps its
 /// slot in the stride and draws nothing. Nothing is collected: the stride is
 /// measured on the categories themselves.
-pub(crate) fn each_category_tick_label(
+pub fn each_category_tick_label(
     axis: &AxisOptions,
     categories: &[crate::config::Category],
     side: Side,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     position: impl Fn(f64) -> (f32, f32),
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
 ) {
@@ -206,7 +204,7 @@ pub(crate) fn each_category_tick_label(
     let placed = |index: usize| {
         let text = categories[index].label.as_str();
         let position = position(index as f64);
-        let metrics = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+        let metrics = measure.measure_plain(text, &ls.label_font, ls.font_size);
         let origin = label_origin(
             side.clone(),
             position,
@@ -229,23 +227,23 @@ pub(crate) fn each_category_tick_label(
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PlainTickLabel {
-    pub(super) value: f64,
-    pub(super) text: String,
+pub struct PlainTickLabel {
+    pub value: f64,
+    pub text: String,
 }
 
-pub(super) fn visible_timestamp_labels(
+pub fn visible_timestamp_labels(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
 ) -> Vec<PlainTickLabel> {
-    let Some(cfg) = crate::time_axis::timestamp_format(axis) else {
+    let Some(cfg) = crate::chrome::time::timestamp_format(axis) else {
         return Vec::new();
     };
     let labels: Vec<PlainTickLabel> =
-        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, fp) {
+        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, measure) {
             plan.majors
                 .into_iter()
                 .map(|tick| PlainTickLabel {
@@ -257,7 +255,7 @@ pub(super) fn visible_timestamp_labels(
             majors
                 .iter()
                 .filter_map(|v| {
-                    crate::time_axis::format_timestamp_numeric_tick(
+                    crate::chrome::time::format_timestamp_numeric_tick(
                         *v,
                         cfg,
                         axis.min,
@@ -269,21 +267,22 @@ pub(super) fn visible_timestamp_labels(
                 .collect()
         };
 
-    prune_overlapping_plain_labels(axis, side, plot, fp, labels)
+    prune_overlapping_plain_labels(axis, side, plot, measure, labels)
 }
 
-pub(super) fn prune_overlapping_plain_labels(
+pub fn prune_overlapping_plain_labels(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     labels: Vec<PlainTickLabel>,
 ) -> Vec<PlainTickLabel> {
     let mut intervals: Vec<(f32, f32, PlainTickLabel)> = labels
         .into_iter()
         .map(|label| {
             let pos = value_to_screen(label.value, axis, side.clone(), plot);
-            let (start, end) = plain_tick_label_interval(&label.text, pos, side.clone(), axis, fp);
+            let (start, end) =
+                plain_tick_label_interval(&label.text, pos, side.clone(), axis, measure);
             (start, end, label)
         })
         .filter(|(start, end, _)| start.is_finite() && end.is_finite())
@@ -301,15 +300,15 @@ pub(super) fn prune_overlapping_plain_labels(
     out
 }
 
-pub(super) fn plain_tick_label_interval(
+pub fn plain_tick_label_interval(
     text: &str,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
 ) -> (f32, f32) {
     let ls: &LabelStyle = &axis.label_style;
-    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+    let m = measure.measure_plain(text, &ls.label_font, ls.font_size);
     let (origin_x, origin_y) = label_origin(
         side.clone(),
         tick_pos,
@@ -323,13 +322,13 @@ pub(super) fn plain_tick_label_interval(
     }
 }
 
-pub(super) fn plain_seg(c: char) -> RichSegment {
+pub fn plain_seg(c: char) -> RichSegment {
     RichSegment::plain(c)
 }
 
 /// The text of one drawn tick label: plain, or a Power-format `RichText`
 /// with its exponent.
-pub(crate) enum TickText<'a> {
+pub enum TickText<'a> {
     Plain(&'a str),
     Power(&'a RichText),
 }
@@ -337,19 +336,17 @@ pub(crate) enum TickText<'a> {
 /// Where a tick label at `tick_pos` is drawn: its baseline origin and its
 /// glyph extents. The emits place the label there, so a label's pixels and
 /// its selection and hit geometry come from one origin.
-pub(crate) fn tick_label_placement(
+pub fn tick_label_placement(
     text: &TickText<'_>,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
 ) -> ((f32, f32), crate::text::TextExtents) {
     let ls: &LabelStyle = &axis.label_style;
     let m = match text {
-        TickText::Plain(text) => {
-            measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp)
-        }
-        TickText::Power(rt) => measure_rich_text(rt, fp),
+        TickText::Plain(text) => measure.measure_plain(text, &ls.label_font, ls.font_size),
+        TickText::Power(rt) => measure.measure_rich(rt),
     };
     let origin = label_origin(
         side,
@@ -363,16 +360,16 @@ pub(crate) fn tick_label_placement(
 
 /// Place one tick label at its tick, moved by `offset` (the detached-axis
 /// translation), above the data.
-pub(crate) fn place_tick_text(
+pub fn place_tick_text(
     text: &TickText<'_>,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     offset: (f32, f32),
     sink: &mut dyn Sink,
 ) {
-    let (origin, extents) = tick_label_placement(text, tick_pos, side, axis, fp);
+    let (origin, extents) = tick_label_placement(text, tick_pos, side, axis, measure);
     let ls: &LabelStyle = &axis.label_style;
     let placed = PlacedText {
         text: match text {
@@ -393,27 +390,27 @@ pub(crate) fn place_tick_text(
 
 /// The colourbar's tick labels along the strip `rect`
 /// (`Element::ColorBarLabel`), moved by the bar axis' detached translation.
-pub(crate) fn emit_colorbar_tick_labels(
+pub fn emit_colorbar_tick_labels(
     axis: &AxisOptions,
     side: Side,
     rect: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let majors = major_tick_values(axis);
     let offset = axis_offset(side.clone(), axis.line_offset);
-    each_colorbar_tick_label(axis, side.clone(), rect, fp, &majors, |text, pos| {
-        place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
+    each_colorbar_tick_label(axis, side.clone(), rect, measure, &majors, |text, pos| {
+        place_tick_text(&text, pos, side.clone(), axis, measure, offset, sink);
     });
 }
 
 /// Every tick label the axis on `side` draws, with its tick position, in
 /// draw order, before the detached-axis translation.
-pub(crate) fn each_axis_tick_label(
+pub fn each_axis_tick_label(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
 ) {
@@ -426,19 +423,19 @@ pub(crate) fn each_axis_tick_label(
             axis,
             categories,
             side.clone(),
-            fp,
+            measure,
             |value| value_to_screen(value, axis, side.clone(), plot),
             each,
         );
         return;
     }
     if let LabelFormat::Timestamp(_) = &ls.format {
-        for label in visible_timestamp_labels(axis, side.clone(), plot, fp, majors) {
+        for label in visible_timestamp_labels(axis, side.clone(), plot, measure, majors) {
             let pos = value_to_screen(label.value, axis, side.clone(), plot);
             each(TickText::Plain(&label.text), pos);
         }
     } else {
-        for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+        for label in visible_numeric_labels(axis, side.clone(), measure, majors, |value| {
             value_to_screen(value, axis, side.clone(), plot)
         }) {
             each(label.text.as_tick_text(), label.position);
@@ -452,11 +449,11 @@ pub(crate) fn each_axis_tick_label(
 /// collision pruning that belong to a time axis. `LabelFormat::Timestamp` on a
 /// colourbar therefore formats through the numeric path rather than being
 /// silently dropped.
-pub(crate) fn each_colorbar_tick_label(
+pub fn each_colorbar_tick_label(
     axis: &AxisOptions,
     side: Side,
     rect: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
 ) {
@@ -464,7 +461,7 @@ pub(crate) fn each_colorbar_tick_label(
     if !(ls.visible && ls.label_visible) {
         return;
     }
-    for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+    for label in visible_numeric_labels(axis, side.clone(), measure, majors, |value| {
         point_on_rect_side(axis_fraction(value, axis), &side, rect)
     }) {
         each(label.text.as_tick_text(), label.position);

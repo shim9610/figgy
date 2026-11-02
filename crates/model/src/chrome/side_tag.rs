@@ -11,7 +11,7 @@
 use super::*;
 
 /// Stable side name used in stroker element tags.
-pub(crate) fn side_tag(side: &Side) -> &'static str {
+pub fn side_tag(side: &Side) -> &'static str {
     match side {
         Side::Top => "top",
         Side::Bottom => "bottom",

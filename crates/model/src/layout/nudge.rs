@@ -872,29 +872,25 @@ mod tests {
     }
 
     // On Moved, only the target offset must change. The tick labels are
-    // contained on their drawn parts, so the measure must lay them out: one
-    // that cannot place them rejects the move and leaves the config as it was.
+    // contained on their drawn parts, which the model places under any
+    // measure (#160): a plain fixed-width measure moves them as the layout
+    // measure does.
     #[test]
     fn nudge_moved_changes_only_target_offset() {
-        let mut cfg = default_config();
-        let before = cfg.clone();
-        assert_eq!(
-            cfg.nudge(
-                Element::AxisLabel(Side::Left),
-                &crate::select::tests::FixedMeasure,
-                1.0,
-                0.0
-            ),
-            NudgeResult::Rejected(NudgeReject::OutOfBounds)
-        );
-        assert_eq!(cfg, before);
-        assert_eq!(
-            cfg.nudge(Element::AxisLabel(Side::Left), &LaysOut, 1.0, 0.0),
-            NudgeResult::Moved
-        );
+        let before = default_config();
         let mut expected = before.clone();
         expected.left_y.label_style.label_offset_x += 1.0;
-        assert_eq!(cfg, expected);
+        for measure in [
+            &crate::select::tests::FixedMeasure as &dyn MeasureText,
+            &LaysOut,
+        ] {
+            let mut cfg = before.clone();
+            assert_eq!(
+                cfg.nudge(Element::AxisLabel(Side::Left), measure, 1.0, 0.0),
+                NudgeResult::Moved
+            );
+            assert_eq!(cfg, expected);
+        }
     }
 
     // A y-axis moves only horizontally, *detached*: the parallel (dy)

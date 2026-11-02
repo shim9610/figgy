@@ -8,8 +8,8 @@ use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side};
 use renderer::sink::Parts;
 use renderer::{
-    AxisLabelElement, ColorBarLabelElement, Config, CpuTextMeasure, Draggable, HitMap, MeasureText,
-    Selectable, SelectionGeometry,
+    AxisLabelElement, ColorBarLabelElement, Config, CpuTextMeasure, Draggable, HitMap, Selectable,
+    SelectionGeometry,
 };
 
 const WIDTH: u32 = 640;
@@ -388,9 +388,10 @@ fn polar_tick_labels_hit_each_drawn_label() {
     for side in [Side::Bottom, Side::Left] {
         let element = renderer::layout::Element::AxisLabel(side.clone());
         let mut rects = Vec::new();
-        assert!(measure.emit(
+        assert!(renderer::chrome::emit_part_of(
             &cfg,
             &element,
+            &measure,
             &mut Parts(&mut |p| rects.push(text_rect(p)))
         ));
         assert!(rects.len() >= 4, "{side:?}: {} labels", rects.len());
@@ -404,9 +405,10 @@ fn polar_tick_labels_hit_each_drawn_label() {
     // it, and every point outside all padded label boxes misses the labels.
     let element = renderer::layout::Element::AxisLabel(Side::Bottom);
     let mut rects = Vec::new();
-    measure.emit(
+    renderer::chrome::emit_part_of(
         &cfg,
         &element,
+        &measure,
         &mut Parts(&mut |p| rects.push(text_rect(p))),
     );
     let geometry = cfg.polar_geometry().unwrap();

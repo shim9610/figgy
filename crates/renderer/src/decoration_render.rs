@@ -7,25 +7,13 @@
 
 use crate::raster::{Canvas, Paint};
 
-use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
-use crate::format::LabelFormat;
-use crate::layout::{
-    DataArea, Element, RectF, Side, axis_offset, label_origin, label_rect, point_on_rect_side,
-    visible_colorbar_rect,
-};
-use crate::select::emit_element;
-use crate::sink::{PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text::{MeasureText, RichSegment, RichText, TextAlign};
-use crate::text_render::{FontPolicy, measure_plain_text, measure_rich_text};
+use crate::layout::{RectF, Side};
 
-mod tick_labels;
-pub(crate) use tick_labels::*;
-mod tick_format;
-pub(crate) use tick_format::*;
-mod axis_titles;
-pub(crate) use axis_titles::*;
+pub(crate) use crate::chrome::*;
 mod colorbar;
 pub(crate) use colorbar::*;
 mod sink;
+#[cfg(test)]
+mod tick_format_tests;
 pub(crate) use sink::CanvasSink;
 pub use sink::{draw_selection_box, draw_selection_boxes};

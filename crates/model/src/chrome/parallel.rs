@@ -38,29 +38,29 @@ fn axis_options(config: &Config, i: usize) -> Option<AxisOptions> {
 
 /// The parallel chrome above the data: every axis's line and ticks, then
 /// every axis's tick labels.
-pub(super) fn emit_parallel_axes(
+pub fn emit_parallel_axes(
     config: &Config,
     da: &DataArea,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(parallel) = config.parallel() else {
         return;
     };
     for i in 0..parallel.axes.len() {
-        emit_parallel_axis_strokes(config, da, i, fp, sink);
+        emit_parallel_axis_strokes(config, da, i, measure, sink);
     }
     for i in 0..parallel.axes.len() {
-        emit_parallel_labels(config, da, i, fp, sink);
+        emit_parallel_labels(config, da, i, measure, sink);
     }
 }
 
 /// Axis `i`'s line and ticks, tagged `paxis_{i}` and `ptick_{i}_{k}`.
-pub(super) fn emit_parallel_axis_strokes(
+pub fn emit_parallel_axis_strokes(
     config: &Config,
     da: &DataArea,
     i: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(axis) = axis_options(config, i) else {
@@ -68,14 +68,14 @@ pub(super) fn emit_parallel_axis_strokes(
     };
     let plot = axis_plot(config, &data_area_rect(da), i);
     let (off_x, off_y) = axis_offset(Side::Left, axis.line_offset);
-    let majors = major_tick_values_for_axis(&axis, Side::Left, &plot, fp);
+    let majors = major_tick_values_for_axis(&axis, Side::Left, &plot, measure);
     let dash = axis.line_style.pattern();
     each_axis_stroke(
         &axis,
         Side::Left,
         &plot,
         None,
-        fp,
+        measure,
         &majors,
         |stroke, mut a, mut b| {
             let tag = match stroke {
@@ -107,16 +107,16 @@ pub(super) fn emit_parallel_axis_strokes(
 
 /// Axis `i`'s tick labels (`Element::ParallelAxisLabel(i)`): to the left of
 /// its line, as a left axis' are, moved by the axis's `label_offset`.
-pub(super) fn emit_parallel_labels(
+pub fn emit_parallel_labels(
     config: &Config,
     da: &DataArea,
     i: usize,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let Some(axis) = axis_options(config, i) else {
         return;
     };
     let plot = axis_plot(config, &data_area_rect(da), i);
-    emit_axis_tick_labels(&axis, Side::Left, &plot, fp, sink);
+    emit_axis_tick_labels(&axis, Side::Left, &plot, measure, sink);
 }

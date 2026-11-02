@@ -893,7 +893,7 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 /// series, an annotation or a pick.
 ///
 /// Measured with `measure`'s own layout of each element
-/// ([`MeasureText::emit`] for tick labels, which places the labels the
+/// ([`crate::chrome`] for tick labels, which places the labels the
 /// renderer draws after its pruning), on the panels the renderer draws:
 ///
 /// - **Label format.** An axis whose labels are `Decimal` or `Plain` and not
@@ -1805,65 +1805,26 @@ mod tests {
     /// the chart title.
     const GLYPH: f32 = 8.0;
 
-    /// A measure that lays out three tick labels per visible axis, at both
-    /// ends and the middle of the data-area edge, as the renderer places
-    /// them (`label_origin`, offsets and `line_offset` included), and the
-    /// colourbar's three labels along the strip. A `Decimal` or `Plain`
-    /// label prints `decimal`, any other format `3×10`.
-    struct Labels {
-        decimal: &'static str,
+    /// A measure whose every glyph is `GLYPH` wide, 10 px up and 3 px down:
+    /// the chrome (`crate::chrome`) places and measures the tick labels the
+    /// renderer would draw with it.
+    struct Labels;
+
+    /// `axis` with the labels `0`, `0.00300` and `0.00600`: six digits, the
+    /// widest 7 glyphs (56 px).
+    fn long_labels(axis: &mut AxisOptions) {
+        axis.min = 0.0;
+        axis.max = 0.006;
+        axis.major_spacing = 0.003;
     }
 
-    impl Labels {
-        fn text(&self, axis: &AxisOptions) -> &'static str {
-            match axis.label_style.format {
-                LabelFormat::Decimal | LabelFormat::Plain(_) => self.decimal,
-                _ => "3×10",
-            }
-        }
-
-        fn place(&self, axis: &AxisOptions, side: Side, at: [(f32, f32); 3], sink: &mut dyn Sink) {
-            if !(axis.label_style.visible && axis.label_style.label_visible) {
-                return;
-            }
-            let text = self.text(axis);
-            let extents = TextExtents {
-                width: text.chars().count() as f32 * GLYPH,
-                ascent: 10.0,
-                descent: 3.0,
-            };
-            let o = axis_offset(side.clone(), axis.line_offset);
-            for p in at {
-                let origin = label_origin(
-                    side.clone(),
-                    (p.0 + o.0, p.1 + o.1),
-                    axis.major_tick_length,
-                    (
-                        axis.label_style.label_offset_x,
-                        axis.label_style.label_offset_y,
-                    ),
-                    extents,
-                );
-                sink.text(
-                    Slot::Above,
-                    &PlacedText {
-                        text: TextRef::Plain {
-                            text,
-                            family: "",
-                            size: axis.label_style.font_size,
-                            color: Color::BLACK,
-                        },
-                        origin,
-                        extents,
-                        rotation: None,
-                    },
-                );
-            }
-        }
-    }
-
-    fn ends_and_middle(side: &Side, rect: &RectF) -> [(f32, f32); 3] {
-        [0.0, 0.5, 1.0].map(|t| point_on_rect_side(t, side, rect))
+    /// `axis` with the labels `-1.2345`, `0` and `1.2345`: five digits, long
+    /// but not too long for `Decimal`, the widest 7 glyphs (56 px).
+    fn five_digit_labels(axis: &mut AxisOptions) {
+        axis.min = -1.2345;
+        axis.max = 1.2345;
+        axis.major_spacing = 1.2345;
+        axis.label_style.significant_digits = 5;
     }
 
     impl MeasureText for Labels {
@@ -1873,27 +1834,6 @@ mod tests {
                 ascent: 10.0,
                 descent: 3.0,
             }
-        }
-
-        fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
-            let Ok(da) = cfg.data_area() else {
-                return true;
-            };
-            let plot = RectF::from_rect(&da);
-            match element {
-                Element::AxisLabel(side) => {
-                    let axis = super::super::axis_ref(cfg, side);
-                    self.place(axis, side.clone(), ends_and_middle(side, &plot), sink);
-                }
-                Element::ColorBarLabel => {
-                    if let Some((bar, strip)) = visible_colorbar_rect(cfg) {
-                        let at = ends_and_middle(&bar.side, &strip);
-                        self.place(&bar.axis, bar.side.clone(), at, sink);
-                    }
-                }
-                _ => {}
-            }
-            true
         }
     }
 
@@ -1933,8 +1873,9 @@ mod tests {
     // and the widest label: the three `0.00300` labels of the left axis.
     #[test]
     fn a_probe_reads_the_drawn_labels_without_storing_them() {
-        let cfg = default_config();
-        let measure = Labels { decimal: "0.00300" };
+        let mut cfg = default_config();
+        long_labels(&mut cfg.left_y);
+        let measure = Labels;
         let probe = Probe::of(&cfg, &Element::AxisLabel(Side::Left), &measure);
         assert_eq!(probe.digits, 6);
         assert_eq!(probe.widest, 56.0);
@@ -1949,7 +1890,7 @@ mod tests {
 
         // Measured from the band's inner edge, the tick beyond the data
         // area: the labels reach the gap and 56 px, the 13 px title sits centred in the 110 px band.
-        let mut titled = default_config();
+        let mut titled = cfg.clone();
         titled.left_y.title_option.text.segments = crate::text::rich_segments_from_text("y");
         let title = Probe::of(&titled, &Element::AxisTitle(Side::Left), &measure);
         let inner = band_inner_edge(&Side::Left, RectF::from_rect(&da), 5.0);
@@ -2031,7 +1972,7 @@ mod tests {
     // the default document stays exactly as it is.
     #[test]
     fn auto_layout_keeps_a_document_that_already_clears() {
-        let measure = Labels { decimal: "0.5" };
+        let measure = Labels;
         let cfg = with_titles("y");
         assert!(title_clearance(&cfg, Side::Left, &measure) >= LABEL_GAP);
         assert_eq!(auto_layout(&cfg, &measure), cfg);
@@ -2060,7 +2001,7 @@ mod tests {
     #[test]
     fn auto_layout_places_a_title_beside_its_labels_in_a_tight_band() {
         // Five digits: long, but not too long for `Decimal`.
-        let measure = Labels { decimal: "-1.2345" };
+        let measure = Labels;
         // Past the tick: the gap and 56 px; the title is 13 px thick.
         let (reach, title) = (LABEL_GAP + 56.0, 13.0);
         for (band, grown) in [
@@ -2068,6 +2009,7 @@ mod tests {
             (60.0, reach + LABEL_GAP + title + LABEL_GAP),
         ] {
             let mut cfg = with_titles("Optical depth");
+            five_digit_labels(&mut cfg.left_y);
             cfg.left_y.out_margin = band;
             let input = cfg.clone();
             assert!(
@@ -2099,8 +2041,9 @@ mod tests {
     // and a side with labels but no title only needs room for the labels.
     #[test]
     fn auto_layout_sizes_a_band_without_a_title_for_its_labels_alone() {
-        let measure = Labels { decimal: "-1.2345" };
+        let measure = Labels;
         let mut cfg = default_config();
+        five_digit_labels(&mut cfg.left_y);
         cfg.left_y.out_margin = 20.0;
         cfg.right_y.out_margin = 1.0;
         let out = auto_layout(&cfg, &measure);
@@ -2115,7 +2058,7 @@ mod tests {
     // its band, is left where it is, as is a centred one that clears.
     #[test]
     fn auto_layout_leaves_a_title_that_clears_and_places_one_that_does_not() {
-        let measure = Labels { decimal: "0.5" };
+        let measure = Labels;
         let mut cfg = with_titles("y");
         assert_eq!(auto_layout(&cfg, &measure), cfg, "centred and clear");
         // Left: offset_y is screen x; +30 moves the title inward.
@@ -2141,18 +2084,21 @@ mod tests {
     // Power, Timestamp or categorical axis and short labels keep theirs.
     #[test]
     fn auto_layout_switches_long_decimal_labels_to_power() {
-        let long = Labels { decimal: "0.00300" };
-        let out = auto_layout(&default_config(), &long);
+        let long = Labels;
+        let mut long_cfg = default_config();
+        long_labels(&mut long_cfg.left_y);
+        long_labels(&mut long_cfg.bottom_x);
+        let out = auto_layout(&long_cfg, &long);
         assert_eq!(out.left_y.label_style.format, LabelFormat::Power);
         assert_eq!(out.bottom_x.label_style.format, LabelFormat::Power);
         // Hidden labels are not drawn, so they are never too long.
         assert_eq!(out.top_x.label_style.format, LabelFormat::Decimal);
         assert_eq!(auto_layout(&out, &long), out);
 
-        let short = Labels { decimal: "0.003" };
+        let short = Labels;
         assert_eq!(auto_layout(&default_config(), &short), default_config());
 
-        let mut kept = default_config();
+        let mut kept = long_cfg.clone();
         kept.left_y.label_style.format =
             LabelFormat::Timestamp(crate::format::TimestampLabelFormat::default());
         kept.bottom_x.categories = Some(vec![
@@ -2170,7 +2116,7 @@ mod tests {
     // A band that would leave no data area is not grown.
     #[test]
     fn auto_layout_never_grows_a_band_past_the_data_area() {
-        let measure = Labels { decimal: "-1.2345" };
+        let measure = Labels;
         let mut cfg = with_titles("Optical depth");
         // 60 + 5 + 32 + 5 px of margins leave 20 px; the 81 px band the
         // labels and title need would leave none.
@@ -2192,9 +2138,10 @@ mod tests {
     // clears it.
     #[test]
     fn auto_layout_fits_the_colorbar_band_and_clears_the_legend_off_it() {
-        let measure = Labels { decimal: "-1.2345" };
+        let measure = Labels;
         let mut cfg = default_config();
         let mut bar = crate::default::default_colorbar_options();
+        five_digit_labels(&mut bar.axis);
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text.segments = crate::text::rich_segments_from_text("z");
         cfg.colorbar = Some(bar);
@@ -2232,7 +2179,7 @@ mod tests {
     // overlay's own axis, and a subplot is laid out as a chart of its own.
     #[test]
     fn auto_layout_fits_overlay_and_subplot_bands() {
-        let measure = Labels { decimal: "-1.2345" };
+        let measure = Labels;
         let mut cfg = default_config();
         let mut overlay = crate::layer::OverlayLayer::default();
         overlay.y_axis.title_option.visible = true;

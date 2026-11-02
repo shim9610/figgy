@@ -9,16 +9,16 @@ use super::*;
 /// axis). The data area and grid stay put; tick positions along the axis are
 /// unaffected. `cross` is where the line crosses the perpendicular axis
 /// ([`crate::layout::axis_cross`]); only the line moves there.
-pub(super) fn emit_axis(
+pub fn emit_axis(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
-    emit_axis_strokes(axis, side.clone(), plot, cross, fp, sink);
-    emit_axis_tick_labels(axis, side, plot, fp, sink);
+    emit_axis_strokes(axis, side.clone(), plot, cross, measure, sink);
+    emit_axis_tick_labels(axis, side, plot, measure, sink);
 }
 
 /// The line and the major and minor ticks of `axis` on `side`
@@ -26,23 +26,23 @@ pub(super) fn emit_axis(
 /// the detached-axis translation. Tick stroker tags share one running index
 /// per side (majors first, minors after) so every tick gets its own wobble
 /// shape.
-pub(crate) fn emit_axis_strokes(
+pub fn emit_axis_strokes(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let majors = major_tick_values_for_axis(axis, side.clone(), plot, fp);
+    let majors = major_tick_values_for_axis(axis, side.clone(), plot, measure);
     let dash = axis.line_style.pattern();
     each_axis_stroke(
         axis,
         side.clone(),
         plot,
         cross,
-        fp,
+        measure,
         &majors,
         |stroke, a, b| {
             let tag = match stroke {
@@ -68,21 +68,21 @@ pub(crate) fn emit_axis_strokes(
 /// [`each_axis_tick_label`] walks, placed at its tick and moved by the
 /// detached-axis translation; a categorical axis' labels come from
 /// [`emit_category_tick_labels`].
-pub(crate) fn emit_axis_tick_labels(
+pub fn emit_axis_tick_labels(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     if let Some(categories) = &axis.categories {
-        emit_category_tick_labels(axis, categories, side, plot, fp, sink);
+        emit_category_tick_labels(axis, categories, side, plot, measure, sink);
         return;
     }
-    let majors = major_tick_values_for_axis(axis, side.clone(), plot, fp);
+    let majors = major_tick_values_for_axis(axis, side.clone(), plot, measure);
     let offset = axis_offset(side.clone(), axis.line_offset);
-    each_axis_tick_label(axis, side.clone(), plot, fp, &majors, |text, pos| {
-        place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
+    each_axis_tick_label(axis, side.clone(), plot, measure, &majors, |text, pos| {
+        place_tick_text(&text, pos, side.clone(), axis, measure, offset, sink);
     });
 }
 
@@ -92,12 +92,12 @@ pub(crate) fn emit_axis_tick_labels(
 /// axis' label style and moved by the detached-axis translation, so hover,
 /// hit, selection, both drag offsets and the picked highlight are the
 /// numeric labels'.
-pub(crate) fn emit_category_tick_labels(
+pub fn emit_category_tick_labels(
     axis: &AxisOptions,
     categories: &[crate::config::Category],
     side: Side,
     plot: &RectF,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     sink: &mut dyn Sink,
 ) {
     let offset = axis_offset(side.clone(), axis.line_offset);
@@ -105,37 +105,32 @@ pub(crate) fn emit_category_tick_labels(
         axis,
         categories,
         side.clone(),
-        fp,
+        measure,
         |value| value_to_screen(value, axis, side.clone(), plot),
-        |text, pos| place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink),
+        |text, pos| place_tick_text(&text, pos, side.clone(), axis, measure, offset, sink),
     );
 }
 
 /// Where `value` falls along its axis ([`crate::layout::axis_fraction`]).
-pub(crate) fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
+pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     crate::layout::axis_fraction(value, axis)
 }
 
 /// The plot rectangle of an integer data area: what the Cartesian axis,
 /// tick and grid walks take. Exact for every data area (its corners are
 /// integers far below 2^24).
-pub(crate) fn data_area_rect(da: &DataArea) -> RectF {
+pub fn data_area_rect(da: &DataArea) -> RectF {
     RectF::from_rect(da)
 }
 
-pub(crate) fn value_to_screen(
-    value: f64,
-    axis: &AxisOptions,
-    side: Side,
-    plot: &RectF,
-) -> (f32, f32) {
+pub fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, plot: &RectF) -> (f32, f32) {
     point_on_rect_side(axis_fraction(value, axis), &side, plot)
 }
 
 /// Which stroke of an axis a segment is: its line, or tick `i` in the
 /// running per-axis index (majors first, minors after).
 #[derive(Clone, Copy)]
-pub(crate) enum AxisStroke {
+pub enum AxisStroke {
     Line,
     Tick(usize),
 }
@@ -143,12 +138,12 @@ pub(crate) enum AxisStroke {
 /// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
 /// the detached-axis translation: the line (crossing the perpendicular axis
 /// at `cross`), then the major and minor ticks at the edge.
-pub(super) fn each_axis_stroke(
+pub fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
-    fp: FontPolicy,
+    measure: &dyn MeasureText,
     majors: &[f64],
     mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
@@ -159,7 +154,7 @@ pub(super) fn each_axis_stroke(
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, side.clone(), plot, fp);
+    let minors = minor_tick_values_for_axis(axis, side.clone(), plot, measure);
     let ticks = majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))
@@ -174,7 +169,7 @@ pub(super) fn each_axis_stroke(
 
 /// Every segment the colourbar's axis is stroked along the strip `rect`,
 /// before the detached-axis translation: the line, then the ticks.
-pub(crate) fn each_colorbar_axis_stroke(
+pub fn each_colorbar_axis_stroke(
     axis: &AxisOptions,
     side: Side,
     rect: &RectF,
@@ -209,7 +204,7 @@ pub(crate) fn each_colorbar_axis_stroke(
 
 /// The segment a tick at `pos` is stroked along, or `None` when ticks are
 /// hidden.
-pub(super) fn tick_segment(
+pub fn tick_segment(
     pos: (f32, f32),
     side: Side,
     length: f32,

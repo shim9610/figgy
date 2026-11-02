@@ -1,6 +1,8 @@
 //! Grid lines, drawn at the tick walkers' values.
 
 use super::*;
+use crate::color::Color;
+use crate::line::LineStylePreset;
 
 // Grid rendering.
 //
@@ -9,7 +11,7 @@ use super::*;
 
 /// The grid, below the data: minor lines first so the majors paint over
 /// them, like the rectangular grid always did.
-pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mut dyn Sink) {
+pub fn emit_grid(config: &Config, plot: &RectF, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     let g = &config.grid;
     let x_top = plot.y;
     let x_bot = plot.y + plot.height;
@@ -37,7 +39,7 @@ pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mu
 
     // Draw minor first so major can paint over it.
     if g.show_minor_x {
-        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, fp)
+        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, measure)
             .into_iter()
             .enumerate()
         {
@@ -54,7 +56,7 @@ pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mu
         }
     }
     if g.show_minor_y {
-        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, plot, fp)
+        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, plot, measure)
             .into_iter()
             .enumerate()
         {
@@ -72,7 +74,7 @@ pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mu
     }
 
     if g.show_major_x {
-        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, fp)
+        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, measure)
             .into_iter()
             .enumerate()
         {
@@ -89,7 +91,7 @@ pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mu
         }
     }
     if g.show_major_y {
-        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, plot, fp)
+        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, plot, measure)
             .into_iter()
             .enumerate()
         {

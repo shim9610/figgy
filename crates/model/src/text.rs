@@ -492,34 +492,20 @@ impl TextExtents {
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
 
-    /// Place the parts of decoration `element` a renderer draws under `cfg`
-    /// into `sink`, in `cfg`'s chart frame, and return `true`. Tick labels
-    /// ([`Element::AxisLabel`], [`Element::ColorBarLabel`]) are one
-    /// [`PlacedText`] per drawn label; axes ([`Element::Axis`],
-    /// [`Element::ColorBarAxis`]) are their line and ticks as strokes.
-    ///
-    /// Tick generation, formatting and pruning belong to the renderer, so the
-    /// model cannot know which labels and ticks are drawn. A measure that
-    /// lays them out lets selection, hit testing and drag containment follow
-    /// the drawn parts: the renderer's measure runs the same `emit` function
-    /// its raster draws with. The default lays out nothing and returns
-    /// `false`; tick labels and axes then have no bounds, since nothing tells
-    /// the model where they are drawn. The elements the model places itself
-    /// (titles, the legend, the colourbar strip and title, the data area)
-    /// never reach this method: [`crate::select::emit_element`] places them.
-    ///
-    /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
-    /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel
-    /// [`Element::Axis`]: crate::layout::Element::Axis
-    /// [`Element::ColorBarAxis`]: crate::layout::Element::ColorBarAxis
-    /// [`PlacedText`]: crate::sink::PlacedText
-    fn emit(
-        &self,
-        _cfg: &crate::config::Config,
-        _element: &crate::layout::Element,
-        _sink: &mut dyn crate::sink::Sink,
-    ) -> bool {
-        false
+    /// The extents of `text` drawn in plain characters in `family` at
+    /// `size` (no bold, italic or script): what a tick label measures. The
+    /// default measures it as a plain [`RichText`] through
+    /// [`Self::measure_rich`]; a renderer whose plain-text path differs
+    /// returns what it draws, so the chrome [`crate::chrome`] places is the
+    /// chrome it paints.
+    fn measure_plain(&self, text: &str, family: &str, size: f32) -> TextExtents {
+        self.measure_rich(&RichText {
+            segments: text.chars().map(RichSegment::plain).collect(),
+            color: crate::color::Color::BLACK,
+            font_size: size,
+            font: family.to_string(),
+            align: TextAlign::Left,
+        })
     }
 }
 

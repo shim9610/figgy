@@ -10,13 +10,13 @@ const MAX_ABS_SECONDS: f64 = 31_556_952_000_000.0; // about one million years
 const MAX_TIME_TICKS: usize = 1_000;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TimestampTick {
+pub struct TimestampTick {
     pub value: f64,
     pub label: String,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TimestampTickPlan {
+pub struct TimestampTickPlan {
     pub majors: Vec<TimestampTick>,
     pub minor_values: Vec<f64>,
 }
@@ -56,19 +56,19 @@ struct DateTimeParts {
     nanosecond: u32,
 }
 
-pub(crate) fn timestamp_format(axis: &AxisOptions) -> Option<&TimestampLabelFormat> {
+pub fn timestamp_format(axis: &AxisOptions) -> Option<&TimestampLabelFormat> {
     match &axis.label_style.format {
         LabelFormat::Timestamp(cfg) => Some(cfg),
         _ => None,
     }
 }
 
-pub(crate) fn uses_calendar_ticks(axis: &AxisOptions, cfg: &TimestampLabelFormat) -> bool {
+pub fn uses_calendar_ticks(axis: &AxisOptions, cfg: &TimestampLabelFormat) -> bool {
     matches!(axis.scale, AxisScale::Linear)
         && matches!(cfg.tick_policy, TimestampTickPolicy::AutoCalendar)
 }
 
-pub(crate) fn build_timestamp_tick_plan<F>(
+pub fn build_timestamp_tick_plan<F>(
     axis: &AxisOptions,
     axis_len_px: f32,
     min_gap_px: f32,
@@ -113,7 +113,7 @@ where
     last_valid
 }
 
-pub(crate) fn format_timestamp_numeric_tick(
+pub fn format_timestamp_numeric_tick(
     value: f64,
     cfg: &TimestampLabelFormat,
     axis_min: f64,

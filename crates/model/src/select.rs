@@ -11,13 +11,12 @@
 //! renderer draws the box (`axis_render::draw_selection_box`); the model only
 //! states the policy.
 //!
-//! The elements the model can place itself (titles, the legend, the colourbar
-//! strip and title, the data area) emit through [`emit_element`], which the
-//! renderer's raster also draws with. Tick labels and axis strokes need tick
-//! generation, formatting and pruning, which belong to the renderer, so their
-//! parts come from the renderer's own emit through
-//! [`MeasureText::emit`]; a measure that does not lay them out leaves them
-//! without bounds.
+//! Every element emits through [`emit_element`], which the renderer's raster
+//! also draws with: titles, the legend, the colourbar strip and title and the
+//! data area are placed here, and tick labels and axis strokes by
+//! [`crate::chrome`], whose tick plan, formatting and pruning measure text
+//! only through [`MeasureText`]. Every measure gets the drawn labels' bounds
+//! (#160).
 
 use crate::color::Color;
 use crate::config::{AxisOptions, ChartTitleOptions, Config};
@@ -1013,9 +1012,9 @@ pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
 /// and return whether it could be laid out: the one placement of the chart
 /// title, the axis titles, the legend, the colourbar strip and its title and
 /// the data area, which the renderer's raster draws with too. Tick labels,
-/// axis strokes and the colourbar's axis and labels are placed by `measure`
-/// ([`MeasureText::emit`]), which lays them out with the renderer's tick
-/// plan, formatting and pruning or returns `false`.
+/// axis strokes and the colourbar's axis and labels are placed by
+/// [`crate::chrome::emit_part_of`], with the tick plan, formatting and
+/// pruning the raster draws, measured by `measure`.
 ///
 /// `cfg` is drawn as it is: a caller with a layered document passes the
 /// panel the layer is drawn with (the elements of this module do).
@@ -1037,7 +1036,7 @@ pub fn emit_element(
         | Element::ColorBarAxis
         | Element::ColorBarLabel
         | Element::ParallelAxisLabel(_) => {
-            return measure.emit(cfg, element, sink);
+            return crate::chrome::emit_part_of(cfg, element, measure, sink);
         }
         // Resize targets: nothing of their own is drawn.
         Element::DataAreaEdge(_) | Element::ColorBarEdge(_) => {}
@@ -1232,7 +1231,7 @@ impl Selectable for AxisElement {
         format!("axis_{}", side_str(&self.side))
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::emit`]): a
+    /// The line and ticks the renderer draws ([`crate::chrome::emit_part_of`]): a
     /// polar chart's angle axis is the outer ring, which is the data boundary
     /// and not selectable, and its radius ray hits on each stroke.
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
@@ -1258,7 +1257,7 @@ impl Selectable for AxisLabelElement {
         format!("tick_labels_{}", side_str(&self.side))
     }
 
-    /// The labels the renderer draws ([`MeasureText::emit`]).
+    /// The labels the renderer draws ([`crate::chrome::emit_part_of`]).
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
         on_drawn_panel(cfg, |panel| {
             emit_element(panel, &Element::AxisLabel(self.side.clone()), measure, sink)
@@ -1281,7 +1280,7 @@ impl Selectable for ParallelAxisLabelElement {
         format!("parallel_axis_labels_{}", self.axis)
     }
 
-    /// The labels the renderer draws along the axis ([`MeasureText::emit`]).
+    /// The labels the renderer draws along the axis ([`crate::chrome::emit_part_of`]).
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
         on_drawn_panel(cfg, |panel| {
             emit_element(panel, &Element::ParallelAxisLabel(self.axis), measure, sink)
@@ -1381,7 +1380,7 @@ impl Selectable for ColorBarAxisElement {
         "colorbar_axis".to_string()
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::emit`]).
+    /// The line and ticks the renderer draws ([`crate::chrome::emit_part_of`]).
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
         on_drawn_panel(cfg, |panel| {
             emit_element(panel, &Element::ColorBarAxis, measure, sink)
@@ -1398,7 +1397,7 @@ impl Selectable for ColorBarLabelElement {
         "colorbar_tick_labels".to_string()
     }
 
-    /// The labels the renderer draws ([`MeasureText::emit`]).
+    /// The labels the renderer draws ([`crate::chrome::emit_part_of`]).
     fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
         on_drawn_panel(cfg, |panel| {
             emit_element(panel, &Element::ColorBarLabel, measure, sink)
@@ -1718,192 +1717,17 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::default::default_config;
-    use crate::layout::{
-        ChartArea, LABEL_GAP, Rect, axis_anchor, axis_cross, axis_offset, colorbar_rect,
-        label_origin, point_on_rect_side,
-    };
-    use crate::sink::StrokeStyle;
+    use crate::layout::{ChartArea, Rect, colorbar_rect};
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
 
-    /// A test measure that lays out what only a renderer can place: one tick
-    /// label per `Element::AxisLabel` / `Element::ColorBarLabel` and one
-    /// stroke per `Element::Axis` / `Element::ColorBarAxis`, where the
-    /// renderer draws them (the label at the middle of its side, just past
-    /// the ticks, moved by the axis' `line_offset` and label offsets; the
-    /// axis line on the data-area edge, moved by its `line_offset`). Polar
-    /// charts get four angle labels on the outer ring, one radius label
-    /// beside the ray and the ray itself. Text is measured as
-    /// [`FixedMeasure`] measures it.
+    /// A test measure that measures text as [`FixedMeasure`] does; the
+    /// tick labels and axis strokes are the ones `crate::chrome` places
+    /// with it.
     pub(crate) struct LaysOut;
-
-    /// The extents of every placed tick label: three 8 px glyphs.
-    const LABEL_EXTENTS: TextExtents = TextExtents {
-        width: 24.0,
-        ascent: 10.0,
-        descent: 3.0,
-    };
-
-    fn place_label(sink: &mut dyn Sink, origin: (f32, f32)) {
-        sink.text(
-            Slot::Above,
-            &PlacedText {
-                text: TextRef::Plain {
-                    text: "0.5",
-                    family: "",
-                    size: 12.0,
-                    color: Color::BLACK,
-                },
-                origin,
-                extents: LABEL_EXTENTS,
-                rotation: None,
-            },
-        );
-    }
-
-    /// A label whose box is centred on `center`.
-    fn place_label_at(sink: &mut dyn Sink, center: [f32; 2]) {
-        place_label(
-            sink,
-            (
-                center[0] - LABEL_EXTENTS.width * 0.5,
-                center[1] + (LABEL_EXTENTS.ascent - LABEL_EXTENTS.descent) * 0.5,
-            ),
-        );
-    }
-
-    fn place_stroke(sink: &mut dyn Sink, a: [f32; 2], b: [f32; 2]) {
-        sink.stroke(
-            Slot::Above,
-            a,
-            b,
-            &StrokeStyle {
-                width: 1.0,
-                color: Color::BLACK,
-                dash: &[],
-                tag: "test_axis",
-            },
-        );
-    }
-
-    fn lay_out_polar(cfg: &Config, element: &Element, sink: &mut dyn Sink) {
-        let (Some(polar), Some(g)) = (cfg.polar(), cfg.polar_geometry()) else {
-            return;
-        };
-        let c = g.center;
-        match element {
-            Element::AxisLabel(Side::Bottom) if cfg.bottom_x.label_style.label_visible => {
-                let reach = g.radius
-                    + LABEL_GAP
-                    + LABEL_EXTENTS.width * 0.5
-                    + crate::polar::PolarOptions::angle_label_offset(&cfg.bottom_x.label_style);
-                for k in 0..4 {
-                    let a = polar.zero_angle_degrees.to_radians()
-                        + f64::from(k) * 0.5 * std::f64::consts::PI;
-                    let dir = [a.cos() as f32, -(a.sin() as f32)];
-                    place_label_at(sink, [c[0] + dir[0] * reach, c[1] + dir[1] * reach]);
-                }
-            }
-            Element::AxisLabel(Side::Left) if cfg.left_y.label_style.label_visible => {
-                let (d, s) = (polar.ray_direction(), polar.ray_side());
-                let o = polar.radius_label_offset(&cfg.left_y.label_style);
-                let across = LABEL_GAP + LABEL_EXTENTS.width * 0.5;
-                let along = g.radius * 0.5;
-                place_label_at(
-                    sink,
-                    [
-                        c[0] + d[0] * along + s[0] * across + o[0],
-                        c[1] + d[1] * along + s[1] * across + o[1],
-                    ],
-                );
-            }
-            Element::Axis(Side::Left) => {
-                let d = polar.ray_direction();
-                place_stroke(
-                    sink,
-                    [c[0] + d[0] * g.inner_radius, c[1] + d[1] * g.inner_radius],
-                    [c[0] + d[0] * g.radius, c[1] + d[1] * g.radius],
-                );
-            }
-            _ => {}
-        }
-    }
 
     impl MeasureText for LaysOut {
         fn measure_rich(&self, rt: &RichText) -> TextExtents {
             FixedMeasure.measure_rich(rt)
-        }
-
-        fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
-            match element {
-                Element::AxisLabel(side) | Element::Axis(side) => {
-                    if cfg.polar().is_some() {
-                        lay_out_polar(cfg, element, sink);
-                        return true;
-                    }
-                    let Ok(da) = cfg.data_area() else {
-                        return true;
-                    };
-                    let axis = axis_of(cfg, side);
-                    let plot = RectF::from_rect(&da);
-                    let o = axis_offset(side.clone(), axis.line_offset);
-                    if let Element::Axis(_) = element {
-                        // The line crosses where `cross_at` puts it; the
-                        // labels stay at the edge.
-                        let (a, b) = axis_anchor(side.clone(), &plot, axis_cross(cfg, side));
-                        if axis.line_visible {
-                            place_stroke(sink, [a.0 + o.0, a.1 + o.1], [b.0 + o.0, b.1 + o.1]);
-                        }
-                    } else if axis.label_style.label_visible {
-                        let (a, b) = axis_anchor(side.clone(), &plot, None);
-                        let mid = ((a.0 + b.0) * 0.5 + o.0, (a.1 + b.1) * 0.5 + o.1);
-                        let offset = (
-                            axis.label_style.label_offset_x,
-                            axis.label_style.label_offset_y,
-                        );
-                        place_label(
-                            sink,
-                            label_origin(
-                                side.clone(),
-                                mid,
-                                axis.major_tick_length,
-                                offset,
-                                LABEL_EXTENTS,
-                            ),
-                        );
-                    }
-                    true
-                }
-                Element::ColorBarAxis | Element::ColorBarLabel => {
-                    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
-                        return true;
-                    };
-                    let side = bar.side.clone();
-                    let a = point_on_rect_side(0.0, &side, &rect);
-                    let b = point_on_rect_side(1.0, &side, &rect);
-                    let o = axis_offset(side.clone(), bar.axis.line_offset);
-                    if let Element::ColorBarAxis = element {
-                        place_stroke(sink, [a.0 + o.0, a.1 + o.1], [b.0 + o.0, b.1 + o.1]);
-                    } else if bar.axis.label_style.label_visible {
-                        let mid = ((a.0 + b.0) * 0.5 + o.0, (a.1 + b.1) * 0.5 + o.1);
-                        let offset = (
-                            bar.axis.label_style.label_offset_x,
-                            bar.axis.label_style.label_offset_y,
-                        );
-                        place_label(
-                            sink,
-                            label_origin(
-                                side,
-                                mid,
-                                bar.axis.major_tick_length,
-                                offset,
-                                LABEL_EXTENTS,
-                            ),
-                        );
-                    }
-                    true
-                }
-                _ => false,
-            }
         }
     }
 
@@ -2340,15 +2164,14 @@ pub(crate) mod tests {
         assert!(sb2.handles().is_empty());
     }
 
-    // Tick labels are placed by the measure: a measure that lays them out
-    // gives drawn labels bounds and hidden ones none, and a measure that
-    // cannot place them leaves them without bounds either way.
+    // Tick labels are placed by the model (#160): under any measure the
+    // drawn labels have bounds and hidden ones none.
     #[test]
     fn hidden_axis_labels_have_no_bounds() {
         let mut cfg = cfg_800x600();
         let labels = AxisLabelElement { side: Side::Left };
         assert!(labels.bounds(&cfg, &LaysOut).is_some());
-        assert!(labels.bounds(&cfg, &FixedMeasure).is_none());
+        assert!(labels.bounds(&cfg, &FixedMeasure).is_some());
         cfg.left_y.label_style.label_visible = false;
         assert!(labels.bounds(&cfg, &LaysOut).is_none());
         assert!(labels.bounds(&cfg, &FixedMeasure).is_none());

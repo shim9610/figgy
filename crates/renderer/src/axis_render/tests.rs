@@ -1,14 +1,21 @@
 use super::*;
+use crate::color::Color;
+use crate::config::TickVisibility;
 use crate::config::{DrawStyle, SketchOptions};
 use crate::data_config::ContourLabelConfig;
 use crate::data_render::{
     ContourLabelAtlasError, ContourLabelAtlasInput, contour_label_atlas_grid,
 };
 use crate::default::default_config;
+use crate::format::LabelFormat;
 use crate::layout::LABEL_GAP;
+use crate::layout::{DataArea, RectF, axis_anchor, point_on_rect_side};
 use crate::layout::{TitleBand, axis_title_placement, colorbar_rect, label_origin};
+use crate::line::LineStylePreset;
 use crate::render_warning::SpacingRejection;
+use crate::sink::{Sink, Slot, StrokeStyle};
 use crate::text::{RichSegment, RichText};
+use crate::text_render::{measure_plain_text, measure_rich_text};
 use crate::tick::{
     MAX_LOG_DECADE_STEP, MAX_LOG_DECADES, MAX_MAJOR_INTERVALS, MAX_MINOR_SUBDIVISIONS,
 };
@@ -551,7 +558,15 @@ fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     cfg.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
     let da = cfg.data_area().unwrap();
     let fp = FontPolicy::for_style(&cfg.draw_style);
-    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &data_area_rect(&da), fp).is_some());
+    assert!(
+        timestamp_tick_plan(
+            &cfg.bottom_x,
+            Side::Bottom,
+            &data_area_rect(&da),
+            &CpuTextMeasure::with_policy(fp)
+        )
+        .is_some()
+    );
     assert!(tick_warnings(&cfg).is_empty(), "{:?}", tick_warnings(&cfg));
 
     // The numeric policy walks both settings, so both are reported.
@@ -572,7 +587,15 @@ fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     cfg.bottom_x.max = 3.0e13;
     cfg.bottom_x.minor_count = 4;
     cfg.bottom_x.major_spacing = 0.0;
-    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &data_area_rect(&da), fp).is_none());
+    assert!(
+        timestamp_tick_plan(
+            &cfg.bottom_x,
+            Side::Bottom,
+            &data_area_rect(&da),
+            &CpuTextMeasure::with_policy(fp)
+        )
+        .is_none()
+    );
     let used = effective_major_spacing(&cfg.bottom_x);
     assert_eq!(
         tick_warnings(&cfg),
@@ -773,10 +796,13 @@ fn numeric_labels_do_not_collide_on_small_scaled_or_inverted_axes() {
                     axis.inverted = inverted;
                     let original = axis.clone();
                     let majors = major_tick_values(&axis);
-                    let labels =
-                        visible_numeric_labels(&axis, side.clone(), fp, &majors, |value| {
-                            value_to_screen(value, &axis, side.clone(), &data_area_rect(&da))
-                        });
+                    let labels = visible_numeric_labels(
+                        &axis,
+                        side.clone(),
+                        &CpuTextMeasure::with_policy(fp),
+                        &majors,
+                        |value| value_to_screen(value, &axis, side.clone(), &data_area_rect(&da)),
+                    );
                     assert!(
                         labels.len() >= 2 && labels.len() < majors.len(),
                         "crowded axes must retain useful, separated labels"
@@ -843,7 +869,7 @@ fn numeric_label_density_recovers_on_resize_zoom_and_font_changes() {
         visible_numeric_labels(
             axis,
             Side::Bottom,
-            FontPolicy::Standard,
+            &CpuTextMeasure::with_policy(FontPolicy::Standard),
             &major_tick_values(axis),
             |value| value_to_screen(value, axis, Side::Bottom, &data_area_rect(&da)),
         )
@@ -1052,10 +1078,13 @@ fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
             metrics,
         )
         .rect(metrics);
-        let labels =
-            visible_numeric_labels(axis, Side::Left, fp, &major_tick_values(axis), |value| {
-                value_to_screen(value, axis, Side::Left, &data_area_rect(&da))
-            });
+        let labels = visible_numeric_labels(
+            axis,
+            Side::Left,
+            &CpuTextMeasure::with_policy(fp),
+            &major_tick_values(axis),
+            |value| value_to_screen(value, axis, Side::Left, &data_area_rect(&da)),
+        );
         let bounds = |label: &NumericTickLabel, axis: &AxisOptions, side| {
             let NumericTickText::Plain(text) = &label.text else {
                 panic!("decimal label")
@@ -1085,7 +1114,7 @@ fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
         let labels = visible_numeric_labels(
             &bar.axis,
             Side::Right,
-            fp,
+            &CpuTextMeasure::with_policy(fp),
             &major_tick_values(&bar.axis),
             |value| {
                 point_on_rect_side(
@@ -1921,7 +1950,6 @@ fn a_polar_tick_label_selection_boxes_each_label() {
     use crate::layout::{DrawnPart, Element};
     use crate::select::{AxisLabelElement, SELECTION_PADDING, SelectionGeometry, SelectionOutline};
     use crate::sink::Parts;
-    use crate::text::MeasureText;
     use crate::text_render::CpuTextMeasure;
 
     let mut cfg = default_config();
@@ -1936,12 +1964,13 @@ fn a_polar_tick_label_selection_boxes_each_label() {
     // Polar angle labels are the bottom labels, radius labels the left ones.
     for side in [Side::Bottom, Side::Left] {
         let mut labels = Vec::new();
-        assert!(measure.emit(
+        assert!(crate::chrome::emit_part_of(
             &cfg,
             &Element::AxisLabel(side.clone()),
+            &measure,
             &mut Parts(&mut |part| if let DrawnPart::Text(r) = part {
                 labels.push(r)
-            }),
+            })
         ));
         assert!(labels.len() >= 4, "{side:?}: {} labels", labels.len());
 
@@ -2048,7 +2077,7 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
             &axis,
             side.clone(),
             &data_area_rect(&da),
-            FontPolicy::Standard,
+            &CpuTextMeasure::with_policy(FontPolicy::Standard),
             &mut log,
         );
         let texts: Vec<&str> = log.0.iter().map(|(t, _)| t.as_str()).collect();
@@ -2083,7 +2112,7 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
             &axis,
             side.clone(),
             &data_area_rect(&da),
-            FontPolicy::Standard,
+            &CpuTextMeasure::with_policy(FontPolicy::Standard),
             &mut hidden,
         );
         assert!(hidden.0.is_empty());
@@ -2123,7 +2152,13 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
     let axis = category_axis(&names);
     let gap = axis.label_style.font_size * 0.5;
     let mut log = TextLog::default();
-    emit_axis_tick_labels(&axis, Side::Bottom, &narrow, FontPolicy::Standard, &mut log);
+    emit_axis_tick_labels(
+        &axis,
+        Side::Bottom,
+        &narrow,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
+        &mut log,
+    );
     let kept: Vec<usize> = log
         .0
         .iter()
@@ -2140,7 +2175,13 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
         assert!(pair[1].1.x >= pair[0].1.x + pair[0].1.width + gap - 1e-3);
     }
     let mut all = TextLog::default();
-    emit_axis_tick_labels(&axis, Side::Bottom, &wide, FontPolicy::Standard, &mut all);
+    emit_axis_tick_labels(
+        &axis,
+        Side::Bottom,
+        &wide,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
+        &mut all,
+    );
     assert_eq!(all.0.len(), names.len());
 
     let mut with_empty = category_axis(&["A", "", "C"]);
@@ -2149,7 +2190,7 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
         &with_empty,
         Side::Bottom,
         &wide,
-        FontPolicy::Standard,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &mut log,
     );
     let texts: Vec<&str> = log.0.iter().map(|(t, _)| t.as_str()).collect();
@@ -2160,7 +2201,7 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
         &with_empty,
         Side::Bottom,
         &wide,
-        FontPolicy::Standard,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &mut numeric,
     );
     assert!(numeric.0.iter().all(|(t, _)| t != "A"));
@@ -2180,7 +2221,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         &cfg.bottom_x,
         Side::Bottom,
         &data_area_rect(&da),
-        FontPolicy::Standard,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
     );
     assert_eq!(majors, vec![0.0, 1.0, 2.0, 3.0]);
     assert!(
@@ -2188,7 +2229,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
             &cfg.bottom_x,
             Side::Bottom,
             &data_area_rect(&da),
-            FontPolicy::Standard
+            &CpuTextMeasure::with_policy(FontPolicy::Standard)
         )
         .is_empty()
     );
@@ -2209,7 +2250,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         Side::Bottom,
         &data_area_rect(&da),
         None,
-        FontPolicy::Standard,
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &majors,
         |stroke, a, _| {
             if let AxisStroke::Tick(_) = stroke {
@@ -2247,7 +2288,12 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
     cfg.grid.show_major_x = true;
     cfg.grid.show_minor_x = true;
     let mut grid = GridLog(Vec::new());
-    emit_grid(&cfg, &data_area_rect(&da), FontPolicy::Standard, &mut grid);
+    emit_grid(
+        &cfg,
+        &data_area_rect(&da),
+        &CpuTextMeasure::with_policy(FontPolicy::Standard),
+        &mut grid,
+    );
     let major_x: Vec<f32> = grid
         .0
         .iter()
@@ -2279,7 +2325,12 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         height: 300.25,
     };
     let fp = FontPolicy::Standard;
-    let majors = major_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &plot, fp);
+    let majors = major_tick_values_for_axis(
+        &cfg.bottom_x,
+        Side::Bottom,
+        &plot,
+        &CpuTextMeasure::with_policy(fp),
+    );
     let mut line = None;
     let mut ticks = Vec::new();
     each_axis_stroke(
@@ -2287,7 +2338,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         Side::Bottom,
         &plot,
         None,
-        fp,
+        &CpuTextMeasure::with_policy(fp),
         &majors,
         |stroke, a, b| match stroke {
             AxisStroke::Line => line = Some((a, b)),
@@ -2303,7 +2354,13 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         );
     }
     let mut log = TextLog::default();
-    emit_axis_tick_labels(&cfg.bottom_x, Side::Bottom, &plot, fp, &mut log);
+    emit_axis_tick_labels(
+        &cfg.bottom_x,
+        Side::Bottom,
+        &plot,
+        &CpuTextMeasure::with_policy(fp),
+        &mut log,
+    );
     assert_eq!(log.0.len(), 4);
     for ((_, rect), tick) in log.0.iter().zip(&ticks) {
         assert!((rect.x + rect.width * 0.5 - tick.0).abs() < 1e-3);
@@ -2389,9 +2446,13 @@ fn adaptive_labels(
         width: width * scale,
         height: height * scale,
     });
-    visible_numeric_labels(axis, side.clone(), fp, &major_tick_values(axis), |value| {
-        value_to_screen(value, axis, side.clone(), &data_area_rect(&da))
-    })
+    visible_numeric_labels(
+        axis,
+        side.clone(),
+        &CpuTextMeasure::with_policy(fp),
+        &major_tick_values(axis),
+        |value| value_to_screen(value, axis, side.clone(), &data_area_rect(&da)),
+    )
 }
 
 const ADAPTIVE_RANGES: [(f64, f64); 9] = [
@@ -2715,7 +2776,7 @@ fn an_adaptive_colorbar_labels_its_ladder() {
             &bar.axis,
             bar.side.clone(),
             &strip,
-            fp,
+            &CpuTextMeasure::with_policy(fp),
             &major_tick_values(&bar.axis),
             |text, _| {
                 out.push(match text {
@@ -2821,7 +2882,7 @@ fn label_stride_asks_for_labels_within_the_count_only() {
     for spread in [0.0f32, 1.0, 40.0, 400.0] {
         let kept = prune_numeric_labels(
             &axis,
-            FontPolicy::Standard,
+            &CpuTextMeasure::with_policy(FontPolicy::Standard),
             &majors,
             |value| (value.log10() as f32 * spread, 0.0),
             |(x, y), m| RectF {
@@ -2837,7 +2898,7 @@ fn label_stride_asks_for_labels_within_the_count_only() {
     assert!(
         prune_numeric_labels(
             &axis,
-            FontPolicy::Standard,
+            &CpuTextMeasure::with_policy(FontPolicy::Standard),
             &[],
             |_| (0.0, 0.0),
             |_, _| same

@@ -1,7 +1,6 @@
 //! The colourbar: its strip, border, axis chrome and title.
 
 use super::*;
-use crate::axis_render::*;
 
 // Colourbar.
 //
@@ -12,70 +11,6 @@ use crate::axis_render::*;
 // axis is an `AxisOptions`, so a log colourbar gets decade ticks and 10ⁿ labels
 // from the code that already does it for a log axis, instead of a second
 // implementation that drifts.
-
-/// The colourbar: its strip and border (the model's `Element::ColorBar`
-/// placement), its axis line and ticks, its tick labels and its title (the
-/// model's `Element::ColorBarTitle` placement).
-///
-/// A no-op when there is no colourbar or it is hidden — and `colorbar_parts`
-/// has then reserved no band for it, so there is nothing to leave blank.
-pub(crate) fn emit_colorbar(
-    config: &Config,
-    da: &DataArea,
-    fp: FontPolicy,
-    measure: &dyn MeasureText,
-    sink: &mut dyn Sink,
-) {
-    let Some((bar, rect)) = drawn_colorbar(config, da) else {
-        return;
-    };
-    emit_element(config, &Element::ColorBar, measure, sink);
-    emit_colorbar_axis_strokes(&bar.axis, bar.side.clone(), &rect, sink);
-    emit_colorbar_tick_labels(&bar.axis, bar.side.clone(), &rect, fp, sink);
-    emit_element(config, &Element::ColorBarTitle, measure, sink);
-}
-
-/// The colourbar axis' line and ticks along the strip `rect`
-/// (`Element::ColorBarAxis`). Like a chart axis, the colourbar axis chrome
-/// may detach perpendicular to its direction; the strip and title stay put,
-/// and the labels share the same translation.
-pub(crate) fn emit_colorbar_axis_strokes(
-    axis: &AxisOptions,
-    side: Side,
-    rect: &RectF,
-    sink: &mut dyn Sink,
-) {
-    let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let majors = major_tick_values(axis);
-    let dash = axis.line_style.pattern();
-    each_colorbar_axis_stroke(axis, side, rect, &majors, |stroke, a, b| {
-        let tag = match stroke {
-            AxisStroke::Line => "axis_colorbar".to_string(),
-            AxisStroke::Tick(i) => format!("tick_colorbar_{i}"),
-        };
-        sink.stroke(
-            Slot::Above,
-            [a.0 + off_x, a.1 + off_y],
-            [b.0 + off_x, b.1 + off_y],
-            &StrokeStyle {
-                width: axis.line_width,
-                color: axis.line_color,
-                dash,
-                tag: &tag,
-            },
-        );
-    });
-}
-
-/// The colourbar and its strip rect when it is drawn
-/// ([`crate::layout::visible_colorbar_rect`]). [`tick_warnings`] reports the
-/// bar's axis only then.
-pub(crate) fn drawn_colorbar<'a>(
-    config: &'a Config,
-    _da: &DataArea,
-) -> Option<(&'a crate::config::ColorBarOptions, RectF)> {
-    visible_colorbar_rect(config)
-}
 
 /// Paint the ramp into the strip rect.
 ///

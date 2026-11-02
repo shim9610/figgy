@@ -34,6 +34,21 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **The model places the axis chrome** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  Tick planning, formatting and label pruning, the timestamp ticks, and the
+  placement of the grid, the axes with their ticks and tick labels and the
+  colourbar's axis and labels (rectangular, polar, ternary, 3D box and
+  parallel charts) moved from the renderer into the model's
+  `chrome` module, measured through `MeasureText` alone. Under any measure
+  the drawn tick labels and axis strokes now have bounds, hit tests and drag
+  containment; before, only the renderer's measure placed them and any
+  other left tick labels without bounds. The renderer paints the same
+  placement, so its raster, hit tests and exports are unchanged.
+  `MeasureText::emit` is removed; `MeasureText::measure_plain(text, family,
+  size)` is new, with a default that measures the text as a plain
+  `RichText`. Migration: a `MeasureText` implementation drops its `emit`;
+  one whose plain-text measurement differs from its rich-text one
+  overrides `measure_plain`.
 - **The deprecated readers' companion types are deprecated too** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `BarSeries`, `BoxSummary`, `BoxPlotDirection`, `BoxPlotSeries`,
   `RadarTarget`, `RadarGridShape`, `RadarStyle` and `RadarSeries` exist only
