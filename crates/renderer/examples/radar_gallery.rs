@@ -21,7 +21,7 @@ use renderer::{
     Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, data_render,
     encode_png, radar::*,
 };
-use std::{path::Path, path::PathBuf, sync::Arc};
+use std::{path::Path, path::PathBuf};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -89,7 +89,7 @@ fn main() -> Result {
     let adapter = data_render::request_adapter(&instance)?;
     eprintln!("Radar adapter: {:?}", adapter.get_info());
     let (d, q) = data_render::request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(d), Arc::new(q));
+    let gpu = RendererDevice::new(d, q);
     let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = RadarChart {
         title: "Build quality".into(),

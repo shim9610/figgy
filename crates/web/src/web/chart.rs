@@ -124,7 +124,6 @@ pub(super) async fn create_chart_kernel(
         next_column_revision: 1,
         pending_stream_handoff: None,
         series_extents: HashMap::new(),
-        alive: Rc::new(Cell::new(true)),
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
         hitmap_layer: (renderer::LayerRef::Base, 0, None),
@@ -249,7 +248,6 @@ pub struct FiggyChart {
     /// identity includes the normalized primitive mode and every active
     /// role-specific column revision.
     pub(super) series_extents: HashMap<SeriesExtentKey, Rc<SeriesExtentJob>>,
-    pub(super) alive: Rc<Cell<bool>>,
     /// Monotonic color assignment for newly registered series.
     pub(super) color_seq: usize,
     pub(super) hitmap: HitMap,
@@ -598,12 +596,6 @@ impl FiggyChart {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for FiggyChart {
-    fn drop(&mut self) {
-        self.alive.set(false);
     }
 }
 

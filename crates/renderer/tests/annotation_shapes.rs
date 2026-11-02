@@ -15,7 +15,7 @@ mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect, RectF};
@@ -47,13 +47,13 @@ const BLUE: Color = Color {
     a: 1.0,
 };
 
-fn shared_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-    static DEVICE: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+fn shared_device() -> (wgpu::Device, wgpu::Queue) {
+    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(|| {
         let (device, queue) = test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+        (device, queue)
     });
-    (Arc::clone(device), Arc::clone(queue))
+    (device.clone(), queue.clone())
 }
 
 /// A renderer holding one horizontal line's columns, `y = 5` over `x` 0..10.

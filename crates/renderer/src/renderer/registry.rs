@@ -3246,12 +3246,7 @@ impl Renderer {
                 (DEMO_COLUMN_IDS[2].to_string(), demo_t),
                 (DEMO_COLUMN_IDS[3].to_string(), demo_rc),
             ],
-            pool_alloc_ctx(
-                device.as_ref(),
-                queue.as_ref(),
-                memory_budget,
-                gpu_ledger.as_ref(),
-            ),
+            pool_alloc_ctx(&*device, &*queue, memory_budget, gpu_ledger.as_ref()),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
         crate::chart::validate_renderer_config(&config)?;
@@ -3357,8 +3352,8 @@ impl Renderer {
         let invalidation = self.prepare_columns_invalidation(columns.iter().map(|(id, _)| *id))?;
         let old_layout_generation = self.pool.layout_generation();
         let ctx = pool_alloc_ctx(
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.memory_budget,
             self.gpu_ledger.as_ref(),
         );
@@ -3406,8 +3401,8 @@ impl Renderer {
             id.clone(),
             source,
             pool_alloc_ctx(
-                self.device.as_ref(),
-                self.queue.as_ref(),
+                &self.device,
+                &self.queue,
                 self.memory_budget,
                 self.gpu_ledger.as_ref(),
             ),
@@ -3423,8 +3418,8 @@ impl Renderer {
             &mut self.picker,
             Some(invalidation),
             self.renderer_identity,
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.errorbar_extent_engine.as_ref(),
         )
     }
@@ -3444,8 +3439,8 @@ impl Renderer {
             id.clone(),
             source,
             pool_alloc_ctx(
-                self.device.as_ref(),
-                self.queue.as_ref(),
+                &self.device,
+                &self.queue,
                 self.memory_budget,
                 self.gpu_ledger.as_ref(),
             ),
@@ -3461,8 +3456,8 @@ impl Renderer {
             &mut self.picker,
             Some(invalidation),
             self.renderer_identity,
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.errorbar_extent_engine.as_ref(),
         )
     }
@@ -3519,8 +3514,8 @@ impl Renderer {
         let changed = &changed[..count];
         let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
         let ctx = pool_alloc_ctx(
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.memory_budget,
             self.gpu_ledger.as_ref(),
         );
@@ -3570,8 +3565,8 @@ impl Renderer {
         let changed = &changed_ids[..if replaced { 3 } else { 1 }];
         let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
         let ctx = pool_alloc_ctx(
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.memory_budget,
             self.gpu_ledger.as_ref(),
         );
@@ -3711,8 +3706,8 @@ impl Renderer {
     pub fn defragment(&mut self) -> Result<bool> {
         self.health.check()?;
         let defragment = self.pool.begin_defragment(pool_alloc_ctx(
-            self.device.as_ref(),
-            self.queue.as_ref(),
+            &self.device,
+            &self.queue,
             self.memory_budget,
             self.gpu_ledger.as_ref(),
         ))?;
@@ -3763,8 +3758,8 @@ impl Renderer {
             let result = (|| -> Result<()> {
                 let relayout = self.pool.begin_relayout(
                     pool_alloc_ctx(
-                        self.device.as_ref(),
-                        self.queue.as_ref(),
+                        &self.device,
+                        &self.queue,
                         self.memory_budget,
                         self.gpu_ledger.as_ref(),
                     ),

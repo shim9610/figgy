@@ -15,7 +15,7 @@ mod test_gpu;
 use renderer::radial::*;
 use renderer::{Color, RasterImage, RendererDevice};
 use std::f32::consts::TAU;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
@@ -24,7 +24,7 @@ fn gpu() -> RendererDevice {
     static GPU: OnceLock<RendererDevice> = OnceLock::new();
     GPU.get_or_init(|| {
         let (d, q) = test_gpu::device();
-        RendererDevice::new(Arc::new(d), Arc::new(q))
+        RendererDevice::new(d, q)
     })
     .clone()
 }

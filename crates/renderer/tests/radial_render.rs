@@ -11,7 +11,7 @@ fn gpu() -> RendererDevice {
     static GPU: OnceLock<RendererDevice> = OnceLock::new();
     GPU.get_or_init(|| {
         let (d, q) = test_gpu::device();
-        RendererDevice::new(Arc::new(d), Arc::new(q))
+        RendererDevice::new(d, q)
     })
     .clone()
 }

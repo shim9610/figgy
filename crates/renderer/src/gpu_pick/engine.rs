@@ -356,18 +356,15 @@ pub(super) fn same_optional_storage(a: Option<ColumnHandle>, b: Option<ColumnHan
 
 impl GpuPickEngine {
     #[cfg(test)]
-    pub(super) fn new(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-    ) -> Result<Self, GpuPickError> {
+    pub(super) fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, GpuPickError> {
         let mut noop = |_| {};
         Self::new_observed(device, queue, &mut noop)
     }
 
     #[cfg(test)]
     pub(super) fn new_observed(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self, GpuPickError> {
         observe_result(observer, INIT_SCOPE, "limits", || {
@@ -1897,8 +1894,8 @@ impl GpuPickEngine {
         pool: &ColumnPool,
         query: GpuPickQuery,
         display_scale: f32,
-        arcs: &[Option<Arc<wgpu::Buffer>>],
-        rings: &[Option<Arc<wgpu::Buffer>>],
+        arcs: &[Option<wgpu::Buffer>],
+        rings: &[Option<wgpu::Buffer>],
         members: usize,
         member_transform: &dyn Fn(usize) -> ScatterTransform,
         exact: &PickExactPipelines,
@@ -2131,7 +2128,7 @@ impl GpuPickEngine {
         });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
-                device: Arc::clone(&self.bundle.device),
+                device: self.bundle.device.clone(),
                 health: self.bundle.health.clone(),
                 readback,
                 receiver,
@@ -2147,7 +2144,7 @@ impl GpuPickEngine {
 pub(super) enum GpuPickTicketState {
     ReadyNone,
     Pending {
-        device: Arc<wgpu::Device>,
+        device: wgpu::Device,
         /// The device's health record, checked by the readback poll.
         health: crate::renderer::DeviceHealth,
         readback: wgpu::Buffer,

@@ -23,8 +23,6 @@
 //! Run with:
 //! `cargo run -p figgy-renderer --example egui_embed --features egui_demo`
 
-use std::sync::Arc;
-
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 
@@ -626,10 +624,10 @@ impl eframe::App for DemoApp {
         self.render_state = Some(render_state.clone());
 
         if !self.initialized {
-            // figgy needs Arc<Device/Queue>. Wrap RenderState's owned values in Arc
-            // (wgpu::Device is Arc-like internally, so the clone is cheap).
-            let device = Arc::new(render_state.device.clone());
-            let queue = Arc::new(render_state.queue.clone());
+            // wgpu::Device and wgpu::Queue are reference-counted handles, so the
+            // clones share RenderState's device and queue.
+            let device = render_state.device.clone();
+            let queue = render_state.queue.clone();
             let format = render_state.target_format;
 
             let mut renderer = match Renderer::try_new(

@@ -13,8 +13,8 @@ use super::*;
 /// API and avoids accepting loose device/queue arguments at every call site.
 #[derive(Clone)]
 pub struct RendererDevice {
-    pub(super) device: Arc<wgpu::Device>,
-    pub(super) queue: Arc<wgpu::Queue>,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
     /// Device-lost and uncaptured-error record, registered once here and
     /// shared by every renderer built from this bundle (#152).
     pub(super) health: DeviceHealth,
@@ -28,7 +28,7 @@ impl RendererDevice {
     /// handler, so figgy reports a lost device and every GPU error as a
     /// [`FiggyError`] instead of wgpu's default panic. wgpu keeps one of each
     /// per device: build one bundle per device and clone it.
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let health = DeviceHealth::watch(&device);
         Self {
             device,
@@ -37,10 +37,10 @@ impl RendererDevice {
         }
     }
 
-    pub fn device(&self) -> &Arc<wgpu::Device> {
+    pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
-    pub fn queue(&self) -> &Arc<wgpu::Queue> {
+    pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
     /// The device's health record, shared by every user of this bundle.
@@ -3264,11 +3264,11 @@ impl Renderer {
         })
     }
 
-    pub fn device(&self) -> &Arc<wgpu::Device> {
+    pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    pub fn queue(&self) -> &Arc<wgpu::Queue> {
+    pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
 

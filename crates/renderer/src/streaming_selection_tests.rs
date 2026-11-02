@@ -53,7 +53,7 @@ fn fixture_with_display(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
             4,

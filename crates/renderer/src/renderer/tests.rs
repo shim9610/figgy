@@ -108,7 +108,7 @@ fn state_test_renderer_with_capacity(pool_capacity: u64) -> Option<Renderer> {
     let (device, queue) = crate::data_render::shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_capacity,
         )
@@ -4690,7 +4690,7 @@ fn renderer_begins_errorbar_extent_from_current_column_ids() {
         return;
     };
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -4729,7 +4729,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
         return;
     };
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5282,7 +5282,7 @@ fn point_constellation_scatterline_exports() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5349,7 +5349,7 @@ fn all_scatter_shapes_export_visible_markers() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5445,7 +5445,7 @@ fn xy_errorbar_does_not_require_zero_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5487,7 +5487,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5546,7 +5546,7 @@ fn errorbar_style_index_colors_points_independently() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5640,7 +5640,7 @@ fn record_prepared_rgba(
     w: u32,
     h: u32,
 ) -> RecordedPreparedRgba {
-    let device = renderer.device.as_ref();
+    let device = &renderer.device;
     let target_desc = wgpu::TextureDescriptor {
         label: Some("mapped style regression target"),
         size: wgpu::Extent3d {
@@ -7185,7 +7185,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7231,7 +7231,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
     assert!(r.pool().slot("__zero").is_none());
 
     let mut export_renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7365,7 +7365,7 @@ fn two_line_series_both_render() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7446,7 +7446,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7538,7 +7538,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7645,7 +7645,7 @@ fn space_background_rebakes_only_on_key_change() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7708,7 +7708,7 @@ fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7774,7 +7774,7 @@ fn gpu_arc_prefix_matches_cpu_reference() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7903,7 +7903,7 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -8037,7 +8037,7 @@ fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -8185,7 +8185,7 @@ fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -8238,7 +8238,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -8300,17 +8300,16 @@ fn arc_results_reuse_only_exact_compute_keys() {
         series: &series,
     }];
 
-    let arc_of = |p: &PreparedFrame| -> Arc<wgpu::Buffer> {
-        Arc::clone(
-            &p.items[0].series[0]
-                .line
-                .as_ref()
-                .expect("dashed series has a line layer")
-                .arc
-                .as_ref()
-                .expect("dashed series has an arc prefix")
-                .0,
-        )
+    let arc_of = |p: &PreparedFrame| -> wgpu::Buffer {
+        p.items[0].series[0]
+            .line
+            .as_ref()
+            .expect("dashed series has a line layer")
+            .arc
+            .as_ref()
+            .expect("dashed series has an arc prefix")
+            .0
+            .clone()
     };
 
     let p1 = r.prepare(&items_a).unwrap();
@@ -8319,7 +8318,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
     let p2 = r.prepare(&items_b).unwrap();
     let a2 = arc_of(&p2);
     assert!(
-        Arc::ptr_eq(&a1, &a2),
+        a1 == a2,
         "an identical compute key should reuse its immutable arc result"
     );
     assert_eq!(
@@ -8343,9 +8342,9 @@ fn arc_results_reuse_only_exact_compute_keys() {
         )
         .expect("changed geometry arc result")
         .unwrap();
-    let changed_arc = Arc::clone(&changed.prefix.0);
+    let changed_arc = changed.prefix.0.clone();
     assert!(
-        !Arc::ptr_eq(&arc_of(&r.prepare(&items_a).unwrap()), &changed_arc),
+        arc_of(&r.prepare(&items_a).unwrap()) != changed_arc,
         "a changed geometry transform must not overwrite the old result"
     );
     drop(changed);
@@ -8362,7 +8361,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
         .expect("cached changed geometry arc result")
         .unwrap();
     assert!(
-        Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
+        changed_arc == changed_again.prefix.0,
         "an exact changed key should reuse its immutable result"
     );
 
@@ -8380,7 +8379,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
         .expect("style-only arc result")
         .unwrap();
     assert!(
-        Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
+        changed_arc == style_only_result.prefix.0,
         "style-only changes must not retraverse geometry columns"
     );
 
@@ -8398,7 +8397,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
         .expect("changed data generation arc result")
         .unwrap();
     assert!(
-        !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
+        changed_arc != changed_data.prefix.0,
         "a new source generation must not reuse an old prefix"
     );
     assert_eq!(
@@ -9729,7 +9728,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -9802,7 +9801,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     chart.set_x_range(0.0, 1.0);
 
     let mut foreign = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -9948,7 +9947,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -10100,7 +10099,7 @@ fn log_auto_fit_clamps_to_smallest_positive_uploaded_value() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -10139,7 +10138,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10352,7 +10351,7 @@ fn dense_line_has_no_gaps() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10455,7 +10454,7 @@ fn solid_line_exports_analytic_aa_fringe() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10533,7 +10532,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10681,7 +10680,7 @@ fn dashed_curve_runs_match_pattern() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10828,7 +10827,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -10919,7 +10918,7 @@ fn renderer_init_and_add_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -11876,8 +11875,8 @@ fn an_undeclared_ceiling_carries_no_out_of_pool_total() {
     // out-of-pool total to compute and none to misread. `GpuBudget` fusing
     // the two is what makes that a type-level fact rather than a comment.
     let ctx = pool_alloc_ctx(
-        renderer.device.as_ref(),
-        renderer.queue.as_ref(),
+        &renderer.device,
+        &renderer.queue,
         renderer.memory_budget,
         renderer.gpu_ledger.as_ref(),
     );
@@ -11892,8 +11891,8 @@ fn an_undeclared_ceiling_carries_no_out_of_pool_total() {
     assert!(external > 0, "the panel textures should be charged by now");
     assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
     let ctx = pool_alloc_ctx(
-        renderer.device.as_ref(),
-        renderer.queue.as_ref(),
+        &renderer.device,
+        &renderer.queue,
         renderer.memory_budget,
         renderer.gpu_ledger.as_ref(),
     );
@@ -14279,9 +14278,8 @@ fn chart_view_size_mismatch_is_an_error() {
 #[test]
 fn waits_on_a_destroyed_device_return_device_lost() {
     let (device, queue) = crate::test_gpu::device();
-    let device = Arc::new(device);
     let renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        RendererDevice::new(device.clone(), queue),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )
@@ -14310,9 +14308,8 @@ fn waits_on_a_destroyed_device_return_device_lost() {
 #[test]
 fn a_call_returns_the_gpu_error_it_raised() {
     let (device, queue) = crate::test_gpu::device();
-    let device = Arc::new(device);
     let renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        RendererDevice::new(device.clone(), queue),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )

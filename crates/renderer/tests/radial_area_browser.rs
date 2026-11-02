@@ -2,7 +2,6 @@
 //! checks retain the existing per-suite timeout as coverage grows.
 #![cfg(target_arch = "wasm32")]
 use renderer::RendererDevice;
-use std::sync::Arc;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 #[path = "support/radial_area.rs"]
@@ -17,5 +16,5 @@ async fn radial_area_select_resize_move_pick_and_export_on_webgpu() {
         .await
         .unwrap();
     assert!(device.as_webgpu().is_some());
-    radial_area::check(RendererDevice::new(Arc::new(device), Arc::new(queue))).await;
+    radial_area::check(RendererDevice::new(device, queue)).await;
 }

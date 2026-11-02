@@ -26,8 +26,6 @@ mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::Arc;
-
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
 use renderer::config::{AxisOptions, DrawStyle, SketchOptions, TickVisibility};
 use renderer::layout::Rect;
@@ -56,7 +54,7 @@ const TOLERANCE: f32 = 0.01;
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(Arc::new(device), Arc::new(queue))
+    RendererDevice::new(device, queue)
 }
 
 fn renderer(gpu: &RendererDevice) -> Renderer {

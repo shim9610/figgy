@@ -147,8 +147,8 @@ pub struct PipelinePreparation {
     feature: PreparationFeature,
     identity: u64,
     generation: u64,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: DeviceHealth,
     format: wgpu::TextureFormat,
@@ -390,7 +390,7 @@ impl Renderer {
         } = prepared;
         if self.renderer_identity != job.identity
             || self.target_pipeline_generation != job.generation
-            || !Arc::ptr_eq(&self.device, &job.device)
+            || self.device != job.device
             || self.surface_format != job.format
             || self.target_sample_count != job.pipelines.sample_count
         {
@@ -618,7 +618,7 @@ mod tests {
     fn renderer() -> Renderer {
         let (device, queue) = crate::test_gpu::device();
         Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(device, queue),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )

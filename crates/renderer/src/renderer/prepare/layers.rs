@@ -49,7 +49,7 @@ impl PrepareContext<'_> {
         &mut self,
         config: &Config,
         series: &SeriesConfig,
-    ) -> Result<Option<Arc<wgpu::Buffer>>> {
+    ) -> Result<Option<wgpu::Buffer>> {
         let (Some(_), Some(_), Some(c)) = (
             series.render_type.ternary_region(),
             config.ternary.as_ref(),
@@ -76,7 +76,7 @@ impl PrepareContext<'_> {
             self.caps.max_compute_workgroups_per_dimension,
         )?
         .ok_or_else(|| ring_scan_too_large(&series.series_id))?;
-        Ok(Some(Arc::new(buffer)))
+        Ok(Some(buffer))
     }
 
     /// Convert one panel's `Series` list into `SeriesLayers` ready for

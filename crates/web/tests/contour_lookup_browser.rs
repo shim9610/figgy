@@ -1,7 +1,5 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
@@ -34,7 +32,7 @@ async fn renderer() -> Renderer {
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
     Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )

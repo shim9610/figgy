@@ -4,8 +4,6 @@
 //! Run: `cargo run -p figgy-renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
 
-use std::sync::Arc;
-
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
@@ -113,7 +111,7 @@ fn main() {
     let adapter = request_adapter(&inst).expect("adapter");
     let (device, queue) = request_device(&adapter).expect("device");
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )

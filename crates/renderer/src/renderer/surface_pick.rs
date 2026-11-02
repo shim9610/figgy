@@ -41,7 +41,7 @@ struct PointPick3d {
     line: Option<data_render::surface_mesh::View3dBinding>,
     /// The camera group (with the value map when mapped), for the markers.
     scatter: Option<data_render::surface_mesh::View3dBinding>,
-    arc: Option<(Arc<wgpu::Buffer>, u64)>,
+    arc: Option<(wgpu::Buffer, u64)>,
     style_index: Option<ColumnHandle>,
     color_value: Option<ColumnHandle>,
     size_value: Option<ColumnHandle>,
@@ -558,7 +558,7 @@ impl Renderer {
         ));
         Ok(crate::GpuDataPickTicket::surface(
             crate::gpu_data_pick::SurfacePickTicket {
-                device: Arc::clone(&self.device),
+                device: self.device.clone(),
                 health: self.health.clone(),
                 readback,
                 receiver,

@@ -12,8 +12,6 @@ mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::Arc;
-
 use renderer::layout::{Element, RectF, Side, auto_layout};
 use renderer::sink::Parts;
 use renderer::{Config, CpuTextMeasure, HitMap, Renderer, RendererDevice};
@@ -27,7 +25,7 @@ const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/r
 
 fn renderer() -> Renderer {
     let (device, queue) = test_gpu::device();
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
 }
 

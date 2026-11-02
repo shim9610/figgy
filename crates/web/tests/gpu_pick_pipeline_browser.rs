@@ -1,7 +1,5 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::{
     Color, DataRenderType, DataScatterStyleConfig, GpuPickRequest, Renderer, RendererDevice,
     ScatterShape, SeriesConfig,
@@ -228,10 +226,8 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
     let (device, queue) = request_device_async(&adapter)
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()),
         wgpu::TextureFormat::Bgra8Unorm,
         2 * 1024 * 1024,
     )

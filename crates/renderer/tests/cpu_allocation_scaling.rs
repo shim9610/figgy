@@ -123,11 +123,10 @@ fn least_squares(points: &[(f64, f64)]) -> (f64, f64) {
 }
 
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
-    use std::sync::Arc;
     let (device, queue) = test_gpu::device();
     Some(
         Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(device, queue),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_bytes,
         )

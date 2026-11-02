@@ -9,8 +9,6 @@
 //! Run with:
 //! `cargo run -p figgy-renderer --example constellation_lab --features egui_demo`
 
-use std::sync::Arc;
-
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 
@@ -77,8 +75,8 @@ impl Drop for FiggyState {
 }
 
 fn build_state(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     format: wgpu::TextureFormat,
 ) -> Result<FiggyState, String> {
     let mut renderer = Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY)
@@ -374,8 +372,8 @@ impl eframe::App for LabApp {
         self.render_state = Some(render_state.clone());
 
         if !self.initialized && self.failed.is_none() {
-            let device = Arc::new(render_state.device.clone());
-            let queue = Arc::new(render_state.queue.clone());
+            let device = render_state.device.clone();
+            let queue = render_state.queue.clone();
             match build_state(device, queue, render_state.target_format) {
                 Ok(state) => {
                     render_state

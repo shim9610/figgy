@@ -288,9 +288,6 @@ impl FiggyChart {
                 _ => {}
             }
         }
-        if !self.alive.get() {
-            return Err(js_err("chart was dropped while auto_fit_all was pending"));
-        }
         if layer == renderer::LayerRef::Base {
             self.renderer
                 .commit_auto_fit_all_if_current(&token, &x_ext, &y_ext, padding)
