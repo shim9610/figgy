@@ -1013,8 +1013,10 @@ additive.
   the pass that already wrote them, so a source cannot report statistics
   that disagree with its values (a wrong `min` used to reach auto-fit and the
   bar validation's refusal of negative shares). A streamed source is measured
-  the same way, one chunk at a time. The statistics are of the value the GPU
-  reads (`hi + lo`), as the smallest positive already was. Each trait is now
+  the same way, one chunk at a time. `ColumnPairWriter::write_value(index,
+  f64)` writes the `(hi, lo)` split and records the f64 itself, so a host's
+  `0.3` fits an axis to `0.3`; `write_pair` records `hi + lo`, and a value
+  the GPU reads as zero or infinite is recorded as it reads it. Each trait is now
   `len`, `is_empty`, `write_pairs(&self, &mut ColumnPairWriter)` and
   `write_pair_range(&self, start, &mut ColumnPairWriter) -> Result<(),
   ColumnRangeWriteError>` (default `Unsupported`). Removed: `min`, `max`, the

@@ -2,7 +2,6 @@
 //! buffers without constructing an owned per-value mirror. Each adapter only
 //! writes values; the renderer's writer records their statistics.
 
-use renderer::data::split_f64_to_f32_pair;
 use renderer::{ColumnPairWriter, ColumnRangeWriteError, ColumnSource, HiLoColumnSource};
 
 /// The slice range a streamed chunk of `len` values from `start` reads.
@@ -124,8 +123,7 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
 
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
+            dst.write_value(index, value);
         }
     }
 
@@ -136,8 +134,7 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
     ) -> Result<(), ColumnRangeWriteError> {
         let range = chunk_range(self.data.len(), start, dst.len())?;
         for (index, &value) in self.data[range].iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
+            dst.write_value(index, value);
         }
         Ok(())
     }
@@ -261,8 +258,7 @@ impl HiLoColumnSource for JsF64StreamSource {
 
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for index in 0..dst.len() {
-            let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(index as u32));
-            dst.write_pair(index, hi, lo);
+            dst.write_value(index, self.0.get_index(index as u32));
         }
     }
 
@@ -273,8 +269,7 @@ impl HiLoColumnSource for JsF64StreamSource {
     ) -> Result<(), ColumnRangeWriteError> {
         let range = js_chunk_range(self.0.length(), start, dst.len())?;
         for (target, source) in range.enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(source));
-            dst.write_pair(target, hi, lo);
+            dst.write_value(target, self.0.get_index(source));
         }
         Ok(())
     }
@@ -283,6 +278,7 @@ impl HiLoColumnSource for JsF64StreamSource {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use renderer::data::split_f64_to_f32_pair;
     use std::sync::OnceLock;
     use std::time::Duration;
 
@@ -457,16 +453,16 @@ mod tests {
             expected,
             pairs(values.iter().map(|&value| (value as f32, 0.0)))
         );
-        let (low_hi, low_lo) = split_f64_to_f32_pair(1_700_000_000_000.125);
-        let (high_hi, high_lo) = split_f64_to_f32_pair(1_700_000_000_000.875);
+
         for upload in [
             scalar_upload(&device, &queue, &source),
             hilo_upload(&device, &queue, &source),
         ] {
             assert_eq!(upload.bytes, expected);
+            // The statistics are the f64 values themselves.
             assert_eq!(upload.min, -8.5);
-            assert_eq!(upload.max, high_hi as f64 + high_lo as f64);
-            assert_eq!(upload.min_positive, Some(low_hi as f64 + low_lo as f64));
+            assert_eq!(upload.max, 1_700_000_000_000.875);
+            assert_eq!(upload.min_positive, Some(1_700_000_000_000.125));
         }
     }
 

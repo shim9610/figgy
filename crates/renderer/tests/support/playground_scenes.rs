@@ -1866,7 +1866,6 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// bench (sizes, timings, the pan benchmark) in its own `big_data.rs`.
 pub mod big_data {
     use renderer::config::Config;
-    use renderer::data::split_f64_to_f32_pair;
     use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
     use renderer::{Chart, Color, ColumnPairWriter, FiggyError, HiLoColumnSource, Renderer};
 
@@ -1941,8 +1940,7 @@ pub mod big_data {
 
         fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
             for i in 0..self.len {
-                let (hi, lo) = split_f64_to_f32_pair(self.value(i));
-                dst.write_pair(i, hi, lo);
+                dst.write_value(i, self.value(i));
             }
         }
     }

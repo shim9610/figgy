@@ -191,7 +191,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. A source only writes values. The `ColumnPairWriter` it writes through records the column's statistics in that same pass: the finite minimum and maximum and the smallest finite value above zero, each taken from the `hi as f64 + lo as f64` value the GPU reads (`(value as f32, 0)` for a scalar column). Auto-fit reads them, and log-axis auto-fit uses the smallest positive value as the lower bound when the data contains zeros or negatives. Non-finite values are left out. A streamed source is measured the same way, one chunk at a time. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. A source only writes values. The `ColumnPairWriter` it writes through records the column's statistics in that same pass: the finite minimum and maximum and the smallest finite value above zero. `writer.write_value(index, v)` writes an f64 as its `(hi, lo)` split and records `v` itself; `writer.write_pair(index, hi, lo)` records `hi as f64 + lo as f64`. A value the GPU reads as zero (below f32 range) is recorded as zero. Auto-fit reads them, and log-axis auto-fit uses the smallest positive value as the lower bound when the data contains zeros or negatives. Non-finite values are left out. A streamed source is measured the same way, one chunk at a time. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
 existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
@@ -764,7 +764,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 `Renderer::add_column`은 `&dyn ColumnSource`를 받는다. 사용 중인 데이터 타입에 이 트레이트를 구현하면 네이티브 환경에서 중간 변환용 `Vec` 없이 매핑된 스테이징 버퍼에 직접 기록할 수 있다. 스테이징 버퍼에서 컬럼 풀로 옮기는 작업은 GPU가 수행한다. CPU에는 변환용 버퍼나 점 데이터의 복사본을 따로 두지 않는다.
 
-데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. 통계는 일반 컬럼에서는 실제 업로드한 `(value as f32, 0)`, hi/lo 컬럼에서는 기록한 `hi as f64 + lo as f64`를 기준으로 계산하며, 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
+데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `writer.write_value(index, v)`로 f64를 기록하면 `(hi, lo)`로 나눠 쓰고 통계에는 `v` 자체를 반영한다. `writer.write_pair(index, hi, lo)`는 `hi as f64 + lo as f64`를 반영한다. 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
 
 큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 `Column` 타입 세 가지는 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
 

@@ -160,8 +160,7 @@ impl HiLoColumnSource for VirtualColumn {
     ) -> Result<(), ColumnRangeWriteError> {
         let range = checked_range(self.len, start, dst.len())?;
         for (local, index) in range.enumerate() {
-            let (hi, lo) = renderer::data::split_f64_to_f32_pair(self.precise(index));
-            dst.write_pair(local, hi, lo);
+            dst.write_value(local, self.precise(index));
         }
         Ok(())
     }
