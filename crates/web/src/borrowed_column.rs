@@ -1012,13 +1012,14 @@ mod tests {
         queue: &wgpu::Queue,
         source: &T,
     ) -> (Vec<u8>, Option<f64>) {
+        let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
         let mut pool =
-            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+            ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
         let handle = pool
             .add_column(
                 "scalar".into(),
                 source,
-                renderer::GpuAllocCtx::unbudgeted(device, queue),
+                renderer::GpuAllocCtx::new(device, queue, &ledger),
             )
             .unwrap();
         let min_positive = pool.slot("scalar").unwrap().min_positive;
@@ -1033,13 +1034,14 @@ mod tests {
         queue: &wgpu::Queue,
         source: &T,
     ) -> (Vec<u8>, Option<f64>) {
+        let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
         let mut pool =
-            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+            ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
         let handle = pool
             .add_hilo_column(
                 "hilo".into(),
                 source,
-                renderer::GpuAllocCtx::unbudgeted(device, queue),
+                renderer::GpuAllocCtx::new(device, queue, &ledger),
             )
             .unwrap();
         let min_positive = pool.slot("hilo").unwrap().min_positive;
@@ -1261,6 +1263,7 @@ mod tests {
 
     #[test]
     fn empty_sources_have_no_positive_upload_stat() {
+        let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
         let empty_f32 = BorrowedF32Column::new(&[]);
         assert_eq!(ColumnSource::min(&empty_f32), f64::INFINITY);
         assert_eq!(ColumnSource::max(&empty_f32), f64::NEG_INFINITY);
@@ -1274,12 +1277,12 @@ mod tests {
             return;
         };
         let mut pool =
-            ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
+            ColumnPool::new(renderer::GpuAllocCtx::new(&device, &queue, &ledger), ALIGN).unwrap();
         assert_eq!(
             pool.add_column(
                 "f32-scalar".into(),
                 &empty_f32,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
             AllocError::EmptySource
@@ -1288,7 +1291,7 @@ mod tests {
             pool.add_hilo_column(
                 "f32-hilo".into(),
                 &empty_f32,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
             AllocError::EmptySource
@@ -1297,7 +1300,7 @@ mod tests {
             pool.add_column(
                 "f64-scalar".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
             AllocError::EmptySource
@@ -1306,7 +1309,7 @@ mod tests {
             pool.add_hilo_column(
                 "f64-hilo".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
             AllocError::EmptySource

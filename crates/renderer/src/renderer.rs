@@ -340,15 +340,6 @@ pub struct Renderer {
     /// outside this struct. Credits return after submission completion.
     gpu_ledger: Arc<GpuLedger>,
 
-    /// Host allocation policy for budget-checked paths, pool growth included.
-    ///
-    /// `None` (the default) means device limits are the only bound, which is
-    /// the 0.9 behavior. When set, it rides into every pool allocation as
-    /// `GpuAllocCtx::budget` together with the out-of-pool total read at that
-    /// moment, so the pool refuses a growth that would cross the ceiling
-    /// instead of discovering it as a device error.
-    memory_budget: Option<u64>,
-
     /// Host policy for renderer-selected streamed -> resident transitions.
     /// `None` keeps native callers in explicit-control mode. This is separate
     /// from `memory_budget`: the latter governs checked allocation paths, while

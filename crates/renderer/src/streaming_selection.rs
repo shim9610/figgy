@@ -420,7 +420,7 @@ impl Renderer {
             .checked_add(bytes)
             .and_then(|value| value.checked_add(staging))
             .ok_or(StreamError::Overflow)?
-            > self.memory_budget.unwrap_or(u64::MAX)
+            > self.gpu_ledger.budget_limit()
         {
             return Err(StreamError::TooLarge.into());
         }

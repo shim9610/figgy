@@ -18,6 +18,9 @@ pub struct RendererDevice {
     /// Device-lost and uncaptured-error record, registered once here and
     /// shared by every renderer built from this bundle (#152).
     pub(super) health: DeviceHealth,
+    /// The GPU byte ledger and memory budget, created once here and shared
+    /// by every renderer built from this bundle (#160).
+    pub(super) ledger: Arc<GpuLedger>,
 }
 
 impl RendererDevice {
@@ -34,6 +37,8 @@ impl RendererDevice {
             device,
             queue,
             health,
+            // host-alloc: W1-a
+            ledger: Arc::new(GpuLedger::new()),
         }
     }
 
@@ -48,6 +53,13 @@ impl RendererDevice {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn health(&self) -> &DeviceHealth {
         &self.health
+    }
+
+    /// The bundle's GPU byte ledger and memory budget, shared by every
+    /// renderer built from this bundle. A standalone [`crate::ColumnPool`]
+    /// charges it through [`crate::GpuAllocCtx::new`].
+    pub fn ledger(&self) -> &Arc<GpuLedger> {
+        &self.ledger
     }
 }
 
@@ -2578,33 +2590,48 @@ pub(crate) fn gpu_poll(
     Ok(status)
 }
 
-/// Allocation context for one column-pool call.
+/// Allocation context for one column-pool call: the device, the queue and
+/// the bundle's ledger, whose budget and running total the pool checks at the
+/// allocation itself (#160).
 ///
-/// A free function over the fields rather than a `&self` method for two
-/// reasons. It keeps the caller's `&mut self.pool` borrow disjoint from the
-/// device/queue/ledger borrows, and it makes the out-of-pool total something
-/// that is *read at the call* — there is no place to cache it, so a budget
-/// check can never run against a stale sum. The pool adds its own current
-/// capacity and the capacity it is about to allocate, so `external_bytes`
-/// deliberately excludes the pool row.
-///
-/// The sum happens inside `map`, so with no ceiling declared it does not happen
-/// at all: the pool reads the out-of-pool total only to compare it against a
-/// ceiling, and `GpuBudget` keeps the two together precisely so there is no
-/// unused total to compute or to fabricate.
+/// A free function over the fields rather than a `&self` method, so the
+/// caller's `&mut self.pool` borrow stays disjoint from the device, queue and
+/// ledger borrows.
 pub(super) fn pool_alloc_ctx<'a>(
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    memory_budget: Option<u64>,
-    ledger: &GpuLedger,
+    ledger: &'a Arc<GpuLedger>,
 ) -> data_render::GpuAllocCtx<'a> {
-    data_render::GpuAllocCtx {
-        device,
-        queue,
-        budget: memory_budget.map(|ceiling_bytes| data_render::GpuBudget {
-            ceiling_bytes,
-            external_bytes: ledger.total_bytes(),
-        }),
+    data_render::GpuAllocCtx::new(device, queue, ledger)
+}
+
+/// Hand every retirement the ledger holds to the queue's completion: the
+/// resources are destroyed and their bytes credited once the work submitted
+/// before this call completes. One path for every renderer on a device
+/// bundle (#160).
+pub(crate) fn retire_on_completion(ledger: &Arc<GpuLedger>, queue: &wgpu::Queue) {
+    let batch = ledger.take_retirement();
+    if batch.is_empty() {
+        return;
+    }
+    let ledger = Arc::clone(ledger);
+    #[cfg(not(target_arch = "wasm32"))]
+    queue.on_submitted_work_done(move || ledger.complete_retirement(batch));
+    #[cfg(target_arch = "wasm32")]
+    {
+        // wgpu requires a Send completion callback even for WebGPU, but
+        // browser buffer handles must stay on their owning JS thread.
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        queue.on_submitted_work_done(move || {
+            if sender.send(()).is_err() {
+                // The receiver was dropped: the waiting task was cancelled.
+            }
+        });
+        wasm_bindgen_futures::spawn_local(async move {
+            if receiver.await.is_ok() {
+                ledger.complete_retirement(batch);
+            }
+        });
     }
 }
 
@@ -2939,6 +2966,7 @@ impl Renderer {
             device,
             queue,
             health,
+            ledger: gpu_ledger,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -2970,13 +2998,8 @@ impl Renderer {
             );
         }
         finished(observer, "renderer", "capabilities");
-        // host-alloc: W1-a
-        let gpu_ledger = Arc::new(GpuLedger::new());
         let pool = observe_result(observer, "renderer", "figgy column pool", || {
-            ColumnPool::new(
-                pool_alloc_ctx(&device, &queue, None, &gpu_ledger),
-                pool_capacity,
-            )
+            ColumnPool::new(pool_alloc_ctx(&device, &queue, &gpu_ledger), pool_capacity)
         })?;
 
         let texture_bgl = data_render::create_texture_bind_group_layout(&device);
@@ -3093,7 +3116,6 @@ impl Renderer {
             space_bg: None,
             surface_format,
             gpu_ledger,
-            memory_budget: None,
             auto_resident_working_set_limit: None,
         })
     }
@@ -3103,7 +3125,6 @@ impl Renderer {
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,
         target_sample_count: u32,
-        gpu_ledger: Arc<GpuLedger>,
         minimal: bool,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Self> {
@@ -3111,6 +3132,7 @@ impl Renderer {
             device,
             queue,
             health,
+            ledger: gpu_ledger,
         } = gpu;
         started(observer, "renderer", "capabilities");
         let caps = RendererDeviceCaps::from_device(&device);
@@ -3138,10 +3160,7 @@ impl Renderer {
         finished(observer, "renderer", "capabilities");
         crate::init::yield_init_frame().await;
         let pool = observe_result_async(observer, "renderer", "figgy column pool", || {
-            ColumnPool::new(
-                pool_alloc_ctx(&device, &queue, None, &gpu_ledger),
-                pool_capacity,
-            )
+            ColumnPool::new(pool_alloc_ctx(&device, &queue, &gpu_ledger), pool_capacity)
         })
         .await?;
 
@@ -3259,7 +3278,6 @@ impl Renderer {
             space_bg: None,
             surface_format,
             gpu_ledger,
-            memory_budget: None,
             auto_resident_working_set_limit: None,
         })
     }
@@ -3276,37 +3294,32 @@ impl Renderer {
         &self.pool
     }
 
-    /// Requested bytes of tracked GPU allocations, one row per [`GpuResourceKind`].
-    ///
-    /// The pool row comes from the pool itself (its live slab plus the
-    /// ping-pong backup while one exists); every other row comes from the
-    /// ledger. Final-owner drops move bytes to *retired*. A submission boundary
+    /// Requested bytes of tracked GPU allocations, one row per [`GpuResourceKind`],
+    /// for the whole device bundle: every renderer built from this renderer's
+    /// `RendererDevice` charges the same ledger, column pools included (#160).
+    /// Final-owner drops move bytes to *retired*. A submission boundary
     /// captures retired resources; their bytes remain charged until GPU completion,
     /// when the handles are destroyed and their credits returned.
     ///
     /// This excludes lazy Milkyway/Constellation style textures, host-owned GPU
-    /// resources, other renderers, CPU/output buffers and shader/pipeline/driver
+    /// resources, renderers built from another `RendererDevice`, CPU/output
+    /// buffers and shader/pipeline/driver
     /// internals. It is not a measurement of physical VRAM residency. Streaming
     /// export admission separately checks known style-texture payload sizes.
     /// See [`Self::set_memory_budget`] for the allocation policy's scope.
     pub fn gpu_memory_usage(&self) -> GpuMemoryUsage {
-        self.gpu_ledger
-            .snapshot()
-            .with_kind(
-                GpuResourceKind::ColumnPool,
-                self.pool.gpu_bytes(),
-                self.pool.retired_bytes(),
-            )
-            .with_creations(GpuResourceKind::ColumnPool, self.pool.buffer_creations())
-            .with_peak_at_least(self.pool.peak_bytes())
+        self.gpu_ledger.snapshot()
     }
 
-    /// The host allocation budget, if any; see [`Self::set_memory_budget`] for scope.
+    /// The device bundle's memory budget, if any; see
+    /// [`Self::set_memory_budget`] for scope.
     pub fn memory_budget(&self) -> Option<u64> {
-        self.memory_budget
+        self.gpu_ledger.budget()
     }
 
-    /// Set the host budget used by checked allocation and admission paths.
+    /// Set the device bundle's budget used by checked allocation and admission
+    /// paths: one budget for every renderer built from this renderer's
+    /// `RendererDevice` (#160).
     ///
     /// **What it governs.** Checks at participating allocation paths, including
     /// pool growth. This is not a universal device allocator or a hard VRAM
@@ -3326,7 +3339,7 @@ impl Renderer {
     /// whatever growth fails later — the reason this returns anything at all.
     #[must_use = "a returned total means the new ceiling is already exceeded"]
     pub fn set_memory_budget(&mut self, budget: Option<u64>) -> Option<u64> {
-        self.memory_budget = budget;
+        self.gpu_ledger.set_budget(budget);
         let ceiling = budget?;
         let current = self.gpu_memory_usage().total_bytes();
         (current > ceiling).then_some(current)
@@ -3354,34 +3367,7 @@ impl Renderer {
         // frame's batch instead of waiting for the next prepare.
         self.resident_displays
             .retain(|display| display.view.strong_count() > 0);
-        let batch = self.gpu_ledger.take_retirement();
-        let (pool_retired, pool_bytes) = self.pool.take_retirement();
-        if pool_bytes == 0 && batch.is_empty() {
-            return;
-        }
-        let ledger = Arc::clone(&self.gpu_ledger);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.queue.on_submitted_work_done(move || {
-            ledger.complete_retirement(batch);
-            pool_retired.complete(pool_bytes);
-        });
-        #[cfg(target_arch = "wasm32")]
-        {
-            // wgpu requires a Send completion callback even for WebGPU, but
-            // browser buffer handles must stay on their owning JS thread.
-            let (sender, receiver) = futures_channel::oneshot::channel();
-            self.queue.on_submitted_work_done(move || {
-                if sender.send(()).is_err() {
-                    // The receiver was dropped: the waiting task was cancelled.
-                }
-            });
-            wasm_bindgen_futures::spawn_local(async move {
-                if receiver.await.is_ok() {
-                    ledger.complete_retirement(batch);
-                    pool_retired.complete(pool_bytes);
-                }
-            });
-        }
+        retire_on_completion(&self.gpu_ledger, &self.queue);
     }
 
     /// Service submitted GPU work and retirement callbacks without waiting.

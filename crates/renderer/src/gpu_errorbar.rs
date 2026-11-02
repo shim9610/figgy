@@ -518,28 +518,28 @@ impl GpuErrorbarExtentEngine {
         &self.health
     }
 
-    /// Engine whose scratch is charged to a ledger only it can see.
-    ///
-    /// For callers with no renderer to report to (tests, standalone use). The
-    /// renderer builds its engine with [`Self::new_tracked`] so extent work
-    /// shows up in `Renderer::gpu_memory_usage`.
-    pub fn new(device: &wgpu::Device) -> Self {
-        // host-alloc: W1-a
-        Self::new_tracked(device, Arc::new(GpuLedger::new()))
+    /// Engine on the device bundle `gpu`: its per-ticket scratch is charged to
+    /// the bundle's ledger and its readbacks poll the bundle's health record,
+    /// as for every renderer built from `gpu` (#160).
+    pub fn new(gpu: &crate::RendererDevice) -> Self {
+        let mut noop = |_| {};
+        Self::new_observed(gpu, &mut noop)
     }
 
-    /// Engine whose per-ticket scratch is charged to `ledger`.
-    pub fn new_tracked(device: &wgpu::Device, ledger: Arc<GpuLedger>) -> Self {
+    /// [`Self::new`], reporting each initialization step to `observer`.
+    pub fn new_observed(gpu: &crate::RendererDevice, observer: &mut dyn FnMut(InitEvent)) -> Self {
+        Self::new_observed_tracked(gpu.device(), Arc::clone(gpu.ledger()), observer)
+            .with_health(gpu.health().clone())
+    }
+
+    /// Engine whose per-ticket scratch is charged to `ledger`, for the
+    /// renderer's own pipeline preparation, which holds the bundle's parts.
+    pub(crate) fn new_tracked(device: &wgpu::Device, ledger: Arc<GpuLedger>) -> Self {
         let mut noop = |_| {};
         Self::new_observed_tracked(device, ledger, &mut noop)
     }
 
-    pub fn new_observed(device: &wgpu::Device, observer: &mut dyn FnMut(InitEvent)) -> Self {
-        // host-alloc: W1-a
-        Self::new_observed_tracked(device, Arc::new(GpuLedger::new()), observer)
-    }
-
-    pub fn new_observed_tracked(
+    pub(crate) fn new_observed_tracked(
         device: &wgpu::Device,
         ledger: Arc<GpuLedger>,
         observer: &mut dyn FnMut(InitEvent),
@@ -1461,10 +1461,11 @@ mod tests {
         id: &str,
         values: Vec<f32>,
     ) -> ColumnHandle {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         pool.add_column(
             id.into(),
             &f32_column(values),
-            crate::data_render::GpuAllocCtx::unbudgeted(device, queue),
+            crate::data_render::GpuAllocCtx::new(device, queue, &ledger),
         )
         .unwrap()
     }
@@ -1540,11 +1541,12 @@ mod tests {
 
     #[test]
     fn field_extent_matches_the_rendered_cell_or_sample_lattice() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1562,7 +1564,7 @@ mod tests {
             "field-fit-y",
             vec![-2.5, -2.3, 2.3, 2.5],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
 
         let samples = resolve_field(
             &engine,
@@ -1621,11 +1623,12 @@ mod tests {
 
     #[test]
     fn legacy_extent_matches_nan_and_short_error_oracle() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1650,7 +1653,7 @@ mod tests {
             "legacy-upper",
             vec![100.0, f32::NAN],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = pollster::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
@@ -1671,11 +1674,12 @@ mod tests {
 
     #[test]
     fn legacy_extent_preserves_overflow_hilo_and_multi_pass() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             128 * 1024,
         )
         .unwrap();
@@ -1700,7 +1704,7 @@ mod tests {
             "legacy-many-upper",
             vec![7.0; 1000],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = pollster::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
@@ -1714,7 +1718,7 @@ mod tests {
         assert_eq!(extent.min_positive, Some(1.0));
 
         let mut overflow_pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1753,11 +1757,12 @@ mod tests {
 
     #[test]
     fn points_keep_base_tail_beyond_short_error_domain() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1771,7 +1776,7 @@ mod tests {
         );
         let lower = add_f32(&mut pool, &device, &queue, "series-x-lower", vec![5.0, 0.0]);
         let upper = add_f32(&mut pool, &device, &queue, "series-x-upper", vec![0.0, 5.0]);
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1795,11 +1800,12 @@ mod tests {
 
     #[test]
     fn line_uses_only_finite_adjacent_segment_endpoints() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1817,7 +1823,7 @@ mod tests {
             "line-y",
             vec![0.0, 1.0, f32::NAN, 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1831,7 +1837,7 @@ mod tests {
         assert_eq!((extent.y.min, extent.y.max), (0.0, 1.0));
 
         let mut single_pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1852,11 +1858,12 @@ mod tests {
 
     #[test]
     fn all_point_modes_and_one_sided_nan_match_renderer_direction_policy() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1872,7 +1879,7 @@ mod tests {
             vec![f32::NAN, 3.0],
         );
         let y_hi = add_f32(&mut pool, &device, &queue, "modes-y-hi", vec![1000.0, 4.0]);
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         for mode in [
             GpuSeriesExtentMode::Points,
             GpuSeriesExtentMode::PointsX,
@@ -1916,11 +1923,12 @@ mod tests {
 
     #[test]
     fn paired_invalid_rows_exclude_base_and_error_endpoints() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1952,7 +1960,7 @@ mod tests {
             "paired-invalid-hi",
             vec![100.0; 3],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1975,11 +1983,12 @@ mod tests {
 
     #[test]
     fn enabled_direction_keeps_finite_endpoint_when_opposite_error_is_infinite() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -1993,7 +2002,7 @@ mod tests {
             "one-infinite-hi",
             vec![f32::INFINITY],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2015,11 +2024,12 @@ mod tests {
 
     #[test]
     fn xy_errors_share_six_column_domain_without_truncating_base_tail() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -2041,7 +2051,7 @@ mod tests {
         let x_upper = add_f32(&mut pool, &device, &queue, "six-domain-x-hi", vec![1.0; 3]);
         let y_lower = add_f32(&mut pool, &device, &queue, "six-domain-y-lo", vec![2.0]);
         let y_upper = add_f32(&mut pool, &device, &queue, "six-domain-y-hi", vec![2.0]);
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2064,12 +2074,13 @@ mod tests {
 
     #[test]
     fn subnormal_min_positive_is_exact() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let tiny = f32::from_bits(1);
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -2081,7 +2092,7 @@ mod tests {
             "subnormal-y",
             vec![tiny * 2.0, tiny * 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2097,6 +2108,7 @@ mod tests {
 
     #[test]
     fn hilo_error_endpoints_preserve_residual_lanes() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -2104,7 +2116,7 @@ mod tests {
         let raw_lower = 0.25_f64;
         let raw_upper = 0.75_f64;
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -2112,35 +2124,35 @@ mod tests {
             .add_hilo_column(
                 "hilo-error-x".into(),
                 &f64_column(vec![raw_value]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let y = pool
             .add_hilo_column(
                 "hilo-error-y".into(),
                 &f64_column(vec![1.0]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let lower = pool
             .add_hilo_column(
                 "hilo-error-lo".into(),
                 &f64_column(vec![raw_lower]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let upper = pool
             .add_hilo_column(
                 "hilo-error-hi".into(),
                 &f64_column(vec![raw_upper]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let pair_sum = |value: f64| {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2163,11 +2175,12 @@ mod tests {
 
     #[test]
     fn series_extent_preserves_hilo_residuals_and_min_positive() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
         let mut pool = ColumnPool::new(
-            crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+            crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             64 * 1024,
         )
         .unwrap();
@@ -2176,21 +2189,21 @@ mod tests {
             .add_hilo_column(
                 "hilo-series-x".into(),
                 &f64_column(raw.to_vec()),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let y = pool
             .add_hilo_column(
                 "hilo-series-y".into(),
                 &f64_column(vec![-2.0, 0.25]),
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         let pair_sum = |value: f64| {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2206,11 +2219,12 @@ mod tests {
     }
     #[test]
     fn reduction_boundaries_and_reuse_have_bounded_first_completion() {
+        let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let (device, queue) = crate::data_render::shared_device().expect("required adapter");
-        let engine = GpuErrorbarExtentEngine::new(&device);
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
         for count in [1_usize, 63, 64, 65, 127, 128, 129, 4097] {
             let mut pool = ColumnPool::new(
-                crate::data_render::GpuAllocCtx::unbudgeted(&device, &queue),
+                crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),
                 1024 * 1024,
             )
             .unwrap();

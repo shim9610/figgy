@@ -671,13 +671,12 @@ impl Renderer {
             pending_defrag,
             picker,
             gpu_ledger,
-            memory_budget,
             ..
         } = self;
         let promotion = pool.begin_streamed_promotion(
             &uploads,
             report.pool_capacity_after,
-            pool_alloc_ctx(&*device, &*queue, *memory_budget, gpu_ledger.as_ref()),
+            pool_alloc_ctx(&*device, &*queue, &gpu_ledger),
         )?;
         let relocated = promotion.relocated();
         let prepared_picker = prepare_picker_for_pool_mutation(

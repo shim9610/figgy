@@ -399,12 +399,9 @@ impl ColumnDefragment<'_> {
     pub fn commit(mut self) -> bool {
         self.rollback.take();
         if self.resized {
-            // The old-capacity slab cannot serve a defrag at the new size.
-            if let Some(old_slab) = self.pool.backup.take() {
-                let bytes = old_slab.size();
-                drop(old_slab);
-                self.pool.note_buffer_retired(bytes);
-            }
+            // The old-capacity slab cannot serve a defrag at the new size;
+            // dropping it retires its bytes in the ledger.
+            self.pool.backup = None;
         }
         self.legacy_result
     }
@@ -432,7 +429,6 @@ impl Drop for ColumnDefragment<'_> {
             if rollback.candidate_was_backup {
                 self.pool.backup = Some(candidate);
             } else {
-                self.pool.note_buffer_retired(candidate.size());
             }
         }
     }
@@ -600,9 +596,10 @@ impl ColumnPool {
             });
         }
 
-        // A resized pool cannot reuse a backup at the old capacity.
-        if resized && let Some(stale_backup) = self.backup.take() {
-            self.note_buffer_retired(stale_backup.size());
+        // A resized pool cannot reuse a backup at the old capacity; dropping
+        // it retires its bytes in the ledger.
+        if resized {
+            self.backup = None;
         }
         // Lazily create backup with the same capacity/usage as primary.
         let candidate_was_backup = self.backup.is_some();
@@ -616,8 +613,8 @@ impl ColumnPool {
                     | BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             };
-            let fresh_backup = create_buffer_checked(device, &backup_desc, "column pool backup")?;
-            self.note_buffer_created(capacity);
+            let fresh_backup =
+                create_buffer_checked(device, ctx.ledger, &backup_desc, "column pool backup")?;
             self.backup = Some(fresh_backup);
         }
 
@@ -788,24 +785,26 @@ impl ColumnPool {
                 limit: ceiling,
             });
         }
-        if let Some(budget) = ctx.budget {
-            // Released buffers, including a dropped backup, remain resident
-            // until queue completion and cannot finance the new allocation.
-            let peak = budget
-                .external_bytes
-                .checked_add(self.gpu_bytes())
-                .and_then(|sum| sum.checked_add(self.retired_bytes()))
-                .and_then(|sum| sum.checked_add(target))
-                .ok_or(AllocError::BudgetExceeded {
-                    resource,
-                    requested: u64::MAX,
-                    limit: budget.ceiling_bytes,
-                })?;
-            if peak > budget.ceiling_bytes {
+        if let Some(limit) = ctx.ledger.budget() {
+            // The ledger holds everything the device bundle charged, this
+            // pool's slab and backup and other renderers' pools included.
+            // Released buffers, a dropped backup among them, stay in its
+            // retired total until queue completion and cannot finance the
+            // new allocation.
+            let peak =
+                ctx.ledger
+                    .total_bytes()
+                    .checked_add(target)
+                    .ok_or(AllocError::BudgetExceeded {
+                        resource,
+                        requested: u64::MAX,
+                        limit,
+                    })?;
+            if peak > limit {
                 return Err(AllocError::BudgetExceeded {
                     resource,
                     requested: peak,
-                    limit: budget.ceiling_bytes,
+                    limit,
                 });
             }
         }

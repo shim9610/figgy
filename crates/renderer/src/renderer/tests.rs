@@ -9379,7 +9379,6 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
             max_work_buffer_bytes: 48,
             max_upload_bytes: 96,
             renderer_budget_bytes: u64::MAX,
-            pool_bytes: r.gpu_memory_usage().pool_bytes(),
         },
         &[
             ColumnInput {
@@ -11111,14 +11110,16 @@ fn upload_peak_and_current_usage_include_submitted_staging() {
     };
     let values = 4096usize;
     let column = col_f64((0..values).map(|i| i as f64).collect());
-    renderer.pool.reset_peak_bytes();
+    renderer.gpu_ledger.reset_peak();
     renderer.add_column("x", &column).unwrap();
 
     let staged = (values as u64) * crate::data::COLUMN_VALUE_BYTES as u64;
     let usage = renderer.gpu_memory_usage();
+    // The staging was live next to everything else the device held, and
+    // stays charged as retired, so the peak is the current total.
     assert_eq!(
-        renderer.pool.peak_bytes(),
-        usage.live_bytes_of(GpuResourceKind::ColumnPool) + staged,
+        usage.peak_bytes(),
+        usage.total_bytes(),
         "the peak must include submitted staging"
     );
     assert_eq!(
@@ -11241,7 +11242,12 @@ fn pool_cleanup_releases_capacity_after_delete_and_keeps_survivor() {
     assert_eq!(renderer.pool().slot("keep").unwrap().len_values, 3);
     assert!(!renderer.is_valid_handle(&old_handle));
     assert!(renderer.gpu_memory_usage().total_bytes() < before);
-    assert_eq!(renderer.pool().retired_bytes(), 0);
+    assert_eq!(
+        renderer
+            .gpu_memory_usage()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
+        0
+    );
 }
 
 #[test]
@@ -11289,7 +11295,12 @@ fn pool_cleanup_picker_failure_preserves_original_pool() {
     assert_eq!(renderer.pool().capacity(), 1024 * 1024);
     assert!(renderer.is_valid_handle(&handle));
     assert_eq!(renderer.pool().slot("x").unwrap().len_values, 2);
-    assert_eq!(renderer.pool().retired_bytes(), 0);
+    assert_eq!(
+        renderer
+            .gpu_memory_usage()
+            .retired_bytes_of(GpuResourceKind::ColumnPool),
+        0
+    );
 }
 
 #[test]
@@ -11414,7 +11425,11 @@ fn a_renderer_batch_registers_every_grid_column_at_one_buffer_each_batch() {
     let z0 = col_f64(vec![1.0, 2.0]);
     let z1 = col_f64(vec![-3.0, 4.0]);
 
-    let before = renderer.pool.buffer_creations();
+    let creations = |r: &Renderer| {
+        r.gpu_memory_usage()
+            .creations_of(GpuResourceKind::ColumnPool)
+    };
+    let before = creations(&renderer);
     renderer
         .add_columns(&[
             ("x", &x as &dyn ColumnSource),
@@ -11424,7 +11439,7 @@ fn a_renderer_batch_registers_every_grid_column_at_one_buffer_each_batch() {
         ])
         .expect("batch upload");
     assert_eq!(
-        renderer.pool.buffer_creations() - before,
+        creations(&renderer) - before,
         1,
         "four columns, one staging buffer"
     );
@@ -11930,8 +11945,11 @@ fn the_report_tracks_the_pool_across_a_growth() {
     assert_eq!(after.pool_bytes(), capacity_after);
 }
 
+/// The pool's allocation context carries the renderer's own ledger, so a
+/// growth check reads the device budget and the device total, the pool
+/// included, at the call itself (#160).
 #[test]
-fn an_undeclared_ceiling_carries_no_out_of_pool_total() {
+fn the_pool_context_carries_the_device_ledger_and_its_budget() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -11939,47 +11957,25 @@ fn an_undeclared_ceiling_carries_no_out_of_pool_total() {
     let _view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    renderer.end_gpu_frame();
-    renderer
-        .device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(30)),
-        })
-        .expect("retired GPU work completes");
-    settle_gpu_retirement(&mut renderer);
-
-    // No ceiling: the context carries no budget at all, so there is no
-    // out-of-pool total to compute and none to misread. `GpuBudget` fusing
-    // the two is what makes that a type-level fact rather than a comment.
-    let ctx = pool_alloc_ctx(
-        &renderer.device,
-        &renderer.queue,
-        renderer.memory_budget,
-        renderer.gpu_ledger.as_ref(),
-    );
-    assert!(
-        ctx.budget.is_none(),
-        "with no ceiling declared the pool must be handed no budget"
-    );
-
-    // With a ceiling, the total rides along and matches what the report
-    // says is held outside the pool right now.
-    let external = renderer.gpu_memory_usage().external_bytes();
-    assert!(external > 0, "the panel textures should be charged by now");
-    assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
-    let ctx = pool_alloc_ctx(
-        &renderer.device,
-        &renderer.queue,
-        renderer.memory_budget,
-        renderer.gpu_ledger.as_ref(),
-    );
-    let budget = ctx.budget.expect("a declared ceiling reaches the pool");
-    assert_eq!(budget.ceiling_bytes, u64::MAX);
+    let ctx = pool_alloc_ctx(&renderer.device, &renderer.queue, &renderer.gpu_ledger);
+    assert!(Arc::ptr_eq(ctx.ledger, &renderer.gpu_ledger));
+    assert_eq!(ctx.ledger.budget(), None, "no ceiling is declared yet");
     assert_eq!(
-        budget.external_bytes, external,
-        "the out-of-pool total must be the one read at this call"
+        ctx.ledger.total_bytes(),
+        renderer.gpu_memory_usage().total_bytes(),
+        "the ledger total is the whole report, the pool row included"
     );
+    assert!(renderer.gpu_memory_usage().pool_bytes() > 0);
+
+    let ceiling = 1 << 40;
+    assert_eq!(renderer.set_memory_budget(Some(ceiling)), None);
+    let ctx = pool_alloc_ctx(&renderer.device, &renderer.queue, &renderer.gpu_ledger);
+    assert_eq!(ctx.ledger.budget(), Some(ceiling));
+    // A budget of `u64::MAX` bytes is a set budget, distinct from none.
+    assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+    assert_eq!(renderer.memory_budget(), Some(u64::MAX));
+    assert_eq!(renderer.set_memory_budget(None), None);
+    assert_eq!(renderer.memory_budget(), None);
 }
 
 #[test]

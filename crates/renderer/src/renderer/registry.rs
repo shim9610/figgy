@@ -2186,7 +2186,7 @@ impl Renderer {
                 current_gpu_bytes: u64::MAX,
                 transition_peak_bytes: u64::MAX,
                 working_set_limit_bytes: request.working_set_limit_bytes,
-                memory_budget_bytes: self.memory_budget,
+                memory_budget_bytes: self.gpu_ledger.budget(),
                 device_buffer_limit_bytes: self
                     .caps
                     .max_buffer_size
@@ -2211,7 +2211,7 @@ impl Renderer {
             current_gpu_bytes,
             transition_peak_bytes: current_gpu_bytes,
             working_set_limit_bytes: request.working_set_limit_bytes,
-            memory_budget_bytes: self.memory_budget,
+            memory_budget_bytes: self.gpu_ledger.budget(),
             device_buffer_limit_bytes,
         };
 
@@ -2294,7 +2294,7 @@ impl Renderer {
             return report;
         };
         report.transition_peak_bytes = transition_peak_bytes;
-        let Some(memory_budget) = self.memory_budget else {
+        let Some(memory_budget) = self.gpu_ledger.budget() else {
             report.status = ResidentAdmissionStatus::MemoryBudgetUnset;
             return report;
         };
@@ -2968,10 +2968,10 @@ impl Renderer {
                 .ok_or(FiggyError::GpuResourceLimit {
                     resource: "chart style bytes",
                     requested: u64::MAX,
-                    limit: self.memory_budget.unwrap_or(u64::MAX),
+                    limit: self.gpu_ledger.budget_limit(),
                 })?;
         }
-        let limit = self.memory_budget.unwrap_or(u64::MAX);
+        let limit = self.gpu_ledger.budget_limit();
         let requested = self
             .gpu_memory_usage()
             .checked_total_bytes()
@@ -3475,10 +3475,8 @@ impl Renderer {
             pending_defrag,
             picker,
             gpu_ledger,
-            memory_budget,
             ..
         } = self;
-        let memory_budget = *memory_budget;
         let inner = pool.begin_demo_batch_upsert(
             [
                 (DEMO_COLUMN_IDS[0].to_string(), demo_x),
@@ -3486,7 +3484,7 @@ impl Renderer {
                 (DEMO_COLUMN_IDS[2].to_string(), demo_t),
                 (DEMO_COLUMN_IDS[3].to_string(), demo_rc),
             ],
-            pool_alloc_ctx(&*device, &*queue, memory_budget, gpu_ledger.as_ref()),
+            pool_alloc_ctx(&*device, &*queue, &gpu_ledger),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
         crate::chart::validate_renderer_config(&config)?;
@@ -3591,12 +3589,7 @@ impl Renderer {
         }
         let invalidation = self.prepare_columns_invalidation(columns.iter().map(|(id, _)| *id))?;
         let old_layout_generation = self.pool.layout_generation();
-        let ctx = pool_alloc_ctx(
-            &self.device,
-            &self.queue,
-            self.memory_budget,
-            self.gpu_ledger.as_ref(),
-        );
+        let ctx = pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger);
         let batch = self.pool.begin_add_columns(columns, ctx)?;
         let relocated = batch.pool().layout_generation() != old_layout_generation;
         // No changed-column list: every id here is new to the pool, and
@@ -3640,12 +3633,7 @@ impl Renderer {
         let inner = self.pool.begin_upsert_column(
             id.clone(),
             source,
-            pool_alloc_ctx(
-                &self.device,
-                &self.queue,
-                self.memory_budget,
-                self.gpu_ledger.as_ref(),
-            ),
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
         )?;
         finish_renderer_column_upsert(
             inner,
@@ -3678,12 +3666,7 @@ impl Renderer {
         let inner = self.pool.begin_upsert_hilo_column(
             id.clone(),
             source,
-            pool_alloc_ctx(
-                &self.device,
-                &self.queue,
-                self.memory_budget,
-                self.gpu_ledger.as_ref(),
-            ),
+            pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
         )?;
         finish_renderer_column_upsert(
             inner,
@@ -3753,12 +3736,7 @@ impl Renderer {
         let replaced = count > 1;
         let changed = &changed[..count];
         let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
-        let ctx = pool_alloc_ctx(
-            &self.device,
-            &self.queue,
-            self.memory_budget,
-            self.gpu_ledger.as_ref(),
-        );
+        let ctx = pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger);
         let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
         let (relocated, picker) =
             self.pool
@@ -3804,12 +3782,7 @@ impl Renderer {
         let replaced = old.is_some();
         let changed = &changed_ids[..if replaced { 3 } else { 1 }];
         let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
-        let ctx = pool_alloc_ctx(
-            &self.device,
-            &self.queue,
-            self.memory_budget,
-            self.gpu_ledger.as_ref(),
-        );
+        let ctx = pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger);
         let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
         let (relocated, picker) =
             self.pool
@@ -3948,8 +3921,7 @@ impl Renderer {
         let defragment = self.pool.begin_defragment(pool_alloc_ctx(
             &self.device,
             &self.queue,
-            self.memory_budget,
-            self.gpu_ledger.as_ref(),
+            &self.gpu_ledger,
         ))?;
         let picker = if defragment.relocated() {
             match self.picker.active.as_ref().map(|active| active.chart_id) {
@@ -3997,12 +3969,7 @@ impl Renderer {
         if target < self.pool.capacity() {
             let result = (|| -> Result<()> {
                 let relayout = self.pool.begin_relayout(
-                    pool_alloc_ctx(
-                        &self.device,
-                        &self.queue,
-                        self.memory_budget,
-                        self.gpu_ledger.as_ref(),
-                    ),
+                    pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
                     target,
                 )?;
                 let picker = if relayout.relocated() {

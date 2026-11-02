@@ -14,13 +14,12 @@ use ::renderer::{
 use radial_decorations::Decorations;
 use std::sync::{Arc, Mutex, OnceLock};
 static LOCK: Mutex<()> = Mutex::new(());
+/// The shared test device in a bundle of its own per call, so each renderer
+/// a test builds charges its own ledger and budget (#160).
 fn gpu() -> RendererDevice {
-    static GPU: OnceLock<RendererDevice> = OnceLock::new();
-    GPU.get_or_init(|| {
-        let (d, q) = test_gpu::device();
-        RendererDevice::new(d, q)
-    })
-    .clone()
+    static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(test_gpu::device);
+    RendererDevice::new(d.clone(), q.clone())
 }
 const SIZE: (u32, u32) = (800, 520);
 

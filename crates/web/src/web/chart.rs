@@ -532,7 +532,7 @@ impl FiggyChart {
                 "free_bytes": pool.free_bytes(),
                 "largest_free_bytes": pool.largest_free_region(),
                 "backup_bytes": pool.backup_bytes(),
-                "retired_bytes": pool.retired_bytes(),
+                "retired_bytes": usage.retired_bytes_of(renderer::GpuResourceKind::ColumnPool),
                 "auto_growth": pool.growth_policy == GrowthPolicy::OnAllocFailure,
             },
             "resources": resources,

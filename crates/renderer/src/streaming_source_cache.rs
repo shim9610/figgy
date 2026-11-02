@@ -214,7 +214,7 @@ impl Renderer {
     ) -> Option<(Vec<CachedColumn>, u64)> {
         let snapshot = self.auto_stream_snapshot(job)?;
         let limit = self.auto_resident_working_set_limit.filter(|n| *n != 0)?;
-        let budget = self.memory_budget?;
+        let budget = self.gpu_ledger.budget()?;
         let mut total = 0u64;
         let mut columns = Vec::new();
         // A failed host reservation is a failed optional cache allocation.

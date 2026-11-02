@@ -30,13 +30,14 @@ fn scalar_upload(
     queue: &wgpu::Queue,
     source: &dyn ColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let mut pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
     let handle = pool
         .add_column(
             "matrix".into(),
             source,
-            renderer::GpuAllocCtx::unbudgeted(device, queue),
+            renderer::GpuAllocCtx::new(device, queue, &ledger),
         )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
@@ -48,13 +49,14 @@ fn hilo_upload(
     queue: &wgpu::Queue,
     source: &dyn HiLoColumnSource,
 ) -> (Vec<(f32, f32)>, Option<f64>) {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let mut pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(device, queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(device, queue, &ledger), ALIGN).unwrap();
     let handle = pool
         .add_hilo_column(
             "matrix".into(),
             source,
-            renderer::GpuAllocCtx::unbudgeted(device, queue),
+            renderer::GpuAllocCtx::new(device, queue, &ledger),
         )
         .unwrap();
     let min_positive = pool.slot("matrix").unwrap().min_positive;
@@ -314,6 +316,7 @@ fn required_fused_writer_keeps_source_traits_object_safe() {
 
 #[test]
 fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = shared_device() else {
         eprintln!("no GPU adapter; skipping fused upload matrix");
         return;
@@ -385,13 +388,13 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
         max: f64::NEG_INFINITY,
     };
     let mut empty_pool =
-        ColumnPool::new(renderer::GpuAllocCtx::unbudgeted(&device, &queue), ALIGN).unwrap();
+        ColumnPool::new(renderer::GpuAllocCtx::new(&device, &queue, &ledger), ALIGN).unwrap();
     assert_eq!(
         empty_pool
             .add_column(
                 "empty-option".into(),
                 &empty,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -401,7 +404,7 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             .add_column(
                 "empty-f64".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -411,7 +414,7 @@ fn built_in_scalar_stats_use_actual_uploaded_f32_values() {
             .add_hilo_column(
                 "empty-hilo".into(),
                 &empty_f64,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue)
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger)
             )
             .unwrap_err(),
         AllocError::EmptySource
@@ -589,12 +592,13 @@ fn read_pairs(
 
 #[test]
 fn pool_calls_fused_writer_once_and_panics_roll_back() {
+    let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
     let Some((device, queue)) = shared_device() else {
         eprintln!("no GPU adapter; skipping pool contract assertions");
         return;
     };
     let mut pool = ColumnPool::new(
-        renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+        renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         3 * ALIGN,
     )
     .unwrap();
@@ -606,7 +610,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         .add_column(
             "x".into(),
             &add_source,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         )
         .unwrap();
     assert_eq!(add_source.calls.get(), 1);
@@ -623,7 +627,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
             .begin_upsert_hilo_column(
                 "x".into(),
                 &replacement,
-                renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+                renderer::GpuAllocCtx::new(&device, &queue, &ledger),
             )
             .unwrap();
         assert_eq!(replacement.calls.get(), 1);
@@ -640,7 +644,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         let _ = pool.add_column(
             "panic".into(),
             &panic_add,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(add_result.is_err());
@@ -655,7 +659,7 @@ fn pool_calls_fused_writer_once_and_panics_roll_back() {
         let _ = pool.begin_upsert_column(
             "x".into(),
             &panic_upsert,
-            renderer::GpuAllocCtx::unbudgeted(&device, &queue),
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
         );
     }));
     assert!(upsert_result.is_err());

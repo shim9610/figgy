@@ -448,13 +448,13 @@ cargo run -p figgy-renderer --example radial_editor --features egui_demo
 
 ## 자원 수명과 검증
 
-기본 GPU 예산은 256 MiB이며 `set_memory_budget`으로 바꾼다. 프레임마다 112바이트 uniform,
+GPU 장부와 예산은 렌더러를 만든 장치 묶음(`RendererDevice`)의 것이며, 같은 묶음에서 만든 모든 렌더러가 함께 쓴다. 기본값은 예산 없음이고 `set_memory_budget(Some(bytes))`로 정한다. 프레임마다 112바이트 uniform,
 보이는 조각당 176바이트 표를 사용한다. 조각 선택(`pick`)마다 16바이트 질의·결과 버퍼와 16바이트
 readback 버퍼를 만들고, 결과를 읽은 뒤 놓는다. 라벨 배치가 바뀌면 실제 출력 크기의 RGBA 라벨
 텍스처를 만들고, 배치가 같으면 공유한다. 내보내기는 출력
 타깃과 정렬된 readback 버퍼를 추가한다. GPU 할당 전에 전체 사용량과 예산을 검사한다.
 `gpu_memory_usage()`는 살아 있는 자원과 GPU 완료를 기다리는 자원을 모두 집계한다.
-기존 `Renderer`와 원장은 별도이므로 두 렌더러를 함께 쓰는 호스트는 두 사용량을 합산해 관리한다.
+같은 `RendererDevice` 묶음에서 만든 `Renderer`와 원장을 함께 쓰므로, 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다.
 
 불변 프레임마다 작은 uniform·조각 표를 새로 만들 수 있으므로, 사용이 끝난 프레임을 놓고 관련
 command buffer를 모두 제출하거나 버린 뒤 `end_frame()`을 호출한다. 호버할 때 라벨 해상도 크기의

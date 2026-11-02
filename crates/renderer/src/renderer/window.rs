@@ -1236,10 +1236,9 @@ impl Renderer {
         let caps = RendererDeviceCaps::from_device(&device);
         // Probing MSAA decides the sample count the renderer's pipelines are
         // compiled against, so it has to happen before the renderer exists.
-        // The ledger is therefore created here and adopted by the renderer:
-        // one ledger per device, this target included.
-        // host-alloc: W1-a
-        let gpu_ledger = Arc::new(GpuLedger::new());
+        // The target is charged to the bundle's ledger, which the renderer
+        // shares: one ledger per device bundle, this target included.
+        let gpu_ledger = Arc::clone(gpu.ledger());
         let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
         let (target_sample_count, msaa_target) =
             observe_result(observer, "window", "figgy frame msaa target", || {
@@ -1264,7 +1263,6 @@ impl Renderer {
             surface_config.format,
             pool_capacity_bytes,
             target_sample_count,
-            Arc::clone(&gpu_ledger),
             minimal,
             observer,
         )

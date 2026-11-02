@@ -70,7 +70,6 @@ pub(crate) const TILE_OVERHEAD_BYTES: u64 = TILE_BYTES + STEP_BYTES;
 #[derive(Clone, Copy)]
 pub(crate) struct Budget {
     pub max_renderer_bytes: u64,
-    pub pool_bytes: u64,
     /// Other simultaneously required allocations, excluding existing ledger
     /// owners and this call's own allocations. Recompute at each call.
     pub headroom_bytes: u64,
@@ -954,8 +953,7 @@ pub(crate) fn sweep_bound(count: u32) -> u32 {
 fn check_budget(ledger: &GpuLedger, budget: Budget, additional: u64) -> Result<(), StreamError> {
     let peak = ledger
         .total_bytes()
-        .checked_add(budget.pool_bytes)
-        .and_then(|n| n.checked_add(budget.headroom_bytes))
+        .checked_add(budget.headroom_bytes)
         .and_then(|n| n.checked_add(additional))
         .ok_or(StreamError::Overflow)?;
     if peak > budget.max_renderer_bytes {
@@ -1094,7 +1092,6 @@ mod tests {
         );
         let budget = Budget {
             max_renderer_bytes: 128 * 1024,
-            pool_bytes: 0,
             headroom_bytes: 0,
         };
         let mut comparisons = 0;
@@ -1351,7 +1348,6 @@ mod tests {
         let ledger = Arc::new(GpuLedger::new());
         let budget = Budget {
             max_renderer_bytes: 64 * 1024,
-            pool_bytes: 0,
             headroom_bytes: 0,
         };
         let pipelines =

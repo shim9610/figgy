@@ -103,7 +103,7 @@ impl Renderer {
             .total_bytes()
             .checked_add(64 + 16 + GpuSeriesExtentTicket::FIELD_BYTES)
             .ok_or(StreamError::Overflow)?
-            > self.memory_budget.unwrap_or(u64::MAX)
+            > self.gpu_ledger.budget_limit()
         {
             return Err(StreamError::TooLarge.into());
         }
@@ -152,7 +152,7 @@ impl Renderer {
                     .total_bytes()
                     .checked_add(GpuSeriesExtentTicket::FIELD_BYTES)
                     .ok_or(StreamError::Overflow)?
-                    > self.memory_budget.unwrap_or(u64::MAX)
+                    > self.gpu_ledger.budget_limit()
                 {
                     return Err(StreamError::TooLarge.into());
                 }

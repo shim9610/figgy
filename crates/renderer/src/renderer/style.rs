@@ -1014,13 +1014,13 @@ impl Renderer {
             .ok_or(FiggyError::GpuResourceLimit {
                 resource: "chart style budget",
                 requested: u64::MAX,
-                limit: self.memory_budget.unwrap_or(u64::MAX),
+                limit: self.gpu_ledger.budget_limit(),
             })?;
-        if requested > self.memory_budget.unwrap_or(u64::MAX) {
+        if requested > self.gpu_ledger.budget_limit() {
             return Err(FiggyError::GpuResourceLimit {
                 resource: "chart style budget",
                 requested,
-                limit: self.memory_budget.unwrap_or(u64::MAX),
+                limit: self.gpu_ledger.budget_limit(),
             });
         }
         // Decorrelates per-series hash patterns in the styled shader entries
@@ -1205,7 +1205,7 @@ impl Renderer {
         let overflow = || FiggyError::GpuResourceLimit {
             resource: "chart style bytes",
             requested: u64::MAX,
-            limit: self.memory_budget.unwrap_or(u64::MAX),
+            limit: self.gpu_ledger.budget_limit(),
         };
         let mut add_map = |slots: usize,
                            slot_bytes: u64,

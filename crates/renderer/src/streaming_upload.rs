@@ -20,9 +20,6 @@ pub(crate) struct ChunkUploadBudget {
     /// Staging plus work bytes, including any allocation padding.
     pub max_upload_bytes: u64,
     pub renderer_budget_bytes: u64,
-    /// ALL pool live + retired bytes, including old slabs and pending copies,
-    /// which are not in the external resource ledger. Never pass just capacity.
-    pub pool_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -182,8 +179,7 @@ fn work_allocation_bytes(
             .checked_add(preferred)
             .is_some_and(|bytes| bytes <= budget.max_upload_bytes)
         && ledger_bytes
-            .checked_add(budget.pool_bytes)
-            .and_then(|bytes| bytes.checked_add(required))
+            .checked_add(required)
             .and_then(|bytes| bytes.checked_add(preferred))
             .is_some_and(|bytes| bytes <= budget.renderer_budget_bytes);
     if fits { preferred } else { required }
@@ -225,8 +221,7 @@ fn validate_layout(
         work_bytes
     };
     let total = ledger_bytes
-        .checked_add(budget.pool_bytes)
-        .and_then(|bytes| bytes.checked_add(work_bytes))
+        .checked_add(work_bytes)
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
     if input_bytes > budget.max_input_bytes
@@ -283,13 +278,10 @@ fn validate_source_layout(
         work_bytes
     };
     let total = ledger_bytes
-        .checked_add(budget.pool_bytes)
-        .and_then(|bytes| {
-            bytes.checked_add(if reusable_staging_bytes >= work_bytes {
-                0
-            } else {
-                work_bytes
-            })
+        .checked_add(if reusable_staging_bytes >= work_bytes {
+            0
+        } else {
+            work_bytes
         })
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
@@ -937,7 +929,7 @@ mod tests {
         use crate::data_render::*;
         let (device, queue) = shared_device().expect("chunk draw requires GPU; no skip");
         let ledger = Arc::new(GpuLedger::new());
-        let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+        let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
         let mut pool = ColumnPool::new(ctx, 4096).unwrap();
         // The low lane matters: the high lanes all round to the same value.
         let xs = crate::data::Column {
@@ -1237,7 +1229,6 @@ mod tests {
             max_work_buffer_bytes: 2048,
             max_upload_bytes: 4096,
             renderer_budget_bytes: 8192,
-            pool_bytes: 0,
         }
     }
 
@@ -1532,12 +1523,14 @@ mod tests {
             bytes: &bytes,
         };
         let mut caps = budget();
-        caps.pool_bytes = 64 + 36; // Live pool plus uncompleted retired slabs.
+        // The ledger holds 100 bytes of other resources plus the live pool
+        // (64) and its uncompleted retired slabs (36).
+        let ledger_bytes = 100 + 64 + 36;
         caps.renderer_budget_bytes = 216;
-        assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0).is_ok());
+        assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, ledger_bytes, 0).is_ok());
         caps.renderer_budget_bytes -= 1;
         assert!(matches!(
-            validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0),
+            validate_layout(std::slice::from_ref(&input), caps, 2048, ledger_bytes, 0),
             Err(ChunkUploadError::Input(StreamError::TooLarge))
         ));
         caps.renderer_budget_bytes = u64::MAX;

@@ -371,7 +371,6 @@ impl Pipelines {
         encoder: &mut wgpu::CommandEncoder,
         ledger: &Arc<GpuLedger>,
         max_renderer_bytes: u64,
-        pool_bytes: u64,
         persistent: &Persistent,
         work: &wgpu::Buffer,
         edges: ColumnHandle,
@@ -422,7 +421,7 @@ impl Pipelines {
         {
             return Err(StreamError::TooLarge);
         }
-        check_stream_budget(ledger, max_renderer_bytes, pool_bytes, local_bytes)?;
+        check_stream_budget(ledger, max_renderer_bytes, local_bytes)?;
         let tally = ChargeTally::default();
         let params = [edge_base, value_base, count, persistent.pixels];
         let uniform = charged_buffer_init(
@@ -577,7 +576,6 @@ impl Persistent {
         ledger: &Arc<GpuLedger>,
         pixels: u32,
         max_renderer_bytes: u64,
-        pool_bytes: u64,
         style_map: Option<&wgpu::BindGroup>,
     ) -> Result<Self, StreamError> {
         let pixels = pixels.max(1);
@@ -600,7 +598,6 @@ impl Persistent {
         check_stream_budget(
             ledger,
             max_renderer_bytes,
-            pool_bytes,
             bytes.checked_add(map_bytes).ok_or(StreamError::Overflow)?,
         )?;
         let tally = ChargeTally::default();
@@ -722,12 +719,11 @@ fn stream_gpu_error(_: crate::FiggyError) -> StreamError {
 fn check_stream_budget(
     ledger: &Arc<GpuLedger>,
     max_renderer_bytes: u64,
-    pool_bytes: u64,
     additional: u64,
 ) -> Result<(), StreamError> {
-    if pool_bytes
-        .checked_add(ledger.total_bytes())
-        .and_then(|n| n.checked_add(additional))
+    if ledger
+        .total_bytes()
+        .checked_add(additional)
         .ok_or(StreamError::Overflow)?
         > max_renderer_bytes
     {
@@ -974,12 +970,12 @@ mod stream_tests {
         let (pipelines, transform, style, map) = setup(&device, 8, &[]);
         let ledger = Arc::new(GpuLedger::new());
         assert_eq!(
-            Persistent::new(&pipelines, &device, &ledger, 8, 128, 1, Some(&map)).err(),
+            Persistent::new(&pipelines, &device, &ledger, 8, 127, Some(&map)).err(),
             Some(StreamError::TooLarge),
-            "resident pool bytes must participate in the renderer cap"
+            "the 128 pixel bytes must fit the renderer cap"
         );
         let persistent =
-            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, 0, Some(&map)).unwrap();
+            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, Some(&map)).unwrap();
         assert_eq!(persistent.charged_bytes(), 128);
         let empty_map_ledger = Arc::new(GpuLedger::new());
         // The 8 pixels' 128 bytes and one padding row of each map buffer.
@@ -989,21 +985,12 @@ mod stream_tests {
                 + std::mem::size_of::<BarStyleMapMeta>()) as u64;
         assert_eq!(padded, 320);
         assert_eq!(
-            Persistent::new(
-                &pipelines,
-                &device,
-                &empty_map_ledger,
-                8,
-                padded - 1,
-                0,
-                None
-            )
-            .err(),
+            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded - 1, None).err(),
             Some(StreamError::TooLarge),
             "the unmapped padding style map must be inside admission"
         );
         let empty_map =
-            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded, 0, None).unwrap();
+            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded, None).unwrap();
         assert_eq!(empty_map.charged_bytes(), padded);
         assert_eq!(empty_map_ledger.total_bytes(), padded);
         drop(empty_map);
@@ -1040,8 +1027,7 @@ mod stream_tests {
                     &mut device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
                     &ledger,
-                    192,
-                    1,
+                    191,
                     &persistent,
                     &work,
                     edges,
@@ -1087,7 +1073,6 @@ mod stream_tests {
                     &mut encoder,
                     &ledger,
                     u64::MAX,
-                    0,
                     &persistent,
                     &work,
                     edges,
@@ -1125,7 +1110,6 @@ mod stream_tests {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
                     &ledger,
                     u64::MAX,
-                    0,
                     &persistent,
                     &work,
                     edges,
@@ -1158,7 +1142,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 empty_edges,
@@ -1210,7 +1193,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,
@@ -1248,7 +1230,7 @@ mod stream_tests {
         let (pipelines, transform, style, map) = setup(&device, 8, &overrides);
         let ledger = Arc::new(GpuLedger::new());
         let persistent =
-            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, 0, Some(&map)).unwrap();
+            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, Some(&map)).unwrap();
         let work = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stream histogram mapped reused work"),
             size: 24,
@@ -1282,7 +1264,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,
@@ -1334,7 +1315,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,
