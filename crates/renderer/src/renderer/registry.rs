@@ -106,13 +106,10 @@ impl ChartViewState {
             picked_data: _,
             colorbar: _,
             draw_style: _,
-            polar: _,
-            ternary: _,
-            view_3d: _,
             // The parallel axes' ranges place each column on its axis; the
             // panel's own axes are the categorical positions and the
             // normalized band.
-            parallel: _,
+            coordinates: _,
             overlays,
             subplots,
             active_layer: _,
@@ -173,10 +170,7 @@ impl ChartViewState {
             picked_data: _,
             colorbar: _,
             draw_style: _,
-            polar: _,
-            ternary: _,
-            view_3d: _,
-            parallel: _,
+            coordinates: _,
             overlays: config_overlays,
             subplots: config_subplots,
             active_layer: _,
@@ -245,10 +239,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         picked_data: _,
         colorbar,
         draw_style,
-        polar,
-        ternary,
-        view_3d,
-        parallel,
+        coordinates,
         overlays,
         subplots,
         active_layer: _,
@@ -267,13 +258,10 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && legend == &right.legend
         && colorbar == &right.colorbar
         && draw_style == &right.draw_style
-        // The grid, axes and labels are rings and spokes or a rectangle.
-        && polar == &right.polar
-        && ternary == &right.ternary
-        // The box's grid, axes and labels follow the camera.
-        && view_3d == &right.view_3d
-        // Each parallel axis's line, ticks and labels are its range's.
-        && parallel == &right.parallel
+        // The grid, axes and labels are rings and spokes, a triangle, a box
+        // that follows the camera, parallel axes with their own ranges, or
+        // a rectangle.
+        && coordinates == &right.coordinates
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays

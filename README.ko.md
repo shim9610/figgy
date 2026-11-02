@@ -176,7 +176,7 @@ use renderer::{format::LabelFormat, polar::PolarOptions};
 chart.set_x_range(0.0, 360.0); // 그릴 각도 눈금과 스포크
 chart.set_y_range(0.0, 1.0); // 반지름 축
 let config = chart.config_mut();
-config.polar = Some(PolarOptions::default()); // 0°는 오른쪽, 반시계 방향
+config.set_polar(Some(PolarOptions::default())); // 0°는 오른쪽, 반시계 방향
 config.bottom_x.major_spacing = 30.0; // 30°마다 스포크
 config.bottom_x.label_style.format = LabelFormat::Degrees;
 ```

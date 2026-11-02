@@ -524,7 +524,7 @@ fn data_anchored_shapes_are_skipped_on_a_polar_chart() {
         }),
         ellipse((0.4, 0.4), (0.6, 0.6), filled(GREEN)),
     ]);
-    chart.config_mut().polar = Some(Default::default());
+    chart.config_mut().set_polar(Some(Default::default()));
     let img = export(&mut r, &chart, &[], 1.0);
     save("shapes-polar", &img);
     assert!(is_green(pixel(&img, at(&chart, 1.0, 0.5, 0.5))));

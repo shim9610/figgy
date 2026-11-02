@@ -79,7 +79,7 @@ async fn a_radar_document_opens_as_radar_series_on_a_polar_chart() {
             .all(|s| matches!(s.render_type, DataRenderType::Radar { .. }))
     );
     assert_eq!(config.bottom_x.category_count(), Some(4));
-    let polar = config.polar.as_ref().unwrap();
+    let polar = config.polar().unwrap();
     assert_eq!(polar.grid_shape, Some(GridShape::Polygon));
     // The radius axis is fitted from zero over every value.
     assert!(config.left_y.min == 0.0 && config.left_y.max >= 5.0);

@@ -197,7 +197,7 @@ pub(crate) fn apply_auto_fit_all(
     // A ternary chart's axes span the whole triangle, not a data extent; a
     // parallel chart's are the categorical positions and the normalized band
     // (`Chart::auto_fit_parallel_axes` fits its axes).
-    if config.ternary.is_some() || config.parallel.is_some() {
+    if config.ternary().is_some() || config.parallel().is_some() {
         return;
     }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
@@ -719,7 +719,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
-            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
+            .filter(|chart| chart.ternary().is_none() && chart.parallel().is_none())
             .and_then(|chart| fitted_axis_range(&chart.bottom_x, ext, padding_ratio))
         else {
             return;
@@ -733,7 +733,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
-            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
+            .filter(|chart| chart.ternary().is_none() && chart.parallel().is_none())
             .and_then(|chart| fitted_axis_range(&chart.left_y, ext, padding_ratio))
         else {
             return;
@@ -815,7 +815,7 @@ impl Chart {
     /// chosen bounds through [`Self::with_axis_range_change`] instead.
     /// A ternary chart is left as it is: its axes span the triangle.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if self.config.ternary.is_some() || self.config.parallel.is_some() {
+        if self.config.ternary().is_some() || self.config.parallel().is_some() {
             return;
         }
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
@@ -827,7 +827,7 @@ impl Chart {
     /// Fit the Y axis to a prepared [`FitExtent`] — see
     /// [`Self::auto_fit_x_extent`].
     pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if self.config.ternary.is_some() || self.config.parallel.is_some() {
+        if self.config.ternary().is_some() || self.config.parallel().is_some() {
             return;
         }
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
@@ -985,7 +985,8 @@ impl Chart {
     ) -> Result<()> {
         // A parallel chart fits each of its axes to its columns (#141); the
         // categorical positions and the normalized band stay.
-        if self.config.parallel.is_some() && matches!(layer, LayerRef::Base | LayerRef::Annotations)
+        if self.config.parallel().is_some()
+            && matches!(layer, LayerRef::Base | LayerRef::Annotations)
         {
             return self.auto_fit_parallel_axes(pool, series, padding_ratio);
         }
@@ -1091,7 +1092,7 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
-        let axes = match self.config.parallel.as_ref() {
+        let axes = match self.config.parallel() {
             Some(parallel) => parallel.axes.len(),
             None => return Ok(()),
         };
@@ -1104,8 +1105,7 @@ impl Chart {
             }
             let Some(axis) = self
                 .config
-                .parallel
-                .as_ref()
+                .parallel()
                 .map(|parallel| parallel.axes[i].axis_options(&self.config.left_y))
             else {
                 return Ok(());
@@ -1114,7 +1114,7 @@ impl Chart {
                 continue;
             };
             self.with_axis_range_change(|c| {
-                if let Some(axis) = c.parallel.as_mut().and_then(|p| p.axes.get_mut(i)) {
+                if let Some(axis) = c.parallel_mut().and_then(|p| p.axes.get_mut(i)) {
                     axis.min = min;
                     axis.max = max;
                 }
@@ -1144,7 +1144,7 @@ impl Chart {
             }
             _ => &self.config,
         };
-        if chart.view_3d.is_none() {
+        if chart.view_3d().is_none() {
             return Ok(());
         }
         let mut z = FitExtent::EMPTY;

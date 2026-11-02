@@ -95,7 +95,7 @@ fn bare_config() -> Config {
         axis.tick = TickVisibility::None;
         axis.title_option.visible = false;
     }
-    config.ternary = Some(TernaryOptions {});
+    config.set_ternary(Some(TernaryOptions {}));
     config
 }
 
@@ -658,7 +658,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
     };
     assert!(err(bare_config(), vec![plain]).contains("only ternary series"));
     let mut rectangular = bare_config();
-    rectangular.ternary = None;
+    rectangular.set_ternary(None);
     assert!(err(rectangular, vec![ok.clone()]).contains("ternary chart"));
     // The axis rules are the chart's, checked where it is drawn, as a
     // polar chart's are.

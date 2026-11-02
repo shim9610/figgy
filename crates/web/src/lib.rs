@@ -1571,7 +1571,7 @@ mod web {
                     axis.max = 100.0;
                     axis.major_spacing = 20.0;
                 }
-                config.ternary = Some(renderer::ternary::TernaryOptions {});
+                config.set_ternary(Some(renderer::ternary::TernaryOptions {}));
             }
             fn parallel(config: &mut renderer::Config) {
                 use renderer::parallel::{ParallelAxis, ParallelOptions};
@@ -1584,9 +1584,9 @@ mod web {
                 config.left_y.min = 0.0;
                 config.left_y.max = 1.0;
                 config.left_y.categories = None;
-                config.parallel = Some(ParallelOptions {
+                config.set_parallel(Some(ParallelOptions {
                     axes: (0..AXES).map(|_| ParallelAxis::new(0.0, 10.0)).collect(),
-                });
+                }));
             }
             let record_fields = |names: &[&'static str]| {
                 names

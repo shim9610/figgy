@@ -55,7 +55,7 @@ pub fn axis_anchor(side: Side, plot: &RectF, cross: Option<f32>) -> ((f32, f32),
 /// `bottom_x` for the left and right ones. `None` without a crossing, for a
 /// value with no position on that axis, and on a polar chart.
 pub fn axis_cross(config: &Config, side: &Side) -> Option<f32> {
-    if config.polar.is_some() {
+    if config.polar().is_some() {
         return None;
     }
     let (axis, perpendicular) = match side {
@@ -1041,7 +1041,7 @@ fn axis_band_measure(
     let da = panel.data_area().ok()?;
     let axis = axis_ref(panel, side);
     let inner = band_inner_edge(side, RectF::from_rect(&da), tick_contribution(axis));
-    let labels = if panel.polar.is_some() {
+    let labels = if panel.polar().is_some() {
         Probe::of(panel, &Element::AxisLabel(Side::Bottom), measure).with(Probe::of(
             panel,
             &Element::AxisLabel(Side::Left),
@@ -1284,7 +1284,7 @@ mod tests {
         config.left_y.cross_at = Some(0.5);
         assert_eq!(axis_cross(&config, &Side::Left), Some(0.5));
         // Polar charts draw no Cartesian axis lines.
-        config.polar = Some(crate::polar::PolarOptions::default());
+        config.set_polar(Some(crate::polar::PolarOptions::default()));
         assert_eq!(axis_cross(&config, &Side::Left), None);
     }
 

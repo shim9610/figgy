@@ -245,22 +245,22 @@ pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn 
     // The Cartesian walks take the plot rectangle.
     let plot = data_area_rect(&da);
 
-    if config.polar.is_some() {
+    if config.polar().is_some() {
         polar::emit_polar_grid(config, &da, fp, sink);
         // The angle axis is the outer ring, the radius axis the labelled
         // ray; the top and right axes are not drawn.
         polar::emit_polar_axes(config, &da, fp, sink);
-    } else if config.ternary.is_some() {
+    } else if config.ternary().is_some() {
         // The triangle's edges are the three components' axes; the top
         // axis is not drawn.
         ternary::emit_ternary_grid(config, &da, fp, sink);
         ternary::emit_ternary_axes(config, &da, fp, sink);
-    } else if config.view_3d.is_some() {
+    } else if config.view_3d().is_some() {
         // The box's back panes carry the grid and three of its edges the
         // x, y and z axes; the top axis is not drawn.
         box3d::emit_box_grid(config, &da, fp, sink);
         box3d::emit_box_axes(config, &da, fp, sink);
-    } else if config.parallel.is_some() {
+    } else if config.parallel().is_some() {
         // The category axes name the parallel axes; each parallel axis
         // draws its own line, ticks and labels at its category. No grid:
         // the axes are the structure, and `left_y` is the normalized band,
@@ -319,42 +319,42 @@ pub(crate) fn emit_part_of(
         Side::Right => &config.right_y,
     };
     match element {
-        Element::AxisLabel(side) if config.polar.is_some() => match side {
+        Element::AxisLabel(side) if config.polar().is_some() => match side {
             Side::Bottom => polar::emit_polar_angle_labels(config, &da, fp, sink),
             Side::Left => polar::emit_polar_radius_labels(config, &da, fp, sink),
             Side::Top | Side::Right => {}
         },
-        Element::Axis(side) if config.polar.is_some() => {
+        Element::Axis(side) if config.polar().is_some() => {
             // The angle axis is the outer ring, the data boundary: no
             // element owns it.
             if *side == Side::Left {
                 polar::emit_polar_radius_strokes(config, &da, fp, sink);
             }
         }
-        Element::AxisLabel(side) if config.ternary.is_some() => {
+        Element::AxisLabel(side) if config.ternary().is_some() => {
             if let Some(k) = ternary::side_component(side) {
                 ternary::emit_ternary_labels(config, &da, k, fp, sink);
             }
         }
-        Element::Axis(side) if config.ternary.is_some() => {
+        Element::Axis(side) if config.ternary().is_some() => {
             if let Some(k) = ternary::side_component(side) {
                 ternary::emit_ternary_axis_strokes(config, &da, k, fp, sink);
             }
         }
-        Element::AxisLabel(side) if config.view_3d.is_some() => {
+        Element::AxisLabel(side) if config.view_3d().is_some() => {
             if let Some(k) = box3d::side_component(side) {
                 box3d::emit_box_labels(config, &da, k, fp, sink);
             }
         }
         // A parallel chart's value axes are its parallel axes; `left_y` and
         // `right_y` are not drawn (#141).
-        Element::AxisLabel(side) if config.parallel.is_some() => match side {
+        Element::AxisLabel(side) if config.parallel().is_some() => match side {
             Side::Top | Side::Bottom => {
                 emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
             }
             Side::Left | Side::Right => {}
         },
-        Element::Axis(side) if config.parallel.is_some() => match side {
+        Element::Axis(side) if config.parallel().is_some() => match side {
             Side::Top | Side::Bottom => emit_axis_strokes(
                 axis_of(side),
                 side.clone(),
@@ -368,7 +368,7 @@ pub(crate) fn emit_part_of(
         Element::ParallelAxisLabel(i) => {
             parallel::emit_parallel_labels(config, &da, *i, fp, sink);
         }
-        Element::Axis(side) if config.view_3d.is_some() => {
+        Element::Axis(side) if config.view_3d().is_some() => {
             if let Some(k) = box3d::side_component(side) {
                 box3d::emit_box_axis_strokes(config, &da, k, fp, sink);
             }

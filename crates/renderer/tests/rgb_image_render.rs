@@ -868,13 +868,13 @@ fn registration_names_what_an_image_cannot_read() {
         "an image's opacity is 0..=1"
     );
     let mut three_d = chart.config().clone();
-    three_d.view_3d = Some(View3d::default());
+    three_d.set_view_3d(Some(View3d::default()));
     assert_eq!(
         reason(&mut r, &three_d, flat("img", &ids)),
         "an image draws flat: not on a 3D chart"
     );
     let mut polar = chart.config().clone();
-    polar.polar = Some(renderer::polar::PolarOptions::default());
+    polar.set_polar(Some(renderer::polar::PolarOptions::default()));
     assert_eq!(
         reason(&mut r, &polar, flat("img", &ids)),
         "field and contour series are not drawn on polar axes"

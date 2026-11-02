@@ -31,7 +31,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 640 });
-    config.ternary = Some(TernaryOptions {});
+    config.set_ternary(Some(TernaryOptions {}));
     for axis in [&mut config.bottom_x, &mut config.left_y, &mut config.right_y] {
         axis.min = 0.0; // every axis spans the whole triangle
         axis.max = 100.0;

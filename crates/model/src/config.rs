@@ -910,44 +910,13 @@ pub struct Config {
         serde(default, skip_serializing_if = "DrawStyle::is_precise")
     )]
     pub draw_style: DrawStyle,
-    /// The polar coordinate system. `None` (default, key absent in JSON) is
-    /// the rectangular chart; `Some` draws `bottom_x` as the angle axis and
-    /// `left_y` as the radius axis. The `bottom_x` range only chooses which
-    /// angle ticks, spokes and labels are drawn: the angle mapping does not
-    /// depend on it. See [`crate::polar::PolarOptions`].
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub polar: Option<crate::polar::PolarOptions>,
-    /// The ternary coordinate system. `None` (default, key absent in JSON)
-    /// is the rectangular chart; `Some` draws a triangle whose corners are
-    /// the 100 % of the three components read on `bottom_x`, `left_y` and
-    /// `right_y`. See [`crate::ternary`].
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub ternary: Option<crate::ternary::TernaryOptions>,
-    /// The 3D view. `None` (default, key absent in JSON) is the flat chart;
-    /// `Some` draws a box seen through this camera, heatmaps as surfaces
-    /// and contours on its floor, with x on `bottom_x`, y on `left_y` and
-    /// z on `right_y`. See [`crate::view3d`].
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub view_3d: Option<crate::view3d::View3d>,
-    /// The parallel coordinate system (#141). `None` (default, key absent
-    /// in JSON) is the rectangular chart; `Some` draws one vertical axis per
-    /// category of `bottom_x`, each with its own range, and every
-    /// `Parallel` series as one polyline per row across them. See
-    /// [`crate::parallel`].
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub parallel: Option<crate::parallel::ParallelOptions>,
+    /// The coordinate system: rectangular (the default, no key in JSON),
+    /// polar, ternary, a 3D box or parallel axes, exactly one (#160).
+    /// Written as the one key `polar`, `ternary`, `view_3d` or `parallel`
+    /// it has always been written as. Read and set one system through
+    /// [`Config::polar`] / [`Config::set_polar`] and their siblings.
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    pub coordinates: crate::coordinates::Coordinates,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
@@ -1041,15 +1010,11 @@ impl Config {
             picked_data,
             colorbar,
             draw_style,
-            polar,
-            // The ternary switch holds no pixel dimension.
-            ternary,
-            // The camera holds angles, a distance in box half-diagonals and
-            // relative lengths: no pixel dimension.
-            view_3d,
-            // The axes' ranges are data; their label offsets are logical
+            // A ternary switch, a 3D camera (angles, a distance in box
+            // half-diagonals, relative lengths) and the polar options hold
+            // no pixel dimension; a parallel axis' label offsets are logical
             // pixels, scaled below.
-            parallel,
+            coordinates,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.
@@ -1063,7 +1028,7 @@ impl Config {
         // A parallel axis's labels sit to its left with the fixed label gap,
         // as `left_y`'s: its scaled offset makes up the gap as
         // `scale_label_gap` does.
-        if let Some(parallel) = parallel {
+        if let crate::coordinates::Coordinates::Parallel(parallel) = coordinates {
             let extra = (s - 1.0) * crate::layout::LABEL_GAP;
             for axis in &mut parallel.axes {
                 axis.label_offset[0] = axis.label_offset[0] * s - extra;
@@ -1097,7 +1062,7 @@ impl Config {
 
         // The polar options are angles, an angle unit and a fraction of the
         // outer radius: none of them is a pixel dimension.
-        let polar = match polar {
+        let polar = match coordinates.polar() {
             Some(PolarOptions {
                 zero_angle_degrees: _,
                 clockwise: _,
@@ -1120,7 +1085,7 @@ impl Config {
             scale_axis_in_place(axis, s);
             // Ternary and 3D box labels keep a font-relative gap, which
             // scales with the font: no fixed gap to make up for.
-            if ternary.is_none() && view_3d.is_none() {
+            if coordinates.ternary().is_none() && coordinates.view_3d().is_none() {
                 scale_label_gap(axis, &side, polar, s);
             }
         }

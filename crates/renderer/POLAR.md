@@ -45,7 +45,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 960, height: 640 });
-    config.polar = Some(PolarOptions::default()); // 0° on the right, counter-clockwise
+    config.set_polar(Some(PolarOptions::default())); // 0° on the right, counter-clockwise
     let mut chart = Chart::new(config).with_title("Antenna pattern");
     // The range helpers also reset tick spacing and label format: call them first.
     chart.set_x_range(0.0, 360.0); // which angle ticks and spokes draw

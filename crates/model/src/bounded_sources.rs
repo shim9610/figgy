@@ -992,7 +992,7 @@ impl Config {
             axis.tick = TickVisibility::None;
         }
         let zero = -f64::from(style.start_angle_degrees);
-        config.polar = Some(PolarOptions {
+        config.set_polar(Some(PolarOptions {
             zero_angle_degrees: zero,
             clockwise: style.clockwise,
             radial_label_angle_degrees: zero.rem_euclid(360.0),
@@ -1006,7 +1006,7 @@ impl Config {
             sector: None,
             inner_radius_fraction: 0.0,
             interpolation: PolarInterpolation::Chord,
-        });
+        }));
 
         let GridOptions {
             show_major_x,
@@ -1915,7 +1915,7 @@ mod radar_tests {
             Some(&c.categories[..])
         );
         assert_eq!(config.left_y.categories, None);
-        assert!(config.polar.is_some());
+        assert!(config.polar().is_some());
         assert_eq!(config.validate_polar(), Ok(()));
         assert_eq!(config.bottom_x.validate_categories(), Ok(()));
         assert_eq!(config.validate_radar(&series), Ok(()));
@@ -1957,7 +1957,7 @@ mod radar_tests {
     fn the_spoke_layout_maps_to_the_polar_options() {
         let mut c = chart();
         let (config, _, _) = Config::from_radar(&c);
-        let polar = config.polar.as_ref().unwrap();
+        let polar = config.polar().unwrap();
         // -90 screen degrees with y down is up: 90 with y up.
         assert_eq!(polar.zero_angle_degrees, 90.0);
         assert!(polar.clockwise);
@@ -1973,7 +1973,7 @@ mod radar_tests {
         c.style.clockwise = false;
         c.style.grid_shape = RadarGridShape::Circle;
         let (config, _, _) = Config::from_radar(&c);
-        let polar = config.polar.as_ref().unwrap();
+        let polar = config.polar().unwrap();
         assert_eq!(polar.zero_angle_degrees, -30.0);
         assert_eq!(polar.radial_label_angle_degrees, 330.0);
         assert!(!polar.clockwise);

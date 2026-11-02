@@ -6841,7 +6841,7 @@ fn streamed_series_reject_violins_and_raw_points() {
 #[test]
 fn streamed_series_reject_radar() {
     let mut config = basic_errorbar_chart().config().clone();
-    config.polar = Some(crate::polar::PolarOptions::default());
+    config.set_polar(Some(crate::polar::PolarOptions::default()));
     config.bottom_x.categories = Some(vec![
         crate::config::Category::new("a", "A"),
         crate::config::Category::new("b", "B"),
@@ -6929,7 +6929,7 @@ fn polar_rejects_streamlines() {
         .add_column("c", &col_f64(vec![1.0, 2.0, f64::NAN, 3.0, 4.0]))
         .unwrap();
     let mut polar = crate::default::default_config();
-    polar.polar = Some(crate::polar::PolarOptions::default());
+    polar.set_polar(Some(crate::polar::PolarOptions::default()));
     let chart = renderer.register_chart(polar, Vec::new()).unwrap();
     let before = renderer.visual_revision();
     assert!(matches!(
@@ -6997,7 +6997,7 @@ fn polar_rejects_streamlines() {
 #[test]
 fn streamed_series_reject_polar_charts() {
     let mut config = basic_errorbar_chart().config().clone();
-    config.polar = Some(crate::polar::PolarOptions::default());
+    config.set_polar(Some(crate::polar::PolarOptions::default()));
     let series = SeriesConfig {
         series_id: "stream".into(),
         source_id: None,
@@ -7025,7 +7025,7 @@ fn streamed_series_reject_polar_charts() {
         Err(FiggyError::InvalidSeriesConfig { reason, .. })
             if reason.contains("polar") && reason.contains("streamed sources are not supported")
     ));
-    config.polar = None;
+    config.set_polar(None);
     assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
 }
 

@@ -147,7 +147,7 @@ pub fn view3d_gpu(
     composite: ((f64, f64), (f64, f64)),
     live: ((f64, f64), (f64, f64)),
 ) -> Option<View3dGpu> {
-    let view: &View3d = config.view_3d.as_ref()?;
+    let view: &View3d = config.view_3d()?;
     let m = config.view_matrix()?.m;
     let axis = &config.right_y;
     let log = matches!(axis.scale, AxisScale::Logarithmic);

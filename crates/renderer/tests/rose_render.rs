@@ -156,11 +156,11 @@ fn chart(mode: CategoryBarMode, n: usize, value: (f64, f64)) -> Chart {
         axis.title_option.visible = false;
     }
     config.bottom_x.categories = Some(categories(n));
-    config.polar = Some(PolarOptions {
+    config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
         ..PolarOptions::default()
-    });
+    }));
     config.bar_groups = Some(BarGroups {
         mode,
         direction: CategoryBarDirection::Vertical,
@@ -480,8 +480,7 @@ fn a_stack_grows_from_the_inner_ring_and_inward_on_an_inverted_axis() {
     let mut chart = chart(CategoryBarMode::Stacked, 4, (0.0, 40.0));
     chart
         .config_mut()
-        .polar
-        .as_mut()
+        .polar_mut()
         .unwrap()
         .inner_radius_fraction = 0.3;
     let img = export(&mut r, &chart, &series, 1.0);
@@ -516,8 +515,7 @@ fn a_stack_grows_from_the_inner_ring_and_inward_on_an_inverted_axis() {
     }
     chart
         .config_mut()
-        .polar
-        .as_mut()
+        .polar_mut()
         .unwrap()
         .inner_radius_fraction = 0.0;
     chart.set_y_range(40.0, 0.0);

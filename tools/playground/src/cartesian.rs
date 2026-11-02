@@ -966,7 +966,7 @@ impl CartesianHost {
             }
             // The polar coordinate system: a radar chart's spoke layout and
             // ring shape.
-            if let Some(polar) = config.polar.as_mut() {
+            if let Some(polar) = config.polar_mut() {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut polar.clockwise, "clockwise");
                     let mut polygon = polar.grid_shape() == renderer::GridShape::Polygon;

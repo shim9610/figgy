@@ -389,7 +389,7 @@ fn edits() -> Vec<Edit> {
     // no stream first frame to compare.
     cases.push(Edit {
         name: "polar (None -> Some)",
-        apply: |c| c.polar = Some(crate::polar::PolarOptions::default()),
+        apply: |c| c.set_polar(Some(crate::polar::PolarOptions::default())),
         work: Work::Replay,
         differs: true,
         raster: true,
@@ -1499,15 +1499,15 @@ fn config_fields_are_classified() {
         picked_data: _,   // selection revision, same classification as picked_points
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
-        polar: _,         // the coordinate system: geometry (Packed/Replay) and raster
-        ternary: _,       // the coordinate system: geometry (Packed/Replay) and raster
-        view_3d: _, // the camera: geometry and raster; the baseline series are not 3D kinds, so tests/surface_render.rs covers a camera edit redrawing the composite
-        parallel: _, // the parallel axes: the rows' placement (resident display key) and the axes' raster; the baseline series are not parallel kinds, so tests/parallel_render.rs covers them
-        overlays,    // overlay_edits(): range/series/band Packed, the rest Prefix
-        subplots,    // subplot_edits(): geometry/series/links Packed, chrome Prefix
+        // the coordinate system: geometry (Packed/Replay) and raster; a 3D
+        // camera and parallel axes are covered by tests/surface_render.rs and
+        // tests/parallel_render.rs, since the baseline series are neither kind
+        coordinates: _,
+        overlays,        // overlay_edits(): range/series/band Packed, the rest Prefix
+        subplots,        // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _, // layer only: no raster, no pixels
-        annotations: _, // annotation_edits(): annotation revision only
-        bar_groups: _, // "bar_groups (None -> Some)" + resident display mutations
+        annotations: _,  // annotation_edits(): annotation revision only
+        bar_groups: _,   // "bar_groups (None -> Some)" + resident display mutations
         line_offsets: _, // "line_offsets (None -> Some)" + resident display mutations
     } = baseline_with_colorbar();
     let AxisOptions {

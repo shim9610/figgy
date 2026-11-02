@@ -5,6 +5,8 @@ pub mod categorical;
 pub mod color;
 pub mod colormap;
 pub mod config;
+pub mod coordinates;
+pub use coordinates::Coordinates;
 pub mod data;
 pub mod data_config;
 pub mod decoration;

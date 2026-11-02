@@ -254,7 +254,7 @@ fn the_colourbar_axis_hits_where_it_is_stroked() {
 #[test]
 fn the_polar_radius_ray_hits_on_its_line_and_ticks() {
     let mut cfg = bare_config();
-    cfg.polar = Some(renderer::polar::PolarOptions::default());
+    cfg.set_polar(Some(renderer::polar::PolarOptions::default()));
     cfg.left_y.line_visible = true;
     cfg.left_y.tick = TickVisibility::Both;
     cfg.left_y.major_tick_length = 12.0;

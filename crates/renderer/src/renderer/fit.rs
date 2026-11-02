@@ -1070,9 +1070,9 @@ impl Renderer {
             state,
         )
         .map_err(GpuErrorbarError::from_figgy)?;
-        let kind = if layer_config(&state.config, layer).is_some_and(|c| c.ternary.is_some()) {
+        let kind = if layer_config(&state.config, layer).is_some_and(|c| c.ternary().is_some()) {
             AutoFitAllKind::Skip
-        } else if state.config.parallel.is_some() {
+        } else if state.config.parallel().is_some() {
             AutoFitAllKind::Parallel
         } else {
             AutoFitAllKind::Extents
@@ -1187,7 +1187,7 @@ impl Renderer {
                     }
                 }
                 chart.auto_fit_layer_extent(layer, &x_extent, &y_extent, padding);
-                if layer_config(chart.config(), layer).is_some_and(|c| c.view_3d.is_some()) {
+                if layer_config(chart.config(), layer).is_some_and(|c| c.view_3d().is_some()) {
                     chart.auto_fit_view_3d_z(&self.pool, layer, &state.series, padding)?;
                 }
             }

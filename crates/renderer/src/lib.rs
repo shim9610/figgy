@@ -53,10 +53,11 @@ pub use vector_export::{WrittenPart, written_document_parts};
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::bounded_sources::{BoxColumn, BoxField};
-pub use ::model::{ConfigError, SeriesUpload, UploadValues};
+pub use ::model::{ConfigError, Coordinates, SeriesUpload, UploadValues};
 pub use ::model::{
-    bounded_sources, boxplot, categorical, color, colormap, config, data_config, default, drag,
-    expand, format, layout, legend, line, preset, resize, select, sink, text, tick, validate,
+    bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config,
+    default, drag, expand, format, layout, legend, line, preset, resize, select, sink, text, tick,
+    validate,
 };
 
 // Public API re-exports.

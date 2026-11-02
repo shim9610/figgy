@@ -289,7 +289,7 @@ pub(crate) fn ternary_constants(
 /// its window `[0, n]`.
 pub(crate) fn transform_constants(config: &Config) -> ([f32; 4], [f32; 4]) {
     let (Some(polar), Some(map), Some(geometry)) = (
-        &config.polar,
+        config.polar(),
         config.polar_angle_map(),
         config.polar_geometry(),
     ) else {
@@ -306,7 +306,7 @@ pub(crate) fn transform_constants(config: &Config) -> ([f32; 4], [f32; 4]) {
         [
             start as f32,
             end as f32,
-            crate::line_step::arc_pieces(config.polar.as_ref()) as f32,
+            crate::line_step::arc_pieces(config.polar()) as f32,
             geometry.radius,
         ],
     )

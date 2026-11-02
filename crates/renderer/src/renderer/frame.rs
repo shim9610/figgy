@@ -50,10 +50,7 @@ pub(super) fn annotation_raster_for_chart(
         picked_data: _,
         colorbar: _,
         draw_style,
-        polar: _,
-        ternary: _,
-        view_3d: _,
-        parallel: _,
+        coordinates: _,
         overlays: _,
         subplots: _,
         active_layer: _,
@@ -885,8 +882,8 @@ impl ResidentDisplayKey {
             }
             && self.stencil == probe.stencil
             && self.draw_style == probe.chart_config.draw_style
-            && self.polar == probe.chart_config.polar
-            && self.parallel == probe.chart_config.parallel
+            && self.polar.as_ref() == probe.chart_config.polar()
+            && self.parallel.as_ref() == probe.chart_config.parallel()
             && self.colorbar == probe.chart_config.colorbar
             && self.bar_groups == probe.chart_config.bar_groups
             && match &self.categories {
@@ -914,8 +911,8 @@ impl ResidentDisplayKey {
             data_area: probe.data_area,
             transform: probe.transform,
             draw_style: probe.chart_config.draw_style,
-            polar: probe.chart_config.polar.clone(),
-            parallel: probe.chart_config.parallel.clone(),
+            polar: probe.chart_config.polar().cloned(),
+            parallel: probe.chart_config.parallel().cloned(),
             colorbar: probe.chart_config.colorbar.clone(),
             bar_groups: probe.chart_config.bar_groups.clone(),
             categories: has_category_bars(probe.series).then(|| {

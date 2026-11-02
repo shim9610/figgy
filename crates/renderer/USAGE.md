@@ -498,10 +498,10 @@ Picking, selection, titles, axes, labels and legends are the polar chart's
 
 ### Polar plots
 
-A polar plot is a Cartesian chart with `config.polar = Some(PolarOptions { .. })`:
+A polar plot is a Cartesian chart with `config.set_polar(Some(PolarOptions { .. })`:
 the same line, scatter and area series, column pool, picking and export, drawn
 in (angle, radius). `bottom_x` is the angle axis and `left_y` the radius axis.
-`set_y_range` sets the radius range; `set_x_range` only chooses which angle
+`set_y_range` sets the radius range); `set_x_range` only chooses which angle
 ticks, spokes and labels are drawn, because one turn always spans 360° (or 2π)
 from `zero_angle_degrees`. The grid becomes rings and spokes, the angle axis the
 outer ring and the radius axis a labelled ray that drags around the centre.
@@ -1012,7 +1012,7 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 극좌표 플롯
 
-극좌표 플롯은 `config.polar = Some(PolarOptions { .. })`를 켠 직교 차트다. 직교 차트와 같은
+극좌표 플롯은 `config.set_polar(Some(PolarOptions { .. })`를 켠 직교 차트다. 직교 차트와 같은
 선·산점도·면 시리즈, 컬럼 풀, 피킹, 내보내기를 그대로 쓰고 좌표만 (각도, 반지름)으로 바꿔 그린다.
 `bottom_x`가 각도 축, `left_y`가 반지름 축이다. `set_y_range`는 반지름 범위를 정한다. 원은 항상
 `zero_angle_degrees`에서 시작하는 한 바퀴(360° 또는 2π)이므로 `set_x_range`는 그릴 각도
@@ -1050,7 +1050,7 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 ```rust
 let bytes = renderer
     .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
-    .await?;
+    .await?);
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:

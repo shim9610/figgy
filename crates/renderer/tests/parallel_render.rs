@@ -176,12 +176,12 @@ fn bare_config() -> Config {
     config.left_y.min = 0.0;
     config.left_y.max = 1.0;
     config.left_y.major_spacing = 0.25;
-    config.parallel = Some(ParallelOptions {
+    config.set_parallel(Some(ParallelOptions {
         axes: RANGES
             .iter()
             .map(|(min, max)| ParallelAxis::new(*min, *max))
             .collect(),
-    });
+    }));
     config
 }
 
@@ -199,7 +199,7 @@ fn dressed_config() -> Config {
 /// position along x, the value's fraction of the axis's range along y.
 fn point_px(config: &Config, i: usize, value: f64, scale: f64) -> (f64, f64) {
     let da = config.data_area().expect("data area");
-    let axis = &config.parallel.as_ref().expect("parallel").axes[i];
+    let axis = &config.parallel().expect("parallel").axes[i];
     let tx = (i as f64 + 0.5) / AXES as f64;
     let ty = axis.fraction(value).expect("a placeable value");
     (
@@ -358,7 +358,7 @@ fn inverted_and_logarithmic_axes_place_their_values() {
     let mut r = renderer();
     let mut config = bare_config();
     {
-        let axes = &mut config.parallel.as_mut().unwrap().axes;
+        let axes = &mut config.parallel_mut().unwrap().axes;
         axes[1].inverted = true;
         axes[2].scale = AxisScale::Logarithmic;
     }
@@ -628,14 +628,14 @@ fn a_colour_column_colours_each_row_through_the_colorbar() {
 fn the_fit_takes_each_axis_range_from_its_column_statistics() {
     let mut r = renderer();
     let mut config = bare_config();
-    config.parallel.as_mut().unwrap().axes[2].scale = AxisScale::Logarithmic;
+    config.parallel_mut().unwrap().axes[2].scale = AxisScale::Logarithmic;
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
     let mut chart = Chart::new(config);
     chart
         .auto_fit_parallel_axes(r.pool(), &series, 0.0)
         .unwrap();
-    let axes = &chart.config().parallel.as_ref().unwrap().axes;
+    let axes = &chart.config().parallel().unwrap().axes;
     assert_eq!((axes[0].min, axes[0].max), (2.0, 8.0));
     assert_eq!((axes[1].min, axes[1].max), (20.0, 75.0));
     assert!(
@@ -653,14 +653,14 @@ fn the_fit_takes_each_axis_range_from_its_column_statistics() {
     padded
         .auto_fit_parallel_axes(r.pool(), &series, 0.1)
         .unwrap();
-    let axis = &padded.config().parallel.as_ref().unwrap().axes[0];
+    let axis = &padded.config().parallel().unwrap().axes[0];
     assert!((axis.min - 1.4).abs() < 1e-9 && (axis.max - 8.6).abs() < 1e-9);
     // The layer fit of a parallel chart fits its axes too.
     let mut layered = Chart::new(bare_config());
     layered
         .auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &series, 0.0)
         .unwrap();
-    assert_eq!(layered.config().parallel.as_ref().unwrap().axes[3].max, 4.0);
+    assert_eq!(layered.config().parallel().unwrap().axes[3].max, 4.0);
     assert_eq!(
         layered.config().bottom_x.categories.as_ref().map(Vec::len),
         Some(AXES)
@@ -739,7 +739,7 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
         moved.nudge(Element::ParallelAxisLabel(2), &measure, -4.0, 6.0),
         NudgeResult::Moved
     );
-    let axes = &moved.parallel.as_ref().unwrap().axes;
+    let axes = &moved.parallel().unwrap().axes;
     assert_eq!(axes[2].label_offset, [-4.0, 6.0]);
     assert_eq!(axes[1].label_offset, [0.0, 0.0]);
     assert_eq!(moved.left_y.label_style.label_offset_x, 0.0);
@@ -805,7 +805,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     let config = bare_config();
     let columns = upload(&mut r, "rows", &ROWS);
     let reason = |r: &mut Renderer, config: &Config, series: Vec<SeriesConfig>| {
-        let what = format!("{:?} / {:?}", config.parallel, series);
+        let what = format!("{:?} / {:?}", config.parallel(), series);
         match r.register_chart(config.clone(), series) {
             Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
             Err(FiggyError::InvalidConfig { reason, .. }) => reason.to_owned(),
@@ -831,7 +831,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         "a parallel chart draws only parallel series"
     );
     let mut plain = bare_config();
-    plain.parallel = None;
+    plain.set_parallel(None);
     assert_eq!(
         reason(&mut r, &plain, vec![series("rows", &columns, RED, None)]),
         "a parallel series is drawn on a parallel chart (Config.parallel)"
@@ -854,16 +854,18 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         reason(&mut r, &config, vec![dashed]),
         "a parallel series' line is solid"
     );
+    // A chart has one coordinate system (#160): a polar chart is not a
+    // parallel one, so a parallel series is refused there.
     let mut polar = bare_config();
-    polar.polar = Some(renderer::polar::PolarOptions::default());
+    polar.set_polar(Some(renderer::polar::PolarOptions::default()));
     assert_eq!(
         reason(&mut r, &polar, vec![series("rows", &columns, RED, None)]),
-        "parallel series are drawn on parallel charts, not polar axes"
+        "a parallel series is drawn on a parallel chart (Config.parallel)"
     );
     // The chart's own rules are checked where the chart is drawn (as the
     // polar and ternary systems' are): the export names them.
     let config_reason = |r: &mut Renderer, config: &Config, series: Vec<SeriesConfig>| {
-        let what = format!("{:?}", config.parallel);
+        let what = format!("{:?}", config.parallel());
         match r
             .export_rgba(
                 renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
@@ -880,7 +882,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         }
     };
     let mut few = bare_config();
-    few.parallel.as_mut().unwrap().axes.pop();
+    few.parallel_mut().unwrap().axes.pop();
     assert_eq!(
         config_reason(&mut r, &few, vec![series("rows", &columns[..3], RED, None)]),
         "a parallel chart's bottom_x has one category per axis"
@@ -955,7 +957,7 @@ fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
         .unwrap();
     for count in [0usize, 1] {
         let mut short = bare_config();
-        short.parallel.as_mut().unwrap().axes.truncate(count);
+        short.parallel_mut().unwrap().axes.truncate(count);
         let mut item = series("rows", &columns, RED, None);
         if let DataRenderType::Parallel { columns, .. } = &mut item.render_type {
             columns.truncate(count);
@@ -985,7 +987,7 @@ fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
             }
             other => panic!("set_chart_series with {count} columns: {other:?}"),
         }
-        assert_eq!(r.chart_config(id).unwrap().parallel, config.parallel);
+        assert_eq!(r.chart_config(id).unwrap().parallel(), config.parallel());
     }
     r.remove_chart(id).unwrap();
 }
@@ -1014,9 +1016,9 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
             .map(|i| Category::new(format!("x{i}"), format!("x{i}")))
             .collect(),
     );
-    config.parallel = Some(ParallelOptions {
+    config.set_parallel(Some(ParallelOptions {
         axes: (0..axes).map(|_| ParallelAxis::new(0.0, 100.0)).collect(),
-    });
+    }));
     let series = SeriesConfig {
         series_id: "big".into(),
         source_id: None,

@@ -738,11 +738,11 @@ fn box_labels_sit_past_the_top_of_the_box() {
 fn radar_chart() -> Chart {
     let mut config = bare_config();
     config.bottom_x.categories = Some(categories(4));
-    config.polar = Some(PolarOptions {
+    config.set_polar(Some(PolarOptions {
         zero_angle_degrees: 90.0,
         clockwise: true,
         ..PolarOptions::default()
-    });
+    }));
     let mut chart = Chart::new(config);
     chart.set_y_range(0.0, 1.0);
     chart

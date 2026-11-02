@@ -142,7 +142,7 @@ fn released_radar_documents_convert_to_radar_series() {
         let (config, series, uploads) = Config::from_radar(&doc);
         assert_eq!(series.len(), doc.series.len(), "{file}");
         assert_eq!(uploads.len(), doc.series.len() + 1, "{file}");
-        assert!(config.polar.is_some(), "{file}");
+        assert!(config.polar().is_some(), "{file}");
         assert_eq!(
             config.bottom_x.category_count(),
             Some(doc.categories.len()),

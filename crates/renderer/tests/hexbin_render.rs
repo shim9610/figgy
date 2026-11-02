@@ -688,7 +688,7 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
         "a hexagonal grid needs linear x and y axes: its lattice is uniform"
     );
     let mut three_d = chart.config().clone();
-    three_d.view_3d = Some(View3d::default());
+    three_d.set_view_3d(Some(View3d::default()));
     assert_eq!(
         reason(
             &mut r,

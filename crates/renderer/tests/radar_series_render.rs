@@ -113,7 +113,7 @@ fn chart(polar: PolarOptions) -> Chart {
         axis.title_option.visible = false;
     }
     config.bottom_x.categories = Some(categories(5));
-    config.polar = Some(polar);
+    config.set_polar(Some(polar));
     let mut chart = Chart::new(config);
     chart.set_y_range(0.0, 1.0);
     chart
@@ -579,7 +579,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     };
     // A rectangular chart.
     let mut rectangular = chart(up_clockwise());
-    rectangular.config_mut().polar = None;
+    rectangular.config_mut().set_polar(None);
     let reason = invalid(
         r.export_rgba(
             renderer::ExportSource::chart(&rectangular, &series),
@@ -781,14 +781,14 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
     type SeriesEdit = fn(&mut RadarSeriesStyle, &mut Color);
     let chart_edits: [(&str, ChartEdit); 6] = [
         ("grid_shape Polygon", |c| {
-            c.polar.as_mut().unwrap().grid_shape = Some(GridShape::Polygon)
+            c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon)
         }),
         ("zero angle", |c| {
-            c.polar.as_mut().unwrap().zero_angle_degrees = 30.0
+            c.polar_mut().unwrap().zero_angle_degrees = 30.0
         }),
-        ("clockwise", |c| c.polar.as_mut().unwrap().clockwise = false),
+        ("clockwise", |c| c.polar_mut().unwrap().clockwise = false),
         ("sector", |c| {
-            c.polar.as_mut().unwrap().sector = Some([0.0, 270.0])
+            c.polar_mut().unwrap().sector = Some([0.0, 270.0])
         }),
         ("a category more", |c| {
             c.bottom_x
@@ -798,7 +798,7 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
                 .push(Category::new("c5", "Cat 5"))
         }),
         ("inner radius", |c| {
-            c.polar.as_mut().unwrap().inner_radius_fraction = 0.3
+            c.polar_mut().unwrap().inner_radius_fraction = 0.3
         }),
     ];
     let series_edits: [(&str, SeriesEdit); 8] = [
