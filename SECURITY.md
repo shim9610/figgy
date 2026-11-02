@@ -42,7 +42,11 @@ Rendering defects without a security impact belong in the
 
 ## Automated checks
 
-Dependabot alerts track known dependency vulnerabilities. Secret scanning and
+Dependabot alerts track known dependency vulnerabilities, and
+[`.github/dependabot.yml`](.github/dependabot.yml) proposes dependency and
+GitHub Actions updates. In CI, `cargo deny check` ([`deny.toml`](deny.toml))
+fails on any RustSec advisory, a license outside the allowed list, a wildcard
+version or a dependency from an unknown source. Secret scanning and
 push protection help detect accidentally committed credentials. CodeQL analyzes
 public, non-draft pull requests; see [CI coverage](ci/README.md#security-analysis).
 These checks supplement review and tests; they do not guarantee that the code is

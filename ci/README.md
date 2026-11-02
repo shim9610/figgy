@@ -67,7 +67,8 @@ The separate `CodeQL` workflow runs only for public, non-draft pull requests,
 using the same opened/updated/reopened/ready-for-review events as the package
 matrix. It has no push, scheduled or manual trigger. It analyzes Rust, Python,
 JavaScript/TypeScript and GitHub Actions with the `security-extended` query suite
-on standard Ubuntu runners. CodeQL actions are pinned to exact commit IDs.
+on standard Ubuntu runners. CodeQL actions, like every action in the other
+workflows, are pinned to exact commit IDs.
 
 The Rust analysis uses CodeQL's supported `none` build mode. This source analysis
 does not run GPU tests, prove coverage of every feature/target configuration, or
@@ -188,6 +189,10 @@ archives. A separate `repository` job, on Ubuntu with Vulkan (lavapipe when the
 runner has no render device), tests the checkout itself under the same triggers
 and scope check:
 
+0. `cargo deny check` ([`deny.toml`](../deny.toml), through
+   `EmbarkStudios/cargo-deny-action` pinned to a commit) on every change, not
+   only within the scope check: a RustSec advisory, a license outside the
+   allowed list, a wildcard version or an unknown source fails it.
 1. `cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast
    -- --test-threads=1`: every workspace member, including `figgy-web`
    (`publish = false`, so the package jobs never build it), with the renderer's
@@ -332,6 +337,9 @@ Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사�
 워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
 selftest를 실행한다. selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
 아티팩트로 7일간 남으므로 이전 실행과 비교해 렌더링 변화를 확인할 수 있다.
+이 작업은 변경 범위와 상관없이 매번 `cargo deny check`(`deny.toml`)도 실행해서, RustSec
+보안 권고, 허용 목록 밖의 라이선스, 와일드카드 버전, 알 수 없는 출처의 의존성을 막는다.
+모든 워크플로의 액션은 커밋 ID로 고정한다.
 
 세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,

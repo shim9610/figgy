@@ -917,6 +917,16 @@ additive.
   `pollster::block_on(renderer.export_panel_rgba_async(&chart, &series, 1.0))`
   or, with `use pollster::FutureExt as _;`,
   `renderer.export_panel_rgba_async(&chart, &series, 1.0).block_on()`.
+- **Font lookups without a lock** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  Registered fonts are an immutable snapshot published through `arc-swap`:
+  `register_font_bytes` builds the successor under the registration mutex,
+  and family lookups, per-character fallback and `font_family_available`
+  read the current snapshot without a lock. A registered file is copied once
+  and its faces are parsed at registration; before, every resolved face of a
+  file leaked a second copy of the whole file. System faces are copied once
+  per font file on first use, so the faces of one collection (`.ttc`) share a
+  copy, and the shared system-face mutex is gone. A family lookup no longer
+  allocates a key on every character. No API change.
 - **Plain wgpu handles instead of `Arc`-wrapped ones**
   ([#160](https://github.com/shim9610/figgy/issues/160)). `wgpu::Device`,
   `wgpu::Queue` and `wgpu::Buffer` are reference-counted handles that

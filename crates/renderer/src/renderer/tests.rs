@@ -14508,7 +14508,8 @@ fn a_call_returns_the_gpu_error_it_raised() {
 // does), so `Drop` is never reached with a GPU error the last call raised.
 #[test]
 fn every_windowed_call_reports_its_own_gpu_errors() {
-    let source = include_str!("window.rs");
+    // A Windows checkout has CRLF line ends; the scan below matches LF.
+    let source = include_str!("window.rs").replace("\r\n", "\n");
     let start = source
         .find("impl<'w> WindowedRenderer<'w> {")
         .expect("the WindowedRenderer impl");
