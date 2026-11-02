@@ -14,9 +14,10 @@ pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_
 ///
 /// Sources can inspect only the number of pairs and write a complete pair by
 /// index. The mapped bytes and the renderer's wgpu dependency stay private.
-/// The writer records the column's statistics from the pairs written: the
-/// finite minimum and maximum and the smallest value above zero, each the
-/// `hi + lo` value the GPU reads. A source supplies values, never statistics.
+/// The writer records the column's statistics from the values written: the
+/// finite minimum and maximum and the smallest value above zero, from the
+/// f64 itself for [`Self::write_value`] and from `hi + lo` for
+/// [`Self::write_pair`]. A source supplies values, never statistics.
 pub struct ColumnPairWriter<'a> {
     dst: wgpu::WriteOnly<'a, [u8]>,
     observer: Option<&'a mut dyn FnMut(usize, f32, f32)>,
@@ -86,15 +87,40 @@ impl<'a> ColumnPairWriter<'a> {
         self.len() == 0
     }
 
-    /// Write one little-endian `(hi, lo)` pair.
+    /// Write one little-endian `(hi, lo)` pair. The statistics record the
+    /// pair's `hi + lo`.
     ///
     /// A write with `index` outside `0..self.len()` is not performed, and
     /// the upload this writer belongs to fails with an error once the source
     /// returns.
     pub fn write_pair(&mut self, index: usize, hi: f32, lo: f32) {
+        if self.store(index, hi, lo) {
+            self.bounds.record(hi, lo);
+        }
+    }
+
+    /// Write one f64 value as its `(hi, lo)` split (about 48 bits, #107).
+    /// The statistics record the value itself, so a host's `0.3` stays `0.3`
+    /// rather than the few-ulp-off sum of its split; a value the GPU reads
+    /// as zero (below f32 range) or as infinite (past it) is recorded as
+    /// the GPU reads it.
+    pub fn write_value(&mut self, index: usize, value: f64) {
+        let (hi, lo) = split_f64_to_f32_pair(value);
+        if self.store(index, hi, lo) {
+            if hi == 0.0 || !hi.is_finite() {
+                self.bounds.record(hi, lo);
+            } else {
+                self.bounds.record_value(value);
+            }
+        }
+    }
+
+    /// Store a pair; `false` when `index` is out of range and nothing was
+    /// written.
+    fn store(&mut self, index: usize, hi: f32, lo: f32) -> bool {
         if index >= self.len() {
             self.out_of_range.set(true);
-            return;
+            return false;
         }
         let start = index * COLUMN_VALUE_BYTES;
         let (hi_bytes, lo_bytes) = if self.index_lanes {
@@ -114,10 +140,10 @@ impl<'a> ColumnPairWriter<'a> {
                 lo_bytes[2],
                 lo_bytes[3],
             ]);
-        self.bounds.record(hi, lo);
         if let Some(observer) = self.observer.as_mut() {
             observer(index, hi, lo);
         }
+        true
     }
 
     /// The statistics of the pairs written: `None` when none was finite.
@@ -223,9 +249,14 @@ struct EncodedBounds {
 
 impl EncodedBounds {
     fn record(&mut self, hi: f32, lo: f32) {
-        let gpu_value = hi + lo;
-        let value = hi as f64 + lo as f64;
-        if !gpu_value.is_finite() || !value.is_finite() {
+        if !(hi + lo).is_finite() {
+            return;
+        }
+        self.record_value(hi as f64 + lo as f64);
+    }
+
+    fn record_value(&mut self, value: f64) {
+        if !value.is_finite() {
             return;
         }
         let value = if value == 0.0 { 0.0 } else { value };
@@ -383,6 +414,20 @@ fn write_range_with<T: Copy>(
     Ok(())
 }
 
+/// Write `values[start..]` as f64 values, at writer indices from 0.
+fn write_value_range<T: Copy>(
+    values: &[T],
+    start: u64,
+    dst: &mut ColumnPairWriter<'_>,
+    value: impl Fn(T) -> f64,
+) -> std::result::Result<(), ColumnRangeWriteError> {
+    let range = checked_source_range(values.len(), start, dst.len())?;
+    for (index, &v) in values[range].iter().enumerate() {
+        dst.write_value(index, value(v));
+    }
+    Ok(())
+}
+
 /// Write every value through `pair`.
 fn write_all_with<T: Copy>(
     values: &[T],
@@ -395,9 +440,20 @@ fn write_all_with<T: Copy>(
     }
 }
 
-/// A missing value is NaN; a present one keeps the (hi, lo) split (#107).
-fn split_optional(value: Option<f64>) -> (f32, f32) {
-    value.map_or((f32::NAN, 0.0), split_f64_to_f32_pair)
+/// Write every value as an f64.
+fn write_all_values<T: Copy>(
+    values: &[T],
+    dst: &mut ColumnPairWriter<'_>,
+    value: impl Fn(T) -> f64,
+) {
+    for (index, &v) in values.iter().enumerate() {
+        dst.write_value(index, value(v));
+    }
+}
+
+/// A missing value is NaN (#107).
+fn optional(value: Option<f64>) -> f64 {
+    value.unwrap_or(f64::NAN)
 }
 
 // An f64 column writes the (hi, lo) split on both paths: it keeps about 48
@@ -408,14 +464,14 @@ impl ColumnSource for Column<f64> {
         self.data.len()
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, split_f64_to_f32_pair);
+        write_all_values(&self.data, dst, |value| value);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, split_f64_to_f32_pair)
+        write_value_range(&self.data, start, dst, |value| value)
     }
 }
 
@@ -424,14 +480,14 @@ impl HiLoColumnSource for Column<f64> {
         self.data.len()
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, split_f64_to_f32_pair);
+        write_all_values(&self.data, dst, |value| value);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, split_f64_to_f32_pair)
+        write_value_range(&self.data, start, dst, |value| value)
     }
 }
 
@@ -480,8 +536,7 @@ impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for index in 0..ColumnSource::len(self) {
-            let (hi, lo) = split_f64_to_f32_pair(self.value(index));
-            dst.write_pair(index, hi, lo);
+            dst.write_value(index, self.value(index));
         }
     }
 }
@@ -497,10 +552,7 @@ impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
         ::model::bounded_sources::BoxColumn::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        self.for_each(|index, value| {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-        });
+        self.for_each(|index, value| dst.write_value(index, value));
     }
 }
 
@@ -509,14 +561,14 @@ impl ColumnSource for Column<Option<f64>> {
         self.data.len()
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, split_optional);
+        write_all_values(&self.data, dst, optional);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, split_optional)
+        write_value_range(&self.data, start, dst, optional)
     }
 }
 
@@ -525,14 +577,14 @@ impl HiLoColumnSource for Column<Option<f64>> {
         self.data.len()
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, split_optional);
+        write_all_values(&self.data, dst, optional);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, split_optional)
+        write_value_range(&self.data, start, dst, optional)
     }
 }
 
@@ -693,15 +745,38 @@ mod tests {
         let (cancel_hi, cancel_lo) = split_f64_to_f32_pair(cancellation);
 
         assert_eq!(pairs[0], (cancel_hi, cancel_lo));
+        // The statistics are the written f64 values themselves.
         let bounds = bounds.unwrap();
-        assert_eq!(
-            bounds.min_positive,
-            Some(cancel_hi as f64 + cancel_lo as f64)
-        );
-        assert_eq!(bounds.min, cancel_hi as f64 + cancel_lo as f64);
-        assert_eq!(bounds.max, pairs[2].0 as f64 + pairs[2].1 as f64);
+        assert_eq!(bounds.min_positive, Some(cancellation));
+        assert_eq!((bounds.min, bounds.max), (cancellation, epoch_b));
         let epoch_delta = (pairs[2].0 - pairs[1].0) + (pairs[2].1 - pairs[1].1);
         assert!((epoch_delta as f64 - 0.75).abs() < 1.0e-3);
+    }
+
+    /// An f64 written by value keeps its exact value in the statistics,
+    /// where the sum of its split is a few ulps off (0.3 would fit an axis
+    /// to 0.2999999999999998); one the GPU reads as zero is recorded as 0.
+    #[test]
+    fn written_f64_values_keep_their_exact_statistics() {
+        let (hi, lo) = split_f64_to_f32_pair(0.3);
+        assert_ne!(
+            hi as f64 + lo as f64,
+            0.3,
+            "the probe needs an inexact split"
+        );
+        let (_, bounds) = upload(3, |dst| {
+            dst.write_value(0, 0.3);
+            dst.write_value(1, 0.9);
+            dst.write_value(2, f64::from_bits(1));
+        });
+        assert_eq!(
+            bounds,
+            Some(crate::StreamBounds {
+                min: 0.0,
+                max: 0.9,
+                min_positive: Some(0.3),
+            })
+        );
     }
 
     #[test]
