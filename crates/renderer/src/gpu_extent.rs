@@ -325,7 +325,7 @@ pub(crate) struct GpuFieldExtentColumns {
 
 /// Validation, submission, or detached-readback failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GpuErrorbarError {
+pub enum GpuExtentError {
     ColumnNotResident {
         id: String,
     },
@@ -391,7 +391,7 @@ pub enum GpuErrorbarError {
     Gpu(String),
 }
 
-impl GpuErrorbarError {
+impl GpuExtentError {
     pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
         Self::Gpu(error.to_string())
     }
@@ -399,7 +399,7 @@ impl GpuErrorbarError {
 
 /// A readback failure in the variants an extent reduction has always
 /// reported.
-impl From<ReadbackError> for GpuErrorbarError {
+impl From<ReadbackError> for GpuExtentError {
     fn from(error: ReadbackError) -> Self {
         match error {
             ReadbackError::Poll(error) => Self::DevicePollFailed(error.to_string()),
@@ -411,7 +411,7 @@ impl From<ReadbackError> for GpuErrorbarError {
     }
 }
 
-impl std::fmt::Display for GpuErrorbarError {
+impl std::fmt::Display for GpuExtentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ColumnNotResident { id } => {
@@ -487,10 +487,10 @@ impl std::fmt::Display for GpuErrorbarError {
     }
 }
 
-impl std::error::Error for GpuErrorbarError {}
+impl std::error::Error for GpuExtentError {}
 
 #[cfg(target_arch = "wasm32")]
-async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
+async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuExtentError> {
     let mut observer = |_| {};
     crate::init::prewarm_compute_entries_js(
         device,
@@ -503,7 +503,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorb
         &mut observer,
     )
     .await
-    .map_err(GpuErrorbarError::AsyncCompileFailed)
+    .map_err(GpuExtentError::AsyncCompileFailed)
 }
 
 /// Pipelines and layouts intended to be created once and owned by Renderer.
@@ -773,7 +773,7 @@ impl GpuErrorbarExtentEngine {
     /// Dawn/driver compilation is not deferred to the first `queue.submit()`.
     /// The resulting JS pipelines are discarded; the wgpu engine created
     /// afterwards should hit the device compilation cache.
-    pub async fn warm_device_async(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
+    pub async fn warm_device_async(device: &wgpu::Device) -> Result<(), GpuExtentError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _native_needs_no_warmup = device;
@@ -793,12 +793,12 @@ impl GpuErrorbarExtentEngine {
         pool_buffer: &wgpu::Buffer,
         mode: GpuSeriesExtentMode,
         columns: GpuSeriesExtentColumns,
-    ) -> Result<GpuSeriesExtentTicket, GpuErrorbarError> {
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
         let x = checked_range(pool_buffer, &columns.x, columns.x.len_values, "x")?;
         let y = checked_range(pool_buffer, &columns.y, columns.y.len_values, "y")?;
         let input_len = x.len.min(y.len);
         if input_len == 0 {
-            return Err(GpuErrorbarError::EmptyColumn {
+            return Err(GpuExtentError::EmptyColumn {
                 role: "paired series",
             });
         }
@@ -807,7 +807,7 @@ impl GpuErrorbarExtentEngine {
             if !active {
                 return Ok(ColumnRangeGpu { offset: 0, len: 0 });
             }
-            let handle = column.ok_or(GpuErrorbarError::MissingSeriesColumn { role, mode })?;
+            let handle = column.ok_or(GpuExtentError::MissingSeriesColumn { role, mode })?;
             checked_range(pool_buffer, &handle, handle.len_values, role)
         };
         let x_lower = required(columns.x_lower, "x lower error", mode.has_x_errors())?;
@@ -839,7 +839,7 @@ impl GpuErrorbarExtentEngine {
         pool_buffer: &wgpu::Buffer,
         columns: [ColumnHandle; 4],
         factor: f32,
-    ) -> Result<GpuSeriesExtentTicket, GpuErrorbarError> {
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
         let [x, y, u, v] = columns;
         let x = checked_range(pool_buffer, &x, x.len_values, "x")?;
         let y = checked_range(pool_buffer, &y, y.len_values, "y")?;
@@ -847,7 +847,7 @@ impl GpuErrorbarExtentEngine {
         let v = checked_range(pool_buffer, &v, v.len_values, "vector v")?;
         let input_len = x.len.min(y.len);
         if input_len == 0 {
-            return Err(GpuErrorbarError::EmptyColumn {
+            return Err(GpuExtentError::EmptyColumn {
                 role: "paired series",
             });
         }
@@ -879,11 +879,11 @@ impl GpuErrorbarExtentEngine {
         pool_buffer: &wgpu::Buffer,
         mode: GpuFieldExtentMode,
         columns: GpuFieldExtentColumns,
-    ) -> Result<GpuSeriesExtentTicket, GpuErrorbarError> {
+    ) -> Result<GpuSeriesExtentTicket, GpuExtentError> {
         let x = checked_range(pool_buffer, &columns.x, columns.x.len_values, "field x")?;
         let y = checked_range(pool_buffer, &columns.y, columns.y.len_values, "field y")?;
         if columns.x_cells == 0 || columns.y_cells == 0 {
-            return Err(GpuErrorbarError::EmptyColumn {
+            return Err(GpuExtentError::EmptyColumn {
                 role: "field drawable lattice",
             });
         }
@@ -915,22 +915,22 @@ impl GpuErrorbarExtentEngine {
         values: ColumnHandle,
         lower_errors: ColumnHandle,
         upper_errors: ColumnHandle,
-    ) -> Result<GpuErrorbarExtentTicket, GpuErrorbarError> {
+    ) -> Result<GpuErrorbarExtentTicket, GpuExtentError> {
         let value = checked_range(pool_buffer, &values, values.len_values, "value")?;
         if value.len == 0 {
-            return Err(GpuErrorbarError::EmptyColumn { role: "value" });
+            return Err(GpuExtentError::EmptyColumn { role: "value" });
         }
         let lower_bound_len = lower_errors.len_values.min(values.len_values);
         let upper_bound_len = upper_errors.len_values.min(values.len_values);
         let lower = checked_range(pool_buffer, &lower_errors, lower_bound_len, "lower error")?;
         let upper = checked_range(pool_buffer, &upper_errors, upper_bound_len, "upper error")?;
         if lower.len == 0 {
-            return Err(GpuErrorbarError::EmptyColumn {
+            return Err(GpuExtentError::EmptyColumn {
                 role: "lower error",
             });
         }
         if upper.len == 0 {
-            return Err(GpuErrorbarError::EmptyColumn {
+            return Err(GpuExtentError::EmptyColumn {
                 role: "upper error",
             });
         }
@@ -951,7 +951,7 @@ impl GpuErrorbarExtentEngine {
         queue: &wgpu::Queue,
         pool_buffer: &wgpu::Buffer,
         mut params: ParamsGpu,
-    ) -> Result<GpuExtentTicketCore, GpuErrorbarError> {
+    ) -> Result<GpuExtentTicketCore, GpuExtentError> {
         let limits = device.limits();
         let pool_binding = checked_pool_binding(pool_buffer, &limits)?;
         let input_len = params.lengths_1[2];
@@ -960,7 +960,7 @@ impl GpuErrorbarExtentEngine {
             .min(max_scratch_groups)
             .min(u64::from(u32::MAX)) as u32;
         if dispatch_cap == 0 {
-            return Err(GpuErrorbarError::NoDispatchCapacity);
+            return Err(GpuExtentError::NoDispatchCapacity);
         }
 
         let first_groups = div_ceil(input_len, WORKGROUP_SIZE).min(dispatch_cap);
@@ -983,7 +983,7 @@ impl GpuErrorbarExtentEngine {
                 mapped_at_creation: false,
             },
         )
-        .map_err(GpuErrorbarError::from_figgy)?;
+        .map_err(GpuExtentError::from_figgy)?;
         // gpu-alloc: ErrorbarScratch
         let scratch_b = charged_buffer(
             &scratch_tally,
@@ -995,7 +995,7 @@ impl GpuErrorbarExtentEngine {
                 mapped_at_creation: false,
             },
         )
-        .map_err(GpuErrorbarError::from_figgy)?;
+        .map_err(GpuExtentError::from_figgy)?;
         // gpu-alloc: Readback
         let readback = charged_buffer(
             &readback_tally,
@@ -1007,7 +1007,7 @@ impl GpuErrorbarExtentEngine {
                 mapped_at_creation: false,
             },
         )
-        .map_err(GpuErrorbarError::from_figgy)?;
+        .map_err(GpuExtentError::from_figgy)?;
 
         params.lengths_1[3] = first_groups;
         // The params uniforms are owned by their bind groups; `params_buffer`
@@ -1142,7 +1142,7 @@ struct GpuExtentTicketCore {
 }
 
 impl GpuExtentTicketCore {
-    async fn resolve(self) -> Result<SeriesStateGpu, GpuErrorbarError> {
+    async fn resolve(self) -> Result<SeriesStateGpu, GpuExtentError> {
         let Self {
             readback,
             // Dropped here: resolving destroys the scratch and the readback.
@@ -1228,7 +1228,7 @@ impl GpuSeriesExtentTicket {
     /// `None` means pending; `Some(None)` is a completed empty drawable extent.
     pub(crate) fn try_resolve(
         &mut self,
-    ) -> Result<Option<Option<GpuSeriesExtent>>, GpuErrorbarError> {
+    ) -> Result<Option<Option<GpuSeriesExtent>>, GpuExtentError> {
         let Some(state) = self
             .core
             .readback
@@ -1239,7 +1239,7 @@ impl GpuSeriesExtentTicket {
         decode_series_state(state).map(|extent| Some(Self::widened(self.overhang, extent)))
     }
 
-    pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuErrorbarError> {
+    pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
         let overhang = self.overhang;
         decode_series_state(self.core.resolve().await?)
             .map(|extent| Self::widened(overhang, extent))
@@ -1252,14 +1252,14 @@ pub struct GpuErrorbarExtentTicket {
 }
 
 impl GpuErrorbarExtentTicket {
-    pub async fn resolve(self) -> Result<Option<GpuErrorbarExtent>, GpuErrorbarError> {
+    pub async fn resolve(self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
         let state = self.core.resolve().await?;
         decode_axis_state(state.x)
     }
 }
 
-fn checked_u32_len(role: &'static str, len: usize) -> Result<u32, GpuErrorbarError> {
-    u32::try_from(len).map_err(|_| GpuErrorbarError::ValueCountTooLarge { role, len })
+fn checked_u32_len(role: &'static str, len: usize) -> Result<u32, GpuExtentError> {
+    u32::try_from(len).map_err(|_| GpuExtentError::ValueCountTooLarge { role, len })
 }
 
 fn checked_range(
@@ -1267,18 +1267,18 @@ fn checked_range(
     handle: &ColumnHandle,
     bound_values: usize,
     role: &'static str,
-) -> Result<ColumnRangeGpu, GpuErrorbarError> {
+) -> Result<ColumnRangeGpu, GpuExtentError> {
     let len = checked_u32_len(role, bound_values)?;
     let required = (bound_values as u64)
         .checked_mul(COLUMN_VALUE_BYTES as u64)
-        .ok_or(GpuErrorbarError::ValueCountTooLarge {
+        .ok_or(GpuExtentError::ValueCountTooLarge {
             role,
             len: bound_values,
         })?;
     let pool_size = pool_buffer.size();
     let end = handle.offset.checked_add(required);
     if required > handle.byte_size || end.is_none_or(|end| end > pool_size) {
-        return Err(GpuErrorbarError::InvalidColumnRange {
+        return Err(GpuExtentError::InvalidColumnRange {
             role,
             offset: handle.offset,
             required,
@@ -1288,14 +1288,14 @@ fn checked_range(
     }
     let lane_alignment = COLUMN_VALUE_BYTES as u32;
     if !handle.offset.is_multiple_of(u64::from(lane_alignment)) {
-        return Err(GpuErrorbarError::MisalignedColumnOffset {
+        return Err(GpuExtentError::MisalignedColumnOffset {
             role,
             offset: handle.offset,
             alignment: lane_alignment,
         });
     }
     let offset = u32::try_from(handle.offset / COLUMN_VALUE_BYTES as u64).map_err(|_| {
-        GpuErrorbarError::ColumnOffsetTooLarge {
+        GpuExtentError::ColumnOffsetTooLarge {
             role,
             offset: handle.offset,
         }
@@ -1306,17 +1306,17 @@ fn checked_range(
 fn checked_pool_binding<'a>(
     pool_buffer: &'a wgpu::Buffer,
     limits: &wgpu::Limits,
-) -> Result<wgpu::BufferBinding<'a>, GpuErrorbarError> {
+) -> Result<wgpu::BufferBinding<'a>, GpuExtentError> {
     let requested = pool_buffer.size();
     let limit = limits.max_storage_buffer_binding_size;
     if requested > limit {
-        return Err(GpuErrorbarError::StorageBindingTooLarge {
+        return Err(GpuExtentError::StorageBindingTooLarge {
             role: "column pool",
             requested,
             limit,
         });
     }
-    let size = NonZeroU64::new(requested).ok_or(GpuErrorbarError::EmptyColumn {
+    let size = NonZeroU64::new(requested).ok_or(GpuExtentError::EmptyColumn {
         role: "column pool",
     })?;
     Ok(wgpu::BufferBinding {
@@ -1335,7 +1335,7 @@ fn params_buffer(
     device: &wgpu::Device,
     label: &'static str,
     params: ParamsGpu,
-) -> Result<wgpu::Buffer, GpuErrorbarError> {
+) -> Result<wgpu::Buffer, GpuExtentError> {
     // gpu-alloc: ErrorbarScratch
     charged_buffer_init(
         tally,
@@ -1346,17 +1346,17 @@ fn params_buffer(
             usage: wgpu::BufferUsages::UNIFORM,
         },
     )
-    .map_err(GpuErrorbarError::from_figgy)
+    .map_err(GpuExtentError::from_figgy)
 }
 
-fn decode_bound(bound: [f32; 2]) -> Result<f64, GpuErrorbarError> {
+fn decode_bound(bound: [f32; 2]) -> Result<f64, GpuExtentError> {
     if !bound.into_iter().all(f32::is_finite) {
-        return Err(GpuErrorbarError::CorruptResult);
+        return Err(GpuExtentError::CorruptResult);
     }
     Ok(bound[0] as f64 + bound[1] as f64)
 }
 
-fn decode_axis_state(state: AxisStateGpu) -> Result<Option<GpuErrorbarExtent>, GpuErrorbarError> {
+fn decode_axis_state(state: AxisStateGpu) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
     if state.minimum == EMPTY_MINIMUM_BOUND
         && state.maximum == EMPTY_MAXIMUM_BOUND
         && state.minimum_positive == EMPTY_MINIMUM_BOUND
@@ -1371,10 +1371,10 @@ fn decode_axis_state(state: AxisStateGpu) -> Result<Option<GpuErrorbarExtent>, G
     } else if state.minimum_positive == EMPTY_MINIMUM_BOUND {
         None
     } else {
-        return Err(GpuErrorbarError::CorruptResult);
+        return Err(GpuExtentError::CorruptResult);
     };
     if min > max || min_positive.is_some_and(|value| value <= 0.0 || value > max) {
-        return Err(GpuErrorbarError::CorruptResult);
+        return Err(GpuExtentError::CorruptResult);
     }
     Ok(Some(GpuErrorbarExtent {
         min,
@@ -1383,11 +1383,11 @@ fn decode_axis_state(state: AxisStateGpu) -> Result<Option<GpuErrorbarExtent>, G
     }))
 }
 
-fn decode_series_state(state: SeriesStateGpu) -> Result<Option<GpuSeriesExtent>, GpuErrorbarError> {
+fn decode_series_state(state: SeriesStateGpu) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
     match (decode_axis_state(state.x)?, decode_axis_state(state.y)?) {
         (None, None) => Ok(None),
         (Some(x), Some(y)) => Ok(Some(GpuSeriesExtent { x, y })),
-        _ => Err(GpuErrorbarError::CorruptResult),
+        _ => Err(GpuExtentError::CorruptResult),
     }
 }
 

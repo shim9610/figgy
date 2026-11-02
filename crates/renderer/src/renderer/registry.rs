@@ -361,7 +361,7 @@ pub(super) struct ChartRenderState {
     /// by its fit stamp. A stamp names the series' columns by allocation, so a
     /// repeated fit over unchanged columns reuses the extent instead of
     /// rerunning the reduction; a fit replaces the whole map (#160).
-    pub(super) fit_extents: HashMap<FitSeriesStamp, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    pub(super) fit_extents: HashMap<FitSeriesStamp, Option<crate::gpu_extent::GpuSeriesExtent>>,
     /// The surface a host draws this chart on through
     /// [`Renderer::prepare_registered`], when it set one with
     /// [`Renderer::set_chart_display`]; `None` draws the document as stored.
@@ -667,7 +667,7 @@ pub struct RendererColumnUpsert<'a> {
     pub(super) pending_defrag_after_commit: Option<bool>,
     pub(super) device: &'a wgpu::Device,
     pub(super) queue: &'a wgpu::Queue,
-    pub(super) errorbar_extent_engine: Option<&'a crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    pub(super) errorbar_extent_engine: Option<&'a crate::gpu_extent::GpuErrorbarExtentEngine>,
 }
 
 /// Prepared renderer side of the bundled demo transaction.
@@ -732,12 +732,12 @@ impl RendererColumnUpsert<'_> {
         lower_id: &str,
         upper_id: &str,
     ) -> std::result::Result<
-        crate::gpu_errorbar::GpuErrorbarExtentTicket,
-        crate::gpu_errorbar::GpuErrorbarError,
+        crate::gpu_extent::GpuErrorbarExtentTicket,
+        crate::gpu_extent::GpuExtentError,
     > {
         for id in [value_id, lower_id, upper_id] {
             if self.streaming_sources.contains_key(id) {
-                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident {
                     id: id.to_owned(),
                 });
             }
@@ -756,7 +756,7 @@ impl RendererColumnUpsert<'_> {
         engine
             .health()
             .check()
-            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+            .map_err(crate::gpu_extent::GpuExtentError::from_figgy)?;
         Ok(ticket)
     }
 
@@ -765,11 +765,11 @@ impl RendererColumnUpsert<'_> {
     /// require both lower and upper ids.
     pub fn begin_series_extent(
         &self,
-        mode: crate::gpu_errorbar::GpuSeriesExtentMode,
-        columns: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
+        mode: crate::gpu_extent::GpuSeriesExtentMode,
+        columns: crate::gpu_extent::GpuSeriesExtentColumnIds<'_>,
     ) -> std::result::Result<
-        crate::gpu_errorbar::GpuSeriesExtentTicket,
-        crate::gpu_errorbar::GpuErrorbarError,
+        crate::gpu_extent::GpuSeriesExtentTicket,
+        crate::gpu_extent::GpuExtentError,
     > {
         for id in [
             Some(columns.x),
@@ -783,7 +783,7 @@ impl RendererColumnUpsert<'_> {
         .flatten()
         {
             if self.streaming_sources.contains_key(id) {
-                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident {
                     id: id.to_owned(),
                 });
             }
@@ -800,7 +800,7 @@ impl RendererColumnUpsert<'_> {
         engine
             .health()
             .check()
-            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+            .map_err(crate::gpu_extent::GpuExtentError::from_figgy)?;
         Ok(ticket)
     }
 
@@ -811,13 +811,13 @@ impl RendererColumnUpsert<'_> {
         &self,
         series: &SeriesConfig,
     ) -> std::result::Result<
-        Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
-        crate::gpu_errorbar::GpuErrorbarError,
+        Option<crate::gpu_extent::GpuSeriesExtentTicket>,
+        crate::gpu_extent::GpuExtentError,
     > {
         if let Err(FiggyError::ColumnNotResident { id }) =
             require_resident_sources(self.streaming_sources, series)
         {
-            return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident { id });
+            return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident { id });
         }
         let engine = prepared_errorbar_extent_engine(self.errorbar_extent_engine)?;
         let ticket = begin_series_fit_extent_from_pool(
@@ -830,7 +830,7 @@ impl RendererColumnUpsert<'_> {
         engine
             .health()
             .check()
-            .map_err(crate::gpu_errorbar::GpuErrorbarError::from_figgy)?;
+            .map_err(crate::gpu_extent::GpuExtentError::from_figgy)?;
         Ok(ticket)
     }
 
@@ -902,7 +902,7 @@ pub(super) fn finish_renderer_column_upsert<'a>(
     invalidation: Option<ColumnInvalidationPlan>,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
-    errorbar_extent_engine: Option<&'a crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    errorbar_extent_engine: Option<&'a crate::gpu_extent::GpuErrorbarExtentEngine>,
 ) -> Result<RendererColumnUpsert<'a>> {
     let relocated = inner.pool().layout_generation() != old_layout_generation;
     let changed_columns = [changed_column];

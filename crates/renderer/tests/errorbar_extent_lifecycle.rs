@@ -4,7 +4,7 @@ mod test_gpu;
 use std::sync::OnceLock;
 
 use renderer::{
-    Column, GpuErrorbarError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
+    Column, GpuExtentError, GpuResourceKind, GpuSeriesExtentColumnIds, GpuSeriesExtentMode,
     Renderer, RendererDevice,
 };
 
@@ -66,11 +66,11 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
     assert!(!renderer.errorbar_extent_engine_ready());
     assert!(matches!(
         renderer.begin_errorbar_extent("x", "x", "x"),
-        Err(GpuErrorbarError::EngineNotReady)
+        Err(GpuExtentError::EngineNotReady)
     ));
     assert!(matches!(
         renderer.begin_series_extent(GpuSeriesExtentMode::Points, point_columns()),
-        Err(GpuErrorbarError::EngineNotReady)
+        Err(GpuExtentError::EngineNotReady)
     ));
 
     {
@@ -79,7 +79,7 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
             .unwrap();
         assert!(matches!(
             provisional.begin_series_extent(GpuSeriesExtentMode::Points, point_columns()),
-            Err(GpuErrorbarError::EngineNotReady)
+            Err(GpuExtentError::EngineNotReady)
         ));
     }
     assert!(!renderer.errorbar_extent_engine_ready());

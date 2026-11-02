@@ -170,7 +170,7 @@ impl FiggyChart {
             return Ok(());
         }
         let ticket = match self.renderer.begin_auto_fit_all(self.chart_id, padding) {
-            Err(renderer::GpuErrorbarError::EngineNotReady) => {
+            Err(renderer::GpuExtentError::EngineNotReady) => {
                 // The first fit that needs a reduction compiles the engine.
                 self.renderer
                     .ensure_errorbar_extent_engine()

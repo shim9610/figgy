@@ -41,7 +41,7 @@ mod tests {
 
     const CASES: &[Case] = &[
         Case {
-            source: crate::gpu_errorbar::ERRORBAR_FIT_SHADER.source,
+            source: crate::gpu_extent::ERRORBAR_FIT_SHADER.source,
             array: "shared_states",
             width: 64,
             poison: "SeriesState(AxisState(vec2<f32>(1.0), vec2<f32>(2.0), vec2<f32>(3.0)), AxisState(vec2<f32>(4.0), vec2<f32>(5.0), vec2<f32>(6.0)))",

@@ -218,7 +218,7 @@ pub struct Renderer {
     observed_font_generation: u64,
     pending_defrag: bool,
     picker: RendererPicker,
-    errorbar_extent_engine: Option<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    errorbar_extent_engine: Option<crate::gpu_extent::GpuErrorbarExtentEngine>,
     target_sample_count: u32,
     target_pipeline_generation: u64,
 
