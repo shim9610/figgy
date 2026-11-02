@@ -25,6 +25,10 @@ use std::collections::HashSet;
 
 /// Actual whisker endpoints, not the theoretical IQR fences. CI endpoints may
 /// extend outside Q1/Q3. No sample statistics are inferred by the renderer.
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxSummary {
@@ -82,6 +86,10 @@ impl BoxSummary {
         Ok(())
     }
 }
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotDirection {
@@ -97,6 +105,10 @@ pub enum BoxPlotDirection {
 /// default is `Flat`.
 #[deprecated(since = "0.13.0", note = "use Material")]
 pub type BoxPlotMaterial = crate::Material;
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxPlotSeries {

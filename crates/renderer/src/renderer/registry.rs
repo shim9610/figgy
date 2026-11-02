@@ -470,20 +470,20 @@ pub(super) struct ColumnInvalidationPlan {
     pub(super) visual: Option<RenderRevision>,
 }
 
-pub(super) struct LoadDemoChartRevision {
+pub(super) struct ChartReplacementRevision {
     pub(super) id: ChartId,
     pub(super) revisions: ChartRevisions,
 }
 
-pub(super) struct LoadDemoChartPlan {
+pub(super) struct ChartReplacementPlan {
     pub(super) target_id: ChartId,
     pub(super) config: Config,
     pub(super) series: Vec<SeriesConfig>,
-    pub(super) revisions: Vec<LoadDemoChartRevision>,
+    pub(super) revisions: Vec<ChartReplacementRevision>,
     pub(super) visual: RenderRevision,
 }
 
-impl LoadDemoChartPlan {
+impl ChartReplacementPlan {
     pub(super) fn publish(
         self,
         chart_states: &mut HashMap<ChartId, ChartRenderState>,
@@ -524,7 +524,7 @@ impl ColumnInvalidationPlan {
     ) {
         for update in self.charts {
             // The plan's ids were read from this map, which the guard has
-            // held exclusively since; see `LoadDemoChartPlan::publish`.
+            // held exclusively since; see `ChartReplacementPlan::publish`.
             let Some(state) = chart_states.get_mut(&update.id) else {
                 continue;
             };
@@ -587,7 +587,7 @@ impl ColumnRemovalPlan {
     ) {
         for update in self.charts {
             // The plan's ids were read from this map, which the guard has
-            // held exclusively since; see `LoadDemoChartPlan::publish`.
+            // held exclusively since; see `ChartReplacementPlan::publish`.
             let Some(state) = chart_states.get_mut(&update.id) else {
                 continue;
             };
@@ -671,19 +671,23 @@ pub struct RendererColumnUpsert<'a> {
 }
 
 /// Prepared renderer side of the bundled demo transaction.
-#[must_use = "dropping a RendererLoadDemo leaves renderer authority unchanged"]
-pub struct RendererLoadDemo<'a> {
-    pub(super) inner: data_render::column_pool::ColumnBatchUpsert<'a>,
+/// A prepared replacement of some columns and one chart
+/// ([`Renderer::begin_replace_chart_columns`]): nothing is published until
+/// [`Self::commit`], and dropping it leaves the renderer as it was.
+#[must_use = "dropping a ChartColumnsReplacement leaves renderer authority unchanged"]
+pub struct ChartColumnsReplacement<'a, const N: usize> {
+    pub(super) inner: data_render::column_pool::ColumnBatchUpsert<'a, N>,
     pub(super) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
     pub(super) visual_revision: &'a mut RenderRevision,
     pub(super) pending_defrag: &'a mut bool,
-    pub(super) chart_plan: LoadDemoChartPlan,
+    pub(super) chart_plan: ChartReplacementPlan,
     pub(super) picker: Option<PreparedActivePickerMutation<'a>>,
 }
 
-impl RendererLoadDemo<'_> {
-    /// Publish the four demo columns, chart state, picker, and maintenance bit.
-    pub fn commit(self) -> [ColumnHandle; 4] {
+impl<const N: usize> ChartColumnsReplacement<'_, N> {
+    /// Publish the columns, the chart, the picker and the maintenance bit
+    /// together; the handles are the columns' in the order they were given.
+    pub fn commit(self) -> [ColumnHandle; N] {
         let Self {
             inner,
             chart_states,
@@ -1161,21 +1165,22 @@ pub(super) fn try_insert_column_id(
     Ok(ids.insert(owned))
 }
 
-pub(super) fn prepare_load_demo_chart_plan(
+pub(super) fn prepare_chart_replacement_plan(
     chart_states: &HashMap<ChartId, ChartRenderState>,
     chart_order: &[ChartId],
     visual_revision: RenderRevision,
     target_id: ChartId,
     config: Config,
     series: Vec<SeriesConfig>,
-) -> Result<LoadDemoChartPlan> {
+    replaced: &[&str],
+) -> Result<ChartReplacementPlan> {
     chart_states
         .get(&target_id)
         .ok_or(FiggyError::UnknownChart { id: target_id })?;
     let mut revisions = Vec::new();
     revisions.try_reserve(chart_order.len()).map_err(|error| {
         FiggyError::StateAllocationFailed {
-            resource: "load-demo chart revisions",
+            resource: "chart replacement revisions",
             reason: error.to_string(),
         }
     })?;
@@ -1184,8 +1189,7 @@ pub(super) fn prepare_load_demo_chart_plan(
             .get(id)
             .ok_or(FiggyError::UnknownChart { id: *id })?;
         let is_target = *id == target_id;
-        if !is_target
-            && !series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
+        if !is_target && !series_list_references_any_column(&state.series, replaced.iter().copied())
         {
             continue;
         }
@@ -1208,11 +1212,8 @@ pub(super) fn prepare_load_demo_chart_plan(
                 selection: selection_config_revision(selection, &state.config, &config)?,
                 series: series_revision.successor("chart series revision")?,
                 data: if !data_series_declarations_equal(&state.series, &series)
-                    || series_list_references_any_column(
-                        &state.series,
-                        DEMO_COLUMN_IDS.iter().copied(),
-                    )
-                    || series_list_references_any_column(&series, DEMO_COLUMN_IDS.iter().copied())
+                    || series_list_references_any_column(&state.series, replaced.iter().copied())
+                    || series_list_references_any_column(&series, replaced.iter().copied())
                 {
                     data.successor("chart data revision")?
                 } else {
@@ -1227,7 +1228,7 @@ pub(super) fn prepare_load_demo_chart_plan(
                 annotation: annotation_config_revision(annotation, &state.config, &config)?,
             }
         } else {
-            // A chart that only reads the demo columns: its data changed.
+            // A chart that only reads the replaced columns: its data changed.
             ChartRevisions {
                 desired,
                 config: config_revision,
@@ -1239,7 +1240,7 @@ pub(super) fn prepare_load_demo_chart_plan(
                 annotation,
             }
         };
-        revisions.push(LoadDemoChartRevision {
+        revisions.push(ChartReplacementRevision {
             id: *id,
             revisions: next,
         });
@@ -1248,7 +1249,7 @@ pub(super) fn prepare_load_demo_chart_plan(
         return Err(FiggyError::UnknownChart { id: target_id });
     }
     let visual = visual_revision.successor("renderer visual revision")?;
-    Ok(LoadDemoChartPlan {
+    Ok(ChartReplacementPlan {
         target_id,
         config,
         series,
@@ -1625,8 +1626,6 @@ pub(super) fn validate_line_fill<'s>(
     }
     Ok(())
 }
-
-pub(super) const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
 
 impl Renderer {
     /// Check whether an exact resident working set fits every declared static
@@ -2979,54 +2978,45 @@ impl Renderer {
             .or_else(|| self.pool.slot(id).map(crate::LogicalColumn::Resident))
     }
 
-    /// Prepare the renderer-owned portion of the bundled demo as one commit.
+    /// Prepare one commit that uploads `columns` (new ids, or replacements
+    /// of resident ones) and replaces chart `chart_id`'s config and series.
     ///
-    /// `prepare_state` receives the complete candidate pool so the final axis
-    /// ranges can be derived without publishing columns or submitting extent
-    /// work. Dropping the returned guard leaves all renderer authority intact.
-    #[allow(clippy::too_many_arguments)]
-    pub fn begin_load_demo<F>(
+    /// `prepare_state` receives the complete candidate pool, so the chart's
+    /// axis ranges can be derived from the new columns before anything is
+    /// published or extent work is submitted. Other charts that read a
+    /// replaced column move their data revision. Dropping the returned guard
+    /// leaves every column and chart as it was; [`ChartColumnsReplacement::commit`]
+    /// publishes them all. A streamed column id is refused.
+    pub fn begin_replace_chart_columns<const N: usize, F>(
         &mut self,
         chart_id: ChartId,
-        demo_x: &dyn ColumnSource,
-        demo_sin: &dyn ColumnSource,
-        demo_t: &dyn ColumnSource,
-        demo_rc: &dyn ColumnSource,
+        columns: [(&str, &dyn ColumnSource); N],
         prepare_state: F,
-    ) -> Result<RendererLoadDemo<'_>>
+    ) -> Result<ChartColumnsReplacement<'_, N>>
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
         // The guard borrows the renderer, so the check uses a clone of the
         // health record; a failed check drops the guard, which rolls back.
         let health = self.health.clone();
-        let guard = self.begin_load_demo_unreported(
-            chart_id,
-            demo_x,
-            demo_sin,
-            demo_t,
-            demo_rc,
-            prepare_state,
-        )?;
+        let guard =
+            self.begin_replace_chart_columns_unreported(chart_id, columns, prepare_state)?;
         health.check()?;
         Ok(guard)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn begin_load_demo_unreported<F>(
+    fn begin_replace_chart_columns_unreported<const N: usize, F>(
         &mut self,
         chart_id: ChartId,
-        demo_x: &dyn ColumnSource,
-        demo_sin: &dyn ColumnSource,
-        demo_t: &dyn ColumnSource,
-        demo_rc: &dyn ColumnSource,
+        columns: [(&str, &dyn ColumnSource); N],
         prepare_state: F,
-    ) -> Result<RendererLoadDemo<'_>>
+    ) -> Result<ChartColumnsReplacement<'_, N>>
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
         self.health.check()?;
-        for id in DEMO_COLUMN_IDS {
+        let ids = columns.map(|(id, _)| id);
+        for id in ids {
             self.reject_streamed_id(id)?;
         }
         let Renderer {
@@ -3041,25 +3031,21 @@ impl Renderer {
             gpu_ledger,
             ..
         } = self;
-        let inner = pool.begin_demo_batch_upsert(
-            [
-                (DEMO_COLUMN_IDS[0].to_string(), demo_x),
-                (DEMO_COLUMN_IDS[1].to_string(), demo_sin),
-                (DEMO_COLUMN_IDS[2].to_string(), demo_t),
-                (DEMO_COLUMN_IDS[3].to_string(), demo_rc),
-            ],
+        let inner = pool.begin_batch_upsert(
+            columns.map(|(id, source)| (id.to_string(), source)),
             pool_alloc_ctx(&*device, &*queue, &gpu_ledger),
         )?;
         let (config, series) = prepare_state(inner.pool())?;
         crate::chart::validate_renderer_config(&config)?;
         validate_renderer_series(inner.pool(), &config, &series)?;
-        let chart_plan = prepare_load_demo_chart_plan(
+        let chart_plan = prepare_chart_replacement_plan(
             chart_states,
             chart_order,
             *visual_revision,
             chart_id,
             config,
             series,
+            &ids,
         )?;
 
         let picker = match picker.active.as_ref().map(|active| active.chart_id) {
@@ -3072,17 +3058,12 @@ impl Renderer {
                         .ok_or(FiggyError::UnknownChart { id: active_id })?;
                     PickChartPlan::for_active_layer(&state.config, &state.series)?
                 };
-                picker.prepare_active_pool_mutation(
-                    inner.pool(),
-                    active_id,
-                    plan,
-                    &DEMO_COLUMN_IDS,
-                )?
+                picker.prepare_active_pool_mutation(inner.pool(), active_id, plan, &ids)?
             }
             None => None,
         };
 
-        Ok(RendererLoadDemo {
+        Ok(ChartColumnsReplacement {
             inner,
             chart_states,
             visual_revision,

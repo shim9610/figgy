@@ -27,6 +27,10 @@ pub use crate::data_config::{
     CategoryBarDirection, CategoryBarLabelFormat, CategoryBarLabels, CategoryBarMode,
     CategoryBarOverride, CategoryBarStyle, CategoryBarTarget,
 };
+#[deprecated(
+    since = "0.13.0",
+    note = "part of the CategoricalChart document reader; removed with it in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarSeries {

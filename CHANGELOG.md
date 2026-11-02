@@ -33,6 +33,12 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **The deprecated readers' companion types are deprecated too** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `BarSeries`, `BoxSummary`, `BoxPlotDirection`, `BoxPlotSeries`,
+  `RadarTarget`, `RadarGridShape`, `RadarStyle` and `RadarSeries` exist only
+  inside `CategoricalChart`, `BoxPlotChart` and `RadarChart`, deprecated
+  since 0.13.0, and leave with them. Code that reads a legacy document
+  through them adds `#[allow(deprecated)]`, as for the readers.
 - **Unused items removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `DataConfig` (a lone `data_id`), `DataCell` (a bundle of columns nothing
   built), `default::default_rich_text` (an empty black 12 px `RichText`) and
@@ -977,6 +983,22 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **One replacement transaction instead of the demo loader** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Renderer::begin_load_demo`, which uploaded four fixed `demo_*` columns
+  and replaced one chart as one commit, is
+  `Renderer::begin_replace_chart_columns(chart_id, columns, prepare_state)`:
+  any number of `(id, &dyn ColumnSource)` columns (new or replacing
+  resident ones) and the chart's config and series, published together by
+  `ChartColumnsReplacement::commit`, which returns the columns' handles in
+  order; dropping the guard changes nothing. `RendererLoadDemo` is
+  `ChartColumnsReplacement<'_, N>`. The sample data of `renderer::demo` and
+  the model's document expansion (`expand`, `Expansion`, `ExpandedPanel`)
+  are hidden from the documentation: machinery for the examples and the
+  renderer, with no compatibility promise; the renderer no longer
+  re-exports `expand`. Migration:
+  `begin_load_demo(chart, &x, &sin, &t, &rc, f)` →
+  `begin_replace_chart_columns(chart, [("demo_x", &x as &dyn ColumnSource),
+  ("demo_sin", &sin), ("demo_t", &t), ("demo_rc", &rc)], f)`.
 - **Device setup in `renderer::gpu`; the GPU internals hidden** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `create_instance`, `request_adapter_async`,
   `request_adapter_for_surface_async`, `request_device_async`,
