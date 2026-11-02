@@ -983,6 +983,16 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Names that say what they serve** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The `gpu_errorbar` module, which computes every series' GPU extents and
+  not only error bars', is `gpu_extent`, and its error `GpuErrorbarError`
+  is `GpuExtentError` (the error bar's own `GpuErrorbarExtent` and
+  `GpuErrorbarExtentTicket` keep their names). `text_render::register_font_bytes`
+  returns `renderer::Result` instead of a `String` error: bytes without a usable
+  face are `FiggyError::InvalidFont`, an exhausted generation counter is
+  `FiggyError::CounterExhausted`. Migration: `renderer::gpu_errorbar::` →
+  `renderer::gpu_extent::`, `GpuErrorbarError` → `GpuExtentError`, and match
+  `FiggyError` (or format it, as before) from `register_font_bytes`.
 - **One replacement transaction instead of the demo loader** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Renderer::begin_load_demo`, which uploaded four fixed `demo_*` columns
   and replaced one chart as one commit, is

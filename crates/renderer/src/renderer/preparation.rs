@@ -159,7 +159,7 @@ pub struct PreparedPipelines {
     job: PipelinePreparation,
     contour: Option<crate::gpu_contour::ContourLabelPipelines>,
     arc: Option<data_render::line_arc::ArcScanPipelines>,
-    extent: Option<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    extent: Option<crate::gpu_extent::GpuErrorbarExtentEngine>,
     picker: RendererPicker,
 }
 fn failure(reason: impl std::fmt::Display) -> FiggyError {
@@ -264,11 +264,11 @@ impl PipelinePreparation {
                     .await
                     .map_err(failure)?,
                 );
-                crate::gpu_errorbar::GpuErrorbarExtentEngine::warm_device_async(&self.device)
+                crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device)
                     .await
                     .map_err(failure)?;
                 extent = Some(
-                    crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                    crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                         &self.device,
                         self.ledger.clone(),
                     )

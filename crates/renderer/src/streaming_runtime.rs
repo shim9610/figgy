@@ -399,7 +399,7 @@ struct StreamDrawCursor {
     arc: Option<arc_runtime::StreamArcState>,
     field: Option<field_runtime::StreamFieldState>,
     field_fit: Option<field_fit::StreamFieldFit>,
-    field_fits: HashMap<usize, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    field_fits: HashMap<usize, Option<crate::gpu_extent::GpuSeriesExtent>>,
     selection: selection::StreamSelectionState,
     view_candidate: Option<view_residency::ViewPackedCandidate>,
     view_cache: Option<Arc<view_residency::GpuViewCache>>,
@@ -937,7 +937,7 @@ fn stream_error_extent(
 fn auto_stream_fit_extents(
     snapshot: &AutoStreamExecutionSnapshot,
     statistics: &HashMap<ColumnId, StreamStatisticsCache>,
-    field_fits: &HashMap<usize, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    field_fits: &HashMap<usize, Option<crate::gpu_extent::GpuSeriesExtent>>,
 ) -> (crate::FitExtent, crate::FitExtent) {
     let mut x = crate::FitExtent::EMPTY;
     let mut y = crate::FitExtent::EMPTY;

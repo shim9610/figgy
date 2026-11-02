@@ -529,15 +529,15 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
     ));
     assert!(matches!(
         renderer.begin_errorbar_extent("s", "s", "s"),
-        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+        Err(crate::GpuExtentError::ColumnNotResident { .. })
     ));
     assert!(matches!(
         renderer.begin_series_extent(crate::GpuSeriesExtentMode::Points, columns),
-        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+        Err(crate::GpuExtentError::ColumnNotResident { .. })
     ));
     assert!(matches!(
         renderer.begin_series_fit_extent(&series),
-        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+        Err(crate::GpuExtentError::ColumnNotResident { .. })
     ));
     let old = renderer.chart_states[&chart].revisions.desired;
     {
@@ -546,11 +546,11 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
             .unwrap();
         assert!(matches!(
             guard.begin_series_fit_extent(&series),
-            Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            Err(crate::GpuExtentError::ColumnNotResident { .. })
         ));
         assert!(matches!(
             guard.begin_errorbar_extent("s", "s", "s"),
-            Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            Err(crate::GpuExtentError::ColumnNotResident { .. })
         ));
         for mode in [
             crate::GpuSeriesExtentMode::Line,
@@ -558,7 +558,7 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
         ] {
             assert!(matches!(
                 guard.begin_series_extent(mode, columns),
-                Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+                Err(crate::GpuExtentError::ColumnNotResident { .. })
             ));
         }
     }
@@ -2804,7 +2804,7 @@ fn a_matrix_column_must_be_registered_and_is_a_referenced_column() {
 // metadata. Their stamps remain in the fit token in either case.
 #[test]
 fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
-    use crate::gpu_errorbar::GpuSeriesExtentMode;
+    use crate::gpu_extent::GpuSeriesExtentMode;
 
     let matrix = crate::data_config::MatrixRef {
         columns: vec!["z0".into()],
@@ -4829,7 +4829,7 @@ fn renderer_begins_errorbar_extent_from_current_column_ids() {
     pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     match renderer.begin_errorbar_extent("fit-value", "missing", "fit-upper") {
-        Err(crate::gpu_errorbar::GpuErrorbarError::UnknownColumn { role, id }) => {
+        Err(crate::gpu_extent::GpuExtentError::UnknownColumn { role, id }) => {
             assert_eq!(role, "lower error");
             assert_eq!(id, "missing");
         }
@@ -4863,7 +4863,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
         .add_column("series-fit-y", &col_f64(vec![10.0, 20.0]))
         .unwrap();
     pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
-    let ids = crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+    let ids = crate::gpu_extent::GpuSeriesExtentColumnIds {
         x: "series-fit-x",
         y: "series-fit-y",
         x_lower: None,
@@ -4873,20 +4873,20 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
     };
 
     match renderer.begin_series_extent(
-        crate::gpu_errorbar::GpuSeriesExtentMode::Points,
-        crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+        crate::gpu_extent::GpuSeriesExtentMode::Points,
+        crate::gpu_extent::GpuSeriesExtentColumnIds {
             x: "missing",
             ..ids
         },
     ) {
-        Err(crate::gpu_errorbar::GpuErrorbarError::UnknownColumn { role, id }) => {
+        Err(crate::gpu_extent::GpuExtentError::UnknownColumn { role, id }) => {
             assert_eq!(role, "x");
             assert_eq!(id, "missing");
         }
         _ => panic!("missing x column must be reported before submission"),
     }
-    match renderer.begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::PointsX, ids) {
-        Err(crate::gpu_errorbar::GpuErrorbarError::MissingSeriesColumn { role, .. }) => {
+    match renderer.begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::PointsX, ids) {
+        Err(crate::gpu_extent::GpuExtentError::MissingSeriesColumn { role, .. }) => {
             assert_eq!(role, "x lower error");
         }
         _ => panic!("active x errors require role-labelled lower and upper columns"),
@@ -4897,7 +4897,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
             .begin_upsert_hilo_column("series-fit-x", &col_f64(vec![100.0, 200.0]))
             .unwrap();
         upsert
-            .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+            .begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::Points, ids)
             .unwrap()
     };
     let provisional = pollster::block_on(rollback_ticket.resolve())
@@ -4906,7 +4906,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
     assert_eq!((provisional.x.min, provisional.x.max), (100.0, 200.0));
     let rolled_back = pollster::block_on(
         renderer
-            .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+            .begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::Points, ids)
             .unwrap()
             .resolve(),
     )
@@ -4919,7 +4919,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
             .begin_upsert_hilo_column("series-fit-x", &col_f64(vec![300.0, 400.0]))
             .unwrap();
         let ticket = upsert
-            .begin_series_extent(crate::gpu_errorbar::GpuSeriesExtentMode::Points, ids)
+            .begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::Points, ids)
             .unwrap();
         upsert.commit();
         ticket
@@ -5379,9 +5379,8 @@ fn failed_extent_prewarm_leaves_engine_unpublished() {
     // Native warmup is a no-op and the public API intentionally has no
     // failure injection, so exercise the private post-warm publication
     // boundary with the same error returned by a failed wasm warmup.
-    let error = crate::gpu_errorbar::GpuErrorbarError::AsyncCompileFailed(
-        "injected prewarm failure".into(),
-    );
+    let error =
+        crate::gpu_extent::GpuExtentError::AsyncCompileFailed("injected prewarm failure".into());
     assert_eq!(
         renderer.finish_errorbar_extent_engine_preparation(Err(error.clone())),
         Err(error)
@@ -5389,8 +5388,8 @@ fn failed_extent_prewarm_leaves_engine_unpublished() {
     assert!(!renderer.errorbar_extent_engine_ready());
     assert!(matches!(
         renderer.begin_series_extent(
-            crate::gpu_errorbar::GpuSeriesExtentMode::Points,
-            crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+            crate::gpu_extent::GpuSeriesExtentMode::Points,
+            crate::gpu_extent::GpuSeriesExtentColumnIds {
                 x: "missing-x",
                 y: "missing-y",
                 x_lower: None,
@@ -5399,7 +5398,7 @@ fn failed_extent_prewarm_leaves_engine_unpublished() {
                 y_upper: None,
             },
         ),
-        Err(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
+        Err(crate::gpu_extent::GpuExtentError::EngineNotReady)
     ));
 }
 
@@ -15532,7 +15531,7 @@ fn whole_chart_auto_fit_fits_the_union_and_reuses_unchanged_extents() {
         .unwrap();
     assert!(matches!(
         renderer.begin_auto_fit_all(chart, 0.0),
-        Err(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
+        Err(crate::gpu_extent::GpuExtentError::EngineNotReady)
     ));
     pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 

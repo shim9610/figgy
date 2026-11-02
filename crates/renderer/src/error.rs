@@ -150,6 +150,12 @@ pub enum FiggyError {
         reason: String,
     },
 
+    /// Font bytes handed to [`register_font_bytes`](crate::text_render::register_font_bytes)
+    /// hold no face the text stack can use.
+    InvalidFont {
+        reason: &'static str,
+    },
+
     /// The wgpu device was lost. Every later GPU call on this renderer
     /// returns this error; the host recreates the device and the renderer.
     DeviceLost {
@@ -227,6 +233,7 @@ impl std::fmt::Display for FiggyError {
             Self::StalePreparedFrame { reason } => {
                 write!(f, "stale prepared frame: {reason}")
             }
+            Self::InvalidFont { reason } => write!(f, "invalid font: {reason}"),
             Self::Internal { invariant } => {
                 write!(f, "internal invariant failed (figgy bug): {invariant}")
             }

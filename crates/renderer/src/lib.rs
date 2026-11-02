@@ -40,7 +40,7 @@ pub mod gpu {
 #[doc(hidden)]
 pub mod gpu_contour;
 mod gpu_data_pick;
-pub mod gpu_errorbar;
+pub mod gpu_extent;
 pub mod gpu_memory;
 mod gpu_pick;
 mod gpu_readback;
@@ -111,8 +111,8 @@ pub use data_render::{
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
 pub use gpu_data_pick::GpuDataPickTicket;
-pub use gpu_errorbar::{
-    GpuErrorbarError, GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuFieldExtentMode,
+pub use gpu_extent::{
+    GpuErrorbarExtent, GpuErrorbarExtentTicket, GpuExtentError, GpuFieldExtentMode,
     GpuSeriesExtent, GpuSeriesExtentColumnIds, GpuSeriesExtentMode, GpuSeriesExtentTicket,
     GpuSeriesFitMode,
 };

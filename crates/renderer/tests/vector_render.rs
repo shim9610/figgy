@@ -20,7 +20,7 @@ use renderer::data_config::{
     MatrixOrientation, MatrixRef, PointColorMap, Shading, StreamlineArrows, VectorColorMap,
     VectorComponents, VectorPivot, VectorScale, VectorStyle,
 };
-use renderer::gpu_errorbar::GpuSeriesExtent;
+use renderer::gpu_extent::GpuSeriesExtent;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{

@@ -208,7 +208,10 @@ impl RegisteredFonts {
 
     /// This snapshot with `bytes` added, and the families the file declares.
     /// The bytes are leaked only when the file has a usable face.
-    fn with_font(&self, bytes: Vec<u8>) -> Result<(Self, Vec<String>, &'static [u8]), String> {
+    fn with_font(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<(Self, Vec<String>, &'static [u8]), crate::FiggyError> {
         // Probe on a scratch database first, so a file without a usable face
         // is dropped rather than leaked.
         let bytes = Arc::new(bytes);
@@ -219,11 +222,13 @@ impl RegisteredFonts {
             .filter_map(|id| probe.face(*id))
             .any(|face| !face.families.is_empty())
         {
-            return Err("font data contains no usable face".to_string());
+            return Err(crate::FiggyError::InvalidFont {
+                reason: "the data contains no usable face",
+            });
         }
         drop(probe);
         let bytes = Arc::try_unwrap(bytes)
-            .map_err(|_| "font bytes are still shared after probing".to_string())?;
+            .map_err(|_| crate::FiggyError::internal("font bytes are not shared after probing"))?;
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
 
         let mut next = self.clone();
@@ -274,7 +279,7 @@ impl FontRegistry {
         &self,
         bytes: Vec<u8>,
         generation: u64,
-    ) -> Result<(Vec<String>, Option<u64>), String> {
+    ) -> Result<(Vec<String>, Option<u64>), crate::FiggyError> {
         let mut registered = self
             .registered
             .lock()
@@ -284,7 +289,9 @@ impl FontRegistry {
         }
         let successor = generation
             .checked_add(1)
-            .ok_or_else(|| "font generation counter exhausted".to_string())?;
+            .ok_or(crate::FiggyError::CounterExhausted {
+                counter: "font generation",
+            })?;
         let (next, families, leaked) = self.fonts.load().with_font(bytes)?;
         self.fonts.store(Arc::new(next));
         registered.insert(leaked, families.clone());
@@ -298,13 +305,14 @@ fn font_registry() -> &'static FontRegistry {
 }
 
 /// Register a font (TTF/OTF/TTC bytes) for `RichText.font` family lookup.
-/// Returns the family names the file declares, or an error when the bytes
+/// Returns the family names the file declares, or
+/// [`FiggyError::InvalidFont`](crate::FiggyError::InvalidFont) when the bytes
 /// parse to no usable face. Registering the exact same bytes again is
 /// idempotent; different font files declaring the same family still coexist.
 /// A registered face also supplies characters the configured family cannot
 /// draw (per-character fallback), so registering a font can change text
 /// whose `font` names another family.
-pub fn register_font_bytes(bytes: Vec<u8>) -> Result<Vec<String>, String> {
+pub fn register_font_bytes(bytes: Vec<u8>) -> crate::Result<Vec<String>> {
     let generation = font_generation();
     let (families, successor) = font_registry().register(bytes, generation)?;
     let Some(successor) = successor else {
@@ -2136,7 +2144,12 @@ mod tests {
             .register(EMBEDDED_REGULAR.to_vec(), u64::MAX)
             .expect_err("exhausted generation must reject registration");
 
-        assert_eq!(error, "font generation counter exhausted");
+        assert!(matches!(
+            error,
+            crate::FiggyError::CounterExhausted {
+                counter: "font generation"
+            }
+        ));
         assert_eq!(fonts.fonts.load().db.faces().count(), 0);
         assert!(fonts.registered.lock().unwrap().is_empty());
     }
@@ -2147,7 +2160,7 @@ mod tests {
         let error = fonts
             .register(b"not a font".to_vec(), 0)
             .expect_err("bytes that are no font must be refused");
-        assert_eq!(error, "font data contains no usable face");
+        assert!(matches!(error, crate::FiggyError::InvalidFont { .. }));
         assert_eq!(fonts.fonts.load().db.faces().count(), 0);
         assert!(fonts.registered.lock().unwrap().is_empty());
     }

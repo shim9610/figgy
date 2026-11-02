@@ -20,7 +20,7 @@ use crate::chart::FitExtent;
 
 type SeriesExtent = Option<(FitExtent, FitExtent)>;
 
-fn fit_extent(extent: &crate::gpu_errorbar::GpuErrorbarExtent) -> FitExtent {
+fn fit_extent(extent: &crate::gpu_extent::GpuErrorbarExtent) -> FitExtent {
     FitExtent {
         min: extent.min,
         max: extent.max,

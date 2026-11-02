@@ -1,7 +1,7 @@
 //! Compact endpoint replay for the existing GPU field-lattice fit reducer.
 //! Only GPU-derived bounds return to the CPU; original coordinates never do.
 use super::*;
-use crate::gpu_errorbar::{
+use crate::gpu_extent::{
     GpuFieldExtentColumns, GpuFieldExtentMode, GpuSeriesExtentTicket, GpuSeriesFitMode,
 };
 
@@ -26,7 +26,7 @@ impl StreamFieldFit {
 pub(super) fn all_fit_inputs_ready(
     snapshot: &AutoStreamExecutionSnapshot,
     statistics: &HashMap<ColumnId, StreamStatisticsCache>,
-    fields: &HashMap<usize, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
+    fields: &HashMap<usize, Option<crate::gpu_extent::GpuSeriesExtent>>,
 ) -> bool {
     snapshot.series.iter().enumerate().all(|(index, series)| {
         if is_stream_heatmap(&series.render_type) {
@@ -59,7 +59,7 @@ fn compact_indices(mode: GpuFieldExtentMode, cells: u32) -> ([u32; 4], u32, u32)
     }
 }
 
-fn extent_error(error: crate::gpu_errorbar::GpuErrorbarError) -> StreamRequestError {
+fn extent_error(error: crate::gpu_extent::GpuExtentError) -> StreamRequestError {
     FiggyError::GpuResourceAllocationFailed {
         resource: "stream field fit",
         reason: error.to_string(),
@@ -157,7 +157,7 @@ impl Renderer {
                     return Err(StreamError::TooLarge.into());
                 }
                 let engine = self.errorbar_extent_engine.get_or_insert_with(|| {
-                    crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                    crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                         &self.device,
                         Arc::clone(&self.gpu_ledger),
                     )

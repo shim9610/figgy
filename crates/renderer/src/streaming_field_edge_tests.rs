@@ -242,7 +242,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
         let headroom = if picking {
             crate::data_render::stream_field::STEP_BYTES
         } else {
-            crate::gpu_errorbar::GpuSeriesExtentTicket::FIELD_BYTES
+            crate::gpu_extent::GpuSeriesExtentTicket::FIELD_BYTES
         };
         let _ = f
             .renderer

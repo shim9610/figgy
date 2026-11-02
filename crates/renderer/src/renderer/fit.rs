@@ -66,7 +66,7 @@ pub(super) struct FitSeriesStamp {
     /// recorded with its column stamps, so a content change in one of those
     /// columns still invalidates the token — dropping the series from the token
     /// entirely would have quietly stopped detecting that.
-    pub(super) mode: Option<crate::gpu_errorbar::GpuSeriesFitMode>,
+    pub(super) mode: Option<crate::gpu_extent::GpuSeriesFitMode>,
     /// Matrix orientation changes which resolved dimension belongs to x/y even
     /// when the same columns and lattice mode remain selected.
     pub(super) field_orientation: Option<u8>,
@@ -269,7 +269,7 @@ pub(super) fn build_fit_token_from_state(
             series_id: item.series_id.clone(),
             layer: state.config.layer_of_series(&item.series_id),
             params,
-            mode: crate::gpu_errorbar::GpuSeriesFitMode::from_render_type(&item.render_type),
+            mode: crate::gpu_extent::GpuSeriesFitMode::from_render_type(&item.render_type),
             field_orientation: fit_matrix(&item.render_type).map(|matrix| {
                 match matrix.orientation {
                     crate::data_config::MatrixOrientation::ColumnsAreX => 0,
@@ -333,15 +333,15 @@ pub(super) fn current_extent_handle(
     pool: &ColumnPool,
     role: &'static str,
     id: &str,
-) -> std::result::Result<ColumnHandle, crate::gpu_errorbar::GpuErrorbarError> {
-    let handle = pool.handle_for(id).ok_or_else(|| {
-        crate::gpu_errorbar::GpuErrorbarError::UnknownColumn {
-            role,
-            id: id.to_string(),
-        }
-    })?;
+) -> std::result::Result<ColumnHandle, crate::gpu_extent::GpuExtentError> {
+    let handle =
+        pool.handle_for(id)
+            .ok_or_else(|| crate::gpu_extent::GpuExtentError::UnknownColumn {
+                role,
+                id: id.to_string(),
+            })?;
     if !pool.is_valid_handle(&handle) {
-        return Err(crate::gpu_errorbar::GpuErrorbarError::StaleHandle {
+        return Err(crate::gpu_extent::GpuExtentError::StaleHandle {
             role,
             id: id.to_string(),
             generation: handle.generation,
@@ -352,16 +352,16 @@ pub(super) fn current_extent_handle(
 }
 
 pub(super) fn prepared_errorbar_extent_engine(
-    engine: Option<&crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    engine: Option<&crate::gpu_extent::GpuErrorbarExtentEngine>,
 ) -> std::result::Result<
-    &crate::gpu_errorbar::GpuErrorbarExtentEngine,
-    crate::gpu_errorbar::GpuErrorbarError,
+    &crate::gpu_extent::GpuErrorbarExtentEngine,
+    crate::gpu_extent::GpuExtentError,
 > {
-    engine.ok_or(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
+    engine.ok_or(crate::gpu_extent::GpuExtentError::EngineNotReady)
 }
 
 pub(super) fn begin_errorbar_extent_from_pool(
-    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    engine: &crate::gpu_extent::GpuErrorbarExtentEngine,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pool: &ColumnPool,
@@ -369,8 +369,8 @@ pub(super) fn begin_errorbar_extent_from_pool(
     lower_id: &str,
     upper_id: &str,
 ) -> std::result::Result<
-    crate::gpu_errorbar::GpuErrorbarExtentTicket,
-    crate::gpu_errorbar::GpuErrorbarError,
+    crate::gpu_extent::GpuErrorbarExtentTicket,
+    crate::gpu_extent::GpuExtentError,
 > {
     engine.begin(
         device,
@@ -383,16 +383,14 @@ pub(super) fn begin_errorbar_extent_from_pool(
 }
 
 pub(super) fn begin_series_extent_from_pool(
-    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    engine: &crate::gpu_extent::GpuErrorbarExtentEngine,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pool: &ColumnPool,
-    mode: crate::gpu_errorbar::GpuSeriesExtentMode,
-    ids: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
-) -> std::result::Result<
-    crate::gpu_errorbar::GpuSeriesExtentTicket,
-    crate::gpu_errorbar::GpuErrorbarError,
-> {
+    mode: crate::gpu_extent::GpuSeriesExtentMode,
+    ids: crate::gpu_extent::GpuSeriesExtentColumnIds<'_>,
+) -> std::result::Result<crate::gpu_extent::GpuSeriesExtentTicket, crate::gpu_extent::GpuExtentError>
+{
     let optional_handle = |role, id: Option<&str>| {
         id.map(|id| current_extent_handle(pool, role, id))
             .transpose()
@@ -402,7 +400,7 @@ pub(super) fn begin_series_extent_from_pool(
         queue,
         pool.buffer(),
         mode,
-        crate::gpu_errorbar::GpuSeriesExtentColumns {
+        crate::gpu_extent::GpuSeriesExtentColumns {
             x: current_extent_handle(pool, "x", ids.x)?,
             y: current_extent_handle(pool, "y", ids.y)?,
             x_lower: optional_handle("x lower error", ids.x_lower)?,
@@ -414,16 +412,16 @@ pub(super) fn begin_series_extent_from_pool(
 }
 
 pub(super) fn begin_series_fit_extent_from_pool(
-    engine: &crate::gpu_errorbar::GpuErrorbarExtentEngine,
+    engine: &crate::gpu_extent::GpuErrorbarExtentEngine,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pool: &ColumnPool,
     series: &SeriesConfig,
 ) -> std::result::Result<
-    Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
-    crate::gpu_errorbar::GpuErrorbarError,
+    Option<crate::gpu_extent::GpuSeriesExtentTicket>,
+    crate::gpu_extent::GpuExtentError,
 > {
-    use crate::gpu_errorbar::{GpuFieldExtentColumns, GpuSeriesFitMode};
+    use crate::gpu_extent::{GpuFieldExtentColumns, GpuSeriesFitMode};
 
     let Some(mode) = GpuSeriesFitMode::from_render_type(&series.render_type) else {
         // Histogram bounds are still available synchronously from its edge and
@@ -431,9 +429,9 @@ pub(super) fn begin_series_fit_extent_from_pool(
         return Ok(None);
     };
     match mode {
-        GpuSeriesFitMode::Paired(crate::gpu_errorbar::GpuSeriesExtentMode::VectorTips) => {
-            const TIPS: crate::gpu_errorbar::GpuErrorbarError =
-                crate::gpu_errorbar::GpuErrorbarError::Internal {
+        GpuSeriesFitMode::Paired(crate::gpu_extent::GpuSeriesExtentMode::VectorTips) => {
+            const TIPS: crate::gpu_extent::GpuExtentError =
+                crate::gpu_extent::GpuExtentError::Internal {
                     invariant: "the tips mode comes from a Data-scaled point vector",
                 };
             let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
@@ -479,7 +477,7 @@ pub(super) fn begin_series_fit_extent_from_pool(
                 queue,
                 pool,
                 mode,
-                crate::gpu_errorbar::GpuSeriesExtentColumnIds {
+                crate::gpu_extent::GpuSeriesExtentColumnIds {
                     x: &series.x_column,
                     y: &series.y_column,
                     x_lower,
@@ -492,7 +490,7 @@ pub(super) fn begin_series_fit_extent_from_pool(
         }
         GpuSeriesFitMode::Field(mode) => {
             let matrix = fit_matrix(&series.render_type).ok_or(
-                crate::gpu_errorbar::GpuErrorbarError::Internal {
+                crate::gpu_extent::GpuExtentError::Internal {
                     invariant: "field fit mode comes from a matrix render type",
                 },
             )?;
@@ -507,7 +505,7 @@ pub(super) fn begin_series_fit_extent_from_pool(
             };
             let checked_cells = |role: &'static str, cells: usize| {
                 u32::try_from(cells).map_err(|_| {
-                    crate::gpu_errorbar::GpuErrorbarError::ValueCountTooLarge { role, len: cells }
+                    crate::gpu_extent::GpuExtentError::ValueCountTooLarge { role, len: cells }
                 })
             };
             // A hexagonal grid's coordinates were registered with uniform
@@ -778,29 +776,29 @@ impl Renderer {
     /// warmup leaves the engine unpublished.
     pub async fn ensure_errorbar_extent_engine(
         &mut self,
-    ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
+    ) -> std::result::Result<(), crate::gpu_extent::GpuExtentError> {
         let result = self.ensure_errorbar_extent_engine_unreported().await;
-        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
+        self.reported_as(result, crate::gpu_extent::GpuExtentError::from_figgy)
     }
 
     async fn ensure_errorbar_extent_engine_unreported(
         &mut self,
-    ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
+    ) -> std::result::Result<(), crate::gpu_extent::GpuExtentError> {
         if self.errorbar_extent_engine.is_some() {
             return Ok(());
         }
         let warm_result =
-            crate::gpu_errorbar::GpuErrorbarExtentEngine::warm_device_async(&self.device).await;
+            crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device).await;
         self.finish_errorbar_extent_engine_preparation(warm_result)
     }
 
     pub(super) fn finish_errorbar_extent_engine_preparation(
         &mut self,
-        warm_result: std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError>,
-    ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
+        warm_result: std::result::Result<(), crate::gpu_extent::GpuExtentError>,
+    ) -> std::result::Result<(), crate::gpu_extent::GpuExtentError> {
         warm_result?;
         self.errorbar_extent_engine = Some(
-            crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+            crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
                 &self.device,
                 Arc::clone(&self.gpu_ledger),
             )
@@ -818,12 +816,12 @@ impl Renderer {
         lower_id: &str,
         upper_id: &str,
     ) -> std::result::Result<
-        crate::gpu_errorbar::GpuErrorbarExtentTicket,
-        crate::gpu_errorbar::GpuErrorbarError,
+        crate::gpu_extent::GpuErrorbarExtentTicket,
+        crate::gpu_extent::GpuExtentError,
     > {
         for id in [value_id, lower_id, upper_id] {
             if self.streaming_sources.contains_key(id) {
-                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident {
                     id: id.to_owned(),
                 });
             }
@@ -844,11 +842,11 @@ impl Renderer {
     /// readback and does not borrow this renderer.
     pub fn begin_series_extent(
         &self,
-        mode: crate::gpu_errorbar::GpuSeriesExtentMode,
-        columns: crate::gpu_errorbar::GpuSeriesExtentColumnIds<'_>,
+        mode: crate::gpu_extent::GpuSeriesExtentMode,
+        columns: crate::gpu_extent::GpuSeriesExtentColumnIds<'_>,
     ) -> std::result::Result<
-        crate::gpu_errorbar::GpuSeriesExtentTicket,
-        crate::gpu_errorbar::GpuErrorbarError,
+        crate::gpu_extent::GpuSeriesExtentTicket,
+        crate::gpu_extent::GpuExtentError,
     > {
         for id in [
             Some(columns.x),
@@ -862,7 +860,7 @@ impl Renderer {
         .flatten()
         {
             if self.streaming_sources.contains_key(id) {
-                return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident {
+                return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident {
                     id: id.to_owned(),
                 });
             }
@@ -884,11 +882,11 @@ impl Renderer {
         &self,
         series: &SeriesConfig,
     ) -> std::result::Result<
-        Option<crate::gpu_errorbar::GpuSeriesExtentTicket>,
-        crate::gpu_errorbar::GpuErrorbarError,
+        Option<crate::gpu_extent::GpuSeriesExtentTicket>,
+        crate::gpu_extent::GpuExtentError,
     > {
         if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series) {
-            return Err(crate::gpu_errorbar::GpuErrorbarError::ColumnNotResident { id });
+            return Err(crate::gpu_extent::GpuExtentError::ColumnNotResident { id });
         }
         begin_series_fit_extent_from_pool(
             prepared_errorbar_extent_engine(self.errorbar_extent_engine.as_ref())?,
@@ -914,9 +912,9 @@ enum AutoFitAllKind {
 /// One series' extent for a whole-chart fit.
 pub(super) enum AutoFitSeriesExtent {
     /// A reduction submitted for this fit.
-    Pending(crate::gpu_errorbar::GpuSeriesExtentTicket),
+    Pending(crate::gpu_extent::GpuSeriesExtentTicket),
     /// The extent the last committed fit found for the same stamp.
-    Known(Option<crate::gpu_errorbar::GpuSeriesExtent>),
+    Known(Option<crate::gpu_extent::GpuSeriesExtent>),
 }
 
 pub(super) struct AutoFitSeries {
@@ -951,7 +949,7 @@ pub struct ResolvedAutoFitAll {
         FitSeriesStamp,
         bool,
         bool,
-        Option<crate::gpu_errorbar::GpuSeriesExtent>,
+        Option<crate::gpu_extent::GpuSeriesExtent>,
     )>,
 }
 
@@ -959,10 +957,10 @@ impl AutoFitAllTicket {
     /// Wait for every reduction this fit submitted.
     pub async fn resolve(
         self,
-    ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_errorbar::GpuErrorbarError> {
+    ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
         let mut series = Vec::new();
         series.try_reserve(self.series.len()).map_err(|error| {
-            crate::gpu_errorbar::GpuErrorbarError::from_figgy(FiggyError::StateAllocationFailed {
+            crate::gpu_extent::GpuExtentError::from_figgy(FiggyError::StateAllocationFailed {
                 resource: "auto-fit series extents",
                 reason: error.to_string(),
             })
@@ -984,7 +982,7 @@ impl AutoFitAllTicket {
     }
 }
 
-fn fit_extent_of(extent: crate::gpu_errorbar::GpuErrorbarExtent) -> crate::chart::FitExtent {
+fn fit_extent_of(extent: crate::gpu_extent::GpuErrorbarExtent) -> crate::chart::FitExtent {
     crate::chart::FitExtent {
         min: extent.min,
         max: extent.max,
@@ -1033,19 +1031,19 @@ impl Renderer {
         &self,
         id: ChartId,
         padding: f64,
-    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
+    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_extent::GpuExtentError> {
         let result = self.begin_auto_fit_all_unreported(id, padding);
-        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
+        self.reported_as(result, crate::gpu_extent::GpuExtentError::from_figgy)
     }
 
     fn begin_auto_fit_all_unreported(
         &self,
         id: ChartId,
         padding: f64,
-    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
-        use crate::gpu_errorbar::GpuErrorbarError;
+    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_extent::GpuExtentError> {
+        use crate::gpu_extent::GpuExtentError;
         if !padding.is_finite() || padding < 0.0 {
-            return Err(GpuErrorbarError::from_figgy(FiggyError::InvalidConfig {
+            return Err(GpuExtentError::from_figgy(FiggyError::InvalidConfig {
                 field: "auto-fit padding",
                 reason: "padding must be finite and non-negative",
             }));
@@ -1054,11 +1052,8 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })
-            .map_err(GpuErrorbarError::from_figgy)?;
-        let layer = match self
-            .active_layer(id)
-            .map_err(GpuErrorbarError::from_figgy)?
-        {
+            .map_err(GpuExtentError::from_figgy)?;
+        let layer = match self.active_layer(id).map_err(GpuExtentError::from_figgy)? {
             crate::LayerRef::Annotations => crate::LayerRef::Base,
             layer => layer,
         };
@@ -1069,7 +1064,7 @@ impl Renderer {
             id,
             state,
         )
-        .map_err(GpuErrorbarError::from_figgy)?;
+        .map_err(GpuExtentError::from_figgy)?;
         let kind = if layer_config(&state.config, layer).is_some_and(|c| c.ternary().is_some()) {
             AutoFitAllKind::Skip
         } else if state.config.parallel().is_some() {
@@ -1080,7 +1075,7 @@ impl Renderer {
         let mut series = Vec::new();
         if kind == AutoFitAllKind::Extents {
             series.try_reserve(state.series.len()).map_err(|error| {
-                GpuErrorbarError::from_figgy(FiggyError::StateAllocationFailed {
+                GpuExtentError::from_figgy(FiggyError::StateAllocationFailed {
                     resource: "auto-fit series extents",
                     reason: error.to_string(),
                 })

@@ -63,7 +63,7 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("line_arc", crate::data_render::line_arc::LINE_ARC_SHADER),
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
     ("contour_label", crate::gpu_contour::CONTOUR_LABEL_SHADER),
-    ("errorbar_fit", crate::gpu_errorbar::ERRORBAR_FIT_SHADER),
+    ("errorbar_fit", crate::gpu_extent::ERRORBAR_FIT_SHADER),
     ("radial", crate::radial::RADIAL_SHADER),
     ("radial_pick", crate::radial::RADIAL_PICK_SHADER),
     (
@@ -137,7 +137,7 @@ mod tests {
         use crate::data_render::vector;
         use crate::gpu_pick::types as pick;
         use crate::line_step::{self, AREA_FILL_TO_SERIES, LINE_ARC_SHIFT, LINE_STEP_SHIFT};
-        use crate::{data_render as dr, gpu_data_pick as data_pick, gpu_errorbar as fit};
+        use crate::{data_render as dr, gpu_data_pick as data_pick, gpu_extent as fit};
         let rust: &[(&str, u32)] = &[
             ("FIELD_COLUMNS_ARE_Y", dr::FIELD_FLAG_COLUMNS_ARE_Y),
             ("FIELD_CENTERS", dr::FIELD_FLAG_CENTERS),
