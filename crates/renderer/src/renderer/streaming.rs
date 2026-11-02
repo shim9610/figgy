@@ -379,6 +379,25 @@ impl Renderer {
         transition_headroom_bytes: u64,
         working_set_limit_bytes: u64,
     ) -> Result<ResidentAdmission> {
+        let result = self.resident_admission_for_streamed_columns_unreported(
+            sources,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        );
+        self.reported(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resident_admission_for_streamed_columns_unreported(
+        &self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
         let lengths = self.validated_streamed_promotion_lengths(sources)?;
         Ok(self.resident_admission_for_validated_streamed_lengths(
             &lengths,
@@ -414,12 +433,28 @@ impl Renderer {
     /// Register any number of replayable sources without uploading or retaining
     /// their payload. Existing ids are rejected, including resident ids.
     pub fn register_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
+        let result = self.register_streamed_columns_unreported(columns);
+        self.reported(result)
+    }
+
+    fn register_streamed_columns_unreported(
+        &mut self,
+        columns: Vec<crate::StreamColumn>,
+    ) -> Result<()> {
         self.mutate_streamed_columns(columns, false)
     }
 
     /// Replace existing host metadata atomically. Each source revision must
     /// strictly increase; bindings are unchanged and only dependent charts dirty.
     pub fn replace_streamed_columns(&mut self, columns: Vec<crate::StreamColumn>) -> Result<()> {
+        let result = self.replace_streamed_columns_unreported(columns);
+        self.reported(result)
+    }
+
+    fn replace_streamed_columns_unreported(
+        &mut self,
+        columns: Vec<crate::StreamColumn>,
+    ) -> Result<()> {
         self.mutate_streamed_columns(columns, true)
     }
 
@@ -611,6 +646,25 @@ impl Renderer {
     /// registrations, series, picker, and existing resident layout unchanged.
     #[allow(clippy::too_many_arguments)]
     pub fn promote_streamed_columns_to_resident(
+        &mut self,
+        sources: &[crate::StreamSourceBinding<'_>],
+        already_resident_working_set_bytes: u64,
+        derived_buffer_sizes: &[u64],
+        transition_headroom_bytes: u64,
+        working_set_limit_bytes: u64,
+    ) -> Result<ResidentAdmission> {
+        let result = self.promote_streamed_columns_to_resident_unreported(
+            sources,
+            already_resident_working_set_bytes,
+            derived_buffer_sizes,
+            transition_headroom_bytes,
+            working_set_limit_bytes,
+        );
+        self.reported(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn promote_streamed_columns_to_resident_unreported(
         &mut self,
         sources: &[crate::StreamSourceBinding<'_>],
         already_resident_working_set_bytes: u64,
@@ -897,6 +951,17 @@ impl Renderer {
     /// first. Any error therefore leaves the pool, stream registry, charts and
     /// picker unchanged; success publishes all ids together.
     pub fn demote_resident_columns_to_streamed(
+        &mut self,
+        changed_ids: &[&str],
+        columns: Vec<crate::StreamColumn>,
+        sources: &[crate::StreamSourceBinding<'_>],
+    ) -> Result<()> {
+        let result =
+            self.demote_resident_columns_to_streamed_unreported(changed_ids, columns, sources);
+        self.reported(result)
+    }
+
+    fn demote_resident_columns_to_streamed_unreported(
         &mut self,
         changed_ids: &[&str],
         columns: Vec<crate::StreamColumn>,

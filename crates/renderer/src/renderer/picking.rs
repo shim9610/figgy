@@ -1638,12 +1638,27 @@ impl Renderer {
     /// This is idempotent. The immutable compute pipeline bundle is created
     /// only by the first successful call; chart registries remain lazy.
     pub fn enable_gpu_picking(&mut self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self.enable_gpu_picking_unreported();
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    fn enable_gpu_picking_unreported(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let mut noop = |_| {};
         self.enable_gpu_picking_observed(&mut noop)
     }
 
     /// Enable exact GPU picking while reporting timestamp-free pipeline stages.
     pub fn enable_gpu_picking_observed(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self.enable_gpu_picking_observed_unreported(observer);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    fn enable_gpu_picking_observed_unreported(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
@@ -1672,11 +1687,28 @@ impl Renderer {
     pub async fn enable_gpu_picking_async(
         &mut self,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self.enable_gpu_picking_async_unreported().await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    async fn enable_gpu_picking_async_unreported(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         let mut noop = |_| {};
         self.enable_gpu_picking_observed_async(&mut noop).await
     }
 
     pub async fn enable_gpu_picking_observed_async(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self
+            .enable_gpu_picking_observed_async_unreported(observer)
+            .await;
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    async fn enable_gpu_picking_observed_async_unreported(
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
@@ -1709,6 +1741,14 @@ impl Renderer {
         &mut self,
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        let result = self.prepare_gpu_picking_for_chart_unreported(id);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    fn prepare_gpu_picking_for_chart_unreported(
+        &mut self,
+        id: ChartId,
+    ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
         let state = self
             .chart_states
@@ -1726,6 +1766,15 @@ impl Renderer {
 
     /// Submit one exact pick against renderer-owned chart state.
     pub fn pick_chart(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
+        let result = self.pick_chart_unreported(id, request);
+        self.reported_as(result, crate::gpu_pick::GpuPickError::from_figgy)
+    }
+
+    fn pick_chart_unreported(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,
@@ -1885,6 +1934,15 @@ impl Renderer {
     /// render metadata (lane bases, counts, styles and identity indices), while
     /// the bar/field render shaders themselves compute the exact hit geometry.
     pub fn pick_chart_data(
+        &mut self,
+        id: ChartId,
+        request: GpuPickRequest,
+    ) -> Result<crate::GpuDataPickTicket> {
+        let result = self.pick_chart_data_unreported(id, request);
+        self.reported(result)
+    }
+
+    fn pick_chart_data_unreported(
         &mut self,
         id: ChartId,
         request: GpuPickRequest,

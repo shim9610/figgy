@@ -869,6 +869,21 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Every `Renderer` call reports its own GPU error; `WindowedRenderer` keeps only the surface** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The trailing device-health check that only `WindowedRenderer` ran after
+  each call (#158) now runs inside `Renderer`'s own methods, so a host that
+  embeds `Renderer` directly (egui, iced) gets a call's GPU error from that
+  call, not from the next one. `WindowedRenderer` keeps what the surface
+  owns (`resize`, `draw`, `draw_registered`, `draw_prepared`,
+  `first_frame_ready`, `warm_up`, `pick_chart_at`, `pick_chart_data_at`,
+  `surface_size`, `surface_format` and the constructors) and implements
+  `DerefMut<Target = Renderer>` beside `Deref`; its 87 hand-written
+  forwarding methods are gone. Migration: none for calls written as
+  `windowed.method(...)`, which now resolve to the `Renderer` method through
+  auto-deref; code that named a forwarder as a path
+  (`WindowedRenderer::add_column`) names the `Renderer` method instead.
+  `Renderer::ensure_target_format` changes the pipelines' format only;
+  `WindowedRenderer::resize` sets it back to the surface's.
 - **Radial exports are guarded like every other export** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `RadialRenderer::export_rgba_async`, `export_svg_async` and
   `export_pdf_async` check the device health before and after the export,

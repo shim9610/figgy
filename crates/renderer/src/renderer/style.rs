@@ -985,6 +985,11 @@ impl Renderer {
     /// or identity, recreate it before [`Self::prepare`]. That method does not
     /// update caller-owned styles. The registered-chart path manages its own cache.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
+        let result = self.create_style_for_series_unreported(cfg);
+        self.reported(result)
+    }
+
+    fn create_style_for_series_unreported(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
         self.health.check()?;
         self.create_style_for_series_scaled(cfg, 1.0)
     }
@@ -993,6 +998,15 @@ impl Renderer {
     /// width, dash lengths, point radius, errorbar widths/cap) is multiplied
     /// by `scale` (used by the high-DPI export path).
     pub fn create_style_for_series_scaled(
+        &mut self,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<ChartStyle> {
+        let result = self.create_style_for_series_scaled_unreported(cfg, scale);
+        self.reported(result)
+    }
+
+    fn create_style_for_series_scaled_unreported(
         &mut self,
         cfg: &SeriesConfig,
         scale: f32,
