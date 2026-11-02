@@ -14,6 +14,8 @@
 //! device resource limits are reported before wgpu validation can abort.
 
 mod export;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use export::native_export_scoped;
 pub use export::*;
 mod picking;
 pub use picking::*;

@@ -54,7 +54,7 @@ fn assert_pixels(image: &RasterImage) {
 
 #[test]
 fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
-    let mut renderer = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut renderer = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut chart = RadialChart {
         slices: (0..16)
             .map(|i| RadialSlice::new(format!("Group {i}"), 1., Color::from_rgb8(30, 110, 210)))

@@ -258,7 +258,7 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 ## Native edit, pick and export workflow
 
 1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
-   Use `Renderer::try_new` for Cartesian charts or `RadialRenderer::new` for the radial chart.
+   Use `Renderer::try_new` for Cartesian charts or `RadialRenderer::try_new` for the radial chart.
    Window helpers are optional; a headless application does not need a window.
 2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, create a
    `ChartView` and a `ChartStyle` for each series, then use `prepare` +
@@ -390,7 +390,7 @@ async fn edit_and_export(
     gpu: RendererDevice,
     pointer: [f32; 2], // chart-local logical pixels
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut renderer = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut renderer = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
     let mut chart = RadialChart {
         slices: vec![
             RadialSlice::new("A", 30.0, Color::from_rgb8(40, 140, 200)),

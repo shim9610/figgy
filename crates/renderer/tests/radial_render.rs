@@ -30,7 +30,7 @@ fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
     frame.pick(p).unwrap().resolve().block_on().unwrap()
 }
 fn renderer() -> RadialRenderer {
-    RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
+    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
 fn drain(r: &RadialRenderer) {
     r.end_frame();
@@ -220,7 +220,7 @@ fn renderers_on_one_device_bundle_share_the_ledger_and_the_budget() {
     let pool_bytes = 64 * 1024;
     let cartesian = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
     let alone = cartesian.gpu_memory_usage().total_bytes();
-    let mut radial = RadialRenderer::new(gpu.clone(), format).unwrap();
+    let mut radial = RadialRenderer::try_new(gpu.clone(), format).unwrap();
     let _frame = radial.prepare(&chart(), (320, 320), 1.0).unwrap();
     let mut second = renderer::Renderer::try_new(gpu.clone(), format, pool_bytes).unwrap();
 
@@ -266,7 +266,7 @@ fn radial_export_formats_preserve_straight_alpha_and_png_dimensions() {
         wgpu::TextureFormat::Bgra8Unorm,
         wgpu::TextureFormat::Bgra8UnormSrgb,
     ] {
-        let mut r = RadialRenderer::new(gpu(), format).unwrap();
+        let mut r = RadialRenderer::try_new(gpu(), format).unwrap();
         let image = r.export_rgba_async(&c, (320, 240), 1.5).block_on().unwrap();
         assert_eq!((image.width, image.height), (480, 360));
         for (actual, expected) in image.rgba[..4].iter().zip([102u8, 153, 204, 128]) {

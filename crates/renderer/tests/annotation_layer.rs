@@ -96,10 +96,10 @@ macro_rules! family_contract {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fn fresh(c: &$chart, scale: f32) -> Vec<u8> {
-                let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+                let mut r = $renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
                 r.export_rgba_async(c, SIZE, scale).block_on().unwrap().rgba
             }
-            let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut r = $renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c: $chart = $build;
             let edit: fn(&mut $chart) = $edit;
             // 0) An empty layer: hiding it reuses the frame and its label
@@ -366,12 +366,12 @@ macro_rules! family_routing {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fn fresh(c: &$chart, scale: f32) -> Vec<u8> {
-                let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+                let mut r = $renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
                 r.export_rgba_async(c, SIZE, scale).block_on().unwrap().rgba
             }
             let select_data: fn(&mut $chart) = $select_data;
             let data_selected: fn(&$chart) -> bool = $data_selected;
-            let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut r = $renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             // An empty layer: switching to it reuses the frame and its label
             // raster and changes no pixel, and the cached export equals a
             // fresh one.
@@ -591,7 +591,7 @@ fn radial_data_anchors_are_warnings() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
         slices: vec![
             RadialSlice::new("High", 35., Color::from_rgb8(100, 145, 185)),
@@ -662,7 +662,7 @@ fn annotation_hit_regions_follow_the_drawn_items() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The radial chart has no value axes, so every item is ratio-anchored.
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let thick = ArrowStyle {
         line: AnnotationLineStyle {
             width: 12.,

@@ -661,7 +661,7 @@ fn radial_cases() -> Vec<(&'static str, RadialChart)> {
 #[test]
 fn the_radial_chart_reads_back_as_its_emitted_parts() {
     let gpu = gpu();
-    let mut rr = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut rr = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let size = (800, 520);
     let selection = {
         let c = renderer::select::SELECTION_COLOR;
@@ -819,7 +819,7 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
     }
     assert!(exported >= documents.len());
 
-    let mut rr = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut rr = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     for (name, chart) in radial_cases() {
         for scale in SCALES {
             for size in [(1, 1), (3, 5)] {

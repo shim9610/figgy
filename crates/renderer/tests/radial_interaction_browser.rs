@@ -52,7 +52,7 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
         .unwrap();
     assert!(device.as_webgpu().is_some());
     let gpu = RendererDevice::new(device, queue);
-    let mut r = RadialRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
+    let mut r = RadialRenderer::try_new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
         .await
         .unwrap();
     let mut c = RadialChart {

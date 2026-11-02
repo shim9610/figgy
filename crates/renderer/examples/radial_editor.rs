@@ -95,7 +95,7 @@ impl Editor {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         let state = cc.wgpu_render_state.clone().ok_or("wgpu required")?;
-        let renderer = RadialRenderer::new(
+        let renderer = RadialRenderer::try_new(
             RendererDevice::new(state.device.clone(), state.queue.clone()),
             wgpu::TextureFormat::Rgba8Unorm,
         )?;

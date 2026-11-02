@@ -86,12 +86,15 @@ fn png_error(stage: &str, error: png::EncodingError) -> FiggyError {
 /// Run an export inside native out-of-memory, validation and internal error
 /// scopes, popped once it is done. An error the export returned itself is
 /// reported first; otherwise any captured GPU error fails the export, since
-/// an image rendered through a failed resource is not one to save.
+/// an image rendered through a failed resource is not one to save. `gpu`
+/// turns a captured error into the caller's error type. Every export uses
+/// it, the radial chart's included (#160).
 #[cfg(not(target_arch = "wasm32"))]
-async fn native_export_scoped<T>(
+pub(crate) async fn native_export_scoped<T, E>(
     device: &wgpu::Device,
-    work: impl std::future::Future<Output = Result<T>>,
-) -> Result<T> {
+    work: impl std::future::Future<Output = std::result::Result<T, E>>,
+    gpu: impl FnOnce(FiggyError) -> E,
+) -> std::result::Result<T, E> {
     // wgpu 30's scope guards pop themselves on drop, so a cancelled export
     // cannot leave a scope on the device's stack for the next caller.
     let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -104,7 +107,7 @@ async fn native_export_scoped<T>(
     let out_of_memory = out_of_memory.pop().await;
     let rendered = rendered?;
     match out_of_memory.or(validation).or(internal) {
-        Some(error) => Err(gpu_error("figgy export", error)),
+        Some(error) => Err(gpu(gpu_error("figgy export", error))),
         None => Ok(rendered),
     }
 }
@@ -448,6 +451,7 @@ impl Renderer {
             native_export_scoped(
                 &device,
                 self.export_vector_inner::<F>(chart, series, scale, clear),
+                std::convert::identity,
             )
             .await
         };
@@ -528,6 +532,7 @@ impl Renderer {
             native_export_scoped(
                 &device,
                 self.export_rgba_with_clear_inner(chart, series, scale, clear, scope),
+                std::convert::identity,
             )
             .await
         };

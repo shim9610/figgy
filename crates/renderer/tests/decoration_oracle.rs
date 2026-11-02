@@ -3285,7 +3285,7 @@ impl Radial {
 
 fn radial_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
     let scene = scene_name(kind);
-    match RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm) {
+    match RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm) {
         Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::document(kind)),
         Err(e) => {
             let at = At {

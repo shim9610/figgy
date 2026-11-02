@@ -12,7 +12,7 @@ pub use selection::assert_selection_only;
 pub use selection::assert_selection_with_rerasterized_label;
 
 pub async fn check(gpu: RendererDevice) {
-    let mut r = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
         title: "Resize data area".into(),
         slices: vec![RadialSlice::new("A", 1., Color::from_rgb8(220, 70, 40))],

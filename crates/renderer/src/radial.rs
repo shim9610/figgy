@@ -495,7 +495,7 @@ impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
     /// Uses the checked production pipeline descriptors before publishing the
     /// wgpu-owned pipeline. Native hosts use the ordinary synchronous constructor.
-    pub async fn new_async(
+    pub async fn try_new_async(
         gpu: RendererDevice,
         format: wgpu::TextureFormat,
     ) -> Result<Self, RadialError> {
@@ -521,13 +521,13 @@ impl RadialRenderer {
         )
         .await
         .map_err(RadialError::Gpu)?;
-        Self::new(gpu, format)
+        Self::try_new(gpu, format)
     }
 
     /// Share the host device/queue. Supports RGBA8/BGRA8, linear or sRGB targets.
     /// Charges the bundle's ledger and spends its budget, which every renderer
     /// built from `gpu` shares (#160).
-    pub fn new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, RadialError> {
+    pub fn try_new(gpu: RendererDevice, format: wgpu::TextureFormat) -> Result<Self, RadialError> {
         if !matches!(
             format,
             wgpu::TextureFormat::Rgba8Unorm
@@ -1137,7 +1137,40 @@ impl RadialRenderer {
     /// Render `draw` into a cleared target of `width x height` physical
     /// pixels in the renderer's format and read it back as straight-alpha
     /// RGBA8 (linear, whatever the format's encoding).
+    ///
+    /// The export path every radial export goes through, with the same
+    /// guards as [`crate::Renderer`]'s exports (#160): the device health is
+    /// checked first, the work runs inside out-of-memory, validation and
+    /// internal error scopes (native: around the whole render; browser:
+    /// pushed before the first resource and popped before the readback), the
+    /// completion of its transient resources is attached, and the health is
+    /// checked again, so a GPU error during the export fails it.
     async fn render_rgba(
+        &self,
+        size: (u32, u32),
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<RasterImage, RadialError> {
+        self.gpu.health().check().map_err(radial_gpu_error)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = crate::renderer::native_export_scoped(
+            self.gpu.device(),
+            self.render_rgba_inner(size, draw),
+            radial_gpu_error,
+        )
+        .await;
+        #[cfg(target_arch = "wasm32")]
+        let result = self.render_rgba_inner(size, draw).await;
+        // The export's submission and readback have completed and its
+        // transient target and readback buffer are dropped.
+        self.end_frame();
+        let image = result?;
+        // A GPU error that reached the uncaptured-error handler during the
+        // export (a browser scope resolves asynchronously) fails it too.
+        self.gpu.health().check().map_err(radial_gpu_error)?;
+        Ok(image)
+    }
+
+    async fn render_rgba_inner(
         &self,
         (width, height): (u32, u32),
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
@@ -1151,6 +1184,9 @@ impl RadialRenderer {
         }
         self.admit(u64::from(width) * u64::from(height) * 4 + bytes)?;
         let device = self.gpu.device();
+        #[cfg(target_arch = "wasm32")]
+        let browser_scopes = crate::renderer::BrowserErrorScopes::push(device, "radial export")
+            .map_err(radial_gpu_error)?;
         // gpu-alloc: ExportTarget
         let target = crate::renderer::create_texture_checked(
             device,
@@ -1222,7 +1258,14 @@ impl RadialRenderer {
             },
         );
         self.gpu.queue().submit([encoder.finish()]);
-        let mut rgba = GpuReadback::map(device, self.gpu.health(), &buffer, None)
+        let readback = GpuReadback::map(device, self.gpu.health(), &buffer, None);
+        #[cfg(target_arch = "wasm32")]
+        browser_scopes
+            .request_all()
+            .finish()
+            .await
+            .map_err(radial_gpu_error)?;
+        let mut rgba = readback
             .read(|data| {
                 let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
                 for row in data.chunks_exact(stride as usize) {
