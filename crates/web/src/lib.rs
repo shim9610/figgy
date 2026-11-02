@@ -199,22 +199,8 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
     serde_json::to_string(&value)
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
-fn checked_column_revision(next: u64) -> Result<(u64, u64), &'static str> {
-    next.checked_add(1)
-        .map(|successor| (next, successor))
-        .ok_or("column revision counter exhausted")
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(target_arch = "wasm32")]
 const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-
-#[cfg(any(target_arch = "wasm32", test))]
-struct PreparedColumnMetadata {
-    columns: std::collections::HashMap<String, usize>,
-    revisions: std::collections::HashMap<String, u64>,
-    next_revision: u64,
-}
 
 #[cfg(any(target_arch = "wasm32", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,7 +238,7 @@ fn validate_column_data_len(len: usize) -> Result<(), &'static str> {
 /// `ids.len() x values_per_column` shape cannot be cut into columns at all.
 #[cfg(any(target_arch = "wasm32", test))]
 fn validate_column_batch(
-    columns: &std::collections::HashMap<String, usize>,
+    is_registered: impl Fn(&str) -> bool,
     ids: &[String],
     values_per_column: usize,
     data_len: usize,
@@ -280,154 +266,13 @@ fn validate_column_batch(
     seen.try_reserve(ids.len())
         .map_err(|_| "column batch id set allocation failed".to_string())?;
     for id in ids {
-        validate_column_registry_action(columns.contains_key(id), ColumnRegistryAction::Register)
+        validate_column_registry_action(is_registered(id), ColumnRegistryAction::Register)
             .map_err(|reason| format!("column '{id}' {reason}"))?;
         if !seen.insert(id.as_str()) {
             return Err(format!("column '{id}' appears twice in one batch"));
         }
     }
     Ok(())
-}
-
-/// Registry metadata for a whole batch, prepared into fresh maps.
-///
-/// Same prepare-then-commit shape as [`prepare_demo_column_metadata`], for the
-/// same reason: nothing installs until the renderer's own atomic insert has
-/// succeeded. Each id gets its own revision, so a host watching revisions sees
-/// one bump per column rather than one for the batch.
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_batch_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    ids: &[String],
-    len: usize,
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let column_capacity = columns
-        .len()
-        .checked_add(ids.len())
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(column_capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let revision_capacity = revisions
-        .len()
-        .checked_add(ids.len())
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(revision_capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let mut successor = next_revision;
-    for id in ids {
-        let (revision, next) = checked_column_revision(successor)?;
-        future_columns.insert(id.clone(), len);
-        future_revisions.insert(id.clone(), revision);
-        successor = next;
-    }
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    id: &str,
-    len: usize,
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let (revision, successor) = checked_column_revision(next_revision)?;
-    let capacity = columns
-        .len()
-        .checked_add(1)
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-    future_columns.insert(id.to_string(), len);
-
-    let capacity = revisions
-        .len()
-        .checked_add(1)
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-    future_revisions.insert(id.to_string(), revision);
-
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn prepare_demo_column_metadata(
-    columns: &std::collections::HashMap<String, usize>,
-    revisions: &std::collections::HashMap<String, u64>,
-    next_revision: u64,
-    lengths: [usize; 4],
-) -> Result<PreparedColumnMetadata, &'static str> {
-    use std::collections::HashMap;
-
-    let additional_columns = DEMO_COLUMN_IDS
-        .iter()
-        .filter(|id| !columns.contains_key(**id))
-        .count();
-    let column_capacity = columns
-        .len()
-        .checked_add(additional_columns)
-        .ok_or("column metadata capacity exhausted")?;
-    let mut future_columns = HashMap::new();
-    future_columns
-        .try_reserve(column_capacity)
-        .map_err(|_| "column metadata allocation failed")?;
-    future_columns.extend(columns.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let additional_revisions = DEMO_COLUMN_IDS
-        .iter()
-        .filter(|id| !revisions.contains_key(**id))
-        .count();
-    let revision_capacity = revisions
-        .len()
-        .checked_add(additional_revisions)
-        .ok_or("column revision metadata capacity exhausted")?;
-    let mut future_revisions = HashMap::new();
-    future_revisions
-        .try_reserve(revision_capacity)
-        .map_err(|_| "column revision metadata allocation failed")?;
-    future_revisions.extend(revisions.iter().map(|(id, value)| (id.clone(), *value)));
-
-    let mut successor = next_revision;
-    for (id, len) in DEMO_COLUMN_IDS.into_iter().zip(lengths) {
-        let (revision, next) = checked_column_revision(successor)?;
-        future_columns.insert(id.to_string(), len);
-        future_revisions.insert(id.to_string(), revision);
-        successor = next;
-    }
-    Ok(PreparedColumnMetadata {
-        columns: future_columns,
-        revisions: future_revisions,
-        next_revision: successor,
-    })
 }
 
 /// Replace the chart title with plain `text` and grow its band to hold it, as
@@ -444,7 +289,6 @@ fn set_plain_chart_title(config: &mut renderer::Config, text: &str) {
 struct PreparedDemoDeclarations {
     config: renderer::Config,
     series: Vec<renderer::SeriesConfig>,
-    labels: Vec<Option<String>>,
     color_seq: usize,
 }
 
@@ -452,7 +296,6 @@ struct PreparedDemoDeclarations {
 fn prepare_demo_declarations(
     current_config: &renderer::Config,
     current_series: &[renderer::SeriesConfig],
-    current_labels: &[Option<String>],
     cycle: renderer::ColorCycle,
     color_seq: usize,
 ) -> Result<PreparedDemoDeclarations, String> {
@@ -465,11 +308,6 @@ fn prepare_demo_declarations(
         .try_reserve(current_series.len().saturating_add(2))
         .map_err(|error| error.to_string())?;
     series.extend(current_series.iter().cloned());
-    let mut labels = Vec::new();
-    labels
-        .try_reserve(current_labels.len().saturating_add(2))
-        .map_err(|error| error.to_string())?;
-    labels.extend(current_labels.iter().cloned());
     let mut next_color_seq = color_seq;
 
     for (series_id, x_column, y_column, label) in [
@@ -546,7 +384,6 @@ fn prepare_demo_declarations(
         };
         if let Some(index) = existing {
             series[index] = item.clone();
-            labels[index] = Some(label.to_string());
             renderer::config::set_legend_entry_label(
                 &mut config.legend.content,
                 index,
@@ -558,7 +395,6 @@ fn prepare_demo_declarations(
             );
         } else {
             series.push(item.clone());
-            labels.push(Some(label.to_string()));
             renderer::config::append_legend_entry_rich(
                 &mut config.legend.content,
                 renderer::config::series_symbol_segments(
@@ -577,15 +413,12 @@ fn prepare_demo_declarations(
     Ok(PreparedDemoDeclarations {
         config,
         series,
-        labels,
         color_seq: next_color_seq,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use renderer::data_config::{
         ContourConfig, ErrorRef, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
@@ -597,12 +430,10 @@ mod tests {
     };
 
     use super::{
-        ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, checked_column_revision,
-        consume_successful_frame, frame_decision, picked_data_json_string,
-        picked_label_json_string, picked_point_json_string, prepare_batch_column_metadata,
-        prepare_column_metadata, prepare_demo_column_metadata, prepare_demo_declarations,
-        set_plain_chart_title, validate_column_batch, validate_column_data_len,
-        validate_column_registry_action,
+        ColumnRegistryAction, FrameDecision, consume_successful_frame, frame_decision,
+        picked_data_json_string, picked_label_json_string, picked_point_json_string,
+        prepare_demo_declarations, set_plain_chart_title, validate_column_batch,
+        validate_column_data_len, validate_column_registry_action,
     };
 
     fn scatter_style() -> DataScatterStyleConfig {
@@ -1003,15 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn column_revision_successor_rejects_overflow() {
-        assert_eq!(checked_column_revision(41), Ok((41, 42)));
-        assert_eq!(
-            checked_column_revision(u64::MAX),
-            Err("column revision counter exhausted")
-        );
-    }
-
-    #[test]
     fn all_render_types_normalize_to_their_drawable_extent_domain() {
         let x_error = ErrorRef::Symmetric {
             column: "x_err".to_string(),
@@ -1167,131 +989,44 @@ mod tests {
     }
 
     #[test]
-    fn metadata_preflight_does_not_publish_before_commit() {
-        let columns = HashMap::from([("x".to_string(), 2)]);
-        let revisions = HashMap::from([("x".to_string(), 7)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-
-        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 3).unwrap();
-
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("x"), Some(&3));
-        assert_eq!(prepared.revisions.get("x"), Some(&8));
-        assert_eq!(prepared.next_revision, 9);
-    }
-
-    #[test]
-    fn same_length_update_still_issues_a_new_revision() {
-        let columns = HashMap::from([("x".to_string(), 2)]);
-        let revisions = HashMap::from([("x".to_string(), 7)]);
-
-        let prepared = prepare_column_metadata(&columns, &revisions, 8, "x", 2).unwrap();
-
-        assert_eq!(prepared.columns.get("x"), Some(&2));
-        assert_eq!(prepared.revisions.get("x"), Some(&8));
-        assert_eq!(prepared.next_revision, 9);
-    }
-
-    #[test]
-    fn demo_metadata_issues_four_revisions_without_partial_publication() {
-        let columns = HashMap::from([("stable".to_string(), 7), ("demo_x".to_string(), 3)]);
-        let revisions = HashMap::from([("stable".to_string(), 10), ("demo_x".to_string(), 11)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-        let prepared = prepare_demo_column_metadata(&columns, &revisions, 20, [512; 4]).unwrap();
-
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("stable"), Some(&7));
-        assert_eq!(prepared.revisions.get("stable"), Some(&10));
-        for (index, id) in DEMO_COLUMN_IDS.into_iter().enumerate() {
-            assert_eq!(prepared.columns.get(id), Some(&512));
-            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
-        }
-        assert_eq!(prepared.next_revision, 24);
-
-        let error = match prepare_demo_column_metadata(&columns, &revisions, u64::MAX - 3, [512; 4])
-        {
-            Ok(_) => panic!("fourth demo revision must reject overflow"),
-            Err(error) => error,
-        };
-        assert_eq!(error, "column revision counter exhausted");
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-    }
-
-    #[test]
-    fn batch_metadata_issues_one_revision_per_column_without_partial_publication() {
-        let columns = HashMap::from([("stable".to_string(), 7)]);
-        let revisions = HashMap::from([("stable".to_string(), 10)]);
-        let original_columns = columns.clone();
-        let original_revisions = revisions.clone();
-        let ids = ["g0".to_string(), "g1".to_string(), "g2".to_string()];
-
-        let prepared = prepare_batch_column_metadata(&columns, &revisions, 20, &ids, 64).unwrap();
-        // The caller's maps are untouched until it installs the prepared ones.
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-        assert_eq!(prepared.columns.get("stable"), Some(&7));
-        assert_eq!(prepared.revisions.get("stable"), Some(&10));
-        for (index, id) in ids.iter().enumerate() {
-            assert_eq!(prepared.columns.get(id), Some(&64));
-            assert_eq!(prepared.revisions.get(id), Some(&(20 + index as u64)));
-        }
-        assert_eq!(prepared.next_revision, 23);
-
-        // Overflow on the third id rejects the whole batch, not the first two.
-        let error =
-            match prepare_batch_column_metadata(&columns, &revisions, u64::MAX - 2, &ids, 64) {
-                Ok(_) => panic!("a batch revision past the counter must be rejected"),
-                Err(error) => error,
-            };
-        assert_eq!(error, "column revision counter exhausted");
-        assert_eq!(columns, original_columns);
-        assert_eq!(revisions, original_revisions);
-    }
-
-    #[test]
     fn a_column_batch_is_validated_before_anything_is_uploaded() {
-        let columns = HashMap::from([("taken".to_string(), 4)]);
+        let columns = |id: &str| id == "taken";
         let ids = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
 
         // The shape that works: 3 ids x 2 values = 6.
-        assert!(validate_column_batch(&columns, &ids(&["a", "b", "c"]), 2, 6).is_ok());
+        assert!(validate_column_batch(columns, &ids(&["a", "b", "c"]), 2, 6).is_ok());
 
         assert_eq!(
-            validate_column_batch(&columns, &[], 2, 0).unwrap_err(),
+            validate_column_batch(columns, &[], 2, 0).unwrap_err(),
             "a column batch needs at least one id"
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a"]), 0, 0).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a"]), 0, 0).unwrap_err(),
             "values_per_column data must not be empty"
         );
         // A flat buffer that does not divide into the declared shape is not a
         // length mismatch to draw through — it cannot be cut into columns at all.
         assert!(
-            validate_column_batch(&columns, &ids(&["a", "b"]), 3, 5)
+            validate_column_batch(columns, &ids(&["a", "b"]), 3, 5)
                 .unwrap_err()
                 .contains("5 values")
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a", "taken"]), 2, 4).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a", "taken"]), 2, 4).unwrap_err(),
             "column 'taken' is already registered"
         );
         assert_eq!(
-            validate_column_batch(&columns, &ids(&["a", "a"]), 2, 4).unwrap_err(),
+            validate_column_batch(columns, &ids(&["a", "a"]), 2, 4).unwrap_err(),
             "column 'a' appears twice in one batch"
         );
-        assert!(validate_column_batch(&columns, &ids(&["__zero"]), 2, 2).is_ok());
+        assert!(validate_column_batch(columns, &ids(&["__zero"]), 2, 2).is_ok());
     }
 
     #[test]
     fn demo_declarations_are_complete_and_stable_on_repeat() {
         let initial_config = renderer::default::default_config();
         let first =
-            prepare_demo_declarations(&initial_config, &[], &[], renderer::ColorCycle::Classic, 0)
+            prepare_demo_declarations(&initial_config, &[], renderer::ColorCycle::Classic, 0)
                 .unwrap();
         assert_eq!(
             first
@@ -1302,8 +1037,15 @@ mod tests {
             vec!["sine", "rc"]
         );
         assert_eq!(
-            first.labels,
-            vec![Some("sin(x)".into()), Some("RC charge".into())]
+            first
+                .series
+                .iter()
+                .map(|item| item.label.as_ref().map(|label| label.segments.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(renderer::text::rich_segments_from_text("sin(x)")),
+                Some(renderer::text::rich_segments_from_text("RC charge"))
+            ]
         );
         assert_eq!(first.color_seq, 2);
         assert_eq!(
@@ -1322,14 +1064,12 @@ mod tests {
         let repeated = prepare_demo_declarations(
             &first.config,
             &first.series,
-            &first.labels,
             renderer::ColorCycle::Classic,
             first.color_seq,
         )
         .unwrap();
         assert_eq!(repeated.config, first.config);
         assert_eq!(repeated.series, first.series);
-        assert_eq!(repeated.labels, first.labels);
         assert_eq!(repeated.color_seq, first.color_seq);
     }
 
@@ -1337,30 +1077,17 @@ mod tests {
     fn demo_precommit_abort_preserves_every_host_owned_authority() {
         let config = renderer::default::default_config();
         let series = vec![line_series("stable", "stable-x", "stable-y")];
-        let columns = HashMap::from([("stable-x".to_string(), 2), ("stable-y".to_string(), 2)]);
-        let revisions = HashMap::from([("stable-x".to_string(), 1), ("stable-y".to_string(), 1)]);
-        let labels = vec![Some("stable".to_string())];
         let styles = vec![7u32];
         let color_seq = 1usize;
 
-        let prepared_metadata =
-            prepare_demo_column_metadata(&columns, &revisions, 2, [512; 4]).unwrap();
-        let prepared_declarations = prepare_demo_declarations(
-            &config,
-            &series,
-            &labels,
-            renderer::ColorCycle::Classic,
-            color_seq,
-        )
-        .unwrap();
-        drop((prepared_metadata, prepared_declarations));
+        let prepared_declarations =
+            prepare_demo_declarations(&config, &series, renderer::ColorCycle::Classic, color_seq)
+                .unwrap();
+        drop(prepared_declarations);
 
         assert_eq!(config, renderer::default::default_config());
         assert_eq!(series, vec![line_series("stable", "stable-x", "stable-y")]);
-        assert_eq!(columns.len(), 2);
-        assert_eq!(revisions.len(), 2);
         assert_eq!(styles, vec![7]);
-        assert_eq!(labels, vec![Some("stable".to_string())]);
         assert_eq!(color_seq, 1);
     }
 
@@ -1393,7 +1120,7 @@ mod tests {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use std::{cell::Cell, collections::HashMap};
+    use std::cell::Cell;
 
     use wasm_bindgen::prelude::*;
     use web_sys::HtmlCanvasElement;
@@ -1420,9 +1147,8 @@ mod web {
         JsStreamColumn,
     };
     use crate::{
-        ColumnRegistryAction, FrameDecision, PreparedDemoDeclarations, consume_successful_frame,
-        frame_decision, prepare_batch_column_metadata, prepare_column_metadata,
-        prepare_demo_column_metadata, prepare_demo_declarations, set_plain_chart_title,
+        ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
+        consume_successful_frame, frame_decision, prepare_demo_declarations, set_plain_chart_title,
         validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
 
@@ -1442,7 +1168,6 @@ mod web {
     mod export;
     mod picking;
     mod streaming;
-    use streaming::PendingStreamHandoffMetadata;
     pub use streaming::{AutoStreamingRangeRequestResult, AutoStreamingRequestResult};
     pub use streaming::{StreamingOperationHandle, StreamingStepResult, StreamingUsageResult};
 
@@ -1458,10 +1183,7 @@ mod web {
 
     #[cfg(test)]
     mod tests {
-        use std::{
-            collections::HashMap,
-            hash::{Hash, Hasher},
-        };
+        use std::hash::{Hash, Hasher};
 
         use wasm_bindgen::JsCast;
         use wasm_bindgen_test::*;
@@ -1484,10 +1206,7 @@ mod web {
         struct FiggyAuthority {
             config: renderer::Config,
             series: Vec<SeriesConfig>,
-            columns: HashMap<String, usize>,
-            column_revisions: HashMap<String, u64>,
-            next_column_revision: u64,
-            labels: Vec<Option<String>>,
+            column_revisions: Vec<(String, Option<u64>)>,
             legend_auto_managed: bool,
             color_seq: usize,
             chart_stamp: ChartRenderStamp,
@@ -1520,9 +1239,17 @@ mod web {
 
         fn snapshot(chart: &FiggyChart) -> FiggyAuthority {
             let pool = chart.renderer.pool();
-            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            let mut ids = chart
+                .renderer
+                .logical_column_ids()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             ids.sort();
             ids.dedup();
+            let column_revisions = ids
+                .iter()
+                .map(|id| (id.clone(), chart.renderer.column_revision(id)))
+                .collect();
             let slots = ids
                 .into_iter()
                 .map(|id| {
@@ -1545,10 +1272,7 @@ mod web {
             FiggyAuthority {
                 config: chart.chart_config().unwrap().clone(),
                 series: chart.chart_series().unwrap().to_vec(),
-                columns: chart.columns.clone(),
-                column_revisions: chart.column_revisions.clone(),
-                next_column_revision: chart.next_column_revision,
-                labels: chart.labels.clone(),
+                column_revisions,
                 legend_auto_managed: chart.legend_auto_managed,
                 color_seq: chart.color_seq,
                 chart_stamp: chart.renderer.chart_render_stamp(chart.chart_id).unwrap(),
@@ -1606,7 +1330,10 @@ mod web {
 
             chart.load_demo().expect("retry must commit");
             for id in crate::DEMO_COLUMN_IDS {
-                assert_eq!(chart.columns.get(id), Some(&512));
+                assert_eq!(
+                    chart.renderer.logical_column(id).map(|c| c.len()),
+                    Some(512)
+                );
                 assert!(chart.renderer.pool().slot(id).is_some());
             }
             assert!(
@@ -1659,13 +1386,16 @@ mod web {
             );
 
             for id in &ids {
-                assert_eq!(chart.columns.get(id), Some(&N));
-                assert!(chart.column_revisions.contains_key(id));
+                assert_eq!(
+                    chart.renderer.logical_column(id).map(|c| c.len()),
+                    Some(N as u64)
+                );
+                assert!(chart.renderer.column_revision(id).is_some());
             }
             // One revision per column, not one for the batch.
             let mut revisions: Vec<u64> = ids
                 .iter()
-                .map(|id| *chart.column_revisions.get(id).unwrap())
+                .map(|id| chart.renderer.column_revision(id).unwrap())
                 .collect();
             revisions.sort_unstable();
             revisions.dedup();
@@ -1675,7 +1405,7 @@ mod web {
             let clash = vec![format!("fresh"), ids[0].clone()];
             let small: Vec<f64> = vec![0.0; 2 * N];
             assert!(chart.register_columns_f64(clash, &small, N).is_err());
-            assert!(!chart.columns.contains_key("fresh"));
+            assert!(chart.renderer.logical_column("fresh").is_none());
         }
 
         // ---- #152 index invariants at their producers ----
@@ -2366,13 +2096,6 @@ mod web {
             }
         }
 
-        /// LABELS_MATCH_SERIES (#152): the legacy labels hold one entry per
-        /// series. The GPU styles are the renderer's (#160).
-        fn assert_labels_match(chart: &FiggyChart, at: &str) {
-            let series = chart.chart_series().unwrap().len();
-            assert_eq!(chart.labels.len(), series, "{at}: labels");
-        }
-
         const CATEGORICAL_DOCUMENT: &str = r#"{
             "categories": [
                 {"id": "q1", "label": "Q1"},
@@ -2429,20 +2152,24 @@ mod web {
             "selected": {"series_id": "a", "category_id": "range"}
         }"#;
 
-        /// Remove every registered column of `chart` in turn, checking the
-        /// labels after each.
+        /// Remove every registered column of `chart` in turn.
         fn remove_every_column(chart: &mut FiggyChart, at: &str) {
-            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            let mut ids = chart
+                .renderer
+                .logical_column_ids()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             ids.sort();
             for id in ids {
-                chart.remove_column(&id).unwrap();
-                assert_labels_match(chart, &format!("{at}: remove_column {id}"));
+                chart
+                    .remove_column(&id)
+                    .unwrap_or_else(|error| panic!("{at}: remove_column {id}: {error:?}"));
             }
         }
 
-        /// LABELS_MATCH_SERIES (#152): `labels` and `styles` hold one entry
-        /// per series after every call that changes the series or the
-        /// labels, successful or rejected: line upserts, label edits,
+        /// Every call that changes the series or their labels either commits
+        /// or is rejected whole, and the chart's series and legend live only
+        /// in the renderer (#152, #160): line upserts, label edits,
         /// series removal, `set_series` with 0, 1 and 200 series, the three
         /// document loads, `load_demo` twice, and the removal of each column
         /// a series of every kind reads (a line's, a colour or size map's,
@@ -2450,33 +2177,23 @@ mod web {
         /// a range bar's extra columns, a matrix grid column, a vector
         /// component), its record and ragged columns.
         #[wasm_bindgen_test(async)]
-        async fn labels_and_styles_follow_every_series_change() {
+        async fn every_series_change_commits_or_rejects_whole() {
             let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
-            assert_labels_match(&chart, "create");
             chart.register_column_f64("lx", &[0.0, 1.0, 2.0]).unwrap();
             chart.register_column_f64("ly", &[2.0, 3.0, 4.0]).unwrap();
             chart.add_line_series("a", "lx", "ly", 2.0, "A").unwrap();
-            assert_labels_match(&chart, "add a");
             chart.add_line_series("a", "lx", "ly", 3.0, "").unwrap();
-            assert_labels_match(&chart, "update a");
             chart.add_line_series("b", "lx", "ly", 2.0, "B").unwrap();
-            assert_labels_match(&chart, "add b");
             assert!(
                 chart
                     .add_line_series("c", "lx", "missing", 2.0, "C")
                     .is_err()
             );
-            assert_labels_match(&chart, "rejected add");
             assert!(chart.set_series_label("a", "Alpha").unwrap());
-            assert_labels_match(&chart, "set label");
             assert!(chart.set_series_label("a", "").unwrap());
-            assert_labels_match(&chart, "clear label");
             assert!(!chart.set_series_label("nope", "x").unwrap());
-            assert_labels_match(&chart, "label of a missing series");
             assert!(chart.remove_series("b").unwrap());
-            assert_labels_match(&chart, "remove b");
             assert!(!chart.remove_series("nope").unwrap());
-            assert_labels_match(&chart, "remove a missing series");
 
             let lines = |ids: &mut dyn Iterator<Item = String>| -> String {
                 let series: Vec<SeriesConfig> = ids
@@ -2498,7 +2215,6 @@ mod web {
                 chart
                     .set_series(&lines(&mut (0..count).map(|i| format!("s{i}"))))
                     .unwrap();
-                assert_labels_match(&chart, &format!("set_series {count}"));
             }
             // Survivors keep their labels, new ids join.
             chart
@@ -2508,9 +2224,7 @@ mod web {
                         .chain((0..10).map(|i| format!("t{i}"))),
                 ))
                 .unwrap();
-            assert_labels_match(&chart, "set_series survivors");
             assert!(chart.set_series("not json").is_err());
-            assert_labels_match(&chart, "rejected set_series json");
             let mut unknown: Vec<SeriesConfig> =
                 serde_json::from_str(&chart.get_series().unwrap()).unwrap();
             unknown[0].y_column = "missing".into();
@@ -2519,41 +2233,30 @@ mod web {
                     .set_series(&serde_json::to_string(&unknown).unwrap())
                     .is_err()
             );
-            assert_labels_match(&chart, "rejected set_series column");
-            for round in 0..2 {
+            for _ in 0..2 {
                 chart.load_demo().unwrap();
-                assert_labels_match(&chart, &format!("load_demo {round}"));
             }
 
             chart
                 .set_categorical_document(CATEGORICAL_DOCUMENT)
                 .unwrap();
-            assert_labels_match(&chart, "categorical document");
             assert!(chart.set_categorical_document("{").is_err());
-            assert_labels_match(&chart, "rejected categorical document");
             remove_every_column(&mut chart, "categorical document");
             chart.set_boxplot_document(BOXPLOT_DOCUMENT).unwrap();
-            assert_labels_match(&chart, "box plot document");
             assert!(chart.set_boxplot_document("{").is_err());
-            assert_labels_match(&chart, "rejected box plot document");
             remove_every_column(&mut chart, "box plot document");
             chart.set_radar_document(RADAR_DOCUMENT).unwrap();
-            assert_labels_match(&chart, "radar document");
             assert!(chart.set_radar_document("{").is_err());
-            assert_labels_match(&chart, "rejected radar document");
             remove_every_column(&mut chart, "radar document");
             assert!(!chart.remove_column("missing").unwrap());
-            assert_labels_match(&chart, "remove a missing column");
 
             // Each column a series of every kind reads, removed and put
             // back: the series goes with it and comes back with it.
             for scene in selection_scenes() {
                 let mut chart = scene_chart(&scene).await;
-                assert_labels_match(&chart, scene.name);
                 let series_json = serde_json::to_string(&[scene.series.clone()]).unwrap();
                 for (id, data) in &scene.columns {
                     assert!(chart.remove_column(id).unwrap(), "{}: {id}", scene.name);
-                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
                     assert!(
                         chart.chart_series().unwrap().is_empty(),
                         "{}: a series reading {id} stays",
@@ -2561,7 +2264,6 @@ mod web {
                     );
                     chart.register_column_f64(id, data).unwrap();
                     chart.set_series(&series_json).unwrap();
-                    assert_labels_match(&chart, &format!("{}: restore {id}", scene.name));
                 }
                 let composites = scene
                     .record
@@ -2571,7 +2273,6 @@ mod web {
                 for id in composites {
                     // A record or ragged id is not a registry column.
                     let _removed = chart.remove_column(id);
-                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
                 }
             }
         }

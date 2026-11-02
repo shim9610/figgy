@@ -14202,6 +14202,82 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     }
 }
 
+/// The renderer's column registry is the only one a host needs (#160):
+/// `logical_column_ids` lists every streamed and resident column a host
+/// registered and no record or ragged member, and `column_revision` reports a
+/// streamed column's declared revision and a new revision for every resident
+/// upload.
+#[test]
+fn logical_column_registry_lists_host_columns_and_tracks_revisions() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .register_streamed_columns(vec![state_test_stream("s", 7)])
+        .unwrap();
+    let column = |scale: f32| Column {
+        data: vec![0.0, scale],
+        min: 0.0,
+        max: scale,
+    };
+    renderer.upsert_column("r", &column(1.0)).unwrap();
+    let record = composite_test_record(3);
+    let fields: Vec<(&str, &dyn ColumnSource)> = record
+        .iter()
+        .map(|(name, column)| (*name, column as &dyn ColumnSource))
+        .collect();
+    renderer
+        .upsert_record(
+            "box",
+            &RecordSource {
+                schema: data_render::BOX_PLOT_RECORD,
+                fields: &fields,
+            },
+        )
+        .unwrap();
+    let values = Column {
+        data: vec![1.0, 2.0],
+        min: 1.0,
+        max: 2.0,
+    };
+    let offsets = Column {
+        data: vec![0.0, 2.0],
+        min: 0.0,
+        max: 2.0,
+    };
+    renderer
+        .upsert_ragged(
+            "outliers",
+            &RaggedSource {
+                values: &values,
+                offsets: &offsets,
+            },
+        )
+        .unwrap();
+
+    let mut ids: Vec<&str> = renderer.logical_column_ids().collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["r", "s"]);
+    assert_eq!(renderer.column_revision("s"), Some(7));
+    let first = renderer.column_revision("r").unwrap();
+    renderer.upsert_column("r", &column(1.0)).unwrap();
+    let second = renderer.column_revision("r").unwrap();
+    assert_ne!(
+        first, second,
+        "an identical re-upload still gets a new revision"
+    );
+    renderer
+        .replace_streamed_columns(vec![state_test_stream("s", 9)])
+        .unwrap();
+    assert_eq!(renderer.column_revision("s"), Some(9));
+
+    assert!(renderer.remove_column("r").unwrap());
+    assert_eq!(renderer.column_revision("r"), None);
+    assert_eq!(renderer.column_revision("missing"), None);
+    let ids: Vec<&str> = renderer.logical_column_ids().collect();
+    assert_eq!(ids, ["s"]);
+}
+
 /// Records, ragged columns and columns share one id space, and the member
 /// columns belong to their record: the host cannot insert, replace, remove
 /// or reference them as columns.

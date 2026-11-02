@@ -869,6 +869,12 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **The column registry is readable** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Renderer::logical_column_ids` lists every column a host registered,
+  streamed or resident (record and ragged member columns excepted), and
+  `Renderer::column_revision(id)` returns a streamed column's declared
+  revision or the allocation epoch of a resident column's latest upload, so a
+  host reads the registry from the renderer instead of keeping its own.
 - **Registered charts drawn on a display** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Renderer::set_chart_display(chart, Some((width, height)))` makes
   `draw_registered` draw the chart scaled and letterboxed onto that surface,
@@ -2040,6 +2046,21 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **No second column registry in the wrapper** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The wrapper no longer keeps its own map of column lengths and revisions,
+  its revision counter or the pending handoff metadata; registration checks,
+  `step_selection` and `gpu_memory_status` read the renderer's registry
+  (`logical_column`, `logical_column_ids`, `column_revision`). Behaviour
+  change: a resident column's revision in `gpu_memory_status` is now the
+  pool's allocation epoch for its latest upload. It still changes on every
+  upload, and a streamed column still reports the revision the host declared.
+  The JS API is unchanged.
+- **No plain-text label mirror** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The wrapper no longer keeps a plain-text copy of every series label beside
+  `SeriesConfig::label`. Behaviour change: rebuilding the automatic legend,
+  and `set_series` with a series that has no `label`, take the label from the
+  series alone. A series whose new config drops its label no longer keeps
+  the label its earlier config had.
 - **The canvas draws through the renderer's registry** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `frame()` draws every chart with `draw_registered` at the canvas display
   (`set_chart_display`, kept current by `resize`) instead of copying the

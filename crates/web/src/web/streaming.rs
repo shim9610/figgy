@@ -420,11 +420,6 @@ impl StreamingUsageResult {
     }
 }
 
-pub(super) struct PendingStreamHandoffMetadata {
-    pub(super) columns: Vec<(String, usize, u64)>,
-    pub(super) next_column_revision: u64,
-}
-
 #[wasm_bindgen]
 impl FiggyChart {
     // ---- exact non-resident streaming ----
@@ -497,7 +492,7 @@ impl FiggyChart {
             .request_auto_streaming_chart_with_display_scale(
                 self.chart_id,
                 &self.view,
-                display_config,
+                display_config.into_owned(),
                 display_scale,
                 StreamingChartOptions {
                     size: self.surface_size,
@@ -663,30 +658,9 @@ impl FiggyChart {
         encodings: Vec<String>,
     ) -> Result<(), JsValue> {
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
-        let mut next_columns = self.columns.clone();
-        let mut next_revisions = self.column_revisions.clone();
-        next_columns.try_reserve(ids.len()).map_err(js_err)?;
-        next_revisions.try_reserve(ids.len()).map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
-        for source in &columns {
-            next_columns.insert(
-                source.id.clone(),
-                usize::try_from(source.len).map_err(js_err)?,
-            );
-            next_revisions.insert(source.id.clone(), source.revision);
-            next_column_revision = next_column_revision.max(
-                source
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
-        }
         self.renderer
             .register_streamed_columns(columns)
             .map_err(js_err)?;
-        self.columns = next_columns;
-        self.column_revisions = next_revisions;
-        self.next_column_revision = next_column_revision;
         Ok(())
     }
 
@@ -700,30 +674,9 @@ impl FiggyChart {
         encodings: Vec<String>,
     ) -> Result<(), JsValue> {
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
-        let mut next_columns = self.columns.clone();
-        let mut next_revisions = self.column_revisions.clone();
-        next_columns.try_reserve(ids.len()).map_err(js_err)?;
-        next_revisions.try_reserve(ids.len()).map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
-        for source in &columns {
-            next_columns.insert(
-                source.id.clone(),
-                usize::try_from(source.len).map_err(js_err)?,
-            );
-            next_revisions.insert(source.id.clone(), source.revision);
-            next_column_revision = next_column_revision.max(
-                source
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
-        }
         self.renderer
             .replace_streamed_columns(columns)
             .map_err(js_err)?;
-        self.columns = next_columns;
-        self.column_revisions = next_revisions;
-        self.next_column_revision = next_column_revision;
         Ok(())
     }
 
@@ -738,29 +691,13 @@ impl FiggyChart {
         max_primitives_per_chunk: f64,
     ) -> Result<AutoStreamingRequestResult, JsValue> {
         let columns = stream_columns_from_metadata(&ids, &revisions, &lengths, &encodings)?;
-        let mut pending_columns = Vec::new();
-        pending_columns
-            .try_reserve_exact(columns.len())
-            .map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
         for source in &columns {
-            if !self.columns.contains_key(&source.id) {
+            if self.renderer.logical_column(&source.id).is_none() {
                 return Err(js_err(format!(
                     "resident stream handoff column {:?} is not registered",
                     source.id
                 )));
             }
-            pending_columns.push((
-                source.id.clone(),
-                usize::try_from(source.len).map_err(js_err)?,
-                source.revision,
-            ));
-            next_column_revision = next_column_revision.max(
-                source
-                    .revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
         }
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
@@ -789,7 +726,7 @@ impl FiggyChart {
             .request_resident_stream_handoff_with_display_scale(
                 self.chart_id,
                 &self.view,
-                display_config,
+                display_config.into_owned(),
                 display_scale,
                 columns,
                 StreamingChartOptions {
@@ -801,10 +738,6 @@ impl FiggyChart {
             .map_err(js_err)?;
         let (name, pending_latest) = match result {
             renderer::AutoStreamingRequest::Started { .. } => {
-                self.pending_stream_handoff = Some(PendingStreamHandoffMetadata {
-                    columns: pending_columns,
-                    next_column_revision,
-                });
                 self.request_host_redraw();
                 ("started", false)
             }
@@ -837,16 +770,10 @@ impl FiggyChart {
     pub fn auto_stream_chart_request_ranges(
         &mut self,
     ) -> Result<AutoStreamingRangeRequestResult, JsValue> {
-        let result = match self
+        let result = self
             .renderer
             .auto_stream_chart_request_ranges(self.chart_id)
-        {
-            Ok(result) => result,
-            Err(error) => {
-                self.pending_stream_handoff = None;
-                return Err(js_err(error));
-            }
-        };
+            .map_err(js_err)?;
         let counts = self.renderer.stream_status(self.chart_id).map_err(js_err)?;
         let response = AutoStreamingRangeRequestResult::from_core(
             result,
@@ -856,15 +783,6 @@ impl FiggyChart {
                 counts.total_primitives as f64,
             ),
         )?;
-        if response.status == "complete" {
-            if let Some(pending) = self.pending_stream_handoff.take() {
-                for (id, len, revision) in pending.columns {
-                    self.columns.insert(id.clone(), len);
-                    self.column_revisions.insert(id, revision);
-                }
-                self.next_column_revision = pending.next_column_revision;
-            }
-        }
         self.request_host_redraw();
         Ok(response)
     }
@@ -1064,7 +982,6 @@ impl FiggyChart {
             .renderer
             .interrupt_render(self.chart_id)
             .map_err(js_err)?;
-        self.pending_stream_handoff = None;
         Ok(match status {
             renderer::RenderInterruptStatus::StreamCancelQueued => {
                 // Even an otherwise clean frame must retire the cancelled
@@ -1088,11 +1005,6 @@ impl FiggyChart {
     ) -> Result<(), JsValue> {
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
-        let mut next_columns = self.columns.clone();
-        let mut next_revisions = self.column_revisions.clone();
-        next_columns.try_reserve(ids.len()).map_err(js_err)?;
-        next_revisions.try_reserve(ids.len()).map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
         let mut columns = Vec::new();
         columns.try_reserve_exact(ids.len()).map_err(js_err)?;
         for ((id, revision), source) in ids.iter().zip(&revisions).zip(&sources) {
@@ -1104,20 +1016,10 @@ impl FiggyChart {
                 revision: *revision,
                 statistics: StreamStatistics::Unknown,
             });
-            next_columns.insert(id.clone(), source.len());
-            next_revisions.insert(id.clone(), *revision);
-            next_column_revision = next_column_revision.max(
-                revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
         }
         self.renderer
             .register_streamed_columns(columns)
             .map_err(js_err)?;
-        self.columns = next_columns;
-        self.column_revisions = next_revisions;
-        self.next_column_revision = next_column_revision;
         Ok(())
     }
 
@@ -1131,11 +1033,6 @@ impl FiggyChart {
     ) -> Result<(), JsValue> {
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
-        let mut next_columns = self.columns.clone();
-        let mut next_revisions = self.column_revisions.clone();
-        next_columns.try_reserve(ids.len()).map_err(js_err)?;
-        next_revisions.try_reserve(ids.len()).map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
         let mut columns = Vec::new();
         columns.try_reserve_exact(ids.len()).map_err(js_err)?;
         for ((id, revision), source) in ids.iter().zip(&revisions).zip(&sources) {
@@ -1147,20 +1044,10 @@ impl FiggyChart {
                 revision: *revision,
                 statistics: StreamStatistics::Unknown,
             });
-            next_columns.insert(id.clone(), source.len());
-            next_revisions.insert(id.clone(), *revision);
-            next_column_revision = next_column_revision.max(
-                revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
         }
         self.renderer
             .replace_streamed_columns(columns)
             .map_err(js_err)?;
-        self.columns = next_columns;
-        self.column_revisions = next_revisions;
-        self.next_column_revision = next_column_revision;
         Ok(())
     }
 
@@ -1176,11 +1063,6 @@ impl FiggyChart {
     ) -> Result<(), JsValue> {
         let sources = js_stream_sources(&sources)?;
         let revisions = validate_stream_bindings(&ids, &revisions, &sources)?;
-        let mut next_columns = self.columns.clone();
-        let mut next_revisions = self.column_revisions.clone();
-        next_columns.try_reserve(ids.len()).map_err(js_err)?;
-        next_revisions.try_reserve(ids.len()).map_err(js_err)?;
-        let mut next_column_revision = self.next_column_revision;
         let mut columns = Vec::new();
         let mut bindings = Vec::new();
         columns.try_reserve_exact(ids.len()).map_err(js_err)?;
@@ -1199,13 +1081,6 @@ impl FiggyChart {
                 revision: *revision,
                 source: source.source(),
             });
-            next_columns.insert(id.clone(), source.len());
-            next_revisions.insert(id.clone(), *revision);
-            next_column_revision = next_column_revision.max(
-                revision
-                    .checked_add(1)
-                    .ok_or_else(|| js_err("column revision counter exhausted"))?,
-            );
         }
         let mut changed_ids = Vec::new();
         changed_ids.try_reserve_exact(ids.len()).map_err(js_err)?;
@@ -1213,9 +1088,6 @@ impl FiggyChart {
         self.renderer
             .demote_resident_columns_to_streamed(&changed_ids, columns, &bindings)
             .map_err(js_err)?;
-        self.columns = next_columns;
-        self.column_revisions = next_revisions;
-        self.next_column_revision = next_column_revision;
         self.request_host_redraw();
         Ok(())
     }
@@ -1226,7 +1098,7 @@ impl FiggyChart {
         let max_primitives_per_chunk =
             js_safe_u64(max_primitives_per_chunk, "max_primitives_per_chunk")?;
         let (display_config, _, _) = self.display_config()?;
-        let display_chart = Chart::new(display_config);
+        let display_chart = Chart::new(display_config.into_owned());
         self.renderer
             .update_transform(&self.view, &display_chart)
             .map_err(js_err)?;
@@ -1329,7 +1201,6 @@ impl FiggyChart {
     /// Cancel this chart and resolve only after its submitted work and
     /// retired renderer-owned surfaces have crossed the completion fence.
     pub async fn cancel_streaming_and_wait(&mut self) -> Result<(), JsValue> {
-        self.pending_stream_handoff = None;
         self.renderer
             .cancel_streaming_chart_and_wait(self.chart_id)
             .await

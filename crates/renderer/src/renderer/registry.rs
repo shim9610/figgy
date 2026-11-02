@@ -3414,6 +3414,27 @@ impl Renderer {
         Ok(removed)
     }
 
+    /// The revision of column `id`: a streamed source's declared revision, or
+    /// the allocation a resident column's latest upload made, which every
+    /// upload renews. `None` for an id the renderer does not hold (#160).
+    pub fn column_revision(&self, id: &str) -> Option<u64> {
+        self.streaming_sources
+            .get(id)
+            .map(|source| source.column.revision)
+            .or_else(|| self.pool.allocation_epoch(id))
+    }
+
+    /// The id of every logical column: each streamed source and each resident
+    /// column a host registered (record and ragged member columns excepted),
+    /// in no particular order (#160).
+    pub fn logical_column_ids(&self) -> impl Iterator<Item = &str> + '_ {
+        self.streaming_sources.keys().map(String::as_str).chain(
+            self.pool
+                .column_ids()
+                .filter(|id| !self.streaming_sources.contains_key(*id)),
+        )
+    }
+
     /// Look up either logical host metadata or the authoritative resident slot.
     pub fn logical_column(&self, id: &str) -> Option<crate::LogicalColumn<'_>> {
         self.streaming_sources

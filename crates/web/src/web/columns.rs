@@ -236,37 +236,22 @@ impl FiggyChart {
     pub(super) fn upsert_column_atomic(
         &mut self,
         id: &str,
-        len: usize,
         source: ColumnUploadSource<'_>,
     ) -> Result<(), JsValue> {
-        // Everything installed after the renderer commit is prepared here,
-        // including the checked revision successor and collection capacity.
-        let metadata = prepare_column_metadata(
-            &self.columns,
-            &self.column_revisions,
-            self.next_column_revision,
-            id,
-            len,
-        )
-        .map_err(js_err)?;
-
         let guard = match source {
             ColumnUploadSource::Scalar(source) => self.renderer.begin_upsert_column(id, source),
             ColumnUploadSource::HiLo(source) => self.renderer.begin_upsert_hilo_column(id, source),
         }
         .map_err(column_registration_error)?;
         guard.commit();
-        self.columns = metadata.columns;
-        self.column_revisions = metadata.revisions;
-        self.next_column_revision = metadata.next_revision;
         Ok(())
     }
 
-    /// Upload a validated batch and install its registry metadata.
+    /// Upload a validated batch.
     ///
     /// Generic over the adapter so f32 and f64 share one commit without boxing
     /// a source per column — the only per-column allocations on this path are
-    /// the two `Vec`s and the metadata maps, all proportional to the *column*
+    /// the two `Vec`s, all proportional to the *column*
     /// count and independent of `values_per_column`.
     ///
     /// **No series-extent refresh**, for the reason `Renderer::add_columns`
@@ -277,17 +262,8 @@ impl FiggyChart {
     pub(super) fn commit_column_batch<S: ColumnSource>(
         &mut self,
         ids: &[String],
-        len: usize,
         adapters: &[S],
     ) -> Result<(), JsValue> {
-        let metadata = prepare_batch_column_metadata(
-            &self.columns,
-            &self.column_revisions,
-            self.next_column_revision,
-            ids,
-            len,
-        )
-        .map_err(js_err)?;
         let mut refs: Vec<(&str, &dyn ColumnSource)> = Vec::new();
         refs.try_reserve_exact(ids.len()).map_err(js_err)?;
         refs.extend(
@@ -298,9 +274,6 @@ impl FiggyChart {
         self.renderer
             .add_columns(&refs)
             .map_err(column_registration_error)?;
-        self.columns = metadata.columns;
-        self.column_revisions = metadata.revisions;
-        self.next_column_revision = metadata.next_revision;
         Ok(())
     }
 }
@@ -312,28 +285,28 @@ impl FiggyChart {
     /// Register a new `Float32Array` column. Existing ids are rejected.
     pub fn register_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
         validate_column_registry_action(
-            self.columns.contains_key(id),
+            self.renderer.logical_column(id).is_some(),
             ColumnRegistryAction::Register,
         )
         .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         validate_column_data_len(data.len())
             .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         let column = BorrowedF32Column::new(data);
-        self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
+        self.upsert_column_atomic(id, ColumnUploadSource::Scalar(&column))
     }
 
     /// Register a new `Float64Array` column as GPU `(hi, lo)` pairs.
     /// Existing ids are rejected.
     pub fn register_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
         validate_column_registry_action(
-            self.columns.contains_key(id),
+            self.renderer.logical_column(id).is_some(),
             ColumnRegistryAction::Register,
         )
         .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         validate_column_data_len(data.len())
             .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         let column = BorrowedF64Column::new(data);
-        self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
+        self.upsert_column_atomic(id, ColumnUploadSource::HiLo(&column))
     }
 
     /// Register many new columns from **one** flat `Float32Array`.
@@ -357,15 +330,20 @@ impl FiggyChart {
         data: &[f32],
         values_per_column: usize,
     ) -> Result<(), JsValue> {
-        validate_column_batch(&self.columns, &ids, values_per_column, data.len())
-            .map_err(js_err)?;
+        validate_column_batch(
+            |id| self.renderer.logical_column(id).is_some(),
+            &ids,
+            values_per_column,
+            data.len(),
+        )
+        .map_err(js_err)?;
         let mut adapters = Vec::new();
         adapters.try_reserve_exact(ids.len()).map_err(js_err)?;
         adapters.extend(
             data.chunks_exact(values_per_column)
                 .map(BorrowedF32Column::new),
         );
-        self.commit_column_batch(&ids, values_per_column, &adapters)
+        self.commit_column_batch(&ids, &adapters)
     }
 
     /// Register many new columns from **one** flat `Float64Array`.
@@ -379,43 +357,48 @@ impl FiggyChart {
         data: &[f64],
         values_per_column: usize,
     ) -> Result<(), JsValue> {
-        validate_column_batch(&self.columns, &ids, values_per_column, data.len())
-            .map_err(js_err)?;
+        validate_column_batch(
+            |id| self.renderer.logical_column(id).is_some(),
+            &ids,
+            values_per_column,
+            data.len(),
+        )
+        .map_err(js_err)?;
         let mut adapters = Vec::new();
         adapters.try_reserve_exact(ids.len()).map_err(js_err)?;
         adapters.extend(
             data.chunks_exact(values_per_column)
                 .map(BorrowedSplitF64Column::new),
         );
-        self.commit_column_batch(&ids, values_per_column, &adapters)
+        self.commit_column_batch(&ids, &adapters)
     }
 
     /// Atomically replace an existing column from a `Float32Array`.
     /// Missing ids are rejected; every accepted call performs an upload.
     pub fn update_register_column_f32(&mut self, id: &str, data: &[f32]) -> Result<(), JsValue> {
         validate_column_registry_action(
-            self.columns.contains_key(id),
+            self.renderer.logical_column(id).is_some(),
             ColumnRegistryAction::Update,
         )
         .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         validate_column_data_len(data.len())
             .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         let column = BorrowedF32Column::new(data);
-        self.upsert_column_atomic(id, data.len(), ColumnUploadSource::Scalar(&column))
+        self.upsert_column_atomic(id, ColumnUploadSource::Scalar(&column))
     }
 
     /// Atomically replace an existing column from a `Float64Array` as
     /// GPU `(hi, lo)` pairs. Every accepted call performs an upload.
     pub fn update_register_column_f64(&mut self, id: &str, data: &[f64]) -> Result<(), JsValue> {
         validate_column_registry_action(
-            self.columns.contains_key(id),
+            self.renderer.logical_column(id).is_some(),
             ColumnRegistryAction::Update,
         )
         .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         validate_column_data_len(data.len())
             .map_err(|reason| js_err(format!("column '{id}' {reason}")))?;
         let column = BorrowedF64Column::new(data);
-        self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
+        self.upsert_column_atomic(id, ColumnUploadSource::HiLo(&column))
     }
 
     /// Register or replace the box plot record `id` (the schema
@@ -435,7 +418,7 @@ impl FiggyChart {
         use renderer::{BOX_PLOT_RECORD, MAX_RECORD_FIELDS};
         use wasm_bindgen::JsCast;
 
-        if self.columns.contains_key(id) {
+        if self.renderer.logical_column(id).is_some() {
             return Err(js_err(format!(
                 "record '{id}': the id is a registered column"
             )));
@@ -508,7 +491,7 @@ impl FiggyChart {
         values: &[f64],
         offsets: &[f64],
     ) -> Result<(), JsValue> {
-        if self.columns.contains_key(id) {
+        if self.renderer.logical_column(id).is_some() {
             return Err(js_err(format!(
                 "ragged column '{id}': the id is a registered column"
             )));
@@ -559,15 +542,6 @@ impl FiggyChart {
                 .filter(|(_, keep)| **keep)
                 .map(|(series, _)| series.clone()),
         );
-        let mut next_labels = Vec::new();
-        next_labels.try_reserve(self.labels.len()).map_err(js_err)?;
-        next_labels.extend(
-            self.labels
-                .iter()
-                .zip(&keep)
-                .filter(|(_, keep)| **keep)
-                .map(|(label, _)| label.clone()),
-        );
         let mut next_config = self.chart_config()?.clone();
         if self.legend_auto_managed {
             for &index in removed.iter().rev() {
@@ -593,9 +567,6 @@ impl FiggyChart {
             return Ok(false);
         }
 
-        self.columns.remove(id);
-        self.column_revisions.remove(id);
-        self.labels = next_labels;
         if self.renderer.pool().slot(id).is_some() {
             return Err(js_err(
                 "internal: the renderer reported a removed column that is still in the pool",
@@ -615,24 +586,18 @@ impl FiggyChart {
         let demo_sin = BorrowedCastF32Column::new(&ys);
         let demo_t = BorrowedCastF32Column::new(&ts);
         let demo_rc = BorrowedCastF32Column::new(&vs);
-        let metadata = prepare_demo_column_metadata(
-            &self.columns,
-            &self.column_revisions,
-            self.next_column_revision,
-            [xs.len(), ys.len(), ts.len(), vs.len()],
-        )
-        .map_err(js_err)?;
         let declarations = prepare_demo_declarations(
             self.chart_config()?,
             self.chart_series()?,
-            &self.labels,
             self.cycle,
             self.color_seq,
         )
         .map_err(js_err)?;
         for item in &declarations.series {
             for id in referenced_columns(item) {
-                if !metadata.columns.contains_key(id) {
+                // Every column a demo series reads is either one of the
+                // demo's own or already registered.
+                if !DEMO_COLUMN_IDS.contains(&id) && self.renderer.logical_column(id).is_none() {
                     return Err(js_err(format!(
                         "series '{}' references unregistered column '{id}'",
                         item.series_id
@@ -646,7 +611,6 @@ impl FiggyChart {
         let PreparedDemoDeclarations {
             config,
             series,
-            labels,
             color_seq,
         } = declarations;
         let guard = self
@@ -672,10 +636,6 @@ impl FiggyChart {
         }
 
         guard.commit();
-        self.columns = metadata.columns;
-        self.column_revisions = metadata.revisions;
-        self.next_column_revision = metadata.next_revision;
-        self.labels = labels;
         self.color_seq = color_seq;
         Ok(())
     }
