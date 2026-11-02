@@ -108,8 +108,8 @@ fn fixture_with_display(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::new(0.0, 0.2, 0.7, 0.4),
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 0.0,
@@ -127,8 +127,10 @@ fn fixture_with_display(
                 }]),
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     };
     let bar = SeriesConfig {
         source_id: Some("source".into()),
@@ -806,7 +808,12 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         &[("x", 1), ("y", 1)],
     );
     let mut style_is_x = point.clone();
-    if let DataRenderType::Scatter { scatter } = &mut style_is_x.render_type {
+    if let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+    }) = &mut style_is_x.render_type
+    {
         scatter.point_style_index_column = Some("x".into());
     }
     check(
@@ -837,19 +844,20 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z2".into(), "z3".into()],
                 orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
                 grid_layout: crate::data_config::GridLayout::Edges,
             },
-            fill: crate::data_config::FieldFillConfig {
+            fill: Some(crate::data_config::FieldFillConfig {
                 mode: crate::data_config::FillMode::Continuous,
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     };
     let len = |_: &str| Some(5u64);
     for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {

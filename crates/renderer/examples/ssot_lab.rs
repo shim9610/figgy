@@ -382,31 +382,54 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
         0 => (
             DrawStyle::Precise,
             "Precise — dashed line (GPU arc scan)",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Dash, Color::from_rgb8(100, 180, 255), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Dash,
+                    Color::from_rgb8(100, 180, 255),
+                    2.0,
+                )),
+                errors: None,
+            }),
         ),
         1 => (
             DrawStyle::Sketch(SketchOptions::default()),
             "Sketch — arc-parameterized wobble",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 150, 110), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(255, 150, 110),
+                    2.0,
+                )),
+                errors: None,
+            }),
         ),
         2 => (
             DrawStyle::Milkyway(MilkywayOptions::default()),
             "Milkyway — ribbon + indirect star pass",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(190, 150, 255), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(190, 150, 255),
+                    2.0,
+                )),
+                errors: None,
+            }),
         ),
         _ => (
             DrawStyle::Constellation(ConstellationOptions::default()),
             "Constellation — PSF stars",
-            DataRenderType::ScatterLine {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 214, 130), 1.5),
-                scatter: scatter(Color::from_rgb8(255, 214, 130), 3.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter(Color::from_rgb8(255, 214, 130), 3.0)),
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(255, 214, 130),
+                    1.5,
+                )),
+                errors: None,
+            }),
         ),
     }
 }

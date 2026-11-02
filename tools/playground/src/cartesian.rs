@@ -1506,25 +1506,21 @@ fn draw_style_index(style: &DrawStyle) -> usize {
 
 fn render_type_name(t: &DataRenderType) -> &'static str {
     match t {
-        DataRenderType::Scatter { .. } => "scatter",
-        DataRenderType::Line { .. } => "line",
-        DataRenderType::ScatterLine { .. } => "scatter+line",
-        DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. } => "scatter+errors",
-        DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. } => "line+scatter+errors",
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: None, errors: None }) => "scatter",
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. }) => "line",
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: Some(_), errors: None }) => "scatter+line",
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: None, errors: Some(_) }) => "scatter+errors",
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: Some(_), errors: Some(_) }) => "line+scatter+errors",
         DataRenderType::Histogram { .. } => "histogram",
         DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::BoxPlot { .. } => "box plot",
         DataRenderType::RangeBars { .. } => "range bars",
         DataRenderType::Ternary { .. } => "ternary",
         DataRenderType::Radar { .. } => "radar",
-        DataRenderType::Heatmap { .. } => "heatmap",
+        DataRenderType::Field(renderer::data_config::FieldSeries { contour: None, .. }) => "heatmap",
         DataRenderType::RgbImage { .. } => "image",
-        DataRenderType::Contour { .. } => "contour",
-        DataRenderType::HeatmapContour { .. } => "heatmap+contour",
+        DataRenderType::Field(renderer::data_config::FieldSeries { fill: None, .. }) => "contour",
+        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(_), contour: Some(_), surface: _ }) => "heatmap+contour",
         DataRenderType::Vector { .. } => "vector",
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
@@ -1631,14 +1627,7 @@ fn scatter_controls(
 /// The scatter style of a render type that draws markers.
 fn scatter_of(t: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
     match t {
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterLine { scatter, .. }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarX { scatter, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
         _ => None,
     }
 }
@@ -1802,7 +1791,7 @@ fn series_controls(
     r: &Renderer,
 ) {
     match &mut s.render_type {
-        DataRenderType::Line { line } => line_controls(ui, line),
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(line), errors: None }) => line_controls(ui, line),
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
         DataRenderType::Parallel { line, .. } => line_controls(ui, line),
@@ -1815,41 +1804,20 @@ fn series_controls(
                 line_controls(ui, line);
             }
         }
-        DataRenderType::Scatter { scatter } => scatter_controls(ui, scatter, columns, r),
-        DataRenderType::ScatterLine { scatter, line } => {
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: None }) => scatter_controls(ui, scatter, columns, r),
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: None }) => {
             scatter_controls(ui, scatter, columns, r);
             line_controls(ui, line);
         }
-        DataRenderType::ScatterErrorbarX {
-            scatter, err_style, ..
-        }
-        | DataRenderType::ScatterErrorbarY {
-            scatter, err_style, ..
-        }
-        | DataRenderType::ScatterErrorbarXY {
-            scatter, err_style, ..
-        } => {
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: None, style: err_style }) })
+        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: None, y: Some(_), style: err_style }) })
+        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: Some(_), style: err_style }) }) => {
             scatter_controls(ui, scatter, columns, r);
             error_controls(ui, err_style);
         }
-        DataRenderType::LineScatterErrorbarX {
-            scatter,
-            line,
-            err_style,
-            ..
-        }
-        | DataRenderType::LineScatterErrorbarY {
-            scatter,
-            line,
-            err_style,
-            ..
-        }
-        | DataRenderType::LineScatterErrorbarXY {
-            scatter,
-            line,
-            err_style,
-            ..
-        } => {
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: None, style: err_style }) })
+        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: None, y: Some(_), style: err_style }) })
+        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: Some(_), style: err_style }) }) => {
             scatter_controls(ui, scatter, columns, r);
             line_controls(ui, line);
             error_controls(ui, err_style);
@@ -1959,7 +1927,7 @@ fn series_controls(
             slider(ui, "marker size", &mut size, 1.0..=24.0);
             style.marker_size_px = Some(size);
         }
-        DataRenderType::Heatmap { fill, .. } => {
+        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(fill), contour: None, surface: _ }) => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
             choice(
                 ui,
@@ -1989,8 +1957,8 @@ fn series_controls(
                 ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
             });
         }
-        DataRenderType::Contour { contour, .. } => contour_controls(ui, contour, config),
-        DataRenderType::HeatmapContour { fill, contour, .. } => {
+        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: None, contour: Some(contour), .. }) => contour_controls(ui, contour, config),
+        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(fill), contour: Some(contour), surface: _ }) => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
             choice(
                 ui,
@@ -2187,10 +2155,8 @@ fn layer_columns<'a>(
         .filter(|s| {
             !matches!(
                 s.render_type,
-                DataRenderType::Heatmap { .. }
+                DataRenderType::Field(_)
                     | DataRenderType::RgbImage { .. }
-                    | DataRenderType::Contour { .. }
-                    | DataRenderType::HeatmapContour { .. }
             )
         })
         .collect();
@@ -2303,7 +2269,7 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
 /// direction. Both ends of a band must live in the same chart.
 fn fill_partners(series: &[SeriesConfig], id: &str) -> Vec<String> {
     let fills_to = |s: &SeriesConfig| match &s.render_type {
-        DataRenderType::Line { line } | DataRenderType::ScatterLine { line, .. } => {
+        DataRenderType::Xy(renderer::data_config::XySeries { line: Some(line), errors: None, .. }) => {
             match &line.fill {
                 Some(LineFill::ToSeries(other)) => Some(other.clone()),
                 _ => None,
@@ -2636,7 +2602,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     // The field scene with its label workarounds: no box, no level 0.
     {
         let mut scene = scenes::build(r, SceneKind::Field, big_data::START_POINTS).map_err(e)?;
-        if let DataRenderType::HeatmapContour { contour, .. } = &mut scene.series[0].render_type {
+        if let DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(_), contour: Some(contour), surface: _ }) = &mut scene.series[0].render_type {
             contour.levels.retain(|l| *l != 0.0);
             if let Some(l) = contour.labels.as_mut() {
                 l.bg_color = None;
@@ -2698,9 +2664,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             std::fs::write(dir.join(format!("{name}.png")), png).map_err(|e| e.to_string())?;
         }
         let mut scatter = scene.series.clone();
-        scatter[0].render_type = DataRenderType::Scatter {
-            scatter: scenes::scatter_style(renderer::Color::BLACK, ScatterShape::Circle, 3.0),
-        };
+        scatter[0].render_type = DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scenes::scatter_style(renderer::Color::BLACK, ScatterShape::Circle, 3.0)), line: None, errors: None });
         if r.set_chart_series(id, scatter).is_ok() {
             return Err("a line offset member without a line was accepted".into());
         }

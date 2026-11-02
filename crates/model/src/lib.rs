@@ -48,11 +48,11 @@ pub use data_config::{
     BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap,
-    RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, SizeScale,
-    StreamlineArrows, StreamlinesRef, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
-    VectorStyle,
+    DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorBars,
+    ErrorRef, FieldSeries, LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LEVELS,
+    PointColorMap, PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig,
+    SeriesRef, SizeScale, StreamlineArrows, StreamlinesRef, VectorColorMap, VectorComponents,
+    VectorPivot, VectorScale, VectorStyle, XySeries,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

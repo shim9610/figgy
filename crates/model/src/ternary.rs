@@ -569,7 +569,14 @@ mod tests {
         let mut same = ok.clone();
         same.y_column = "c".into();
         assert!(err(same).contains("three distinct"));
-        let plain = series("p", DataRenderType::Scatter { scatter: scatter() });
+        let plain = series(
+            "p",
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+            }),
+        );
         assert!(err(plain).contains("only ternary series"));
         let mut rectangular = config.clone();
         rectangular.ternary = None;

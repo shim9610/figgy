@@ -188,19 +188,20 @@ fn hexbin(ids: &[String], orientation: MatrixOrientation) -> SeriesConfig {
         label: None,
         x_column: "hx".into(),
         y_column: "hy".into(),
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids.to_vec(),
                 orientation,
                 grid_layout: GridLayout::Hexagonal,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     }
 }
 
@@ -633,7 +634,13 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
     lone.y_column = "lone".into();
     assert!(reason(&mut r, chart.config(), lone).contains("y coordinates (\"lone\") are uniform"));
     let mut interpolated = hexbin(&ids, MatrixOrientation::ColumnsAreX);
-    if let DataRenderType::Heatmap { fill, .. } = &mut interpolated.render_type {
+    if let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: Some(fill),
+        contour: None,
+        surface: _,
+    }) = &mut interpolated.render_type
+    {
         fill.shading = Shading::Interpolated;
     }
     assert_eq!(
@@ -641,18 +648,18 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
         "a hexagonal grid is shaded flat"
     );
     let contour = SeriesConfig {
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids.clone(),
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Hexagonal,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels: vec![5.0],
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -664,9 +671,9 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
                 },
                 per_level_color: None,
                 labels: None,
-            },
+            }),
             surface: None,
-        },
+        }),
         ..hexbin(&ids, MatrixOrientation::ColumnsAreX)
     };
     assert_eq!(

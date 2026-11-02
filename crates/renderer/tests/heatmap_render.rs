@@ -201,16 +201,17 @@ fn heatmap(
         y_column: "gy".into(),
         z_column: None,
         render_type: if levels.is_empty() {
-            DataRenderType::Heatmap {
+            DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix,
-                fill,
+                fill: Some(fill),
+                contour: None,
                 surface: None,
-            }
+            })
         } else {
-            DataRenderType::HeatmapContour {
+            DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix,
-                fill,
-                contour: ContourConfig {
+                fill: Some(fill),
+                contour: Some(ContourConfig {
                     levels,
                     line: DataLineStyleConfig {
                         line_style: LineStylePreset::Solid,
@@ -222,9 +223,9 @@ fn heatmap(
                     },
                     per_level_color: None,
                     labels: None,
-                },
+                }),
                 surface: None,
-            }
+            })
         },
     }
 }

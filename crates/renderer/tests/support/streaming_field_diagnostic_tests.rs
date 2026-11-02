@@ -360,19 +360,20 @@ fn heatmap_browser_fixture_backend_diagnostic() {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Heatmap {
+            render_type: DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: crate::data_config::MatrixRef {
                     columns: vec!["z0".into(), "z1".into(), "z0".into()],
                     orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
                     grid_layout: crate::data_config::GridLayout::Centers,
                 },
-                fill: crate::data_config::FieldFillConfig {
+                fill: Some(crate::data_config::FieldFillConfig {
                     mode: crate::data_config::FillMode::Continuous,
                     shading: crate::data_config::Shading::Interpolated,
                     opacity: 0.63,
-                },
+                }),
+                contour: None,
                 surface: None,
-            },
+            }),
         }];
         let mut resident = make();
         for (id, values) in &columns {

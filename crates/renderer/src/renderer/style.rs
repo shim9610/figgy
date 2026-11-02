@@ -951,20 +951,25 @@ pub fn draw_style_supports(style: &DrawStyle, render_type: &DataRenderType) -> b
 /// stopping here makes it a decision.
 pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
     match rt {
-        DataRenderType::ScatterLine { .. } => true,
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: Some(_),
+            errors: None,
+        }) => true,
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
+        | DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: None,
+            errors: None,
+        })
+        | DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            errors: Some(_),
+            ..
+        })
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }

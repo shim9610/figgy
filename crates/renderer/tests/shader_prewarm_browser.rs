@@ -129,13 +129,14 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels: vec![0.8, 1.6, 2.4],
                 line: DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
@@ -157,8 +158,9 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
                     bg_color: Some(Color::new(1., 0., 1., 1.)),
                     bg_padding_px: 2.,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     };
     let image = renderer
         .export_rgba(

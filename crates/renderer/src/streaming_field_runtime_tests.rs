@@ -122,7 +122,7 @@ fn setup_columns_with_budget(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: crate::data_config::MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z0".into()],
                 orientation: if columns_are_y {
@@ -136,7 +136,7 @@ fn setup_columns_with_budget(
                     crate::data_config::GridLayout::Edges
                 },
             },
-            fill: crate::data_config::FieldFillConfig {
+            fill: Some(crate::data_config::FieldFillConfig {
                 mode: crate::data_config::FillMode::Continuous,
                 shading: if interpolated {
                     crate::data_config::Shading::Interpolated
@@ -144,9 +144,10 @@ fn setup_columns_with_budget(
                     crate::data_config::Shading::Flat
                 },
                 opacity: 0.63,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     }];
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())
@@ -1017,7 +1018,7 @@ fn setup_grid(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: crate::data_config::MatrixRef {
                 columns: z_ids.iter().map(|id| (*id).into()).collect(),
                 orientation: if columns_are_y {
@@ -1031,7 +1032,7 @@ fn setup_grid(
                     crate::data_config::GridLayout::Edges
                 },
             },
-            fill: crate::data_config::FieldFillConfig {
+            fill: Some(crate::data_config::FieldFillConfig {
                 mode: crate::data_config::FillMode::Continuous,
                 shading: if interpolated {
                     crate::data_config::Shading::Interpolated
@@ -1039,9 +1040,10 @@ fn setup_grid(
                     crate::data_config::Shading::Flat
                 },
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     }];
     let id = renderer
         .register_chart(chart.config().clone(), series.clone())

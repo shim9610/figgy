@@ -537,33 +537,51 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "sin_area",
             "ln_x",
             "ln_sin",
-            DataRenderType::Line { line: area },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(area),
+                errors: None,
+            }),
         ),
         series(
             "cos_dashed",
             "ln_x",
             "ln_cos",
-            DataRenderType::Line { line: dashed },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(dashed),
+                errors: None,
+            }),
         ),
         series(
             "band_hi",
             "ln_x",
             "ln_hi",
-            DataRenderType::Line { line: band },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(band),
+                errors: None,
+            }),
         ),
         series(
             "band_lo",
             "ln_x",
             "ln_lo",
-            DataRenderType::Line {
-                line: line_style(green, 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(green, 1.5)),
+                errors: None,
+            }),
         ),
         series(
             "step_mid",
             "ln_step_x",
             "ln_step_y",
-            DataRenderType::Line { line: step },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(step),
+                errors: None,
+            }),
         ),
     ];
     let mut config = with_math_title(
@@ -639,29 +657,43 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "cloud",
             "sc_cx",
             "sc_cy",
-            DataRenderType::Scatter {
-                scatter: scatter_style(
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(
                     Color::from_rgba(0.09, 0.75, 0.81, 0.55),
                     ScatterShape::DiamondFilled,
                     5.0,
-                ),
-            },
+                )),
+                line: None,
+                errors: None,
+            }),
         ),
-        series("fit", "sc_x", "sc_fit", DataRenderType::Line { line: fit }),
+        series(
+            "fit",
+            "sc_x",
+            "sc_fit",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(fit),
+                errors: None,
+            }),
+        ),
         series(
             "measured",
             "sc_x",
             "sc_y",
-            DataRenderType::ScatterErrorbarXY {
-                scatter: scatter_style(red, ScatterShape::CircleFilled, 7.0),
-                err_x: ErrorRef::Symmetric {
-                    column: "sc_ex".into(),
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "sc_ey".into(),
-                },
-                err_style: err,
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(red, ScatterShape::CircleFilled, 7.0)),
+                line: None,
+                errors: Some(renderer::data_config::ErrorBars {
+                    x: Some(ErrorRef::Symmetric {
+                        column: "sc_ex".into(),
+                    }),
+                    y: Some(ErrorRef::Symmetric {
+                        column: "sc_ey".into(),
+                    }),
+                    style: err,
+                }),
+            }),
         ),
     ];
     let _ = teal;
@@ -746,13 +778,21 @@ fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "depth",
             "vm_x1",
             "vm_y1",
-            DataRenderType::Scatter { scatter: coloured },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(coloured),
+                line: None,
+                errors: None,
+            }),
         ),
         series(
             "bubbles",
             "vm_x2",
             "vm_y2",
-            DataRenderType::Scatter { scatter: bubbles },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(bubbles),
+                line: None,
+                errors: None,
+            }),
         ),
     ];
     let mut config = base_config("Scatter: colour and size value maps", "x", "y");
@@ -861,18 +901,18 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "field",
         "fld_x",
         "fld_y",
-        DataRenderType::HeatmapContour {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels: vec![0.0, 0.2, 0.4, 0.6, 0.8],
                 line: line_style(ink, 1.2),
                 per_level_color: None,
@@ -887,9 +927,9 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     bg_color: None,
                     bg_padding_px: 2.0,
                 }),
-            },
+            }),
             surface: None,
-        },
+        }),
     )];
     Ok(CartesianScene {
         config: chart.config().clone(),
@@ -928,16 +968,21 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "pattern",
             "polar_deg",
             "polar_pattern",
-            DataRenderType::Line { line: filled },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(filled),
+                errors: None,
+            }),
         ),
         series(
             "rose",
             "polar_rose_deg",
             "polar_rose",
-            DataRenderType::ScatterLine {
-                scatter: scatter_style(red, ScatterShape::CircleFilled, 6.0),
-                line: line_style(red, 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(red, ScatterShape::CircleFilled, 6.0)),
+                line: Some(line_style(red, 1.5)),
+                errors: None,
+            }),
         ),
     ];
     let mut config = base_config("Polar: pattern and rose", "Angle", "Radius");
@@ -1035,15 +1080,16 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "speed",
         "vf_x",
         "vf_y",
-        DataRenderType::Heatmap {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: grid(&s_ids),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 0.3,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     );
     // The gradient grid: data-scaled, so the tips follow the axes when the
     // view pans or zooms, and coloured by the speed grid.
@@ -1237,9 +1283,11 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "sigma",
         "log_e",
         "log_sigma",
-        DataRenderType::Line {
-            line: line_style(Color::from_rgb8(60, 160, 90), 2.5),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line_style(Color::from_rgb8(60, 160, 90), 2.5)),
+            errors: None,
+        }),
     )];
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
@@ -1294,18 +1342,21 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "budget",
             "cat_x",
             "cat_budget",
-            DataRenderType::ScatterLine {
-                scatter: scatter_style(blue, ScatterShape::CircleFilled, 9.0),
-                line: line_style(blue, 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(blue, ScatterShape::CircleFilled, 9.0)),
+                line: Some(line_style(blue, 2.0)),
+                errors: None,
+            }),
         ),
         series(
             "spent",
             "cat_x",
             "cat_spent",
-            DataRenderType::Scatter {
-                scatter: scatter_style(orange, ScatterShape::Diamond, 11.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(orange, ScatterShape::Diamond, 11.0)),
+                line: None,
+                errors: None,
+            }),
         ),
     ];
     Ok(CartesianScene {
@@ -1351,10 +1402,11 @@ fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "optical_depth",
         "ll_t",
         "ll_tau",
-        DataRenderType::ScatterLine {
-            scatter: points,
-            line: line_style(blue, 1.5),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(points),
+            line: Some(line_style(blue, 1.5)),
+            errors: None,
+        }),
     )];
 
     let mut config = base_config("Aerosol optical depth over three days", "Time (UTC)", "");
@@ -1472,18 +1524,21 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "temperature",
             "day_hour",
             "day_temp",
-            DataRenderType::Line {
-                line: line_style(Color::from_rgb8(34, 104, 198), 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
+                errors: None,
+            }),
         ),
         series(
             "pressure",
             "day_hour",
             "day_press",
-            DataRenderType::ScatterLine {
-                scatter: scatter_style(rust, ScatterShape::Circle, 5.0),
-                line: line_style(rust, 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(rust, ScatterShape::Circle, 5.0)),
+                line: Some(line_style(rust, 1.5)),
+                errors: None,
+            }),
         ),
     ];
     Ok(CartesianScene {
@@ -1560,41 +1615,51 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "temperature",
             "day_hour",
             "day_temp",
-            DataRenderType::Line {
-                line: line_style(Color::from_rgb8(34, 104, 198), 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
+                errors: None,
+            }),
         ),
         series(
             "pressure",
             "day_hour",
             "day_press",
-            DataRenderType::Line {
-                line: line_style(rust, 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(rust, 2.0)),
+                errors: None,
+            }),
         ),
         series(
             "humidity_t",
             "day_temp",
             "day_hum",
-            DataRenderType::Scatter {
-                scatter: scatter_style(green, ScatterShape::TriangleFilled, 6.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(green, ScatterShape::TriangleFilled, 6.0)),
+                line: None,
+                errors: None,
+            }),
         ),
         series(
             "daytime",
             "day_hour",
             "day_press",
-            DataRenderType::Line {
-                line: line_style(rust, 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(rust, 2.0)),
+                errors: None,
+            }),
         ),
         series(
             "daytime_humidity",
             "day_hour",
             "day_hum",
-            DataRenderType::Line {
-                line: line_style(green, 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(green, 2.0)),
+                errors: None,
+            }),
         ),
     ];
     Ok(CartesianScene {
@@ -1716,9 +1781,11 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "charge",
         "ann_t",
         "ann_v",
-        DataRenderType::Line {
-            line: line_style(Color::from_rgb8(220, 90, 60), 2.0),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line_style(Color::from_rgb8(220, 90, 60), 2.0)),
+            errors: None,
+        }),
     )];
     Ok(CartesianScene {
         config: with_legend(config, &series),
@@ -1769,7 +1836,16 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }
         let id = format!("T{}", 300 + 25 * k);
         members.push(id.clone());
-        traces.push(series(&id, "os_x", &column, DataRenderType::Line { line }));
+        traces.push(series(
+            &id,
+            "os_x",
+            &column,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
+        ));
     }
     let mut config = base_config(
         "Offset spectra: band drift with temperature",
@@ -1964,9 +2040,21 @@ pub mod big_data {
         let scatter =
             super::scatter_style(Color::from_rgb8(214, 39, 40), ScatterShape::Circle, 2.0);
         let render_type = match mode {
-            Mode::Line => DataRenderType::Line { line },
-            Mode::Scatter => DataRenderType::Scatter { scatter },
-            Mode::Both => DataRenderType::ScatterLine { scatter, line },
+            Mode::Line => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
+            Mode::Scatter => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: None,
+                errors: None,
+            }),
+            Mode::Both => DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(line),
+                errors: None,
+            }),
         };
         vec![super::series("samples", X_ID, Y_ID, render_type)]
     }
@@ -2865,8 +2953,8 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "trajectory",
         "sf_tx",
         "sf_ty",
-        DataRenderType::ScatterLine {
-            scatter: renderer::data_config::DataScatterStyleConfig {
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(renderer::data_config::DataScatterStyleConfig {
                 point_color: Color::from_rgb8(220, 60, 40),
                 point_shape: renderer::ScatterShape::CircleFilled,
                 point_size: 3.5,
@@ -2875,9 +2963,10 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: line_style(Color::from_rgb8(220, 60, 40), 1.5),
-        },
+            }),
+            line: Some(line_style(Color::from_rgb8(220, 60, 40), 1.5)),
+            errors: None,
+        }),
     );
     trajectory.z_column = Some("sf_tz".into());
     let series = vec![
@@ -2885,18 +2974,18 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "surface",
             "sf_x",
             "sf_y",
-            DataRenderType::HeatmapContour {
+            DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: MatrixRef {
                     columns: columns.iter().map(|c| c.as_str().into()).collect(),
                     orientation: MatrixOrientation::ColumnsAreX,
                     grid_layout: GridLayout::Centers,
                 },
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: Shading::Interpolated,
                     opacity: 1.0,
-                },
-                contour: {
+                }),
+                contour: Some({
                     let mut bar = default::default_colorbar_options();
                     bar.axis.min = -0.8;
                     bar.axis.max = 1.3;
@@ -2904,7 +2993,7 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                         .set_nice_levels(&bar.axis, 8)
                         .expect("the surface scene's colourbar range gives nice levels");
                     contour
-                },
+                }),
                 surface: Some(SurfaceStyle {
                     wireframe: Some(SurfaceWireframe {
                         color: Color::new(0.1, 0.1, 0.1, 0.35),
@@ -2913,7 +3002,7 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     material: renderer::Material::Matte,
                     ..SurfaceStyle::default()
                 }),
-            },
+            }),
         ),
         trajectory,
     ];
@@ -3419,19 +3508,20 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         "hexbin",
         "hexbin_x",
         "hexbin_y",
-        DataRenderType::Heatmap {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Hexagonal,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     )];
     Ok(CartesianScene {
         config: chart.config().clone(),
@@ -3655,13 +3745,15 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             "marks",
             "img_mx",
             "img_my",
-            DataRenderType::Scatter {
-                scatter: scatter_style(
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(
                     Color::from_rgb8(20, 20, 20),
                     ScatterShape::DiamondFilled,
                     6.0,
-                ),
-            },
+                )),
+                line: None,
+                errors: None,
+            }),
         ),
     ];
     Ok(CartesianScene {

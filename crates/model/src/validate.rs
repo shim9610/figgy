@@ -212,6 +212,17 @@ impl Config {
             {
                 return Err(fail("series_id must be unique within a chart"));
             }
+            // A composed kind draws only the combinations it has a form for.
+            let composition = match &item.render_type {
+                DataRenderType::Xy(xy) => xy.validate(),
+                DataRenderType::Field(field) => field.validate(),
+                _ => Ok(()),
+            };
+            composition.map_err(|reason| ConfigError {
+                series_id: Some(item.series_id.clone()),
+                field: "render_type",
+                reason,
+            })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>;
         let rules: [(&'static str, Rule); 10] = [
@@ -269,10 +280,11 @@ impl Config {
             return Ok(());
         };
         let line = match &item.render_type {
-            DataRenderType::Scatter { .. } | DataRenderType::CategoryBars { .. } => None,
-            DataRenderType::Line { line } | DataRenderType::ScatterLine { line, .. } => {
-                Some(line.interpolation.is_linear())
+            DataRenderType::Xy(xy) if xy.errors.is_some() => {
+                return Err("error bars are not drawn on polar axes");
             }
+            DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
+            DataRenderType::CategoryBars { .. } => None,
             DataRenderType::Radar { .. } => item
                 .render_type
                 .radar()
@@ -280,19 +292,8 @@ impl Config {
             DataRenderType::Histogram { .. } => {
                 return Err("histogram series are not drawn on polar axes");
             }
-            DataRenderType::Heatmap { .. }
-            | DataRenderType::RgbImage { .. }
-            | DataRenderType::HeatmapContour { .. }
-            | DataRenderType::Contour { .. } => {
+            DataRenderType::Field(_) | DataRenderType::RgbImage { .. } => {
                 return Err("field and contour series are not drawn on polar axes");
-            }
-            DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. } => {
-                return Err("error bars are not drawn on polar axes");
             }
             DataRenderType::Vector { .. } => {
                 return Err("vector series are not drawn on polar axes");
@@ -344,8 +345,8 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 3.0,
@@ -354,8 +355,10 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
         }
     }
 

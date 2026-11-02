@@ -821,9 +821,11 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         "a parallel series names one column per axis"
     );
     let mut plain_line = series("rows", &columns, RED, None);
-    plain_line.render_type = DataRenderType::Line {
-        line: line(RED, 1.0),
-    };
+    plain_line.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: None,
+        line: Some(line(RED, 1.0)),
+        errors: None,
+    });
     assert_eq!(
         reason(&mut r, &config, vec![plain_line]),
         "a parallel chart draws only parallel series"

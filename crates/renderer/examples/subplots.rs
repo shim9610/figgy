@@ -126,7 +126,16 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         let mut style = line(color, 3.);
         style.fill = Some(LineFill::ToBaseline(floor));
         style.fill_color = Some(Color::from_rgba(color.r, color.g, color.b, 0.1));
-        specs.push(series(id, "h", id, DataRenderType::Line { line: style }));
+        specs.push(series(
+            id,
+            "h",
+            id,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(style),
+                errors: None,
+            }),
+        ));
     }
     let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
     config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
@@ -266,9 +275,11 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             id,
             x,
             y,
-            DataRenderType::Line {
-                line: line(color, 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(color, 2.5)),
+                errors: None,
+            }),
         )
     };
     let specs = [

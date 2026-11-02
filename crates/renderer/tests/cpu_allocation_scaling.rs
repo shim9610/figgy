@@ -386,16 +386,18 @@ fn prepare_cost_is_independent_of_series_length() {
             x_column: x.to_string(),
             y_column: y.to_string(),
             z_column: None,
-            render_type: renderer::DataRenderType::Line {
-                line: renderer::DataLineStyleConfig {
+            render_type: renderer::DataRenderType::Xy(renderer::XySeries {
+                scatter: None,
+                line: Some(renderer::DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
                     line_color: renderer::Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         };
         let style = renderer.create_style_for_series(&series_config).unwrap();
         let series = [renderer::Series {

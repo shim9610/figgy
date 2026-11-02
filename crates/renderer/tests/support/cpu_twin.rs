@@ -540,11 +540,7 @@ fn extract_vector_points(rt: &DataRenderType) -> Option<&crate::data_config::Vec
 
 fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
     match rt {
-        DataRenderType::Line { line }
-        | DataRenderType::ScatterLine { line, .. }
-        | DataRenderType::LineScatterErrorbarX { line, .. }
-        | DataRenderType::LineScatterErrorbarY { line, .. }
-        | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(line),
+        DataRenderType::Xy(crate::data_config::XySeries { line: Some(line), .. }) => Some(line),
         // Exhaustive on purpose: a new render type must fail to compile here so
         // somebody decides whether picking should hit-test a line for it.
         //
@@ -552,15 +548,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         // vertex to snap to, and a matrix' `(x_column, y_column)` are grid
         // coordinates, so a "nearest point" would be a grid intersection the
         // user never plotted. Picking a cell or a level is a separate query.
-        DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
+        DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         // A category bar is picked per (category, series) bar by the typed
         // data pick, never as a point; so are a box and a range bar.
         | DataRenderType::CategoryBars { .. }
@@ -583,20 +574,11 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
 
 fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
     match rt {
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterLine { scatter, .. }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarX { scatter, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
-        DataRenderType::Line { .. }
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
@@ -1547,16 +1529,18 @@ mod tests {
             x_column: x.into(),
             y_column: y.into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         }
     }
 
@@ -1578,8 +1562,8 @@ mod tests {
             x_column: x.into(),
             y_column: y.into(),
             z_column: None,
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size,
@@ -1588,8 +1572,10 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
         }
     }
 
@@ -1607,8 +1593,8 @@ mod tests {
             x_column: x.into(),
             y_column: y.into(),
             z_column: None,
-            render_type: DataRenderType::ScatterErrorbarY {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size,
@@ -1617,20 +1603,24 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: err_y.into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: Color::BLACK,
-                    error_bar_width: 1.0,
-                    error_bar_cap_size: 6.0,
-                    cap_width: 1.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                line: None,
+                errors: Some(crate::data_config::ErrorBars {
+                    x: None,
+                    y: Some(ErrorRef::Symmetric {
+                        column: err_y.into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: Color::BLACK,
+                        error_bar_width: 1.0,
+                        error_bar_cap_size: 6.0,
+                        cap_width: 1.0,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
         }
     }
 
@@ -1713,7 +1703,12 @@ mod tests {
         config.left_y.max = 10.0;
         let columns = Columns::new(&[("x", &[0.0, 10.0]), ("y", &[5.0, 5.0])]);
         let mut series = line_series("wide", "x", "y");
-        let DataRenderType::Line { line } = &mut series.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }) = &mut series.render_type
+        else {
             unreachable!();
         };
         line.line_width = 10.0;
@@ -1756,7 +1751,17 @@ mod tests {
         let config = config();
         let columns = Columns::new(&[("x", &[5.0]), ("y", &[5.0]), ("ey", &[2.0])]);
         let mut series = scatter_errorbar_y_series("err", "x", "y", "ey", 0.0);
-        let DataRenderType::ScatterErrorbarY { scatter, .. } = &mut series.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: None,
+                    y: Some(_),
+                    style: _,
+                }),
+        }) = &mut series.render_type
+        else {
             unreachable!();
         };
         scatter.point_shape = ScatterShape::Circle;
@@ -1778,7 +1783,12 @@ mod tests {
             ("style", &[0.0, 1.0]),
         ]);
         let mut series = scatter_series_with_size("mapped", "x", "y", None, 0.0);
-        let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }) = &mut series.render_type
+        else {
             unreachable!();
         };
         scatter.point_style_index_column = Some("style".into());

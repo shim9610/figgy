@@ -31,6 +31,40 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Composed render types** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The nine marker / line / error-bar combinations of `DataRenderType`
+  (`Scatter`, `Line`, `ScatterLine`, `ScatterErrorbarX`, `ScatterErrorbarY`,
+  `ScatterErrorbarXY`, `LineScatterErrorbarX`, `LineScatterErrorbarY`,
+  `LineScatterErrorbarXY`) are one variant, `DataRenderType::Xy(XySeries {
+  scatter, line, errors })`, with `ErrorBars { x, y, style }`; the three
+  field combinations (`Heatmap`, `Contour`, `HeatmapContour`) are
+  `DataRenderType::Field(FieldSeries { matrix, fill, contour, surface })`.
+  `XySeries::validate` and `FieldSeries::validate` hold the combinations a
+  series can draw (markers or a line; error bars with markers; a fill or
+  contours; a surface look with a fill), and `Config::validate_series`
+  checks them. On the wire nothing changes: documents keep the
+  one-variant-per-combination form and parse and re-serialize byte for
+  byte; serializing a combination with no written form fails. Migration:
+  - `DataRenderType::Scatter { scatter }` →
+    `DataRenderType::Xy(XySeries { scatter: Some(scatter), line: None, errors: None })`;
+    `Line { line }` → `line: Some(line)`; `ScatterLine` → both;
+  - `ScatterErrorbarX { scatter, err_x, err_style }` →
+    `Xy(XySeries { scatter: Some(scatter), line: None, errors:
+    Some(ErrorBars { x: Some(err_x), y: None, style: err_style }) })`, and
+    likewise the `Y`, `XY` and `LineScatterErrorbar*` forms;
+  - `Heatmap { matrix, fill, surface }` →
+    `Field(FieldSeries { matrix, fill: Some(fill), contour: None, surface })`;
+    `Contour { matrix, contour }` → `fill: None, contour: Some(contour),
+    surface: None`; `HeatmapContour` → both;
+  - a `match` reads the parts instead of listing combinations, for example
+    `DataRenderType::Xy(xy) => xy.line.as_ref()`.
+- **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `SeriesConfig::visit_columns` visits every plain column a series reads
+  (coordinates, marker, error-bar, grid, component, colour and further axis
+  columns) and `SeriesConfig::visit_composite_columns` a box plot's record
+  and ragged columns. The renderer's column bookkeeping and the browser
+  product read the same list, which before were two copies that disagreed
+  on a box plot's record. Additive.
 - **One home for the chart and series rules** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Config::validate_chart` holds every rule on the chart itself (a non-empty
   target, finite and increasing axis ranges positive on a log scale, the

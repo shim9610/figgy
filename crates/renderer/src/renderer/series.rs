@@ -71,11 +71,7 @@ pub(super) fn has_errorbar(rt: &DataRenderType) -> bool {
 /// display mapping of the series' style, never of its data.
 pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleConfig>> {
     match rt {
-        DataRenderType::Line { line }
-        | DataRenderType::ScatterLine { line, .. }
-        | DataRenderType::LineScatterErrorbarX { line, .. }
-        | DataRenderType::LineScatterErrorbarY { line, .. }
-        | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(Cow::Borrowed(line)),
+        DataRenderType::Xy(crate::data_config::XySeries { line: Some(line), .. }) => Some(Cow::Borrowed(line)),
         DataRenderType::Radar { .. } => rt.radar().map(|radar| Cow::Owned(radar.line_style())),
         // Streamlines are drawn by the line path: their polylines, NaN rows
         // breaking them, are this line.
@@ -87,19 +83,14 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // polyline through `(x_column, y_column)`. Its style is read
         // through `ParallelRef::line` where the parallel layer is built.
         DataRenderType::Parallel { .. } => None,
-        DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
+        DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
         // A contour's `contour.line` is not this line. This one is the polyline
         // through `(x_column, y_column)`; a contour is an implicit level set
         // drawn directly from the matrix. Returning its style here would make `has_line`
         // true and draw a polyline through the grid's coordinate columns.
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -112,14 +103,7 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
 /// ([`crate::data_config::RadarRef::scatter_style`]).
 pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatterStyleConfig>> {
     match rt {
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterLine { scatter, .. }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarX { scatter, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(Cow::Borrowed(scatter)),
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(scatter), .. }) => Some(Cow::Borrowed(scatter)),
         DataRenderType::Radar { .. } => rt
             .radar()
             .and_then(|radar| radar.scatter_style())
@@ -131,12 +115,10 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
-        DataRenderType::Line { .. }
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         // Arrows are not markers: they have their own pipeline, pick radius
         // and legend mark (`extract_vector`).
         | DataRenderType::Vector { .. }
@@ -182,19 +164,9 @@ pub struct SeriesDrawInfo {
 pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::DataBarStyleConfig> {
     match rt {
         DataRenderType::Histogram { bar } => Some(bar),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Heatmap { .. }
+        DataRenderType::Xy(_)
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -220,22 +192,16 @@ pub(super) fn extract_field_fill(
     rt: &DataRenderType,
 ) -> Option<&crate::data_config::FieldFillConfig> {
     match rt {
-        DataRenderType::Heatmap { fill, .. } | DataRenderType::HeatmapContour { fill, .. } => {
-            Some(fill)
-        }
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            fill: Some(fill),
+            surface: _,
+            ..
+        }) => Some(fill),
         // An image paints cells but has no fill config: `has_field` names
         // it beside this match.
         DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. })
+        | DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
@@ -262,19 +228,13 @@ pub(super) fn has_contour(rt: &DataRenderType) -> bool {
 /// also divide the bands of a quantized fill.
 pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config::ContourConfig> {
     match rt {
-        DataRenderType::Contour { contour, .. }
-        | DataRenderType::HeatmapContour { contour, .. } => Some(contour),
-        DataRenderType::Heatmap { .. }
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(contour),
+            ..
+        }) => Some(contour),
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
@@ -299,20 +259,10 @@ pub(super) fn extract_vector(
 )> {
     match rt {
         DataRenderType::Vector { components, style } => Some((components, style)),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
@@ -348,7 +298,7 @@ pub(super) fn series_draw_info_from_pool(
 
     match &series.render_type {
         // A polyline draws one segment between adjacent points.
-        DataRenderType::Line { .. } => {
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
             let (count, truncated) = paired(&[x, y]);
             SeriesDrawInfo {
                 drawn_count: count.saturating_sub(1),
@@ -376,7 +326,11 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
-        DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            errors: None,
+            ..
+        }) => {
             let (count, truncated) = paired(&[x, y]);
             SeriesDrawInfo {
                 drawn_count: count,
@@ -425,12 +379,11 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
-        DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            errors: Some(_),
+            ..
+        }) => {
             // x, y, and up to two lo/hi pairs — the same six roles the
             // errorbar draw call minimizes over, on the stack.
             let mut lengths = [x, y, 0, 0, 0, 0];
@@ -480,10 +433,8 @@ pub(super) fn series_draw_info_from_pool(
         // A field's primitive count is its cells. `cols` / `rows` report the
         // grid the declaration and the data agreed on, which is the only way a
         // host can tell a 10x10 grid drawn as 10x9 from one drawn whole.
-        DataRenderType::Heatmap { matrix, .. }
-        | DataRenderType::RgbImage { red: matrix, .. }
-        | DataRenderType::Contour { matrix, .. }
-        | DataRenderType::HeatmapContour { matrix, .. } => {
+        DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. })
+        | DataRenderType::RgbImage { red: matrix, .. } => {
             let extent = matrix_extent(matrix, x as usize, y as usize, |id| len(id) as usize);
             SeriesDrawInfo {
                 drawn_count: (extent.cols as u64).saturating_mul(extent.rows as u64),
@@ -594,20 +545,10 @@ pub(super) fn series_draw_info_from_pool(
 /// about a variant.
 pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config::MatrixRef> {
     match rt {
-        DataRenderType::Heatmap { matrix, .. }
+        DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. })
         // An image's lattice is its red grid's; the others match it.
-        | DataRenderType::RgbImage { red: matrix, .. }
-        | DataRenderType::Contour { matrix, .. }
-        | DataRenderType::HeatmapContour { matrix, .. } => Some(matrix),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::RgbImage { red: matrix, .. } => Some(matrix),
+        DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
         // A vector's grids are not "the matrix": they are components, not z.
         // `fit_matrix` reaches the `u` grid for the coordinate lattice.
@@ -634,20 +575,10 @@ pub(super) fn requires_colorbar(rt: &DataRenderType) -> bool {
 
 pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfig> {
     match rt {
-        DataRenderType::ScatterErrorbarX { err_style, .. }
-        | DataRenderType::ScatterErrorbarY { err_style, .. }
-        | DataRenderType::ScatterErrorbarXY { err_style, .. }
-        | DataRenderType::LineScatterErrorbarX { err_style, .. }
-        | DataRenderType::LineScatterErrorbarY { err_style, .. }
-        | DataRenderType::LineScatterErrorbarXY { err_style, .. } => Some(err_style),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        DataRenderType::Xy(xy) => xy.errors.as_ref().map(|errors| &errors.style),
+        DataRenderType::Histogram { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -661,20 +592,10 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
 
 pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
     match rt {
-        DataRenderType::ScatterErrorbarY { err_y, .. }
-        | DataRenderType::ScatterErrorbarXY { err_y, .. }
-        | DataRenderType::LineScatterErrorbarY { err_y, .. }
-        | DataRenderType::LineScatterErrorbarXY { err_y, .. } => Some(err_y),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        DataRenderType::Xy(xy) => xy.errors.as_ref().and_then(|errors| errors.y.as_ref()),
+        DataRenderType::Histogram { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -688,20 +609,10 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
 
 pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
     match rt {
-        DataRenderType::ScatterErrorbarX { err_x, .. }
-        | DataRenderType::ScatterErrorbarXY { err_x, .. }
-        | DataRenderType::LineScatterErrorbarX { err_x, .. }
-        | DataRenderType::LineScatterErrorbarXY { err_x, .. } => Some(err_x),
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        DataRenderType::Xy(xy) => xy.errors.as_ref().and_then(|errors| errors.x.as_ref()),
+        DataRenderType::Histogram { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }

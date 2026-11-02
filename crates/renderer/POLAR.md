@@ -62,16 +62,14 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         x_column: "deg".into(),
         y_column: "gain".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::from_rgb8(30, 110, 210),
                 line_width: 2.5,
-                fill: Some(LineFill::ToBaseline(0.0)), // filled to the centre
+                fill: Some(LineFill::ToBaseline(0.0)), 
                 fill_color: Some(Color::new(0.12, 0.43, 0.82, 0.25)),
                 interpolation: LineInterpolation::Linear,
-            },
-        },
+            }), errors: None }),
     }];
     // The background stays transparent; `export_rgba` fills it.
     let image = pollster::block_on(renderer.export_rgba(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0)))?;

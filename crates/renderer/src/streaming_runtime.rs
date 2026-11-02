@@ -63,20 +63,13 @@ pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series r
 
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
-        DataRenderType::Heatmap { .. } => true,
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
         DataRenderType::RgbImage { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::Line { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        | DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(_), ..
+        })
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -695,24 +688,20 @@ fn stream_draw_phases(
         } else {
             &[]
         }),
-        DataRenderType::Line { .. } => Ok(&[StreamDrawPhase::Line]),
-        DataRenderType::Scatter { .. } => Ok(&[StreamDrawPhase::Scatter]),
-        DataRenderType::ScatterLine { .. } => {
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => Ok(&[StreamDrawPhase::Line]),
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: None, errors: None }) => Ok(&[StreamDrawPhase::Scatter]),
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: Some(_), errors: None }) => {
             Ok(&[StreamDrawPhase::Line, StreamDrawPhase::Scatter])
         }
-        DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. } => {
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: None, errors: Some(_) }) => {
             Ok(&[StreamDrawPhase::Errorbar, StreamDrawPhase::Scatter])
         }
-        DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. } => Ok(&[
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: Some(_), errors: Some(_) }) => Ok(&[
             StreamDrawPhase::Errorbar,
             StreamDrawPhase::Line,
             StreamDrawPhase::Scatter,
         ]),
-        DataRenderType::Heatmap { .. } => Ok(if primitives.field {
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => Ok(if primitives.field {
             &[StreamDrawPhase::Field]
         } else {
             &[]
@@ -815,7 +804,7 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Parallel { .. } => Ok(&[]),
-        DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. })
             if primitives.field || primitives.contour =>
         {
             Err(FiggyError::InvalidSeriesConfig {
@@ -824,7 +813,7 @@ fn stream_draw_phases(
             }
             .into())
         }
-        DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. } => Ok(&[]),
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. }) => Ok(&[]),
     }
 }
 

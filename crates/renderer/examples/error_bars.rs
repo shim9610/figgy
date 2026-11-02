@@ -35,22 +35,25 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             name,
             "response-x",
             &format!("response-{name}"),
-            DataRenderType::LineScatterErrorbarY {
-                line: line(color, 2.5),
-                scatter: scatter(color, 6.0),
-                err_y: ErrorRef::Symmetric {
-                    column: format!("error-{name}"),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: color,
-                    error_bar_width: 1.5,
-                    error_bar_cap_size: 7.0,
-                    cap_width: 1.5,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter(color, 6.0)),
+                line: Some(line(color, 2.5)),
+                errors: Some(renderer::data_config::ErrorBars {
+                    x: None,
+                    y: Some(ErrorRef::Symmetric {
+                        column: format!("error-{name}"),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: color,
+                        error_bar_width: 1.5,
+                        error_bar_cap_size: 7.0,
+                        cap_width: 1.5,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
         ));
     }
     let mut c = chart(

@@ -649,9 +649,11 @@ fn registration_rejects_what_ternary_does_not_draw() {
         }
     };
     let plain = SeriesConfig {
-        render_type: DataRenderType::Scatter {
-            scatter: marker_style(4.0),
-        },
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(marker_style(4.0)),
+            line: None,
+            errors: None,
+        }),
         ..ok.clone()
     };
     assert!(err(bare_config(), vec![plain]).contains("only ternary series"));

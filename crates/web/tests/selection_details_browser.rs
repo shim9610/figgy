@@ -224,12 +224,14 @@ fn trace(id: &str) -> SeriesConfig {
         x_column: "ox".into(),
         y_column: "oy".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: renderer::DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(renderer::DataLineStyleConfig {
                 line_width: 2.0,
                 ..Default::default()
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 

@@ -88,10 +88,11 @@ fn main() -> Result {
                     id,
                     "time",
                     id,
-                    DataRenderType::ScatterLine {
-                        line: line(color, 2.5),
-                        scatter: scatter(color, 8.),
-                    },
+                    DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(scatter(color, 8.)),
+                        line: Some(line(color, 2.5)),
+                        errors: None,
+                    }),
                 ));
                 chart = chart.with_legend_entry(label, color, 2.5, LegendEntryKind::LineScatter);
             }

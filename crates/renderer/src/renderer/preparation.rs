@@ -108,23 +108,13 @@ impl PreparationFeature {
                 | DataRenderType::RangeBars { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
-                DataRenderType::Heatmap { .. }
+                DataRenderType::Field(_)
                 | DataRenderType::RgbImage { .. }
-                | DataRenderType::Contour { .. }
-                | DataRenderType::HeatmapContour { .. }
                 | DataRenderType::Vector { .. }
                 // Streamline lines draw through the line pipelines (always
                 // prepared) and their arrowheads through a vector pipeline.
                 | DataRenderType::Streamlines { .. } => Self::Fields,
-                DataRenderType::Scatter { .. }
-                | DataRenderType::Line { .. }
-                | DataRenderType::ScatterLine { .. }
-                | DataRenderType::ScatterErrorbarX { .. }
-                | DataRenderType::ScatterErrorbarY { .. }
-                | DataRenderType::ScatterErrorbarXY { .. }
-                | DataRenderType::LineScatterErrorbarX { .. }
-                | DataRenderType::LineScatterErrorbarY { .. }
-                | DataRenderType::LineScatterErrorbarXY { .. }
+                DataRenderType::Xy(_)
                 // A radar series draws through the line and scatter pipelines.
                 | DataRenderType::Radar { .. }
                 // So does a ternary series, through its ternary entries, and

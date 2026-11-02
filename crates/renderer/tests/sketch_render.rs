@@ -124,16 +124,18 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: style,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 
@@ -145,8 +147,8 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 7.0,
@@ -155,8 +157,10 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     }
 }
 
@@ -170,8 +174,8 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::ScatterErrorbarY {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color {
                     r: 0.0,
                     g: 0.0,
@@ -185,18 +189,22 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_y: ErrorRef::Symmetric { column: err.into() },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: color,
-                error_bar_width: 2.0,
-                error_bar_cap_size: 4.0,
-                cap_width: 2.0,
-                error_bar_style_table: None,
-                error_bar_style_index_column: None,
-                error_bar_style_overrides: None,
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric { column: err.into() }),
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: color,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 4.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
+                },
+            }),
+        }),
     }
 }
 
@@ -754,15 +762,27 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                     };
                     let mut series = line_series("signal", x, y, RED, preset);
                     if matches!(draw_style, DrawStyle::Constellation(_)) {
-                        let DataRenderType::Line { line } = series.render_type else {
-                            unreachable!()
-                        };
-                        let DataRenderType::Scatter { scatter } =
-                            scatter_series("signal", x, y, RED).render_type
+                        let DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: None,
+                            line: Some(line),
+                            errors: None,
+                        }) = series.render_type
                         else {
                             unreachable!()
                         };
-                        series.render_type = DataRenderType::ScatterLine { line, scatter };
+                        let DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: Some(scatter),
+                            line: None,
+                            errors: None,
+                        }) = scatter_series("signal", x, y, RED).render_type
+                        else {
+                            unreachable!()
+                        };
+                        series.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: Some(scatter),
+                            line: Some(line),
+                            errors: None,
+                        });
                     }
                     series
                 };
@@ -839,15 +859,27 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                 };
                 let mut series = scatter_series("signal", x, y, GREEN);
                 if matches!(draw_style, DrawStyle::Constellation(_)) {
-                    let DataRenderType::Scatter { scatter } = series.render_type else {
-                        unreachable!()
-                    };
-                    let DataRenderType::Line { line } =
-                        line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
+                    let DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(scatter),
+                        line: None,
+                        errors: None,
+                    }) = series.render_type
                     else {
                         unreachable!()
                     };
-                    series.render_type = DataRenderType::ScatterLine { line, scatter };
+                    let DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: None,
+                        line: Some(line),
+                        errors: None,
+                    }) = line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
+                    else {
+                        unreachable!()
+                    };
+                    series.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(scatter),
+                        line: Some(line),
+                        errors: None,
+                    });
                 }
                 series
             };

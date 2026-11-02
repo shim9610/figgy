@@ -199,7 +199,11 @@ fn scatter_series(
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
         z_column: None,
-        render_type: DataRenderType::Scatter { scatter },
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }),
     }
 }
 
@@ -218,16 +222,18 @@ fn line_series(
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::BLACK,
                 line_width,
                 fill: None,
                 fill_color: None,
                 interpolation: crate::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 
@@ -2209,7 +2215,12 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
                 "parity-step-y",
                 3.0,
             );
-            let DataRenderType::Line { line } = &mut cpu_series.render_type else {
+            let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }) = &mut cpu_series.render_type
+            else {
                 unreachable!()
             };
             line.interpolation = mode;
@@ -2377,7 +2388,11 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
         x_column: "parity-tie-x0".into(),
         y_column: "parity-tie-y0".into(),
         z_column: None,
-        render_type: DataRenderType::ScatterLine { scatter, line },
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(line),
+            errors: None,
+        }),
     };
     let later_series = scatter_series(
         "later",

@@ -582,7 +582,11 @@ impl FiggyChart {
         let existing = current.iter().position(|c| c.series_id == series_id);
         let color = match existing {
             Some(i) => match &current[i].render_type {
-                DataRenderType::Line { line } => line.line_color,
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line),
+                    errors: None,
+                }) => line.line_color,
                 _ => self.cycle.color(i),
             },
             None => self.cycle.color(self.color_seq),
@@ -608,16 +612,18 @@ impl FiggyChart {
             x_column: x_column.into(),
             y_column: y_column.into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: color,
                     line_width: line_width.max(0.5),
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         };
         self.ensure_columns_exist(&cfg)?;
         let mut proposed = current;
@@ -747,8 +753,10 @@ impl FiggyChart {
             .find(|cfg| cfg.series_id == series_id)
             .ok_or_else(|| js_err("no series with this id in the chart"))?;
         let contour = match &mut cfg.render_type {
-            DataRenderType::Contour { contour, .. }
-            | DataRenderType::HeatmapContour { contour, .. } => contour,
+            DataRenderType::Field(renderer::data_config::FieldSeries {
+                contour: Some(contour),
+                ..
+            }) => contour,
             _ => return Err(js_err("series does not have contour levels")),
         };
         contour

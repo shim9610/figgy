@@ -68,9 +68,11 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
             id,
             "hour",
             id,
-            DataRenderType::Line {
-                line: line(color, 3.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(color, 3.5)),
+                errors: None,
+            }),
         ));
         chart = chart.with_legend_entry(label, color, 3.5, LegendEntryKind::Line);
     }
@@ -120,10 +122,11 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
             id,
             "week",
             id,
-            DataRenderType::ScatterLine {
-                line: line(color, 3.),
-                scatter: scatter(color, 7.),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter(color, 7.)),
+                line: Some(line(color, 3.)),
+                errors: None,
+            }),
         ));
         chart = chart.with_legend_entry(label, color, 3., LegendEntryKind::Line);
     }
@@ -321,25 +324,25 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         "terrain",
         "east",
         "north",
-        DataRenderType::HeatmapContour {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels: (1..=17).map(|i| i as f64 * 0.1).collect(),
                 line: line(Color::from_rgba(0.92, 0.98, 0.8, 0.65), 1.1),
                 per_level_color: None,
                 labels: None,
-            },
+            }),
             surface: None,
-        },
+        }),
     )];
     let mut bar = renderer::default::default_colorbar_options();
     // The gallery image was rendered with this gap.

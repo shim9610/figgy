@@ -6,17 +6,10 @@ use super::*;
 /// carries it.
 pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
     match rt {
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterLine { scatter, .. }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarX { scatter, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
         // A ternary series' markers, when it draws them.
         DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
-        DataRenderType::Line { .. }
+        DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. })
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
@@ -27,10 +20,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Streamlines { .. }
         // Nor has a parallel series; its colour column colours the rows.
         | DataRenderType::Parallel { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. } => None,
     }
 }
@@ -554,9 +545,9 @@ impl FiggyChart {
                 // grid and colour grid beside it.
                 let image = series.render_type.rgb_image();
                 let (matrix, vector) = match &series.render_type {
-                    DataRenderType::Heatmap { matrix, .. }
-                    | DataRenderType::Contour { matrix, .. }
-                    | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                    DataRenderType::Field(renderer::data_config::FieldSeries {
+                        matrix, ..
+                    }) => (matrix, None),
                     // An image's lattice is its red grid's; the green and
                     // blue values are read beside it (#139).
                     DataRenderType::RgbImage { red, .. } => (red, None),

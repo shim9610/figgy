@@ -1787,7 +1787,12 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
         }),
     ];
     for (name, apply) in edits {
-        let DataRenderType::Line { line } = &mut series.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }) = &mut series.render_type
+        else {
             unreachable!()
         };
         apply(line);
@@ -1823,7 +1828,12 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
     // Back to the original declaration: the plain line, pixel for pixel.
     assert_eq!(previous, frame(&mut r, id, true).0);
     let mut fresh_plain = declaration("s", "x", "a");
-    let DataRenderType::Line { line } = &mut fresh_plain.render_type else {
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = &mut fresh_plain.render_type
+    else {
         unreachable!()
     };
     line.interpolation = LineInterpolation::Linear;
@@ -1975,9 +1985,8 @@ fn ssot_selection_edits_replace_only_the_overlay() {
         let line = super::super::extract_line(&series.render_type)
             .unwrap()
             .into_owned();
-        series.render_type = DataRenderType::ScatterLine {
-            line,
-            scatter: DataScatterStyleConfig {
+        series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::BLACK,
                 point_size: 4.0,
                 point_shape: ScatterShape::CircleFilled,
@@ -1986,8 +1995,10 @@ fn ssot_selection_edits_replace_only_the_overlay() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        };
+            }),
+            line: Some(line),
+            errors: None,
+        });
         series
     };
     let setup = |c: &Config, resident: bool, cache: bool| {

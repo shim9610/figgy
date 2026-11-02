@@ -108,8 +108,8 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
         x_column: "theta".into(),
         y_column: "r".into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: RED,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: size,
@@ -118,8 +118,10 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     }
 }
 
@@ -142,7 +144,11 @@ fn line(id: &str, line: DataLineStyleConfig) -> SeriesConfig {
         x_column: "theta".into(),
         y_column: "r".into(),
         z_column: None,
-        render_type: DataRenderType::Line { line },
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }),
     }
 }
 

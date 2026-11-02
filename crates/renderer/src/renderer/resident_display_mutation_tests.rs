@@ -513,29 +513,40 @@ fn chart_series() -> Vec<SeriesConfig> {
         }),
     };
     vec![
-        declared("line", "x", "a", DataRenderType::Line { line }),
+        declared(
+            "line",
+            "x",
+            "a",
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
+        ),
         declared(
             "err",
             "x",
             "c",
-            DataRenderType::LineScatterErrorbarXY {
-                scatter,
-                line: line_style(Color::new(0.1, 0.6, 0.2, 1.0)),
-                err_x: ErrorRef::Symmetric { column: "e".into() },
-                err_y: ErrorRef::Asymmetric {
-                    lower: "e".into(),
-                    upper: "m".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: Color::new(0.3, 0.3, 0.3, 1.0),
-                    error_bar_width: 1.0,
-                    error_bar_cap_size: 3.0,
-                    cap_width: 1.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(line_style(Color::new(0.1, 0.6, 0.2, 1.0))),
+                errors: Some(crate::data_config::ErrorBars {
+                    x: Some(ErrorRef::Symmetric { column: "e".into() }),
+                    y: Some(ErrorRef::Asymmetric {
+                        lower: "e".into(),
+                        upper: "m".into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: Color::new(0.3, 0.3, 0.3, 1.0),
+                        error_bar_width: 1.0,
+                        error_bar_cap_size: 3.0,
+                        cap_width: 1.0,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
         ),
         declared(
             "hist",
@@ -558,16 +569,16 @@ fn chart_series() -> Vec<SeriesConfig> {
             "field",
             "gx",
             "gy",
-            DataRenderType::HeatmapContour {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(),
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: Shading::Flat,
                     opacity: 0.5,
-                },
-                contour,
+                }),
+                contour: Some(contour),
                 surface: None,
-            },
+            }),
         ),
         declared(
             "vec",

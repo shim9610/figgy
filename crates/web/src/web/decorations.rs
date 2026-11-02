@@ -201,21 +201,15 @@ impl FiggyChart {
                 Ok(())
             };
             match &cfg.render_type {
-                DataRenderType::Heatmap { matrix, .. }
-                | DataRenderType::Contour { matrix, .. }
-                | DataRenderType::HeatmapContour { matrix, .. } => {
+                DataRenderType::Field(renderer::data_config::FieldSeries { matrix, .. }) => {
                     for id in &matrix.columns {
                         union(id)?;
                     }
                 }
-                DataRenderType::Scatter { scatter }
-                | DataRenderType::ScatterLine { scatter, .. }
-                | DataRenderType::ScatterErrorbarX { scatter, .. }
-                | DataRenderType::ScatterErrorbarY { scatter, .. }
-                | DataRenderType::ScatterErrorbarXY { scatter, .. }
-                | DataRenderType::LineScatterErrorbarX { scatter, .. }
-                | DataRenderType::LineScatterErrorbarY { scatter, .. }
-                | DataRenderType::LineScatterErrorbarXY { scatter, .. } => {
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter),
+                    ..
+                }) => {
                     if let Some(map) = &scatter.point_color_map {
                         union(&map.column)?;
                     }
@@ -258,7 +252,7 @@ impl FiggyChart {
                 // An image's colours are its data: the colourbar maps none
                 // of its channels.
                 DataRenderType::RgbImage { .. }
-                | DataRenderType::Line { .. }
+                | DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. })
                 | DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
                 | DataRenderType::BoxPlot { .. }

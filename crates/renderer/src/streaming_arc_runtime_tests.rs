@@ -123,8 +123,8 @@ fn parity_with_samples(
         interpolation: crate::data_config::LineInterpolation::Linear,
     };
     let render_type = if matches!(chart.config().draw_style, DrawStyle::Constellation(_)) {
-        DataRenderType::ScatterLine {
-            scatter: crate::data_config::DataScatterStyleConfig {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(crate::data_config::DataScatterStyleConfig {
                 point_size: 4.0,
                 point_color: Color::new(0.8, 0.3, 0.2, 0.65),
                 point_shape: crate::data_config::ScatterShape::CircleFilled,
@@ -133,11 +133,16 @@ fn parity_with_samples(
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line,
-        }
+            }),
+            line: Some(line),
+            errors: None,
+        })
     } else {
-        DataRenderType::Line { line }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        })
     };
     let series = vec![SeriesConfig {
         series_id: "line".into(),

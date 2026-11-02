@@ -178,8 +178,8 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: color,
                 point_shape: shape,
                 point_size: size,
@@ -188,8 +188,10 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     }
 }
 
@@ -197,7 +199,12 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
 /// sparse size override `size`.
 fn scatter_with_size_override(base: f32, size: f32) -> SeriesConfig {
     let mut series = scatter("marker", ScatterShape::Circle, base, RED);
-    let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+    let DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+    }) = &mut series.render_type
+    else {
         unreachable!()
     };
     scatter.point_style_overrides =
@@ -568,7 +575,12 @@ fn zero_size_markers_pick_their_drawn_dot() {
         let size_zero = scatter("dot", shape.clone(), 0.0, RED);
         let mut slot_zero = scatter("dot", shape.clone(), 7.0, RED);
         let mut map_zero = scatter("dot", shape.clone(), 7.0, RED);
-        let DataRenderType::Scatter { scatter: slot } = &mut slot_zero.render_type else {
+        let DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(slot),
+            line: None,
+            errors: None,
+        }) = &mut slot_zero.render_type
+        else {
             unreachable!()
         };
         slot.point_style_index_column = Some("style".into());
@@ -577,7 +589,12 @@ fn zero_size_markers_pick_their_drawn_dot() {
             point_shape: None,
             point_size: Some(0.0),
         }]);
-        let DataRenderType::Scatter { scatter: map } = &mut map_zero.render_type else {
+        let DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(map),
+            line: None,
+            errors: None,
+        }) = &mut map_zero.render_type
+        else {
             unreachable!()
         };
         map.point_size_map = Some(PointSizeMap {
@@ -620,7 +637,12 @@ fn overlap_tie_follows_the_painted_colour() {
         .unwrap();
     let chart = bare_chart();
     let mut series = scatter("pair", ScatterShape::CircleFilled, 8.0, RED);
-    let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+    let DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+    }) = &mut series.render_type
+    else {
         unreachable!()
     };
     scatter.point_style_index_column = Some("style".into());
@@ -727,16 +749,18 @@ pub fn line(
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: renderer::DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(renderer::DataLineStyleConfig {
                 line_style: style,
                 line_color: RED,
                 line_width: width,
                 fill: None,
                 fill_color: None,
                 interpolation,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 
@@ -1114,8 +1138,8 @@ fn random_composite_markers_and_star_lines_pick_where_they_draw() {
         let size = rng.range(2.0, 12.0) as f32;
         let width = rng.range(0.5, 3.0) as f32;
         let scatter_line = SeriesConfig {
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: BLUE,
                     point_shape: shape.clone(),
                     point_size: size,
@@ -1124,16 +1148,17 @@ fn random_composite_markers_and_star_lines_pick_where_they_draw() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: renderer::DataLineStyleConfig {
+                }),
+                line: Some(renderer::DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: RED,
                     line_width: width,
                     fill: None,
                     fill_color: None,
                     interpolation: LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
             ..scatter("random", shape.clone(), size, BLUE)
         };
         let (chart, series, what) = match kind {
@@ -1328,8 +1353,8 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
     upload_xy(&mut renderer, vec![4.0, 5.0, 6.0], vec![4.5, 5.5, 4.8]);
     let chart = styled_chart(DrawStyle::Constellation(ConstellationOptions::default()));
     let series = [SeriesConfig {
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: BLUE,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 3.0,
@@ -1338,16 +1363,17 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: renderer::DataLineStyleConfig {
+            }),
+            line: Some(renderer::DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: RED,
                 line_width: 1.5,
                 fill: None,
                 fill_color: None,
                 interpolation: LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
         ..scatter("sky", ScatterShape::CircleFilled, 3.0, BLUE)
     }];
     for scale in [1.0, 2.0] {
@@ -1405,8 +1431,8 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
         ("y".into(), ys.iter().map(|v| *v as f32).collect()),
     ]);
     let scatter_line = |shape: ScatterShape, style: LineStylePreset| SeriesConfig {
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: BLUE,
                 point_shape: shape,
                 point_size: 5.0,
@@ -1415,16 +1441,17 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: renderer::DataLineStyleConfig {
+            }),
+            line: Some(renderer::DataLineStyleConfig {
                 line_style: style,
                 line_color: RED,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
         ..scatter("path", ScatterShape::Circle, 5.0, BLUE)
     };
     for style in [
@@ -1997,24 +2024,27 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                 // Constellation draws scatter-line series only; one point
                 // draws no line.
                 let marker = scatter("marker", shape.clone(), 6.0, RED);
-                let DataRenderType::Scatter {
-                    scatter: marker_style,
-                } = marker.render_type.clone()
+                let DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(marker_style),
+                    line: None,
+                    errors: None,
+                }) = marker.render_type.clone()
                 else {
                     unreachable!()
                 };
                 let series = [SeriesConfig {
-                    render_type: DataRenderType::ScatterLine {
-                        scatter: marker_style,
-                        line: renderer::DataLineStyleConfig {
+                    render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                        scatter: Some(marker_style),
+                        line: Some(renderer::DataLineStyleConfig {
                             line_style: renderer::line::LineStylePreset::Solid,
                             line_color: RED,
                             line_width: 1.0,
                             fill: None,
                             fill_color: None,
                             interpolation: renderer::data_config::LineInterpolation::Linear,
-                        },
-                    },
+                        }),
+                        errors: None,
+                    }),
                     ..marker
                 }];
                 check(
@@ -2215,7 +2245,7 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 _ => "cy".into(),
             },
             z_column: None,
-            render_type: DataRenderType::Heatmap {
+            render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: MatrixRef {
                     columns: vec!["h0".into(), "h1".into(), "h2".into()],
                     orientation: MatrixOrientation::ColumnsAreX,
@@ -2224,13 +2254,14 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                         _ => GridLayout::Centers,
                     },
                 },
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: shading.clone(),
                     opacity: 1.0,
-                },
+                }),
+                contour: None,
                 surface: None,
-            },
+            }),
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{shading:?} at {scale}x");
@@ -2333,13 +2364,14 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         x_column: "cgx".into(),
         y_column: "cgy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["c0".into(), "c1".into(), "c2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels: vec![6.0, 10.0, 14.0],
                 line: DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
@@ -2361,8 +2393,9 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
                     bg_color: None,
                     bg_padding_px: 3.0,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     };
     let mut chart = bare_chart();
     let mut bar = renderer::default::default_colorbar_options();
@@ -2525,13 +2558,14 @@ fn contour_strokes_pick_where_they_paint() {
         x_column: "sgx".into(),
         y_column: "sgy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["s0".into(), "s1".into(), "s2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels: vec![7.0, 12.5],
                 line: DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
@@ -2543,8 +2577,9 @@ fn contour_strokes_pick_where_they_paint() {
                 },
                 per_level_color: None,
                 labels: None,
-            },
-        },
+            }),
+            surface: None,
+        }),
     }];
     let mut chart = bare_chart();
     let mut bar = renderer::default::default_colorbar_options();
@@ -2788,8 +2823,11 @@ pub fn errorbar_series(
     err_style: renderer::data_config::DataErrorBarStyleConfig,
 ) -> SeriesConfig {
     use renderer::data_config::ErrorRef;
-    let DataRenderType::Scatter { scatter } =
-        scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
+    let DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+    }) = scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
     else {
         unreachable!()
     };
@@ -2797,30 +2835,45 @@ pub fn errorbar_series(
         column: column.into(),
     };
     let render_type = match kind {
-        "x" => DataRenderType::ScatterErrorbarX {
-            scatter,
-            err_x: symmetric("ex"),
-            err_style,
-        },
-        "y" => DataRenderType::ScatterErrorbarY {
-            scatter,
-            err_y: symmetric("ey"),
-            err_style,
-        },
-        "xy" => DataRenderType::ScatterErrorbarXY {
-            scatter,
-            err_x: symmetric("ex"),
-            err_y: symmetric("ey"),
-            err_style,
-        },
-        "asym" => DataRenderType::ScatterErrorbarY {
-            scatter,
-            err_y: ErrorRef::Asymmetric {
-                lower: "ey_lo".into(),
-                upper: "ey_hi".into(),
-            },
-            err_style,
-        },
+        "x" => DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: Some(symmetric("ex")),
+                y: None,
+                style: err_style,
+            }),
+        }),
+        "y" => DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(symmetric("ey")),
+                style: err_style,
+            }),
+        }),
+        "xy" => DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: Some(symmetric("ex")),
+                y: Some(symmetric("ey")),
+                style: err_style,
+            }),
+        }),
+        "asym" => DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Asymmetric {
+                    lower: "ey_lo".into(),
+                    upper: "ey_hi".into(),
+                }),
+                style: err_style,
+            }),
+        }),
         other => panic!("no error-bar kind {other}"),
     };
     SeriesConfig {
@@ -3002,7 +3055,12 @@ pub fn filled_line(
         renderer::line::LineStylePreset::Solid,
         interpolation,
     );
-    let DataRenderType::Line { line } = &mut series.render_type else {
+    let DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = &mut series.render_type
+    else {
         unreachable!()
     };
     line.fill = fill;
@@ -3095,7 +3153,12 @@ fn area_fills_pick_where_they_paint() {
                 (LineFill::ToSeries("lower".into()), "to series"),
             ] {
                 let mut lower = lower.clone();
-                let DataRenderType::Line { line } = &mut lower.render_type else {
+                let DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line),
+                    errors: None,
+                }) = &mut lower.render_type
+                else {
                     unreachable!()
                 };
                 line.interpolation = interpolation;
@@ -4605,27 +4668,33 @@ fn offset_lines_pick_where_their_shifted_parts_paint() {
         LineInterpolation::Linear,
         Color::new(0.5, 0.8, 0.5, 1.0),
     );
-    let DataRenderType::Scatter { scatter: markers } =
-        scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE).render_type
+    let DataRenderType::Xy(renderer::data_config::XySeries {
+        scatter: Some(markers),
+        line: None,
+        errors: None,
+    }) = scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE).render_type
     else {
         unreachable!()
     };
     let dashed = SeriesConfig {
-        render_type: DataRenderType::LineScatterErrorbarY {
-            scatter: markers,
-            line: renderer::DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(markers),
+            line: Some(renderer::DataLineStyleConfig {
                 line_style: LineStylePreset::Dash,
                 line_color: BLUE,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: LineInterpolation::Linear,
-            },
-            err_y: ErrorRef::Symmetric {
-                column: "ey".into(),
-            },
-            err_style: errorbar_style(GREEN, 1.5, 6.0, 1.5),
-        },
+            }),
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric {
+                    column: "ey".into(),
+                }),
+                style: errorbar_style(GREEN, 1.5, 6.0, 1.5),
+            }),
+        }),
         ..scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE)
     };
     let plain = line(
