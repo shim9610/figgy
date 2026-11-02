@@ -4479,3 +4479,18 @@ fn the_batch_observer_sees_every_column_by_its_batch_index() {
     .unwrap();
     assert_eq!(present(&pool, "one"), expect(&["median"], ONE));
 }
+
+/// The browser upload pairs each record field by the name the model gives
+/// it (`BoxField::name`, #160), so every field of the box plot record
+/// schema must be one of them, and no other.
+#[test]
+fn box_fields_name_every_record_schema_field() {
+    let mut schema: Vec<&str> = BOX_PLOT_RECORD.iter().map(|(name, _)| *name).collect();
+    let mut fields: Vec<&str> = crate::BoxField::ALL
+        .iter()
+        .map(|field| field.name())
+        .collect();
+    schema.sort_unstable();
+    fields.sort_unstable();
+    assert_eq!(schema, fields);
+}
