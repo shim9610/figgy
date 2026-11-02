@@ -8,6 +8,7 @@
 //! half the row pitch in the odd columns), so a wrong centre, a wrong
 //! neighbour or a cell painted past its Voronoi edge fails rather than passes.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -274,7 +275,10 @@ fn every_cell_is_painted_to_its_voronoi_edge() {
     let chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("hexbin-cells", &img);
     for c in 0..COLS {
         for row in 0..ROWS {
@@ -331,7 +335,10 @@ fn columns_are_y_reads_the_grid_transposed() {
     let chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreY)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     for c in 0..COLS {
         for row in 0..ROWS {
             let (x, y) = center(c as i64, row as i64);
@@ -353,7 +360,10 @@ fn the_2x_export_doubles_the_lattice() {
     let chart = chart();
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
-    let img = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT * 2));
     for (c, row) in [(0, 0), (1, 2), (4, 3)] {
         let (x, y) = center(c as i64, row as i64);
@@ -509,7 +519,10 @@ fn the_selected_hexagon_outlines_its_six_edges() {
         contour_width_extra_px: 0.0,
     });
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("hexbin-selected", &img);
     let (c, row) = (2i64, 1i64);
     let a = center(c, row);
@@ -699,7 +712,10 @@ fn a_four_million_cell_lattice_draws() {
     series.x_column = "bigx".into();
     series.y_column = "bigy".into();
     let started = std::time::Instant::now();
-    let img = r.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .block_on()
+        .unwrap();
     eprintln!(
         "{cols} x {rows} hexagonal cells exported in {:?}",
         started.elapsed()

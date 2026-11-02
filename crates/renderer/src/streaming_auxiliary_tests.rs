@@ -1,4 +1,5 @@
 use super::*;
+use pollster::FutureExt as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
     crate::Column {
@@ -226,7 +227,10 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
             );
             pump(&mut renderer, operation, &x, &y);
             let actual = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
-            let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+            let expected = resident
+                .export_panel_rgba_async(&chart, &series, scale)
+                .block_on()
+                .unwrap();
             assert_eq!(
                 (actual.width, actual.height),
                 (expected.width, expected.height)
@@ -273,7 +277,10 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     .unwrap();
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
-    let old_expected = resident.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let old_expected = resident
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         old_export.rgba == old_expected.rgba,
         "already-started export must stay frozen"
@@ -284,7 +291,8 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     pump(&mut renderer, second, &x, &y);
     let new_export = pollster::block_on(renderer.finish_stream_export(second)).unwrap();
     let new_expected = resident
-        .export_panel_rgba(&Chart::new(latest), &series, 1.0)
+        .export_panel_rgba_async(&Chart::new(latest), &series, 1.0)
+        .block_on()
         .unwrap();
     assert!(
         old_expected.rgba != new_expected.rgba,

@@ -91,6 +91,7 @@ const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 176);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pollster::FutureExt as _;
 
     #[test]
     fn contour_lookup_uses_finite_prefixes_numeric_indices_and_block_metadata() {
@@ -636,14 +637,15 @@ mod tests {
     #[test]
     fn device_request_opens_device_and_queue() {
         let instance = create_instance();
-        let adapter =
-            request_adapter(&instance).expect("required GPU test: adapter initialization failed");
+        let adapter = request_adapter_async(&instance)
+            .block_on()
+            .expect("required GPU test: adapter initialization failed");
         let info = adapter.get_info();
         println!("adapter name    : {}", info.name);
         println!("adapter backend : {:?}", info.backend);
         println!("adapter type    : {:?}", info.device_type);
         println!("adapter driver  : {} / {}", info.driver, info.driver_info);
-        match request_device(&adapter) {
+        match request_device_async(&adapter).block_on() {
             Ok((device, _queue)) => {
                 let limits = device.limits();
                 println!("device opened OK");
@@ -664,10 +666,12 @@ mod tests {
     #[test]
     fn request_device_takes_the_adapters_limits() {
         let instance = create_instance();
-        let adapter =
-            request_adapter(&instance).expect("required GPU test: adapter initialization failed");
-        let (device, _queue) =
-            request_device(&adapter).expect("required GPU test: device initialization failed");
+        let adapter = request_adapter_async(&instance)
+            .block_on()
+            .expect("required GPU test: adapter initialization failed");
+        let (device, _queue) = request_device_async(&adapter)
+            .block_on()
+            .expect("required GPU test: device initialization failed");
         let (supported, granted) = (adapter.limits(), device.limits());
         assert_eq!(granted.max_buffer_size, supported.max_buffer_size);
         assert_eq!(

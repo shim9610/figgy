@@ -1,12 +1,13 @@
 //! README Constellation preview: stars at sparse source points, joined by lines.
 //! cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png
 //! Constellation uses ScatterLine; Milkyway uses Line in its separate preview.
+use pollster::FutureExt as _;
 use renderer::config::{ConstellationOptions, DrawStyle, LegendCorner, LegendEntryKind};
 use renderer::data::Column;
 use renderer::data_config::{
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
+use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
@@ -28,9 +29,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(parent)?;
     }
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let mut r = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,

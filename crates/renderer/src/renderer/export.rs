@@ -349,30 +349,6 @@ impl Renderer {
         encode_png(&img)
     }
 
-    /// Blocking wrapper around [`Self::export_document_rgba_async`]. Native
-    /// only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_rgba(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        pollster::block_on(self.export_document_rgba_async(chart, series, scale))
-    }
-
-    /// Blocking wrapper around [`Self::export_document_png_bytes_async`].
-    /// Native only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_png_bytes(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        pollster::block_on(self.export_document_png_bytes_async(chart, series, scale))
-    }
-
     /// Export the whole document as an SVG document at `scale ×` resolution
     /// (#48). The decorations are vector content from the placement the PNG
     /// export draws with: axes, ticks, tick labels, grid, titles, legend,
@@ -444,30 +420,6 @@ impl Renderer {
     ) -> Result<Vec<u8>> {
         self.export_vector_scoped::<crate::vector_export::PdfOut>(chart, series, scale, clear)
             .await
-    }
-
-    /// Blocking wrapper around [`Self::export_document_svg_async`]. Native
-    /// only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_svg(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<String> {
-        pollster::block_on(self.export_document_svg_async(chart, series, scale))
-    }
-
-    /// Blocking wrapper around [`Self::export_document_pdf_async`]. Native
-    /// only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_pdf(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        pollster::block_on(self.export_document_pdf_async(chart, series, scale))
     }
 
     /// The vector export in format `F`, with the PNG export's checks, device
@@ -1249,30 +1201,5 @@ impl Renderer {
             .export_panel_rgba_with_clear_async(chart, series, scale, clear)
             .await?;
         encode_png(&img)
-    }
-
-    /// Blocking convenience wrapper around [`Self::export_panel_rgba_async`].
-    /// Native only — on wasm, await the async variant from the host's event
-    /// loop instead.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_rgba(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        pollster::block_on(self.export_panel_rgba_async(chart, series, scale))
-    }
-
-    /// Blocking convenience wrapper around
-    /// [`Self::export_panel_png_bytes_async`]. Native only.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_png_bytes(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        pollster::block_on(self.export_panel_png_bytes_async(chart, series, scale))
     }
 }

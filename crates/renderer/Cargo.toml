@@ -51,10 +51,7 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std", "o
 # successor under its own mutex (#160).
 arc-swap = "1.7"
 
-# Blocking executor for the sync convenience wrappers — never on wasm, where
-# blocking the single thread would deadlock; use the *_async variants there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = "1.0"
 eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }
 egui = { version = "0.36", optional = true }
 egui-wgpu = { version = "0.36", optional = true }
@@ -69,6 +66,10 @@ web-sys = { version = "0.3", features = ["Window"] }
 # unsupported/; re-wire it when iced ships a wgpu 30 release.
 # iced = { version = "0.14", optional = true, features = ["wgpu"] }
 # iced_wgpu = { version = "0.14", optional = true }
+
+# Native tests and examples block on the async API themselves (#160).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster = "1.0"
 
 [dev-dependencies]
 # The crate's own tests enable `cpu-twin`, so the CPU picker in

@@ -70,7 +70,7 @@ let series = vec![SeriesConfig {
 // categories.
 let mut chart = Chart::new(config);
 chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-let png = r.export_panel_png_bytes(&chart, &series, 2.0)?;
+let png = pollster::block_on(r.export_panel_png_bytes_async(&chart, &series, 2.0))?;
 # let _ = png;
 # Ok(())
 # }

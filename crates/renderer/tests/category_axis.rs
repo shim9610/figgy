@@ -10,6 +10,7 @@
 //! it picks, highlights and anchors annotations at the category positions.
 #![cfg(not(target_arch = "wasm32"))]
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -206,10 +207,12 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
     numeric_twin(&mut numeric.top_x, 7);
     for scale in [1.0f32, 2.0] {
         let a = r
-            .export_document_rgba(&Chart::new(categorical.clone()), &series, scale)
+            .export_document_rgba_async(&Chart::new(categorical.clone()), &series, scale)
+            .block_on()
             .unwrap();
         let b = r
-            .export_document_rgba(&Chart::new(numeric.clone()), &series, scale)
+            .export_document_rgba_async(&Chart::new(numeric.clone()), &series, scale)
+            .block_on()
             .unwrap();
         assert_eq!((a.width, a.height), (b.width, b.height));
         let changed = a
@@ -220,7 +223,8 @@ fn a_categorical_chart_exports_like_its_numeric_twin() {
             .count();
         assert_eq!(changed, 0, "{scale}x");
         let png = r
-            .export_document_png_bytes(&Chart::new(categorical.clone()), &series, scale)
+            .export_document_png_bytes_async(&Chart::new(categorical.clone()), &series, scale)
+            .block_on()
             .unwrap();
         assert!(png.starts_with(b"\x89PNG"), "{scale}x");
     }
@@ -263,7 +267,8 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
 
     // The highlight of point 3 changes pixels around its marker only.
     let plain = r
-        .export_document_rgba(&Chart::new(cfg.clone()), &series, 1.0)
+        .export_document_rgba_async(&Chart::new(cfg.clone()), &series, 1.0)
+        .block_on()
         .unwrap();
     let mut selected = cfg.clone();
     selected.picked_data = Some(DataSelectionsConfig {
@@ -275,7 +280,8 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
         ..Default::default()
     });
     let highlighted = r
-        .export_document_rgba(&Chart::new(selected), &series, 1.0)
+        .export_document_rgba_async(&Chart::new(selected), &series, 1.0)
+        .block_on()
         .unwrap();
     let (cx, cy) = at(3);
     let mut changed = 0;
@@ -510,7 +516,8 @@ fn crowded_category_and_log_labels_draw_and_export() {
                 assert!(!rgba.is_empty(), "{name} at {scale}x");
             }
             let png = r
-                .export_document_png_bytes(&Chart::new(cfg.clone()), &series, scale)
+                .export_document_png_bytes_async(&Chart::new(cfg.clone()), &series, scale)
+                .block_on()
                 .unwrap_or_else(|e| panic!("{name} at {scale}x: {e}"));
             assert!(png.starts_with(b"\x89PNG"), "{name} at {scale}x");
         }

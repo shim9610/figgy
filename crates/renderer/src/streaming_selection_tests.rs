@@ -3,6 +3,7 @@ use crate::config::{DataSelectionsConfig, PickedPointsConfig};
 use crate::data_config::{
     BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
 };
+use pollster::FutureExt as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
     crate::Column {
@@ -481,7 +482,10 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         matches!(r.request_stream_selection_ranges(id).unwrap(), StreamingSelectionRequest::Complete { revision } if revision == selection_revision)
     );
     for scale in [1.0, 2.0] {
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let operation = r
             .begin_stream_export(id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 3)
             .unwrap();
@@ -613,7 +617,8 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     assert_eq!(
         actual.rgba,
         resident
-            .export_panel_rgba(&chart, &series, 1.0)
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
             .unwrap()
             .rgba
     );
@@ -671,7 +676,10 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
                 _ => {}
             }
         }
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let actual = screen(&mut r, id, &view);
         assert_display_equivalent(
             &actual,
@@ -681,7 +689,10 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         select(chart.config_mut(), &[10, 2, 10]);
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let expected = resident
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let actual = screen(&mut r, id, &view);
         assert_display_equivalent(
             &actual,

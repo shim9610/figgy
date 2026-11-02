@@ -25,6 +25,7 @@
 
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
+use pollster::FutureExt as _;
 
 use renderer::color::Color;
 use renderer::config::{AxisOptions, AxisScale, Config, GridOptions, LegendEntryKind};
@@ -720,11 +721,10 @@ impl eframe::App for DemoApp {
                             .expect("FiggyState");
                         let (renderer, panels) = (&mut state.renderer, &state.panels);
                         for (i, panel) in panels.iter().enumerate() {
-                            match renderer.export_panel_png_bytes(
-                                &panel.chart,
-                                &panel.series,
-                                scale,
-                            ) {
+                            match renderer
+                                .export_panel_png_bytes_async(&panel.chart, &panel.series, scale)
+                                .block_on()
+                            {
                                 Ok(bytes) => {
                                     let path = format!("/tmp/figgy_egui_panel_{i}.png");
                                     match std::fs::write(&path, &bytes) {

@@ -9,6 +9,7 @@ use crate::config::LegendCorner;
 use crate::layout::{ChartArea, NudgeResult, RectF};
 use crate::text::RichText;
 use crate::{AnnotationSkip, LayerRef, RenderWarning, SelectionGeometry};
+use pollster::FutureExt as _;
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -508,10 +509,12 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
     );
     let series = r.chart_series(id).unwrap().to_vec();
     let one = r
-        .export_panel_rgba(&Chart::new(config.clone()), &series, 1.0)
+        .export_panel_rgba_async(&Chart::new(config.clone()), &series, 1.0)
+        .block_on()
         .unwrap();
     let two = r
-        .export_panel_rgba(&Chart::new(config.clone()), &series, 2.0)
+        .export_panel_rgba_async(&Chart::new(config.clone()), &series, 2.0)
+        .block_on()
         .unwrap();
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
     // The span's left edge, found on a plot row below the line.

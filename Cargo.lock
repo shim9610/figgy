@@ -733,6 +733,7 @@ dependencies = [
  "figgy-renderer",
  "futures-channel",
  "js-sys",
+ "pollster",
  "serde",
  "serde_json",
  "wasm-bindgen",

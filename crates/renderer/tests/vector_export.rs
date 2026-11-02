@@ -17,6 +17,7 @@
 //!   rejection, the sketch and Milkyway styles and the radial chart.
 #![cfg(not(target_arch = "wasm32"))]
 
+use pollster::FutureExt as _;
 #[path = "support/pdf_structure.rs"]
 mod pdf_structure;
 #[path = "support/playground_scenes.rs"]
@@ -112,9 +113,18 @@ fn check_document(
     scale: f32,
     amplitude: f32,
 ) -> Sizes {
-    let svg = r.export_document_svg(chart, series, scale).unwrap();
-    let pdf = r.export_document_pdf(chart, series, scale).unwrap();
-    let image = r.export_document_rgba(chart, series, scale).unwrap();
+    let svg = r
+        .export_document_svg_async(chart, series, scale)
+        .block_on()
+        .unwrap();
+    let pdf = r
+        .export_document_pdf_async(chart, series, scale)
+        .block_on()
+        .unwrap();
+    let image = r
+        .export_document_rgba_async(chart, series, scale)
+        .block_on()
+        .unwrap();
     let png = encode_png(&image).unwrap();
     let mut written = Vec::new();
     written_document_parts(chart, scale, &mut |part| written.push(part)).unwrap();
@@ -250,7 +260,11 @@ fn the_sketch_and_milkyway_styles_read_back() {
     milkyway.draw_style = DrawStyle::Milkyway(Default::default());
     let chart = Chart::new(milkyway);
     check_document(&mut r, "Milkyway Lines", &chart, &scene.series, 1.0, 0.0);
-    let svg = svg_parts::read(&r.export_document_svg(&chart, &scene.series, 1.0).unwrap());
+    let svg = svg_parts::read(
+        &r.export_document_svg_async(&chart, &scene.series, 1.0)
+            .block_on()
+            .unwrap(),
+    );
     let ReadPart::Image(backdrop) = svg.parts[0] else {
         panic!("the backdrop comes first: {:?}", svg.parts[0]);
     };
@@ -316,10 +330,14 @@ fn the_data_images_are_the_png_exports_pixels() {
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
             let export = r
-                .export_document_rgba(&chart, &scene.series, scale)
+                .export_document_rgba_async(&chart, &scene.series, scale)
+                .block_on()
                 .unwrap();
-            let svg =
-                svg_parts::read(&r.export_document_svg(&chart, &scene.series, scale).unwrap());
+            let svg = svg_parts::read(
+                &r.export_document_svg_async(&chart, &scene.series, scale)
+                    .block_on()
+                    .unwrap(),
+            );
             assert!(!svg.images.is_empty(), "{context}: a data image");
             let mut covered = vec![false; (export.width * export.height) as usize];
             for (rect, bytes) in &svg.images {
@@ -368,7 +386,8 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
             let export = r
-                .export_document_rgba(&chart, &scene.series, scale)
+                .export_document_rgba_async(&chart, &scene.series, scale)
+                .block_on()
                 .unwrap();
             let target = Rect {
                 x: 0,
@@ -383,8 +402,11 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
             );
             let below = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Grid).unwrap();
             let above = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Decoration).unwrap();
-            let svg =
-                svg_parts::read(&r.export_document_svg(&chart, &scene.series, scale).unwrap());
+            let svg = svg_parts::read(
+                &r.export_document_svg_async(&chart, &scene.series, scale)
+                    .block_on()
+                    .unwrap(),
+            );
             let data: Vec<(Rect, RasterImage)> = svg
                 .parts
                 .iter()
@@ -480,15 +502,26 @@ fn the_same_document_writes_the_same_bytes() {
         let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS).unwrap();
         let chart = Chart::new(scene.config.clone());
         for scale in SCALES {
-            let svg = r.export_document_svg(&chart, &scene.series, scale).unwrap();
+            let svg = r
+                .export_document_svg_async(&chart, &scene.series, scale)
+                .block_on()
+                .unwrap();
             assert_eq!(
                 svg,
-                r.export_document_svg(&chart, &scene.series, scale).unwrap(),
+                r.export_document_svg_async(&chart, &scene.series, scale)
+                    .block_on()
+                    .unwrap(),
                 "{kind:?}"
             );
-            let pdf = r.export_document_pdf(&chart, &scene.series, scale).unwrap();
+            let pdf = r
+                .export_document_pdf_async(&chart, &scene.series, scale)
+                .block_on()
+                .unwrap();
             assert!(
-                pdf == r.export_document_pdf(&chart, &scene.series, scale).unwrap(),
+                pdf == r
+                    .export_document_pdf_async(&chart, &scene.series, scale)
+                    .block_on()
+                    .unwrap(),
                 "{kind:?}"
             );
         }
@@ -504,7 +537,11 @@ fn the_clear_colour_is_a_background_rectangle() {
     let scene = scenes::build(&mut r, SceneKind::Annotations, BIG_DATA_POINTS).unwrap();
     let chart = Chart::new(scene.config.clone());
     let clear = Color::new(0.1, 0.2, 0.3, 1.0);
-    let plain = svg_parts::read(&r.export_document_svg(&chart, &scene.series, 1.0).unwrap());
+    let plain = svg_parts::read(
+        &r.export_document_svg_async(&chart, &scene.series, 1.0)
+            .block_on()
+            .unwrap(),
+    );
     let svg = r.export_document_svg_with_clear_async(&chart, &scene.series, 1.0, clear);
     let svg = pollster::block_on(svg).unwrap();
     assert!(
@@ -571,10 +608,19 @@ fn a_streamed_source_is_rejected() {
             result
         );
     };
-    rejected(r.export_document_svg(&chart, &series, 1.0).map(|_| ()));
-    rejected(r.export_document_pdf(&chart, &series, 1.0).map(|_| ()));
     rejected(
-        r.export_document_png_bytes(&chart, &series, 1.0)
+        r.export_document_svg_async(&chart, &series, 1.0)
+            .block_on()
+            .map(|_| ()),
+    );
+    rejected(
+        r.export_document_pdf_async(&chart, &series, 1.0)
+            .block_on()
+            .map(|_| ()),
+    );
+    rejected(
+        r.export_document_png_bytes_async(&chart, &series, 1.0)
+            .block_on()
             .map(|_| ()),
     );
 }
@@ -627,7 +673,7 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
             let context = format!("{name} at {scale}x");
             let mut written: Vec<WrittenPart> = Vec::new();
             written_vector_parts(&chart, size, scale, &mut |part| written.push(part)).unwrap();
-            let svg = rr.export_svg(&chart, size, scale).unwrap();
+            let svg = rr.export_svg_async(&chart, size, scale).block_on().unwrap();
             assert!(
                 !svg.contains(&selection),
                 "{context}: a selection box was drawn"
@@ -647,7 +693,8 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
                 &format!("{context} SVG"),
             );
             assert_eq!(file.images.len(), 1, "{context}: one frame image");
-            let pdf = pdf_structure::read(&rr.export_pdf(&chart, size, scale).unwrap());
+            let pdf =
+                pdf_structure::read(&rr.export_pdf_async(&chart, size, scale).block_on().unwrap());
             assert_eq!(pdf.page, [600.0, 390.0]);
             let parts = pdf_structure::content_parts(&pdf, physical);
             assert_parts_match(&parts, &written, TOLERANCE, 0.0, &format!("{context} PDF"));
@@ -667,7 +714,7 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
                 .unwrap();
             assert_eq!(
                 svg,
-                rr.export_svg(&chart, size, scale).unwrap(),
+                rr.export_svg_async(&chart, size, scale).block_on().unwrap(),
                 "{context}: deterministic"
             );
         }
@@ -748,7 +795,8 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
             }
             let context = format!("{name} at {scale}x");
             let svg = r
-                .export_document_svg(&chart, series, scale)
+                .export_document_svg_async(&chart, series, scale)
+                .block_on()
                 .unwrap_or_else(|e| panic!("{context}: {e}"));
             let file = svg_parts::read(&svg);
             for (rect, png) in &file.images {
@@ -761,7 +809,8 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
                 );
             }
             pdf_structure::read(
-                &r.export_document_pdf(&chart, series, scale)
+                &r.export_document_pdf_async(&chart, series, scale)
+                    .block_on()
                     .unwrap_or_else(|e| panic!("{context}: {e}")),
             );
             r.end_gpu_frame();
@@ -776,8 +825,12 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
             for size in [(1, 1), (3, 5)] {
                 // Below the radial chart's smallest canvas: refused.
                 for result in [
-                    rr.export_svg(&chart, size, scale).map(|_| ()),
-                    rr.export_pdf(&chart, size, scale).map(|_| ()),
+                    rr.export_svg_async(&chart, size, scale)
+                        .block_on()
+                        .map(|_| ()),
+                    rr.export_pdf_async(&chart, size, scale)
+                        .block_on()
+                        .map(|_| ()),
                 ] {
                     assert!(
                         matches!(result, Err(renderer::radial::RadialError::Invalid(_))),
@@ -790,14 +843,16 @@ fn odd_sizes_subplots_and_milkyway_export_their_images() {
             for scale in SCALES {
                 let context = format!("{name} {size:?} at {scale}x");
                 let svg = rr
-                    .export_svg(&chart, size, scale)
+                    .export_svg_async(&chart, size, scale)
+                    .block_on()
                     .unwrap_or_else(|e| panic!("{context}: {e:?}"));
                 let file = svg_parts::read(&svg);
                 assert_eq!(file.images.len(), 1, "{context}");
                 let image = decode_png(&file.images[0].1);
                 assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
                 pdf_structure::read(
-                    &rr.export_pdf(&chart, size, scale)
+                    &rr.export_pdf_async(&chart, size, scale)
+                        .block_on()
                         .unwrap_or_else(|e| panic!("{context}: {e:?}")),
                 );
                 rr.end_frame();

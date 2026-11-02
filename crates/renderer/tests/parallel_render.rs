@@ -10,6 +10,7 @@
 //! categorical axis's positions, so a wrong axis, a wrong normalization or
 //! a row drawn through the wrong column fails rather than passes.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -298,7 +299,10 @@ fn each_row_passes_through_its_axis_points_and_midpoints_at_1x_and_2x() {
         .collect();
     let chart = Chart::new(config.clone());
     for scale in [1.0f64, 2.0] {
-        let img = r.export_panel_rgba(&chart, &series, scale as f32).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, scale as f32)
+            .block_on()
+            .unwrap();
         save(&format!("parallel-rows-{scale}x"), &img);
         for (k, row) in ROWS.iter().enumerate() {
             for i in 0..AXES {
@@ -358,7 +362,10 @@ fn inverted_and_logarithmic_axes_place_their_values() {
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
     let chart = Chart::new(config.clone());
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("parallel-inverted-log", &img);
     let da = config.data_area().unwrap();
     let frac = |(_, y): (f64, f64)| (f64::from(da.y + da.height) - y) / f64::from(da.height);
@@ -411,7 +418,10 @@ fn a_non_finite_value_breaks_the_row_at_its_axis() {
     let columns = upload(&mut r, "nan", &rows);
     let series = [series("nan", &columns, RED, None)];
     let chart = Chart::new(config.clone());
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("parallel-broken", &img);
     let background = pixel(&img, (2.0, 2.0));
     // The first segment of the broken row is drawn.
@@ -485,7 +495,10 @@ fn the_pick_answers_the_row_and_the_highlight_redraws_it() {
         contour_width_extra_px: 0.0,
     });
     let chart = Chart::new(highlighted);
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("parallel-selected", &img);
     for i in 0..AXES - 1 {
         assert_colour_at(
@@ -559,7 +572,10 @@ fn a_colour_column_colours_each_row_through_the_colorbar() {
         .unwrap();
     let series = [series("rows", &columns, RED, Some("rows_class"))];
     let chart = Chart::new(config.clone());
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("parallel-coloured", &img);
     let stops = ColorMap::Viridis.stops();
     let first = stops[0];
@@ -646,7 +662,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let columns = upload(&mut r, "rows", &ROWS);
     let series = [series("rows", &columns, RED, None)];
     let chart = Chart::new(config.clone());
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save("parallel-dressed", &img);
     let measure = CpuTextMeasure::for_style(&config.draw_style);
     let map = HitMap::for_active_layer(&config);
@@ -740,7 +759,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     named.bottom_x.label_style.visible = true;
     named.bottom_x.label_style.label_visible = true;
     let names = Chart::new(named.clone());
-    let img = r.export_panel_rgba(&names, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&names, &series, 1.0)
+        .block_on()
+        .unwrap();
     let (x, _) = point_px(&named, 1, 50.0, 1.0);
     let below = (0..30).any(|dy| {
         !is_background(
@@ -819,7 +841,10 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     // polar and ternary systems' are): the export names them.
     let config_reason = |r: &mut Renderer, config: &Config, series: Vec<SeriesConfig>| {
         let what = format!("{:?}", config.parallel);
-        match r.export_panel_rgba(&Chart::new(config.clone()), &series, 1.0) {
+        match r
+            .export_panel_rgba_async(&Chart::new(config.clone()), &series, 1.0)
+            .block_on()
+        {
             Err(FiggyError::InvalidConfig { field, reason }) => {
                 assert_eq!(field, "parallel", "{what}");
                 reason.to_owned()
@@ -981,7 +1006,10 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
     };
     let chart = Chart::new(config.clone());
     let started = std::time::Instant::now();
-    let img = r.export_panel_rgba(&chart, &[series.clone()], 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &[series.clone()], 1.0)
+        .block_on()
+        .unwrap();
     eprintln!(
         "{rows} rows x {axes} axes exported in {:?}",
         started.elapsed()

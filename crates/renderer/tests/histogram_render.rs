@@ -10,6 +10,7 @@
 //! `data_area()` + axis range the renderer uses, so the assertions name where a
 //! bar *should* be rather than where it happens to have landed.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -243,7 +244,10 @@ fn every_bin_draws_and_its_height_follows_its_count() {
         return;
     };
     let (chart, series) = vertical_fixture(&mut renderer);
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("vertical", &img);
 
     let mut tops = Vec::new();
@@ -293,7 +297,10 @@ fn selected_bin_outline_uses_the_exact_bar_instance() {
         contour_width_extra_px: 0.0,
     });
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let selected_x0 = data_x_to_px(&chart, EDGES[1]).floor().max(0.0) as u32;
     let selected_x1 = data_x_to_px(&chart, EDGES[2]).ceil().max(0.0) as u32;
     let mut inside = 0usize;
@@ -323,7 +330,10 @@ fn bars_draw_their_border_in_the_border_colour() {
         return;
     };
     let (chart, series) = vertical_fixture(&mut renderer);
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
 
     let border_ink = img.rgba.chunks_exact(4).filter(|p| is_border(p)).count();
     assert!(border_ink > 100, "only {border_ink} border pixels");
@@ -343,7 +353,10 @@ fn bars_draw_their_border_in_the_border_colour() {
             bar_style_overrides: None,
         },
     };
-    let plain = renderer.export_panel_rgba(&chart, &no_border, 1.0).unwrap();
+    let plain = renderer
+        .export_panel_rgba_async(&chart, &no_border, 1.0)
+        .block_on()
+        .unwrap();
     assert_eq!(
         plain.rgba.chunks_exact(4).filter(|p| is_border(p)).count(),
         0,
@@ -380,7 +393,10 @@ fn the_gap_separates_neighbouring_bars() {
         12.0,
         0.0,
     )];
-    let img = renderer.export_panel_rgba(&chart, &wide_gap, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &wide_gap, 1.0)
+        .block_on()
+        .unwrap();
 
     // The interior bin boundaries (x = 1, 2, 3) must be clear of bar ink.
     for edge in [1.0f64, 2.0, 3.0] {
@@ -409,7 +425,10 @@ fn the_gap_separates_neighbouring_bars() {
         10_000.0,
         0.0,
     )];
-    let squeezed = renderer.export_panel_rgba(&chart, &closed, 1.0).unwrap();
+    let squeezed = renderer
+        .export_panel_rgba_async(&chart, &closed, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         squeezed.rgba.chunks_exact(4).filter(|p| is_fill(p)).count() > 100,
         "a gap wider than the bin must retain a minimum visible footprint"
@@ -448,7 +467,10 @@ fn subpixel_bins_survive_a_one_pixel_gap_in_both_orientations() {
             }
         };
         let series = vec![histogram(x, y, orientation.clone(), 1.0, 0.0)];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .unwrap();
         let fill_pixels = img.rgba.chunks_exact(4).filter(|p| is_fill(p)).count();
         assert!(
             fill_pixels > 1_000,
@@ -456,7 +478,10 @@ fn subpixel_bins_survive_a_one_pixel_gap_in_both_orientations() {
         );
         for scale in [1.0, 2.0] {
             let stroked = vec![histogram(x, y, orientation.clone(), 1.0, 1.0)];
-            let img = renderer.export_panel_rgba(&chart, &stroked, scale).unwrap();
+            let img = renderer
+                .export_panel_rgba_async(&chart, &stroked, scale)
+                .block_on()
+                .unwrap();
             assert_eq!(
                 img.rgba.chunks_exact(4).filter(|p| is_fill(p)).count(),
                 0,
@@ -526,18 +551,20 @@ fn subpixel_envelope_keeps_maxima_without_repeated_alpha_blending() {
                 series
             };
             let dense = renderer
-                .export_panel_rgba(
+                .export_panel_rgba_async(
                     &chart,
                     &[make("envelope_edges", "envelope_counts", 1.0)],
                     scale,
                 )
+                .block_on()
                 .unwrap();
             let reference = renderer
-                .export_panel_rgba(
+                .export_panel_rgba_async(
                     &chart,
                     &[make("reference_edges", "reference_counts", 0.0)],
                     scale,
                 )
+                .block_on()
                 .unwrap();
             let da = chart.config().data_area().unwrap();
             // Stay away from the data-area scissor and outer border. Every
@@ -603,7 +630,10 @@ fn envelope_uses_winner_style_bar_baseline_and_keeps_tiny_edges() {
             ..Default::default()
         },
     }]);
-    let image = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
+    let image = renderer
+        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .block_on()
+        .unwrap();
     let x = data_x_to_px(&chart, 100.0).floor() as u32;
     for value in [6.0, 7.5] {
         assert!(
@@ -632,7 +662,10 @@ fn width_ratio_centres_a_narrower_bar_inside_each_bin() {
     bar.border_width = 0.0;
     bar.width_ratio = 0.5;
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let raw_x0 = data_x_to_px(&chart, EDGES[0]);
     let raw_x1 = data_x_to_px(&chart, EDGES[1]);
     let y = data_y_to_px(&chart, 0.5).round() as u32;
@@ -675,7 +708,10 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
         },
     }]);
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let bin_x0 = data_x_to_px(&chart, EDGES[1]).floor().max(0.0) as u32;
     let bin_x1 = data_x_to_px(&chart, EDGES[2]).ceil().max(0.0) as u32;
     let mut override_fill = 0usize;
@@ -709,7 +745,10 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let selected = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let selected = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let selected_x: Vec<u32> = (0..selected.width)
         .filter(|x| (0..selected.height).any(|y| is_selection(pixel(&selected, *x, y))))
         .collect();
@@ -815,7 +854,10 @@ fn selected_override_bin_outline_is_exactly_its_painted_bar() {
             for scale in [1.0, 2.0] {
                 let case = format!("dense={dense} {orientation:?} {scale}x");
                 chart.config_mut().picked_data = None;
-                let painted = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let painted = renderer
+                    .export_panel_rgba_async(&chart, &series, scale)
+                    .block_on()
+                    .unwrap();
                 let bar_box =
                     bounding_box(&painted, is_override_paint).expect("the selected bin paints");
                 if !dense {
@@ -849,7 +891,10 @@ fn selected_override_bin_outline_is_exactly_its_painted_bar() {
                     point_radius_extra_px: 0.0,
                     contour_width_extra_px: 0.0,
                 });
-                let outlined = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let outlined = renderer
+                    .export_panel_rgba_async(&chart, &series, scale)
+                    .block_on()
+                    .unwrap();
                 let outline_box =
                     bounding_box(&outlined, is_selection).expect("the selected bin is outlined");
                 // One pixel of slack per edge: a partly covered edge pixel
@@ -895,7 +940,10 @@ fn horizontal_bars_run_along_x() {
         2.0,
         0.0,
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("horizontal", &img);
 
     // Each bin is a horizontal band; its bar reaches right to its own count.
@@ -939,7 +987,10 @@ fn horizontal_log_count_axis_clips_zero_baseline_and_preserves_endpoints() {
         0.0,
     )];
     for scale in [1.0, 1.5, 2.0] {
-        let img = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+        let img = renderer
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         let da = chart.config().data_area().unwrap();
         for (i, count) in counts.iter().enumerate() {
             let y = (data_y_to_px(&chart, i as f64 + 0.5) * scale).round() as u32;
@@ -988,7 +1039,10 @@ fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
         },
     }]);
     let series = [s];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let at = |x, y| {
         pixel(
             &img,
@@ -1021,7 +1075,10 @@ fn horizontal_signed_bars_keep_bin_override_and_selected_width() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let selected = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let selected = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let ys: Vec<u32> = (0..selected.height)
         .filter(|&y| (0..selected.width).any(|x| is_selection(pixel(&selected, x, y))))
         .collect();
@@ -1061,7 +1118,10 @@ fn a_short_count_column_draws_fewer_bars_and_says_so() {
     assert_eq!(info.drawn_count, 2);
     assert!(info.truncated, "4 bins declared, 2 counts supplied");
 
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("truncated", &img);
     for bin in 0..2 {
         let x0 = data_x_to_px(&chart, EDGES[bin]).ceil() as u32 + 3;
@@ -1108,7 +1168,10 @@ fn a_logarithmic_count_axis_still_draws_every_bar() {
         2.0,
         0.0,
     )];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = renderer
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     save_probe("log-y", &img);
 
     let da = chart.config().data_area().expect("data area");

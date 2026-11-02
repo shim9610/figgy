@@ -15,6 +15,7 @@
 //! with.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+use pollster::FutureExt as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -214,7 +215,9 @@ fn count(img: &RasterImage, pred: fn([u8; 4]) -> bool) -> usize {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba(chart, series, scale).unwrap()
+    r.export_panel_rgba_async(chart, series, scale)
+        .block_on()
+        .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -575,27 +578,35 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let mut rectangular = chart(up_clockwise());
     rectangular.config_mut().polar = None;
     let reason = invalid(
-        r.export_panel_rgba(&rectangular, &series, 1.0),
+        r.export_panel_rgba_async(&rectangular, &series, 1.0)
+            .block_on(),
         "rectangular",
     );
     assert!(reason.contains("polar"), "{reason}");
     // A numeric angle axis.
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
-    let reason = invalid(r.export_panel_rgba(&numeric, &series, 1.0), "numeric");
+    let reason = invalid(
+        r.export_panel_rgba_async(&numeric, &series, 1.0).block_on(),
+        "numeric",
+    );
     assert!(reason.contains("categorical angle axis"), "{reason}");
     // Arc interpolation.
     let arcs = chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
         ..up_clockwise()
     });
-    let reason = invalid(r.export_panel_rgba(&arcs, &series, 1.0), "arcs");
+    let reason = invalid(
+        r.export_panel_rgba_async(&arcs, &series, 1.0).block_on(),
+        "arcs",
+    );
     assert!(reason.contains("Chord"), "{reason}");
     // A column that does not hold one value per category.
     r.add_column("short", &col(vec![0.5, 0.5, 0.5])).unwrap();
     let short = [radar("short", "short", RED, outline_and_fill())];
     let reason = invalid(
-        r.export_panel_rgba(&chart(up_clockwise()), &short, 1.0),
+        r.export_panel_rgba_async(&chart(up_clockwise()), &short, 1.0)
+            .block_on(),
         "short",
     );
     assert!(reason.contains("one value per category"), "{reason}");
@@ -606,7 +617,8 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         labels.text = vec!["1".into(); 4];
     }
     let reason = invalid(
-        r.export_panel_rgba(&chart(up_clockwise()), &[labelled], 1.0),
+        r.export_panel_rgba_async(&chart(up_clockwise()), &[labelled], 1.0)
+            .block_on(),
         "labels",
     );
     assert!(reason.contains("one string per category"), "{reason}");
@@ -616,7 +628,11 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         ..up_clockwise()
     });
     polygon.config_mut().bottom_x.categories = None;
-    assert!(r.export_panel_rgba(&polygon, &[], 1.0).is_err());
+    assert!(
+        r.export_panel_rgba_async(&polygon, &[], 1.0)
+            .block_on()
+            .is_err()
+    );
     // A stylized draw style draws no radar series, and says so.
     assert!(!renderer::draw_style_supports(
         &renderer::config::DrawStyle::Sketch(Default::default()),
@@ -694,7 +710,10 @@ fn a_polar_subplot_draws_its_own_radar_series() {
     let chart = Chart::new(parent);
     let series = [radar("one", "one", RED, outline_and_fill())];
     for scale in [1.0, 2.0] {
-        let img = r.export_document_rgba(&chart, &series, scale).unwrap();
+        let img = r
+            .export_document_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         save(&format!("radar-subplot-{scale}x"), &img);
         let (w, h) = (img.width as usize, img.height as usize);
         let lower = img.rgba[w * 4 * (h / 2)..]

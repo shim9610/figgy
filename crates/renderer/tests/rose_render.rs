@@ -15,6 +15,7 @@
 //! wedges side by side in the categories' order, `bar_gap` pixels apart at
 //! the ring.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -294,7 +295,9 @@ fn any_within(
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba(chart, series, scale).unwrap()
+    r.export_panel_rgba_async(chart, series, scale)
+        .block_on()
+        .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -813,7 +816,10 @@ fn a_polar_subplot_draws_its_own_rose() {
     let chart = Chart::new(parent);
     let series = [bars("one", RED), bars("two", BLUE)];
     for scale in [1.0, 2.0] {
-        let img = r.export_document_rgba(&chart, &series, scale).unwrap();
+        let img = r
+            .export_document_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         save(&format!("rose-subplot-{scale}x"), &img);
         let (w, h) = (img.width as usize, img.height as usize);
         for (name, pred) in [("red", is_red as fn([u8; 4]) -> bool), ("blue", is_blue)] {
@@ -872,7 +878,11 @@ fn a_horizontal_group_on_a_polar_chart_is_refused() {
         .validate_category_bars(&series)
         .expect_err("a horizontal rose is refused");
     assert!(reason.contains("rose"), "{reason}");
-    assert!(r.export_panel_rgba(&chart, &series, 1.0).is_err());
+    assert!(
+        r.export_panel_rgba_async(&chart, &series, 1.0)
+            .block_on()
+            .is_err()
+    );
     assert!(
         r.register_chart(chart.config().clone(), series.to_vec())
             .is_err()

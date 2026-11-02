@@ -1,5 +1,6 @@
 //! A crowded first frame must remain renderable and editable through the shared API.
 #![cfg(not(target_arch = "wasm32"))]
+use pollster::FutureExt as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
@@ -69,7 +70,10 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
                 .prepare(&chart, (420, 280), scale)
                 .expect("label spacing cannot reject the first frame");
             assert_eq!(radial_labels(&*frame, &chart).len(), 16);
-            let image = renderer.export_rgba(&chart, (420, 280), scale).unwrap();
+            let image = renderer
+                .export_rgba_async(&chart, (420, 280), scale)
+                .block_on()
+                .unwrap();
             assert_pixels(&image);
             save(&format!("radial-{mode:?}-{scale}"), &image);
             let shown = chart.clone();
@@ -100,7 +104,8 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_ne!(
                 image.rgba,
                 renderer
-                    .export_rgba(&chart, (420, 280), scale)
+                    .export_rgba_async(&chart, (420, 280), scale)
+                    .block_on()
                     .unwrap()
                     .rgba
             );
@@ -108,7 +113,8 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_eq!(
                 image.rgba,
                 renderer
-                    .export_rgba(&chart, (420, 280), scale)
+                    .export_rgba_async(&chart, (420, 280), scale)
+                    .block_on()
                     .unwrap()
                     .rgba
             );
@@ -119,6 +125,11 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     chart.decorations = Default::default();
     let small = renderer.prepare(&chart, (240, 200), 1.).unwrap();
     assert_eq!(radial_labels(&*small, &chart).len(), 16);
-    assert_pixels(&renderer.export_rgba(&chart, (240, 200), 1.).unwrap());
+    assert_pixels(
+        &renderer
+            .export_rgba_async(&chart, (240, 200), 1.)
+            .block_on()
+            .unwrap(),
+    );
     renderer.end_frame();
 }

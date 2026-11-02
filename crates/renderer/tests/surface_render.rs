@@ -8,6 +8,7 @@
 //! on through `Config::project_3d`, so a wrong axis, camera or depth order
 //! fails rather than passes.
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -135,7 +136,8 @@ fn ridge(x: f64, y: f64) -> f64 {
 }
 
 fn export(r: &mut Renderer, config: &Config, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba(&Chart::new(config.clone()), series, scale)
+    r.export_panel_rgba_async(&Chart::new(config.clone()), series, scale)
+        .block_on()
         .unwrap()
 }
 

@@ -1,5 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use pollster::FutureExt as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use renderer::{Color, Material, RendererDevice, radial::*};
@@ -27,7 +28,7 @@ fn chart() -> RadialChart {
 }
 /// The GPU pick at `p`, resolved.
 fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
-    frame.pick(p).unwrap().resolve_blocking().unwrap()
+    frame.pick(p).unwrap().resolve().block_on().unwrap()
 }
 fn renderer() -> RadialRenderer {
     RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
@@ -47,7 +48,7 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
-    let image = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let image = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     let red = image
         .rgba
         .chunks_exact(4)
@@ -61,7 +62,7 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     assert!((red as f64 / (red + blue) as f64 - 0.25).abs() < 0.005);
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     drain(&r);
-    let ring = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let ring = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     assert_eq!(
         &ring.rgba[(160 * 320 + 160) * 4..][..4],
         &[255, 255, 255, 255]
@@ -70,10 +71,10 @@ fn radial_proportions_hole_zero_and_full_circle_are_correct() {
     c.start_angle_degrees = f32::MAX;
     c.slices[0].value = 0.0;
     drain(&r);
-    let full = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let full = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     c.slices[0].explode = 0.35;
     drain(&r);
-    let hidden = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let hidden = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     assert!(
         hidden.rgba == full.rgba,
         "zero-value slice changed the layout"
@@ -109,7 +110,11 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         &r.prepare(&c, (480, 320), 1.0).unwrap()
     ));
     assert_eq!(r.gpu_memory_usage(), usage);
-    let before = r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba;
+    let before = r
+        .export_rgba_async(&c, (480, 320), 1.0)
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     renderer::text_render::register_font_bytes(
         include_bytes!("../fonts/ComicNeue-Regular.ttf").to_vec(),
@@ -164,7 +169,11 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         changed.format_labels();
         let frame = r.prepare(&changed, (480, 320), 1.0).unwrap();
         assert!(!Arc::ptr_eq(&original, &frame), "stale {name} snapshot");
-        let after = r.export_rgba(&changed, (480, 320), 1.0).unwrap().rgba;
+        let after = r
+            .export_rgba_async(&changed, (480, 320), 1.0)
+            .block_on()
+            .unwrap()
+            .rgba;
         assert!(before != after, "{name} did not update visible pixels");
         drop(frame);
         drain(&r);
@@ -212,7 +221,7 @@ fn radial_export_formats_preserve_straight_alpha_and_png_dimensions() {
         wgpu::TextureFormat::Bgra8UnormSrgb,
     ] {
         let mut r = RadialRenderer::new(gpu(), format).unwrap();
-        let image = r.export_rgba(&c, (320, 240), 1.5).unwrap();
+        let image = r.export_rgba_async(&c, (320, 240), 1.5).block_on().unwrap();
         assert_eq!((image.width, image.height), (480, 360));
         for (actual, expected) in image.rgba[..4].iter().zip([102u8, 153, 204, 128]) {
             assert!(
@@ -266,7 +275,7 @@ fn radial_detail_and_all_materials_render_and_change() {
         c.style.texture_strength = 0.8;
         c.style.tilt_degrees = 30.0;
         c.style.depth = 0.18;
-        let img = r.export_rgba(&c, (640, 400), 1.0).unwrap();
+        let img = r.export_rgba_async(&c, (640, 400), 1.0).block_on().unwrap();
         assert!(
             img.rgba
                 .chunks_exact(4)
@@ -299,7 +308,11 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     c.style.bevel = 0.025;
     c.style.gap_degrees = 2.0;
     c.format_labels();
-    let baseline = r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba;
+    let baseline = r
+        .export_rgba_async(&c, (480, 320), 1.0)
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
         ("outer corner", Box::new(|c| c.style.outer_corner = 0.15)),
@@ -367,7 +380,10 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
             "identical {name} did not reuse"
         );
         assert_ne!(
-            r.export_rgba(&changed, (480, 320), 1.0).unwrap().rgba,
+            r.export_rgba_async(&changed, (480, 320), 1.0)
+                .block_on()
+                .unwrap()
+                .rgba,
             baseline,
             "{name}"
         );
@@ -391,7 +407,13 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
         "hover leaked resources: {maximum}"
     );
     c.interaction = RadialInteraction::default();
-    assert_eq!(r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba, baseline);
+    assert_eq!(
+        r.export_rgba_async(&c, (480, 320), 1.0)
+            .block_on()
+            .unwrap()
+            .rgba,
+        baseline
+    );
 }
 
 #[test]
@@ -409,7 +431,7 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
     c.style.hover_brightness = 0.0;
     c.interaction.selected = Some(RadialTarget::main(0));
     let frame = r.prepare(&c, (320, 320), 1.0).unwrap();
-    let img = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let img = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     let mut hits = [0; 2];
     for y in (10..310).step_by(3) {
         for x in (10..310).step_by(3) {
@@ -476,7 +498,7 @@ fn radial_pick_at_rest_finds_the_unlifted_footprint() {
             let p = [x as f32 + 0.5, y as f32 + 0.5];
             let (drawn, rest) = (
                 pick(&frame, p),
-                frame.pick_at_rest(p).unwrap().resolve_blocking().unwrap(),
+                frame.pick_at_rest(p).unwrap().resolve().block_on().unwrap(),
             );
             let a = RadialTarget::main(0);
             lifted_only += usize::from(drawn == Some(a) && rest != Some(a));
@@ -540,7 +562,7 @@ fn radial_gpu_pick_agrees_with_the_cpu_twin() {
                     for x in (4..400).step_by(7) {
                         let p = [x as f32 + 0.5, y as f32 + 0.5];
                         let gpu = if rest {
-                            frame.pick_at_rest(p).unwrap().resolve_blocking().unwrap()
+                            frame.pick_at_rest(p).unwrap().resolve().block_on().unwrap()
                         } else {
                             pick(&frame, p)
                         };
@@ -616,7 +638,7 @@ fn radial_step_selection_moves_the_highlight_to_each_slice() {
     let size = (400, 300);
     for scale in [1.0f32, 2.0] {
         c.interaction = Default::default();
-        let rest = r.export_rgba(&c, size, scale).unwrap();
+        let rest = r.export_rgba_async(&c, size, scale).block_on().unwrap();
         drain(&r);
         // Step from no selection through every target and wrap to the first.
         for expected in targets.iter().chain(&targets[..1]) {
@@ -624,7 +646,7 @@ fn radial_step_selection_moves_the_highlight_to_each_slice() {
             let target = c.interaction.selected.unwrap();
             assert_eq!(target, *expected, "step order at {scale}x");
             let frame = r.prepare(&c, size, scale).unwrap();
-            let image = r.export_rgba(&c, size, scale).unwrap();
+            let image = r.export_rgba_async(&c, size, scale).block_on().unwrap();
             assert_eq!((image.width, image.height), (rest.width, rest.height));
             let on = |p: [f32; 2]| {
                 frame.cpu_twin_pick(p, false) == Some(target)
@@ -686,11 +708,11 @@ fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
     let mut c = chart();
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     c.style.gap_degrees = 4.0;
-    let sharp = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let sharp = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     drain(&r);
     c.style.inner_corner = 0.15;
     c.style.outer_corner = 0.15;
-    let rounded = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let rounded = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     drain(&r);
     let colored =
         |im: &renderer::RasterImage| im.rgba.chunks_exact(4).filter(|p| p[1] < 50).count();
@@ -704,13 +726,13 @@ fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
         width: 2.0,
         ..Default::default()
     };
-    let one = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let one = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     drain(&r);
-    let two = r.export_rgba(&c, (320, 320), 2.0).unwrap();
+    let two = r.export_rgba_async(&c, (320, 320), 2.0).block_on().unwrap();
     drain(&r);
     c.style.outline.rim = false;
     c.style.outline.separators = false;
-    let plain2 = r.export_rgba(&c, (320, 320), 2.0).unwrap();
+    let plain2 = r.export_rgba_async(&c, (320, 320), 2.0).block_on().unwrap();
     // Integrate coverage rather than thresholding partially antialiased pixels.
     let ink = |plain: &renderer::RasterImage, outlined: &renderer::RasterImage| -> f64 {
         plain
@@ -755,7 +777,11 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     c.interaction.hovered = Some(RadialTarget::main(0));
     c.interaction.hover_progress = 0.5;
     c.format_labels();
-    let before = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
+    let before = r
+        .export_rgba_async(&c, (500, 360), 1.0)
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
         ("decimals", Box::new(|c| c.label_decimals = 3)),
@@ -801,7 +827,10 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
         edit(&mut changed);
         changed.format_labels();
         assert_ne!(
-            r.export_rgba(&changed, (500, 360), 1.0).unwrap().rgba,
+            r.export_rgba_async(&changed, (500, 360), 1.0)
+                .block_on()
+                .unwrap()
+                .rgba,
             before,
             "{name}"
         );
@@ -809,10 +838,20 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     }
     c.style.material = Material::Paper;
     c.style.texture_strength = 0.8;
-    let paper = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
+    let paper = r
+        .export_rgba_async(&c, (500, 360), 1.0)
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     c.style.texture_angle_degrees = 90.0;
-    assert_ne!(r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba, paper);
+    assert_ne!(
+        r.export_rgba_async(&c, (500, 360), 1.0)
+            .block_on()
+            .unwrap()
+            .rgba,
+        paper
+    );
     drain(&r);
     c.interaction = RadialInteraction::default();
     c.labels = RadialLabels::None;
@@ -824,10 +863,10 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
             RadialSlice::new("E", 50.0, Color::from_rgb8(240, 180, 30)),
         ],
     });
-    let original = r.export_rgba(&c, (640, 360), 1.0).unwrap();
+    let original = r.export_rgba_async(&c, (640, 360), 1.0).block_on().unwrap();
     drain(&r);
     c.slice_mut(RadialTarget::detail(0)).unwrap().color = Color::from_rgb8(200, 40, 200);
-    let edited = r.export_rgba(&c, (640, 360), 1.0).unwrap();
+    let edited = r.export_rgba_async(&c, (640, 360), 1.0).block_on().unwrap();
     for y in 0..360 {
         assert_eq!(
             &original.rgba[y * 640 * 4..(y * 640 + 300) * 4],
@@ -864,7 +903,7 @@ fn radial_title_wider_than_the_canvas_is_clipped() {
     );
     assert_eq!(frame.decoration_at(&c, [2.0, bounds.y + 4.0]), Some(id));
     assert_eq!(frame.decoration_at(&c, [-1.0, bounds.y + 4.0]), None);
-    let image = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let image = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     let ink = |columns: std::ops::Range<usize>| {
         (0..60).any(|y| {
             columns.clone().any(|x| {
@@ -903,7 +942,11 @@ fn radial_labels_draw_the_slice_text() {
     named.slices[0].label = "Zed".into();
     named.format_labels();
     assert_eq!(named.slices[0].text.as_deref(), Some("Zed"));
-    let expected = r.export_rgba(&named, (480, 320), 1.0).unwrap().rgba;
+    let expected = r
+        .export_rgba_async(&named, (480, 320), 1.0)
+        .block_on()
+        .unwrap()
+        .rgba;
     drain(&r);
     let mut custom = named.clone();
     custom.slices[0].label = "A".into();
@@ -911,13 +954,19 @@ fn radial_labels_draw_the_slice_text() {
     // The name and format no longer produce "Zed"; the stored text does.
     assert_eq!(custom.slices[0].text.as_deref(), Some("Zed"));
     assert_eq!(
-        r.export_rgba(&custom, (480, 320), 1.0).unwrap().rgba,
+        r.export_rgba_async(&custom, (480, 320), 1.0)
+            .block_on()
+            .unwrap()
+            .rgba,
         expected
     );
     drain(&r);
     custom.slices[0].text = Some("Custom\ntwo lines".into());
     assert_ne!(
-        r.export_rgba(&custom, (480, 320), 1.0).unwrap().rgba,
+        r.export_rgba_async(&custom, (480, 320), 1.0)
+            .block_on()
+            .unwrap()
+            .rgba,
         expected
     );
     drain(&r);
@@ -1047,12 +1096,12 @@ fn radial_inside_labels_follow_lift_without_raster_reallocation() {
     c.style.hover_brightness = 0.0;
     c.format_labels();
     let rest = r.prepare(&c, (320, 320), 1.0).unwrap();
-    let a = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let a = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     drain(&r);
     c.interaction.selected = Some(RadialTarget::main(0));
     let lifted = r.prepare(&c, (320, 320), 1.0).unwrap();
     assert!(rest.shares_annotations_with(&lifted));
-    let b = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let b = r.export_rgba_async(&c, (320, 320), 1.0).block_on().unwrap();
     let centroid = |im: &renderer::RasterImage| {
         let mut count = 0.0;
         let mut y = 0.0;
@@ -1102,10 +1151,12 @@ fn radial_paper_wall_grain_varies_with_height_instead_of_extruding_stripes() {
     let plain = {
         let mut plain = c.clone();
         plain.style.texture_strength = 0.0;
-        r.export_rgba(&plain, (512, 512), 1.0).unwrap()
+        r.export_rgba_async(&plain, (512, 512), 1.0)
+            .block_on()
+            .unwrap()
     };
     drain(&r);
-    let grain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let grain = r.export_rgba_async(&c, (512, 512), 1.0).block_on().unwrap();
     // Locate the front cylindrical wall from the silhouette, then measure ONLY
     // the texture residual against an otherwise identical untextured render.
     // At fixed x the cylinder's x/y and normal are constant; height is different.
@@ -1185,10 +1236,16 @@ fn radial_raised_rims_include_visible_top_wall_creases() {
             },
             ..Default::default()
         };
-        let plain = r.export_rgba(&c, (384, 320), scale).unwrap();
+        let plain = r
+            .export_rgba_async(&c, (384, 320), scale)
+            .block_on()
+            .unwrap();
         drain(&r);
         c.style.outline.rim = true;
-        let outlined = r.export_rgba(&c, (384, 320), scale).unwrap();
+        let outlined = r
+            .export_rgba_async(&c, (384, 320), scale)
+            .block_on()
+            .unwrap();
         save_surface_probe(
             if hole == 0.0 {
                 "raised-pie-rim"
@@ -1255,14 +1312,20 @@ fn radial_raised_rims_include_visible_top_wall_creases() {
         c.style.outline.rim = false;
         c.style.outline.separators = true;
         assert_eq!(
-            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            r.export_rgba_async(&c, (384, 320), scale)
+                .block_on()
+                .unwrap()
+                .rgba,
             plain.rgba
         );
         drain(&r);
         c.style.outline.rim = true;
         c.style.outline.width = 0.0;
         assert_eq!(
-            r.export_rgba(&c, (384, 320), scale).unwrap().rgba,
+            r.export_rgba_async(&c, (384, 320), scale)
+                .block_on()
+                .unwrap()
+                .rgba,
             plain.rgba
         );
         drain(&r);
@@ -1292,10 +1355,10 @@ fn radial_wood_is_matte_irregular_surface_grain_not_bands_or_wall_stripes() {
         },
         ..Default::default()
     };
-    let plain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let plain = r.export_rgba_async(&c, (512, 512), 1.0).block_on().unwrap();
     drain(&r);
     c.style.texture_strength = 1.0;
-    let grain = r.export_rgba(&c, (512, 512), 1.0).unwrap();
+    let grain = r.export_rgba_async(&c, (512, 512), 1.0).block_on().unwrap();
     save_surface_probe("plywood-surface", &grain);
     let residual = |x: usize, y: usize| -> f64 {
         let i = (y * 512 + x) * 4;
@@ -1366,15 +1429,20 @@ fn a_split_past_the_slices_is_refused_by_prepare_and_every_export() {
                 "{context}"
             );
             assert!(
-                invalid(&r.export_rgba(&c, size, scale).err().unwrap()),
+                invalid(
+                    &r.export_rgba_async(&c, size, scale)
+                        .block_on()
+                        .err()
+                        .unwrap()
+                ),
                 "{context}"
             );
             assert!(
-                invalid(&r.export_svg(&c, size, scale).unwrap_err()),
+                invalid(&r.export_svg_async(&c, size, scale).block_on().unwrap_err()),
                 "{context}"
             );
             assert!(
-                invalid(&r.export_pdf(&c, size, scale).unwrap_err()),
+                invalid(&r.export_pdf_async(&c, size, scale).block_on().unwrap_err()),
                 "{context}"
             );
         }

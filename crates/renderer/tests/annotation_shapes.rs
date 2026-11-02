@@ -10,6 +10,7 @@
 //! expected positions come from the chart's own data area and ratio
 //! anchors.
 
+use pollster::FutureExt as _;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
 #[path = "support/gpu.rs"]
@@ -232,7 +233,9 @@ fn is_black(p: [u8; 4]) -> bool {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_document_rgba(chart, series, scale).unwrap()
+    r.export_document_rgba_async(chart, series, scale)
+        .block_on()
+        .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -473,7 +476,10 @@ fn shapes_hit_drag_resize_and_move_their_vertices() {
 fn the_vector_export_writes_closed_paths_for_shapes() {
     let mut r = renderer();
     let chart = chart(shapes());
-    let svg = r.export_document_svg(&chart, &[], 1.0).unwrap();
+    let svg = r
+        .export_document_svg_async(&chart, &[], 1.0)
+        .block_on()
+        .unwrap();
     let file = svg_parts::read(&svg);
     let polygons: Vec<usize> = file
         .parts

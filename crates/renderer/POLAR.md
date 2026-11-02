@@ -74,7 +74,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         },
     }];
     // The background stays transparent; `export_panel_rgba_with_clear_async` fills it.
-    let image = renderer.export_panel_rgba(&chart, &series, 1.0)?;
+    let image = pollster::block_on(renderer.export_panel_rgba_async(&chart, &series, 1.0))?;
     std::fs::write("antenna.png", renderer::encode_png(&image)?)?;
     Ok(())
 }
@@ -226,7 +226,7 @@ data anchor, a `ReferenceLine` and a `Span` are not drawn and are reported as
 
 A subplot's `config.polar` makes that panel polar, so polar and rectangular
 panels mix in one document. PNG export goes through the same
-`export_panel_rgba` / `export_document_rgba` calls as rectangular charts,
+`export_panel_rgba_async` / `export_document_rgba_async` calls as rectangular charts,
 with the same scale range (clamped to 0.25 to 8), and rings stay round at
 2x. The browser wrapper's `FiggyChart` accepts `polar` in its config JSON
 (see the [WASM schema](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)).
@@ -361,7 +361,7 @@ GPU 피킹(`pick_chart`, `pick_chart_data`)은 셰이더와 같은 매핑으로 
 ### 서브플롯과 내보내기
 
 서브플롯의 `config.polar`로 그 패널만 극좌표가 되므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수
-있다. PNG 내보내기는 직교 차트와 같은 `export_panel_rgba` / `export_document_rgba`를 같은 배율
+있다. PNG 내보내기는 직교 차트와 같은 `export_panel_rgba_async` / `export_document_rgba_async`를 같은 배율
 범위(0.25~8로 제한)에서 쓰며 2배 배율에서도 고리가 둥글다. 브라우저 래퍼 `FiggyChart`는 설정
 JSON의 `polar`를 받는다([WASM 스키마](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)).
 

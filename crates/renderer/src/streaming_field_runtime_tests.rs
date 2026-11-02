@@ -1,4 +1,5 @@
 use super::*;
+use pollster::FutureExt as _;
 
 #[path = "streaming_field_selection_tests.rs"]
 mod selection_tests;
@@ -288,7 +289,8 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
             pump(&mut f, Some(operation));
             let actual = pollster::block_on(f.renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
-                .export_panel_rgba(&f.chart, &f.series, scale)
+                .export_panel_rgba_async(&f.chart, &f.series, scale)
+                .block_on()
                 .unwrap();
             assert_eq!(
                 (actual.width, actual.height),

@@ -781,28 +781,6 @@ impl<'w> WindowedRenderer<'w> {
         self.reported(result)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_rgba(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        let result = self.inner.export_panel_rgba(chart, series, scale);
-        self.reported(result)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_panel_png_bytes(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        let result = self.inner.export_panel_png_bytes(chart, series, scale);
-        self.reported(result)
-    }
-
     pub async fn export_panel_png_bytes_with_clear_async(
         &mut self,
         chart: &Chart,
@@ -871,28 +849,6 @@ impl<'w> WindowedRenderer<'w> {
         self.reported(result)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_rgba(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        let result = self.inner.export_document_rgba(chart, series, scale);
-        self.reported(result)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_png_bytes(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        let result = self.inner.export_document_png_bytes(chart, series, scale);
-        self.reported(result)
-    }
-
     pub async fn export_document_svg_async(
         &mut self,
         chart: &Chart,
@@ -944,28 +900,6 @@ impl<'w> WindowedRenderer<'w> {
             .inner
             .export_document_pdf_with_clear_async(chart, series, scale, clear)
             .await;
-        self.reported(result)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_svg(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<String> {
-        let result = self.inner.export_document_svg(chart, series, scale);
-        self.reported(result)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn export_document_pdf(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        let result = self.inner.export_document_pdf(chart, series, scale);
         self.reported(result)
     }
 
@@ -1325,17 +1259,6 @@ impl Renderer {
             _instance: instance,
             _adapter: adapter,
         })
-    }
-
-    /// Blocking convenience wrapper around [`Self::for_window_async`]. Native
-    /// only — on wasm, blocking the single thread would deadlock.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn for_window<'w>(
-        target: impl Into<wgpu::SurfaceTarget<'w>>,
-        size: (u32, u32),
-        pool_capacity_bytes: u64,
-    ) -> Result<WindowedRenderer<'w>> {
-        pollster::block_on(Self::for_window_async(target, size, pool_capacity_bytes))
     }
 }
 

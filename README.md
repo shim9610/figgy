@@ -166,9 +166,9 @@ use renderer::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = pollster::block_on(request_adapter_async(&instance))?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = pollster::block_on(request_device_async(&adapter))?;
     let mut renderer = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
@@ -305,7 +305,7 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let image = renderer.export_panel_rgba(&Chart::new(config), &series, 1.0)?;
+let image = pollster::block_on(renderer.export_panel_rgba_async(&Chart::new(config), &series, 1.0))?;
 std::fs::write("radar.png", encode_png(&image)?)?;
 ```
 

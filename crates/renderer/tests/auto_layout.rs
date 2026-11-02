@@ -7,6 +7,7 @@
 //! oracle's `auto_layout_*` tests.
 #![cfg(not(target_arch = "wasm32"))]
 
+use pollster::FutureExt as _;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
@@ -322,7 +323,8 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
         .expect("register");
     let chart = renderer::Chart::new(scene.config.clone());
     let before = r
-        .export_document_png_bytes(&chart, &scene.series, 1.0)
+        .export_document_png_bytes_async(&chart, &scene.series, 1.0)
+        .block_on()
         .expect("export");
     let stamp = r.chart_render_stamp(id).expect("stamp");
 
@@ -332,7 +334,8 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     let applied = r.chart_render_stamp(id).expect("stamp");
     assert_ne!(applied, stamp, "the edit invalidates the chart");
     let after = r
-        .export_document_png_bytes(&renderer::Chart::new(out.clone()), &scene.series, 1.0)
+        .export_document_png_bytes_async(&renderer::Chart::new(out.clone()), &scene.series, 1.0)
+        .block_on()
         .expect("export");
     assert_ne!(after, before);
 

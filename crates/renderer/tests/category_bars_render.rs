@@ -10,6 +10,7 @@
 //! from the same data area and axis ranges the renderer draws with.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+use pollster::FutureExt as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -292,7 +293,10 @@ fn bars_span_their_values_in_every_mode_direction_and_scale() {
             let chart = chart(mode, direction, range);
             let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
             for scale in [1.0f32, 2.0] {
-                let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+                let img = r
+                    .export_panel_rgba_async(&chart, &series, scale)
+                    .block_on()
+                    .unwrap();
                 assert_eq!(
                     (img.width, img.height),
                     (
@@ -368,7 +372,10 @@ fn signed_stacks_and_missing_values_follow_the_stack_rules() {
     let direction = CategoryBarDirection::Vertical;
     let chart = chart(CategoryBarMode::Stacked, direction, (-20.0, 20.0));
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let span = |k: usize, pred: fn(&[u8]) -> bool| {
         bbox(&img, slot(&chart, direction, k, 1.0), pred).map(|b| value_span(b, direction))
     };
@@ -417,8 +424,14 @@ fn overrides_and_materials_restyle_only_their_bars() {
         }],
     );
     for scale in [1.0f32, 2.0] {
-        let before = r.export_panel_rgba(&chart, &plain, scale).unwrap();
-        let after = r.export_panel_rgba(&chart, &overridden, scale).unwrap();
+        let before = r
+            .export_panel_rgba_async(&chart, &plain, scale)
+            .block_on()
+            .unwrap();
+        let after = r
+            .export_panel_rgba_async(&chart, &overridden, scale)
+            .block_on()
+            .unwrap();
         let green = bbox(&after, slot(&chart, direction, 1, scale), is_green).expect("green bar");
         let red_before = bbox(&before, slot(&chart, direction, 1, scale), is_red).unwrap();
         assert_eq!(
@@ -464,8 +477,14 @@ fn overrides_and_materials_restyle_only_their_bars() {
         style.material = Material::Matte;
         style.texture_strength = 1.0;
     }
-    let flat = r.export_panel_rgba(&chart, &plain, 1.0).unwrap();
-    let grained = r.export_panel_rgba(&chart, &matte, 1.0).unwrap();
+    let flat = r
+        .export_panel_rgba_async(&chart, &plain, 1.0)
+        .block_on()
+        .unwrap();
+    let grained = r
+        .export_panel_rgba_async(&chart, &matte, 1.0)
+        .block_on()
+        .unwrap();
     assert_ne!(flat.rgba, grained.rgba, "the material changes the shading");
     let near_red = |p: &[u8]| p[3] > 200 && p[0] > 150 && p[1] < 110 && p[2] < 110;
     for k in 0..3 {
@@ -492,7 +511,10 @@ fn overrides_and_materials_restyle_only_their_bars() {
             label_format: None,
         }],
     );
-    let restyled = r.export_panel_rgba(&chart, &styled, 1.0).unwrap();
+    let restyled = r
+        .export_panel_rgba_async(&chart, &styled, 1.0)
+        .block_on()
+        .unwrap();
     let a = slot(&chart, direction, 0, 1.0);
     let b = bbox(&flat, a, is_blue).unwrap();
     // The rounded top corners leave the bar's corner pixel clear.
@@ -535,7 +557,10 @@ fn the_selection_outline_traces_an_overridden_bar() {
         for scale in [1.0f32, 2.0] {
             let case = format!("{direction:?} {scale}x");
             chart.config_mut().picked_data = None;
-            let painted = r.export_panel_rgba(&chart, &series, scale).unwrap();
+            let painted = r
+                .export_panel_rgba_async(&chart, &series, scale)
+                .block_on()
+                .unwrap();
             let region = slot(&chart, direction, 1, scale);
             let bar = bbox(&painted, region, is_green).expect("the overridden bar paints");
             chart.config_mut().picked_data = Some(DataSelectionsConfig {
@@ -551,7 +576,10 @@ fn the_selection_outline_traces_an_overridden_bar() {
                 point_radius_extra_px: 0.0,
                 contour_width_extra_px: 0.0,
             });
-            let outlined = r.export_panel_rgba(&chart, &series, scale).unwrap();
+            let outlined = r
+                .export_panel_rgba_async(&chart, &series, scale)
+                .block_on()
+                .unwrap();
             let full = (0, 0, outlined.width, outlined.height);
             let ring = bbox(&outlined, full, is_magenta).expect("the selected bar is outlined");
             let edges = [
@@ -771,7 +799,10 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
     let percent = chart(CategoryBarMode::PercentStacked, direction, (0.0, 100.0));
     for scale in [1.0f32, 2.0] {
-        match r.export_panel_rgba(&percent, &series, scale) {
+        match r
+            .export_panel_rgba_async(&percent, &series, scale)
+            .block_on()
+        {
             Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
                 assert_eq!(series_id, "two", "{scale}x");
                 assert!(reason.contains("PercentStacked"), "{reason}");
@@ -783,7 +814,10 @@ fn a_percent_stack_with_a_negative_value_is_refused() {
         }
     }
     let stacked = chart(CategoryBarMode::Stacked, direction, (-20.0, 40.0));
-    let image = r.export_panel_rgba(&stacked, &series, 1.0).unwrap();
+    let image = r
+        .export_panel_rgba_async(&stacked, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(
         bbox(&image, slot(&stacked, direction, 1, 1.0), is_blue).is_some(),
         "the negative bar draws in a stack"
@@ -826,8 +860,14 @@ fn a_categorical_document_draws_as_category_bars() {
         .auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)
         .unwrap();
     for scale in [1.0f32, 2.0] {
-        let with = r.export_panel_rgba(&chart, &series, scale).unwrap();
-        let without = r.export_panel_rgba(&chart, &[], scale).unwrap();
+        let with = r
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
+        let without = r
+            .export_panel_rgba_async(&chart, &[], scale)
+            .block_on()
+            .unwrap();
         // The document's override colour is drawn.
         let red = |p: &[u8]| p[3] > 200 && p[0] > 180 && p[1] < 70 && p[2] < 70;
         let full = (0, 0, with.width, with.height);
@@ -872,11 +912,17 @@ fn the_category_axis_line_crosses_the_value_axis_at_zero() {
             .unwrap()
     };
     chart.config_mut().bottom_x.cross_at = None;
-    let edge = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let edge = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let da = chart.config().data_area().unwrap();
     assert!(line_row(&edge, &chart).abs_diff(da.y + da.height) <= 1);
     chart.config_mut().bottom_x.cross_at = Some(0.0);
-    let crossed = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let crossed = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let zero = value_px(&chart, direction, 0.0, 1.0);
     let row = line_row(&crossed, &chart);
     assert!(
@@ -942,7 +988,10 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
         sub_two,
     ];
     for scale in [1.0f32, 2.0] {
-        let img = r.export_document_rgba(&parent, &series, scale).unwrap();
+        let img = r
+            .export_document_rgba_async(&parent, &series, scale)
+            .block_on()
+            .unwrap();
         let (w, h) = (img.width, img.height);
         assert_eq!(h, (2.0 * HEIGHT as f32 * scale) as u32);
         let top = (0, 0, w, h / 2);
@@ -1026,8 +1075,14 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
     inverted.config_mut().left_y.inverted = true;
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
     for scale in [1.0f32, 2.0] {
-        let a = r.export_panel_rgba(&upright, &series, scale).unwrap();
-        let b = r.export_panel_rgba(&inverted, &series, scale).unwrap();
+        let a = r
+            .export_panel_rgba_async(&upright, &series, scale)
+            .block_on()
+            .unwrap();
+        let b = r
+            .export_panel_rgba_async(&inverted, &series, scale)
+            .block_on()
+            .unwrap();
         // Slot `k` of the upright axis holds category `2 - k` when inverted.
         for k in 0..3 {
             let region = slot(&upright, direction, k, scale);
@@ -1066,7 +1121,10 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let outlined = r.export_panel_rgba(&inverted, &series, 1.0).unwrap();
+    let outlined = r
+        .export_panel_rgba_async(&inverted, &series, 1.0)
+        .block_on()
+        .unwrap();
     assert!(bbox(&outlined, slot(&upright, direction, 2, 1.0), is_magenta).is_some());
     assert_eq!(
         bbox(&outlined, slot(&upright, direction, 0, 1.0), is_magenta),
@@ -1079,7 +1137,10 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
     let id = r
         .register_chart(inverted.config().clone(), series.to_vec())
         .unwrap();
-    let img = r.export_panel_rgba(&inverted, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&inverted, &series, 1.0)
+        .block_on()
+        .unwrap();
     let bar = bbox(&img, slot(&upright, direction, 2, 1.0), is_red).unwrap();
     let (x, y) = ((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
     let request = renderer::GpuPickRequest {
@@ -1125,8 +1186,14 @@ fn a_2x_export_is_the_1x_layout_doubled() {
             };
             let chart = chart(mode, direction, value);
             let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
-            let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-            let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+            let one = r
+                .export_panel_rgba_async(&chart, &series, 1.0)
+                .block_on()
+                .unwrap();
+            let two = r
+                .export_panel_rgba_async(&chart, &series, 2.0)
+                .block_on()
+                .unwrap();
             for k in 0..3 {
                 for (name, pred) in [("red", is_red as fn(&[u8]) -> bool), ("blue", is_blue)] {
                     let case = format!("{direction:?} {mode:?} category {k} {name}");
@@ -1200,7 +1267,10 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         )
     };
     for scale in [1.0f32, 2.0] {
-        let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        let img = r
+            .export_panel_rgba_async(&chart, &series, scale)
+            .block_on()
+            .unwrap();
         for k in [0, 63, 64, 150, N - 1] {
             let bar = bbox(&img, region(&chart, k, scale), is_red)
                 .unwrap_or_else(|| panic!("{scale}x: no bar in category {k}"));
@@ -1232,7 +1302,10 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         contour_width_extra_px: 0.0,
     });
     // At 2x, where a bar is wide enough for a solid outline.
-    let outlined = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let outlined = r
+        .export_panel_rgba_async(&chart, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert!(bbox(&outlined, region(&chart, N - 1, 2.0), is_magenta).is_some());
     assert_eq!(bbox(&outlined, region(&chart, 0, 2.0), is_magenta), None);
     chart.config_mut().picked_data = None;
@@ -1241,7 +1314,10 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     let id = r
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&chart, &series, 1.0)
+        .block_on()
+        .unwrap();
     let bar = bbox(&img, region(&chart, N - 1, 1.0), is_red).unwrap();
     let (x, y) = ((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
     let request = renderer::GpuPickRequest {
@@ -1361,7 +1437,10 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     // Stacked: every member stacks on the earlier ones.
     let mut stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
     for scale in [1.0f32, 2.0] {
-        let img = r.export_panel_rgba(&stacked, &series, scale).unwrap();
+        let img = r
+            .export_panel_rgba_async(&stacked, &series, scale)
+            .block_on()
+            .unwrap();
         for k in [0, 25, N - 1] {
             for (pred, low, name) in [
                 (is_blue as fn(&[u8]) -> bool, 20.0, "s20"),
@@ -1382,7 +1461,10 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
             }
         }
     }
-    let img = r.export_panel_rgba(&stacked, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&stacked, &series, 1.0)
+        .block_on()
+        .unwrap();
     let bar = bbox(&img, region(&stacked, N - 1, 1.0), is_red).unwrap();
     let hit = pick_at(&mut r, &stacked, (bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
     assert!(
@@ -1406,14 +1488,20 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let outlined = r.export_panel_rgba(&stacked, &series, 2.0).unwrap();
+    let outlined = r
+        .export_panel_rgba_async(&stacked, &series, 2.0)
+        .block_on()
+        .unwrap();
     assert!(bbox(&outlined, region(&stacked, N - 1, 2.0), is_magenta).is_some());
     assert_eq!(bbox(&outlined, region(&stacked, 0, 2.0), is_magenta), None);
 
     // Grouped: series 39 is the last bar of its group.
     let grouped = wide_chart(CategoryBarMode::Grouped, (0.0, 2.0));
     for scale in [1.0f32, 2.0] {
-        let img = r.export_panel_rgba(&grouped, &series, scale).unwrap();
+        let img = r
+            .export_panel_rgba_async(&grouped, &series, scale)
+            .block_on()
+            .unwrap();
         for k in [0, 25, N - 1] {
             let slot = region(&grouped, k, scale);
             let bar = bbox(&img, slot, is_red)
@@ -1436,7 +1524,10 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
             assert!(across_span(blue, direction).1 < across_span(bar, direction).0);
         }
     }
-    let img = r.export_panel_rgba(&grouped, &series, 1.0).unwrap();
+    let img = r
+        .export_panel_rgba_async(&grouped, &series, 1.0)
+        .block_on()
+        .unwrap();
     let bar = bbox(&img, region(&grouped, N - 1, 1.0), is_red).unwrap();
     let hit = pick_at(&mut r, &grouped, (bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
     assert!(
@@ -1452,9 +1543,15 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     let stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
     for members in [4, M] {
         let group = &series[..members];
-        let _ = r.export_panel_rgba(&stacked, group, 1.0).unwrap();
+        let _ = r
+            .export_panel_rgba_async(&stacked, group, 1.0)
+            .block_on()
+            .unwrap();
         let start = std::time::Instant::now();
-        let _ = r.export_panel_rgba(&stacked, group, 1.0).unwrap();
+        let _ = r
+            .export_panel_rgba_async(&stacked, group, 1.0)
+            .block_on()
+            .unwrap();
         let draw = start.elapsed();
         let id = r
             .register_chart(stacked.config().clone(), group.to_vec())

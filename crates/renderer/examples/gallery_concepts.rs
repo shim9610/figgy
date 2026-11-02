@@ -10,6 +10,7 @@
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
+use pollster::FutureExt as _;
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -26,7 +27,7 @@ use renderer::{
         ContourConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
     },
-    data_render::{create_instance, request_adapter, request_device},
+    data_render::{create_instance, request_adapter_async, request_device_async},
     radial::*,
 };
 use std::path::Path;
@@ -235,7 +236,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         ..Default::default()
     };
     chart.format_labels();
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
+    let image = r.export_rgba_async(&chart, SIZE, 1.).block_on()?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
@@ -265,7 +266,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         ..Default::default()
     };
     chart.format_labels();
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
+    let image = r.export_rgba_async(&chart, SIZE, 1.).block_on()?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();
     Ok(())
@@ -354,9 +355,9 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
 fn main() -> Result {
     let out = gallery::output_directory("target/concepts")?;
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(device, queue);
     let mut r = Renderer::try_new(
         gpu.clone(),

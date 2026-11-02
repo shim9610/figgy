@@ -2,6 +2,7 @@
 //! frame, its own cache beside the frame and label raster caches, export
 //! parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
+use pollster::FutureExt as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
@@ -97,7 +98,7 @@ macro_rules! family_contract {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fn fresh(c: &$chart, scale: f32) -> Vec<u8> {
                 let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-                r.export_rgba(c, SIZE, scale).unwrap().rgba
+                r.export_rgba_async(c, SIZE, scale).block_on().unwrap().rgba
             }
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c: $chart = $build;
@@ -109,7 +110,11 @@ macro_rules! family_contract {
                 let mut empty = c.clone();
                 empty.annotations.items.clear();
                 let f = r.prepare(&empty, SIZE, 1.).unwrap();
-                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                let before = r
+                    .export_rgba_async(&empty, SIZE, 1.)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
                 empty.annotations.visible = false;
                 let g = r.prepare(&empty, SIZE, 1.).unwrap();
                 assert!(Arc::ptr_eq(&f, &g), "empty layer: hiding rebuilt the frame");
@@ -117,7 +122,11 @@ macro_rules! family_contract {
                     f.shares_annotations_with(&g),
                     "empty layer: hiding redrew the label raster"
                 );
-                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                let cached = r
+                    .export_rgba_async(&empty, SIZE, 1.)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
                 assert!(cached == before, "empty layer: hiding changed pixels");
                 assert!(
                     cached == fresh(&empty, 1.),
@@ -125,7 +134,13 @@ macro_rules! family_contract {
                 );
                 empty.title = "Edited".into();
                 assert!(!Arc::ptr_eq(&f, &r.prepare(&empty, SIZE, 1.).unwrap()));
-                assert!(r.export_rgba(&empty, SIZE, 1.).unwrap().rgba == fresh(&empty, 1.));
+                assert!(
+                    r.export_rgba_async(&empty, SIZE, 1.)
+                        .block_on()
+                        .unwrap()
+                        .rgba
+                        == fresh(&empty, 1.)
+                );
                 r.end_frame();
             }
             for scale in [1., 2.] {
@@ -136,7 +151,7 @@ macro_rules! family_contract {
                 assert!(a.render_warnings().is_empty(), "{:?}", a.render_warnings());
                 assert_eq!(a.annotations().entries().count(), c.annotations.items.len());
                 assert_eq!(a.size(), f.size());
-                let before = r.export_rgba(&c, SIZE, scale).unwrap();
+                let before = r.export_rgba_async(&c, SIZE, scale).block_on().unwrap();
                 assert!(
                     before.rgba == fresh(&c, scale),
                     "scale {scale}: export differs from fresh"
@@ -182,7 +197,10 @@ macro_rules! family_contract {
                     !b.shares_rasters_with(&a),
                     "edit must re-rasterize the layer"
                 );
-                let after = r.export_rgba(&edited, SIZE, scale).unwrap();
+                let after = r
+                    .export_rgba_async(&edited, SIZE, scale)
+                    .block_on()
+                    .unwrap();
                 assert!(
                     after.rgba != before.rgba,
                     "scale {scale}: edit changed nothing"
@@ -201,7 +219,10 @@ macro_rules! family_contract {
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 assert!(h.shares_rasters_with(&b), "a visible toggle re-rasterized");
                 assert!(!h.draws_overlay());
-                let hidden_pixels = r.export_rgba(&hidden, SIZE, scale).unwrap();
+                let hidden_pixels = r
+                    .export_rgba_async(&hidden, SIZE, scale)
+                    .block_on()
+                    .unwrap();
                 let mut bare = edited.clone();
                 bare.annotations.items.clear();
                 assert!(
@@ -219,7 +240,10 @@ macro_rules! family_contract {
                     Arc::ptr_eq(&f, &s),
                     "scale {scale}: selection rebuilt the frame"
                 );
-                let selected_pixels = r.export_rgba(&selected, SIZE, scale).unwrap();
+                let selected_pixels = r
+                    .export_rgba_async(&selected, SIZE, scale)
+                    .block_on()
+                    .unwrap();
                 assert!(selected_pixels.rgba != after.rgba, "selection box missing");
                 assert!(selected_pixels.rgba == fresh(&selected, scale));
 
@@ -256,8 +280,14 @@ macro_rules! family_contract {
                         serde_json::from_str(&serde_json::to_string(&dragged).unwrap()).unwrap();
                     assert_eq!(restored, dragged);
                     assert!(
-                        r.export_rgba(&restored, SIZE, scale).unwrap().rgba
-                            == r.export_rgba(&dragged, SIZE, scale).unwrap().rgba
+                        r.export_rgba_async(&restored, SIZE, scale)
+                            .block_on()
+                            .unwrap()
+                            .rgba
+                            == r.export_rgba_async(&dragged, SIZE, scale)
+                                .block_on()
+                                .unwrap()
+                                .rgba
                     );
                 }
                 // A title edit still rebuilds the frame.
@@ -338,7 +368,7 @@ macro_rules! family_routing {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fn fresh(c: &$chart, scale: f32) -> Vec<u8> {
                 let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-                r.export_rgba(c, SIZE, scale).unwrap().rgba
+                r.export_rgba_async(c, SIZE, scale).block_on().unwrap().rgba
             }
             let select_data: fn(&mut $chart) = $select_data;
             let data_selected: fn(&$chart) -> bool = $data_selected;
@@ -350,7 +380,11 @@ macro_rules! family_routing {
                 let mut empty: $chart = $build;
                 empty.annotations.items.clear();
                 let f = r.prepare(&empty, SIZE, 1.).unwrap();
-                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                let before = r
+                    .export_rgba_async(&empty, SIZE, 1.)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
                 empty.active_layer = LayerRef::Annotations;
                 let g = r.prepare(&empty, SIZE, 1.).unwrap();
                 assert!(
@@ -361,7 +395,11 @@ macro_rules! family_routing {
                     f.shares_annotations_with(&g),
                     "empty layer: the switch redrew the label raster"
                 );
-                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                let cached = r
+                    .export_rgba_async(&empty, SIZE, 1.)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
                 assert!(cached == before, "empty layer: the switch changed pixels");
                 assert!(
                     cached == fresh(&empty, 1.),
@@ -408,7 +446,11 @@ macro_rules! family_routing {
                 // Entering the layer reuses the frame and both caches and
                 // exports the bytes of a fresh renderer; the decoration
                 // selection is cleared, the data selection kept.
-                let before = r.export_rgba(&c, SIZE, scale).unwrap().rgba;
+                let before = r
+                    .export_rgba_async(&c, SIZE, scale)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
                 c.decorations.selected = Some(DecorationId::ChartTitle);
                 select_data(&mut c);
                 assert_eq!(
@@ -429,8 +471,18 @@ macro_rules! family_routing {
                     switched
                         .shares_rasters_with(&r.prepare_annotations(&plain, SIZE, scale).unwrap())
                 );
-                let entered = r.export_rgba(&c, SIZE, scale).unwrap().rgba;
-                assert!(entered == r.export_rgba(&plain, SIZE, scale).unwrap().rgba);
+                let entered = r
+                    .export_rgba_async(&c, SIZE, scale)
+                    .block_on()
+                    .unwrap()
+                    .rgba;
+                assert!(
+                    entered
+                        == r.export_rgba_async(&plain, SIZE, scale)
+                            .block_on()
+                            .unwrap()
+                            .rgba
+                );
                 assert!(
                     entered == fresh(&c, scale),
                     "scale {scale}: switch differs from fresh"
@@ -491,7 +543,11 @@ macro_rules! family_routing {
                 assert_eq!(anchor_kinds(&dragged.annotations), kinds);
                 assert!(Arc::ptr_eq(&g, &r.prepare(&dragged, SIZE, scale).unwrap()));
                 assert!(
-                    r.export_rgba(&dragged, SIZE, scale).unwrap().rgba == fresh(&dragged, scale)
+                    r.export_rgba_async(&dragged, SIZE, scale)
+                        .block_on()
+                        .unwrap()
+                        .rgba
+                        == fresh(&dragged, scale)
                 );
                 #[cfg(feature = "serde")]
                 {
@@ -507,7 +563,11 @@ macro_rules! family_routing {
                 assert!(data_selected(&dragged));
                 assert!(Arc::ptr_eq(&g, &r.prepare(&dragged, SIZE, scale).unwrap()));
                 assert!(
-                    r.export_rgba(&dragged, SIZE, scale).unwrap().rgba == fresh(&dragged, scale)
+                    r.export_rgba_async(&dragged, SIZE, scale)
+                        .block_on()
+                        .unwrap()
+                        .rgba
+                        == fresh(&dragged, scale)
                 );
                 r.end_frame();
             }
@@ -541,7 +601,7 @@ fn radial_data_anchors_are_warnings() {
         ..Default::default()
     };
     c.format_labels();
-    let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
+    let plain = r.export_rgba_async(&c, SIZE, 1.).block_on().unwrap();
     let f = r.prepare(&c, SIZE, 1.).unwrap();
     c.annotations.items = vec![
         boxed_text(Anchor::Data { x: 1., y: 1. }),
@@ -575,7 +635,7 @@ fn radial_data_anchors_are_warnings() {
     assert_eq!(a.annotations().entries().count(), 1);
     assert!(a.draws_overlay());
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
-    let with = r.export_rgba(&c, SIZE, 1.).unwrap();
+    let with = r.export_rgba_async(&c, SIZE, 1.).block_on().unwrap();
     assert!(with.rgba != plain.rgba);
     let bounds = a
         .annotations()
@@ -655,9 +715,9 @@ fn annotation_hit_regions_follow_the_drawn_items() {
         c.format_labels();
         c.annotations.items = vec![item];
         for scale in [1., 2.] {
-            let with = r.export_rgba(&c, SIZE, scale).unwrap();
+            let with = r.export_rgba_async(&c, SIZE, scale).block_on().unwrap();
             c.annotations.visible = false;
-            let without = r.export_rgba(&c, SIZE, scale).unwrap();
+            let without = r.export_rgba_async(&c, SIZE, scale).block_on().unwrap();
             c.annotations.visible = true;
             let a = r.prepare_annotations(&c, SIZE, scale).unwrap();
             let map = a.annotations();

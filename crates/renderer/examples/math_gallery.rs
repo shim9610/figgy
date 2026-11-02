@@ -8,11 +8,12 @@
 //!
 //! Writes `math-gallery.png` (1200 × 1600), `math-gallery@2x.png`, and the
 //! sketch pair `math-gallery-sketch.png` and `math-gallery-sketch@2x.png`.
+use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Config, Renderer, RendererDevice,
     annotation::{Anchor, Annotation, AnnotationKind},
     config::{DrawStyle, TickVisibility},
-    data_render::{create_instance, request_adapter, request_device},
+    data_render::{create_instance, request_adapter_async, request_device_async},
     default, encode_png,
     layout::{ChartArea, Rect},
     text::RichText,
@@ -64,9 +65,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("target/math-gallery"));
     std::fs::create_dir_all(&output)?;
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_async(&instance).block_on()?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(device, queue);
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 16 << 20)?;
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
