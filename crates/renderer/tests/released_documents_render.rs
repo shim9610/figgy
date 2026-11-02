@@ -54,6 +54,21 @@ fn assert_same_image(
     before: &Result<Vec<u8>, String>,
     after: &Result<Vec<u8>, String>,
 ) {
+    assert_same_result(file, scale, before, after);
+    assert!(
+        file.contains("-default") || before.is_ok(),
+        "{file} {scale}x: an edited document must draw, or the comparison proves nothing: {before:?}"
+    );
+}
+
+/// The same image, or the same refusal: a document the renderer cannot draw
+/// must be refused for the same reason after the save.
+fn assert_same_result(
+    file: &str,
+    scale: f32,
+    before: &Result<Vec<u8>, String>,
+    after: &Result<Vec<u8>, String>,
+) {
     match (before, after) {
         (Ok(before), Ok(after)) => {
             assert_eq!(before.len(), after.len(), "{file} {scale}x: image sizes");
@@ -67,15 +82,7 @@ fn assert_same_image(
                 "{file} {scale}x: {differing} pixels differ after the save"
             );
         }
-        (Err(before), Err(after)) => {
-            // Only a default (empty) document may be refused; an edited one
-            // must draw, or the comparison would prove nothing.
-            assert!(
-                file.contains("-default"),
-                "{file} {scale}x: an edited document must draw: {before}"
-            );
-            assert_eq!(before, after, "{file} {scale}x");
-        }
+        (Err(before), Err(after)) => assert_eq!(before, after, "{file} {scale}x"),
         _ => panic!("{file} {scale}x: drawn {before:?}, after the save {after:?}"),
     }
 }
@@ -161,24 +168,36 @@ fn check_radial(file: &str) {
     // written before the strings existed draw them once loaded.
     before.normalize_labels();
     after.normalize_labels();
-    // The edited documents' explicit plot area does not fit under their
-    // title on this renderer, which refuses it (found here; tracked
-    // separately). The area is dropped on both sides alike, so the
-    // comparison still covers every other field.
-    before.decorations.data_area = None;
-    after.decorations.data_area = None;
     let mut r = RadialRenderer::try_new(device(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    for scale in SCALES {
-        let image = |chart: &RadialChart, r: &mut RadialRenderer| {
-            r.export_rgba(chart, RADIAL_SIZE, ExportOptions::document(scale))
-                .block_on()
-                .map(|image| image.rgba)
-                .map_err(|e| e.to_string())
-        };
-        let a = image(&before, &mut r);
-        let b = image(&after, &mut r);
+    let mut export = |chart: &RadialChart, scale: f32| {
+        let image = r
+            .export_rgba(chart, RADIAL_SIZE, ExportOptions::document(scale))
+            .block_on()
+            .map(|image| image.rgba)
+            .map_err(|e| e.to_string());
         r.end_frame();
-        assert_same_image(file, scale, &a, &b);
+        image
+    };
+    for scale in SCALES {
+        // As written: the edited documents set a plot area starting at
+        // y = 60 under a title, whose band every release (0.16.1 to now)
+        // makes at least 70 px tall, so every release refuses to draw them
+        // (an explicit area must fit the measured plot region). The save
+        // must keep the same answer.
+        assert_same_result(file, scale, &export(&before, scale), &export(&after, scale));
+        // Drawn: the same documents with the automatic plot area, so the
+        // comparison covers every other field in pixels.
+        let mut drawn = [before.clone(), after.clone()];
+        for chart in &mut drawn {
+            chart.decorations.data_area = None;
+        }
+        let [drawn_before, drawn_after] = drawn;
+        assert_same_image(
+            file,
+            scale,
+            &export(&drawn_before, scale),
+            &export(&drawn_after, scale),
+        );
     }
 }
 
