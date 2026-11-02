@@ -14,7 +14,7 @@
 /// Which layer of a chart document receives pointer interaction.
 ///
 /// This is document state, one level above element selection
-/// (`DecorationLayout::selected`, `picked_points`, `picked_data`): it decides
+/// (`DecorationLayout::selected`, `picked_data`): it decides
 /// which layer's elements are registered in the hit map, not which element is
 /// selected. `Base` is the default and exists on every chart, so a document
 /// without the field routes the pointer to the chart's own elements.

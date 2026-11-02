@@ -128,10 +128,10 @@ fn stream_prefix(oracle: &mut Renderer, config: &Config) -> Option<Vec<u8>> {
 /// The selection baseline of the parent matrix: a picked point on a
 /// scatter-line series.
 fn picked_suite() -> (Config, Vec<SeriesConfig>) {
-    use crate::config::{PickedPointRef, PickedPointsConfig};
+    use crate::config::{DataSelectionsConfig, PickedDataRef};
     let mut c = baseline();
-    c.picked_points = Some(PickedPointsConfig {
-        refs: vec![PickedPointRef {
+    c.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "s".into(),
             point_index: 2,

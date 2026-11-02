@@ -953,19 +953,8 @@ impl FiggyChart {
         Ok(JsValue::from_str(&json))
     }
 
-    /// Replace the picked-point overlay config. Passing JSON `null`
+    /// Replace the chart's selection (`picked_data`). Passing JSON `null`
     /// clears it.
-    pub fn set_picked_points(&mut self, json: &str) -> Result<(), JsValue> {
-        let picked: Option<renderer::config::PickedPointsConfig> =
-            serde_json::from_str(json).map_err(js_err)?;
-        let mut config = self.chart_config()?.clone();
-        config.picked_points = picked;
-        self.replace_chart_config(config)
-    }
-
-    /// Replace the typed data-selection overlay config. Passing JSON
-    /// `null` clears it. This is independent of the legacy point-only
-    /// overlay so existing hosts keep their current behavior.
     pub fn set_picked_data(&mut self, json: &str) -> Result<(), JsValue> {
         let picked: Option<renderer::DataSelectionsConfig> =
             serde_json::from_str(json).map_err(js_err)?;

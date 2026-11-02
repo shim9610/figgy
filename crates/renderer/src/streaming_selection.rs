@@ -130,26 +130,6 @@ fn next_entry(
             }
             1 => {
                 if let Some(picks) = config
-                    .picked_points
-                    .as_ref()
-                    .filter(|p| p.visible && (primitives.line || primitives.scatter))
-                {
-                    while let Some(pick) = picks.refs.get(cursor.ordinal) {
-                        let ordinal = cursor.ordinal;
-                        cursor.ordinal += 1;
-                        if picked_ref_matches_series(declaration, pick) {
-                            selected = Some((
-                                pick.point_index,
-                                SelectionRefFilter::Legacy(ordinal),
-                                false,
-                            ));
-                            break;
-                        }
-                    }
-                }
-            }
-            2 => {
-                if let Some(picks) = config
                     .picked_data
                     .as_ref()
                     .filter(|p| p.visible && (primitives.line || primitives.scatter))
@@ -288,7 +268,6 @@ impl Renderer {
                 && state.revisions.view == snapshot.view_revision
             {
                 let current = state.config.scaled(snapshot.display_scale);
-                config.picked_points = current.picked_points;
                 config.picked_data = current.picked_data;
             }
             Ok((config, state.revisions.selection))

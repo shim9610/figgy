@@ -1408,8 +1408,8 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
         Some(3)
     );
     let mut selected = narrowed;
-    selected.picked_points = Some(crate::PickedPointsConfig {
-        refs: vec![crate::PickedPointRef {
+    selected.picked_data = Some(crate::DataSelectionsConfig {
+        refs: vec![crate::PickedDataRef::Point {
             source_id: None,
             series_id: "s".into(),
             point_index: 4,

@@ -606,10 +606,9 @@ test("selection-only mutations do not replay a completed stream", async () => {
     replayRequests += 1;
     return { status: "complete" };
   };
-  kernel.set_picked_points = () => {};
   kernel.set_picked_data = () => {};
   for (let index = 0; index < 10; index += 1) {
-    element.set_picked_points(String(index));
+    element.set_picked_data(String(index));
     runFacadeFrame(state);
   }
   element.set_picked_data("null");
@@ -626,7 +625,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
     return range.offset === 3 ? first.promise : newest.promise;
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request, ids, revisions, lengths, offsets, chunks) => {
@@ -639,7 +638,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
   runFacadeFrame(state);
   assert.equal(reads.length, 1, "unchanged pending selection must not re-read");
   assert.equal(committed, 1);
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   assert.deepEqual(reads.map((r) => r.offset), [3, 5]);
@@ -664,7 +663,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
     return range.offset === 3 ? old.promise : new Float32Array([5]);
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request) => { committed = request.index; };
@@ -672,7 +671,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
   runFacadeFrame(state);
   old.reject(new Error("old selection failed"));
   await flushTasks();
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   runFacadeFrame(state);

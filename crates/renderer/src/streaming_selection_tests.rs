@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{DataSelectionsConfig, PickedPointsConfig};
+use crate::config::DataSelectionsConfig;
 use crate::data_config::{
     BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
 };
@@ -197,20 +197,6 @@ fn fixture_with_display(
 }
 
 fn select(config: &mut Config, indices: &[usize]) {
-    config.picked_points = Some(PickedPointsConfig {
-        refs: indices
-            .iter()
-            .map(|index| PickedPointRef {
-                source_id: Some("source".into()),
-                series_id: "point".into(),
-                point_index: *index,
-            })
-            .collect(),
-        ring_color: Color::new(1.0, 0.0, 0.0, 0.45),
-        ring_width_px: 3.0,
-        radius_extra_px: 4.0,
-        ..Default::default()
-    });
     config.picked_data = Some(DataSelectionsConfig {
         refs: indices
             .iter()
@@ -402,7 +388,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
             .selection
             .ready
             .len(),
-        9
+        6
     );
     let bindings: Vec<_> = values
         .iter()
@@ -496,10 +482,10 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
             .unwrap();
         chart
             .config_mut()
-            .picked_points
+            .picked_data
             .as_mut()
             .unwrap()
-            .radius_extra_px += 1.0;
+            .point_radius_extra_px += 1.0;
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
         let actual = finish_export(&mut r, operation, &values);

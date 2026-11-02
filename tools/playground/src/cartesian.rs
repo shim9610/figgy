@@ -2257,7 +2257,6 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
     c.overlays.clear();
     c.annotations = Default::default();
     c.picked_data = None;
-    c.picked_points = None;
     c.legend.visible = false;
     c.chart_title.text.segments = rich_segments_from_text(&format!("Subplot {n}"));
     c.set_active_layer(LayerRef::Base);

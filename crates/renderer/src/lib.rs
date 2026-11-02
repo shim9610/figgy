@@ -65,10 +65,7 @@ pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};
 pub use chart::{Chart, FitExtent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{
-    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef, PickedPointRef,
-    PickedPointsConfig,
-};
+pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
 pub use data::{
     Column, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, ColumnUploadStats,
     HiLoColumnSource, StreamColumnSource,

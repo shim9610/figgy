@@ -3481,7 +3481,7 @@ fn chart_render_stamp_classifies_renderer_owned_dirty_state() {
     assert!(layer.needs_draw_since(Some(&decoration)));
     assert!(!layer.needs_raster_since(Some(&decoration)));
     let mut picked_config = renderer.chart_config(chart).unwrap().clone();
-    picked_config.picked_points = Some(crate::config::PickedPointsConfig::default());
+    picked_config.picked_data = Some(crate::config::DataSelectionsConfig::default());
     renderer.set_chart_config(chart, picked_config).unwrap();
     let picked = renderer.chart_render_stamp(chart).unwrap();
     assert!(picked.needs_draw_since(Some(&layer)));
@@ -5656,16 +5656,17 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
     r.add_column("ey", &col_f64(vec![1.0])).unwrap();
 
     let mut chart = basic_errorbar_chart();
-    chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
+    chart.config_mut().picked_data = Some(crate::config::DataSelectionsConfig {
         visible: true,
-        refs: vec![crate::config::PickedPointRef {
+        refs: vec![crate::config::PickedDataRef::Point {
             source_id: None,
             series_id: "err".into(),
             point_index: 0,
         }],
-        ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
-        ring_width_px: 3.0,
-        radius_extra_px: 8.0,
+        highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),
+        outline_width_px: 3.0,
+        point_radius_extra_px: 8.0,
+        ..Default::default()
     });
     let mut scatter = test_scatter_style();
     scatter.point_size = 0.0;
@@ -6094,16 +6095,17 @@ fn override_only_scatter_picked_ring_paints_on_screen_and_export() {
     renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
 
     let mut chart = basic_errorbar_chart();
-    chart.config_mut().picked_points = Some(crate::config::PickedPointsConfig {
+    chart.config_mut().picked_data = Some(crate::config::DataSelectionsConfig {
         visible: true,
-        refs: vec![crate::config::PickedPointRef {
+        refs: vec![crate::config::PickedDataRef::Point {
             source_id: None,
             series_id: "ov-scatter".into(),
             point_index: 0,
         }],
-        ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
-        ring_width_px: 3.0,
-        radius_extra_px: 8.0,
+        highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),
+        outline_width_px: 3.0,
+        point_radius_extra_px: 8.0,
+        ..Default::default()
     });
     let series = [override_only_scatter_series("ov-scatter", "x", "y")];
     let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
@@ -6413,25 +6415,26 @@ fn picked_ring_follows_the_size_map() {
         None,
         Some(("s", SizeScale::Radius)),
     )];
-    let picked = |point_index: usize| crate::config::PickedPointsConfig {
+    let picked = |point_index: usize| crate::config::DataSelectionsConfig {
         visible: true,
-        refs: vec![crate::config::PickedPointRef {
+        refs: vec![crate::config::PickedDataRef::Point {
             source_id: None,
             series_id: "ring".into(),
             point_index,
         }],
-        ring_color: Color::new(0.0, 1.0, 0.0, 1.0),
-        ring_width_px: 3.0,
-        radius_extra_px: 4.0,
+        highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),
+        outline_width_px: 3.0,
+        point_radius_extra_px: 4.0,
+        ..Default::default()
     };
 
     let mut chart = basic_errorbar_chart();
-    chart.config_mut().picked_points = Some(picked(0));
+    chart.config_mut().picked_data = Some(picked(0));
     let visible = render_mapped_style_case(&mut renderer, &chart, &series);
     assert!(visible.pick_ring_mapped);
     assert_ink_on_screen_and_export(&visible, "ring on the mapped point", is_saturated_green, 40);
 
-    chart.config_mut().picked_points = Some(picked(1));
+    chart.config_mut().picked_data = Some(picked(1));
     let hidden = render_mapped_style_case(&mut renderer, &chart, &series);
     assert_eq!(
         count_rgba_ink(&hidden.screen, is_saturated_green),

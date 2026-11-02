@@ -24,14 +24,10 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
-    pub picked_points: Option<PickedPointsConfig>,
-    pub picked_data: Option<DataSelectionsConfig>,
+    pub picked_data: Option<DataSelectionsConfig>, // the chart's one selection: points, bins, cells, contour pieces, value labels
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
-    pub polar: Option<PolarOptions>,         // None = rectangular; Some draws bottom_x as the angle, left_y as the radius
-    pub ternary: Option<TernaryOptions>,     // None = rectangular; Some draws a triangle, bottom_x / left_y / right_y its three components
-    pub view_3d: Option<View3d>,             // None = flat; Some draws a 3D box, bottom_x / left_y / right_y its x, y and z
-    pub parallel: Option<ParallelOptions>,   // None = rectangular; Some draws one vertical axis per category of bottom_x, each with its own range (parallel coordinates)
+    pub coordinates: Coordinates,            // Cartesian (default), Polar, Ternary, View3d or Parallel; written as the one key polar / ternary / view_3d / parallel
     pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
@@ -388,7 +384,7 @@ The layer fields shared by every chart family (`Config`, `RadialChart`,
 
 | Field | Meaning |
 |---|---|
-| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)`, `Annotations`, `Subplot(index)` or `SubplotOverlay(subplot, overlay)`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); with `Annotations` the annotation items are tested on top of the chart's own hit map and on every other layer clicks pass through them (`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). Element selection (`selected`, `picked_points`, `picked_data`) lives one level below it and a layer change clears it, the data selection excepted. An `Overlay` or `Subplot` index past its list reads and is stored as `Base`, a `SubplotOverlay` whose overlay is missing as its `Subplot`; the radial chart and the legacy documents have no overlays or subplots, so those fall back to `Base` there (`RadialChart::active_layer()` / `set_active_layer`, the setter clearing `decorations.selected` on a change; the readers carry `active_layer()` of `CategoricalChart`, `BoxPlotChart` and `RadarChart`). |
+| `active_layer: LayerRef` | The layer that receives pointer interaction: `Base` (default, omitted from JSON), `Overlay(index)`, `Annotations`, `Subplot(index)` or `SubplotOverlay(subplot, overlay)`. Decides which layer's elements the hit map registers (`HitMap::for_active_layer`); with `Annotations` the annotation items are tested on top of the chart's own hit map and on every other layer clicks pass through them (`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). Element selection (`selected`, `picked_data`) lives one level below it and a layer change clears it, the data selection excepted. An `Overlay` or `Subplot` index past its list reads and is stored as `Base`, a `SubplotOverlay` whose overlay is missing as its `Subplot`; the radial chart and the legacy documents have no overlays or subplots, so those fall back to `Base` there (`RadialChart::active_layer()` / `set_active_layer`, the setter clearing `decorations.selected` on a change; the readers carry `active_layer()` of `CategoricalChart`, `BoxPlotChart` and `RadarChart`). |
 | `annotations: AnnotationLayer { visible, items }` | The dedicated annotation layer: `items` in draw order, composited as an underlay below the data (spans) and an overlay above every decoration (everything else) but toggled, selected and edited as one unit. `visible = false` skips the two composite draws without re-rasterizing anything. The default (visible, no items) is omitted from JSON, and so is an empty `items`. |
 
 Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
@@ -562,18 +558,6 @@ from `colorbar.colormap`, filling the same field (empty without a colour bar).
 Composition helpers: `symbol_segments(kind, color)`,
 `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`.
 
-### `PickedPointsConfig`
-| Field | Type | Meaning |
-|---|---|---|
-| `visible` | bool | Enables/disables the overlay when `picked_points` is present |
-| `refs` | `Vec<PickedPointRef>` | Picked data references: `series_id`, optional `source_id`, and `point_index`. The overlay stores provenance, not copied coordinates |
-| `ring_color` | `Color` | Highlight ring color |
-| `ring_width_px` | f32 | Ring stroke width in pixels |
-| `radius_extra_px` | f32 | Extra radius added around the source marker |
-
-Missing `picked_points` / JSON `null` means no picked-point overlay. JSON `{}` is accepted as the default overlay config (`visible: true`, empty refs, gold ring, 2 px stroke, +3 px radius), so hosts can turn the overlay on and then fill `refs`.
-The overlay ring follows the picked scatter marker radius, including per-point style mapping; for line-only picks it uses `radius_extra_px` around the snapped endpoint.
-
 ### `DataSelectionsConfig`
 
 `Config.picked_data` holds `visible` and `refs`, a list of `PickedDataRef`
@@ -588,6 +572,16 @@ segments. The overlay resolves current geometry from the same GPU resources as
 the normal draw, and stale/out-of-range indices draw nothing. JSON `null`
 clears it and `{}` selects the default empty gold overlay (`visible: true`,
 2 px outline, +3 px point radius, +2 px contour width).
+A point's ring follows the picked scatter marker radius, including per-point
+style mapping; for a line-only pick it is drawn `point_radius_extra_px` around
+the snapped vertex.
+
+A document written before 0.19 may carry `picked_points`, the former
+point-only selection (`visible`, `refs` of `series_id` / `source_id` /
+`point_index`, `ring_color`, `ring_width_px`, `radius_extra_px`). It is read
+into `picked_data`: its refs become `point` refs after the typed ones, and
+without a `picked_data` its look becomes the highlight's. Only `picked_data`
+is written.
 
 ### `ColorBarOptions`
 | Field | Type | Meaning |
@@ -1153,7 +1147,7 @@ Multiplies every pixel-based dim by `scale`. `min/max/major_spacing`, scale enum
   needs one: `renderer::default::default_colorbar_options()` returns a visible
   right-hand Viridis bar (18 px thick, 24 px gap, `length_frac = 0.75`,
   centred) with a 0..1 placeholder z range.
-- draw_style `Precise`; `polar`, `picked_points` and `picked_data` are `None`;
+- draw_style `Precise`; the chart is `Coordinates::Cartesian` and `picked_data` is `None`;
   no overlays, subplots or annotations.
 
 Empty text is filled in via the `Chart::with_title / with_x_title / with_y_title / with_legend_entry` builders.
@@ -1180,12 +1174,10 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
-    pub picked_points: Option<PickedPointsConfig>,
-    pub picked_data: Option<DataSelectionsConfig>,
+    pub picked_data: Option<DataSelectionsConfig>, // 차트의 단 하나의 선택: 점, 막대, 셀, 등고선 조각, 값 라벨
     pub colorbar: Option<ColorBarOptions>,   // 색상 막대이자 차트의 Z 스케일
     pub draw_style: DrawStyle,
-    pub polar: Option<PolarOptions>,         // None이면 직교 차트. Some이면 bottom_x를 각도, left_y를 반지름으로 그린다
-    pub parallel: Option<ParallelOptions>,   // None이면 직교 차트. Some이면 bottom_x의 범주마다 자기 범위를 가진 세로 축을 세운다(평행 좌표)
+    pub coordinates: Coordinates,            // Cartesian(기본값), Polar, Ternary, View3d, Parallel 중 하나. JSON에는 polar / ternary / view_3d / parallel 키 하나로 쓴다
     pub overlays: Vec<OverlayLayer>,         // 오른쪽 보조 Y축. 각 축은 나열한 시리즈의 스케일을 맡는다
     pub subplots: Vec<Subplot>,              // 같은 문서에 그리는 추가 차트. 차트마다 축을 따로 가진다
     pub active_layer: LayerRef,              // 포인터 상호작용 대상 레이어. 기본값 `Base`는 차트 자체의 시리즈와 장식
@@ -1331,7 +1323,7 @@ pub struct Config {
 
 | 필드 | 의미 |
 |---|---|
-| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations`, `Subplot(index)`, `SubplotOverlay(subplot, overlay)` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), `Annotations`일 때는 주석 항목을 차트 자체 히트 맵 위에서 먼저 검사하고 다른 레이어에서는 클릭이 주석을 통과한다(`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). 요소 선택(`selected`, `picked_points`, `picked_data`)은 그 아래 단계이고 레이어가 바뀌면 데이터 선택을 뺀 요소 선택을 지운다. 범위 밖의 `Overlay`·`Subplot` 인덱스는 `Base`로, 오버레이가 없는 `SubplotOverlay`는 그 `Subplot`으로 읽고 저장한다. 원형 차트와 이전 문서(범주형 막대·박스플롯·레이더)에는 오버레이와 서브플롯이 없으므로 이들은 `Base`로 되돌린다(`RadialChart`의 `active_layer()` / `set_active_layer`, 바뀌면 세터가 `decorations.selected`를 지운다. 리더는 `CategoricalChart`, `BoxPlotChart`, `RadarChart`의 `active_layer()`를 옮긴다). |
+| `active_layer: LayerRef` | 포인터 상호작용을 받는 레이어. `Base`(기본값, JSON에서 생략), `Overlay(index)`, `Annotations`, `Subplot(index)`, `SubplotOverlay(subplot, overlay)` 중 하나다. 히트 맵에 어느 레이어의 요소를 등록할지 정하며(`HitMap::for_active_layer`), `Annotations`일 때는 주석 항목을 차트 자체 히트 맵 위에서 먼저 검사하고 다른 레이어에서는 클릭이 주석을 통과한다(`ChartView::hit_test_active_layer`, `BoundedAnnotationFrame::hit_test_active_layer`). 요소 선택(`selected`, `picked_data`)은 그 아래 단계이고 레이어가 바뀌면 데이터 선택을 뺀 요소 선택을 지운다. 범위 밖의 `Overlay`·`Subplot` 인덱스는 `Base`로, 오버레이가 없는 `SubplotOverlay`는 그 `Subplot`으로 읽고 저장한다. 원형 차트와 이전 문서(범주형 막대·박스플롯·레이더)에는 오버레이와 서브플롯이 없으므로 이들은 `Base`로 되돌린다(`RadialChart`의 `active_layer()` / `set_active_layer`, 바뀌면 세터가 `decorations.selected`를 지운다. 리더는 `CategoricalChart`, `BoxPlotChart`, `RadarChart`의 `active_layer()`를 옮긴다). |
 | `annotations: AnnotationLayer { visible, items }` | 전용 주석 층. `items`를 그리는 순서대로 담으며, 구간(span)은 데이터 아래 층에, 나머지는 모든 장식 위 층에 합성하되 켜고 끄기·선택·편집은 한 단위로 다룬다. `visible = false`는 합성 두 번만 건너뛰고 어떤 래스터도 다시 만들지 않는다. 기본값(보임, 항목 없음)과 빈 `items`는 JSON에서 생략한다. |
 
 오버레이 요소는 `DecorationId::Overlay { layer, inner }`(`overlay_<n>:<inner id>`, 아래 `OverlayLayer` 참고),
@@ -1461,22 +1453,13 @@ pub struct Config {
 범례 기호는 `field_em`으로 너비를 고정한 텍스트 구간이다. 모양에 관계없이 `SYMBOL_FIELD_EM`, 즉 폰트 크기의 2배 너비를 차지한다. 선 기호는 `rule: true`로 구간 전체에 수평선을 그리고, 점 기호는 가운데에 `● ■ ▲ …` 같은 글리프를 놓는다. 선과 점을 함께 표시할 때도 전체 너비는 같다.
 점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 히트맵 기호는 차트 컬러맵 견본이다. `colorbar.colormap`에서 뽑은 여섯 색 띠로 같은 구간을 채우며, 색상 막대가 없으면 빈 구간이다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`을 사용한다.
 
-### `PickedPointsConfig`
-| 필드 | 타입 | 의미 |
-|---|---|---|
-| `visible` | bool | `picked_points`가 있을 때 선택 표시를 그릴지 여부 |
-| `refs` | `Vec<PickedPointRef>` | 선택한 데이터의 `series_id`, 선택적인 `source_id`, `point_index`. 좌표 복사본 대신 출처와 인덱스를 저장한다. |
-| `ring_color` | `Color` | 강조 테두리 색 |
-| `ring_width_px` | f32 | 강조 테두리의 두께(px) |
-| `radius_extra_px` | f32 | 점 기호 바깥으로 추가할 반지름 |
-
-`picked_points`가 없거나 JSON `null`이면 점 선택 표시를 그리지 않는다. `{}`는 기본 설정인 `visible: true`, 빈 참조 목록, 금색 테두리, 선 두께 2px, 추가 반지름 3px로 해석한다. 이 설정에 `refs`를 채워 선택한 점을 표시할 수 있다.
-강조 테두리의 크기는 점별 스타일을 포함한 산점도 기호의 반지름을 따른다. 선만 있는 시리즈에서는 선택된 끝점 주위에 `radius_extra_px`만큼의 반지름으로 그린다.
-
 ### `DataSelectionsConfig`
 
 `Config.picked_data`는 `PickedDataRef`로 선택 대상을 저장한다. `Point`, `HistogramBin`, `MatrixCell`, `ContourLevel`로 종류를 구분하며, 모두 `series_id`와 선택적인 `source_id`를 가진다. 종류에 따라 `point_index`, `bin_index`, X·Y축 기준 `x_index/y_index`, 또는 `level_index + x_index/y_index`가 추가된다.
 표시 모양은 `highlight_color`, `outline_width_px`, `point_radius_extra_px`, `contour_width_extra_px`로 설정한다. 좌표·막대 경계·등고선 선분은 복사해 보관하지 않고, 일반 그리기와 같은 GPU 자원에서 계산한다. 범위를 벗어난 인덱스는 그리지 않는다. JSON `null`은 선택 표시를 해제하고, `{}`는 선택 대상이 없는 금색 기본 설정을 만든다.
+점의 강조 테두리 크기는 점별 스타일을 포함한 산점도 기호의 반지름을 따른다. 선만 있는 시리즈에서는 선택된 꼭짓점 주위에 `point_radius_extra_px`만큼의 반지름으로 그린다.
+
+0.19 이전 문서에는 점 전용 선택인 `picked_points`(`visible`, `series_id`·`source_id`·`point_index`로 된 `refs`, `ring_color`, `ring_width_px`, `radius_extra_px`)가 있을 수 있다. 이 키는 읽을 때 `picked_data`로 옮긴다. 참조는 기존 참조 뒤에 `point` 참조로 붙고, `picked_data`가 없으면 테두리 모양이 강조 모양이 된다. 저장할 때는 `picked_data`만 쓴다.
 
 ### `ColorBarOptions`
 | 필드 | 타입 | 의미 |
@@ -1742,7 +1725,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 - `colorbar`: `None`. 필드 시리즈, 점 색 매핑, 벡터 색 매핑에는 색상 막대가 필요하다.
   `renderer::default::default_colorbar_options()`는 오른쪽에 놓인 Viridis 막대(두께 18px, 간격 24px,
   `length_frac = 0.75`, 가운데 정렬)와 0..1 자리표시 Z 범위를 돌려준다.
-- `draw_style`은 `Precise`이고 `polar`, `picked_points`, `picked_data`는 `None`이다. 오버레이,
+- `draw_style`은 `Precise`, 좌표계는 `Coordinates::Cartesian`이고 `picked_data`는 `None`이다. 오버레이,
   서브플롯, 주석은 없다.
 
 빈 텍스트는 `Chart::with_title / with_x_title / with_y_title / with_legend_entry`로 채울 수 있다.

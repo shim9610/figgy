@@ -17,8 +17,10 @@ at the time. The first crates.io publication is recorded below.
 
 Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
-written by model 0.12 and earlier parse and re-serialize byte for byte; the
-new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
+written by model 0.12 and earlier parse; they re-serialize byte for byte
+except where a fact that was stored twice now has one owner (#160), which
+the migration notes name: such a document is written once in the new form
+and round trips byte for byte from then on. The new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection,
@@ -31,6 +33,25 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **One selection per chart** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Config::picked_points` (`PickedPointsConfig`, `PickedPointRef`), the
+  point-only selection drawn beside `picked_data`, is removed:
+  `Config::picked_data` holds every selection, points as
+  `PickedDataRef::Point`. A document that still carries `picked_points` is
+  read into `picked_data`: its refs become `point` refs after the ones
+  `picked_data` lists, and when the document has no `picked_data` its
+  `visible`, `ring_color`, `ring_width_px` and `radius_extra_px` become
+  `visible`, `highlight_color`, `outline_width_px` and
+  `point_radius_extra_px`. Beside a `picked_data`, the points take its look,
+  and hidden points (`visible: false`) are dropped. Only `picked_data` is
+  written, so such a document re-serializes in the new form. Migration:
+  - `PickedPointsConfig { visible, refs, ring_color, ring_width_px,
+    radius_extra_px }` → `DataSelectionsConfig { visible, refs,
+    highlight_color, outline_width_px, point_radius_extra_px,
+    ..Default::default() }`;
+  - `PickedPointRef { source_id, series_id, point_index }` →
+    `PickedDataRef::Point { source_id, series_id, point_index }`;
+  - a `Config { .. }` literal or pattern drops `picked_points`.
 - **One coordinate system per chart** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Config`'s four optional systems (`polar`, `ternary`, `view_3d`,
   `parallel`), whose exclusivity three validators checked, are one field,
@@ -2205,6 +2226,12 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **`set_picked_points` is removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The chart has one selection, `Config.picked_data`. Migration:
+  `set_picked_points(JSON.stringify({ refs: [{ series_id, point_index }],
+  ring_color, ring_width_px, radius_extra_px }))` →
+  `set_picked_data(JSON.stringify({ refs: [{ kind: "point", series_id,
+  point_index }], highlight_color, outline_width_px, point_radius_extra_px }))`.
 - **No second column registry in the wrapper** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The wrapper no longer keeps its own map of column lengths and revisions,
   its revision counter or the pending handoff metadata; registration checks,

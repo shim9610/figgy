@@ -13,7 +13,7 @@ mod test_gpu;
 
 use std::sync::OnceLock;
 
-use renderer::config::{AxisOptions, AxisScale, PickedPointRef, PickedPointsConfig};
+use renderer::config::{AxisOptions, AxisScale};
 use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
@@ -1164,16 +1164,17 @@ fn picked_point_vector_draws_the_ring_at_its_anchor() {
     };
     point_fixture(&mut renderer, &[(1.0, 1.0), (3.0, 3.0)], &[(40.0, 0.0); 2]);
     let mut chart = bare_chart();
-    chart.config_mut().picked_points = Some(PickedPointsConfig {
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
         visible: true,
-        refs: vec![PickedPointRef {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "arrows".into(),
             point_index: 1,
         }],
-        ring_color: GREEN,
-        ring_width_px: 3.0,
-        radius_extra_px: 4.0,
+        highlight_color: GREEN,
+        outline_width_px: 3.0,
+        point_radius_extra_px: 4.0,
+        ..Default::default()
     });
     let img = export(&mut renderer, &chart, &[points("arrows", pixels(1.0))]);
     let a = data_to_px(&chart, 3.0, 3.0);
@@ -1897,16 +1898,17 @@ fn picked_streamline_point_draws_the_ring() {
         ],
     );
     let mut chart = bare_chart();
-    chart.config_mut().picked_points = Some(PickedPointsConfig {
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
         visible: true,
-        refs: vec![PickedPointRef {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "flow".into(),
             point_index: 4,
         }],
-        ring_color: GREEN,
-        ring_width_px: 3.0,
-        radius_extra_px: 8.0,
+        highlight_color: GREEN,
+        outline_width_px: 3.0,
+        point_radius_extra_px: 8.0,
+        ..Default::default()
     });
     let img = export(&mut renderer, &chart, &[thin_streamlines(Some(ARROWS))]);
     let a = data_to_px(&chart, 0.5, 3.0);

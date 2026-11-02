@@ -472,7 +472,7 @@ own layer; `Overlay(index)` addresses an overlay layer, `Subplot(index)` and
 `Annotations` the annotation layer. The radial chart and the legacy documents
 have no overlays or subplots and read those values as `Base`. The active layer is document state
 one level above element selection: it decides which layer's elements the
-pointer route registers, while `selected`, `picked_points` and `picked_data`
+pointer route registers, while `selected` and `picked_data`
 keep naming the element inside that layer. Drawn pixels never depend on
 `active_layer`: inactive layers are not dimmed, and editing chrome belongs to
 the host. Overlay layers and subplots route through the Cartesian hit map (see

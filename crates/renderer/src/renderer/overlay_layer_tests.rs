@@ -1042,9 +1042,9 @@ fn offset_line_ring_sits_on_the_shifted_point() {
         .unwrap();
     let mut r = offset_renderer();
     let select = |mut config: Config| {
-        config.picked_points = Some(crate::config::PickedPointsConfig {
+        config.picked_data = Some(crate::config::DataSelectionsConfig {
             visible: true,
-            refs: vec![crate::config::PickedPointRef {
+            refs: vec![crate::config::PickedDataRef::Point {
                 source_id: None,
                 series_id: "m2".into(),
                 point_index: 2,

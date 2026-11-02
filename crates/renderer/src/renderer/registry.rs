@@ -102,7 +102,6 @@ impl ChartViewState {
             chart_title: _,
             grid: _,
             legend: _,
-            picked_points: _,
             picked_data: _,
             colorbar: _,
             draw_style: _,
@@ -166,7 +165,6 @@ impl ChartViewState {
             chart_title: _,
             grid: _,
             legend: _,
-            picked_points: _,
             picked_data: _,
             colorbar: _,
             draw_style: _,
@@ -208,7 +206,7 @@ pub(super) fn selection_config_revision(
     before: &Config,
     after: &Config,
 ) -> Result<RenderRevision> {
-    if before.picked_points != after.picked_points || before.picked_data != after.picked_data {
+    if before.picked_data != after.picked_data {
         current.successor("chart selection revision")
     } else {
         Ok(current)
@@ -220,7 +218,7 @@ pub(super) fn selection_config_revision(
 /// raster revision: a field listed as `_` here never touches the CPU raster,
 /// every other field does. Exhaustive so a new field must be classified.
 ///
-/// - `picked_points` / `picked_data` are the GPU selection overlay
+/// - `picked_data` is the GPU selection overlay
 ///   (`selection_config_revision`).
 /// - `active_layer` only routes interaction; `annotations` is the dedicated
 ///   annotation layer, rasterized by its own pass under its own revision
@@ -235,7 +233,6 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         chart_title,
         grid,
         legend,
-        picked_points: _,
         picked_data: _,
         colorbar,
         draw_style,

@@ -6,7 +6,7 @@
 use super::super::*;
 use super::{declaration, read_draw_target};
 use crate::annotation::{Anchor, Annotation, AnnotationKind};
-use crate::config::{PickedPointRef, PickedPointsConfig, SketchOptions};
+use crate::config::{DataSelectionsConfig, PickedDataRef, SketchOptions};
 use crate::layout::ChartArea;
 use crate::text::RichText;
 use crate::{LayerRef, OverlayLayer};
@@ -292,15 +292,15 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     let drawn = r.resident_display_serial(&view).unwrap();
     let mut previous = painted_like_direct(&r, frame, 1);
 
-    let picked = |index: usize, ring: Color| PickedPointsConfig {
+    let picked = |index: usize, ring: Color| DataSelectionsConfig {
         visible: true,
-        refs: vec![PickedPointRef {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "s0".into(),
             point_index: index,
         }],
-        ring_color: ring,
-        ..PickedPointsConfig::default()
+        highlight_color: ring,
+        ..DataSelectionsConfig::default()
     };
     let cases: Vec<(&str, Box<dyn Fn(&mut Config)>)> = vec![
         (
@@ -332,15 +332,15 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
         ),
         (
             "point picked",
-            Box::new(move |c| c.picked_points = Some(picked(100, Color::new(1.0, 0.5, 0.0, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(100, Color::new(1.0, 0.5, 0.0, 1.0)))),
         ),
         (
             "pick moved",
-            Box::new(move |c| c.picked_points = Some(picked(40, Color::new(1.0, 0.5, 0.0, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(40, Color::new(1.0, 0.5, 0.0, 1.0)))),
         ),
         (
             "pick ring colour",
-            Box::new(move |c| c.picked_points = Some(picked(40, Color::new(0.0, 0.8, 0.2, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(40, Color::new(0.0, 0.8, 0.2, 1.0)))),
         ),
     ];
     for (name, apply) in cases {
@@ -772,15 +772,15 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
             ("annotation visibility", [false, false])
         }
         6 => {
-            c.picked_points = (rng.below(3) != 0).then(|| PickedPointsConfig {
+            c.picked_data = (rng.below(3) != 0).then(|| DataSelectionsConfig {
                 visible: true,
-                refs: vec![PickedPointRef {
+                refs: vec![PickedDataRef::Point {
                     source_id: None,
                     series_id: if rng.below(2) == 0 { "s0" } else { "s1" }.into(),
                     point_index: rng.below(POINTS as u64) as usize,
                 }],
-                ring_color: ring(rng),
-                ..PickedPointsConfig::default()
+                highlight_color: ring(rng),
+                ..DataSelectionsConfig::default()
             });
             ("pick", [false, false])
         }
