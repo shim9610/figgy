@@ -214,16 +214,18 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg_sin).unwrap();
     PanelEntry {
@@ -291,16 +293,18 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
@@ -359,16 +363,18 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg_xs).unwrap();
     PanelEntry {
@@ -443,18 +449,18 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         x_column: "bump_x".into(),
         y_column: "bump_y".into(),
         z_column: None,
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -472,16 +478,15 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
                     format: LabelFormat::Decimal,
                     significant_digits: 1,
                     spacing_px: 120.0,
-                    // Empty: the GPU picks. A non-empty list would override it.
+
                     anchors: Vec::new(),
-                    // The label's own background, so the isoline under it does
-                    // not run through the digits.
+
                     bg_color: Some(Color::from_rgb8(250, 250, 250)),
                     bg_padding_px: 2.0,
                 }),
-            },
+            }),
             surface: None,
-        },
+        }),
     }];
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let styles = series

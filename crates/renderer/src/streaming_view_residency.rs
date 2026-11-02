@@ -309,10 +309,7 @@ impl ViewPackedCandidate {
             return None;
         }
         let supported = series.iter().all(|item| match &item.render_type {
-            DataRenderType::Histogram { .. }
-            | DataRenderType::Heatmap { .. }
-            | DataRenderType::Contour { .. }
-            | DataRenderType::HeatmapContour { .. } => false,
+            DataRenderType::Histogram { .. } | DataRenderType::Field(_) => false,
             other => {
                 let scatter_ok = super::extract_scatter(other).is_none_or(|scatter| {
                     scatter.point_style_index_column.is_none()
@@ -997,16 +994,18 @@ mod tests {
                 x_column: "x".into(),
                 y_column: "y".into(),
                 z_column: None,
-                render_type: DataRenderType::Line {
-                    line: crate::data_config::DataLineStyleConfig {
+                render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: None,
+                    line: Some(crate::data_config::DataLineStyleConfig {
                         line_color: crate::Color::BLACK,
                         line_width: 2.0,
                         line_style: LineStylePreset::Solid,
                         fill: None,
                         fill_color: None,
                         interpolation: crate::data_config::LineInterpolation::Linear,
-                    },
-                },
+                    }),
+                    errors: None,
+                }),
             }];
             let candidate = ViewPackedCandidate::for_chart(&config, &series, 4096, 1.0).unwrap();
             let cache = GpuViewCache {
@@ -1028,7 +1027,12 @@ mod tests {
                 "must request uncached data"
             );
             let mut larger = series.clone();
-            if let DataRenderType::Line { line } = &mut larger[0].render_type {
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }) = &mut larger[0].render_type
+            {
                 line.line_width = 1000.0;
             }
             assert!(

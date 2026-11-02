@@ -142,9 +142,8 @@ fn picked_suite() -> (Config, Vec<SeriesConfig>) {
     let line = super::super::super::extract_line(&series.render_type)
         .unwrap()
         .into_owned();
-    series.render_type = DataRenderType::ScatterLine {
-        line,
-        scatter: DataScatterStyleConfig {
+    series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(DataScatterStyleConfig {
             point_color: Color::BLACK,
             point_size: 4.0,
             point_shape: ScatterShape::CircleFilled,
@@ -153,8 +152,10 @@ fn picked_suite() -> (Config, Vec<SeriesConfig>) {
             point_style_overrides: None,
             point_color_map: None,
             point_size_map: None,
-        },
-    };
+        }),
+        line: Some(line),
+        errors: None,
+    });
     (c, vec![series])
 }
 

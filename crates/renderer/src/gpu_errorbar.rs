@@ -148,17 +148,25 @@ impl GpuSeriesFitMode {
         }
         use crate::data_config::{GridLayout, Shading};
         let (matrix, samples) = match render_type {
-            DataRenderType::Heatmap {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix,
-                fill,
+                fill: Some(fill),
+                contour: None,
                 surface: _,
-            } => (matrix, matches!(fill.shading, Shading::Interpolated)),
-            DataRenderType::Contour { matrix, .. } => (matrix, true),
+            }) => (matrix, matches!(fill.shading, Shading::Interpolated)),
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix, fill: None, ..
+            }) => (matrix, true),
             // An image fits as a heatmap of its red grid's layout.
             DataRenderType::RgbImage { red, shading, .. } => {
                 (red, matches!(shading, Shading::Interpolated))
             }
-            DataRenderType::HeatmapContour { matrix, fill, .. } => {
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix,
+                fill: Some(fill),
+                contour: Some(_),
+                surface: _,
+            }) => {
                 // The fit covers the union of fill and isolines. A flat fill
                 // reaches cell edges; an interpolated fill and the contour both
                 // stop at sample points.
@@ -192,15 +200,7 @@ impl GpuSeriesFitMode {
                 components: crate::data_config::VectorComponents::Points { .. },
                 ..
             }
-            | DataRenderType::Scatter { .. }
-            | DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. }
-            | DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. } => {
+            | DataRenderType::Xy(_) => {
                 // The paired mode answered these above; it is their mode.
                 return GpuSeriesExtentMode::from_render_type(render_type).map(Self::Paired);
             }
@@ -244,18 +244,15 @@ impl GpuSeriesExtentMode {
         match render_type {
             // A radar outline is a line through (position, value) pairs;
             // streamlines are polylines whose NaN rows hold no extent.
-            DataRenderType::Line { .. }
+            DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
             | DataRenderType::Radar { .. }
             | DataRenderType::Streamlines { .. } => Some(Self::Line),
-            DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
+            DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), errors: None, .. }) => {
                 Some(Self::Points)
             }
-            DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarX { .. } => Some(Self::PointsX),
-            DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarY { .. } => Some(Self::PointsY),
-            DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. } => Some(Self::PointsXY),
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: Some(_), y: None, .. }), .. }) => Some(Self::PointsX),
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: None, .. }), .. }) => Some(Self::PointsY),
+            DataRenderType::Xy(crate::data_config::XySeries { errors: Some(crate::data_config::ErrorBars { x: Some(_), y: Some(_), .. }), .. }) => Some(Self::PointsXY),
             // Point vectors fit their anchors; in `Data` mode the tips are data
             // coordinates too and join the extent. `Pixels` tips are screen
             // lengths, not data, so they are left out like marker radii.
@@ -279,10 +276,8 @@ impl GpuSeriesExtentMode {
             // A parallel chart's are the categorical positions and the
             // normalized band.
             | DataRenderType::Parallel { .. }
-            | DataRenderType::Heatmap { .. }
-            | DataRenderType::RgbImage { .. }
-            | DataRenderType::Contour { .. }
-            | DataRenderType::HeatmapContour { .. } => None,
+            | DataRenderType::Field(_)
+            | DataRenderType::RgbImage { .. } => None,
         }
     }
 

@@ -81,8 +81,8 @@ fn main() {
         x_column: "x".into(),
         y_column: "stars".into(),
         z_column: None,
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: accent,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 6.5,
@@ -91,16 +91,17 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: accent,
                 line_width: 3.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }];
 
     let star_chart = |style: DrawStyle| {
@@ -171,8 +172,8 @@ fn main() {
             x_column: "t".into(),
             y_column: "ya".into(),
             z_column: None,
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: accent,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 5.5,
@@ -181,16 +182,17 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: accent,
                     line_width: 2.5,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         },
         SeriesConfig {
             series_id: "trend".into(),
@@ -199,16 +201,18 @@ fn main() {
             x_column: "t".into(),
             y_column: "yb".into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Dash,
                     line_color: blue,
                     line_width: 2.5,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         },
         SeriesConfig {
             series_id: "meas".into(),
@@ -217,8 +221,8 @@ fn main() {
             x_column: "t".into(),
             y_column: "yc".into(),
             z_column: None,
-            render_type: DataRenderType::ScatterErrorbarY {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: green,
                     point_shape: ScatterShape::Diamond,
                     point_size: 5.0,
@@ -227,20 +231,24 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "err".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: green,
-                    error_bar_width: 1.6,
-                    error_bar_cap_size: 6.0,
-                    cap_width: 1.6,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                line: None,
+                errors: Some(renderer::data_config::ErrorBars {
+                    x: None,
+                    y: Some(ErrorRef::Symmetric {
+                        column: "err".into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: green,
+                        error_bar_width: 1.6,
+                        error_bar_cap_size: 6.0,
+                        cap_width: 1.6,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
         },
     ];
 

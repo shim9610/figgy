@@ -147,30 +147,29 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
     series.x_column = format!("r{}", series.x_column);
     series.y_column = format!("r{}", series.y_column);
     let (scatter, error) = match &mut series.render_type {
-        DataRenderType::Scatter { scatter } | DataRenderType::ScatterLine { scatter, .. } => {
-            (scatter, None)
-        }
-        DataRenderType::ScatterErrorbarXY {
-            scatter,
-            err_x,
-            err_y,
-            err_style,
-        } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            errors: None,
+            ..
+        }) => (scatter, None),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: Some(err_x),
+                    y: Some(err_y),
+                    style: err_style,
+                }),
+        }) => {
             prefix_error_column(err_x);
             prefix_error_column(err_y);
             (scatter, Some(err_style))
         }
-        DataRenderType::Line { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
+        DataRenderType::Xy(_)
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Heatmap { .. }
+        | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
-        | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
@@ -786,18 +785,21 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                 error.cap_width = 0.0;
             }
             let mut cfg = declaration(id, "x", "y");
-            cfg.render_type = DataRenderType::ScatterErrorbarXY {
-                scatter: point,
-                err_x: ErrorRef::Asymmetric {
-                    lower: "ex_lo".into(),
-                    upper: "ex_hi".into(),
-                },
-                err_y: ErrorRef::Asymmetric {
-                    lower: "ey_lo".into(),
-                    upper: "ey_hi".into(),
-                },
-                err_style: error,
-            };
+            cfg.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(point),
+                line: None,
+                errors: Some(crate::data_config::ErrorBars {
+                    x: Some(ErrorRef::Asymmetric {
+                        lower: "ex_lo".into(),
+                        upper: "ex_hi".into(),
+                    }),
+                    y: Some(ErrorRef::Asymmetric {
+                        lower: "ey_lo".into(),
+                        upper: "ey_hi".into(),
+                    }),
+                    style: error,
+                }),
+            });
             cfg
         })
         .collect();
@@ -1206,34 +1208,40 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         };
                         let mut series = declaration(id, "x", "y");
                         series.render_type = if mode == 2 {
-                            DataRenderType::ScatterLine {
-                                scatter: scatter(color),
-                                line: DataLineStyleConfig {
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: Some(DataLineStyleConfig {
                                     line_color: color,
                                     line_width: 2.5,
                                     line_style: LineStylePreset::Solid,
                                     fill: None,
                                     fill_color: None,
                                     interpolation: crate::data_config::LineInterpolation::Linear,
-                                },
-                            }
+                                }),
+                                errors: None,
+                            })
                         } else if errorbars {
-                            DataRenderType::ScatterErrorbarXY {
-                                scatter: scatter(color),
-                                err_x: ErrorRef::Asymmetric {
-                                    lower: "ex_lo".into(),
-                                    upper: "ex_hi".into(),
-                                },
-                                err_y: ErrorRef::Asymmetric {
-                                    lower: "ey_lo".into(),
-                                    upper: "ey_hi".into(),
-                                },
-                                err_style: error_style(color),
-                            }
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: None,
+                                errors: Some(crate::data_config::ErrorBars {
+                                    x: Some(ErrorRef::Asymmetric {
+                                        lower: "ex_lo".into(),
+                                        upper: "ex_hi".into(),
+                                    }),
+                                    y: Some(ErrorRef::Asymmetric {
+                                        lower: "ey_lo".into(),
+                                        upper: "ey_hi".into(),
+                                    }),
+                                    style: error_style(color),
+                                }),
+                            })
                         } else {
-                            DataRenderType::Scatter {
-                                scatter: scatter(color),
-                            }
+                            DataRenderType::Xy(crate::data_config::XySeries {
+                                scatter: Some(scatter(color)),
+                                line: None,
+                                errors: None,
+                            })
                         };
                         series
                     })
@@ -1428,39 +1436,42 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                             bar_style_overrides: None,
                         },
                     },
-                    1 => DataRenderType::Heatmap {
+                    1 => DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
-                        fill,
+                        fill: Some(fill),
+                        contour: None,
                         surface: None,
-                    },
-                    2 => DataRenderType::Contour { matrix, contour },
-                    3 => DataRenderType::HeatmapContour {
+                    }),
+                    2 => DataRenderType::Field(crate::data_config::FieldSeries {
                         matrix,
-                        fill,
-                        contour,
+                        fill: None,
+                        contour: Some(contour),
                         surface: None,
-                    },
+                    }),
+                    3 => DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        fill: Some(fill),
+                        contour: Some(contour),
+                        surface: None,
+                    }),
                     _ => unreachable!(),
                 };
                 let mut resident = stream.clone();
                 resident.x_column = "rx".into();
                 resident.y_column = "ry".into();
                 match &mut resident.render_type {
-                    DataRenderType::Heatmap { matrix, .. }
+                    DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        contour: None,
+                        ..
+                    })
                     | DataRenderType::RgbImage { red: matrix, .. }
-                    | DataRenderType::Contour { matrix, .. }
-                    | DataRenderType::HeatmapContour { matrix, .. } => {
-                        matrix.columns = vec!["rz".into()]
-                    }
-                    DataRenderType::Scatter { .. }
-                    | DataRenderType::Line { .. }
-                    | DataRenderType::ScatterLine { .. }
-                    | DataRenderType::ScatterErrorbarX { .. }
-                    | DataRenderType::ScatterErrorbarY { .. }
-                    | DataRenderType::ScatterErrorbarXY { .. }
-                    | DataRenderType::LineScatterErrorbarX { .. }
-                    | DataRenderType::LineScatterErrorbarY { .. }
-                    | DataRenderType::LineScatterErrorbarXY { .. }
+                    | DataRenderType::Field(crate::data_config::FieldSeries {
+                        matrix,
+                        contour: Some(_),
+                        ..
+                    }) => matrix.columns = vec!["rz".into()],
+                    DataRenderType::Xy(_)
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::CategoryBars { .. }
                     | DataRenderType::BoxPlot { .. }
@@ -1529,23 +1540,24 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
                 .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
                 .unwrap();
             let mut series = declaration("arc-gated", "x", "a");
-            series.render_type = DataRenderType::ScatterLine {
-                scatter: {
+            series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some({
                     let mut point = scatter(Color::BLACK);
                     point.point_style_index_column = None;
                     point.point_style_table = None;
                     point.point_style_overrides = None;
                     point
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_color: Color::BLACK,
                     line_width: 2.0,
                     line_style: dash,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            };
+                }),
+                errors: None,
+            });
             let id = r.register_chart(config, vec![series]).unwrap();
             let result = r.begin_streaming_chart(
                 id,
@@ -1573,19 +1585,20 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
         }
     }
     let mut series = declaration("precise-field", "x", "a");
-    series.render_type = DataRenderType::Heatmap {
+    series.render_type = DataRenderType::Field(crate::data_config::FieldSeries {
         matrix: MatrixRef {
             columns: vec!["a".into()],
             orientation: MatrixOrientation::ColumnsAreX,
             grid_layout: GridLayout::Edges,
         },
-        fill: FieldFillConfig {
+        fill: Some(FieldFillConfig {
             mode: FillMode::Continuous,
             shading: Shading::Flat,
             opacity: 1.0,
-        },
+        }),
+        contour: None,
         surface: None,
-    };
+    });
     assert!(
         PrepareContext::validate_stream_series(&crate::default::default_config(), &series).is_ok()
     );

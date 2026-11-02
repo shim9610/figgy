@@ -104,8 +104,8 @@ fn build_state(
         x_column: "sample_x".into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size,
@@ -114,16 +114,17 @@ fn build_state(
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
 
     let series = vec![
@@ -220,7 +221,11 @@ impl CallbackTrait for LabCallback {
 
         for idx in 0..state.series.len() {
             let mut changed = false;
-            if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type
+            if let DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(_),
+                errors: None,
+            }) = &mut state.series[idx].render_type
                 && (scatter.point_size - self.point_size).abs() > f32::EPSILON
             {
                 scatter.point_size = self.point_size;

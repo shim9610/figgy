@@ -67,8 +67,8 @@ fn series(id: &str, x: &str, y: &str) -> SeriesConfig {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: renderer::Color::new(0.1, 0.2, 0.8, 1.0),
                 point_shape: renderer::ScatterShape::CircleFilled,
                 point_size: 3.0,
@@ -77,8 +77,10 @@ fn series(id: &str, x: &str, y: &str) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     }
 }
 

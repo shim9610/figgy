@@ -705,8 +705,8 @@ impl DemoApp {
             x_column: "stream-x".into(),
             y_column: "stream-y".into(),
             z_column: None,
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: renderer::Color::new(0.15, 0.65, 1.0, 0.35),
                     point_shape: ScatterShape::SquareFilled,
                     point_size: 1.0,
@@ -715,8 +715,10 @@ impl DemoApp {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
         };
         let chart_id = renderer.register_chart(chart.config().clone(), vec![series])?;
         let view = renderer.create_chart_view(&chart, placeholder)?;

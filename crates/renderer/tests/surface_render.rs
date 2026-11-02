@@ -90,15 +90,16 @@ fn surface_series(nx: usize, shading: Shading, surface: Option<SurfaceStyle>) ->
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(nx),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface,
-        },
+        }),
     }
 }
 
@@ -327,10 +328,12 @@ fn contours_draw_and_pick_on_the_floor() {
     let config = chart_3d();
     let series = vec![SeriesConfig {
         series_id: "floor".into(),
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(21),
-            contour: contour_config(vec![0.5]),
-        },
+            fill: None,
+            contour: Some(contour_config(vec![0.5])),
+            surface: None,
+        }),
         ..surface_series(21, Shading::Interpolated, None)
     }];
     let img = export(&mut r, &config, &series, 1.0);
@@ -397,16 +400,16 @@ fn a_translucent_surface_shows_its_floor_contours() {
     let series = |opacity: f32| {
         vec![SeriesConfig {
             series_id: "both".into(),
-            render_type: DataRenderType::HeatmapContour {
+            render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: matrix(21),
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: Shading::Interpolated,
                     opacity,
-                },
-                contour: contour_config(vec![0.5]),
+                }),
+                contour: Some(contour_config(vec![0.5])),
                 surface: None,
-            },
+            }),
             ..surface_series(21, Shading::Interpolated, None)
         }]
     };
@@ -872,10 +875,11 @@ fn scatter_and_line_series_draw_on_a_3d_chart() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::ScatterLine {
-            scatter: red_points(5.0),
-            line: red_line(3.0, LineStylePreset::Solid),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(5.0)),
+            line: Some(red_line(3.0, LineStylePreset::Solid)),
+            errors: None,
+        }),
     )];
     for scale in [1.0f32, 2.0] {
         let img = export(&mut r, &config, &series, scale);
@@ -939,9 +943,11 @@ fn markers_are_depth_tested_against_the_surface() {
             "px",
             "py",
             "pz",
-            DataRenderType::Scatter {
-                scatter: red_points(6.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(red_points(6.0)),
+                line: None,
+                errors: None,
+            }),
         ),
     ];
     let img = export(&mut r, &config, &series, 1.0);
@@ -980,18 +986,22 @@ fn the_id_pick_answers_markers_and_segment_ends() {
             "tx",
             "ty",
             "tz",
-            DataRenderType::Line {
-                line: red_line(3.0, LineStylePreset::Solid),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(red_line(3.0, LineStylePreset::Solid)),
+                errors: None,
+            }),
         ),
         point_series(
             "dots",
             "tx",
             "ty",
             "tz",
-            DataRenderType::Scatter {
-                scatter: red_points(5.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(red_points(5.0)),
+                line: None,
+                errors: None,
+            }),
         ),
     ];
     r.enable_gpu_picking().unwrap();
@@ -1093,9 +1103,11 @@ fn the_picked_ring_surrounds_the_3d_marker() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::Scatter {
-            scatter: red_points(5.0),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(5.0)),
+            line: None,
+            errors: None,
+        }),
     )];
     let plain = export(&mut r, &config, &series, 1.0);
     config.picked_data = Some(DataSelectionsConfig {
@@ -1152,9 +1164,11 @@ fn a_dashed_3d_line_dashes_along_the_projected_chord() {
             "lx",
             "ly",
             "lz",
-            DataRenderType::Line {
-                line: red_line(3.0, style),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(red_line(3.0, style)),
+                errors: None,
+            }),
         )];
         let img = export(r, &config, &series, scale);
         let displayed = config.scaled(scale);
@@ -1200,10 +1214,11 @@ fn the_screen_draws_the_marks() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::ScatterLine {
-            scatter: red_points(5.0),
-            line: red_line(3.0, LineStylePreset::Solid),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(5.0)),
+            line: Some(red_line(3.0, LineStylePreset::Solid)),
+            errors: None,
+        }),
     )];
     let img = paint_screen(&mut r, &config, &series);
     let p = config.project_3d(helix_point(n, 10)).unwrap();
@@ -1229,10 +1244,11 @@ fn a_million_row_trajectory_draws_and_picks() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::ScatterLine {
-            scatter: red_points(3.0),
-            line: red_line(2.0, LineStylePreset::Solid),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(3.0)),
+            line: Some(red_line(2.0, LineStylePreset::Solid)),
+            errors: None,
+        }),
     )];
     let img = export(&mut r, &config, &series, 1.0);
     save("million_rows", &img);
@@ -1283,9 +1299,11 @@ fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::Scatter {
-            scatter: red_points(5.0),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(5.0)),
+            line: None,
+            errors: None,
+        }),
     );
     flat.z_column = None;
     let err = r
@@ -1300,9 +1318,11 @@ fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
         "tx",
         "ty",
         "tz",
-        DataRenderType::Scatter {
-            scatter: red_points(5.0),
-        },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(red_points(5.0)),
+            line: None,
+            errors: None,
+        }),
     )];
     chart
         .auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)

@@ -46,7 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "gain",
             "deg",
             "pattern",
-            DataRenderType::Line { line },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
         )];
         {
             let config = chart.config_mut();
@@ -73,10 +77,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "rose",
             "rose_deg",
             "rose",
-            DataRenderType::ScatterLine {
-                scatter: gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0),
-                line: gallery::line(Color::from_rgb8(200, 60, 40), 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0)),
+                line: Some(gallery::line(Color::from_rgb8(200, 60, 40), 1.5)),
+                errors: None,
+            }),
         )];
         {
             let config = chart.config_mut();
@@ -109,10 +114,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "spiral",
             "spiral_deg",
             "spiral",
-            DataRenderType::ScatterLine {
-                scatter: gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0),
-                line: dashed,
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0)),
+                line: Some(dashed),
+                errors: None,
+            }),
         )];
         {
             let config = chart.config_mut();
@@ -147,7 +153,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "response",
             "phase",
             "response",
-            DataRenderType::Line { line },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
         )];
         {
             let config = chart.config_mut();

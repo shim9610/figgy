@@ -835,8 +835,8 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 0.0,
@@ -854,8 +854,10 @@ mod tests {
                     }]),
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
         }
     }
 

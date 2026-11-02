@@ -39,16 +39,18 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         x_column: x.to_string(),
         y_column: y.to_string(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 

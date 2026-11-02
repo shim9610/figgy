@@ -287,7 +287,11 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             x_column: "browser-direct-x".into(),
             y_column: "browser-direct-y".into(),
             z_column: None,
-            render_type: DataRenderType::Scatter { scatter: scatter() },
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+            }),
         },
         SeriesConfig {
             source_id: Some("browser-source".into()),
@@ -296,7 +300,11 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             x_column: "browser-pick-x".into(),
             y_column: "browser-pick-y".into(),
             z_column: None,
-            render_type: DataRenderType::Scatter { scatter: scatter() },
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter()),
+                line: None,
+                errors: None,
+            }),
         },
     ];
 

@@ -466,7 +466,11 @@ mod tests {
             Err("a parallel series is drawn on a parallel chart (Config.parallel)")
         );
         let mut scatter = series(&["a", "b", "c"]);
-        scatter.render_type = DataRenderType::Line { line: line() };
+        scatter.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line()),
+            errors: None,
+        });
         assert_eq!(
             config.validate_parallel_series(&[scatter]),
             Err("a parallel chart draws only parallel series")

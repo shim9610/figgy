@@ -124,16 +124,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             x_column: "time".into(),
             y_column: id.into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_color: color,
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }

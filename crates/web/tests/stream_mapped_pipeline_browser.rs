@@ -91,8 +91,8 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::ScatterErrorbarX {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::BLACK,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 7.0,
@@ -104,21 +104,25 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
                 }]),
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_x: ErrorRef::Symmetric { column: "e".into() },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: Color::BLACK,
-                error_bar_width: 2.0,
-                error_bar_cap_size: 5.0,
-                cap_width: 2.0,
-                error_bar_style_table: Some(vec![DataErrorBarPointStyleConfig::default()]),
-                error_bar_style_index_column: Some("error-index".into()),
-                error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
-                    index: 2,
-                    style: DataErrorBarPointStyleConfig::default(),
-                }]),
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: Some(ErrorRef::Symmetric { column: "e".into() }),
+                y: None,
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::BLACK,
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 5.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: Some(vec![DataErrorBarPointStyleConfig::default()]),
+                    error_bar_style_index_column: Some("error-index".into()),
+                    error_bar_style_overrides: Some(vec![DataErrorBarPointStyleOverride {
+                        index: 2,
+                        style: DataErrorBarPointStyleConfig::default(),
+                    }]),
+                },
+            }),
+        }),
     };
     let chart_id = renderer
         .register_chart(config.clone(), vec![series])

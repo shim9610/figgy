@@ -89,9 +89,10 @@ fn contour_series(levels: Vec<f64>, colors: Vec<Color>) -> SeriesConfig {
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&["p0", "p1", "p2"], GridLayout::Centers),
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -103,8 +104,9 @@ fn contour_series(levels: Vec<f64>, colors: Vec<Color>) -> SeriesConfig {
                 },
                 per_level_color: Some(colors),
                 labels: None,
-            },
-        },
+            }),
+            surface: None,
+        }),
     }
 }
 
@@ -116,14 +118,14 @@ fn band_series(levels: Vec<f64>) -> SeriesConfig {
         x_column: "bx".into(),
         y_column: "by".into(),
         z_column: None,
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&["bz"], GridLayout::Edges),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Bands,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -135,9 +137,9 @@ fn band_series(levels: Vec<f64>) -> SeriesConfig {
                 },
                 per_level_color: None,
                 labels: None,
-            },
+            }),
             surface: None,
-        },
+        }),
     }
 }
 

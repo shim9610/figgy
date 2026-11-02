@@ -84,16 +84,18 @@ fn setup(
                 },
             }
         } else {
-            DataRenderType::Line {
-                line: DataLineStyleConfig {
+            DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_color: Color::new(0.2, 0.6, 0.8, 0.45),
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            }
+                }),
+                errors: None,
+            })
         },
     }];
     let id = renderer
@@ -520,8 +522,8 @@ fn styled_scatter(id: &str, x: &str, y: &str) -> SeriesConfig {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::new(0.1, 0.1, 0.6, 0.8),
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 6.0,
@@ -539,8 +541,10 @@ fn styled_scatter(id: &str, x: &str, y: &str) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+        }),
     }
 }
 
@@ -553,56 +557,70 @@ fn wide_line(id: &str, y: &str) -> SeriesConfig {
         x_column: "x".into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_color: Color::new(0.2, 0.6, 0.2, 0.7),
                 line_width: 1.5,
                 line_style: LineStylePreset::Solid,
                 fill: None,
                 fill_color: None,
                 interpolation: crate::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 
 /// The seven-column series: a line, styled markers and styled asymmetric
 /// error bars on both axes, each role on a column of its own.
 fn seven_column_series(id: &str) -> SeriesConfig {
-    let DataRenderType::Scatter { scatter } = styled_scatter(id, "x", "y").render_type else {
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(scatter),
+        line: None,
+        errors: None,
+    }) = styled_scatter(id, "x", "y").render_type
+    else {
         unreachable!()
     };
-    let DataRenderType::Line { line } = wide_line(id, "y").render_type else {
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = wide_line(id, "y").render_type
+    else {
         unreachable!()
     };
     SeriesConfig {
-        render_type: DataRenderType::LineScatterErrorbarXY {
-            scatter,
-            line,
-            err_x: ErrorRef::Asymmetric {
-                lower: "ex_lo".into(),
-                upper: "ex_hi".into(),
-            },
-            err_y: ErrorRef::Asymmetric {
-                lower: "ey_lo".into(),
-                upper: "ey_hi".into(),
-            },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: Color::new(0.6, 0.1, 0.1, 0.8),
-                error_bar_width: 1.0,
-                error_bar_cap_size: 3.0,
-                cap_width: 1.0,
-                error_bar_style_table: Some(vec![
-                    Default::default(),
-                    crate::data_config::DataErrorBarPointStyleConfig {
-                        error_bar_width: Some(2.0),
-                        ..Default::default()
-                    },
-                ]),
-                error_bar_style_index_column: Some("es".into()),
-                error_bar_style_overrides: None,
-            },
-        },
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(line),
+            errors: Some(crate::data_config::ErrorBars {
+                x: Some(ErrorRef::Asymmetric {
+                    lower: "ex_lo".into(),
+                    upper: "ex_hi".into(),
+                }),
+                y: Some(ErrorRef::Asymmetric {
+                    lower: "ey_lo".into(),
+                    upper: "ey_hi".into(),
+                }),
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::new(0.6, 0.1, 0.1, 0.8),
+                    error_bar_width: 1.0,
+                    error_bar_cap_size: 3.0,
+                    cap_width: 1.0,
+                    error_bar_style_table: Some(vec![
+                        Default::default(),
+                        crate::data_config::DataErrorBarPointStyleConfig {
+                            error_bar_width: Some(2.0),
+                            ..Default::default()
+                        },
+                    ]),
+                    error_bar_style_index_column: Some("es".into()),
+                    error_bar_style_overrides: None,
+                },
+            }),
+        }),
         ..wide_line(id, "y")
     }
 }
@@ -774,13 +792,24 @@ fn pump_wide(
 /// holds only unstyled geometry.
 fn unstyled(mut series: SeriesConfig) -> SeriesConfig {
     match &mut series.render_type {
-        DataRenderType::Scatter { scatter } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }) => {
             scatter.point_style_index_column = None;
             scatter.point_style_table = None;
         }
-        DataRenderType::LineScatterErrorbarXY {
-            scatter, err_style, ..
-        } => {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(_),
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: Some(_),
+                    y: Some(_),
+                    style: err_style,
+                }),
+        }) => {
             scatter.point_style_index_column = None;
             scatter.point_style_table = None;
             err_style.error_bar_style_index_column = None;
@@ -854,7 +883,12 @@ fn completed_auto_streams_keep_their_pages_sources_and_styles_per_series() {
             }
         }
         let mut one = styled_scatter("one", "x", "x");
-        if let DataRenderType::Scatter { scatter } = &mut one.render_type {
+        if let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }) = &mut one.render_type
+        {
             scatter.point_style_index_column = Some("x".into());
         }
         assert_eq!(
@@ -1095,7 +1129,12 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
         many.iter()
             .cloned()
             .map(|mut s| {
-                if let DataRenderType::Line { line } = &mut s.render_type {
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line),
+                    errors: None,
+                }) = &mut s.render_type
+                {
                     line.line_color = Color::new(0.8, 0.1, 0.1, 0.9);
                 }
                 s

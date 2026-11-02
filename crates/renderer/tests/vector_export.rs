@@ -636,9 +636,11 @@ fn a_streamed_source_is_rejected() {
         "streamed",
         "st_x",
         "st_y",
-        renderer::data_config::DataRenderType::Line {
-            line: scenes::line_style(Color::BLACK, 1.0),
-        },
+        renderer::data_config::DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(scenes::line_style(Color::BLACK, 1.0)),
+            errors: None,
+        }),
     ));
     let chart = Chart::new(scene.config.clone());
     let rejected = |result: Result<(), FiggyError>| {

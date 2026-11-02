@@ -320,27 +320,27 @@ fn prepare_demo_declarations(
             // comes from. A wildcard here would hand a bar or field series the
             // cycle colour while its own configured colour sat unread.
             Some(index) => match &series[index].render_type {
-                DataRenderType::Line { line } => line.line_color,
-                DataRenderType::Scatter { .. }
-                | DataRenderType::ScatterLine { .. }
-                | DataRenderType::ScatterErrorbarX { .. }
-                | DataRenderType::ScatterErrorbarY { .. }
-                | DataRenderType::ScatterErrorbarXY { .. }
-                | DataRenderType::LineScatterErrorbarX { .. }
-                | DataRenderType::LineScatterErrorbarY { .. }
-                | DataRenderType::LineScatterErrorbarXY { .. } => cycle.color(index),
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line),
+                    ..
+                }) => line.line_color,
+                DataRenderType::Xy(_) => cycle.color(index),
                 DataRenderType::Histogram { bar } => bar.fill_color,
                 DataRenderType::CategoryBars { color, .. } => *color,
                 DataRenderType::BoxPlot { color, .. } => *color,
                 DataRenderType::RangeBars { color, .. } => *color,
                 DataRenderType::Radar { color, .. } => *color,
-                DataRenderType::Contour { contour, .. }
-                | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
+                DataRenderType::Field(renderer::data_config::FieldSeries {
+                    contour: Some(contour),
+                    ..
+                }) => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch
                 // this demo could reuse; an image's colours are its data.
-                DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {
-                    cycle.color(index)
-                }
+                DataRenderType::Field(renderer::data_config::FieldSeries {
+                    contour: None, ..
+                })
+                | DataRenderType::RgbImage { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,
                 DataRenderType::Streamlines { line, .. }
                 | DataRenderType::Parallel { line, .. } => line.line_color,
@@ -371,16 +371,18 @@ fn prepare_demo_declarations(
             x_column: x_column.to_string(),
             y_column: y_column.to_string(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: color,
                     line_width: 2.0,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         };
         if let Some(index) = existing {
             series[index] = item.clone();
@@ -492,7 +494,11 @@ mod tests {
             x_column: x.to_string(),
             y_column: y.to_string(),
             z_column: None,
-            render_type: DataRenderType::Line { line: line_style() },
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style()),
+                errors: None,
+            }),
         }
     }
 
@@ -588,9 +594,11 @@ mod tests {
 
         let mut series = vec![series_config(
             "s",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+            }),
         )];
         series[0].label = Some(config.chart_title.text.clone());
         let json = serde_json::to_string(&series).unwrap();
@@ -662,9 +670,11 @@ mod tests {
 
         let mut series = vec![series_config(
             "s",
-            DataRenderType::Scatter {
-                scatter: scatter_style(),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+            }),
         )];
         series[0].label = Some(title);
         let json = serde_json::to_string(&series).unwrap();
@@ -843,73 +853,99 @@ mod tests {
         };
         let cases = [
             (
-                DataRenderType::Line { line: line_style() },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line_style()),
+                    errors: None,
+                }),
                 GpuSeriesExtentMode::Line,
             ),
             (
-                DataRenderType::Scatter {
-                    scatter: scatter_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: None,
+                    errors: None,
+                }),
                 GpuSeriesExtentMode::Points,
             ),
             (
-                DataRenderType::ScatterLine {
-                    scatter: scatter_style(),
-                    line: line_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: Some(line_style()),
+                    errors: None,
+                }),
                 GpuSeriesExtentMode::Points,
             ),
             (
-                DataRenderType::ScatterErrorbarX {
-                    scatter: scatter_style(),
-                    err_x: x_error.clone(),
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: None,
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: Some(x_error.clone()),
+                        y: None,
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsX,
             ),
             (
-                DataRenderType::ScatterErrorbarY {
-                    scatter: scatter_style(),
-                    err_y: y_error.clone(),
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: None,
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: None,
+                        y: Some(y_error.clone()),
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsY,
             ),
             (
-                DataRenderType::ScatterErrorbarXY {
-                    scatter: scatter_style(),
-                    err_x: x_error.clone(),
-                    err_y: y_error.clone(),
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: None,
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: Some(x_error.clone()),
+                        y: Some(y_error.clone()),
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsXY,
             ),
             (
-                DataRenderType::LineScatterErrorbarX {
-                    scatter: scatter_style(),
-                    line: line_style(),
-                    err_x: x_error.clone(),
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: Some(line_style()),
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: Some(x_error.clone()),
+                        y: None,
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsX,
             ),
             (
-                DataRenderType::LineScatterErrorbarY {
-                    scatter: scatter_style(),
-                    line: line_style(),
-                    err_y: y_error.clone(),
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: Some(line_style()),
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: None,
+                        y: Some(y_error.clone()),
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsY,
             ),
             (
-                DataRenderType::LineScatterErrorbarXY {
-                    scatter: scatter_style(),
-                    line: line_style(),
-                    err_x: x_error,
-                    err_y: y_error,
-                    err_style: errorbar_style(),
-                },
+                DataRenderType::Xy(renderer::data_config::XySeries {
+                    scatter: Some(scatter_style()),
+                    line: Some(line_style()),
+                    errors: Some(renderer::data_config::ErrorBars {
+                        x: Some(x_error),
+                        y: Some(y_error),
+                        style: errorbar_style(),
+                    }),
+                }),
                 GpuSeriesExtentMode::PointsXY,
             ),
         ];
@@ -939,44 +975,48 @@ mod tests {
         };
         let field_cases = [
             (
-                DataRenderType::Heatmap {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
                     matrix: matrix(GridLayout::Edges),
-                    fill: fill(Shading::Flat),
+                    fill: Some(fill(Shading::Flat)),
+                    contour: None,
                     surface: None,
-                },
+                }),
                 GpuFieldExtentMode::EdgesCells,
             ),
             (
-                DataRenderType::Heatmap {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
                     matrix: matrix(GridLayout::Edges),
-                    fill: fill(Shading::Interpolated),
+                    fill: Some(fill(Shading::Interpolated)),
+                    contour: None,
                     surface: None,
-                },
+                }),
                 GpuFieldExtentMode::EdgesSamples,
             ),
             (
-                DataRenderType::Contour {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
                     matrix: matrix(GridLayout::Centers),
-                    contour: contour(),
-                },
+                    fill: None,
+                    contour: Some(contour()),
+                    surface: None,
+                }),
                 GpuFieldExtentMode::CentersSamples,
             ),
             (
-                DataRenderType::HeatmapContour {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
                     matrix: matrix(GridLayout::Centers),
-                    fill: fill(Shading::Flat),
-                    contour: contour(),
+                    fill: Some(fill(Shading::Flat)),
+                    contour: Some(contour()),
                     surface: None,
-                },
+                }),
                 GpuFieldExtentMode::CentersCells,
             ),
             (
-                DataRenderType::HeatmapContour {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
                     matrix: matrix(GridLayout::Centers),
-                    fill: fill(Shading::Interpolated),
-                    contour: contour(),
+                    fill: Some(fill(Shading::Interpolated)),
+                    contour: Some(contour()),
                     surface: None,
-                },
+                }),
                 GpuFieldExtentMode::CentersSamples,
             ),
         ];
@@ -1125,7 +1165,6 @@ mod web {
     use wasm_bindgen::prelude::*;
     use web_sys::HtmlCanvasElement;
 
-    use renderer::data_config::ErrorRef;
     use renderer::layout::{ChartArea, NudgeResult, Rect};
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
@@ -1490,14 +1529,17 @@ mod web {
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout,
             };
-            let heatmap = |grid_layout| DataRenderType::Heatmap {
-                matrix: matrix(&["z0", "z1"], grid_layout),
-                fill: FieldFillConfig {
-                    mode: FillMode::Continuous,
-                    shading: Shading::Flat,
-                    opacity: 1.0,
-                },
-                surface: None,
+            let heatmap = |grid_layout| {
+                DataRenderType::Field(renderer::data_config::FieldSeries {
+                    matrix: matrix(&["z0", "z1"], grid_layout),
+                    fill: Some(FieldFillConfig {
+                        mode: FillMode::Continuous,
+                        shading: Shading::Flat,
+                        opacity: 1.0,
+                    }),
+                    contour: None,
+                    surface: None,
+                })
             };
             let bar_style = || CategoryBarStyle::default();
             let box_plot = |violin| DataRenderType::BoxPlot {
@@ -1593,8 +1635,8 @@ mod web {
                         "scatter",
                         "sx",
                         "sy",
-                        DataRenderType::Scatter {
-                            scatter: scatter(
+                        DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: Some(scatter(
                                 Some(PointColorMap {
                                     column: "sc".into(),
                                 }),
@@ -1606,8 +1648,10 @@ mod web {
                                     max_px: 8.0,
                                     scale: SizeScale::Area,
                                 }),
-                            ),
-                        },
+                            )),
+                            line: None,
+                            errors: None,
+                        }),
                     ),
                     pick: point("scatter", 2),
                     keys: keys(&["x", "y", "color_value", "size_value"]),
@@ -2204,9 +2248,11 @@ mod web {
                         x_column: "lx".into(),
                         y_column: "ly".into(),
                         z_column: None,
-                        render_type: DataRenderType::Line {
-                            line: DataLineStyleConfig::default(),
-                        },
+                        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                            scatter: None,
+                            line: Some(DataLineStyleConfig::default()),
+                            errors: None,
+                        }),
                     })
                     .collect();
                 serde_json::to_string(&series).unwrap()

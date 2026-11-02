@@ -176,13 +176,14 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["p0".into(), "p1".into(), "p2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -204,8 +205,9 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
                     bg_color: Some(Color::new(1.0, 0.0, 1.0, 1.0)),
                     bg_padding_px: 2.0,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     }
 }
 

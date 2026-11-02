@@ -584,9 +584,7 @@ impl Config {
     pub fn validate_view3d_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
             let (surface, matrix, fill, contour) = match &item.render_type {
-                DataRenderType::Scatter { .. }
-                | DataRenderType::Line { .. }
-                | DataRenderType::ScatterLine { .. }
+                DataRenderType::Xy(crate::data_config::XySeries { errors: None, .. })
                     if self.view_3d.is_some() =>
                 {
                     if item.z_column.as_deref().is_none_or(str::is_empty) {
@@ -596,8 +594,11 @@ impl Config {
                         );
                     }
                     let line = match &item.render_type {
-                        DataRenderType::Line { line }
-                        | DataRenderType::ScatterLine { line, .. } => Some(line),
+                        DataRenderType::Xy(crate::data_config::XySeries {
+                            line: Some(line),
+                            errors: None,
+                            ..
+                        }) => Some(line),
                         _ => None,
                     };
                     if let Some(line) = line {
@@ -616,18 +617,24 @@ impl Config {
                 DataRenderType::Parallel { .. } if self.view_3d.is_some() => {
                     return Err("a parallel series draws flat: not on a 3D chart");
                 }
-                DataRenderType::Heatmap {
+                DataRenderType::Field(crate::data_config::FieldSeries {
                     matrix,
-                    fill,
+                    fill: Some(fill),
+                    contour: None,
                     surface,
-                } => (surface, matrix, Some(fill), None),
-                DataRenderType::HeatmapContour {
+                }) => (surface, matrix, Some(fill), None),
+                DataRenderType::Field(crate::data_config::FieldSeries {
                     matrix,
-                    fill,
-                    contour,
+                    fill: Some(fill),
+                    contour: Some(contour),
                     surface,
-                } => (surface, matrix, Some(fill), Some(contour)),
-                DataRenderType::Contour { matrix, contour } => (&None, matrix, None, Some(contour)),
+                }) => (surface, matrix, Some(fill), Some(contour)),
+                DataRenderType::Field(crate::data_config::FieldSeries {
+                    matrix,
+                    fill: None,
+                    contour: Some(contour),
+                    ..
+                }) => (&None, matrix, None, Some(contour)),
                 _ if self.view_3d.is_some() => {
                     return Err(
                         "a 3D chart draws only heatmaps, contours, heatmap contours and the \
@@ -735,15 +742,16 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Heatmap {
+            render_type: DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(3),
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: Shading::Interpolated,
                     opacity: 1.0,
-                },
+                }),
+                contour: None,
                 surface,
-            },
+            }),
         }
     }
 
@@ -887,8 +895,8 @@ mod tests {
         assert_eq!(config.validate_view3d_series(&[heatmap(None)]), Ok(()));
         let err = |s: SeriesConfig| config.validate_view3d_series(&[s]).unwrap_err();
         let scatter = SeriesConfig {
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 3.0,
@@ -897,8 +905,10 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
             ..heatmap(None)
         };
         assert!(err(scatter.clone()).contains("z_column"));
@@ -908,7 +918,11 @@ mod tests {
         scatter_3d.z_column = Some("z".into());
         assert_eq!(config.validate_view3d_series(&[scatter_3d.clone()]), Ok(()));
         let line = |line: crate::data_config::DataLineStyleConfig| SeriesConfig {
-            render_type: DataRenderType::Line { line },
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+            }),
             ..scatter_3d.clone()
         };
         let plain = crate::data_config::DataLineStyleConfig::default();
@@ -927,22 +941,30 @@ mod tests {
         };
         assert!(err(line(filled)).contains("area fill"));
         let bars = SeriesConfig {
-            render_type: DataRenderType::ScatterErrorbarY {
-                scatter: match &scatter.render_type {
-                    DataRenderType::Scatter { scatter } => scatter.clone(),
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(match &scatter.render_type {
+                    DataRenderType::Xy(crate::data_config::XySeries {
+                        scatter: Some(scatter),
+                        line: None,
+                        errors: None,
+                    }) => scatter.clone(),
                     _ => unreachable!(),
-                },
-                err_y: crate::data_config::ErrorRef::Symmetric { column: "e".into() },
-                err_style: crate::data_config::DataErrorBarStyleConfig {
-                    error_bar_color: Color::BLACK,
-                    error_bar_width: 1.0,
-                    error_bar_cap_size: 3.0,
-                    cap_width: 1.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                line: None,
+                errors: Some(crate::data_config::ErrorBars {
+                    x: None,
+                    y: Some(crate::data_config::ErrorRef::Symmetric { column: "e".into() }),
+                    style: crate::data_config::DataErrorBarStyleConfig {
+                        error_bar_color: Color::BLACK,
+                        error_bar_width: 1.0,
+                        error_bar_cap_size: 3.0,
+                        cap_width: 1.0,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
             ..scatter_3d.clone()
         };
         assert!(err(bars).contains("only heatmaps"));
@@ -958,7 +980,13 @@ mod tests {
             Ok(())
         );
         let mut banded = heatmap(None);
-        if let DataRenderType::Heatmap { fill, .. } = &mut banded.render_type {
+        if let DataRenderType::Field(crate::data_config::FieldSeries {
+            matrix: _,
+            fill: Some(fill),
+            contour: None,
+            surface: _,
+        }) = &mut banded.render_type
+        {
             fill.mode = FillMode::Bands;
         }
         assert!(err(banded).contains("continuous"));
@@ -996,10 +1024,12 @@ mod tests {
             }),
         };
         let labelled = SeriesConfig {
-            render_type: DataRenderType::Contour {
+            render_type: DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(3),
-                contour,
-            },
+                fill: None,
+                contour: Some(contour),
+                surface: None,
+            }),
             ..heatmap(None)
         };
         assert!(err(labelled).contains("no labels"));

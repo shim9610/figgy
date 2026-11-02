@@ -169,16 +169,14 @@ let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
-    render_type: DataRenderType::Line {
-        line: DataLineStyleConfig {
+    render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: Color::from_rgb8(20, 110, 230),
             line_width: 2.0,
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        },
-    },
+        }), errors: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
@@ -767,16 +765,14 @@ let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
     x_column: "x".into(), y_column: "y".into(), z_column: None,
-    render_type: DataRenderType::Line {
-        line: DataLineStyleConfig {
+    render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: Color::from_rgb8(20, 110, 230),
             line_width: 2.0,
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        },
-    },
+        }), errors: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();

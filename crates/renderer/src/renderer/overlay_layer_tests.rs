@@ -749,7 +749,12 @@ const OFFSET_STEP: f64 = 0.25;
 /// `id` drawing `y` over `x` as a 2 px line of `color`.
 fn colored(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
     let mut series = declaration(id, x, y);
-    if let DataRenderType::Line { line } = &mut series.render_type {
+    if let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = &mut series.render_type
+    {
         line.line_color = color;
     }
     series
@@ -1286,8 +1291,8 @@ fn polar_rejects_line_offsets() {
         c.line_offsets.as_mut().unwrap().step_x = f64::NAN
     }));
     assert!(rejected(&mut r, |_, s| {
-        s[1].render_type = DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        s[1].render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::BLACK,
                 point_shape: ScatterShape::Circle,
                 point_size: 4.0,
@@ -1296,11 +1301,18 @@ fn polar_rejects_line_offsets() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        }
+            }),
+            line: None,
+            errors: None,
+        })
     }));
     assert!(rejected(&mut r, |_, s| {
-        if let DataRenderType::Line { line } = &mut s[0].render_type {
+        if let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }) = &mut s[0].render_type
+        {
             line.fill = Some(crate::data_config::LineFill::ToSeries("m1".into()));
         }
     }));

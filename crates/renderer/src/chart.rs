@@ -1154,9 +1154,7 @@ impl Chart {
                 continue;
             }
             let matrix = match &cfg.render_type {
-                DataRenderType::Heatmap { matrix, .. }
-                | DataRenderType::Contour { matrix, .. }
-                | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                 _ => {
                     if let Some(id) = cfg.z_column.as_deref() {
                         z.union(&Self::slot_extent(pool, id)?);

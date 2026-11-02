@@ -936,18 +936,18 @@ fn grid_arrows_draw_over_a_heatmap_and_contour_on_the_same_grid() {
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(
                 &["z0", "z1", "z2"],
                 &MatrixOrientation::ColumnsAreX,
                 &GridLayout::Edges,
             ),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels: vec![5.0],
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -959,9 +959,9 @@ fn grid_arrows_draw_over_a_heatmap_and_contour_on_the_same_grid() {
                 },
                 per_level_color: None,
                 labels: None,
-            },
+            }),
             surface: None,
-        },
+        }),
     };
     let series = [
         heatmap,

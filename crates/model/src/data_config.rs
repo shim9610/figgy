@@ -63,13 +63,849 @@ pub enum ErrorRef {
     Asymmetric { lower: ColumnId, upper: ColumnId },
 }
 
-/// Series render type. Each variant maps to one independent draw path.
+/// Series render type: what a series draws from its columns.
 ///
-/// Combinations are kept explicit (instead of optional fields on a single
-/// struct) so the renderer can pick its primitives with one `match`.
+/// Points, a line and error bars over the `x_column` / `y_column` pair are
+/// one composed kind, [`DataRenderType::Xy`]; a filled field, its contours
+/// and its 3D surface over a matrix are another, [`DataRenderType::Field`]
+/// (#160). The other kinds each name their own fields. Serialized documents
+/// keep the earlier one-variant-per-combination form (`{"ScatterLine":
+/// {...}}`), so they parse and re-serialize byte for byte.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize),
+    serde(from = "WireRenderType")
+)]
 pub enum DataRenderType {
+    /// Markers, a line and error bars over the series' x and y columns, in
+    /// any combination [`XySeries::validate`] accepts.
+    Xy(XySeries),
+    /// A field over a matrix: its fill, its contours, or both, and its look
+    /// as a surface on a 3D chart ([`FieldSeries::validate`]).
+    Field(FieldSeries),
+
+    /// Bars from pre-binned data. Binning is the host's job: the renderer is
+    /// handed `(edges, counts)` and draws them.
+    ///
+    /// `bar.orientation` alone decides which column is which — `Vertical` reads
+    /// `x_column` as edges and `y_column` as counts, `Horizontal` the reverse.
+    /// The lengths are not consulted to guess the roles.
+    Histogram { bar: DataBarStyleConfig },
+    /// Three matrices drawn as a colour image (#139): `red`, `green` and
+    /// `blue` on one lattice (the series' coordinate columns; the grids
+    /// share their column count, orientation and layout), each channel's
+    /// value mapped linearly from `range` to 0..1 and clamped. No colourbar
+    /// is read: the colours are the data. `Flat` paints each cell its
+    /// colour, `Interpolated` blends each channel between sample points; a
+    /// cell with a non-finite value in any channel is unpainted. Drawn flat
+    /// only; see [`Config::validate_rgb_image_series`](crate::config::Config::validate_rgb_image_series).
+    RgbImage {
+        red: MatrixRef,
+        green: MatrixRef,
+        blue: MatrixRef,
+        /// The channel values that map to 0 and 1 (`[0, 1]` by default;
+        /// `[0, 255]` for bytes).
+        range: [f64; 2],
+        shading: Shading,
+        opacity: f32,
+    },
+    /// A vector field (quiver plot): one arrow per sample, with the direction
+    /// and length given by the host's `u` / `v` components.
+    ///
+    /// The renderer draws the vectors it is given. It does not derive them
+    /// from a scalar field and it does not reduce them to a scalar: colouring
+    /// by magnitude takes a host-supplied value column or grid through
+    /// [`VectorStyle::color_map`].
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject vector series.
+    Vector {
+        components: VectorComponents,
+        style: VectorStyle,
+    },
+    /// The bars of a categorical bar chart: one bar per category of the
+    /// chart's categorical axis ([`AxisOptions::categories`]), in this
+    /// series' colour and look.
+    ///
+    /// The bar direction ([`BarGroups::direction`] of `Config::bar_groups`)
+    /// decides the column roles, like a histogram's orientation:
+    /// `Vertical` reads `x_column` as the category positions (the host
+    /// uploads `0, 1, ..., n - 1`) and `y_column` as the values, one per
+    /// category with NaN for a missing bar; `Horizontal` reads `y_column`
+    /// as the positions and `x_column` as the values. Both columns hold
+    /// exactly one value per category.
+    ///
+    /// The `CategoryBars` series of one layer form its bar group: they
+    /// stand side by side, stack or stack to 100 % as
+    /// [`BarGroups::mode`] says, in series order. The renderer reads the
+    /// other series' values from the pool for a stack; nothing per bar is
+    /// kept on the CPU. A `PercentStacked` group whose value column has a
+    /// negative value (the pool's minimum statistic below 0) is refused when
+    /// it is drawn or picked, with `InvalidSeriesConfig` naming that series
+    /// and the mode; `Stacked` and `Grouped` draw negative values.
+    ///
+    /// Value labels: `labels.text` holds the drawn strings ([`format_labels`]
+    /// writes them; the renderer never formats a value), one per category,
+    /// drawn at each bar's end as `labels.placement` (and a bar override's
+    /// `labels`) says, moved by `labels.offsets`. An empty string draws
+    /// nothing. Labels never displace each other: thinning the category
+    /// axis is the only way to thin them.
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. On a polar chart (`Config.polar`) with a categorical angle
+    /// axis the bars fan around the centre as wedges, a rose (#133): the
+    /// group is vertical, the value is the radius.
+    CategoryBars {
+        /// The fill colour of the series' bars, opaque.
+        color: Color,
+        /// The look of the bars: material, corner radius, outline, texture,
+        /// gloss and the brightness of a picked bar.
+        style: CategoryBarStyle,
+        /// Where the value labels go, how values are written and the drawn
+        /// text of each bar.
+        labels: CategoryBarSeriesLabels,
+        /// What a value label says.
+        label_format: CategoryBarLabelFormat,
+        /// Sparse per-bar overrides, keyed by category id and this series'
+        /// id. At most one per bar; an override's `style` replaces the
+        /// series' style whole.
+        overrides: Option<Vec<CategoryBarOverride>>,
+    },
+    /// The boxes of a box plot: one box per category of the chart's
+    /// categorical axis ([`AxisOptions::categories`]), in this series'
+    /// colour and look, with its median, whiskers and caps, its mean and its
+    /// outliers.
+    ///
+    /// `x_column` is the category index column (the host uploads
+    /// `0, 1, ..., n - 1`) and `y_column` the id of the series' **record**
+    /// of box statistics (the renderer's `BOX_PLOT_RECORD` schema: `median`,
+    /// `q1`, `q3`, `whisker_low`, `whisker_high`, and optionally `mean`,
+    /// `sample_count`, `ci_low`, `ci_high`), one row per category; a missing
+    /// box is a row of NaN. The roles do not swap with the direction as a
+    /// category bar's do: a record is not a value column of either axis, so
+    /// the series names it in its value column slot and keeps its shape.
+    /// `outliers` names a ragged column holding one group of outliers per
+    /// category, when the series has any.
+    ///
+    /// The `BoxPlot` series of one layer form its box group: they stand side
+    /// by side in series order, laid out by `Config::bar_groups`'
+    /// direction, group width and gap ([`BarGroups`]); its mode must be
+    /// grouped. Statistics the record does not order (whisker ≤ q1 ≤
+    /// median ≤ q3 ≤ whisker, outliers outside the whiskers) are not
+    /// checked: the drawing clamps. Nothing per box is kept on the CPU.
+    ///
+    /// Value labels: `labels.text` holds the drawn strings, which the host
+    /// writes (the renderer has no per-box statistics to write them from;
+    /// [`format_box_plot_labels`] helps), one per category, drawn past the
+    /// top of each box (its high whisker, mean, notch and outliers) unless
+    /// `labels.placement` (or a box override's `labels`) is `None`, moved by
+    /// `labels.offsets`. An empty string draws nothing.
+    ///
+    /// The record and the outliers must be GPU resident; a streamed source
+    /// is rejected with an error. Polar charts (`Config.polar`) reject box
+    /// plots.
+    BoxPlot {
+        /// The fill colour of the series' boxes, opaque.
+        color: Color,
+        /// The look of the boxes and their parts.
+        style: BoxPlotStyle,
+        /// Which labels the boxes show, how a median is written and the
+        /// drawn text of each box.
+        labels: BoxPlotSeriesLabels,
+        /// The ragged column of the outliers, one group per category.
+        outliers: Option<ColumnId>,
+        /// Sparse per-box overrides, keyed by category id and this series'
+        /// id. At most one per box; an override's `style` replaces the
+        /// series' style whole.
+        overrides: Option<Vec<BoxPlotOverride>>,
+        /// The violin drawn behind each box: a host density curve per
+        /// category, mirrored or one per side ([`Violin`]). With a violin,
+        /// an empty `y_column` draws no box.
+        violin: Option<Violin>,
+        /// The raw points drawn beside each box, jittered across the slot
+        /// ([`BoxPoints`]): a raincloud with a one-sided violin.
+        points: Option<BoxPoints>,
+    },
+    /// Range bars: one bar per row, floating from a start value to an end
+    /// value at a position, with optional whiskers from a low to a high
+    /// value. One kind draws waterfall charts (the running total before and
+    /// after each step), candlesticks (open to close, low to high), state
+    /// timelines and Gantt charts (an interval per row), and floating
+    /// min–max bars.
+    ///
+    /// `x_column` holds the positions and `y_column` the end values,
+    /// whatever the direction (the box plot convention); `start` holds the
+    /// start values. Every role is a column of one value per row, supplied
+    /// by the host: the renderer draws the values it is given and computes
+    /// none (a running total, a duration or a difference is host data). A
+    /// row with a NaN position, start or end, or with equal start and end,
+    /// draws no bar.
+    ///
+    /// The `RangeBars` series of one layer form its range group: they stand
+    /// side by side in series order (planned beside actual), laid out by
+    /// `Config::bar_groups`' direction, group width and gap ([`BarGroups`]),
+    /// whose mode must be grouped. `Vertical` stands the bars up from a
+    /// position axis on `bottom_x` (a waterfall, candles); `Horizontal` lays
+    /// them along x from a position axis on `left_y` (a Gantt chart). The
+    /// position axis is categorical (one slot per category) or linear
+    /// numeric, where `slot_width` gives the slot in data units (a time
+    /// axis); the value axis is linear or logarithmic.
+    ///
+    /// `color_by` chooses each bar's fill: the series colour, the direction
+    /// of the given ends (`up` when end ≥ start, else `down`, and a host
+    /// flagged total), or a host state index into a style list.
+    /// `progress` shades the part of a bar past a host fraction; `connector`
+    /// joins each bar's end to the next bar.
+    ///
+    /// Value labels: `labels.text` holds the drawn strings, which the host
+    /// writes (the renderer never formats a value), one per row, drawn past
+    /// each bar's end (or inside it) as `labels.placement` says, moved by
+    /// `labels.offsets`. An empty string draws nothing.
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject range bars.
+    RangeBars {
+        /// The fill colour of the series' bars under [`RangeColor::Single`],
+        /// opaque; the legend swatch and the whisker colour by default.
+        color: Color,
+        /// The look of the bars: material, corner radius, outline, texture,
+        /// gloss and the brightness of a picked bar.
+        style: CategoryBarStyle,
+        /// The column of the start values.
+        start: ColumnId,
+        /// The whiskers from a low to a high value (a candle's wick).
+        whiskers: Option<RangeWhiskers>,
+        /// How each bar's fill is chosen.
+        color_by: RangeColor,
+        /// The finished share of each bar (a Gantt task's progress).
+        progress: Option<RangeProgress>,
+        /// The line from each bar's end to the next bar (a waterfall).
+        connector: Option<RangeConnector>,
+        /// The slot of one row along a numeric position axis, in data units;
+        /// `None` on a categorical axis, where the slot is one category.
+        slot_width: Option<f64>,
+        /// Where the value labels go and the drawn text of each bar. The
+        /// renderer never writes the text; `decimals` and `value_suffix` are
+        /// not read.
+        labels: CategoryBarSeriesLabels,
+    },
+    /// The polygon of a radar chart: one vertex per category of the polar
+    /// chart's categorical angle axis (`bottom_x` with
+    /// [`AxisOptions::categories`]), joined into a closed outline, filled
+    /// to the centre (the inner ring) and marked at every vertex, in this
+    /// series' colour and look.
+    ///
+    /// `x_column` is the category index column (the host uploads
+    /// `0, 1, ..., n - 1`) and `y_column` the value of each category on the
+    /// radius axis (`left_y`), NaN for a missing value. Both columns hold
+    /// exactly one value per category. The outline is the polar line path
+    /// with its last segment drawn back to the first vertex; a NaN vertex
+    /// breaks the outline and the fill on both of its sides, as a NaN
+    /// breaks a line. The fill is the polar area path to the inner ring at
+    /// [`RadarSeriesStyle::fill_color`], and the markers are the scatter
+    /// path. Nothing per vertex is kept on the CPU.
+    ///
+    /// Value labels: `labels.text` holds the drawn strings
+    /// ([`format_radar_labels`] writes them), one per category, drawn
+    /// outside each vertex along its spoke when `labels.placement` is
+    /// `Values` (or `Emphasized` and the series has a selected vertex or
+    /// label), moved by `labels.offsets`. An empty string draws nothing.
+    ///
+    /// Only a polar chart (`Config.polar`) with a categorical angle axis
+    /// draws radar series, in the precise draw style; the columns must be
+    /// GPU resident, and a streamed source is rejected with an error.
+    Radar {
+        /// The outline and marker colour; the fill uses it at the style's
+        /// fill opacity unless the style names a fill.
+        color: Color,
+        /// Outline width, fill and marker; unset fields take
+        /// their defaults.
+        style: RadarSeriesStyle,
+        /// Which vertices carry value labels, how a value is written and
+        /// the drawn text of each vertex.
+        labels: RadarSeriesLabels,
+    },
+    /// A ternary series on a ternary chart (`Config.ternary`): markers and/or
+    /// a line through samples of three components, `x_column`, `y_column`
+    /// and `c_column`, each an ordinary column, unnormalized. A sample is
+    /// placed at `(x·L + y·T + c·R) / (x + y + c)`, the triangle's corners
+    /// weighted by its components (see [`crate::ternary`]); the renderer
+    /// normalizes only to place it and reports the original components. A
+    /// sample with a negative or non-finite component, or a sum ≤ 0, is not
+    /// drawn and breaks the line. The markers and the line take every
+    /// option of a scatter and a line series (style tables, colour and size
+    /// maps, dashes) except step modes and fills. With `region`, the series'
+    /// samples are the vertices of closed polygons (a NaN row separates
+    /// them) filled with [`crate::ternary::TernaryRegionStyle`] under every
+    /// series' markers and lines. Streamed sources are rejected.
+    Ternary {
+        /// The third component's column, read on `right_y`.
+        c_column: ColumnId,
+        scatter: Option<DataScatterStyleConfig>,
+        line: Option<DataLineStyleConfig>,
+        /// The fill of the polygons the samples outline; `None` (omitted
+        /// from JSON) fills nothing.
+        region: Option<crate::ternary::TernaryRegionStyle>,
+    },
+    /// Streamlines of a flow, electric or magnetic field: polylines the
+    /// host integrated from its field, drawn by the line path, with
+    /// arrowheads along each drawn line and an optional colour column.
+    ///
+    /// The renderer draws the paths it is given; integrating the field
+    /// into paths is the host's job. `x_column` / `y_column` hold every
+    /// streamline of the series one after another, separated by a row of
+    /// NaN, which breaks a line as it does in any line series. The line
+    /// is drawn with `line` (dash presets included), linearly
+    /// interpolated and without a fill.
+    ///
+    /// With `arrows`, an arrowhead (the vector glyph's head) sits every
+    /// `spacing_px` along the drawn path, measured over the whole series
+    /// as one arc in pixels, pointing along the drawn path's tangent.
+    /// Arrowheads are an appearance of the drawn line, like its dash
+    /// phase: their positions follow the view, so a pan or a zoom moves
+    /// them along the path and they keep their pixel spacing at every
+    /// export scale. A NaN gap holds no arrowhead.
+    ///
+    /// With `color_map`, the line and its arrowheads take the colour of a
+    /// host column (a speed, say), index-aligned with the coordinates,
+    /// through `Config.colorbar`; the colourbar is the only authority on
+    /// the range, scale, ramp and `nan_color`, as for a colour-mapped
+    /// scatter, and a series with a colour map and no colourbar is
+    /// rejected. The colour varies along each segment between its two
+    /// samples' values. The renderer never computes a magnitude.
+    ///
+    /// Drawn in the precise draw style only. The columns must be GPU
+    /// resident; a streamed source is rejected with an error. Polar charts
+    /// (`Config.polar`) reject streamlines.
+    Streamlines {
+        /// The line the streamlines are drawn with. `interpolation` must
+        /// be `Linear` and `fill` `None`.
+        line: DataLineStyleConfig,
+        /// Arrowheads along the drawn lines, or none.
+        arrows: Option<StreamlineArrows>,
+        /// Colour the lines and arrowheads by a host column through
+        /// `Config.colorbar`.
+        color_map: Option<PointColorMap>,
+    },
+    /// Parallel coordinates (#141): one polyline per row across the axes of
+    /// a parallel chart (`Config.parallel`), row `r` through
+    /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
+    /// normalization only to place the sample (rule 1). `columns` names one
+    /// column per axis, in the axes' order; `x_column` and `y_column` are
+    /// its first two. A row with a non-finite value breaks at that axis.
+    /// With `color_column`, each row's polyline takes the colour of that
+    /// column's value through `Config.colorbar`; without, the line's
+    /// colour. Drawn in the precise draw style only, solid and linear
+    /// without a fill; the columns must be GPU resident. See
+    /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
+    Parallel {
+        /// One column id per axis of the parallel chart, in order (a `Vec`
+        /// of configuration: SSOT, rule 3).
+        columns: Vec<ColumnId>,
+        /// The rows' line: its colour (without `color_column`) and width.
+        line: DataLineStyleConfig,
+        /// Colour each row by a host column through `Config.colorbar`.
+        color_column: Option<ColumnId>,
+    },
+}
+
+/// Markers, a line and error bars over a series' x and y columns: the
+/// composed form of what were nine render types (#160).
+#[derive(Debug, Clone, PartialEq)]
+pub struct XySeries {
+    /// The markers, or none.
+    pub scatter: Option<DataScatterStyleConfig>,
+    /// The line through the points, or none.
+    pub line: Option<DataLineStyleConfig>,
+    /// The error bars, or none. They need markers.
+    pub errors: Option<ErrorBars>,
+}
+
+/// Error bars along x, y or both, with one style.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ErrorBars {
+    /// The x error, or none.
+    pub x: Option<ErrorRef>,
+    /// The y error, or none.
+    pub y: Option<ErrorRef>,
+    pub style: DataErrorBarStyleConfig,
+}
+
+/// A field over a matrix: the composed form of what were the heatmap,
+/// contour and heatmap-contour render types (#160).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldSeries {
+    /// The columns that make up z; `x_column` / `y_column` are the grid
+    /// coordinates.
+    pub matrix: MatrixRef,
+    /// The fill, or none.
+    pub fill: Option<FieldFillConfig>,
+    /// The contour lines, or none. Drawn over the fill, or on the box floor
+    /// of a 3D chart.
+    pub contour: Option<ContourConfig>,
+    /// The look of the filled field drawn as a surface on a 3D chart
+    /// (`Config.view_3d`); kept and unused on a flat chart. `None` draws the
+    /// surface with [`SurfaceStyle::default`].
+    pub surface: Option<SurfaceStyle>,
+}
+
+impl XySeries {
+    /// The combinations a series can draw: markers or a line (or both), and
+    /// error bars only with markers, along x, y or both.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.scatter.is_none() && self.line.is_none() {
+            return Err("an xy series draws markers, a line or both");
+        }
+        if let Some(errors) = &self.errors {
+            if self.scatter.is_none() {
+                return Err("error bars are drawn with markers");
+            }
+            if errors.x.is_none() && errors.y.is_none() {
+                return Err("error bars run along x, y or both");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FieldSeries {
+    /// The combinations a field can draw: a fill or contours (or both), and
+    /// a surface look only with a fill.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.fill.is_none() && self.contour.is_none() {
+            return Err("a field draws a fill, contour lines or both");
+        }
+        if self.fill.is_none() && self.surface.is_some() {
+            return Err("a surface look needs the field's fill");
+        }
+        Ok(())
+    }
+}
+
+impl From<WireRenderType> for DataRenderType {
+    fn from(wire: WireRenderType) -> Self {
+        let xy = |scatter, line, errors| {
+            DataRenderType::Xy(XySeries {
+                scatter,
+                line,
+                errors,
+            })
+        };
+        let errors = |x, y, style| Some(ErrorBars { x, y, style });
+        match wire {
+            WireRenderType::Scatter { scatter } => xy(Some(scatter), None, None),
+            WireRenderType::Line { line } => xy(None, Some(line), None),
+            WireRenderType::ScatterLine { scatter, line } => xy(Some(scatter), Some(line), None),
+            WireRenderType::ScatterErrorbarX {
+                scatter,
+                err_x,
+                err_style,
+            } => xy(Some(scatter), None, errors(Some(err_x), None, err_style)),
+            WireRenderType::ScatterErrorbarY {
+                scatter,
+                err_y,
+                err_style,
+            } => xy(Some(scatter), None, errors(None, Some(err_y), err_style)),
+            WireRenderType::ScatterErrorbarXY {
+                scatter,
+                err_x,
+                err_y,
+                err_style,
+            } => xy(
+                Some(scatter),
+                None,
+                errors(Some(err_x), Some(err_y), err_style),
+            ),
+            WireRenderType::LineScatterErrorbarX {
+                scatter,
+                line,
+                err_x,
+                err_style,
+            } => xy(
+                Some(scatter),
+                Some(line),
+                errors(Some(err_x), None, err_style),
+            ),
+            WireRenderType::LineScatterErrorbarY {
+                scatter,
+                line,
+                err_y,
+                err_style,
+            } => xy(
+                Some(scatter),
+                Some(line),
+                errors(None, Some(err_y), err_style),
+            ),
+            WireRenderType::LineScatterErrorbarXY {
+                scatter,
+                line,
+                err_x,
+                err_y,
+                err_style,
+            } => xy(
+                Some(scatter),
+                Some(line),
+                errors(Some(err_x), Some(err_y), err_style),
+            ),
+            WireRenderType::Heatmap {
+                matrix,
+                fill,
+                surface,
+            } => DataRenderType::Field(FieldSeries {
+                matrix,
+                fill: Some(fill),
+                contour: None,
+                surface,
+            }),
+            WireRenderType::Contour { matrix, contour } => DataRenderType::Field(FieldSeries {
+                matrix,
+                fill: None,
+                contour: Some(contour),
+                surface: None,
+            }),
+            WireRenderType::HeatmapContour {
+                matrix,
+                fill,
+                contour,
+                surface,
+            } => DataRenderType::Field(FieldSeries {
+                matrix,
+                fill: Some(fill),
+                contour: Some(contour),
+                surface,
+            }),
+            WireRenderType::Histogram { bar } => DataRenderType::Histogram { bar },
+            WireRenderType::RgbImage {
+                red,
+                green,
+                blue,
+                range,
+                shading,
+                opacity,
+            } => DataRenderType::RgbImage {
+                red,
+                green,
+                blue,
+                range,
+                shading,
+                opacity,
+            },
+            WireRenderType::Vector { components, style } => {
+                DataRenderType::Vector { components, style }
+            }
+            WireRenderType::CategoryBars {
+                color,
+                style,
+                labels,
+                label_format,
+                overrides,
+            } => DataRenderType::CategoryBars {
+                color,
+                style,
+                labels,
+                label_format,
+                overrides,
+            },
+            WireRenderType::BoxPlot {
+                color,
+                style,
+                labels,
+                outliers,
+                overrides,
+                violin,
+                points,
+            } => DataRenderType::BoxPlot {
+                color,
+                style,
+                labels,
+                outliers,
+                overrides,
+                violin,
+                points,
+            },
+            WireRenderType::RangeBars {
+                color,
+                style,
+                start,
+                whiskers,
+                color_by,
+                progress,
+                connector,
+                slot_width,
+                labels,
+            } => DataRenderType::RangeBars {
+                color,
+                style,
+                start,
+                whiskers,
+                color_by,
+                progress,
+                connector,
+                slot_width,
+                labels,
+            },
+            WireRenderType::Radar {
+                color,
+                style,
+                labels,
+            } => DataRenderType::Radar {
+                color,
+                style,
+                labels,
+            },
+            WireRenderType::Ternary {
+                c_column,
+                scatter,
+                line,
+                region,
+            } => DataRenderType::Ternary {
+                c_column,
+                scatter,
+                line,
+                region,
+            },
+            WireRenderType::Streamlines {
+                line,
+                arrows,
+                color_map,
+            } => DataRenderType::Streamlines {
+                line,
+                arrows,
+                color_map,
+            },
+            WireRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            } => DataRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            },
+        }
+    }
+}
+
+impl TryFrom<DataRenderType> for WireRenderType {
+    type Error = &'static str;
+
+    /// The written form of a render type; a combination
+    /// [`XySeries::validate`] or [`FieldSeries::validate`] refuses has none.
+    fn try_from(render: DataRenderType) -> Result<Self, &'static str> {
+        Ok(match render {
+            DataRenderType::Xy(xy) => {
+                xy.validate()?;
+                match (xy.scatter, xy.line, xy.errors) {
+                    (Some(scatter), None, None) => WireRenderType::Scatter { scatter },
+                    (None, Some(line), None) => WireRenderType::Line { line },
+                    (Some(scatter), Some(line), None) => {
+                        WireRenderType::ScatterLine { scatter, line }
+                    }
+                    (
+                        Some(scatter),
+                        line,
+                        Some(ErrorBars {
+                            x,
+                            y,
+                            style: err_style,
+                        }),
+                    ) => match (line, x, y) {
+                        (None, Some(err_x), None) => WireRenderType::ScatterErrorbarX {
+                            scatter,
+                            err_x,
+                            err_style,
+                        },
+                        (None, None, Some(err_y)) => WireRenderType::ScatterErrorbarY {
+                            scatter,
+                            err_y,
+                            err_style,
+                        },
+                        (None, Some(err_x), Some(err_y)) => WireRenderType::ScatterErrorbarXY {
+                            scatter,
+                            err_x,
+                            err_y,
+                            err_style,
+                        },
+                        (Some(line), Some(err_x), None) => WireRenderType::LineScatterErrorbarX {
+                            scatter,
+                            line,
+                            err_x,
+                            err_style,
+                        },
+                        (Some(line), None, Some(err_y)) => WireRenderType::LineScatterErrorbarY {
+                            scatter,
+                            line,
+                            err_y,
+                            err_style,
+                        },
+                        (Some(line), Some(err_x), Some(err_y)) => {
+                            WireRenderType::LineScatterErrorbarXY {
+                                scatter,
+                                line,
+                                err_x,
+                                err_y,
+                                err_style,
+                            }
+                        }
+                        (_, None, None) => return Err("error bars run along x, y or both"),
+                    },
+                    (None, _, _) => return Err("an xy series draws markers or a line"),
+                }
+            }
+            DataRenderType::Field(field) => {
+                field.validate()?;
+                let FieldSeries {
+                    matrix,
+                    fill,
+                    contour,
+                    surface,
+                } = field;
+                match (fill, contour) {
+                    (Some(fill), None) => WireRenderType::Heatmap {
+                        matrix,
+                        fill,
+                        surface,
+                    },
+                    (None, Some(contour)) => WireRenderType::Contour { matrix, contour },
+                    (Some(fill), Some(contour)) => WireRenderType::HeatmapContour {
+                        matrix,
+                        fill,
+                        contour,
+                        surface,
+                    },
+                    (None, None) => return Err("a field draws a fill, contour lines or both"),
+                }
+            }
+            DataRenderType::Histogram { bar } => WireRenderType::Histogram { bar },
+            DataRenderType::RgbImage {
+                red,
+                green,
+                blue,
+                range,
+                shading,
+                opacity,
+            } => WireRenderType::RgbImage {
+                red,
+                green,
+                blue,
+                range,
+                shading,
+                opacity,
+            },
+            DataRenderType::Vector { components, style } => {
+                WireRenderType::Vector { components, style }
+            }
+            DataRenderType::CategoryBars {
+                color,
+                style,
+                labels,
+                label_format,
+                overrides,
+            } => WireRenderType::CategoryBars {
+                color,
+                style,
+                labels,
+                label_format,
+                overrides,
+            },
+            DataRenderType::BoxPlot {
+                color,
+                style,
+                labels,
+                outliers,
+                overrides,
+                violin,
+                points,
+            } => WireRenderType::BoxPlot {
+                color,
+                style,
+                labels,
+                outliers,
+                overrides,
+                violin,
+                points,
+            },
+            DataRenderType::RangeBars {
+                color,
+                style,
+                start,
+                whiskers,
+                color_by,
+                progress,
+                connector,
+                slot_width,
+                labels,
+            } => WireRenderType::RangeBars {
+                color,
+                style,
+                start,
+                whiskers,
+                color_by,
+                progress,
+                connector,
+                slot_width,
+                labels,
+            },
+            DataRenderType::Radar {
+                color,
+                style,
+                labels,
+            } => WireRenderType::Radar {
+                color,
+                style,
+                labels,
+            },
+            DataRenderType::Ternary {
+                c_column,
+                scatter,
+                line,
+                region,
+            } => WireRenderType::Ternary {
+                c_column,
+                scatter,
+                line,
+                region,
+            },
+            DataRenderType::Streamlines {
+                line,
+                arrows,
+                color_map,
+            } => WireRenderType::Streamlines {
+                line,
+                arrows,
+                color_map,
+            },
+            DataRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            } => WireRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            },
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for DataRenderType {
+    /// Written in the one-variant-per-combination form documents have
+    /// always used; a combination with no written form fails.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WireRenderType::try_from(self.clone())
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+/// The serialized form of [`DataRenderType`]: one variant per combination,
+/// as documents have always been written (#160). Never used in memory.
+#[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(not(feature = "serde"), allow(dead_code))]
+pub(crate) enum WireRenderType {
     Scatter {
         scatter: DataScatterStyleConfig,
     },
@@ -2221,20 +3057,10 @@ impl DataRenderType {
     /// kinds that draw a line.
     pub fn takes_line_offset(&self) -> bool {
         match self {
-            DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. } => true,
-            DataRenderType::Scatter { .. }
-            | DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::Histogram { .. }
-            | DataRenderType::Heatmap { .. }
+            DataRenderType::Xy(xy) => xy.line.is_some(),
+            DataRenderType::Histogram { .. }
+            | DataRenderType::Field(_)
             | DataRenderType::RgbImage { .. }
-            | DataRenderType::Contour { .. }
-            | DataRenderType::HeatmapContour { .. }
             | DataRenderType::Vector { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
@@ -2253,11 +3079,9 @@ impl DataRenderType {
     /// other kind.
     fn line_fill(&self) -> Option<&LineFill> {
         match self {
-            DataRenderType::Line { line }
-            | DataRenderType::ScatterLine { line, .. }
-            | DataRenderType::LineScatterErrorbarX { line, .. }
-            | DataRenderType::LineScatterErrorbarY { line, .. }
-            | DataRenderType::LineScatterErrorbarXY { line, .. } => line.fill.as_ref(),
+            DataRenderType::Xy(crate::data_config::XySeries {
+                line: Some(line), ..
+            }) => line.fill.as_ref(),
             _ => None,
         }
     }
@@ -3171,8 +3995,11 @@ impl DataRenderType {
     /// `None` for every other kind and for a heatmap without one.
     pub fn surface_style(&self) -> Option<&SurfaceStyle> {
         match self {
-            DataRenderType::Heatmap { surface, .. }
-            | DataRenderType::HeatmapContour { surface, .. } => surface.as_ref(),
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                fill: Some(_),
+                surface,
+                ..
+            }) => surface.as_ref(),
             _ => None,
         }
     }
@@ -4175,11 +5002,19 @@ impl crate::config::Config {
     pub fn validate_hexagonal_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
             let (matrix, shading) = match &item.render_type {
-                DataRenderType::Heatmap { matrix, fill, .. } => (matrix, Some(&fill.shading)),
+                DataRenderType::Field(crate::data_config::FieldSeries {
+                    matrix,
+                    fill: Some(fill),
+                    contour: None,
+                    surface: _,
+                }) => (matrix, Some(&fill.shading)),
                 // An image's three grids share one layout (its own rule).
                 DataRenderType::RgbImage { red, shading, .. } => (red, Some(shading)),
-                DataRenderType::Contour { matrix, .. }
-                | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                DataRenderType::Field(crate::data_config::FieldSeries {
+                    matrix,
+                    contour: Some(_),
+                    ..
+                }) => (matrix, None),
                 DataRenderType::Vector {
                     components: VectorComponents::Grid { u, v },
                     style,
@@ -4382,15 +5217,7 @@ impl DataRenderType {
     /// anchors, which pick and highlight like markers).
     fn steps_points(&self) -> bool {
         match self {
-            DataRenderType::Scatter { .. }
-            | DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. }
-            | DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. }
+            DataRenderType::Xy(_)
             | DataRenderType::Radar { .. }
             // Its samples, as a scatter or a line series'.
             | DataRenderType::Ternary { .. }
@@ -4404,10 +5231,8 @@ impl DataRenderType {
             // Its raw points, when it has them.
             DataRenderType::BoxPlot { points, .. } => points.is_some(),
             DataRenderType::Histogram { .. }
-            | DataRenderType::Heatmap { .. }
+            | DataRenderType::Field(_)
             | DataRenderType::RgbImage { .. }
-            | DataRenderType::Contour { .. }
-            | DataRenderType::HeatmapContour { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::RangeBars { .. } => false,
         }
@@ -4632,9 +5457,7 @@ impl crate::config::Config {
                 // A field steps over its matrix; a grid vector over its `u`
                 // grid, which every other grid of the series matches.
                 let matrix = match &selected.render_type {
-                    DataRenderType::Heatmap { matrix, .. }
-                    | DataRenderType::Contour { matrix, .. }
-                    | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                    DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                     // An image steps over its red grid, which the others match.
                     DataRenderType::RgbImage { red, .. } => red,
                     DataRenderType::Vector {
@@ -4906,7 +5729,12 @@ mod serde_tests {
         let cfg: SeriesConfig =
             serde_json::from_value(base_series_json()).expect("old series shape parses");
         assert_eq!(cfg.source_id, None);
-        let DataRenderType::Scatter { scatter } = &cfg.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }) = &cfg.render_type
+        else {
             panic!("expected scatter");
         };
         assert_eq!(scatter.point_style_table, None);
@@ -4948,7 +5776,12 @@ mod serde_tests {
             "max_px": 12.0
         });
         let cfg: SeriesConfig = serde_json::from_value(json).expect("maps parse");
-        let DataRenderType::Scatter { scatter } = &cfg.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            errors: None,
+        }) = &cfg.render_type
+        else {
             panic!("expected scatter");
         };
         assert_eq!(
@@ -5295,21 +6128,24 @@ mod serde_tests {
                     }]),
                 },
             },
-            DataRenderType::Heatmap {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix.clone(),
-                fill: fill.clone(),
+                fill: Some(fill.clone()),
+                contour: None,
                 surface: None,
-            },
-            DataRenderType::Contour {
+            }),
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix.clone(),
-                contour: contour.clone(),
-            },
-            DataRenderType::HeatmapContour {
+                fill: None,
+                contour: Some(contour.clone()),
+                surface: None,
+            }),
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix,
-                fill,
-                contour,
+                fill: Some(fill),
+                contour: Some(contour),
                 surface: None,
-            },
+            }),
         ];
         for case in cases {
             let json = serde_json::to_value(&case).expect("serialize render type");
@@ -6056,9 +6892,11 @@ mod category_bar_tests {
             assert_eq!(series, before);
         }
         let mut line = bars("l");
-        line.render_type = DataRenderType::Line {
-            line: DataLineStyleConfig::default(),
-        };
+        line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig::default()),
+            errors: None,
+        });
         assert_eq!(line.drag_value_label(0, 3, 1.0, 1.0), reject);
         assert_eq!(line.value_label_offsets(), None);
 
@@ -6161,9 +6999,11 @@ mod category_bar_tests {
         assert_eq!(labels(&mut series[1]).text, ["C0: 3.3", "C1: 0.3", "-0.7"]);
         // Every series that is not a category bar series is left alone.
         let mut line = bars("a");
-        line.render_type = DataRenderType::Line {
-            line: DataLineStyleConfig::default(),
-        };
+        line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig::default()),
+            errors: None,
+        });
         let before = line.clone();
         format_labels(std::slice::from_mut(&mut line), &cats, read);
         assert_eq!(line, before);
@@ -6360,9 +7200,11 @@ mod box_plot_tests {
         let config = chart(3);
         assert_eq!(config.validate_box_plots(&[boxes("a"), boxes("b")]), Ok(()));
         let mut plain = boxes("a");
-        plain.render_type = DataRenderType::Line {
-            line: DataLineStyleConfig::default(),
-        };
+        plain.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig::default()),
+            errors: None,
+        });
         // No box plot series: nothing to hold, not even a categorical axis.
         assert_eq!(
             crate::default::default_config().validate_box_plots(&[plain]),
@@ -7237,9 +8079,11 @@ mod step_selection_tests {
     }
 
     fn line() -> DataRenderType {
-        DataRenderType::Line {
-            line: DataLineStyleConfig::default(),
-        }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig::default()),
+            errors: None,
+        })
     }
 
     fn histogram(orientation: BarOrientation) -> DataRenderType {
@@ -7496,19 +8340,20 @@ mod step_selection_tests {
 
     #[test]
     fn a_matrix_cell_steps_over_its_grid_and_a_vector_grid_over_u() {
-        let field = DataRenderType::Heatmap {
+        let field = DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(
                 &["z0", "z1", "z2"],
                 MatrixOrientation::ColumnsAreX,
                 GridLayout::Centers,
             ),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        };
+        });
         let grid = vector(VectorComponents::Grid {
             u: matrix(
                 &["u0", "u1"],
@@ -7710,7 +8555,12 @@ mod step_selection_tests {
         );
         // A fill between a member and another series spans two panels.
         let mut filled = series.clone();
-        if let DataRenderType::Line { line } = &mut filled[1].render_type {
+        if let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }) = &mut filled[1].render_type
+        {
             line.fill = Some(LineFill::ToSeries("a".into()));
         }
         let mut config = crate::default::default_config();
@@ -7799,9 +8649,11 @@ mod streamline_tests {
         assert!(validate_streamline_series(&unnamed).is_err());
         // Other kinds pass untouched.
         let mut line = full;
-        line.render_type = DataRenderType::Line {
-            line: DataLineStyleConfig::default(),
-        };
+        line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig::default()),
+            errors: None,
+        });
         assert_eq!(validate_streamline_series(&line), Ok(()));
     }
 
@@ -8290,11 +9142,12 @@ mod hexagonal_tests {
     }
 
     fn heatmap(layout: GridLayout, shading: Shading) -> SeriesConfig {
-        series(DataRenderType::Heatmap {
+        series(DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(layout),
-            fill: fill(shading),
+            fill: Some(fill(shading)),
+            contour: None,
             surface: None,
-        })
+        }))
     }
 
     fn contour() -> ContourConfig {
@@ -8330,19 +9183,25 @@ mod hexagonal_tests {
             Err("a hexagonal grid is shaded flat")
         );
         assert_eq!(
-            ok(&[series(DataRenderType::Contour {
-                matrix: matrix(GridLayout::Hexagonal),
-                contour: contour(),
-            })]),
+            ok(&[series(DataRenderType::Field(
+                crate::data_config::FieldSeries {
+                    matrix: matrix(GridLayout::Hexagonal),
+                    fill: None,
+                    contour: Some(contour()),
+                    surface: None
+                }
+            ))]),
             Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
         );
         assert_eq!(
-            ok(&[series(DataRenderType::HeatmapContour {
-                matrix: matrix(GridLayout::Hexagonal),
-                fill: fill(Shading::Flat),
-                contour: contour(),
-                surface: None,
-            })]),
+            ok(&[series(DataRenderType::Field(
+                crate::data_config::FieldSeries {
+                    matrix: matrix(GridLayout::Hexagonal),
+                    fill: Some(fill(Shading::Flat)),
+                    contour: Some(contour()),
+                    surface: None
+                }
+            ))]),
             Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
         );
         assert_eq!(
@@ -8485,5 +9344,150 @@ mod image_tests {
             Err("an image draws flat: not on a 3D chart"),
             "the 3D rules reject it too, whichever runs first"
         );
+    }
+}
+
+impl SeriesConfig {
+    /// Every plain column this series reads, once per occurrence (#160):
+    /// its x and y columns (not a box plot's record), its markers' style,
+    /// colour and size columns, its error bars' style and error columns, a
+    /// ternary series' third component, a parallel series' further axes and
+    /// colour, a streamline colour column, a box plot's densities and raw
+    /// points, a range bar's further columns, a field's and an image's grid
+    /// columns, and a vector field's components and colour. Records and
+    /// ragged columns are visited by [`Self::visit_composite_columns`].
+    pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
+        visit(&self.x_column);
+        if self.render_type.box_plot().is_none() {
+            visit(&self.y_column);
+        }
+        let scatter = match &self.render_type {
+            DataRenderType::Xy(xy) => xy.scatter.as_ref(),
+            DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
+            // A radar series' markers read no column of their own.
+            _ => None,
+        };
+        if let Some(scatter) = scatter {
+            if let Some(column) = scatter.point_style_index_column.as_deref() {
+                visit(column);
+            }
+            if let Some(map) = scatter.point_color_map.as_ref() {
+                visit(&map.column);
+            }
+            if let Some(map) = scatter.point_size_map.as_ref() {
+                visit(&map.column);
+            }
+        }
+        if let DataRenderType::Xy(XySeries {
+            errors: Some(errors),
+            ..
+        }) = &self.render_type
+        {
+            if let Some(column) = errors.style.error_bar_style_index_column.as_deref() {
+                visit(column);
+            }
+            for error in [errors.x.as_ref(), errors.y.as_ref()].into_iter().flatten() {
+                match error {
+                    ErrorRef::Symmetric { column } => visit(column),
+                    ErrorRef::Asymmetric { lower, upper } => {
+                        visit(lower);
+                        visit(upper);
+                    }
+                }
+            }
+        }
+        match &self.render_type {
+            // Nothing beyond what is visited above.
+            DataRenderType::Xy(_)
+            | DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::Radar { .. } => {}
+            DataRenderType::Ternary { c_column, .. } => visit(c_column),
+            // The first two axis columns are its x and y columns.
+            DataRenderType::Parallel {
+                columns,
+                color_column,
+                ..
+            } => {
+                for column in columns.iter().skip(2) {
+                    visit(column);
+                }
+                if let Some(column) = color_column {
+                    visit(column);
+                }
+            }
+            DataRenderType::Streamlines { color_map, .. } => {
+                if let Some(map) = color_map {
+                    visit(&map.column);
+                }
+            }
+            DataRenderType::BoxPlot { .. } => {
+                if let Some(boxes) = self.render_type.box_plot() {
+                    for id in boxes.plain_columns() {
+                        visit(id);
+                    }
+                }
+            }
+            DataRenderType::RangeBars { .. } => {
+                if let Some(bars) = self.render_type.range_bars() {
+                    for id in bars.extra_columns() {
+                        visit(id);
+                    }
+                }
+            }
+            DataRenderType::Field(field) => {
+                for column in &field.matrix.columns {
+                    visit(column);
+                }
+            }
+            DataRenderType::RgbImage {
+                red, green, blue, ..
+            } => {
+                for column in red
+                    .columns
+                    .iter()
+                    .chain(&green.columns)
+                    .chain(&blue.columns)
+                {
+                    visit(column);
+                }
+            }
+            DataRenderType::Vector { components, style } => {
+                match components {
+                    VectorComponents::Points { u, v } => {
+                        visit(u);
+                        visit(v);
+                    }
+                    VectorComponents::Grid { u, v } => {
+                        for column in u.columns.iter().chain(&v.columns) {
+                            visit(column);
+                        }
+                    }
+                }
+                match style.color_map.as_ref() {
+                    Some(VectorColorMap::Column(column)) => visit(column),
+                    Some(VectorColorMap::Grid(matrix)) => {
+                        for column in &matrix.columns {
+                            visit(column);
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// The record and ragged columns this series reads: a box plot's record
+    /// (its `y_column`, when it names one) and its outlier and violin curve
+    /// columns. Every other kind reads none.
+    pub fn visit_composite_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
+        if let Some(boxes) = self.render_type.box_plot() {
+            if !self.y_column.is_empty() {
+                visit(&self.y_column);
+            }
+            for id in boxes.ragged_columns() {
+                visit(id);
+            }
+        }
     }
 }

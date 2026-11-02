@@ -106,15 +106,21 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             "voltage",
             "minutes",
             "voltage",
-            DataRenderType::Line { line: filled },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(filled),
+                errors: None,
+            }),
         ),
         series(
             "current",
             "minutes",
             "current",
-            DataRenderType::Line {
-                line: line(lavender, 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(lavender, 2.5)),
+                errors: None,
+            }),
         ),
     ];
     chart = chart

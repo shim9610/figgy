@@ -155,18 +155,10 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
         // Z mapping changes the accumulated field pixels, unlike the bar's
         // border, labels or position. XY-only charts do not consume this map.
         && (!series.iter().any(|s| match &s.render_type {
-            DataRenderType::Heatmap { .. } | DataRenderType::HeatmapContour { .. } => true,
+            DataRenderType::Field(crate::data_config::FieldSeries { fill: Some(_), .. }) => true,
             // A colour-mapped vector draws through the colourbar too.
             DataRenderType::Vector { style, .. } => style.color_map.is_some(),
-            DataRenderType::Scatter { .. }
-            | DataRenderType::Line { .. }
-            | DataRenderType::ScatterLine { .. }
-            | DataRenderType::ScatterErrorbarX { .. }
-            | DataRenderType::ScatterErrorbarY { .. }
-            | DataRenderType::ScatterErrorbarXY { .. }
-            | DataRenderType::LineScatterErrorbarX { .. }
-            | DataRenderType::LineScatterErrorbarY { .. }
-            | DataRenderType::LineScatterErrorbarXY { .. }
+            DataRenderType::Xy(_)
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
@@ -179,7 +171,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Parallel { .. }
             // Never streamed either; its colours are its data.
             | DataRenderType::RgbImage { .. }
-            | DataRenderType::Contour { .. } => false,
+            | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. }) => false,
         })
             || match (&left.colorbar, &right.colorbar) {
                 (Some(a), Some(b)) => a.axis.min == b.axis.min

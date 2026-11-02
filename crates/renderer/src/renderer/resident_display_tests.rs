@@ -80,11 +80,16 @@ fn base_config() -> Config {
 /// A line with markers: both body kinds and a pickable point.
 fn series(id: &str, y: &str) -> SeriesConfig {
     let mut s = declaration(id, "x", y);
-    let DataRenderType::Line { line } = s.render_type.clone() else {
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = s.render_type.clone()
+    else {
         unreachable!("the declaration is a line")
     };
-    s.render_type = DataRenderType::ScatterLine {
-        scatter: crate::data_config::DataScatterStyleConfig {
+    s.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(crate::data_config::DataScatterStyleConfig {
             point_color: Color::new(0.1, 0.3, 0.9, 0.8),
             point_shape: crate::ScatterShape::Circle,
             point_size: 6.0,
@@ -93,9 +98,10 @@ fn series(id: &str, y: &str) -> SeriesConfig {
             point_style_overrides: None,
             point_color_map: None,
             point_size_map: None,
-        },
-        line,
-    };
+        }),
+        line: Some(line),
+        errors: None,
+    });
     s
 }
 
@@ -410,7 +416,12 @@ fn data_edits_draw_the_bodies_exactly_once() {
         (
             "line width",
             Edit::Series(|s| {
-                if let DataRenderType::ScatterLine { line, .. } = &mut s.render_type {
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: Some(_),
+                    line: Some(line),
+                    errors: None,
+                }) = &mut s.render_type
+                {
                     line.line_width = 5.0;
                 }
             }),
@@ -524,7 +535,12 @@ fn each_layer_keeps_its_own_bodies() {
             Edit::Config(apply) => edit(&mut r, id, &mut view, apply),
             Edit::Series(index) => {
                 let mut list = r.chart_series(id).unwrap().to_vec();
-                if let DataRenderType::ScatterLine { line, .. } = &mut list[index].render_type {
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: Some(_),
+                    line: Some(line),
+                    errors: None,
+                }) = &mut list[index].render_type
+                {
                     line.line_width += 2.0;
                 }
                 r.set_chart_series(id, list).unwrap();
@@ -812,13 +828,23 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
             ("overlay y range", [false, true])
         }
         12 => {
-            if let DataRenderType::ScatterLine { line, .. } = &mut scene.series[0].render_type {
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(_),
+                line: Some(line),
+                errors: None,
+            }) = &mut scene.series[0].render_type
+            {
                 line.line_width = if line.line_width > 3.0 { 1.5 } else { 4.0 };
             }
             ("base series", [true, false])
         }
         13 => {
-            if let DataRenderType::ScatterLine { scatter, .. } = &mut scene.series[1].render_type {
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(_),
+                errors: None,
+            }) = &mut scene.series[1].render_type
+            {
                 scatter.point_size = if scatter.point_size > 7.0 { 5.0 } else { 9.0 };
             }
             ("overlay series", [false, true])

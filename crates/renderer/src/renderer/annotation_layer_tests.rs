@@ -112,7 +112,12 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
     )
     .unwrap();
     let mut series = declaration("s", "x", "a");
-    if let DataRenderType::Line { line } = &mut series.render_type {
+    if let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+    }) = &mut series.render_type
+    {
         line.line_width = 6.0;
     }
     let id = r.register_chart(config.clone(), vec![series]).unwrap();

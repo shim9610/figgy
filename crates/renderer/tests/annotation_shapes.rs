@@ -96,13 +96,15 @@ fn line() -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_color: Color::BLACK,
                 line_width: 4.0,
                 ..Default::default()
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 

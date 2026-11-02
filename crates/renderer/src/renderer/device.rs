@@ -215,8 +215,10 @@ pub(super) fn preferred_msaa_sample_count(
 pub(super) fn draws_surface(rt: &crate::data_config::DataRenderType) -> bool {
     matches!(
         rt,
-        crate::data_config::DataRenderType::Heatmap { .. }
-            | crate::data_config::DataRenderType::HeatmapContour { .. }
+        crate::data_config::DataRenderType::Field(crate::data_config::FieldSeries {
+            fill: Some(_),
+            ..
+        })
     )
 }
 
@@ -224,8 +226,10 @@ pub(super) fn draws_surface(rt: &crate::data_config::DataRenderType) -> bool {
 pub(super) fn draws_floor(rt: &crate::data_config::DataRenderType) -> bool {
     matches!(
         rt,
-        crate::data_config::DataRenderType::Contour { .. }
-            | crate::data_config::DataRenderType::HeatmapContour { .. }
+        crate::data_config::DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(_),
+            ..
+        })
     )
 }
 

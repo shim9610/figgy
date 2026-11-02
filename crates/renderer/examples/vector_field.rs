@@ -108,15 +108,16 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
             "speed",
             "wx",
             "wy",
-            DataRenderType::Heatmap {
+            DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: grid(&speed_ids),
-                fill: FieldFillConfig {
+                fill: Some(FieldFillConfig {
                     mode: FillMode::Continuous,
                     shading: Shading::Interpolated,
                     opacity: 1.,
-                },
+                }),
+                contour: None,
                 surface: None,
-            },
+            }),
         ),
         series(
             "wind",
@@ -321,15 +322,16 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
         "potential",
         "gx",
         "gy",
-        DataRenderType::Heatmap {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: grid(&z_ids),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 0.35,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
     );
     let arrows = series(
         "gradient",

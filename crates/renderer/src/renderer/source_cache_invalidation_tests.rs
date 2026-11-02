@@ -21,7 +21,12 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
             let mut s = declaration("s", "x", "a");
             match kind {
                 "dash" => {
-                    if let DataRenderType::Line { line } = &mut s.render_type {
+                    if let DataRenderType::Xy(crate::data_config::XySeries {
+                        scatter: None,
+                        line: Some(line),
+                        errors: None,
+                    }) = &mut s.render_type
+                    {
                         line.line_style = LineStylePreset::Dash;
                     }
                 }
@@ -42,12 +47,16 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                 "sketch" => c.draw_style = DrawStyle::Sketch(Default::default()),
                 "constellation" => {
                     c.draw_style = DrawStyle::Constellation(Default::default());
-                    let DataRenderType::Line { line } = s.render_type else {
+                    let DataRenderType::Xy(crate::data_config::XySeries {
+                        scatter: None,
+                        line: Some(line),
+                        errors: None,
+                    }) = s.render_type
+                    else {
                         unreachable!()
                     };
-                    s.render_type = DataRenderType::ScatterLine {
-                        line,
-                        scatter: DataScatterStyleConfig {
+                    s.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                        scatter: Some(DataScatterStyleConfig {
                             point_color: Color::BLACK,
                             point_shape: ScatterShape::CircleFilled,
                             point_size: 8.0,
@@ -56,13 +65,15 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                             point_style_overrides: None,
                             point_color_map: None,
                             point_size_map: None,
-                        },
-                    };
+                        }),
+                        line: Some(line),
+                        errors: None,
+                    });
                 }
                 "milkyway points" => {
                     c.draw_style = DrawStyle::Milkyway(Default::default());
-                    s.render_type = DataRenderType::Scatter {
-                        scatter: DataScatterStyleConfig {
+                    s.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+                        scatter: Some(DataScatterStyleConfig {
                             point_color: Color::new(1.0, 0.0, 0.0, 1.0),
                             point_shape: ScatterShape::CircleFilled,
                             point_size: 8.0,
@@ -71,8 +82,10 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                             point_style_overrides: None,
                             point_color_map: None,
                             point_size_map: None,
-                        },
-                    };
+                        }),
+                        line: None,
+                        errors: None,
+                    });
                 }
                 _ => unreachable!(),
             }
@@ -169,7 +182,12 @@ fn bounded_source_cache_rejects_new_data_aba_and_series_changes() {
                 }
             }
             "series style" => {
-                let DataRenderType::Line { line } = &mut s.render_type else {
+                let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: None,
+                    line: Some(line),
+                    errors: None,
+                }) = &mut s.render_type
+                else {
                     unreachable!()
                 };
                 line.line_color = Color::new(0.0, 0.7, 0.0, 1.0);

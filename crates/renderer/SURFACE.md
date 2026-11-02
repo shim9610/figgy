@@ -68,19 +68,15 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Heatmap {
-            matrix: MatrixRef {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries { matrix: MatrixRef {
                 columns,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
-            },
-            fill: FieldFillConfig {
+            }, fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            surface: None, // every surface option takes its default
-        },
+            }), contour: None, surface: None }),
     }];
     let image = pollster::block_on(renderer.export_rgba(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0)))?;
     std::fs::write("surface.png", renderer::encode_png(&image)?)?;

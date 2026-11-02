@@ -62,16 +62,18 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }
 }
 
@@ -319,8 +321,8 @@ fn main() {
             x_column: x.into(),
             y_column: y.into(),
             z_column: None,
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: color,
                     point_shape: shape,
                     point_size: size,
@@ -329,8 +331,10 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+            }),
         };
 
     // Three scatter series, distinct ring angles, chart-scale markers.
@@ -418,8 +422,8 @@ fn main() {
         x_column: "px".into(),
         y_column: "pb".into(),
         z_column: None,
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 15.0,
@@ -428,16 +432,17 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::from_rgb8(255, 142, 92),
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }];
     export(
         &mut r,
@@ -460,8 +465,8 @@ fn main() {
         x_column: "px".into(),
         y_column: "pb".into(),
         z_column: None,
-        render_type: DataRenderType::ScatterErrorbarY {
-            scatter: DataScatterStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 13.0,
@@ -470,20 +475,24 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_y: ErrorRef::Symmetric {
-                column: "perr".into(),
-            },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: Color::from_rgb8(255, 160, 110),
-                error_bar_width: 2.0,
-                error_bar_cap_size: 7.0,
-                cap_width: 2.0,
-                error_bar_style_table: None,
-                error_bar_style_index_column: None,
-                error_bar_style_overrides: None,
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric {
+                    column: "perr".into(),
+                }),
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::from_rgb8(255, 160, 110),
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 7.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
+                },
+            }),
+        }),
     }];
     export(
         &mut r,

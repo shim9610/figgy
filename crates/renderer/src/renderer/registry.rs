@@ -1362,170 +1362,19 @@ pub(super) fn prepare_load_demo_chart_plan(
     })
 }
 
-pub(super) fn visit_error_ref_columns(error: &ErrorRef, visit: &mut impl FnMut(&str)) {
-    match error {
-        ErrorRef::Symmetric { column } => visit(column),
-        ErrorRef::Asymmetric { lower, upper } => {
-            visit(lower);
-            visit(upper);
-        }
-    }
-}
-
 /// Every pool column this series reads, visited once per occurrence.
 ///
 /// The single enumeration: column removal, validation, pick invalidation, and
 /// the derived-data stamps all reach the pool through here, so a column this
-/// function does not name is a column the renderer believes nobody uses.
-///
-/// The tail match exists to make that a compile error rather than a discovery.
-/// Every column above is reached through an `extract_*` helper, so a variant
-/// whose columns live in a *new* field — the design's matrix bundle, say — would
-/// be invisible here and nothing would fail to compile: a chart keeps a series
-/// pointing at a removed column, and every later `prepare` fails in `lookup`
-/// with `UnknownColumn`, permanently. Listing the variants forces the author of
-/// the next one to answer "does it read anything else?".
+/// function does not name is a column the renderer believes nobody uses. The
+/// list is the model's ([`SeriesConfig::visit_columns`] and
+/// [`SeriesConfig::visit_composite_columns`]), whose exhaustive match makes a
+/// new kind's columns a compile-time question.
 pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
-    visit(&series.x_column);
-    // A violin without boxes names no record.
-    if !(series.y_column.is_empty() && series.render_type.box_plot().is_some()) {
-        visit(&series.y_column);
-    }
-    if let Some(scatter) = extract_scatter(&series.render_type) {
-        if let Some(column) = scatter.point_style_index_column.as_deref() {
-            visit(column);
-        }
-        if let Some(map) = scatter.point_color_map.as_ref() {
-            visit(&map.column);
-        }
-        if let Some(map) = scatter.point_size_map.as_ref() {
-            visit(&map.column);
-        }
-    }
-    if let Some(column) = extract_errorbar_style(&series.render_type)
-        .and_then(|errorbar| errorbar.error_bar_style_index_column.as_deref())
-    {
-        visit(column);
-    }
-    if let Some(error) = extract_err_x(&series.render_type) {
-        visit_error_ref_columns(error, visit);
-    }
-    if let Some(error) = extract_err_y(&series.render_type) {
-        visit_error_ref_columns(error, visit);
-    }
-    match &series.render_type {
-        // Nothing beyond what the extractors above already reached.
-        DataRenderType::Line { .. }
-        | DataRenderType::Scatter { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Histogram { .. }
-        // Category positions and values are its x and y columns.
-        | DataRenderType::CategoryBars { .. }
-        // Category indices and values too.
-        | DataRenderType::Radar { .. } => {}
-        // Its first two components are its x and y columns; the third is a
-        // referenced column, so replacing it redraws the series and
-        // removing it invalidates it.
-        DataRenderType::Ternary { c_column, .. } => visit(c_column),
-        // The first two axis columns are its x and y columns; the rest and
-        // the colour column are referenced, so replacing one redraws the
-        // rows and removing one invalidates the series.
-        DataRenderType::Parallel {
-            columns,
-            color_column,
-            ..
-        } => {
-            for column in columns.iter().skip(2) {
-                visit(column);
-            }
-            if let Some(column) = color_column {
-                visit(column);
-            }
-        }
-        // The polylines are its x and y columns; the colour column is
-        // referenced like a scatter's colour map.
-        DataRenderType::Streamlines { color_map, .. } => {
-            if let Some(map) = color_map {
-                visit(&map.column);
-            }
-        }
-        // Its positions are its x column and its record its y column; the
-        // outliers are a referenced ragged column like a matrix' columns, so
-        // replacing or removing them invalidates the series.
-        // So are a violin's curves and the density and raw point columns.
-        DataRenderType::BoxPlot { .. } => {
-            if let Some(boxes) = series.render_type.box_plot() {
-                for id in boxes.ragged_columns().chain(boxes.plain_columns()) {
-                    visit(id);
-                }
-            }
-        }
-        // Its positions and end values are its x and y columns; the start,
-        // the whiskers, the colour flag or state and the progress are
-        // referenced columns, so replacing one redraws the series and
-        // removing one invalidates it.
-        DataRenderType::RangeBars { .. } => {
-            if let Some(bars) = series.render_type.range_bars() {
-                for id in bars.extra_columns() {
-                    visit(id);
-                }
-            }
-        }
-        // A matrix' constituent columns are referenced columns like any other:
-        // remove-column cascade, validation, and the derived-identity stamp all
-        // reach them through here, so a grid column cannot be dropped from under
-        // a live field.
-        DataRenderType::Heatmap { matrix, .. }
-        | DataRenderType::Contour { matrix, .. }
-        | DataRenderType::HeatmapContour { matrix, .. } => {
-            for column in &matrix.columns {
-                visit(column);
-            }
-        }
-        // An image's three channel grids are referenced columns alike.
-        DataRenderType::RgbImage {
-            red, green, blue, ..
-        } => {
-            for column in red
-                .columns
-                .iter()
-                .chain(&green.columns)
-                .chain(&blue.columns)
-            {
-                visit(column);
-            }
-        }
-        // The components and the colour-map value are referenced columns in
-        // both forms, for the same reasons as a matrix' constituents.
-        DataRenderType::Vector { components, style } => {
-            match components {
-                crate::data_config::VectorComponents::Points { u, v } => {
-                    visit(u);
-                    visit(v);
-                }
-                crate::data_config::VectorComponents::Grid { u, v } => {
-                    for column in u.columns.iter().chain(&v.columns) {
-                        visit(column);
-                    }
-                }
-            }
-            match style.color_map.as_ref() {
-                Some(crate::data_config::VectorColorMap::Column(column)) => visit(column),
-                Some(crate::data_config::VectorColorMap::Grid(matrix)) => {
-                    for column in &matrix.columns {
-                        visit(column);
-                    }
-                }
-                None => {}
-            }
-        }
-    }
+    // The model owns the list (#160); the renderer reads records and ragged
+    // columns too.
+    series.visit_columns(&mut |id| visit(id));
+    series.visit_composite_columns(&mut |id| visit(id));
 }
 
 /// Validate a series list against the pool and the chart's own `Config`.

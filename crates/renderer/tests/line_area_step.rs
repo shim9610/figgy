@@ -114,7 +114,11 @@ fn series(id: &str, x: &str, y: &str, line: DataLineStyleConfig) -> SeriesConfig
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line { line },
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }),
     }
 }
 

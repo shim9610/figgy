@@ -115,8 +115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             x_column: "time".into(),
             y_column: id.into(),
             z_column: None,
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: color,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 6.0,
@@ -125,16 +125,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_color: color,
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }

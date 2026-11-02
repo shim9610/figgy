@@ -258,16 +258,18 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {
@@ -325,16 +327,18 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         x_column: x.into(),
         y_column: y.into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
@@ -383,16 +387,18 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {

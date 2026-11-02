@@ -66,16 +66,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         x_column: "x".into(),
         y_column: "y".into(),
         z_column: None,
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::from_rgb8(34, 104, 198),
                 line_width: 2.5,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+        }),
     }];
     let image = pollster::block_on(renderer.export_rgba(
         renderer::ExportSource::chart(&chart, &series),

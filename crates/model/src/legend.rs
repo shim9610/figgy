@@ -117,16 +117,18 @@ mod legend_update_tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style,
                     line_color: color,
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         }
     }
 
@@ -351,9 +353,18 @@ fn colormap_symbol(map: &ColorMap) -> Vec<RichSegment> {
 /// [`DataLineStyleConfig::effective_fill_color`]: crate::data_config::DataLineStyleConfig::effective_fill_color
 pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegment> {
     match &cfg.render_type {
-        DataRenderType::Line { line } => {
-            line_symbol(line.line_color, line.line_style, line_fill_band(line))
-        }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            ..
+        }) => line_symbol(line.line_color, line.line_style, line_fill_band(line)),
+        // Neither markers nor a line: nothing is drawn, so nothing stands
+        // for it (`XySeries::validate` refuses it).
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: None,
+            ..
+        }) => blank_symbol(),
         // A bar reads as a filled swatch; the glyph is already in the shape
         // table, so no new symbol machinery.
         DataRenderType::Histogram { bar } => {
@@ -361,11 +372,13 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
         }
         // Contour lines are lines. When a fill is under them the line is still
         // the mark — the fill's colours belong to the colourbar.
-        DataRenderType::Contour { contour, .. }
-        | DataRenderType::HeatmapContour { contour, .. } => {
-            line_symbol(contour.line.line_color, contour.line.line_style, None)
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(contour),
+            ..
+        }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => {
+            colormap.map_or_else(blank_symbol, colormap_symbol)
         }
-        DataRenderType::Heatmap { .. } => colormap.map_or_else(blank_symbol, colormap_symbol),
         // An image's colours are its data: no mark stands for them.
         DataRenderType::RgbImage { .. } => blank_symbol(),
         // An arrow: a rule for the shaft and the right-pointing head glyph,
@@ -419,23 +432,21 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
                 None => line_symbol(radar.color, LineStylePreset::Solid, band),
             }
         }
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. } => {
-            scatter_symbol(&scatter.point_shape, scatter.point_color)
-        }
-        DataRenderType::ScatterLine { scatter, line }
-        | DataRenderType::LineScatterErrorbarX { scatter, line, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, line, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, line, .. } => {
-            line_scatter_symbol_with_style(
-                &scatter.point_shape,
-                line.line_color,
-                line.line_style,
-                line_fill_band(line),
-            )
-        }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: None,
+            ..
+        }) => scatter_symbol(&scatter.point_shape, scatter.point_color),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(line),
+            ..
+        }) => line_scatter_symbol_with_style(
+            &scatter.point_shape,
+            line.line_color,
+            line.line_style,
+            line_fill_band(line),
+        ),
         // A ternary series reads as what it draws: markers, a line, or both,
         // over its region fill's band when it has one; a fill alone is a
         // band under an invisible rule.
@@ -686,16 +697,18 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style,
                     line_color: color,
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+            }),
         }
     }
 
@@ -728,7 +741,12 @@ mod tests {
 
         let red = Color::new(1.0, 0.0, 0.0, 1.0);
         let mut filled = line_cfg(red);
-        let DataRenderType::Line { line } = &mut filled.render_type else {
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+        }) = &mut filled.render_type
+        else {
             unreachable!()
         };
         line.fill = Some(LineFill::ToBaseline(0.0));
@@ -755,8 +773,8 @@ mod tests {
         // half rules while the glyph between them stays plain.
         let blue = Color::new(0.0, 0.0, 1.0, 0.5);
         let combined = SeriesConfig {
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: red,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 3.0,
@@ -765,13 +783,14 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     fill: Some(LineFill::ToSeries("other".into())),
                     fill_color: Some(blue),
                     ..DataLineStyleConfig::default()
-                },
-            },
+                }),
+                errors: None,
+            }),
             ..line_cfg(red)
         };
         let segs = series_symbol_segments(&combined, None);
@@ -968,16 +987,18 @@ mod tests {
 
         let level_color = Color::from_rgb8(4, 5, 6);
         for render_type in [
-            DataRenderType::Contour {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(),
-                contour: contour(level_color),
-            },
-            DataRenderType::HeatmapContour {
-                matrix: matrix(),
-                fill: fill(),
-                contour: contour(level_color),
+                fill: None,
+                contour: Some(contour(level_color)),
                 surface: None,
-            },
+            }),
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix: matrix(),
+                fill: Some(fill()),
+                contour: Some(contour(level_color)),
+                surface: None,
+            }),
         ] {
             let mark = series_symbol_segments(&field_series(render_type), None);
             assert_eq!(mark.len(), 1, "a contour mark is one rule");
@@ -995,14 +1016,15 @@ mod tests {
     // still one entry.
     #[test]
     fn a_heatmap_with_a_colormap_shows_a_swatch_of_it() {
-        let heatmap = field_series(DataRenderType::Heatmap {
+        let heatmap = field_series(DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(),
-            fill: crate::data_config::FieldFillConfig {
+            fill: Some(crate::data_config::FieldFillConfig {
                 opacity: 0.5,
                 ..fill()
-            },
+            }),
+            contour: None,
             surface: None,
-        });
+        }));
         let map = ColorMap::Viridis;
         let mark = series_symbol_segments(&heatmap, Some(&map));
         assert_eq!(mark.len(), COLORMAP_SWATCH_STEPS);
@@ -1047,11 +1069,12 @@ mod tests {
     // rows. An empty vec would re-point every later row at the wrong series.
     #[test]
     fn a_heatmap_gets_a_blank_full_width_mark_not_no_entry() {
-        let heatmap = field_series(DataRenderType::Heatmap {
+        let heatmap = field_series(DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(),
-            fill: fill(),
+            fill: Some(fill()),
+            contour: None,
             surface: None,
-        });
+        }));
         let mark = series_symbol_segments(&heatmap, None);
         assert_eq!(mark.len(), 1);
         assert_eq!(mark[0].field_em, Some(SYMBOL_FIELD_EM));

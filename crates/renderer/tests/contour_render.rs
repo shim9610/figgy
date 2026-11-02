@@ -161,10 +161,12 @@ fn contour_only(columns: &[&str], levels: Vec<f64>, colors: Option<Vec<Color>>) 
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(columns),
-            contour: contour_config(levels, colors),
-        },
+            fill: None,
+            contour: Some(contour_config(levels, colors)),
+            surface: None,
+        }),
     }
 }
 
@@ -176,16 +178,16 @@ fn heatmap_contour(columns: &[&str], levels: Vec<f64>) -> SeriesConfig {
         x_column: "gx".into(),
         y_column: "gy".into(),
         z_column: None,
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(columns),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: contour_config(levels, None),
+            }),
+            contour: Some(contour_config(levels, None)),
             surface: None,
-        },
+        }),
     }
 }
 
@@ -553,7 +555,13 @@ fn finite_corners_whose_derivatives_overflow_draw_no_contour_or_anchor() {
     let mut series = contour_only(&["overflow_z0", "overflow_z1"], vec![0.0], None);
     series.x_column = "overflow_x".into();
     series.y_column = "overflow_y".into();
-    if let DataRenderType::Contour { contour, .. } = &mut series.render_type {
+    if let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: None,
+        contour: Some(contour),
+        ..
+    }) = &mut series.render_type
+    {
         contour.labels = Some(auto_label_config(2000.0));
     }
     let image = renderer
@@ -847,10 +855,12 @@ fn flat_y_series(levels: Vec<f64>, line_width: f32) -> SeriesConfig {
         x_column: "hx".into(),
         y_column: "hy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&["h0", "h1", "h2"]),
-            contour,
-        },
+            fill: None,
+            contour: Some(contour),
+            surface: None,
+        }),
     }
 }
 
@@ -928,14 +938,16 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
         x_column: "dx".into(),
         y_column: "dy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: contour_config(vec![2.0], None),
-        },
+            fill: None,
+            contour: Some(contour_config(vec![2.0], None)),
+            surface: None,
+        }),
     }];
     let img = renderer
         .export_rgba(
@@ -998,10 +1010,12 @@ fn a_saddle_needs_no_tie_break() {
         x_column: "qx".into(),
         y_column: "qy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&ids),
-            contour: contour_config(vec![0.0], None),
-        },
+            fill: None,
+            contour: Some(contour_config(vec![0.0], None)),
+            surface: None,
+        }),
     }];
     let img = renderer
         .export_rgba(
@@ -1127,14 +1141,16 @@ fn the_isoline_lands_on_its_level_at_tight_curvature() {
             x_column: "hyx".into(),
             y_column: "hyy".into(),
             z_column: None,
-            render_type: DataRenderType::Contour {
+            render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
                 matrix: MatrixRef {
                     columns: ids.clone(),
                     orientation: MatrixOrientation::ColumnsAreX,
                     grid_layout: GridLayout::Centers,
                 },
-                contour,
-            },
+                fill: None,
+                contour: Some(contour),
+                surface: None,
+            }),
         }];
         let img = renderer
             .export_rgba(
@@ -1248,7 +1264,13 @@ fn labelled(
     labels: ContourLabelConfig,
 ) -> SeriesConfig {
     let mut cfg = contour_only(&["p0", "p1", "p2"], levels, colors);
-    if let DataRenderType::Contour { contour, .. } = &mut cfg.render_type {
+    if let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: None,
+        contour: Some(contour),
+        ..
+    }) = &mut cfg.render_type
+    {
         contour.labels = Some(labels);
     }
     cfg
@@ -1679,14 +1701,16 @@ fn fine_labelled(ids: &[String], levels: Vec<f64>, labels: ContourLabelConfig) -
         x_column: "fx".into(),
         y_column: "fy".into(),
         z_column: None,
-        render_type: DataRenderType::Contour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids.to_vec(),
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour,
-        },
+            fill: None,
+            contour: Some(contour),
+            surface: None,
+        }),
     }
 }
 
@@ -1987,7 +2011,13 @@ fn a_rotated_label_gap_lies_inside_its_quad() {
     let chart = bare_chart(colorbar(0.0, 400.0));
     let series = |line: Color, labels: Option<ContourLabelConfig>| {
         let mut cfg = contour_only(&["h0", "h1", "h2"], vec![200.0], None);
-        if let DataRenderType::Contour { contour, .. } = &mut cfg.render_type {
+        if let DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: _,
+            fill: None,
+            contour: Some(contour),
+            ..
+        }) = &mut cfg.render_type
+        {
             contour.line.line_color = line;
             contour.labels = labels;
         }
@@ -2237,18 +2267,18 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
         x_column: "bx".into(),
         y_column: "by".into(),
         z_column: None,
-        render_type: DataRenderType::HeatmapContour {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels: levels.clone(),
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -2270,9 +2300,9 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
                     bg_color: Some(Color::new(0.98, 0.98, 0.98, 1.0)),
                     bg_padding_px: 2.0,
                 }),
-            },
+            }),
             surface: None,
-        },
+        }),
     }];
     let img = renderer
         .export_rgba(
@@ -2328,7 +2358,13 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     // 0.4 and 0.6 rings 0.02 away on either side.
     // Checked on the label-free render, where no label can sit there.
     let mut unlabelled = series.clone();
-    let DataRenderType::HeatmapContour { contour, .. } = &mut unlabelled[0].render_type else {
+    let DataRenderType::Field(renderer::data_config::FieldSeries {
+        matrix: _,
+        fill: Some(_),
+        contour: Some(contour),
+        surface: _,
+    }) = &mut unlabelled[0].render_type
+    else {
         unreachable!()
     };
     contour.labels = None;

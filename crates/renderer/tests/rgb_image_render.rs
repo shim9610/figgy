@@ -922,15 +922,16 @@ fn registration_names_what_an_image_cannot_read() {
     // No colourbar is needed: the chart has none and the image registers
     // and exports, where a heatmap over the same grid asks for one.
     let heatmap = SeriesConfig {
-        render_type: DataRenderType::Heatmap {
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: matrix(&ids[0], MatrixOrientation::ColumnsAreX),
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Flat,
                 opacity: 1.0,
-            },
+            }),
+            contour: None,
             surface: None,
-        },
+        }),
         ..flat("img", &ids)
     };
     assert!(

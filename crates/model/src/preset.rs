@@ -254,49 +254,17 @@ impl ColorCycle {
     pub fn apply_to_series(self, series: &mut SeriesConfig, index: usize) {
         let c = self.color(index);
         match &mut series.render_type {
-            DataRenderType::Scatter { scatter } => {
-                scatter.point_color = c;
-            }
-            DataRenderType::Line { line } => {
-                line.line_color = c;
-            }
-            DataRenderType::ScatterLine { scatter, line } => {
-                scatter.point_color = c;
-                line.line_color = c;
-            }
-            DataRenderType::ScatterErrorbarX {
-                scatter, err_style, ..
-            }
-            | DataRenderType::ScatterErrorbarY {
-                scatter, err_style, ..
-            }
-            | DataRenderType::ScatterErrorbarXY {
-                scatter, err_style, ..
-            } => {
-                scatter.point_color = c;
-                err_style.error_bar_color = c;
-            }
-            DataRenderType::LineScatterErrorbarX {
-                scatter,
-                line,
-                err_style,
-                ..
-            }
-            | DataRenderType::LineScatterErrorbarY {
-                scatter,
-                line,
-                err_style,
-                ..
-            }
-            | DataRenderType::LineScatterErrorbarXY {
-                scatter,
-                line,
-                err_style,
-                ..
-            } => {
-                scatter.point_color = c;
-                line.line_color = c;
-                err_style.error_bar_color = c;
+            // Markers, line and error bars all take the cycle colour.
+            DataRenderType::Xy(xy) => {
+                if let Some(scatter) = &mut xy.scatter {
+                    scatter.point_color = c;
+                }
+                if let Some(line) = &mut xy.line {
+                    line.line_color = c;
+                }
+                if let Some(errors) = &mut xy.errors {
+                    errors.style.error_bar_color = c;
+                }
             }
             DataRenderType::Histogram { bar } => {
                 bar.fill_color = c;
@@ -304,11 +272,14 @@ impl ColorCycle {
             // The contour line joins the cycle like any other line. The fill
             // does not: its colours come from the colormap, and overwriting one
             // of them with a cycle entry would make the colourbar lie.
-            DataRenderType::Contour { contour, .. }
-            | DataRenderType::HeatmapContour { contour, .. } => {
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                contour: Some(contour),
+                ..
+            }) => {
                 contour.line.line_color = c;
             }
-            DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {}
+            DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
+            | DataRenderType::RgbImage { .. } => {}
             // The arrow colour joins the cycle; a colour map, when set, still
             // draws from the colourbar.
             DataRenderType::Vector { style, .. } => {
@@ -452,8 +423,8 @@ mod tests {
             x_column: "x".into(),
             y_column: "y".into(),
             z_column: None,
-            render_type: DataRenderType::LineScatterErrorbarXY {
-                scatter: DataScatterStyleConfig {
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: Color::BLACK,
                     point_shape: ScatterShape::Circle,
                     point_size: 4.0,
@@ -462,31 +433,33 @@ mod tests {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::BLACK,
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: crate::data_config::LineInterpolation::Linear,
-                },
-                err_x: ErrorRef::Symmetric {
-                    column: "ex".into(),
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "ey".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: Color::BLACK,
-                    error_bar_width: 1.0,
-                    error_bar_cap_size: 3.0,
-                    cap_width: 1.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                errors: Some(crate::data_config::ErrorBars {
+                    x: Some(ErrorRef::Symmetric {
+                        column: "ex".into(),
+                    }),
+                    y: Some(ErrorRef::Symmetric {
+                        column: "ey".into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: Color::BLACK,
+                        error_bar_width: 1.0,
+                        error_bar_cap_size: 3.0,
+                        cap_width: 1.0,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+            }),
         }
     }
 
@@ -495,12 +468,16 @@ mod tests {
         let mut s = full_series();
         ColorCycle::Balanced.apply_to_series(&mut s, 2);
         let expected = ColorCycle::Balanced.color(2);
-        let DataRenderType::LineScatterErrorbarXY {
-            scatter,
-            line,
-            err_style,
-            ..
-        } = &s.render_type
+        let DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(scatter),
+            line: Some(line),
+            errors:
+                Some(crate::data_config::ErrorBars {
+                    x: Some(_),
+                    y: Some(_),
+                    style: err_style,
+                }),
+        }) = &s.render_type
         else {
             unreachable!()
         };
@@ -514,7 +491,17 @@ mod tests {
         let mut list = vec![full_series(), full_series(), full_series()];
         ColorCycle::Classic.apply_to_all(&mut list);
         for (i, s) in list.iter().enumerate() {
-            let DataRenderType::LineScatterErrorbarXY { line, .. } = &s.render_type else {
+            let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(_),
+                line: Some(line),
+                errors:
+                    Some(crate::data_config::ErrorBars {
+                        x: Some(_),
+                        y: Some(_),
+                        style: _,
+                    }),
+            }) = &s.render_type
+            else {
                 unreachable!()
             };
             assert_eq!(line.line_color, ColorCycle::Classic.color(i));
@@ -583,22 +570,26 @@ mod tests {
         assert_eq!(bar.fill_color, expected);
 
         for render_type in [
-            DataRenderType::Contour {
+            DataRenderType::Field(crate::data_config::FieldSeries {
                 matrix: matrix(),
-                contour: contour(),
-            },
-            DataRenderType::HeatmapContour {
-                matrix: matrix(),
-                fill: fill(),
-                contour: contour(),
+                fill: None,
+                contour: Some(contour()),
                 surface: None,
-            },
+            }),
+            DataRenderType::Field(crate::data_config::FieldSeries {
+                matrix: matrix(),
+                fill: Some(fill()),
+                contour: Some(contour()),
+                surface: None,
+            }),
         ] {
             let mut item = series(render_type);
             ColorCycle::Classic.apply_to_series(&mut item, 2);
             let line_color = match &item.render_type {
-                DataRenderType::Contour { contour, .. }
-                | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
+                DataRenderType::Field(crate::data_config::FieldSeries {
+                    contour: Some(contour),
+                    ..
+                }) => contour.line.line_color,
                 _ => unreachable!(),
             };
             assert_eq!(line_color, expected);
@@ -606,11 +597,12 @@ mod tests {
 
         // A fill is left exactly as declared — including inside the combined
         // variant, where only the line was recoloured above.
-        let mut heatmap = series(DataRenderType::Heatmap {
+        let mut heatmap = series(DataRenderType::Field(crate::data_config::FieldSeries {
             matrix: matrix(),
-            fill: fill(),
+            fill: Some(fill()),
+            contour: None,
             surface: None,
-        });
+        }));
         let before = heatmap.clone();
         ColorCycle::Classic.apply_to_series(&mut heatmap, 2);
         assert_eq!(heatmap, before);
