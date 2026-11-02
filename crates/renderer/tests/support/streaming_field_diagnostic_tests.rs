@@ -289,10 +289,10 @@ fn heatmap_browser_fixture_backend_diagnostic() {
     let adapter = data_render::request_adapter(&instance).unwrap();
     eprintln!("FIELD adapter {:?}", adapter.get_info());
     let (device, queue) = data_render::request_device(&adapter).unwrap();
-    let (device, queue) = (Arc::new(device), Arc::new(queue));
+    let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()),
             wgpu::TextureFormat::Bgra8Unorm,
             4096,
         )

@@ -45,7 +45,7 @@ fn star_pitch(style: &DrawStyle) -> Option<f32> {
     }
 }
 
-fn arc(r: &mut Renderer, series_id: &str, config: &Config) -> Option<(Arc<wgpu::Buffer>, u64)> {
+fn arc(r: &mut Renderer, series_id: &str, config: &Config) -> Option<(wgpu::Buffer, u64)> {
     let t = data_render::scatter_transform_from_config(config);
     let prepared = r
         .ensure_arc_prefix(
@@ -130,7 +130,7 @@ fn every_config_leaf_the_arc_key_leaves_out_keeps_the_arc_prefix() {
                 let Some((hit, _)) = arc(&mut r, &series_id, &next) else {
                     return Outcome::Rejected;
                 };
-                if !Arc::ptr_eq(&hit, &cached) {
+                if hit != cached {
                     // The key changed: a new scan.
                     return Outcome::Held;
                 }

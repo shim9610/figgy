@@ -17,7 +17,7 @@ pub(super) fn needs_arc(style: &DrawStyle, series: &SeriesConfig) -> bool {
 
 struct ArcBuffers {
     pool: wgpu::Buffer,
-    arc: Arc<wgpu::Buffer>,
+    arc: wgpu::Buffer,
     sums: wgpu::Buffer,
     top: wgpu::Buffer,
     upper: wgpu::Buffer,
@@ -142,11 +142,11 @@ impl Renderer {
             sizes[0],
             storage | copy | wgpu::BufferUsages::VERTEX,
         )?;
-        let arc = Arc::new(buffer(
+        let arc = buffer(
             "stream canonical arc leaf output",
             sizes[1],
             storage | copy | wgpu::BufferUsages::VERTEX,
-        )?);
+        )?;
         let sums = buffer("stream canonical arc leaf sum", pair, storage)?;
         let top = buffer("stream canonical arc sums0", top_bytes, storage)?;
         let upper = buffer("stream canonical arc sums1", upper_bytes, storage)?;
@@ -547,7 +547,7 @@ impl Renderer {
                     handle(0),
                     handle(Y_OFFSET),
                     (
-                        Arc::clone(&buffers.arc),
+                        buffers.arc.clone(),
                         u64::from(leaf.supply_len) * data_render::line_arc::ARC_PAIR_BYTES,
                     ),
                     Arc::clone(&buffers.charge),

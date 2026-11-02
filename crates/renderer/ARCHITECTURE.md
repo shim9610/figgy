@@ -154,7 +154,7 @@ render-pass boundaries.
 logical-source metadata, render/compute pipelines,
 the shared picker pipeline bundle, at most one derived active-chart picker cache,
 pending pool maintenance, renderer-level bind groups, and the shared
-`Arc<wgpu::Device>` / `Arc<wgpu::Queue>`. It creates `ChartView` and `ChartStyle`
+`wgpu::Device` / `wgpu::Queue` (both reference-counted handles). It creates `ChartView` and `ChartStyle`
 values and returns them to the host, which keeps them in its panel state (see
 [the egui host](examples/egui_embed.rs)). A `PreparedFrame` holds
 its own GPU handles and shared charges, so dropping a host view/style does not
@@ -590,7 +590,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ### 소유권과 수명 경계
 
-`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `Arc<wgpu::Device>`와 `Arc<wgpu::Queue>`도 관리한다.
+`Renderer`는 차트별 `Config`, 순서가 있는 `SeriesConfig`, 상주 `ColumnPool`, 비상주 소스 메타데이터, 렌더링·컴퓨트 파이프라인을 보관한다. 피킹 파이프라인은 공유하고, 현재 차트용 피킹 캐시는 최대 하나만 유지한다. 대기 중인 풀 정리 작업, 렌더러 공통 바인드 그룹, `wgpu::Device`와 `wgpu::Queue` 핸들도 관리한다.
 
 생성해서 반환한 `ChartView`와 `ChartStyle`은 호스트가 패널 상태에 보관한다([egui 예제](examples/egui_embed.rs)). `PreparedFrame` 역시 GPU 핸들과 공유 할당 정보를 유지하므로 호스트가 뷰·스타일을 해제해도 자원이 즉시 사라지지는 않을 수 있다. `WindowedRenderer`는 추가로 surface·instance·adapter와 선택적인 MSAA 렌더 타깃을 보관한다. `ChartId`는 발급한 렌더러에서만 유효하다. 설정과 시리즈를 함께 편집하려면 `set_chart_state`로 둘을 검증한 뒤 한꺼번에 교체한다.
 

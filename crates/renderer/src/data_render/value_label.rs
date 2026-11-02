@@ -348,9 +348,9 @@ pub fn create_value_label_bind_group_layout(device: &wgpu::Device) -> wgpu::Bind
 pub struct ValueLabelData {
     pub bind_group: wgpu::BindGroup,
     /// The uniform alone: the typed pick binds it into its own group 1.
-    pub params: std::sync::Arc<wgpu::Buffer>,
+    pub params: wgpu::Buffer,
     /// The label cells alone, which the typed pick binds beside it.
-    pub cells: std::sync::Arc<wgpu::Buffer>,
+    pub cells: wgpu::Buffer,
     pub count: u32,
     pub charge: crate::gpu_memory::SharedCharge,
     /// Keeps the atlas texture's ledger charge alive with the bind group.
@@ -464,8 +464,8 @@ pub(crate) fn create_value_label_data(
     });
     Ok(ValueLabelData {
         bind_group,
-        params: std::sync::Arc::new(buffer),
-        cells: std::sync::Arc::new(cells),
+        params: buffer,
+        cells,
         count: params.shape[1],
         charge,
         atlas_charge: atlas.texture.shared_charge(),

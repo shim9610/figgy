@@ -348,7 +348,7 @@ fn compare_isolated_stream_chunks(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone()),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -577,7 +577,7 @@ fn compare_stream_phase_pairs(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(Arc::clone(&resident.device), Arc::clone(&resident.queue)),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone()),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -808,10 +808,10 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
     eprintln!("style export adapter: {:?}", adapter.get_info());
     let (device, queue) =
         data_render::request_device(&adapter).expect("style export device required");
-    let (device, queue) = (Arc::new(device), Arc::new(queue));
+    let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()),
             wgpu::TextureFormat::Bgra8Unorm,
             8192,
         )

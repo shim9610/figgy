@@ -879,6 +879,21 @@ additive.
   per font file on first use, so the faces of one collection (`.ttc`) share a
   copy, and the shared system-face mutex is gone. A family lookup no longer
   allocates a key on every character. No API change.
+- **Plain wgpu handles instead of `Arc`-wrapped ones**
+  ([#160](https://github.com/shim9610/figgy/issues/160)). `wgpu::Device`,
+  `wgpu::Queue` and `wgpu::Buffer` are reference-counted handles that
+  implement `Clone` and compare by identity, so wrapping them in `Arc` counted
+  every reference twice. `RendererDevice::new` takes `wgpu::Device` and
+  `wgpu::Queue`; `RendererDevice::device()` / `queue()` and
+  `Renderer::device()` / `queue()` return `&wgpu::Device` /
+  `&wgpu::Queue`; the public buffer fields `ArcScratch::arc`,
+  `ColumnLineLayer::arc` and `ValueLabelData::params` / `cells` are
+  `wgpu::Buffer`. The web chart drops
+  an `alive` flag that could never be false, and the radial layout drops a
+  boxed iterator. Migration: pass the device and queue themselves, as
+  `RendererDevice::new(device, queue)`, instead of `Arc::new(device)` /
+  `Arc::new(queue)`; clone a handle with `.clone()` where `Arc::clone` was
+  used, and compare handles with `==` where `Arc::ptr_eq` was used.
 - **A call reports its own GPU errors**
   ([#158](https://github.com/shim9610/figgy/issues/158)). Every
   `WindowedRenderer` call that records GPU work checks the device health at

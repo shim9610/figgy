@@ -6,11 +6,10 @@ mod radial_decorations;
 mod test_gpu;
 use ::renderer::{layout::NudgeResult, *};
 use radial_decorations::Decorations;
-use std::sync::Arc;
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(Arc::new(device), Arc::new(queue))
+    RendererDevice::new(device, queue)
 }
 
 /// The slice labels of a radial frame.

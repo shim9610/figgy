@@ -6,7 +6,7 @@ use renderer::{
     data_render::{create_instance, request_adapter, request_device},
     encode_png,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = request_adapter(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let color = Color::from_rgb8(70, 130, 180);
     let mut title =
         BoundedTitleOptions::from_legacy("Independent title\nH2O", "sans-serif", 16., Color::BLACK);

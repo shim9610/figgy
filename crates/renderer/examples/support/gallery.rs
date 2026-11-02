@@ -9,7 +9,7 @@ use renderer::{
     layout::{ChartArea, Rect},
     line::LineStylePreset,
 };
-use std::{error::Error, path::Path, sync::Arc};
+use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
@@ -131,7 +131,7 @@ pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
     eprintln!("Gallery adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device(&adapter)?;
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         16 * 1024 * 1024,
     )?;

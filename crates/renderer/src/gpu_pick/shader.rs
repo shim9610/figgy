@@ -343,8 +343,8 @@ impl PickPipelineBundle {
 
 /// Immutable device resources shared by every picker registry on one renderer.
 pub(crate) struct PickPipelineBundle {
-    pub(super) device: Arc<wgpu::Device>,
-    pub(super) queue: Arc<wgpu::Queue>,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
     /// Where pick scratch is charged. Carried by the bundle so every
     /// `&self` query path can charge without a per-call argument.
     pub(super) ledger: Arc<GpuLedger>,
@@ -370,10 +370,9 @@ pub(crate) struct PickPipelineBundle {
 
 // Renderer GPU ownership is Arc-based on every target. WebGPU handles are
 // intentionally !Send/!Sync on wasm because JavaScript confines them locally.
-#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 pub(super) fn create_pipeline_bundle_observed(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
     observer: &mut dyn FnMut(InitEvent),
@@ -567,10 +566,9 @@ impl PickPipelineBundle {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 pub(super) async fn create_pipeline_bundle_observed_async(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
     health: crate::renderer::DeviceHealth,
     observer: &mut dyn FnMut(InitEvent),
@@ -801,8 +799,8 @@ pub(super) fn validate_device_limits(device: &wgpu::Device) -> Result<(), GpuPic
 #[allow(dead_code)] // Consumed by renderer ownership integration in P-02.
 impl PickPipelineBundle {
     pub(crate) fn new_observed(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         observer: &mut dyn FnMut(InitEvent),
@@ -812,8 +810,8 @@ impl PickPipelineBundle {
     }
 
     pub(crate) async fn new_observed_async(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
         ledger: Arc<GpuLedger>,
         health: crate::renderer::DeviceHealth,
         observer: &mut dyn FnMut(InitEvent),

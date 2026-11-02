@@ -762,7 +762,7 @@ impl GpuStreamPick {
             });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
-                device: Arc::clone(&bundle.device),
+                device: bundle.device.clone(),
                 health: bundle.health.clone(),
                 readback,
                 receiver,

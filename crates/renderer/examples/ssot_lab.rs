@@ -413,8 +413,8 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
 
 impl LabApp {
     fn init_state(&mut self, render_state: &egui_wgpu::RenderState) -> Result<LabState, String> {
-        let device = Arc::new(render_state.device.clone());
-        let queue = Arc::new(render_state.queue.clone());
+        let device = render_state.device.clone();
+        let queue = render_state.queue.clone();
         // Ask for the target pool; `try_new` clamps it to what the device's
         // storage binding can address (the arc scan binds the whole pool as
         // one binding). Size the density ceiling from the GRANTED capacity

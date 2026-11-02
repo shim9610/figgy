@@ -234,21 +234,25 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     // The nodes the circle's geometry is measured over: a plain circle's
     // slices, or every node of a sunburst (its rings share one centre and
     // one outer radius) with its effective label placement.
-    let nodes = || -> Box<dyn Iterator<Item = (&'a RadialSlice, RadialLabels)> + 'a> {
-        match slices {
-            Some(slices) => Box::new(
-                slices
-                    .iter()
-                    .map(move |s| (s, placement(chart, RadialTarget { group: g, index: 0 }, s))),
-            ),
-            None => Box::new((0..chart.group_count()).flat_map(move |group| {
+    let nodes = || {
+        let plain = slices.map(|slices| {
+            slices
+                .iter()
+                .map(move |s| (s, placement(chart, RadialTarget { group: g, index: 0 }, s)))
+        });
+        let tree = slices.is_none().then(|| {
+            (0..chart.group_count()).flat_map(move |group| {
                 (0..chart.group_len(group)).filter_map(move |index| {
                     let target = RadialTarget { group, index };
                     let s = chart.slice(target)?;
                     Some((s, placement(chart, target, s)))
                 })
-            })),
-        }
+            })
+        });
+        plain
+            .into_iter()
+            .flatten()
+            .chain(tree.into_iter().flatten())
     };
     let max_explode = nodes()
         .filter(|(s, _)| s.value > 0.0)

@@ -114,7 +114,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
         for opaque in [false, true] {
             for separate_grid in [false, true] {
                 let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+                    RendererDevice::new(device.clone(), queue.clone()),
                     wgpu::TextureFormat::Rgba8Unorm,
                     4096,
                     samples,

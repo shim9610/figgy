@@ -95,10 +95,7 @@ impl Editor {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         let state = cc.wgpu_render_state.clone().ok_or("wgpu required")?;
         let renderer = RadialRenderer::new(
-            RendererDevice::new(
-                Arc::new(state.device.clone()),
-                Arc::new(state.queue.clone()),
-            ),
+            RendererDevice::new(state.device.clone(), state.queue.clone()),
             wgpu::TextureFormat::Rgba8Unorm,
         )?;
         let mut chart = RadialChart {

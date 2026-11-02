@@ -8,7 +8,7 @@ use renderer::{
     Chart, Color, ColumnSource, LayerRef, Material, Renderer, RendererDevice, categorical::*,
     config::Config, data_render, encode_png,
 };
-use std::{path::Path, path::PathBuf, sync::Arc};
+use std::{path::Path, path::PathBuf};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -88,7 +88,7 @@ fn main() -> Result {
     let instance = data_render::create_instance();
     let adapter = data_render::request_adapter(&instance)?;
     let (device, queue) = data_render::request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+    let gpu = RendererDevice::new(device, queue);
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 4 << 20)?;
     let mut chart = CategoricalChart {
         title: "Grouped · Matte".into(),

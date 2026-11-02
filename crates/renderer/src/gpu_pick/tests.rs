@@ -527,8 +527,8 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
     };
     let mut events = Vec::new();
     let bundle = PickPipelineBundle::new_observed(
-        Arc::clone(&device),
-        Arc::clone(&queue),
+        device.clone(),
+        queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::default(),
         &mut |event| events.push(event),
@@ -648,7 +648,7 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
         )
         .unwrap();
         for scatter in [false, true] {
-            let mut resident = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+            let mut resident = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
             for order in 0..2 {
                 resident
                     .add_series(&pool, descriptor(order, scatter))
@@ -800,8 +800,8 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         vector: [None; 3],
     };
     let bundle = PickPipelineBundle::new_observed(
-        Arc::clone(&device),
-        Arc::clone(&queue),
+        device.clone(),
+        queue.clone(),
         Arc::new(GpuLedger::new()),
         crate::renderer::DeviceHealth::default(),
         &mut |_| {},
@@ -2199,7 +2199,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
             };
             line.interpolation = mode;
             let cpu_series = [cpu_series];
-            let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+            let mut engine = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
             engine
                 .add_series(
                     &pool,
@@ -2721,7 +2721,7 @@ fn registry_transition_replaces_affected_slots_and_rebinds_survivors() {
             .unwrap();
     }
 
-    let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+    let mut engine = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
     for index in 0..5 {
         engine
             .add_series(
@@ -3121,7 +3121,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
             meta: [3.0, 0.0, STYLE_MASK_RADIUS as f32, 0.0],
         },
     ];
-    let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+    let mut engine = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
     engine
         .add_series(
             &pool,
@@ -3369,7 +3369,7 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
     )
     .unwrap();
 
-    let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+    let mut engine = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
     engine
         .add_series(
             &pool,
@@ -3721,7 +3721,7 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
     .unwrap();
     pool.add_column("readback-y".into(), &f32_column(vec![5.0; 16]), ctx())
         .unwrap();
-    let mut engine = GpuPickEngine::new(Arc::clone(&device), Arc::clone(&queue)).unwrap();
+    let mut engine = GpuPickEngine::new(device.clone(), queue.clone()).unwrap();
     let query = test_query([50.0, 50.0]);
     let submit = |engine: &GpuPickEngine, members: usize| {
         let mut exact = PickExactPipelines::default();

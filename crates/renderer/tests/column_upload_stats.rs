@@ -2,7 +2,7 @@
 mod test_gpu;
 
 use std::cell::Cell;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use renderer::data::{COLUMN_VALUE_BYTES, split_f64_to_f32_pair};
@@ -479,15 +479,15 @@ fn built_in_hilo_stats_use_recorded_hi_plus_lo() {
     assert_eq!(min_positive, Some(cancel_hi as f64 + cancel_lo as f64));
 }
 
-fn shared_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
-    static DEVICE: OnceLock<Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)>> = OnceLock::new();
+fn shared_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
         .get_or_init(|| {
             let (device, queue) = test_gpu::device();
-            Some((Arc::new(device), Arc::new(queue)))
+            Some((device, queue))
         })
         .as_ref()
-        .map(|(device, queue)| (Arc::clone(device), Arc::clone(queue)))
+        .map(|(device, queue)| (device.clone(), queue.clone()))
 }
 
 #[derive(Debug, PartialEq)]
