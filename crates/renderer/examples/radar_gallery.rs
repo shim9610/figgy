@@ -19,8 +19,8 @@
 #![allow(deprecated)]
 use pollster::FutureExt as _;
 use renderer::{
-    Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, data_render,
-    encode_png, radar::*,
+    Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, encode_png, gpu,
+    radar::*,
 };
 use std::{path::Path, path::PathBuf};
 
@@ -91,10 +91,10 @@ fn main() -> Result {
             .unwrap_or_else(|| "target/radar-gallery".into()),
     );
     std::fs::create_dir_all(&dir)?;
-    let instance = data_render::create_instance();
-    let adapter = data_render::request_adapter_async(&instance).block_on()?;
+    let instance = gpu::create_instance();
+    let adapter = gpu::request_adapter_async(&instance).block_on()?;
     eprintln!("Radar adapter: {:?}", adapter.get_info());
-    let (d, q) = data_render::request_device_async(&adapter).block_on()?;
+    let (d, q) = gpu::request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(d, q);
     let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = RadarChart {

@@ -7,7 +7,7 @@ use renderer::data::Column;
 use renderer::data_config::{
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape,
 };
-use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
+use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};

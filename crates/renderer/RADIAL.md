@@ -41,9 +41,9 @@ use renderer::{
     RadialRenderer, RadialSlice, RendererDevice, encode_png,
 };
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let instance = renderer::data_render::create_instance();
-# let adapter = pollster::block_on(renderer::data_render::request_adapter_async(&instance))?;
-# let (device, queue) = pollster::block_on(renderer::data_render::request_device_async(&adapter))?;
+# let instance = renderer::gpu::create_instance();
+# let adapter = pollster::block_on(renderer::gpu::request_adapter_async(&instance))?;
+# let (device, queue) = pollster::block_on(renderer::gpu::request_device_async(&adapter))?;
 let mut renderer = RadialRenderer::try_new(
     RendererDevice::new(device, queue),
     wgpu::TextureFormat::Rgba8Unorm,

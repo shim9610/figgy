@@ -926,7 +926,7 @@ mod tests {
 
     use pollster::FutureExt as _;
     use renderer::data_render::column_pool::ALIGN;
-    use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
+    use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
     use renderer::{AllocError, ColumnHandle, ColumnPool};
     use wgpu::{BufferDescriptor, BufferUsages};
 

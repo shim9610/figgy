@@ -2,9 +2,8 @@
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use pollster::FutureExt as _;
 use renderer::{
-    Color, Material, RendererDevice,
-    data_render::{create_instance, request_adapter_async, request_device_async},
-    encode_png,
+    Color, Material, RendererDevice, encode_png,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     radial::*,
 };
 use std::path::PathBuf;

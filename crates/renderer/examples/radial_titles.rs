@@ -3,9 +3,8 @@
 use pollster::FutureExt as _;
 use renderer::{
     BoundedTitleOptions, Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice,
-    TextAlign,
-    data_render::{create_instance, request_adapter_async, request_device_async},
-    encode_png,
+    TextAlign, encode_png,
+    gpu::{create_instance, request_adapter_async, request_device_async},
 };
 use std::path::PathBuf;
 

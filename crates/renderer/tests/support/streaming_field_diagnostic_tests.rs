@@ -286,11 +286,11 @@ fn heatmap_browser_fixture_backend_diagnostic() {
     );
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = data_render::request_adapter_async(&instance)
+    let adapter = crate::gpu::request_adapter_async(&instance)
         .block_on()
         .unwrap();
     eprintln!("FIELD adapter {:?}", adapter.get_info());
-    let (device, queue) = data_render::request_device_async(&adapter)
+    let (device, queue) = crate::gpu::request_device_async(&adapter)
         .block_on()
         .unwrap();
     let (device, queue) = (device, queue);

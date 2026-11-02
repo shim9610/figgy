@@ -54,9 +54,9 @@ Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 
 | 동기 API(네이티브 전용) | 비동기 API(모든 플랫폼) | 내용 |
 |---|---|---|
 | `Renderer::for_window` | `Renderer::for_window_async` | surface·adapter·device 초기화 |
-| `data_render::request_adapter` | `request_adapter_async` | |
-| `data_render::request_adapter_for_surface` | `request_adapter_for_surface_async` | |
-| `data_render::request_device` | `request_device_async` | |
+| — | `gpu::request_adapter_async` | 어댑터 요청. 네이티브에서는 `pollster::block_on` 등으로 기다린다 |
+| — | `gpu::request_adapter_for_surface_async` | surface와 맞는 어댑터 요청 |
+| — | `gpu::request_device_async` | 장치와 큐 요청 |
 | — | `Renderer::export_rgba` / `export_png` / `export_svg` / `export_pdf` | GPU→CPU readback. `ExportOptions`의 `scope`로 패널 하나 또는 모든 레이어를 합성한 문서를 고른다. 네이티브에서는 `pollster::block_on` 등으로 기다린다 |
 | — | `Renderer::wait_idle`(동기, 모든 플랫폼) | 네이티브에서는 장치 작업이 끝날 때까지 대기하고, 웹에서는 아무 작업도 하지 않는다 |
 | — | `Renderer::wait_submitted_work` / `WindowedRenderer::first_frame_ready` / `warm_up` | 첫 `queue.submit()` 이후 GPU 작업 완료 대기 |

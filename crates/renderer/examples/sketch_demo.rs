@@ -11,8 +11,8 @@ use renderer::data_config::{
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
     ScatterShape, SeriesConfig,
 };
-use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
 use renderer::default;
+use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};

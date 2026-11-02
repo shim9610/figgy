@@ -521,7 +521,10 @@ or changing fields, adding required fields or enum variants, changing trait
 requirements, and adding `non_exhaustive` to existing types can break consumers.
 Incompatible changes require a new 0.x minor version and migration notes; patch
 updates must preserve the supported contract. Public low-level modules such as
-`data_render`, `axis_render` and `raster` follow the same policy. Moving to a new
+`gpu` (device and surface setup) and `axis_render` follow the same policy. The
+modules hidden from the documentation (`data_render`, `gpu_contour`, `raster`,
+`shader_assembly`) are the renderer's internals, public for its own tests, and
+carry no compatibility promise. Moving to a new
 wgpu major changes public wgpu types such as the `RendererDevice` handles, so it
 ships in a new 0.x minor.
 

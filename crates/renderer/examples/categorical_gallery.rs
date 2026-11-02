@@ -7,7 +7,7 @@
 use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, ColumnSource, LayerRef, Material, Renderer, RendererDevice, categorical::*,
-    config::Config, data_render, encode_png,
+    config::Config, encode_png, gpu,
 };
 use std::{path::Path, path::PathBuf};
 
@@ -91,9 +91,9 @@ fn main() -> Result {
             .unwrap_or_else(|| "target/categorical-gallery".into()),
     );
     std::fs::create_dir_all(&directory)?;
-    let instance = data_render::create_instance();
-    let adapter = data_render::request_adapter_async(&instance).block_on()?;
-    let (device, queue) = data_render::request_device_async(&adapter).block_on()?;
+    let instance = gpu::create_instance();
+    let adapter = gpu::request_adapter_async(&instance).block_on()?;
+    let (device, queue) = gpu::request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(device, queue);
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 4 << 20)?;
     let mut chart = CategoricalChart {

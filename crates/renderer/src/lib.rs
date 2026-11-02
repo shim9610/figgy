@@ -10,11 +10,31 @@ pub mod axis_render;
 mod browser_compile;
 pub mod chart;
 pub mod data;
+/// The GPU drawing internals: pipelines, uniforms, the column pool's
+/// machinery and the per-primitive draws the renderer issues. Public for the
+/// renderer's own tests and hosts that study it; nothing here is a stable
+/// API (#160). Device and surface setup is [`gpu`]; the column pool types a
+/// host names are re-exported at the crate root.
+#[doc(hidden)]
 pub mod data_render;
 mod decoration_render;
 pub mod demo;
 pub mod error;
 mod gpu_compile;
+
+/// GPU device and surface setup: the instance, adapter and device a
+/// renderer is built on ([`RendererDevice::new`] takes the device and queue),
+/// and the window surface helpers. A host that already owns a device skips
+/// all of it.
+pub mod gpu {
+    pub use crate::data_render::{
+        RenderOutcome, configure_surface, create_instance, create_surface_for_window,
+        reconfigure_surface, render_clear, request_adapter_async,
+        request_adapter_for_surface_async, request_device_async, try_configure_surface,
+    };
+}
+/// Contour label placement constants, for the renderer's own tests.
+#[doc(hidden)]
 pub mod gpu_contour;
 mod gpu_data_pick;
 pub mod gpu_errorbar;
@@ -25,6 +45,9 @@ pub mod init;
 pub(crate) mod line_step;
 pub mod pick;
 pub mod radial;
+/// The CPU canvas the decoration raster draws on, for the renderer's own
+/// tests.
+#[doc(hidden)]
 pub mod raster;
 mod render_warning;
 pub mod renderer;
@@ -107,9 +130,9 @@ pub use renderer::{
     GpuPickRequest, MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature, PreparedFrame,
     PreparedPipelines, RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer,
     RendererDevice, RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo,
-    StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, WebDerivedSnapshot,
-    WebDerivedStamp, WindowedRenderer, clamp_export_scale, display_config_for_surface,
-    dpi_to_scale, draw_style_supports, encode_png, fit_display_panel, place_document,
+    StreamingOperation, StreamingSelectionRequest, StreamingSelectionTicket, WindowedRenderer,
+    clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
+    fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{

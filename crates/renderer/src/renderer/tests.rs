@@ -525,10 +525,6 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
         Err(FiggyError::ColumnNotResident { .. })
     ));
     assert!(matches!(
-        renderer.web_derived_snapshot(chart),
-        Err(FiggyError::ColumnNotResident { .. })
-    ));
-    assert!(matches!(
         renderer.begin_errorbar_extent("s", "s", "s"),
         Err(crate::GpuErrorbarError::ColumnNotResident { .. })
     ));
@@ -545,10 +541,6 @@ fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
         let guard = renderer
             .begin_upsert_column("resident", &col_f64(vec![1.0, 2.0]))
             .unwrap();
-        assert!(matches!(
-            guard.web_derived_snapshot(chart),
-            Err(FiggyError::ColumnNotResident { .. })
-        ));
         assert!(matches!(
             guard.begin_series_fit_extent(&series),
             Err(crate::GpuErrorbarError::ColumnNotResident { .. })
@@ -4376,8 +4368,10 @@ fn dropped_renderer_column_upsert_rolls_back_pool_and_chart_state() {
     );
 }
 
+/// A provisional upsert moves no fit token until it commits: dropping it
+/// leaves the chart's token as it was.
 #[test]
-fn provisional_upsert_snapshot_matches_commit_and_disappears_on_drop() {
+fn provisional_upsert_moves_the_fit_token_only_on_commit() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -4389,43 +4383,18 @@ fn provisional_upsert_snapshot_matches_commit_and_disappears_on_drop() {
             vec![state_test_line("line", "x", "y")],
         )
         .unwrap();
-    let before = renderer.web_derived_snapshot(chart).unwrap();
-
+    let before = renderer.begin_fit_commit(chart).unwrap();
     {
-        let guard = renderer
+        let _guard = renderer
             .begin_upsert_column("x", &col_f64(vec![10.0, 11.0]))
             .unwrap();
-        let prospective = guard.web_derived_snapshot(chart).unwrap();
-        assert_ne!(prospective.stamp(), before.stamp());
-        assert_ne!(prospective.fit_token(), before.fit_token());
     }
-    assert_eq!(
-        renderer.web_derived_snapshot(chart).unwrap().stamp(),
-        before.stamp()
-    );
-    assert_eq!(
-        renderer.web_derived_snapshot(chart).unwrap().fit_token(),
-        before.fit_token()
-    );
-
-    let (prospective_stamp, prospective_fit_token) = {
-        let guard = renderer
-            .begin_upsert_column("x", &col_f64(vec![20.0, 21.0]))
-            .unwrap();
-        let snapshot = guard.web_derived_snapshot(chart).unwrap();
-        let stamp = snapshot.stamp().clone();
-        let fit_token = snapshot.fit_token().clone();
-        guard.commit();
-        (stamp, fit_token)
-    };
-    assert_eq!(
-        renderer.web_derived_snapshot(chart).unwrap().stamp(),
-        &prospective_stamp
-    );
-    assert_eq!(
-        renderer.web_derived_snapshot(chart).unwrap().fit_token(),
-        &prospective_fit_token
-    );
+    assert_eq!(renderer.begin_fit_commit(chart).unwrap(), before);
+    renderer
+        .begin_upsert_column("x", &col_f64(vec![20.0, 21.0]))
+        .unwrap()
+        .commit();
+    assert_ne!(renderer.begin_fit_commit(chart).unwrap(), before);
 }
 
 #[test]
@@ -4515,7 +4484,7 @@ fn renderer_column_revision_exhaustion_preflights_before_pool_mutation() {
 }
 
 #[test]
-fn web_derived_stamp_tracks_layout_while_fit_token_survives_defrag_only() {
+fn fit_token_survives_defrag_only() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -4530,13 +4499,10 @@ fn web_derived_stamp_tracks_layout_while_fit_token_survives_defrag_only() {
             vec![state_test_line("line", "x", "y")],
         )
         .unwrap();
-    let before = renderer.web_derived_snapshot(chart).unwrap();
     let token = renderer.begin_fit_commit(chart).unwrap();
 
     assert!(renderer.remove_column("hole").unwrap());
     assert!(renderer.defragment().unwrap());
-    let after = renderer.web_derived_snapshot(chart).unwrap();
-    assert_ne!(before.stamp(), after.stamp());
 
     let x_extent = crate::chart::FitExtent {
         min: 10.0,
@@ -4554,29 +4520,6 @@ fn web_derived_stamp_tracks_layout_while_fit_token_survives_defrag_only() {
     let config = renderer.chart_config(chart).unwrap();
     assert_eq!((config.bottom_x.min, config.bottom_x.max), (10.0, 20.0));
     assert_eq!((config.left_y.min, config.left_y.max), (-5.0, 5.0));
-}
-
-#[test]
-fn web_derived_stamp_tracks_picker_source_identity() {
-    let Some(mut renderer) = state_test_renderer() else {
-        return;
-    };
-    renderer.add_column("x", &col_f64(vec![0.0, 1.0])).unwrap();
-    renderer.add_column("y", &col_f64(vec![1.0, 2.0])).unwrap();
-    let chart = renderer
-        .register_chart(
-            crate::default::default_config(),
-            vec![state_test_line("line", "x", "y")],
-        )
-        .unwrap();
-    let before = renderer.web_derived_snapshot(chart).unwrap();
-    let mut series = renderer.chart_series(chart).unwrap()[0].clone();
-    series.source_id = Some("replacement-source".to_string());
-
-    renderer.set_chart_series(chart, vec![series]).unwrap();
-
-    let after = renderer.web_derived_snapshot(chart).unwrap();
-    assert_ne!(before.stamp(), after.stamp());
 }
 
 #[test]

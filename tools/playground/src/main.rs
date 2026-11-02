@@ -42,6 +42,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use renderer::data_render;
+use renderer::gpu;
 use renderer::{Renderer, RendererDevice};
 
 use crate::cartesian::CartesianHost;
@@ -64,10 +65,9 @@ struct Gpu {
 impl Gpu {
     fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
-        let instance = data_render::create_instance();
-        let surface = data_render::create_surface_for_window(&instance, window)?;
-        let adapter =
-            data_render::request_adapter_for_surface_async(&instance, &surface).block_on()?;
+        let instance = gpu::create_instance();
+        let surface = gpu::create_surface_for_window(&instance, window)?;
+        let adapter = gpu::request_adapter_for_surface_async(&instance, &surface).block_on()?;
         eprintln!("[gpu] adapter: {:?}", adapter.get_info());
         let (device, queue) = request_device(&adapter)?;
         let limits = device.limits();
@@ -76,7 +76,7 @@ impl Gpu {
             limits.max_buffer_size >> 20,
             limits.max_storage_buffer_binding_size >> 20
         );
-        let config = data_render::try_configure_surface(
+        let config = gpu::try_configure_surface(
             &surface,
             &adapter,
             &device,
@@ -517,11 +517,11 @@ impl Drop for App {
 
 fn main() {
     if std::env::args().any(|a| a == "--selftest") {
-        let instance = data_render::create_instance();
-        let adapter = data_render::request_adapter_async(&instance)
+        let instance = gpu::create_instance();
+        let adapter = gpu::request_adapter_async(&instance)
             .block_on()
             .expect("adapter");
-        let (d, q) = data_render::request_device_async(&adapter)
+        let (d, q) = gpu::request_device_async(&adapter)
             .block_on()
             .expect("device");
         let gpu = RendererDevice::new(d, q);

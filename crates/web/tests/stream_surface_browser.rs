@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use ::renderer::FiggyError;
-use ::renderer::data_render::{create_instance, request_adapter_async, request_device_async};
+use ::renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use ::renderer::gpu_memory;
 use wasm_bindgen_test::*;
 

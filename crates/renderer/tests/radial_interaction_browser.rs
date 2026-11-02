@@ -43,13 +43,11 @@ fn edit_radial(frame: &RadialFrame, chart: &mut RadialChart, key: DecorationId) 
 }
 #[wasm_bindgen_test(async)]
 async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
-    let instance = renderer::data_render::create_instance();
-    let adapter = renderer::data_render::request_adapter_async(&instance)
+    let instance = renderer::gpu::create_instance();
+    let adapter = renderer::gpu::request_adapter_async(&instance)
         .await
         .unwrap();
-    let (device, queue) = renderer::data_render::request_device_async(&adapter)
-        .await
-        .unwrap();
+    let (device, queue) = renderer::gpu::request_device_async(&adapter).await.unwrap();
     assert!(device.as_webgpu().is_some());
     let gpu = RendererDevice::new(device, queue);
     let mut r = RadialRenderer::try_new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
@@ -92,13 +90,11 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
 mod radial_export;
 #[wasm_bindgen_test(async)]
 async fn radial_png_preserves_hover_progress_and_persistent_selection_on_webgpu() {
-    let instance = renderer::data_render::create_instance();
-    let adapter = renderer::data_render::request_adapter_async(&instance)
+    let instance = renderer::gpu::create_instance();
+    let adapter = renderer::gpu::request_adapter_async(&instance)
         .await
         .unwrap();
-    let (device, queue) = renderer::data_render::request_device_async(&adapter)
-        .await
-        .unwrap();
+    let (device, queue) = renderer::gpu::request_device_async(&adapter).await.unwrap();
     assert!(device.as_webgpu().is_some());
     radial_export::check(RendererDevice::new(device, queue)).await;
 }
