@@ -11,13 +11,6 @@ version = 2
 # instead of blocking unrelated work.
 unmaintained = "workspace"
 yanked = "deny"
-ignore = [
-    # The text renderer reads the OpenType MATH table through ttf-parser for
-    # math layout (#45); swash's read-fonts has no MATH table, and no
-    # maintained ttf-parser release exists. Moving the MATH reader off
-    # ttf-parser is a separate change.
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is the MATH table reader; no maintained release" },
-]
 
 [licenses]
 version = 2

@@ -45,8 +45,9 @@ swash = "0.2"
 tiny-skia = "0.12"
 # The OpenType MATH table (constants, italic corrections, accent attachments,
 # glyph variants and assemblies) and the GSUB `ssty` script alternates of the
-# math layout (#45); swash's `read-fonts` has no MATH table.
-ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
+# math layout (#45). swash and egui pin read-fonts 0.41, which has no MATH
+# table; this is the release that does. Unify with theirs when they move.
+read-fonts = { version = "0.46", default-features = false, features = ["std"] }
 # Lock-free reads of the registered-font snapshot; registration publishes a
 # successor under its own mutex (#160).
 arc-swap = "1.7"

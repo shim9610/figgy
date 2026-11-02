@@ -1220,7 +1220,7 @@ fn place_cell(
         let seg = &segments[i];
         i += 1;
         let mut position = ScriptPosition::of(seg);
-        if let Some(face) = math {
+        if let Some(face) = &math {
             if let Some(node) = seg.math_node {
                 if matches!(node.kind, crate::text::MathKind::Math(_)) {
                     // A formula: one atom of the cell, laid out from the
@@ -1233,7 +1233,7 @@ fn place_cell(
                         (i - 1, end),
                         (pen_x, baseline),
                         policy,
-                        face,
+                        face.clone(),
                     );
                     max_ascent = max_ascent.max(f.ascent);
                     max_descent = max_descent.max(f.descent);

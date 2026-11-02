@@ -1496,9 +1496,13 @@ additive.
   `fonts/LICENSE-NewCMMath.txt` with the LPPL it refers to. Other math faces
   can be registered with `register_font_bytes` and named in
   `RichText.font`.
-- **New dependency.** `ttf-parser 0.25` (`default-features = false`,
-  features `std` and `opentype-layout`) reads the MATH table and the GSUB
-  `ssty` alternates; the lockfile already held it through winit.
+- **New dependency.** `read-fonts 0.46` (`default-features = false`,
+  feature `std`) reads the MATH table and the GSUB `ssty` alternates. swash
+  and egui pin read-fonts 0.41, which has no MATH table, so the lockfile
+  holds both versions until they move, when the two are unified
+  ([#160](https://github.com/shim9610/figgy/issues/160)). The reader first
+  used `ttf-parser 0.25`, which RustSec marks unmaintained
+  (RUSTSEC-2026-0192); the renderer no longer depends on it.
 - **Power tick labels** write the exponent as a text-mode `Scripts` node
   (D3 of #45) instead of superscript segments. It lays out through the same
   `script_placement`, so the labels' pixels, bounds and parts are unchanged.

@@ -11,11 +11,14 @@
 
 use std::sync::OnceLock;
 
+use read_fonts::tables::gsub::{AlternateSubst, Gsub, SingleSubst, SubstitutionSubtables};
+use read_fonts::tables::head::Head;
+use read_fonts::tables::math::{
+    GlyphAssembly, GlyphPartRecord, Math, MathConstants, MathValueRecord, PartFlags, StretchAxis,
+};
+use read_fonts::types::{GlyphId, Tag};
+use read_fonts::{FontData, FontRead};
 use swash::FontRef;
-use ttf_parser::gsub::SubstitutionSubtable;
-use ttf_parser::math::{Constants, GlyphAssembly, GlyphConstruction, GlyphPart, MathValue};
-use ttf_parser::opentype_layout::LayoutTable;
-use ttf_parser::{GlyphId, Tag};
 
 // Bundled math face (GUST Font License, fonts/LICENSE-NewCMMath.txt):
 // New Computer Modern Math, shipped verbatim.
@@ -27,26 +30,26 @@ pub(in crate::text_render) fn bundled_math_font() -> FontRef<'static> {
     *FACE.get_or_init(|| super::bundled_face(NEW_CM_MATH))
 }
 
-/// A face with a MATH table, read through `ttf-parser`.
-#[derive(Clone, Copy)]
+/// A face with a MATH table, read through `read-fonts`.
+#[derive(Clone)]
 pub(in crate::text_render) struct MathFace {
     pub(in crate::text_render) font: FontRef<'static>,
     upem: f32,
-    constants: Constants<'static>,
-    math: ttf_parser::math::Table<'static>,
-    gsub: Option<LayoutTable<'static>>,
+    constants: MathConstants<'static>,
+    math: Math<'static>,
+    gsub: Option<Gsub<'static>>,
 }
 
 /// A glyph stretched to a size: one glyph (the base or a size variant), or
 /// an assembly of parts with its repeat count and connector overlap.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(in crate::text_render) enum Stretched {
     Glyph(u16),
     Assembly(Assembly),
 }
 
 /// A glyph assembly laid out to a size, in font units.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(in crate::text_render) struct Assembly {
     pub(in crate::text_render) assembly: GlyphAssembly<'static>,
     /// How many times each extender part repeats.
@@ -57,26 +60,26 @@ pub(in crate::text_render) struct Assembly {
     pub(in crate::text_render) length: f32,
 }
 
+fn is_extender(part: &GlyphPartRecord) -> bool {
+    part.part_flags().contains(PartFlags::EXTENDER_FLAG)
+}
+
 impl Assembly {
     /// Every part in drawing order (bottom to top, or left to right), the
     /// extenders repeated, with its start offset along the stretch
     /// direction, in font units. Walks the part array; nothing is stored.
-    pub(in crate::text_render) fn for_each_part(&self, mut f: impl FnMut(GlyphPart, f32)) {
+    pub(in crate::text_render) fn for_each_part(&self, mut f: impl FnMut(GlyphPartRecord, f32)) {
         let mut offset = 0.0f32;
         let mut first = true;
-        for part in self.assembly.parts {
-            let count = if part.part_flags.extender() {
-                self.repeats
-            } else {
-                1
-            };
+        for part in self.assembly.part_records() {
+            let count = if is_extender(part) { self.repeats } else { 1 };
             for _ in 0..count {
                 if !first {
                     offset -= self.overlap;
                 }
                 first = false;
-                f(part, offset);
-                offset += part.full_advance as f32;
+                f(*part, offset);
+                offset += f32::from(part.full_advance().to_u16());
             }
         }
     }
@@ -98,24 +101,16 @@ impl MathFace {
 
     /// The MATH table view of `font`, or `None` when it has none.
     fn of(font: FontRef<'static>) -> Option<MathFace> {
-        let table = |tag: &[u8; 4]| font.table(swash::tag_from_bytes(tag));
-        let raw = ttf_parser::RawFaceTables {
-            head: table(b"head")?,
-            hhea: table(b"hhea")?,
-            maxp: table(b"maxp")?,
-            gsub: table(b"GSUB"),
-            math: Some(table(b"MATH")?),
-            ..Default::default()
-        };
-        let face = ttf_parser::Face::from_raw_tables(raw).ok()?;
-        let tables = face.tables();
-        let math = tables.math?;
+        let table = |tag: &[u8; 4]| font.table(swash::tag_from_bytes(tag)).map(FontData::new);
+        let head = Head::read(table(b"head")?).ok()?;
+        let math = Math::read(table(b"MATH")?).ok()?;
+        let constants = math.math_constants().ok()?;
         Some(MathFace {
             font,
-            upem: tables.head.units_per_em as f32,
-            constants: math.constants?,
+            upem: f32::from(head.units_per_em()),
+            constants,
             math,
-            gsub: tables.gsub,
+            gsub: table(b"GSUB").and_then(|data| Gsub::read(data).ok()),
         })
     }
 
@@ -130,13 +125,13 @@ impl MathFace {
     }
 
     /// The MATH constants.
-    pub(in crate::text_render) fn constants(&self) -> &Constants<'static> {
+    pub(in crate::text_render) fn constants(&self) -> &MathConstants<'static> {
         &self.constants
     }
 
     /// A MATH constant in pixels at `size`.
-    pub(in crate::text_render) fn value(&self, v: MathValue<'_>, size: f32) -> f32 {
-        self.px(v.value as f32, size)
+    pub(in crate::text_render) fn value(&self, v: &MathValueRecord, size: f32) -> f32 {
+        self.px(f32::from(v.value().to_i16()), size)
     }
 
     /// The glyph `c` maps to; 0 when the face lacks it.
@@ -147,90 +142,100 @@ impl MathFace {
     /// The italic correction of `glyph`, in font units (0 when none).
     pub(in crate::text_render) fn italic_correction(&self, glyph: u16) -> f32 {
         self.math
-            .glyph_info
-            .and_then(|info| info.italic_corrections)
-            .and_then(|v| v.get(GlyphId(glyph)))
-            .map_or(0.0, |v| v.value as f32)
+            .math_glyph_info()
+            .ok()
+            .and_then(|info| info.math_italics_correction_info()?.ok())
+            .and_then(|info| info.correction(GlyphId::new(u32::from(glyph))))
+            .map_or(0.0, |v| v as f32)
     }
 
     /// The top accent attachment of `glyph`, in font units from its origin.
     pub(in crate::text_render) fn top_accent(&self, glyph: u16) -> Option<f32> {
         self.math
-            .glyph_info
-            .and_then(|info| info.top_accent_attachments)
-            .and_then(|v| v.get(GlyphId(glyph)))
-            .map(|v| v.value as f32)
+            .math_glyph_info()
+            .ok()
+            .and_then(|info| info.math_top_accent_attachment()?.ok())
+            .and_then(|info| info.attachment(GlyphId::new(u32::from(glyph))))
+            .map(|v| v as f32)
     }
 
     /// The `ssty` alternate of `glyph` for script level `level` (1 for
     /// script, 2 for scriptscript), or `glyph` when the face has none (D5).
     /// An alternate substitution takes the level's alternate (or the last
-    /// one); a single substitution applies at any level.
+    /// one); a single substitution applies at any level. The 24-bit glyph
+    /// formats cannot name a `u16` glyph's substitute and are skipped.
     pub(in crate::text_render) fn script_alternate(&self, glyph: u16, level: u8) -> u16 {
         if level == 0 {
             return glyph;
         }
-        let Some(gsub) = self.gsub else {
+        let Some(gsub) = &self.gsub else {
             return glyph;
         };
-        let Some(feature) = gsub.features.find(Tag::from_bytes(b"ssty")) else {
+        let (Ok(features), Ok(lookups)) = (gsub.feature_list(), gsub.lookup_list()) else {
             return glyph;
         };
-        let id = GlyphId(glyph);
-        for index in feature.lookup_indices {
-            let Some(lookup) = gsub.lookups.get(index) else {
+        let ssty = Tag::new(b"ssty");
+        let Some(feature) = features
+            .feature_records()
+            .iter()
+            .find(|record| record.feature_tag() == ssty)
+            .and_then(|record| record.feature(features.offset_data()).ok())
+        else {
+            return glyph;
+        };
+        let id = GlyphId::new(u32::from(glyph));
+        let pick = usize::from(level) - 1;
+        for index in feature.lookup_list_indices() {
+            let Ok(lookup) = lookups.lookups().get(usize::from(index.get())) else {
                 continue;
             };
-            for subtable in lookup.subtables.into_iter::<SubstitutionSubtable<'_>>() {
-                match subtable {
-                    SubstitutionSubtable::Alternate(alt) => {
-                        let Some(set) =
-                            alt.coverage.get(id).and_then(|i| alt.alternate_sets.get(i))
+            match lookup.subtables() {
+                Ok(SubstitutionSubtables::Alternate(subtables)) => {
+                    for subtable in subtables.iter().flatten() {
+                        let AlternateSubst::Format1(alt) = subtable else {
+                            continue;
+                        };
+                        let Some(set) = alt
+                            .coverage()
+                            .ok()
+                            .and_then(|c| c.get(id))
+                            .and_then(|i| alt.alternate_sets().get(i as usize).ok())
                         else {
                             continue;
                         };
-                        let n = set.alternates.len();
-                        if n == 0 {
-                            continue;
-                        }
-                        let pick = (u16::from(level) - 1).min(n - 1);
-                        if let Some(g) = set.alternates.get(pick) {
-                            return g.0;
+                        let alternates = set.alternate_glyph_ids();
+                        if let Some(g) =
+                            alternates.get(pick.min(alternates.len().saturating_sub(1)))
+                        {
+                            return g.get().to_u16();
                         }
                     }
-                    SubstitutionSubtable::Single(single) => {
-                        use ttf_parser::gsub::SingleSubstitution;
-                        let hit = match single {
-                            SingleSubstitution::Format1 { coverage, delta } => coverage
-                                .get(id)
-                                .map(|_| (i32::from(glyph) + i32::from(delta)) as u16),
-                            SingleSubstitution::Format2 {
-                                coverage,
-                                substitutes,
-                            } => coverage
-                                .get(id)
-                                .and_then(|i| substitutes.get(i))
-                                .map(|g| g.0),
+                }
+                Ok(SubstitutionSubtables::Single(subtables)) => {
+                    for subtable in subtables.iter().flatten() {
+                        let hit = match subtable {
+                            SingleSubst::Format1(single) => {
+                                single.coverage().ok().and_then(|c| c.get(id)).map(|_| {
+                                    (i32::from(glyph) + i32::from(single.delta_glyph_id())) as u16
+                                })
+                            }
+                            SingleSubst::Format2(single) => single
+                                .coverage()
+                                .ok()
+                                .and_then(|c| c.get(id))
+                                .and_then(|i| single.substitute_glyph_ids().get(i as usize))
+                                .map(|g| g.get().to_u16()),
+                            SingleSubst::Format3(_) | SingleSubst::Format4(_) => None,
                         };
                         if let Some(g) = hit {
                             return g;
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
         glyph
-    }
-
-    fn construction(&self, glyph: u16, horizontal: bool) -> Option<GlyphConstruction<'static>> {
-        let variants = self.math.variants?;
-        let constructions = if horizontal {
-            variants.horizontal_constructions
-        } else {
-            variants.vertical_constructions
-        };
-        constructions.get(GlyphId(glyph))
     }
 
     /// `glyph` stretched along one direction to at least `target` font
@@ -244,18 +249,28 @@ impl MathFace {
         target: f32,
         horizontal: bool,
     ) -> Stretched {
-        let Some(construction) = self.construction(glyph, horizontal) else {
+        let axis = if horizontal {
+            StretchAxis::Horizontal
+        } else {
+            StretchAxis::Vertical
+        };
+        let Some(construction) =
+            self.math.math_variants().ok().and_then(|variants| {
+                variants.glyph_construction(GlyphId::new(u32::from(glyph)), axis)
+            })
+        else {
             return Stretched::Glyph(glyph);
         };
         let mut largest = glyph;
-        for variant in construction.variants {
-            largest = variant.variant_glyph.0;
-            if variant.advance_measurement as f32 >= target {
+        for variant in construction.math_glyph_variant_records() {
+            largest = variant.variant_glyph().to_u16();
+            if f32::from(variant.advance_measurement().to_u16()) >= target {
                 return Stretched::Glyph(largest);
             }
         }
         match construction
-            .assembly
+            .glyph_assembly()
+            .and_then(Result::ok)
             .and_then(|assembly| self.assemble(assembly, target))
         {
             Some(assembly) => Stretched::Assembly(assembly),
@@ -265,16 +280,21 @@ impl MathFace {
 
     /// The assembly of `assembly` reaching `target` font units.
     fn assemble(&self, assembly: GlyphAssembly<'static>, target: f32) -> Option<Assembly> {
-        let min_overlap = self.math.variants.map_or(0, |v| v.min_connector_overlap) as f32;
+        let min_overlap = self
+            .math
+            .math_variants()
+            .map_or(0, |v| v.min_connector_overlap().to_u16());
+        let min_overlap = f32::from(min_overlap);
         // First pass: the fixed and the repeated parts.
         let (mut fixed, mut fixed_len, mut ext, mut ext_len) = (0u32, 0.0f32, 0u32, 0.0f32);
-        for part in assembly.parts {
-            if part.part_flags.extender() {
+        for part in assembly.part_records() {
+            let advance = f32::from(part.full_advance().to_u16());
+            if is_extender(part) {
                 ext += 1;
-                ext_len += part.full_advance as f32;
+                ext_len += advance;
             } else {
                 fixed += 1;
-                fixed_len += part.full_advance as f32;
+                fixed_len += advance;
             }
         }
         if fixed + ext == 0 {
@@ -296,7 +316,7 @@ impl MathFace {
         let count = fixed + repeats * ext;
         // Second pass: the largest overlap every connection allows.
         let mut max_overlap = f32::INFINITY;
-        let mut previous: Option<GlyphPart> = None;
+        let mut previous: Option<GlyphPartRecord> = None;
         let probe = Assembly {
             assembly,
             repeats: repeats as u16,
@@ -305,8 +325,11 @@ impl MathFace {
         };
         probe.for_each_part(|part, _| {
             if let Some(prev) = previous {
-                let allowed = prev.end_connector_length.min(part.start_connector_length) as f32;
-                max_overlap = max_overlap.min(allowed);
+                let allowed = prev
+                    .end_connector_length()
+                    .to_u16()
+                    .min(part.start_connector_length().to_u16());
+                max_overlap = max_overlap.min(f32::from(allowed));
             }
             previous = Some(part);
         });
@@ -317,7 +340,7 @@ impl MathFace {
             0.0
         };
         Some(Assembly {
-            assembly,
+            assembly: probe.assembly,
             repeats: repeats as u16,
             overlap,
             length: length(repeats, overlap),
@@ -337,7 +360,7 @@ mod tests {
     fn the_bundled_face_reads_its_math_table() {
         let f = face();
         assert_eq!(f.upem, 1000.0);
-        assert_eq!(f.constants().axis_height().value, 250);
+        assert_eq!(f.constants().axis_height().value().to_i16(), 250);
         assert_eq!(f.constants().script_percent_scale_down(), 70);
         assert_eq!(f.px(250.0, 20.0), 5.0);
         // Italic f has an italic correction; upright digits do not.
@@ -381,7 +404,7 @@ mod tests {
                 let mut last_end = 0.0f32;
                 a.for_each_part(|part, offset| {
                     parts += 1;
-                    last_end = offset + part.full_advance as f32;
+                    last_end = offset + f32::from(part.full_advance().to_u16());
                 });
                 assert!(parts >= 3);
                 assert!((last_end - a.length).abs() < 0.01);

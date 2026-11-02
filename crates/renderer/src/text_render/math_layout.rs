@@ -209,7 +209,7 @@ impl MBox {
 /// A placed glyph or assembly: the shape's advance and ink relative to its
 /// pen. A vertical assembly's pen is at its bottom; a horizontal one's at
 /// its left end, on the glyph baseline.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Shape {
     stretched: Stretched,
     horizontal: bool,
@@ -614,8 +614,8 @@ impl Formula<'_> {
     fn shape(&self, stretched: Stretched, horizontal: bool, size: f32) -> Shape {
         let font = self.face.font;
         let mut ink = MBox::empty(0.0);
-        match stretched {
-            Stretched::Glyph(glyph) => {
+        match &stretched {
+            &Stretched::Glyph(glyph) => {
                 let g = glyph_extents_id(font, size, glyph);
                 ink.width = g.advance;
                 if g.ink_left != g.ink_right || g.ink_top != g.ink_bottom {
@@ -627,7 +627,7 @@ impl Formula<'_> {
             }
             Stretched::Assembly(a) => {
                 a.for_each_part(|part, offset| {
-                    let g = glyph_extents_id(font, size, part.glyph_id.0);
+                    let g = glyph_extents_id(font, size, part.glyph_id().to_u16());
                     let o = self.face.px(offset, size);
                     let (dx, dy) = if horizontal { (o, 0.0) } else { (0.0, -o) };
                     ink.width = ink.width.max(if horizontal { 0.0 } else { g.advance });
@@ -643,9 +643,10 @@ impl Formula<'_> {
                 if horizontal {
                     ink.width = self.face.px(a.length, size);
                 }
-                ink.italic = self
-                    .face
-                    .px(a.assembly.italics_correction.value as f32, size);
+                ink.italic = self.face.px(
+                    f32::from(a.assembly.italics_correction().value().to_i16()),
+                    size,
+                );
             }
         }
         Shape {
@@ -662,8 +663,8 @@ impl Formula<'_> {
             return;
         }
         let font = self.face.font;
-        match shape.stretched {
-            Stretched::Glyph(glyph) => sink.glyph(font, glyph, shape.size, pen, color),
+        match &shape.stretched {
+            Stretched::Glyph(glyph) => sink.glyph(font, *glyph, shape.size, pen, color),
             Stretched::Assembly(a) => a.for_each_part(|part, offset| {
                 let o = self.face.px(offset, shape.size);
                 let at = if shape.horizontal {
@@ -671,7 +672,7 @@ impl Formula<'_> {
                 } else {
                     (pen.0, pen.1 - o)
                 };
-                sink.glyph(font, part.glyph_id.0, shape.size, at, color);
+                sink.glyph(font, part.glyph_id().to_u16(), shape.size, at, color);
             }),
         }
     }
@@ -710,7 +711,7 @@ impl Formula<'_> {
             },
         };
         let size = self.size(style, at.base);
-        let c = *self.face.constants();
+        let c = self.face.constants().clone();
         let v = |m| self.face.value(m, size);
         let display = style.display();
         let num = self.row(
@@ -854,7 +855,7 @@ impl Formula<'_> {
         sink: &mut dyn GlyphSink,
     ) -> MBox {
         let size = self.size(at.style, at.base);
-        let c = *self.face.constants();
+        let c = self.face.constants().clone();
         let v = |m| self.face.value(m, size);
         let body_style = at.style.cramp();
         let body = self.row(
@@ -969,7 +970,7 @@ impl Formula<'_> {
             return out;
         }
         let size = self.size(at.style, at.base);
-        let c = *self.face.constants();
+        let c = self.face.constants().clone();
         let v = |m| self.face.value(m, size);
         let measure = |r, style| self.row(r, style, at.base, &mut MeasureSink, (0.0, 0.0), None);
         let sup = has_sup.then(|| measure(sup_r, at.style.sup()));
@@ -1058,7 +1059,7 @@ impl Formula<'_> {
         draw_op: &mut dyn FnMut(&mut dyn GlyphSink, f32),
     ) -> MBox {
         let size = self.size(at.style, at.base);
-        let c = *self.face.constants();
+        let c = self.face.constants().clone();
         let v = |m| self.face.value(m, size);
         let measure = |r, style| self.row(r, style, at.base, &mut MeasureSink, (0.0, 0.0), None);
         let upper = (upper_r.0 != upper_r.1).then(|| measure(upper_r, at.style.sup()));
@@ -1130,7 +1131,7 @@ impl Formula<'_> {
             return self.scripts(b, upper_r, lower_r, true, at, sink);
         }
         let stretched = if at.style.display() {
-            let min = self.face.constants().display_operator_min_height() as f32;
+            let min = f32::from(self.face.constants().display_operator_min_height().to_u16());
             self.face.stretch(glyph, min, false)
         } else {
             Stretched::Glyph(glyph)
@@ -1340,7 +1341,7 @@ impl Formula<'_> {
         sink: &mut dyn GlyphSink,
     ) -> MBox {
         let size = self.size(at.style, at.base);
-        let c = *self.face.constants();
+        let c = self.face.constants().clone();
         let v = |m| self.face.value(m, size);
         let body_style = if over && kind == OverUnder::Line {
             at.style.cramp()
@@ -1841,7 +1842,7 @@ mod tests {
         let f = Formula {
             rt: &rt,
             segs: &rt.segments,
-            face,
+            face: face.clone(),
             policy: FontPolicy::Standard,
         };
         let prime = leaf('′', 0, 0);
