@@ -595,11 +595,6 @@ impl FiggyChart {
 
         self.columns.remove(id);
         self.column_revisions.remove(id);
-        // Style `i` draws series `i` (the frame zips them); a style past the
-        // last series draws nothing and is dropped with the removed ones.
-        let mut keep_iter = keep.iter();
-        self.styles
-            .retain(|_| keep_iter.next().is_some_and(|keep| *keep));
         self.labels = next_labels;
         if self.renderer.pool().slot(id).is_some() {
             return Err(js_err(
@@ -645,18 +640,9 @@ impl FiggyChart {
                 }
             }
         }
-        let (scale, _) = self.display_scale_and_panel()?;
-        let mut styles = Vec::new();
-        styles
-            .try_reserve(declarations.series.len())
+        self.renderer
+            .preflight_chart_styles(&declarations.series)
             .map_err(js_err)?;
-        for item in &declarations.series {
-            styles.push(
-                self.renderer
-                    .create_style_for_series_scaled(item, scale)
-                    .map_err(js_err)?,
-            );
-        }
         let PreparedDemoDeclarations {
             config,
             series,
@@ -689,7 +675,6 @@ impl FiggyChart {
         self.columns = metadata.columns;
         self.column_revisions = metadata.revisions;
         self.next_column_revision = metadata.next_revision;
-        self.styles = styles;
         self.labels = labels;
         self.color_seq = color_seq;
         Ok(())

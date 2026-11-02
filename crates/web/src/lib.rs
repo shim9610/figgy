@@ -1403,12 +1403,12 @@ mod web {
     use renderer::line::LineStylePreset;
     use renderer::text::{RichText, rich_segments_from_text};
     use renderer::{
-        Chart, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, Color,
-        ColumnSource, CpuTextMeasure, DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent,
-        HiLoColumnSource, HitId, HitMap, LayerHit, RegisteredChartDrawItem, Renderer,
-        ResizeHandle as ModelResizeHandle, Series, SeriesConfig, StreamColumn, StreamEncoding,
-        StreamRangeSourceBinding, StreamReplay, StreamSourceBinding, StreamStatistics,
-        StreamingChartOptions, StreamingLimits, WindowedRenderer,
+        Chart, ChartId, ChartRenderStamp, ChartView, Color, ColumnSource, CpuTextMeasure,
+        DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent, HiLoColumnSource, HitId,
+        HitMap, LayerHit, RegisteredChartDrawItem, Renderer, ResizeHandle as ModelResizeHandle,
+        SeriesConfig, StreamColumn, StreamEncoding, StreamRangeSourceBinding, StreamReplay,
+        StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
+        WindowedRenderer,
     };
 
     use renderer::data_render::{AllocError, GrowthPolicy};
@@ -1487,7 +1487,6 @@ mod web {
             columns: HashMap<String, usize>,
             column_revisions: HashMap<String, u64>,
             next_column_revision: u64,
-            styles: (usize, usize, usize),
             labels: Vec<Option<String>>,
             legend_auto_managed: bool,
             color_seq: usize,
@@ -1549,11 +1548,6 @@ mod web {
                 columns: chart.columns.clone(),
                 column_revisions: chart.column_revisions.clone(),
                 next_column_revision: chart.next_column_revision,
-                styles: (
-                    chart.styles.as_ptr() as usize,
-                    chart.styles.len(),
-                    chart.styles.capacity(),
-                ),
                 labels: chart.labels.clone(),
                 legend_auto_managed: chart.legend_auto_managed,
                 color_seq: chart.color_seq,
@@ -2372,12 +2366,11 @@ mod web {
             }
         }
 
-        /// LABELS_MATCH_SERIES (#152): the legacy labels and the GPU styles
-        /// hold one entry per series.
+        /// LABELS_MATCH_SERIES (#152): the legacy labels hold one entry per
+        /// series. The GPU styles are the renderer's (#160).
         fn assert_labels_match(chart: &FiggyChart, at: &str) {
             let series = chart.chart_series().unwrap().len();
             assert_eq!(chart.labels.len(), series, "{at}: labels");
-            assert_eq!(chart.styles.len(), series, "{at}: styles");
         }
 
         const CATEGORICAL_DOCUMENT: &str = r#"{

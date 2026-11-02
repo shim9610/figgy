@@ -631,6 +631,11 @@ impl<'w> WindowedRenderer<'w> {
         self.reported(result)
     }
 
+    pub fn set_chart_display(&mut self, id: ChartId, surface: Option<(u32, u32)>) -> Result<()> {
+        let result = self.inner.set_chart_display(id, surface);
+        self.reported(result)
+    }
+
     pub fn set_chart_view_state(&mut self, id: ChartId, view: ChartViewState) -> Result<()> {
         let result = self.inner.set_chart_view_state(id, view);
         self.reported(result)

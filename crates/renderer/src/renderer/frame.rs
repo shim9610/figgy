@@ -2580,12 +2580,18 @@ impl Renderer {
         // Resolve every id and fallible contour invariant before creating any
         // GPU styles or advancing the content revision of a supplied view.
         for item in items {
+            let (_, _, scale) = self.chart_display_config(item.chart_id)?;
             let state = self
                 .chart_states
                 .get(&item.chart_id)
                 .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
             for series in &state.series {
-                self.require_resident_series(series)?;
+                // A series whose source is not resident (a cancelled or
+                // unpublished stream) is not drawn; the rest of the chart is
+                // (#160).
+                if self.require_resident_series(series).is_err() {
+                    continue;
+                }
                 validate_contour_level_count(&series.series_id, &series.render_type)?;
                 validate_polar_series(&state.config, series)?;
                 preflight_contour_label_spacing(
@@ -2593,12 +2599,40 @@ impl Renderer {
                     &series.render_type,
                     effective_series_primitives(&state.config.draw_style, &series.render_type)
                         .contour,
-                    1.0,
+                    scale,
                 )?;
             }
         }
         for item in items {
-            self.ensure_registered_styles(item.chart_id)?;
+            if self
+                .chart_states
+                .get(&item.chart_id)
+                .is_some_and(|state| state.display.is_some())
+            {
+                self.ensure_registered_display(item.chart_id)?;
+            } else {
+                self.ensure_registered_styles(item.chart_id)?;
+            }
+        }
+        // Whether each series of each item is drawn: resident sources only.
+        let mut drawn = Vec::new();
+        drawn.try_reserve_exact(items.len()).map_err(allocation)?;
+        for item in items {
+            let state = self
+                .chart_states
+                .get(&item.chart_id)
+                .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            let mut resident = Vec::new();
+            resident
+                .try_reserve_exact(state.series.len())
+                .map_err(allocation)?;
+            resident.extend(
+                state
+                    .series
+                    .iter()
+                    .map(|series| self.require_resident_series(series).is_ok()),
+            );
+            drawn.push(resident);
         }
         let (states, mut preparation) = self.preparation_parts();
         let mut series_inputs = Vec::new();
@@ -2607,15 +2641,16 @@ impl Renderer {
             .try_reserve_exact(items.len())
             .map_err(allocation)?;
         stamps.try_reserve_exact(items.len()).map_err(allocation)?;
-        for item in items {
+        for (item, resident) in items.iter().zip(&drawn) {
             let state = states
                 .get(&item.chart_id)
                 .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
-            let styles = &state
-                .prepared_styles
-                .as_ref()
-                .ok_or(FiggyError::internal("registered styles were prepared"))?
-                .styles;
+            let styles = &match &state.display {
+                Some(display) => display.styles.as_ref().map(|(_, styles)| styles),
+                None => state.prepared_styles.as_ref(),
+            }
+            .ok_or(FiggyError::internal("registered styles were prepared"))?
+            .styles;
             let mut series = Vec::new();
             series
                 .try_reserve_exact(state.series.len())
@@ -2625,7 +2660,9 @@ impl Renderer {
                     .series
                     .iter()
                     .zip(styles)
-                    .map(|(config, style)| Series { config, style }),
+                    .zip(resident)
+                    .filter(|(_, resident)| **resident)
+                    .map(|((config, style), _)| Series { config, style }),
             );
             series_inputs.push(series);
             stamps.push(PreparedChartStamp {
@@ -2640,9 +2677,13 @@ impl Renderer {
             let state = states
                 .get(&item.chart_id)
                 .ok_or(FiggyError::UnknownChart { id: item.chart_id })?;
+            let chart_config = match state.display.as_ref().and_then(|d| d.placed.as_ref()) {
+                Some(placed) => &placed.config,
+                None => &state.config,
+            };
             draws.push(ChartDrawItem {
                 view: item.view,
-                chart_config: &state.config,
+                chart_config,
                 series,
             });
         }
