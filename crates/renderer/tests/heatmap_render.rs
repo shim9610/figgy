@@ -19,7 +19,7 @@ mod test_gpu;
 use std::sync::OnceLock;
 
 use renderer::config::AxisScale;
-use renderer::data::{Column, ColumnPairWriter, ColumnSource, ColumnUploadStats};
+use renderer::data::{Column, ColumnPairWriter, ColumnSource};
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
     MatrixRef, Shading,
@@ -54,12 +54,7 @@ const NAN_PAINT: Color = Color {
 };
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let finite = |acc: f64, v: f64| if v.is_finite() { acc.min(v) } else { acc };
-    let min = data.iter().copied().fold(f64::INFINITY, finite);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, |acc, v| {
-        if v.is_finite() { acc.max(v) } else { acc }
-    });
-    Column { data, min, max }
+    Column { data }
 }
 
 struct PairColumn {
@@ -71,40 +66,10 @@ impl ColumnSource for PairColumn {
         self.pairs.len()
     }
 
-    fn max(&self) -> f64 {
-        self.pairs
-            .iter()
-            .map(|(hi, lo)| *hi as f64 + *lo as f64)
-            .fold(f64::NEG_INFINITY, f64::max)
-    }
-
-    fn min(&self) -> f64 {
-        self.pairs
-            .iter()
-            .map(|(hi, lo)| *hi as f64 + *lo as f64)
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (bytes, (hi, lo)) in dst.chunks_exact_mut(4).zip(&self.pairs) {
-            bytes.copy_from_slice(&(*hi + *lo).to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for (index, (hi, lo)) in self.pairs.iter().copied().enumerate() {
             dst.write_pair(index, hi, lo);
         }
-        let min_positive = self
-            .pairs
-            .iter()
-            .map(|(hi, lo)| *hi as f64 + *lo as f64)
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .reduce(f64::min);
-        ColumnUploadStats { min_positive }
     }
 }
 

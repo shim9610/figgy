@@ -40,8 +40,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|d| 0.15 + 0.85 * (2.0 * d.to_radians()).cos().abs())
         .collect();
-    renderer.add_column("deg", &Column { data: degrees, min: 0.0, max: 360.0 })?;
-    renderer.add_column("gain", &Column { data: gain, min: 0.0, max: 1.0 })?;
+    renderer.add_column("deg", &Column { data: degrees })?;
+    renderer.add_column("gain", &Column { data: gain })?;
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 960, height: 640 });

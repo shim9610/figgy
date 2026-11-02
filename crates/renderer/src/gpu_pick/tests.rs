@@ -50,23 +50,11 @@ impl PointColumnLookup for CpuColumns {
 }
 
 fn f32_column(values: Vec<f32>) -> Column<f32> {
-    let min = values.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    Column {
-        data: values,
-        min,
-        max,
-    }
+    Column { data: values }
 }
 
 fn f64_column(values: Vec<f64>) -> Column<f64> {
-    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column {
-        data: values,
-        min,
-        max,
-    }
+    Column { data: values }
 }
 
 fn parity_config(width: u32, height: u32, x: (f64, f64), y: (f64, f64)) -> Config {

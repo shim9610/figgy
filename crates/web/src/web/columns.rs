@@ -192,7 +192,7 @@ impl FiggyChart {
         adapters.try_reserve_exact(ids.len()).map_err(js_err)?;
         adapters.extend(
             data.chunks_exact(values_per_column)
-                .map(BorrowedSplitF64Column::new),
+                .map(BorrowedF64Column::new),
         );
         self.commit_column_batch(&ids, &adapters)
     }
@@ -320,8 +320,8 @@ impl FiggyChart {
                 "ragged column '{id}': the id is a registered column"
             )));
         }
-        let values = BorrowedSplitF64Column::new(values);
-        let offsets = BorrowedSplitF64Column::new(offsets);
+        let values = BorrowedF64Column::new(values);
+        let offsets = BorrowedF64Column::new(offsets);
         let source = renderer::RaggedSource {
             values: &values,
             offsets: &offsets,

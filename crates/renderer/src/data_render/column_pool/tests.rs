@@ -1,5 +1,4 @@
 use super::monitor::buffer_ceiling_from;
-use super::transactions::write_scalar_source_as_pairs;
 use super::transactions::{ColumnInputMeta, ResidentBatchCapacityPlan};
 use super::*;
 use crate::data::Column;
@@ -587,41 +586,11 @@ impl ColumnSource for RawScalarSource<'_> {
         self.bits.len()
     }
 
-    fn min(&self) -> f64 {
-        0.0
-    }
-
-    fn max(&self) -> f64 {
-        0.0
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        assert_eq!(dst.len(), self.bits.len() * std::mem::size_of::<f32>());
-        for (chunk, bits) in dst.chunks_exact_mut(4).zip(self.bits) {
-            chunk.copy_from_slice(&bits.to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         assert_eq!(dst.len(), self.bits.len());
-        let mut min_positive: Option<f64> = None;
         for (index, bits) in self.bits.iter().enumerate() {
-            let value = f32::from_bits(*bits);
-            dst.write_pair(index, value, 0.0);
-            if value.is_finite()
-                && value > 0.0
-                && match min_positive {
-                    Some(current) => (value as f64) < current,
-                    None => true,
-                }
-            {
-                min_positive = Some(value as f64);
-            }
+            dst.write_pair(index, f32::from_bits(*bits), 0.0);
         }
-        ColumnUploadStats { min_positive }
     }
 }
 
@@ -632,27 +601,7 @@ impl ColumnSource for PanickingScalarSource {
         1
     }
 
-    fn min(&self) -> f64 {
-        1.0
-    }
-
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {
-        panic!("injected scalar writer panic");
-    }
-
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        dst[0] = 0xa5;
-        panic!("injected scalar writer panic");
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         dst.write_pair(0, 9.0, 0.0);
         panic!("injected scalar writer panic");
     }
@@ -665,23 +614,7 @@ impl HiLoColumnSource for PanickingHiLoSource {
         1
     }
 
-    fn min(&self) -> f64 {
-        1.0
-    }
-
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        dst[0] = 0x5a;
-        panic!("injected hi/lo writer panic");
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         dst.write_pair(0, 9.0, 0.25);
         panic!("injected hi/lo writer panic");
     }
@@ -764,12 +697,17 @@ fn scalar_source_expands_to_pairs_without_changing_bits() {
     let mut dst = vec![0xa5; bits.len() * COLUMN_VALUE_BYTES];
     let source = RawScalarSource { bits: &bits };
 
-    let stats = write_scalar_source_as_pairs(
-        &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
-    );
+    let out_of_range = std::cell::Cell::new(false);
+    let mut writer = ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &out_of_range);
+    source.write_pairs(&mut writer);
+    let stats = writer.bounds();
 
+    // The writer records the stored values: the finite ones span
+    // -0.0..=1.0000001, and the NaN and infinities are left out.
+    let stats = stats.expect("finite values were written");
     assert_eq!(stats.min_positive, Some(f32::from_bits(0x3f80_0001) as f64));
+    assert_eq!(stats.min, 0.0);
+    assert_eq!(stats.max, f32::from_bits(0x3f80_0001) as f64);
     for (pair, bits) in dst.chunks_exact(COLUMN_VALUE_BYTES).zip(bits) {
         assert_eq!(&pair[..4], &bits.to_le_bytes());
         assert_eq!(&pair[4..], &0.0f32.to_le_bytes());
@@ -781,13 +719,13 @@ fn scalar_source_expansion_accepts_empty_input() {
     let source = RawScalarSource { bits: &[] };
     let mut dst = [];
 
-    let stats = write_scalar_source_as_pairs(
-        &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
-    );
+    let out_of_range = std::cell::Cell::new(false);
+    let mut writer = ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &out_of_range);
+    source.write_pairs(&mut writer);
+    let stats = writer.bounds();
 
     assert!(dst.is_empty());
-    assert_eq!(stats.min_positive, None);
+    assert_eq!(stats, None);
 }
 
 /// A pool on the shared test device, charged to a ledger of its own: one
@@ -802,9 +740,7 @@ fn mk_pool(cap: u64) -> Option<(wgpu::Device, wgpu::Queue, Arc<GpuLedger>, Colum
 }
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 #[test]
@@ -1616,11 +1552,9 @@ fn legacy_staging_failure_restores_allocator_and_allows_retry() {
             ColumnInputMeta {
                 id: "x".into(),
                 len_values: column.data.len(),
-                min: column.min,
-                max: column.max,
             },
             GpuAllocCtx::new(&device, &queue, &ledger),
-            |dst| write_scalar_source_as_pairs(&column, dst),
+            |dst| ColumnSource::write_pairs(&column, dst),
             |_| {
                 Err(AllocError::AllocationFailed {
                     resource: "column staging buffer",
@@ -1776,11 +1710,7 @@ fn a_rejected_batch_leaves_the_pool_untouched() {
     pool.growth_policy = GrowthPolicy::Fixed;
     let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
     let a = col_f64(vec![1.0, 2.0]);
-    let empty: Column<f64> = Column {
-        data: Vec::new(),
-        min: 0.0,
-        max: 0.0,
-    };
+    let empty: Column<f64> = Column { data: Vec::new() };
     pool.add_column("live".into(), &a, ctx()).expect("seed");
     let free_before = pool.free.clone();
     let slots_before = pool.slots.len();
@@ -2193,11 +2123,9 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
         ColumnInputMeta {
             id: "x".into(),
             len_values: replacement.data.len(),
-            min: replacement.min,
-            max: replacement.max,
         },
         GpuAllocCtx::new(&device, &queue, &ledger),
-        |dst| write_scalar_source_as_pairs(&replacement, dst),
+        |dst| ColumnSource::write_pairs(&replacement, dst),
         |_| {
             Err(AllocError::AllocationFailed {
                 resource: "column staging buffer",
@@ -4123,29 +4051,11 @@ impl ColumnSource for SplitPairSource<'_> {
         self.0.len()
     }
 
-    fn min(&self) -> f64 {
-        self.0.iter().copied().fold(f64::INFINITY, f64::min)
-    }
-
-    fn max(&self) -> f64 {
-        self.0.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (chunk, value) in dst.chunks_exact_mut(4).zip(self.0) {
-            chunk.copy_from_slice(&(*value as f32).to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for (index, &value) in self.0.iter().enumerate() {
             let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
             dst.write_pair(index, hi, lo);
         }
-        ColumnUploadStats { min_positive: None }
     }
 }
 
@@ -4167,9 +4077,9 @@ fn f64_columns_upload_their_exact_split() {
     ];
     let column = col_f64(probes.to_vec());
     let mut lanes = [0u8; 4 * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(
+    ColumnSource::write_pairs(
         &column,
-        ColumnPairWriter::from_bytes_for_test(&mut lanes, &std::cell::Cell::new(false))
+        &mut ColumnPairWriter::from_bytes_for_test(&mut lanes, &std::cell::Cell::new(false))
             .with_index_lanes(true),
     );
     let word =
@@ -4181,9 +4091,9 @@ fn f64_columns_upload_their_exact_split() {
     );
     assert_eq!(word(&lanes, 2), u32::MAX - 1);
     let mut pairs = [0u8; 4 * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(
+    ColumnSource::write_pairs(
         &column,
-        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
+        &mut ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
     );
     let float = |k: usize| f32::from_bits(word(&pairs, k));
     // The split keeps about 48 significant bits: integers below 2^48 are
@@ -4212,9 +4122,8 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     let values = INDEX_LANE_PROBES.map(f64::from);
     let source = SplitPairSource(&values);
     let mut bytes = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(
-        &source,
-        ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false))
+    source.write_pairs(
+        &mut ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false))
             .with_index_lanes(true),
     );
     let word = |bytes: &[u8], k: usize| {
@@ -4246,10 +4155,10 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     );
 
     let mut pairs = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(
-        &source,
-        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
-    );
+    source.write_pairs(&mut ColumnPairWriter::from_bytes_for_test(
+        &mut pairs,
+        &std::cell::Cell::new(false),
+    ));
     let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from((1u32 << 24) + 1));
     assert_eq!(
         (word(&pairs, 6), word(&pairs, 7)),

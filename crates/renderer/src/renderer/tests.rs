@@ -56,9 +56,7 @@ fn every_line_preset_packs_without_gpu_dash_truncation() {
 }
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 fn demo_test_columns() -> [Column<f64>; 4] {
@@ -144,30 +142,15 @@ impl ColumnSource for FailingPromotionSource {
         self.len
     }
 
-    fn min(&self) -> f64 {
-        0.0
-    }
-
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {
+    fn write_pairs(&self, _dst: &mut crate::data::ColumnPairWriter<'_>) {
         unreachable!("promotion uses the range capability")
     }
 
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> crate::data::ColumnUploadStats {
-        unreachable!("promotion uses the range capability")
-    }
-
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         _start: u64,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError> {
+        _dst: &mut crate::data::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::data::ColumnRangeWriteError> {
         Err(crate::data::ColumnRangeWriteError::SourceFailed)
     }
 }
@@ -183,37 +166,18 @@ impl ColumnSource for MutableLenPromotionSource {
         if call == 0 { 1 } else { usize::MAX }
     }
 
-    fn min(&self) -> f64 {
-        1.0
+    fn write_pairs(&self, _dst: &mut crate::data::ColumnPairWriter<'_>) {
+        unreachable!("promotion writes ranges")
     }
 
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {}
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> crate::data::ColumnUploadStats {
-        crate::data::ColumnUploadStats {
-            min_positive: Some(1.0),
-        }
-    }
-
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         _start: u64,
-        mut dst: crate::data::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError> {
+        dst: &mut crate::data::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::data::ColumnRangeWriteError> {
         assert_eq!(dst.len(), 1, "promotion must stage the frozen length");
         dst.write_pair(0, 1.0, 0.0);
-        Ok(Some(crate::StreamBounds {
-            min: 1.0,
-            max: 1.0,
-            min_positive: Some(1.0),
-        }))
+        Ok(())
     }
 }
 
@@ -224,71 +188,39 @@ impl HiLoColumnSource for PanickingPromotionSource {
         1
     }
 
-    fn min(&self) -> f64 {
-        1.0
+    fn write_pairs(&self, _dst: &mut crate::data::ColumnPairWriter<'_>) {
+        unreachable!("promotion writes ranges")
     }
 
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_pair_le_into(&self, _dst: &mut [u8]) {}
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> crate::data::ColumnUploadStats {
-        crate::data::ColumnUploadStats {
-            min_positive: Some(1.0),
-        }
-    }
-
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         _start: u64,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError> {
+        _dst: &mut crate::data::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::data::ColumnRangeWriteError> {
         panic!("injected promotion writer panic")
     }
 }
 
-struct InvalidBoundsPromotionSource;
+/// A source that writes a value and then reports a failure: the promotion
+/// is refused and leaves no trace of the partial write.
+struct PartialWritePromotionSource;
 
-impl ColumnSource for InvalidBoundsPromotionSource {
+impl ColumnSource for PartialWritePromotionSource {
     fn len(&self) -> usize {
         1
     }
 
-    fn min(&self) -> f64 {
-        1.0
+    fn write_pairs(&self, _dst: &mut crate::data::ColumnPairWriter<'_>) {
+        unreachable!("promotion writes ranges")
     }
 
-    fn max(&self) -> f64 {
-        1.0
-    }
-
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {}
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _dst: crate::data::ColumnPairWriter<'_>,
-    ) -> crate::data::ColumnUploadStats {
-        crate::data::ColumnUploadStats {
-            min_positive: Some(1.0),
-        }
-    }
-
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         _start: u64,
-        mut dst: crate::data::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::data::ColumnRangeWriteError> {
+        dst: &mut crate::data::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::data::ColumnRangeWriteError> {
         dst.write_pair(0, 1.0, 0.0);
-        Ok(Some(crate::StreamBounds {
-            min: 2.0,
-            max: 1.0,
-            min_positive: None,
-        }))
+        Err(crate::data::ColumnRangeWriteError::SourceFailed)
     }
 }
 
@@ -397,7 +329,7 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
     assert_eq!(renderer.pending_defrag, pending_before);
     assert_eq!(renderer.picker.active.is_some(), picker_before);
 
-    let Some((mut renderer, chart)) = setup("invalid-bounds", crate::StreamEncoding::ScalarF32)
+    let Some((mut renderer, chart)) = setup("failing-writer", crate::StreamEncoding::ScalarF32)
     else {
         return;
     };
@@ -408,9 +340,9 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         renderer.promote_streamed_columns_to_resident(
             &[crate::StreamSourceBinding {
-                id: "invalid-bounds",
+                id: "failing-writer",
                 revision: 1,
-                source: crate::StreamColumnSource::Scalar(&InvalidBoundsPromotionSource),
+                source: crate::StreamColumnSource::Scalar(&PartialWritePromotionSource),
             }],
             0,
             &[],
@@ -419,7 +351,7 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
         )
     }));
     assert!(matches!(
-        result.expect("invalid statistics must not panic"),
+        result.expect("a source failure must not panic"),
         Err(FiggyError::Pool(
             data_render::AllocError::AllocationFailed {
                 resource: "streamed promotion source",
@@ -427,9 +359,9 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
             }
         ))
     ));
-    assert!(renderer.pool.slot("invalid-bounds").is_none());
-    assert!(renderer.streaming_sources.contains_key("invalid-bounds"));
-    assert_eq!(renderer.stream_revision_lineage["invalid-bounds"], 1);
+    assert!(renderer.pool.slot("failing-writer").is_none());
+    assert!(renderer.streaming_sources.contains_key("failing-writer"));
+    assert_eq!(renderer.stream_revision_lineage["failing-writer"], 1);
     assert_eq!(renderer.pool.used_bytes(), used_before);
     assert_eq!(renderer.pool.layout_generation(), layout_before);
     assert_eq!(revision_snapshot(&renderer, chart), before);
@@ -9535,8 +9467,6 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
             id,
             &Column {
                 data: values.to_vec(),
-                min: 0.1,
-                max: 0.9,
             },
         )
         .unwrap();
@@ -14436,15 +14366,7 @@ fn composite_test_record(rows: usize) -> Vec<(&'static str, Column<f64>)> {
         .iter()
         .map(|name| {
             let data: Vec<f64> = (0..rows).map(|row| row as f64).collect();
-            let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            (
-                *name,
-                Column {
-                    data,
-                    min: 0.0,
-                    max,
-                },
-            )
+            (*name, Column { data })
         })
         .collect()
 }
@@ -14471,13 +14393,9 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     };
     let values = Column {
         data: vec![1.0, 2.0],
-        min: 1.0,
-        max: 2.0,
     };
     let offsets = Column {
         data: vec![0.0, 2.0],
-        min: 0.0,
-        max: 2.0,
     };
     let ragged = RaggedSource {
         values: &values,
@@ -14526,8 +14444,6 @@ fn logical_column_registry_lists_host_columns_and_tracks_revisions() {
         .unwrap();
     let column = |scale: f32| Column {
         data: vec![0.0, scale],
-        min: 0.0,
-        max: scale,
     };
     renderer.upsert_column("r", &column(1.0)).unwrap();
     let record = composite_test_record(3);
@@ -14546,13 +14462,9 @@ fn logical_column_registry_lists_host_columns_and_tracks_revisions() {
         .unwrap();
     let values = Column {
         data: vec![1.0, 2.0],
-        min: 1.0,
-        max: 2.0,
     };
     let offsets = Column {
         data: vec![0.0, 2.0],
-        min: 0.0,
-        max: 2.0,
     };
     renderer
         .upsert_ragged(
@@ -14606,8 +14518,6 @@ fn member_columns_are_owned_by_their_record_or_ragged_column() {
     };
     let column = Column {
         data: vec![1.0, 2.0, 3.0],
-        min: 1.0,
-        max: 3.0,
     };
     renderer.upsert_record("box", &record).unwrap();
     let member = renderer.pool().record("box").unwrap().slot().fields[0]

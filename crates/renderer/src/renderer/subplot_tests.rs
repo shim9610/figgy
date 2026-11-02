@@ -16,9 +16,7 @@ const UPPER: Rect = Rect {
 };
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    crate::Column { data, min, max }
+    crate::Column { data }
 }
 
 fn renderer() -> Renderer {

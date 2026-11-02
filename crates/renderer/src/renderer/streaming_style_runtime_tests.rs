@@ -20,26 +20,14 @@ impl crate::ColumnSource for RangeOnly<'_> {
     fn len(&self) -> usize {
         self.values.len()
     }
-    fn min(&self) -> f64 {
-        0.0
-    }
-    fn max(&self) -> f64 {
-        1.0
-    }
-    fn write_f32_le_into(&self, _: &mut [u8]) {
-        panic!("stream called a full-column writer");
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _: crate::ColumnPairWriter<'_>,
-    ) -> crate::ColumnUploadStats {
+    fn write_pairs(&self, _: &mut crate::ColumnPairWriter<'_>) {
         panic!("stream called a full-column pair writer");
     }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut writer: crate::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError> {
+        writer: &mut crate::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
         let end = (start as usize)
             .checked_add(writer.len())
             .filter(|end| *end <= self.values.len())
@@ -50,7 +38,7 @@ impl crate::ColumnSource for RangeOnly<'_> {
         for (index, &value) in self.values[start as usize..end].iter().enumerate() {
             writer.write_pair(index, value, 0.0);
         }
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -739,14 +727,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                     }) as f32
                 })
                 .collect();
-            (
-                id,
-                crate::Column {
-                    data,
-                    min: 0.0,
-                    max: 1.0,
-                },
-            )
+            (id, crate::Column { data })
         })
         .collect();
     let config = test_config(
@@ -1083,8 +1064,6 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                                 data: values.data
                                     [range.offset as usize..(range.offset + range.len) as usize]
                                     .to_vec(),
-                                min: 0.0,
-                                max: 1.0,
                             }
                         })
                         .collect();
@@ -1152,14 +1131,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                         _ => unreachable!(),
                     })
                     .collect();
-                (
-                    id,
-                    crate::Column {
-                        data,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
+                (id, crate::Column { data })
             })
             .collect();
     let mut failures = Vec::new();
@@ -1381,15 +1353,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 ("ry", vec![0.2, 0.8]),
                 ("rz", vec![0.6]),
             ] {
-                r.add_column(
-                    id,
-                    &crate::Column {
-                        data,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
-                .unwrap();
+                r.add_column(id, &crate::Column { data }).unwrap();
             }
             let mut config = test_config(style);
             config.colorbar = Some(crate::default::default_colorbar_options());

@@ -67,14 +67,7 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         ("error-index", vec![1.0, 0.0, 1.0, 0.0]),
     ] {
         renderer
-            .add_column(
-                id,
-                &Column {
-                    data: values,
-                    min: 0.0,
-                    max: 1.0,
-                },
-            )
+            .add_column(id, &Column { data: values })
             .expect("browser column upload failed");
     }
     let mut config = default::default_config();

@@ -34,8 +34,8 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     let n = 32;
     let at = |i: usize| i as f64 / (n - 1) as f64;
     let xs: Vec<f64> = (0..n).map(at).collect();
-    renderer.add_column("x", &Column { data: xs.clone(), min: 0.0, max: 1.0 })?;
-    renderer.add_column("y", &Column { data: xs.clone(), min: 0.0, max: 1.0 })?;
+    renderer.add_column("x", &Column { data: xs.clone() })?;
+    renderer.add_column("y", &Column { data: xs.clone() })?;
     let mut columns = Vec::new();
     for i in 0..n {
         let id = format!("z{i}");
@@ -43,7 +43,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|y| (-((at(i) - 0.5).powi(2) + (y - 0.5).powi(2)) / 0.05).exp())
             .collect();
-        renderer.add_column(&id, &Column { data: z, min: 0.0, max: 1.0 })?;
+        renderer.add_column(&id, &Column { data: z })?;
         columns.push(id);
     }
 

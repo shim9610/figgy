@@ -25,9 +25,9 @@ use renderer::{
 
 fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     // The host's components, unnormalized: no projection before upload.
-    renderer.add_column("fe", &Column { data: vec![70.0, 20.0, 10.0], min: 10.0, max: 70.0 })?;
-    renderer.add_column("ni", &Column { data: vec![20.0, 70.0, 20.0], min: 20.0, max: 70.0 })?;
-    renderer.add_column("cr", &Column { data: vec![10.0, 10.0, 70.0], min: 10.0, max: 70.0 })?;
+    renderer.add_column("fe", &Column { data: vec![70.0, 20.0, 10.0] })?;
+    renderer.add_column("ni", &Column { data: vec![20.0, 70.0, 20.0] })?;
+    renderer.add_column("cr", &Column { data: vec![10.0, 10.0, 70.0] })?;
 
     let mut config = default::default_config();
     config.chart_area = ChartArea(Rect { x: 0, y: 0, width: 800, height: 640 });

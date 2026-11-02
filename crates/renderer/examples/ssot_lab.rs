@@ -53,9 +53,7 @@ const SERIES_IDS: [&str; 4] = ["precise", "sketch", "milkyway", "constellation"]
 const X_SPAN: f64 = 12.566; // 4π
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 const FG: Color = Color {

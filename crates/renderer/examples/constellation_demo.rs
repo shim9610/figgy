@@ -19,9 +19,7 @@ use renderer::line::LineStylePreset;
 use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
 
 fn col(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// Composite the transparent export over a deep-space backdrop.

@@ -105,10 +105,7 @@ const BLUE: Color = Color {
 };
 
 pub fn col(data: Vec<f64>) -> Column<f64> {
-    let finite = data.iter().copied().filter(|v| v.is_finite());
-    let min = finite.clone().fold(f64::INFINITY, f64::min);
-    let max = finite.fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 fn shared_device() -> (wgpu::Device, wgpu::Queue) {

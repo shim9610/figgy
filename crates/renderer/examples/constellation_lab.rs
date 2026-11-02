@@ -30,9 +30,7 @@ const POOL_CAPACITY: u64 = 8 * 1024 * 1024;
 const SPACE_BG: egui::Color32 = egui::Color32::from_rgb(11, 15, 23);
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// All figgy state, stored directly in `CallbackResources` — no `Mutex`.

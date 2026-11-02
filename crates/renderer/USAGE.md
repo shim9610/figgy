@@ -147,9 +147,7 @@ let mut renderer = pollster::block_on(Renderer::for_window_async(
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
 fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::Column { data, min, max }
+    renderer::Column { data }
 }
 renderer.add_column("x", &column(xs)).unwrap();
 renderer.add_column("y", &column(ys)).unwrap();
@@ -193,7 +191,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. In the same pass that writes the GPU pairs, the source returns `ColumnUploadStats::min_positive`, the smallest finite positive value it wrote; log-axis auto-fit uses it as the lower bound when the data contains zeros or negatives. The renderer cannot read wgpu 30's write-only mapped bytes back, so this statistic must come from the source. `min` / `max` retain their source-level meaning. For a scalar column `min_positive` is taken from the actual uploaded `(value as f32, 0)` value, and for a hi-lo column from the recorded `hi as f64 + lo as f64`; both include only finite positive values. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. A source only writes values. The `ColumnPairWriter` it writes through records the column's statistics in that same pass: the finite minimum and maximum and the smallest finite value above zero, each taken from the `hi as f64 + lo as f64` value the GPU reads (`(value as f32, 0)` for a scalar column). Auto-fit reads them, and log-axis auto-fit uses the smallest positive value as the lower bound when the data contains zeros or negatives. Non-finite values are left out. A streamed source is measured the same way, one chunk at a time. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
 existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
@@ -209,18 +207,18 @@ allocation-free `commit`; hosts do not rebuild the picker themselves.
 pub trait ColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }  // default
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// Legacy scalar encoder retained for source compatibility.
-    /// Caller guarantees `dst.len() == self.len() * 4`. null → `f32::NAN`.
-    fn write_f32_le_into(&self, dst: &mut [u8]);
+    /// Write every value as a `(value as f32, 0)` pair (or a `(hi, lo)`
+    /// split), each index in `0..len()` once. null → `f32::NAN`.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// Write `(value as f32, 0)` pairs and return stats in the same pass.
-    fn write_f32_pair_le_into_with_stats(
+    /// One streamed chunk: `writer.len()` values from `start`. Sources that
+    /// are never streamed keep the default, which reports `Unsupported`.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
@@ -230,18 +228,16 @@ pub trait ColumnSource {
 pub trait HiLoColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// Legacy slice encoder retained for source compatibility.
-    /// Caller guarantees `dst.len() == self.len() * 8`.
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]);
+    /// Write every value as a `(hi, lo)` pair.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// Write pairs and return stats from recorded `hi as f64 + lo as f64`.
-    fn write_f32_pair_le_into_with_stats(
+    /// One streamed chunk, as for `ColumnSource`.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
@@ -251,47 +247,24 @@ pub trait HiLoColumnSource {
 `update_register_column_f64` for an explicit replacement when using timestamp
 axes with large Unix epoch values.
 
-Custom implementations of either trait must implement
-`write_f32_pair_le_into_with_stats`. It has no default, so a source that omits
-it fails to compile instead of failing during upload. There is no byte-readback
-or silently incorrect fallback.
+`write_pairs` has no default, so a source that omits it fails to compile
+instead of failing during upload. A source never reports statistics, so they
+cannot disagree with its values.
 
 **Custom — time series / DataFrame / mmap / FFI data, anything**:
 
 ```rust
 struct MyTimeSeries {
     samples: Vec<f64>,    // or Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
-    cached_min: f64,
-    cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
     fn len(&self) -> usize { self.samples.len() }
-    fn min(&self) -> f64 { self.cached_min }
-    fn max(&self) -> f64 { self.cached_max }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.samples.len() * 4);
-        for (i, &v) in self.samples.iter().enumerate() {
-            dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut writer: renderer::ColumnPairWriter<'_>,
-    ) -> renderer::ColumnUploadStats {
+    fn write_pairs(&self, writer: &mut renderer::ColumnPairWriter<'_>) {
         debug_assert_eq!(writer.len(), self.samples.len());
-        let mut min_positive: Option<f64> = None;
         for (index, &sample) in self.samples.iter().enumerate() {
-            let value = sample as f32;
-            writer.write_pair(index, value, 0.0);
-            let value = value as f64;
-            if value.is_finite() && value > 0.0
-                && min_positive.map_or(true, |current| value < current)
-            {
-                min_positive = Some(value);
-            }
+            writer.write_pair(index, sample as f32, 0.0);
         }
-        renderer::ColumnUploadStats { min_positive }
     }
 }
 
@@ -743,9 +716,7 @@ let mut renderer = pollster::block_on(Renderer::for_window_async(
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
 fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::Column { data, min, max }
+    renderer::Column { data }
 }
 renderer.add_column("x", &column(xs)).unwrap();
 renderer.add_column("y", &column(ys)).unwrap();
@@ -793,7 +764,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 `Renderer::add_column`은 `&dyn ColumnSource`를 받는다. 사용 중인 데이터 타입에 이 트레이트를 구현하면 네이티브 환경에서 중간 변환용 `Vec` 없이 매핑된 스테이징 버퍼에 직접 기록할 수 있다. 스테이징 버퍼에서 컬럼 풀로 옮기는 작업은 GPU가 수행한다. CPU에는 변환용 버퍼나 점 데이터의 복사본을 따로 두지 않는다.
 
-데이터 소스는 값을 GPU용 쌍으로 기록하면서 최소 양수 값도 함께 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `min` / `max`는 원본 데이터 기준을 유지한다. 최소 양수 값은 일반 컬럼에서는 실제 업로드한 `(value as f32, 0)`, hi/lo 컬럼에서는 기록한 `hi as f64 + lo as f64`를 기준으로 계산하며, 유한한 양수만 포함한다.
+데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. 통계는 일반 컬럼에서는 실제 업로드한 `(value as f32, 0)`, hi/lo 컬럼에서는 기록한 `hi as f64 + lo as f64`를 기준으로 계산하며, 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
 
 큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 `Column` 타입 세 가지는 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
 
@@ -805,61 +776,39 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 pub trait ColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }  // 디폴트 제공
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// 기존 구현과의 소스 호환을 위해 남겨 둔 스칼라 인코더다.
-    /// 호출자가 `dst.len() == self.len() * 4`를 보장한다. null은 `f32::NAN`으로 기록한다.
-    fn write_f32_le_into(&self, dst: &mut [u8]);
+    /// 모든 값을 `(value as f32, 0)` 쌍(또는 `(hi, lo)` 분할)으로 기록한다.
+    /// `0..len()`의 각 인덱스를 한 번씩 쓴다. null은 `f32::NAN`으로 기록한다.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// `(value as f32, 0)` 쌍을 기록하고 같은 순회에서 계산한 통계를 반환한다.
-    fn write_f32_pair_le_into_with_stats(
+    /// 스트리밍 청크 하나: `start`부터 `writer.len()`개의 값을 쓴다.
+    /// 스트리밍하지 않는 소스는 `Unsupported`를 반환하는 기본 구현을 쓴다.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
 **기본 제공 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
 
-사용자 정의 `ColumnSource`는 값 기록과 통계 계산을 함께 수행하는 메서드를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 나므로 업로드 도중에야 문제를 발견하는 일을 피할 수 있다. 렌더러는 기록한 바이트를 다시 읽지 않으며, 이 메서드를 대신하는 부정확한 대체 경로도 없다. `HiLoColumnSource`도 같은 이름의 메서드에서 `(hi, lo)`를 기록하고, 두 값을 합쳐 계산한 통계를 반환해야 한다.
+사용자 정의 `ColumnSource`는 값을 기록하는 `write_pairs`를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 난다. 소스는 값만 기록하고 통계는 넘기지 않는다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 그래서 통계가 데이터와 어긋날 수 없다. `HiLoColumnSource`도 같은 이름의 메서드로 `(hi, lo)` 쌍을 기록한다.
 
 **사용자 정의 구현 예: 시계열·DataFrame·mmap·FFI 데이터**
 
 ```rust
 struct MyTimeSeries {
     samples: Vec<f64>,    // 또는 Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
-    cached_min: f64,
-    cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
     fn len(&self) -> usize { self.samples.len() }
-    fn min(&self) -> f64 { self.cached_min }
-    fn max(&self) -> f64 { self.cached_max }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.samples.len() * 4);
-        for (i, &v) in self.samples.iter().enumerate() {
-            dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut writer: renderer::ColumnPairWriter<'_>,
-    ) -> renderer::ColumnUploadStats {
+    fn write_pairs(&self, writer: &mut renderer::ColumnPairWriter<'_>) {
         debug_assert_eq!(writer.len(), self.samples.len());
-        let mut min_positive: Option<f64> = None;
         for (index, &sample) in self.samples.iter().enumerate() {
-            let value = sample as f32;
-            writer.write_pair(index, value, 0.0);
-            let value = value as f64;
-            if value.is_finite() && value > 0.0
-                && min_positive.map_or(true, |current| value < current)
-            {
-                min_positive = Some(value);
-            }
+            writer.write_pair(index, sample as f32, 0.0);
         }
-        renderer::ColumnUploadStats { min_positive }
     }
 }
 

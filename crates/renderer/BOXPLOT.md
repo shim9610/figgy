@@ -34,12 +34,9 @@ use renderer::{
     BOX_PLOT_RECORD, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
     RaggedSource, RecordSource, Renderer, SeriesConfig,
 };
-/// A host column with its range (NaN is a missing value).
+/// A host column (NaN is a missing value); the renderer measures its range.
 fn column(data: Vec<f64>) -> Column<f64> {
-    let finite = data.iter().copied().filter(|v| v.is_finite());
-    let min = finite.clone().fold(f64::INFINITY, f64::min);
-    let max = finite.fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 # fn open(r: &mut Renderer, config: renderer::config::Config,
 #         template: SeriesConfig) -> Result<(), Box<dyn std::error::Error>> {

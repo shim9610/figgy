@@ -1179,13 +1179,9 @@ fn values() -> (crate::Column<f32>, crate::Column<f32>) {
     (
         crate::Column {
             data: vec![0.05, 0.18, 0.3, 0.45, 0.6, 0.75, 0.9, 1.5],
-            min: 0.05,
-            max: 1.5,
         },
         crate::Column {
             data: vec![0.2, 0.7, 0.3, 0.8, 0.4, 0.7, 0.2, 0.6],
-            min: 0.2,
-            max: 0.8,
         },
     )
 }

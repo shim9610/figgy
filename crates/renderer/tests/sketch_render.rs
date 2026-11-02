@@ -39,9 +39,7 @@ use renderer::{
 // ───────────────────────── plumbing / fixtures ─────────────────────────
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// The process-wide device, created once.

@@ -20,9 +20,7 @@ const PANEL: Rect = Rect {
 const POINTS: usize = 200;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    crate::Column { data, min, max }
+    crate::Column { data }
 }
 
 fn wave(phase: f32, scale: f32) -> crate::Column<f32> {

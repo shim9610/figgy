@@ -10,11 +10,13 @@ pub use ::model::data::*;
 
 pub const COLUMN_VALUE_F32S: usize = 2;
 pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_F32S;
-
 /// Safe write-only access to a column's logical `(hi, lo)` f32 pairs.
 ///
 /// Sources can inspect only the number of pairs and write a complete pair by
 /// index. The mapped bytes and the renderer's wgpu dependency stay private.
+/// The writer records the column's statistics from the pairs written: the
+/// finite minimum and maximum and the smallest value above zero, each the
+/// `hi + lo` value the GPU reads. A source supplies values, never statistics.
 pub struct ColumnPairWriter<'a> {
     dst: wgpu::WriteOnly<'a, [u8]>,
     observer: Option<&'a mut dyn FnMut(usize, f32, f32)>,
@@ -25,6 +27,8 @@ pub struct ColumnPairWriter<'a> {
     /// not performed, and the caller that built the writer rejects the
     /// upload once the source returns (#152).
     out_of_range: &'a std::cell::Cell<bool>,
+    /// The statistics of the pairs written so far.
+    bounds: EncodedBounds,
 }
 
 impl<'a> ColumnPairWriter<'a> {
@@ -40,9 +44,9 @@ impl<'a> ColumnPairWriter<'a> {
             observer: None,
             index_lanes: false,
             out_of_range,
+            bounds: EncodedBounds::default(),
         }
     }
-
     /// Store every pair as an index: the integer `hi + lo`, summed in f64,
     /// as `u32` bits in the first lane and 0 in the second, so a shader reads
     /// it as `bitcast<u32>` and every index up to `u32::MAX` is exact. The
@@ -110,9 +114,15 @@ impl<'a> ColumnPairWriter<'a> {
                 lo_bytes[2],
                 lo_bytes[3],
             ]);
+        self.bounds.record(hi, lo);
         if let Some(observer) = self.observer.as_mut() {
             observer(index, hi, lo);
         }
+    }
+
+    /// The statistics of the pairs written: `None` when none was finite.
+    pub(crate) fn bounds(&self) -> Option<crate::StreamBounds> {
+        self.bounds.finish()
     }
 }
 
@@ -121,13 +131,6 @@ impl<'a> ColumnPairWriter<'a> {
 /// (NaN stores 0).
 pub(crate) fn index_lane(hi: f32, lo: f32) -> u32 {
     (hi as f64 + lo as f64) as u32
-}
-
-/// Scalar statistics collected while a source writes its GPU pair encoding.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ColumnUploadStats {
-    /// Smallest finite value greater than zero in the recorded pair stream.
-    pub min_positive: Option<f64>,
 }
 
 /// Failure reported by a range-capable column adapter before a stream chunk is
@@ -210,7 +213,7 @@ impl UniformStep {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, Clone, Copy)]
 struct EncodedBounds {
     min: f64,
     max: f64,
@@ -239,7 +242,7 @@ impl EncodedBounds {
         }
     }
 
-    fn finish(self) -> Option<crate::StreamBounds> {
+    fn finish(&self) -> Option<crate::StreamBounds> {
         self.any.then_some(crate::StreamBounds {
             min: self.min,
             max: self.max,
@@ -261,19 +264,6 @@ fn checked_source_range(
     Ok(start..end)
 }
 
-#[inline]
-fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
-    if !value.is_finite() || value <= 0.0 {
-        return;
-    }
-    if match stats.min_positive {
-        Some(current) => value < current,
-        None => true,
-    } {
-        stats.min_positive = Some(value);
-    }
-}
-
 pub fn split_f64_to_f32_pair(v: f64) -> (f32, f32) {
     let hi = v as f32;
     if !v.is_finite() || !hi.is_finite() {
@@ -285,64 +275,32 @@ pub fn split_f64_to_f32_pair(v: f64) -> (f32, f32) {
 
 /// Adapter from any column-shaped data into the scalar figgy GPU upload path.
 ///
-/// The contract is scalar stats plus a zero-copy staging write: `len` /
-/// `min` / `max` describe the source values, while
-/// [`Self::write_f32_pair_le_into_with_stats`] writes the GPU representation
-/// and returns encoded-value stats without reading mapped bytes. Nulls encode
-/// as `f32::NAN`; null / non-numeric handling is the implementor's
-/// responsibility.
+/// A source writes its values into mapped staging as `(hi, lo)` f32 pairs
+/// and nothing else: the [`ColumnPairWriter`] records the column's
+/// statistics (minimum, maximum, smallest positive) from those pairs while
+/// they are written, so the renderer owns them and no separate pass over the
+/// values is needed. Nulls encode as `f32::NAN`; null / non-numeric handling
+/// is the implementor's responsibility.
 pub trait ColumnSource {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn max(&self) -> f64;
-    fn min(&self) -> f64;
 
-    /// Legacy scalar encoding helper. The caller guarantees
-    /// `dst.len() == self.len() * 4`; the built-in sources write only the
-    /// leading values that fit a shorter `dst`. Nulls encode as `f32::NAN`.
-    /// Pool upload uses [`Self::write_f32_pair_le_into_with_stats`] instead.
-    fn write_f32_le_into(&self, dst: &mut [u8]);
+    /// Write every value as a `(value, 0)` f32 pair, or as a `(hi, lo)` split
+    /// for a source that keeps more than f32 precision, each index in
+    /// `0..len()` once.
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>);
 
-    /// Write the scalar GPU representation directly as `(value, 0)` f32
-    /// pairs. The fallback preserves source compatibility and expands in
-    /// place without allocating a per-value buffer. Pool upload uses the
-    /// write-only fused capability below instead.
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        // The caller guarantees `dst.len() == self.len() * 8`; a shorter
-        // destination receives the leading pairs that fit, so every index
-        // below stays inside `dst`.
-        let n = self.len().min(dst.len() / COLUMN_VALUE_BYTES);
-        let scalar_bytes = n * std::mem::size_of::<f32>();
-        let (scalars, _) = dst.split_at_mut(scalar_bytes);
-        self.write_f32_le_into(scalars);
-        for i in (0..n).rev() {
-            dst.copy_within(i * 4..i * 4 + 4, i * COLUMN_VALUE_BYTES);
-            dst[i * COLUMN_VALUE_BYTES + 4..(i + 1) * COLUMN_VALUE_BYTES].fill(0);
-        }
-    }
-
-    /// Write scalar `(value, 0)` pairs and collect stats in that same pass.
-    ///
-    /// The caller guarantees `dst.len() == self.len() * 8`. `min_positive`
-    /// uses each actual uploaded `value as f32`, widened to f64, and includes
-    /// only finite values greater than zero.
-    ///
-    /// Implementations must write every pair and return the statistics from
-    /// that same pass. Keeping this method required makes an incomplete custom
-    /// source fail at compile time rather than during an upload.
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
-
-    /// Write `dst.len()` scalar values beginning at the logical `start` index
-    /// directly into mapped staging. Returned bounds describe the encoded
-    /// `(value as f32, 0)` values written by this call.
-    fn write_f32_pair_range_into_with_stats(
+    /// Write `dst.len()` values beginning at the logical `start` index
+    /// directly into mapped staging: one streamed chunk. The writer records
+    /// that chunk's statistics.
+    fn write_pair_range(
         &self,
         _start: u64,
-        _dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        _dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
         Err(ColumnRangeWriteError::Unsupported)
     }
 }
@@ -351,35 +309,25 @@ pub trait ColumnSource {
 ///
 /// Each logical value is encoded as two f32 lanes `(hi, lo)` so shaders can
 /// subtract split axis bounds before recombining. This preserves small
-/// timestamp deltas around large Unix epoch values.
+/// timestamp deltas around large Unix epoch values. As for
+/// [`ColumnSource`], the writer records the statistics.
 pub trait HiLoColumnSource {
     fn len(&self) -> usize;
 
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn max(&self) -> f64;
-    fn min(&self) -> f64;
 
-    /// Legacy helper that writes `len * 8` bytes as little-endian `(hi: f32,
-    /// lo: f32)` pairs. Pool upload uses the write-only fused capability.
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]);
-
-    /// Write hi/lo pairs and collect stats from recorded `hi as f64 + lo as
-    /// f64` values in that same pass, including only finite values greater
-    /// than zero. The caller guarantees `dst.len() == self.len() * 8`. See
-    /// [`ColumnSource::write_f32_pair_le_into_with_stats`] for the required
-    /// single-pass contract.
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats;
+    /// Write every value as a `(hi, lo)` pair, each index in `0..len()` once.
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>);
 
     /// Write `dst.len()` hi/lo values beginning at the logical `start` index
-    /// directly into mapped staging. Returned bounds describe finite GPU-
-    /// reconstructible values written by this call.
-    fn write_f32_pair_range_into_with_stats(
+    /// directly into mapped staging: one streamed chunk.
+    fn write_pair_range(
         &self,
         _start: u64,
-        _dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        _dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
         Err(ColumnRangeWriteError::Unsupported)
     }
 }
@@ -409,68 +357,65 @@ impl StreamColumnSource<'_> {
     pub(crate) fn write_range(
         self,
         start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
         match self {
-            Self::Scalar(source) => source.write_f32_pair_range_into_with_stats(start, dst),
-            Self::HiLo(source) => source.write_f32_pair_range_into_with_stats(start, dst),
+            Self::Scalar(source) => source.write_pair_range(start, dst),
+            Self::HiLo(source) => source.write_pair_range(start, dst),
         }
     }
 }
 
 // Built-in implementations for numeric column types.
 
+/// Write `values[start..]` through `pair`, at writer indices from 0.
+fn write_range_with<T: Copy>(
+    values: &[T],
+    start: u64,
+    dst: &mut ColumnPairWriter<'_>,
+    pair: impl Fn(T) -> (f32, f32),
+) -> std::result::Result<(), ColumnRangeWriteError> {
+    let range = checked_source_range(values.len(), start, dst.len())?;
+    for (index, &value) in values[range].iter().enumerate() {
+        let (hi, lo) = pair(value);
+        dst.write_pair(index, hi, lo);
+    }
+    Ok(())
+}
+
+/// Write every value through `pair`.
+fn write_all_with<T: Copy>(
+    values: &[T],
+    dst: &mut ColumnPairWriter<'_>,
+    pair: impl Fn(T) -> (f32, f32),
+) {
+    for (index, &value) in values.iter().enumerate() {
+        let (hi, lo) = pair(value);
+        dst.write_pair(index, hi, lo);
+    }
+}
+
+/// A missing value is NaN; a present one keeps the (hi, lo) split (#107).
+fn split_optional(value: Option<f64>) -> (f32, f32) {
+    value.map_or((f32::NAN, 0.0), split_f64_to_f32_pair)
+}
+
+// An f64 column writes the (hi, lo) split on both paths: it keeps about 48
+// bits on the GPU, not f32's 24 (#107), and streamed windows use the same
+// split (the maintainer's exception to rule 8 for upload precision).
 impl ColumnSource for Column<f64> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, split_f64_to_f32_pair);
     }
-    fn max(&self) -> f64 {
-        self.max
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (scalar, &v) in dst.chunks_exact_mut(4).zip(&self.data) {
-            scalar.copy_from_slice(&(v as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
-            pair[..4].copy_from_slice(&(value as f32).to_le_bytes());
-            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
-        // The (hi, lo) split, written straight into the destination: an f64
-        // column keeps about 48 bits on the GPU, not f32's 24 (#107).
-        for (index, &value) in self.data.iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-            // The value the GPU reads: a magnitude below f32 range is 0 there.
-            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
-        }
-        stats
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        let range = checked_source_range(self.data.len(), start, dst.len())?;
-        let mut bounds = EncodedBounds::default();
-        // The same split for streamed windows (#107, the maintainer's
-        // exception to rule 8 for upload precision).
-        for (index, &value) in self.data[range].iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-            bounds.record(hi, lo);
-        }
-        Ok(bounds.finish())
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, split_f64_to_f32_pair)
     }
 }
 
@@ -478,44 +423,15 @@ impl HiLoColumnSource for Column<f64> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, split_f64_to_f32_pair);
     }
-    fn max(&self) -> f64 {
-        self.max
-    }
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            pair[..4].copy_from_slice(&hi.to_le_bytes());
-            pair[4..].copy_from_slice(&lo.to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, &v) in self.data.iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(v);
-            dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
-        }
-        stats
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        let range = checked_source_range(self.data.len(), start, dst.len())?;
-        let mut bounds = EncodedBounds::default();
-        for (index, &value) in self.data[range].iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-            bounds.record(hi, lo);
-        }
-        Ok(bounds.finish())
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, split_f64_to_f32_pair)
     }
 }
 
@@ -523,38 +439,15 @@ impl ColumnSource for Column<f32> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min as f64
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, |value| (value, 0.0));
     }
-    fn max(&self) -> f64 {
-        self.max as f64
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (scalar, &v) in dst.chunks_exact_mut(4).zip(&self.data) {
-            scalar.copy_from_slice(&v.to_le_bytes());
-        }
-    }
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
-            pair[..4].copy_from_slice(&value.to_le_bytes());
-            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        <Self as HiLoColumnSource>::write_f32_pair_le_into_with_stats(self, dst)
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        let range = checked_source_range(self.data.len(), start, dst.len())?;
-        let mut bounds = EncodedBounds::default();
-        for (index, &hi) in self.data[range].iter().enumerate() {
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
-        }
-        Ok(bounds.finish())
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, |value| (value, 0.0))
     }
 }
 
@@ -562,32 +455,15 @@ impl HiLoColumnSource for Column<f32> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min as f64
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, |value| (value, 0.0));
     }
-    fn max(&self) -> f64 {
-        self.max as f64
-    }
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        <Self as ColumnSource>::write_f32_zero_lo_pair_le_into(self, dst);
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, &hi) in self.data.iter().enumerate() {
-            dst.write_pair(index, hi, 0.0);
-            record_min_positive(&mut stats, hi as f64);
-        }
-        stats
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        <Self as ColumnSource>::write_f32_pair_range_into_with_stats(self, start, dst)
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, |value| (value, 0.0))
     }
 }
 
@@ -602,32 +478,11 @@ impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
     fn len(&self) -> usize {
         ::model::bounded_sources::UploadValues::len(self)
     }
-    fn min(&self) -> f64 {
-        ::model::bounded_sources::UploadValues::min(self)
-    }
-    fn max(&self) -> f64 {
-        ::model::bounded_sources::UploadValues::max(self)
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (i, scalar) in dst
-            .chunks_exact_mut(4)
-            .take(ColumnSource::len(self))
-            .enumerate()
-        {
-            scalar.copy_from_slice(&(self.value(i) as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         for index in 0..ColumnSource::len(self) {
             let (hi, lo) = split_f64_to_f32_pair(self.value(index));
             dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
         }
-        stats
     }
 }
 
@@ -641,30 +496,11 @@ impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
     fn len(&self) -> usize {
         ::model::bounded_sources::BoxColumn::len(self)
     }
-    fn min(&self) -> f64 {
-        ::model::bounded_sources::BoxColumn::min(self)
-    }
-    fn max(&self) -> f64 {
-        ::model::bounded_sources::BoxColumn::max(self)
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        self.for_each(|i, value| {
-            if let Some(scalar) = dst.get_mut(i * 4..i * 4 + 4) {
-                scalar.copy_from_slice(&(value as f32).to_le_bytes());
-            }
-        });
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         self.for_each(|index, value| {
             let (hi, lo) = split_f64_to_f32_pair(value);
             dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
         });
-        stats
     }
 }
 
@@ -672,56 +508,15 @@ impl ColumnSource for Column<Option<f64>> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min.unwrap_or(f64::NAN)
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, split_optional);
     }
-    fn max(&self) -> f64 {
-        self.max.unwrap_or(f64::NAN)
-    }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        for (scalar, opt) in dst.chunks_exact_mut(4).zip(&self.data) {
-            let v = opt.map(|x| x as f32).unwrap_or(f32::NAN);
-            scalar.copy_from_slice(&v.to_le_bytes());
-        }
-    }
-    fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
-            let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            pair[..4].copy_from_slice(&value.to_le_bytes());
-            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
-        // The (hi, lo) split, written straight into the destination (about
-        // 48 bits); a missing value is NaN (#107).
-        for (index, value) in self.data.iter().enumerate() {
-            let value = value.unwrap_or(f64::NAN);
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-            // The value the GPU reads: a magnitude below f32 range is 0 there.
-            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
-        }
-        stats
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        let range = checked_source_range(self.data.len(), start, dst.len())?;
-        let mut bounds = EncodedBounds::default();
-        // The same split for streamed windows (#107, the maintainer's
-        // exception to rule 8 for upload precision); a missing value is NaN.
-        for (index, value) in self.data[range].iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value.unwrap_or(f64::NAN));
-            dst.write_pair(index, hi, lo);
-            bounds.record(hi, lo);
-        }
-        Ok(bounds.finish())
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, split_optional)
     }
 }
 
@@ -729,44 +524,15 @@ impl HiLoColumnSource for Column<Option<f64>> {
     fn len(&self) -> usize {
         self.data.len()
     }
-    fn min(&self) -> f64 {
-        self.min.unwrap_or(f64::NAN)
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_with(&self.data, dst, split_optional);
     }
-    fn max(&self) -> f64 {
-        self.max.unwrap_or(f64::NAN)
-    }
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.data) {
-            let (hi, lo) = value.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
-            pair[..4].copy_from_slice(&hi.to_le_bytes());
-            pair[4..].copy_from_slice(&lo.to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
-        let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, opt) in self.data.iter().enumerate() {
-            let (hi, lo) = opt.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
-            dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, hi as f64 + lo as f64);
-        }
-        stats
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
-        let range = checked_source_range(self.data.len(), start, dst.len())?;
-        let mut bounds = EncodedBounds::default();
-        for (index, value) in self.data[range].iter().enumerate() {
-            let (hi, lo) = value.map(split_f64_to_f32_pair).unwrap_or((f32::NAN, 0.0));
-            dst.write_pair(index, hi, lo);
-            bounds.record(hi, lo);
-        }
-        Ok(bounds.finish())
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_range_with(&self.data, start, dst, split_optional)
     }
 }
 
@@ -774,20 +540,28 @@ impl HiLoColumnSource for Column<Option<f64>> {
 mod tests {
     use super::*;
 
-    fn scalar_upload(source: &dyn ColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
-        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
-        let stats = source.write_f32_pair_le_into_with_stats(
-            ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false)),
-        );
-        (decode_pairs(&bytes), stats)
+    type Bounds = Option<crate::StreamBounds>;
+
+    fn upload(
+        len: usize,
+        write: impl FnOnce(&mut ColumnPairWriter<'_>),
+    ) -> (Vec<(f32, f32)>, Bounds) {
+        let mut bytes = vec![0; len * COLUMN_VALUE_BYTES];
+        let out_of_range = std::cell::Cell::new(false);
+        let bounds = {
+            let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes, &out_of_range);
+            write(&mut writer);
+            writer.bounds()
+        };
+        (decode_pairs(&bytes), bounds)
     }
 
-    fn hilo_upload(source: &dyn HiLoColumnSource) -> (Vec<(f32, f32)>, ColumnUploadStats) {
-        let mut bytes = vec![0; source.len() * COLUMN_VALUE_BYTES];
-        let stats = source.write_f32_pair_le_into_with_stats(
-            ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false)),
-        );
-        (decode_pairs(&bytes), stats)
+    fn scalar_upload(source: &dyn ColumnSource) -> (Vec<(f32, f32)>, Bounds) {
+        upload(source.len(), |dst| source.write_pairs(dst))
+    }
+
+    fn hilo_upload(source: &dyn HiLoColumnSource) -> (Vec<(f32, f32)>, Bounds) {
+        upload(source.len(), |dst| source.write_pairs(dst))
     }
 
     fn decode_pairs(bytes: &[u8]) -> Vec<(f32, f32)> {
@@ -806,17 +580,11 @@ mod tests {
     fn built_in_sources_write_requested_ranges_without_full_column_buffers() {
         let source = Column {
             data: vec![1.0f64, 2.25, 3.5, 4.75, 6.0],
-            min: 1.0,
-            max: 6.0,
         };
-        let mut scalar_bytes = vec![0; 2 * COLUMN_VALUE_BYTES];
-        let scalar_bounds = <Column<f64> as ColumnSource>::write_f32_pair_range_into_with_stats(
-            &source,
-            2,
-            ColumnPairWriter::from_bytes_for_test(&mut scalar_bytes, &std::cell::Cell::new(false)),
-        )
-        .unwrap();
-        assert_eq!(decode_pairs(&scalar_bytes), vec![(3.5, 0.0), (4.75, 0.0)]);
+        let (scalar_pairs, scalar_bounds) = upload(2, |dst| {
+            <Column<f64> as ColumnSource>::write_pair_range(&source, 2, dst).unwrap()
+        });
+        assert_eq!(scalar_pairs, vec![(3.5, 0.0), (4.75, 0.0)]);
         assert_eq!(
             scalar_bounds,
             Some(crate::StreamBounds {
@@ -826,14 +594,9 @@ mod tests {
             })
         );
 
-        let mut hilo_bytes = vec![0; 2 * COLUMN_VALUE_BYTES];
-        let hilo_bounds = <Column<f64> as HiLoColumnSource>::write_f32_pair_range_into_with_stats(
-            &source,
-            1,
-            ColumnPairWriter::from_bytes_for_test(&mut hilo_bytes, &std::cell::Cell::new(false)),
-        )
-        .unwrap();
-        let pairs = decode_pairs(&hilo_bytes);
+        let (pairs, hilo_bounds) = upload(2, |dst| {
+            <Column<f64> as HiLoColumnSource>::write_pair_range(&source, 1, dst).unwrap()
+        });
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0].0 as f64 + pairs[0].1 as f64, 2.25);
         assert_eq!(pairs[1].0 as f64 + pairs[1].1 as f64, 3.5);
@@ -876,40 +639,90 @@ mod tests {
     }
 
     #[test]
-    fn built_in_fused_scalar_stats_follow_recorded_f32_values() {
-        let min_subnormal = f32::from_bits(1);
-        let source = Column {
-            data: vec![f64::from_bits(1), f64::MAX, min_subnormal as f64],
-            min: f64::from_bits(1),
-            max: f64::MAX,
-        };
-        let (pairs, stats) = scalar_upload(&source);
-
-        assert_eq!(pairs[0], (0.0, 0.0));
-        assert_eq!(pairs[1], (f32::INFINITY, 0.0));
-        assert_eq!(stats.min_positive, Some(min_subnormal as f64));
+    fn pair_writer_records_statistics_of_the_pairs_written() {
+        // Non-finite and out-of-range writes leave the statistics alone; a
+        // negative zero counts as zero; the smallest positive is tracked.
+        let out_of_range = std::cell::Cell::new(false);
+        let mut bytes = [0; 5 * COLUMN_VALUE_BYTES];
+        let mut writer = ColumnPairWriter::from_bytes_for_test(&mut bytes, &out_of_range);
+        assert_eq!(writer.bounds(), None);
+        writer.write_pair(0, f32::NAN, 0.0);
+        writer.write_pair(1, f32::INFINITY, 0.0);
+        assert_eq!(writer.bounds(), None);
+        writer.write_pair(2, -0.0, 0.0);
+        writer.write_pair(3, 4.0, 0.5);
+        writer.write_pair(4, -2.0, 0.0);
+        writer.write_pair(9, 100.0, 0.0);
+        assert_eq!(
+            writer.bounds(),
+            Some(crate::StreamBounds {
+                min: -2.0,
+                max: 4.5,
+                min_positive: Some(4.5),
+            })
+        );
+        assert!(out_of_range.get());
     }
 
     #[test]
-    fn built_in_fused_hilo_stats_and_precision_use_recorded_pairs() {
+    fn built_in_scalar_stats_follow_recorded_f32_values() {
+        let min_subnormal = f32::from_bits(1);
+        let source = Column {
+            data: vec![f64::from_bits(1), f64::MAX, min_subnormal as f64],
+        };
+        let (pairs, bounds) = scalar_upload(&source);
+
+        assert_eq!(pairs[0], (0.0, 0.0));
+        assert_eq!(pairs[1], (f32::INFINITY, 0.0));
+        // The value the GPU reads: a magnitude below f32 range is 0 there,
+        // and a value past it is infinite and left out.
+        let bounds = bounds.unwrap();
+        assert_eq!(bounds.min_positive, Some(min_subnormal as f64));
+        assert_eq!((bounds.min, bounds.max), (0.0, min_subnormal as f64));
+    }
+
+    #[test]
+    fn built_in_hilo_stats_and_precision_use_recorded_pairs() {
         let cancellation = 16_777_215.5_f64;
         let epoch_a = 1_700_000_000_000.125_f64;
         let epoch_b = epoch_a + 0.75;
         let source = Column {
             data: vec![cancellation, epoch_a, epoch_b],
-            min: cancellation,
-            max: epoch_b,
         };
-        let (pairs, stats) = hilo_upload(&source);
+        let (pairs, bounds) = hilo_upload(&source);
         let (cancel_hi, cancel_lo) = split_f64_to_f32_pair(cancellation);
 
         assert_eq!(pairs[0], (cancel_hi, cancel_lo));
+        let bounds = bounds.unwrap();
         assert_eq!(
-            stats.min_positive,
+            bounds.min_positive,
             Some(cancel_hi as f64 + cancel_lo as f64)
         );
+        assert_eq!(bounds.min, cancel_hi as f64 + cancel_lo as f64);
+        assert_eq!(bounds.max, pairs[2].0 as f64 + pairs[2].1 as f64);
         let epoch_delta = (pairs[2].0 - pairs[1].0) + (pairs[2].1 - pairs[1].1);
         assert!((epoch_delta as f64 - 0.75).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn optional_columns_leave_missing_values_out_of_the_statistics() {
+        let source = Column {
+            data: vec![None, Some(-3.0), None, Some(7.0)],
+        };
+        let (pairs, bounds) = scalar_upload(&source);
+        assert!(pairs[0].0.is_nan() && pairs[2].0.is_nan());
+        assert_eq!(
+            bounds,
+            Some(crate::StreamBounds {
+                min: -3.0,
+                max: 7.0,
+                min_positive: Some(7.0),
+            })
+        );
+        let all_missing = Column::<Option<f64>> {
+            data: vec![None, None],
+        };
+        assert_eq!(scalar_upload(&all_missing).1, None);
     }
 
     #[test]

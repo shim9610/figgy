@@ -240,8 +240,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
                 id,
                 &Column {
                     data: vec![0.0_f32],
-                    min: 0.0,
-                    max: 0.0,
                 },
             )
             .expect("browser direct-scan column upload failed");
@@ -251,8 +249,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             "browser-pick-x",
             &Column {
                 data: (0..point_count).map(|index| index as f32).collect(),
-                min: 0.0,
-                max: (point_count - 1) as f32,
             },
         )
         .expect("browser pick x-column upload failed");
@@ -261,8 +257,6 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             "browser-pick-y",
             &Column {
                 data: vec![5.0_f32; point_count],
-                min: 5.0,
-                max: 5.0,
             },
         )
         .expect("browser pick y-column upload failed");

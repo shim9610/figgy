@@ -14,11 +14,7 @@ mod edge_tests;
 mod diagnostic_tests;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
-    crate::Column {
-        min: data.iter().copied().fold(f64::INFINITY, f64::min),
-        max: data.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 struct Fixture {

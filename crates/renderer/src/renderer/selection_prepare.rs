@@ -1042,14 +1042,7 @@ mod tests {
             ("index", vec![0.0; 3]),
         ] {
             renderer
-                .add_column(
-                    id,
-                    &crate::Column {
-                        data: values,
-                        min: 0.0,
-                        max: 1.0,
-                    },
-                )
+                .add_column(id, &crate::Column { data: values })
                 .unwrap();
         }
         for kind in 0..3 {

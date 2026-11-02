@@ -2,11 +2,7 @@ use super::*;
 use pollster::FutureExt as _;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
-    crate::Column {
-        min: data.iter().copied().fold(f64::INFINITY, f64::min),
-        max: data.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 fn source(column: &crate::Column<f64>, hilo: bool) -> crate::StreamColumnSource<'_> {

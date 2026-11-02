@@ -9,8 +9,8 @@ use super::*;
 pub(super) fn write_staging_pairs(
     staging: &Buffer,
     raw_bytes: u64,
-    write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
-) -> Result<(ColumnUploadStats, Option<f64>), AllocError> {
+    write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
+) -> Result<(Option<crate::StreamBounds>, Option<f64>), AllocError> {
     let mut view = staging
         .slice(0..raw_bytes)
         .get_mapped_range_mut()
@@ -20,20 +20,28 @@ pub(super) fn write_staging_pairs(
         })?;
     let mut step = crate::data::UniformStep::new();
     let out_of_range = std::cell::Cell::new(false);
-    let stats = {
+    let bounds = {
         let mut observe = |index: usize, hi: f32, lo: f32| step.record(index, hi, lo);
-        write_pairs(ColumnPairWriter::new_observed(
-            view.slice(..),
-            &out_of_range,
-            &mut observe,
-        ))
+        let mut writer =
+            ColumnPairWriter::new_observed(view.slice(..), &out_of_range, &mut observe);
+        write_pairs(&mut writer);
+        writer.bounds()
     };
     drop(view);
     staging.unmap();
     if out_of_range.get() {
         return Err(source_wrote_out_of_range());
     }
-    Ok((stats, step.finish()))
+    Ok((bounds, step.finish()))
+}
+
+/// A column's statistics as its slot stores them, from the bounds its writer
+/// recorded: `+inf`, `-inf` and no positive value when no written value was
+/// finite.
+pub(super) fn slot_statistics(bounds: Option<crate::StreamBounds>) -> (f64, f64, Option<f64>) {
+    bounds.map_or((f64::INFINITY, f64::NEG_INFINITY, None), |bounds| {
+        (bounds.min, bounds.max, bounds.min_positive)
+    })
 }
 
 /// The error for a source that wrote a pair index outside its own length.
@@ -46,20 +54,11 @@ pub(super) fn source_wrote_out_of_range() -> AllocError {
 
 /// Source metadata captured before an upload is prepared.
 ///
-/// This deliberately excludes allocator state and encoded-value statistics,
-/// which belong to [`ColumnSlot`] and [`ColumnUploadStats`] respectively.
+/// This deliberately excludes allocator state and the statistics, which the
+/// writer records while the values are written and [`ColumnSlot`] keeps.
 pub(super) struct ColumnInputMeta {
     pub(super) id: ColumnId,
     pub(super) len_values: usize,
-    pub(super) min: f64,
-    pub(super) max: f64,
-}
-
-pub(super) fn write_scalar_source_as_pairs(
-    source: &dyn ColumnSource,
-    dst: ColumnPairWriter<'_>,
-) -> ColumnUploadStats {
-    source.write_f32_pair_le_into_with_stats(dst)
 }
 
 #[derive(Clone, Copy)]
@@ -119,10 +118,11 @@ pub(super) fn stage_streamed_columns(
             // not figgy's, and is returned as this promotion's failure, as
             // the streamed upload does (`streaming_upload.rs`).
             let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                column.source.write_range(
-                    0,
-                    ColumnPairWriter::new(view.slice(start..end), &out_of_range),
-                )
+                let mut writer = ColumnPairWriter::new(view.slice(start..end), &out_of_range);
+                column
+                    .source
+                    .write_range(0, &mut writer)
+                    .map(|()| writer.bounds())
             }))
             .map_err(|_| AllocError::AllocationFailed {
                 resource: "streamed promotion source",
@@ -135,18 +135,7 @@ pub(super) fn stage_streamed_columns(
             if out_of_range.get() {
                 return Err(source_wrote_out_of_range());
             }
-            crate::streaming_source::validate_statistics(
-                len_values as u64,
-                crate::StreamStatistics::Known(bounds),
-            )
-            .map_err(|reason| AllocError::AllocationFailed {
-                resource: "streamed promotion source",
-                reason: reason.to_owned(),
-            })?;
-            let (min, max, min_positive) = bounds
-                .map_or((f64::INFINITY, f64::NEG_INFINITY, None), |bounds| {
-                    (bounds.min, bounds.max, bounds.min_positive)
-                });
+            let (min, max, min_positive) = slot_statistics(bounds);
             staged.push(StagedStreamedColumn {
                 offset,
                 byte_size,
@@ -1071,25 +1060,26 @@ impl ColumnPool {
                     let index_lanes = index_column == Some(index);
                     let mut step = crate::data::UniformStep::new();
                     let out_of_range = std::cell::Cell::new(false);
-                    let stats = if let Some(observe) = observe.as_mut() {
+                    let bounds = if let Some(observe) = observe.as_mut() {
                         let mut per_column = |row: usize, hi: f32, lo: f32| {
                             step.record(row, hi, lo);
                             (*observe)(index, row, hi, lo);
                         };
-                        write_scalar_source_as_pairs(
-                            source,
+                        let mut writer =
                             ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
-                                .with_index_lanes(index_lanes),
-                        )
+                                .with_index_lanes(index_lanes);
+                        source.write_pairs(&mut writer);
+                        writer.bounds()
                     } else {
                         let mut per_column =
                             |row: usize, hi: f32, lo: f32| step.record(row, hi, lo);
-                        write_scalar_source_as_pairs(
-                            source,
+                        let mut writer =
                             ColumnPairWriter::new_observed(dst, &out_of_range, &mut per_column)
-                                .with_index_lanes(index_lanes),
-                        )
+                                .with_index_lanes(index_lanes);
+                        source.write_pairs(&mut writer);
+                        writer.bounds()
                     };
+                    let (min, max, min_positive) = slot_statistics(bounds);
                     if out_of_range.get() {
                         return Err(source_wrote_out_of_range());
                     }
@@ -1103,9 +1093,9 @@ impl ColumnPool {
                             byte_size,
                             len_values: source.len(),
                             generation: self.generation,
-                            min: source.min(),
-                            max: source.max(),
-                            min_positive: stats.min_positive,
+                            min,
+                            max,
+                            min_positive,
                             uniform_step: step.finish(),
                         },
                     );
@@ -1217,11 +1207,9 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
-                min: source.min(),
-                max: source.max(),
             },
             ctx,
-            |dst| write_scalar_source_as_pairs(source, dst),
+            |dst| source.write_pairs(dst),
             |byte_size| {
                 create_buffer_checked(
                     device,
@@ -1250,11 +1238,9 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
-                min: source.min(),
-                max: source.max(),
             },
             ctx,
-            |dst| source.write_f32_pair_le_into_with_stats(dst),
+            |dst| source.write_pairs(dst),
             |byte_size| {
                 create_buffer_checked(
                     device,
@@ -1345,16 +1331,16 @@ impl ColumnPool {
                 "batch column staging buffer",
             )?;
             staged_bytes = staged_bytes.saturating_add(byte_size);
-            let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, |dst| {
-                write_scalar_source_as_pairs(source, dst)
-            })?;
+            let (bounds, uniform_step) =
+                write_staging_pairs(&staging, raw_bytes, |dst| source.write_pairs(dst))?;
+            let (min, max, min_positive) = slot_statistics(bounds);
             staged.push(StagedColumn {
                 id,
                 len_values,
                 byte_size,
-                min: source.min(),
-                max: source.max(),
-                min_positive: stats.min_positive,
+                min,
+                max,
+                min_positive,
                 uniform_step,
                 staging,
             });
@@ -1578,17 +1564,12 @@ impl ColumnPool {
         &'a mut self,
         input: ColumnInputMeta,
         ctx: GpuAllocCtx<'_>,
-        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
+        write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
         create_staging: impl FnOnce(u64) -> Result<TrackedBuffer, AllocError>,
     ) -> Result<ColumnUpsert<'a>, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
-        let ColumnInputMeta {
-            id,
-            len_values: n,
-            min,
-            max,
-        } = input;
+        let ColumnInputMeta { id, len_values: n } = input;
         if self.is_member_column(&id) {
             return Err(AllocError::MemberColumn(id));
         }
@@ -1627,8 +1608,8 @@ impl ColumnPool {
         // Complete every source-dependent/fallible staging operation before
         // touching allocator metadata or the live primary buffer.
         let staging = create_staging(byte_size)?;
-        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
-        let min_positive = stats.min_positive;
+        let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+        let (min, max, min_positive) = slot_statistics(bounds);
 
         let old_slot = self.slots.get(&id).cloned();
         let replaced_existing = old_slot.is_some();
@@ -1857,8 +1838,8 @@ impl ColumnPool {
     ///
     /// 1. First-fit allocation from the free list.
     /// 2. Create a `mapped_at_creation: true` staging buffer.
-    /// 3. `ColumnSource::write_f32_pair_le_into_with_stats` writes bytes and
-    ///    collects encoded-value stats through the write-only mapped view.
+    /// 3. `ColumnSource::write_pairs` writes the values through the
+    ///    write-only mapped view; the writer records their statistics.
     /// 4. Unmap, encode a staging→primary copy, submit.
     pub(super) fn try_add_column(
         &mut self,
@@ -1870,11 +1851,9 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
-                min: source.min(),
-                max: source.max(),
             },
             ctx,
-            |dst| write_scalar_source_as_pairs(source, dst),
+            |dst| source.write_pairs(dst),
         )
     }
 
@@ -1888,11 +1867,9 @@ impl ColumnPool {
             ColumnInputMeta {
                 id,
                 len_values: source.len(),
-                min: source.min(),
-                max: source.max(),
             },
             ctx,
-            |dst| source.write_f32_pair_le_into_with_stats(dst),
+            |dst| source.write_pairs(dst),
         )
     }
 
@@ -1900,7 +1877,7 @@ impl ColumnPool {
         &mut self,
         input: ColumnInputMeta,
         ctx: GpuAllocCtx<'_>,
-        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
+        write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
     ) -> Result<ColumnHandle, AllocError> {
         let device = ctx.device;
         self.try_add_column_pairs_with(input, ctx, write_pairs, |byte_size| {
@@ -1922,17 +1899,12 @@ impl ColumnPool {
         &mut self,
         input: ColumnInputMeta,
         ctx: GpuAllocCtx<'_>,
-        write_pairs: impl FnOnce(ColumnPairWriter<'_>) -> ColumnUploadStats,
+        write_pairs: impl FnOnce(&mut ColumnPairWriter<'_>),
         create_staging: impl FnOnce(u64) -> Result<TrackedBuffer, AllocError>,
     ) -> Result<ColumnHandle, AllocError> {
         let (device, queue) = (ctx.device, ctx.queue);
         let ceiling = buffer_ceiling(device);
-        let ColumnInputMeta {
-            id,
-            len_values: n,
-            min,
-            max,
-        } = input;
+        let ColumnInputMeta { id, len_values: n } = input;
         if self.slots.contains_key(&id) {
             return Err(AllocError::DuplicateId(id));
         }
@@ -1967,8 +1939,8 @@ impl ColumnPool {
 
         // The source writes and collects stats while the write-only view lives.
         let staging = create_staging(byte_size)?;
-        let (stats, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
-        let min_positive = stats.min_positive;
+        let (bounds, uniform_step) = write_staging_pairs(&staging, raw_bytes, write_pairs)?;
+        let (min, max, min_positive) = slot_statistics(bounds);
 
         let slot = ColumnSlot {
             id: id.clone(),

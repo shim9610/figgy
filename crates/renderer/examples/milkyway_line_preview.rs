@@ -12,9 +12,7 @@ use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png}
 use std::{error::Error, path::PathBuf};
 
 fn column(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

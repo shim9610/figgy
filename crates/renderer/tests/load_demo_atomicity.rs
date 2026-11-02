@@ -9,17 +9,15 @@ use renderer::data::COLUMN_VALUE_BYTES;
 use renderer::data_render::column_pool::ALIGN;
 use renderer::line::LineStylePreset;
 use renderer::{
-    Chart, Color, Column, ColumnHandle, ColumnPairWriter, ColumnSource, ColumnUploadStats,
-    DataLineStyleConfig, DataRenderType, FiggyError, Renderer, RendererDevice, SeriesConfig,
+    Chart, Color, Column, ColumnHandle, ColumnPairWriter, ColumnSource, DataLineStyleConfig,
+    DataRenderType, FiggyError, Renderer, RendererDevice, SeriesConfig,
 };
 use wgpu::{BufferDescriptor, BufferUsages};
 
 const DEMO_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 fn demo_columns() -> [Column<f64>; 4] {
@@ -349,22 +347,7 @@ impl ColumnSource for PanickingSource {
         2
     }
 
-    fn min(&self) -> f64 {
-        1.0
-    }
-
-    fn max(&self) -> f64 {
-        2.0
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        dst.fill(0);
-    }
-
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats {
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>) {
         writer.write_pair(0, 1.0, 0.0);
         panic!("injected demo staging failure");
     }

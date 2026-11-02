@@ -70,8 +70,6 @@ fn renderer() -> Renderer {
         "x",
         &Column {
             data: vec![0.0, 10.0],
-            min: 0.0,
-            max: 10.0,
         },
     )
     .unwrap();
@@ -79,8 +77,6 @@ fn renderer() -> Renderer {
         "y",
         &Column {
             data: vec![5.0, 5.0],
-            min: 5.0,
-            max: 5.0,
         },
     )
     .unwrap();

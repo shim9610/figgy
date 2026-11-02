@@ -162,31 +162,19 @@ impl crate::HiLoColumnSource for PartialFailure {
     fn len(&self) -> usize {
         self.values.data.len()
     }
-    fn min(&self) -> f64 {
-        self.values.min
-    }
-    fn max(&self) -> f64 {
-        self.values.max
-    }
-    fn write_f32_pair_le_into(&self, _: &mut [u8]) {
+    fn write_pairs(&self, _: &mut crate::ColumnPairWriter<'_>) {
         panic!("full-column writer forbidden");
     }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        _: crate::ColumnPairWriter<'_>,
-    ) -> crate::ColumnUploadStats {
-        panic!("full-column writer forbidden");
-    }
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut writer: crate::ColumnPairWriter<'_>,
-    ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError> {
+        writer: &mut crate::ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), crate::ColumnRangeWriteError> {
         if self.fail.replace(false) {
             writer.write_pair(0, 0.5, 0.0);
             return Err(crate::ColumnRangeWriteError::SourceFailed);
         }
-        crate::HiLoColumnSource::write_f32_pair_range_into_with_stats(&self.values, start, writer)
+        crate::HiLoColumnSource::write_pair_range(&self.values, start, writer)
     }
 }
 

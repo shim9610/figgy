@@ -15,11 +15,10 @@ use eframe::wgpu;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
     Chart, ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource,
-    ColumnUploadStats, DataRenderType, DataScatterStyleConfig, FiggyError, HiLoColumnSource,
-    PreparedFrame, RegisteredChartDrawItem, Renderer, RendererDevice, ScatterShape, SeriesConfig,
-    StreamBounds, StreamColumn, StreamColumnSource, StreamEncoding, StreamReplay,
-    StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
-    StreamingProgress,
+    DataRenderType, DataScatterStyleConfig, FiggyError, HiLoColumnSource, PreparedFrame,
+    RegisteredChartDrawItem, Renderer, RendererDevice, ScatterShape, SeriesConfig, StreamColumn,
+    StreamColumnSource, StreamEncoding, StreamReplay, StreamSourceBinding, StreamStatistics,
+    StreamingChartOptions, StreamingLimits, StreamingProgress,
 };
 
 const POOL_CAPACITY: u64 = 1024 * 1024;
@@ -121,48 +120,27 @@ fn checked_range(
     Ok(start..end)
 }
 
+// The demo registers streamed sources only, so the full-column writers are
+// never called; the renderer records each chunk's statistics as it is written.
 impl ColumnSource for VirtualColumn {
     fn len(&self) -> usize {
         self.len
     }
-    fn min(&self) -> f64 {
-        0.0
-    }
-    fn max(&self) -> f64 {
-        1.0
-    }
 
-    fn write_f32_le_into(&self, _dst: &mut [u8]) {
-        panic!("streaming demo must not request a full-column buffer")
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, _dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+    fn write_pairs(&self, _dst: &mut ColumnPairWriter<'_>) {
         panic!("streaming demo must not request a full-column writer")
     }
 
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError> {
         let range = checked_range(self.len, start, dst.len())?;
-        let mut min = f32::INFINITY;
-        let mut max = f32::NEG_INFINITY;
-        let mut min_positive = f32::INFINITY;
         for (local, index) in range.enumerate() {
-            let value = self.coarse(index);
-            dst.write_pair(local, value, 0.0);
-            min = min.min(value);
-            max = max.max(value);
-            if value > 0.0 {
-                min_positive = min_positive.min(value);
-            }
+            dst.write_pair(local, self.coarse(index), 0.0);
         }
-        Ok((dst.len() != 0).then_some(StreamBounds {
-            min: f64::from(min),
-            max: f64::from(max),
-            min_positive: min_positive.is_finite().then(|| f64::from(min_positive)),
-        }))
+        Ok(())
     }
 }
 
@@ -170,45 +148,22 @@ impl HiLoColumnSource for VirtualColumn {
     fn len(&self) -> usize {
         self.len
     }
-    fn min(&self) -> f64 {
-        0.0
-    }
-    fn max(&self) -> f64 {
-        1.0
-    }
 
-    fn write_f32_pair_le_into(&self, _dst: &mut [u8]) {
-        panic!("streaming demo must not request a full-column buffer")
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, _dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+    fn write_pairs(&self, _dst: &mut ColumnPairWriter<'_>) {
         panic!("streaming demo must not request a full-column writer")
     }
 
-    fn write_f32_pair_range_into_with_stats(
+    fn write_pair_range(
         &self,
         start: u64,
-        mut dst: ColumnPairWriter<'_>,
-    ) -> Result<Option<StreamBounds>, ColumnRangeWriteError> {
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError> {
         let range = checked_range(self.len, start, dst.len())?;
-        let mut min = f64::INFINITY;
-        let mut max = f64::NEG_INFINITY;
-        let mut min_positive = f64::INFINITY;
         for (local, index) in range.enumerate() {
             let (hi, lo) = renderer::data::split_f64_to_f32_pair(self.precise(index));
             dst.write_pair(local, hi, lo);
-            let value = hi as f64 + lo as f64;
-            min = min.min(value);
-            max = max.max(value);
-            if value > 0.0 {
-                min_positive = min_positive.min(value);
-            }
         }
-        Ok((dst.len() != 0).then_some(StreamBounds {
-            min,
-            max,
-            min_positive: min_positive.is_finite().then_some(min_positive),
-        }))
+        Ok(())
     }
 }
 

@@ -146,11 +146,7 @@ fn sample_f32(values: usize, grow_from_small_pool: bool) -> Option<Sample> {
     let input_bytes = (values as u64) * 4;
     let stored_bytes = (values as u64) * COLUMN_VALUE_BYTES;
     let data: Vec<f32> = (0..values).map(|i| i as f32).collect();
-    let column = Column {
-        min: 0.0f32,
-        max: (values.saturating_sub(1)) as f32,
-        data,
-    };
+    let column = Column { data };
 
     // "Before": no growth, so the host must size the pool for the data up
     // front — exactly how a 0.9 host works. "After": a small pool that grows.
@@ -310,8 +306,6 @@ fn f64_input_costs_one_stored_byte_per_input_byte() {
         };
         renderer.end_gpu_frame();
         let column = Column {
-            min: 0.0f64,
-            max: (values - 1) as f64,
             data: (0..values).map(|i| i as f64).collect(),
         };
         let rss_before = rss_bytes().unwrap_or(0) as i64;
@@ -364,11 +358,7 @@ fn upload_peak_stays_within_settled_plus_one_staging_buffer() {
 fn releasing_the_data_returns_the_pool_to_empty() {
     let values = (SMALL_INPUT_BYTES / 4) as usize;
     let data: Vec<f32> = (0..values).map(|i| i as f32).collect();
-    let column = Column {
-        min: 0.0f32,
-        max: (values - 1) as f32,
-        data,
-    };
+    let column = Column { data };
     let stored = (values as u64) * COLUMN_VALUE_BYTES;
     let Some(mut renderer) = renderer_with_pool(stored + 64 * 1024) else {
         eprintln!("no GPU adapter; skipping release measurement");

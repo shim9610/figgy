@@ -542,14 +542,19 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
             let out_of_range = std::cell::Cell::new(false);
             let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut on_pair = |row, hi, lo| observe(index, row, hi, lo);
-                supplied.source.write_range(
-                    supplied.source_offset.map_or(column.range.offset, |_| 0),
-                    ColumnPairWriter::new_observed(
-                        mapped.slice(start..end),
-                        &out_of_range,
-                        &mut on_pair,
-                    ),
-                )
+                let mut writer = ColumnPairWriter::new_observed(
+                    mapped.slice(start..end),
+                    &out_of_range,
+                    &mut on_pair,
+                );
+                // The writer records this chunk's statistics.
+                supplied
+                    .source
+                    .write_range(
+                        supplied.source_offset.map_or(column.range.offset, |_| 0),
+                        &mut writer,
+                    )
+                    .map(|()| writer.bounds())
             }))
             .map_err(|_| ChunkUploadError::SourceWrite {
                 index,
@@ -562,14 +567,6 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
                     error: crate::ColumnRangeWriteError::InvalidRange,
                 });
             }
-            crate::streaming_source::validate_statistics(
-                column.range.len,
-                crate::StreamStatistics::Known(bounds),
-            )
-            .map_err(|_| ChunkUploadError::SourceWrite {
-                index,
-                error: crate::ColumnRangeWriteError::SourceFailed,
-            })?;
             if !statistics_plans[index].ranges.is_empty() {
                 column.statistics = Some(bounds);
             }
@@ -942,13 +939,9 @@ mod tests {
                 1e9 + 8.,
                 1e9 + 2.,
             ],
-            min: 1e9,
-            max: 1e9 + 10.,
         };
         let ys = crate::data::Column {
             data: vec![2., 8., 4., 4., f64::NAN, 7., 6.],
-            min: 0.,
-            max: 10.,
         };
         let resident_x = pool.add_hilo_column("x".into(), &xs, ctx).unwrap();
         let resident_y = pool.add_hilo_column("y".into(), &ys, ctx).unwrap();
@@ -1647,8 +1640,6 @@ mod tests {
         let ledger = Arc::new(GpuLedger::new());
         let source = crate::Column {
             data: vec![1f32, 2f32],
-            min: 1.0,
-            max: 2.0,
         };
         let supply = |_| StreamSourceSlice {
             source: crate::StreamColumnSource::Scalar(&source),
