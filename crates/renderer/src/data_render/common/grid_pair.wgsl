@@ -18,6 +18,15 @@ fn normalize_grid_pair(v: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(sum, grid_rounded_add(a_roundoff, b_roundoff));
 }
 
+/// `pair + s` as a `(hi, lo)` pair: the error-free sum of the high lane and
+/// `s` keeps its residual, so a large-offset coordinate still resolves a
+/// small data-space step. The old low lane is added to the residual without
+/// renormalizing, as the arrow glyphs have always done.
+fn pair_add(pair: vec2<f32>, s: f32) -> vec2<f32> {
+    let sum = normalize_grid_pair(vec2<f32>(pair.x, s));
+    return vec2<f32>(sum.x, sum.y + pair.y);
+}
+
 fn add_grid_pairs(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     let high = normalize_grid_pair(vec2<f32>(a.x, b.x));
     let low = grid_rounded_add(grid_rounded_add(a.y, b.y), high.y);

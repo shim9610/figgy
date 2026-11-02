@@ -138,16 +138,6 @@ pub(super) fn emit_ternary_axes(
     }
 }
 
-/// The stroke of an edge or a tick of `axis`.
-fn stroke_style<'t>(axis: &AxisOptions, tag: &'t str) -> StrokeStyle<'t> {
-    StrokeStyle {
-        width: axis.line_width,
-        color: axis.line_color,
-        dash: axis.line_style.pattern(),
-        tag,
-    }
-}
-
 /// Edge `k` and its ticks (`Element::Axis` of its side): the edge moved out
 /// by the axis' `line_offset` along its outward normal, the ticks along the
 /// normal (outside, inside or both).
@@ -162,51 +152,21 @@ pub(super) fn emit_ternary_axis_strokes(
         return;
     };
     let axis = ternary_axis(config, k);
-    let side = component_side(k);
-    let tag_side = side_tag(&side);
     let offset = axis.line_offset;
-    if axis.line_visible {
-        let a = edge_point(&g, k, 0.0, offset);
-        let b = edge_point(&g, k, 1.0, offset);
-        let tag = format!("axis_{tag_side}");
-        sink.stroke(
-            Slot::Above,
-            [a.0, a.1],
-            [b.0, b.1],
-            &stroke_style(axis, &tag),
-        );
-    }
-    if axis.tick == TickVisibility::None {
-        return;
-    }
-    let plot = data_area_rect(da);
-    let majors = major_tick_values_for_axis(axis, side.clone(), &plot, fp);
-    let minors = minor_tick_values_for_axis(axis, side, &plot, fp);
-    for (i, (value, length)) in majors
-        .iter()
-        .map(|v| (*v, axis.major_tick_length))
-        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)))
-        .enumerate()
-    {
-        let Some(f) = fraction(axis, value) else {
-            continue;
-        };
-        let (from, to) = match axis.tick {
-            TickVisibility::None => continue,
-            TickVisibility::Outside => (0.0, length),
-            TickVisibility::Inside => (-length, 0.0),
-            TickVisibility::Both => (-length, length),
-        };
-        let a = edge_point(&g, k, f, offset + from);
-        let b = edge_point(&g, k, f, offset + to);
-        let tag = format!("tick_{tag_side}_{i}");
-        sink.stroke(
-            Slot::Above,
-            [a.0, a.1],
-            [b.0, b.1],
-            &stroke_style(axis, &tag),
-        );
-    }
+    let point = |f: f32, by: f32| {
+        let (x, y) = edge_point(&g, k, f, offset + by);
+        [x, y]
+    };
+    super::emit_edge_axis_strokes(
+        axis,
+        component_side(k),
+        da,
+        fp,
+        sink,
+        (point(0.0, 0.0), point(1.0, 0.0)),
+        |value| fraction(axis, value),
+        point,
+    );
 }
 
 /// Edge `k`'s tick labels (`Element::AxisLabel` of its side), but its 0:

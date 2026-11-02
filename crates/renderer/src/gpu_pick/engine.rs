@@ -383,7 +383,6 @@ impl GpuPickEngine {
         Ok(Self::from_bundle_and_reduce(bundle, reduce))
     }
 
-    #[allow(dead_code)] // Consumed by renderer ownership integration in P-02.
     pub(crate) fn from_bundle(bundle: Arc<PickPipelineBundle>) -> Result<Self, GpuPickError> {
         let reduce =
             Self::create_reduce_resources(&bundle.device, &bundle.ledger, &bundle.reduce_bgl, 1)?;

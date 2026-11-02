@@ -128,6 +128,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
             "data_render/common/area_piece.wgsl",
+            "data_render/common/grid_pair.wgsl",
             "data_render/common/arrow.wgsl",
             "data_render/common/path_arrow.wgsl",
             "gpu_pick/no_scatter.wgsl",
@@ -143,6 +144,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
+            "data_render/common/grid_pair.wgsl",
             "data_render/common/arrow.wgsl",
             "gpu_pick/vector.wgsl",
             "gpu_pick/no_line.wgsl",
@@ -796,7 +798,6 @@ pub(super) fn validate_device_limits(device: &wgpu::Device) -> Result<(), GpuPic
     Ok(())
 }
 
-#[allow(dead_code)] // Consumed by renderer ownership integration in P-02.
 impl PickPipelineBundle {
     pub(crate) fn new_observed(
         device: wgpu::Device,

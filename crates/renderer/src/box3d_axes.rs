@@ -9,38 +9,25 @@
 
 use super::*;
 use crate::sink::{Sink, Slot, StrokeStyle};
-use crate::view3d::{BoxEdge, box_axis};
+use crate::view3d::box_axis;
 
 pub(super) use crate::ternary::side_component;
 
 /// The axis fraction of `value` on `axis`, `0..=1` inside its range, read
 /// as the GPU reads it: logarithmic and inverted axes included.
 fn fraction(axis: &AxisOptions, value: f64) -> Option<f64> {
-    let (lo, hi, v) = match axis.scale {
+    let f = match axis.scale {
         AxisScale::Logarithmic => {
             let (lo, hi) = crate::chart::guarded_log_range(axis.min, axis.max);
-            if value <= 0.0 {
-                return None;
-            }
-            (lo.log10(), hi.log10(), value.log10())
+            crate::layout::span_fraction(value, lo, hi, true)
         }
         _ => {
             let (lo, hi) = axis.data_range();
-            (lo, hi, value)
+            crate::layout::span_fraction(value, lo, hi, false)
         }
-    };
-    let f = (v - lo) / (hi - lo);
+    }?;
     let f = if axis.inverted { 1.0 - f } else { f };
     (f.is_finite() && (-1e-9..=1.0 + 1e-9).contains(&f)).then_some(f.clamp(0.0, 1.0))
-}
-
-fn stroke_style<'t>(axis: &AxisOptions, tag: &'t str) -> StrokeStyle<'t> {
-    StrokeStyle {
-        width: axis.line_width,
-        color: axis.line_color,
-        dash: axis.line_style.pattern(),
-        tag,
-    }
 }
 
 /// The box grid below the data: on each back pane, a line of constant
@@ -138,43 +125,16 @@ pub(super) fn emit_box_axis_strokes(
         return;
     };
     let axis = box_axis(config, k);
-    let side = box_side(k);
-    let tag_side = side_tag(&side);
-    if axis.line_visible {
-        let tag = format!("axis_{tag_side}");
-        sink.stroke(Slot::Above, edge.a, edge.b, &stroke_style(axis, &tag));
-    }
-    if axis.tick == TickVisibility::None {
-        return;
-    }
-    let plot = data_area_rect(da);
-    let majors = major_tick_values_for_axis(axis, side.clone(), &plot, fp);
-    let minors = minor_tick_values_for_axis(axis, side, &plot, fp);
-    for (i, (value, length)) in majors
-        .iter()
-        .map(|v| (*v, axis.major_tick_length))
-        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)))
-        .enumerate()
-    {
-        let Some(f) = fraction(axis, value) else {
-            continue;
-        };
-        let (from, to) = match axis.tick {
-            TickVisibility::None => continue,
-            TickVisibility::Outside => (0.0, length),
-            TickVisibility::Inside => (-length, 0.0),
-            TickVisibility::Both => (-length, length),
-        };
-        let a = tick_point(&edge, f, from);
-        let b = tick_point(&edge, f, to);
-        let tag = format!("tick_{tag_side}_{i}");
-        sink.stroke(Slot::Above, a, b, &stroke_style(axis, &tag));
-    }
-}
-
-/// The pixel point at fraction `f` of `edge`, `offset` along its normal.
-fn tick_point(edge: &BoxEdge, f: f64, offset: f32) -> [f32; 2] {
-    edge.point(f as f32, offset)
+    super::emit_edge_axis_strokes(
+        axis,
+        box_side(k),
+        da,
+        fp,
+        sink,
+        (edge.a, edge.b),
+        |value| fraction(axis, value).map(|f| f as f32),
+        |f, offset| edge.point(f, offset),
+    );
 }
 
 /// Axis `k`'s tick labels (`Element::AxisLabel` of its side): centred past

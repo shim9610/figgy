@@ -121,7 +121,6 @@ impl<'a> GpuAllocCtx<'a> {
 }
 
 impl ColumnPool {
-    #[allow(dead_code)]
     pub(crate) fn identity(&self) -> PoolIdentity {
         self.identity.clone()
     }
