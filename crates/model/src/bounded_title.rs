@@ -29,9 +29,6 @@ impl BoundedTitleOptions {
             },
         }
     }
-    pub fn has_text(&self) -> bool {
-        self.visible && !self.text.segments.is_empty()
-    }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.text.validate_math().map_err(|e| e.as_str())?;
         if !self.text.within_limits() {

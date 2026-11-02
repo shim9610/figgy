@@ -33,6 +33,13 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Unused items removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `DataConfig` (a lone `data_id`), `DataCell` (a bundle of columns nothing
+  built), `default::default_rich_text` (an empty black 12 px `RichText`) and
+  `BoundedTitleOptions::has_text` had no user. A host that used one writes
+  it in place: `RichText { segments: Vec::new(), color: Color::BLACK,
+  font_size: 12.0, font: String::new(), align: TextAlign::Left }`, and
+  `title.visible && !title.text.segments.is_empty()`.
 - **One radial title** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `RadialChart::title`, the plain string drawn in the chart's font when
   `chart_title` was absent, is removed with `normalize_title`:
@@ -970,6 +977,20 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Device setup in `renderer::gpu`; the GPU internals hidden** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `create_instance`, `request_adapter_async`,
+  `request_adapter_for_surface_async`, `request_device_async`,
+  `create_surface_for_window`, `try_configure_surface`, `configure_surface`,
+  `reconfigure_surface`, `render_clear` and `RenderOutcome` are the public
+  `renderer::gpu` module. `data_render`, `gpu_contour` and `raster` are
+  hidden from the documentation: they are the renderer's drawing internals,
+  public for its own tests, with no compatibility promise; the column pool
+  types a host names stay at the crate root. `WebDerivedSnapshot`,
+  `WebDerivedStamp` and `Renderer::web_derived_snapshot`, which nothing
+  read since the web wrapper stopped keeping its own caches, are removed.
+  Migration: `renderer::data_render::{create_instance, request_adapter_async,
+  request_device_async}` → `renderer::gpu::{..}`, and likewise for the
+  surface helpers.
 - **Every path checks the same rules** ([#160](https://github.com/shim9610/figgy/issues/160)).
   Registration, chart edits, the export of a held chart and the registered
   draw read the model's `validate_chart` / `validate_series`, and the

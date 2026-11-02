@@ -317,53 +317,6 @@ pub(super) fn annotation_config_revision(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ColumnContentStamp {
-    pub(super) id: ColumnId,
-    pub(super) allocation_epoch: u64,
-}
-
-/// Atomic identity for all renderer state used by web-owned derived caches.
-///
-/// Fields stay private so the web wrapper cannot reconstruct or increment
-/// renderer counters independently.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct WebDerivedStamp {
-    pub(super) renderer_identity: u64,
-    pub(super) chart_id: ChartId,
-    pub(super) view: RenderRevision,
-    pub(super) data: RenderRevision,
-    pub(super) pool_layout_generation: u64,
-    pub(super) columns: Vec<ColumnContentStamp>,
-}
-
-/// One coherent, owned read of renderer state for browser-only derived work.
-#[derive(Clone, Debug)]
-pub struct WebDerivedSnapshot {
-    pub(super) stamp: WebDerivedStamp,
-    pub(super) fit_token: FitCommitToken,
-    pub(super) config: Config,
-    pub(super) series: Vec<SeriesConfig>,
-}
-
-impl WebDerivedSnapshot {
-    pub fn stamp(&self) -> &WebDerivedStamp {
-        &self.stamp
-    }
-
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    pub fn series(&self) -> &[SeriesConfig] {
-        &self.series
-    }
-
-    pub fn fit_token(&self) -> &FitCommitToken {
-        &self.fit_token
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ChartRevisions {
     pub(super) desired: RenderRevision,
@@ -564,17 +517,6 @@ impl ColumnInvalidationPlan {
             .map_or(current, |update| update.desired)
     }
 
-    pub(super) fn prospective_data_revision(
-        &self,
-        id: ChartId,
-        current: RenderRevision,
-    ) -> RenderRevision {
-        self.charts
-            .iter()
-            .find(|update| update.id == id)
-            .map_or(current, |update| update.data)
-    }
-
     pub(super) fn publish(
         self,
         chart_states: &mut HashMap<ChartId, ChartRenderState>,
@@ -723,7 +665,6 @@ pub struct RendererColumnUpsert<'a> {
     pub(super) invalidation: Option<ColumnInvalidationPlan>,
     pub(super) picker: Option<PreparedActivePickerMutation<'a>>,
     pub(super) pending_defrag_after_commit: Option<bool>,
-    pub(super) renderer_identity: u64,
     pub(super) device: &'a wgpu::Device,
     pub(super) queue: &'a wgpu::Queue,
     pub(super) errorbar_extent_engine: Option<&'a crate::gpu_errorbar::GpuErrorbarExtentEngine>,
@@ -776,35 +717,6 @@ impl RendererColumnUpsert<'_> {
 
     pub fn replaced_existing(&self) -> bool {
         self.inner().replaced_existing()
-    }
-
-    /// Coherent prospective snapshot for cache preparation before commit.
-    ///
-    /// The stamp reflects the provisional pool mapping and the checked data
-    /// revision that `commit` will publish. Dropping this guard rolls the pool
-    /// back, so the returned stamp never becomes current.
-    pub fn web_derived_snapshot(&self, id: ChartId) -> Result<WebDerivedSnapshot> {
-        let state = self
-            .chart_states
-            .get(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        for series in &state.series {
-            require_resident_sources(self.streaming_sources, series)?;
-        }
-        let data_revision = self
-            .invalidation
-            .as_ref()
-            .map_or(state.revisions.data, |invalidation| {
-                invalidation.prospective_data_revision(id, state.revisions.data)
-            });
-        build_web_derived_snapshot_from_state(
-            self.pool(),
-            self.streaming_sources,
-            self.renderer_identity,
-            id,
-            state,
-            data_revision,
-        )
     }
 
     /// Begin an extent job against the provisional mappings.  The column
@@ -984,7 +896,6 @@ pub(super) fn finish_renderer_column_upsert<'a>(
     pending_defrag: &'a mut bool,
     picker: &'a mut RendererPicker,
     invalidation: Option<ColumnInvalidationPlan>,
-    renderer_identity: u64,
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     errorbar_extent_engine: Option<&'a crate::gpu_errorbar::GpuErrorbarExtentEngine>,
@@ -1015,7 +926,6 @@ pub(super) fn finish_renderer_column_upsert<'a>(
         invalidation,
         picker,
         pending_defrag_after_commit,
-        renderer_identity,
         device,
         queue,
         errorbar_extent_engine,
@@ -1714,87 +1624,6 @@ pub(super) fn validate_line_fill<'s>(
         }
     }
     Ok(())
-}
-
-pub(super) fn build_web_derived_stamp_from_state(
-    pool: &ColumnPool,
-    renderer_identity: u64,
-    chart_id: ChartId,
-    state: &ChartRenderState,
-    data_revision: RenderRevision,
-) -> Result<WebDerivedStamp> {
-    let mut ids: Vec<String> = Vec::new();
-    ids.try_reserve(state.series.len().saturating_mul(8))
-        .map_err(|error| FiggyError::StateAllocationFailed {
-            resource: "derived column identities",
-            reason: error.to_string(),
-        })?;
-    for series in &state.series {
-        visit_series_columns(series, &mut |column| {
-            if !ids.iter().any(|existing| existing == column) {
-                ids.push(column.to_string());
-            }
-        });
-    }
-
-    let mut columns = Vec::new();
-    columns
-        .try_reserve(ids.len())
-        .map_err(|error| FiggyError::StateAllocationFailed {
-            resource: "derived column stamps",
-            reason: error.to_string(),
-        })?;
-    for column in ids {
-        let allocation_epoch = pool
-            .allocation_epoch(&column)
-            .ok_or_else(|| FiggyError::UnknownColumn { id: column.clone() })?;
-        columns.push(ColumnContentStamp {
-            id: column,
-            allocation_epoch,
-        });
-    }
-
-    Ok(WebDerivedStamp {
-        renderer_identity,
-        chart_id,
-        view: state.revisions.view,
-        data: data_revision,
-        pool_layout_generation: pool.layout_generation(),
-        columns,
-    })
-}
-
-pub(super) fn build_web_derived_snapshot_from_state(
-    pool: &ColumnPool,
-    streaming_sources: &HashMap<ColumnId, RegisteredStreamColumn>,
-    renderer_identity: u64,
-    chart_id: ChartId,
-    state: &ChartRenderState,
-    data_revision: RenderRevision,
-) -> Result<WebDerivedSnapshot> {
-    let stamp = build_web_derived_stamp_from_state(
-        pool,
-        renderer_identity,
-        chart_id,
-        state,
-        data_revision,
-    )?;
-    let fit_token =
-        build_fit_token_from_state(pool, streaming_sources, renderer_identity, chart_id, state)?;
-    let mut series = Vec::new();
-    series
-        .try_reserve(state.series.len())
-        .map_err(|error| FiggyError::StateAllocationFailed {
-            resource: "web derived series snapshot",
-            reason: error.to_string(),
-        })?;
-    series.extend(state.series.iter().cloned());
-    Ok(WebDerivedSnapshot {
-        stamp,
-        fit_token,
-        config: state.config.clone(),
-        series,
-    })
 }
 
 pub(super) const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
@@ -2893,24 +2722,6 @@ impl Renderer {
         Ok(true)
     }
 
-    pub fn web_derived_snapshot(&self, id: ChartId) -> Result<WebDerivedSnapshot> {
-        let state = self
-            .chart_states
-            .get(&id)
-            .ok_or(FiggyError::UnknownChart { id })?;
-        for series in &state.series {
-            self.require_resident_series(series)?;
-        }
-        build_web_derived_snapshot_from_state(
-            &self.pool,
-            &self.streaming_sources,
-            self.renderer_identity,
-            id,
-            state,
-            state.revisions.data,
-        )
-    }
-
     pub(super) fn prepare_column_invalidation(&self, id: &str) -> Result<ColumnInvalidationPlan> {
         self.prepare_columns_invalidation(std::iter::once(id))
     }
@@ -3434,7 +3245,6 @@ impl Renderer {
             &mut self.pending_defrag,
             &mut self.picker,
             Some(invalidation),
-            self.renderer_identity,
             &self.device,
             &self.queue,
             self.errorbar_extent_engine.as_ref(),
@@ -3480,7 +3290,6 @@ impl Renderer {
             &mut self.pending_defrag,
             &mut self.picker,
             Some(invalidation),
-            self.renderer_identity,
             &self.device,
             &self.queue,
             self.errorbar_extent_engine.as_ref(),

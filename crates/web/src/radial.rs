@@ -104,17 +104,17 @@ impl FiggyRadialChart {
         console_error_panic_hook::set_once();
         let chart = parse_chart(family, value)?;
         validate(&chart, (width, height))?;
-        let instance = renderer::data_render::create_instance();
+        let instance = renderer::gpu::create_instance();
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
             .map_err(js_err)?;
-        let adapter = renderer::data_render::request_adapter_for_surface_async(&instance, &surface)
+        let adapter = renderer::gpu::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(js_err)?;
-        let (device, queue) = renderer::data_render::request_device_async(&adapter)
+        let (device, queue) = renderer::gpu::request_device_async(&adapter)
             .await
             .map_err(js_err)?;
-        let config = renderer::data_render::try_configure_surface(
+        let config = renderer::gpu::try_configure_surface(
             &surface,
             &adapter,
             &device,

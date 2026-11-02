@@ -13,8 +13,8 @@ use renderer::{
     Chart, Color, Config, Renderer, RendererDevice,
     annotation::{Anchor, Annotation, AnnotationKind},
     config::{DrawStyle, TickVisibility},
-    data_render::{create_instance, request_adapter_async, request_device_async},
     default, encode_png,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     layout::{ChartArea, Rect},
     text::RichText,
 };

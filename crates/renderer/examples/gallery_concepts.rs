@@ -27,7 +27,7 @@ use renderer::{
         ContourConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
     },
-    data_render::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_async, request_device_async},
     radial::*,
 };
 use std::path::Path;

@@ -29,17 +29,6 @@ use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
 use crate::text::{RichText, TextAlign};
 
-/// Empty RichText (no segments). Filled in by builders.
-pub fn default_rich_text() -> RichText {
-    RichText {
-        segments: Vec::new(),
-        color: Color::BLACK,
-        font_size: 12.0,
-        font: String::new(),
-        align: TextAlign::Left,
-    }
-}
-
 /// Chart title style. Text starts empty and is filled in by a builder.
 pub fn default_chart_title_options() -> ChartTitleOptions {
     ChartTitleOptions {

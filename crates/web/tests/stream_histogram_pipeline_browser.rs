@@ -6,8 +6,8 @@ use renderer::{
     data_config::{
         BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride,
     },
-    data_render::{create_instance, request_adapter_async, request_device_async},
     default,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     layout::{ChartArea, Rect},
 };
 use wasm_bindgen::{JsCast, JsValue};

@@ -1,7 +1,7 @@
 //! Declarative series configuration types.
 //!
 //! Mapping layer between chart layout (`config::Config`) and raw data
-//! (`data::DataCell`). Each `SeriesConfig` says which columns are X/Y/error
+//! (`data::Column`). Each `SeriesConfig` says which columns are X/Y/error
 //! and which render type / style to use.
 
 use crate::color::Color;
@@ -13,12 +13,6 @@ use crate::material::Material;
 use crate::text::RichText;
 use crate::tick::TickError;
 use crate::view3d::SurfaceStyle;
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct DataConfig {
-    pub data_id: String,
-}
 
 /// One series — which columns to draw, with which render type and style.
 ///

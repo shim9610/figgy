@@ -5,7 +5,7 @@ use pollster::FutureExt as _;
 use renderer::config::{DrawStyle, LegendCorner, LegendEntryKind, MilkywayOptions};
 use renderer::data::Column;
 use renderer::data_config::{DataLineStyleConfig, DataRenderType};
-use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
+use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
