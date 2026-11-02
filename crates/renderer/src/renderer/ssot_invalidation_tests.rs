@@ -1487,18 +1487,17 @@ fn config_fields_are_classified() {
         AxisOptions, AxisTitleOptions, ChartTitleOptions, ColorBarOptions, GridOptions, LabelStyle,
     };
     let Config {
-        chart_area: _,    // chart_area.x/y/width/height: Packed
-        top_x,            // axis!(top_x) + top_x range/scale/inverted: Prefix
-        bottom_x: _,      // axis!(bottom_x) + range/scale/inverted: Packed/Replay
-        left_y: _,        // axis!(left_y) + range/scale/inverted: Packed/Replay
-        right_y: _,       // axis!(right_y) + range/scale/inverted: Prefix
-        chart_title,      // chart_title.*: Prefix, top_margin: Packed
-        grid,             // grid!(...): Prefix
-        legend: _,        // legend.*: Prefix (Legend fields listed inline)
-        picked_points: _, // ssot_selection_edits_replace_only_the_overlay
-        picked_data: _,   // selection revision, same classification as picked_points
-        colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
-        draw_style: _,    // Sketch / Milkyway / Constellation: Replay
+        chart_area: _,  // chart_area.x/y/width/height: Packed
+        top_x,          // axis!(top_x) + top_x range/scale/inverted: Prefix
+        bottom_x: _,    // axis!(bottom_x) + range/scale/inverted: Packed/Replay
+        left_y: _,      // axis!(left_y) + range/scale/inverted: Packed/Replay
+        right_y: _,     // axis!(right_y) + range/scale/inverted: Prefix
+        chart_title,    // chart_title.*: Prefix, top_margin: Packed
+        grid,           // grid!(...): Prefix
+        legend: _,      // legend.*: Prefix (Legend fields listed inline)
+        picked_data: _, // ssot_selection_edits_replace_only_the_overlay
+        colorbar,       // colorbar_edits(): band fields Packed, the rest Prefix
+        draw_style: _,  // Sketch / Milkyway / Constellation: Replay
         // the coordinate system: geometry (Packed/Replay) and raster; a 3D
         // camera and parallel axes are covered by tests/surface_render.rs and
         // tests/parallel_render.rs, since the baseline series are neither kind
@@ -1951,32 +1950,36 @@ fn ssot_edits_reuse_packed_rows_only_when_valid() {
 /// first frame has no invalidation history.
 #[test]
 fn ssot_selection_edits_replace_only_the_overlay() {
-    use crate::config::{PickedPointRef, PickedPointsConfig};
+    use crate::config::{DataSelectionsConfig, PickedDataRef};
     let font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
-    let cases: &[(&str, fn(&mut PickedPointsConfig))] = &[
+    let cases: &[(&str, fn(&mut DataSelectionsConfig))] = &[
         ("visible", |s| s.visible = false),
-        ("ring_color", |s| {
-            s.ring_color = Color::new(0.0, 0.0, 1.0, 1.0)
+        ("highlight_color", |s| {
+            s.highlight_color = Color::new(0.0, 0.0, 1.0, 1.0)
         }),
-        ("ring_width_px", |s| s.ring_width_px = 5.0),
-        ("radius_extra_px", |s| s.radius_extra_px = 8.0),
-        ("point_index", |s| s.refs[0].point_index = 5),
+        ("outline_width_px", |s| s.outline_width_px = 5.0),
+        ("point_radius_extra_px", |s| s.point_radius_extra_px = 8.0),
+        ("point_index", |s| {
+            if let PickedDataRef::Point { point_index, .. } = &mut s.refs[0] {
+                *point_index = 5;
+            }
+        }),
         ("refs.clear", |s| s.refs.clear()),
     ];
     let mut base = baseline();
-    base.picked_points = Some(PickedPointsConfig {
-        refs: vec![PickedPointRef {
+    base.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "s".into(),
             point_index: 2,
         }],
         ..Default::default()
     });
-    let edited = |name: &str, edit: fn(&mut PickedPointsConfig)| {
+    let edited = |name: &str, edit: fn(&mut DataSelectionsConfig)| {
         let mut c = base.clone();
-        edit(c.picked_points.as_mut().unwrap());
+        edit(c.picked_data.as_mut().unwrap());
         assert_ne!(c, base, "{name} must edit the selection");
         c
     };

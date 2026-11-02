@@ -1193,8 +1193,8 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
             assert!(edited.iter().any(|s| s.series_id == point.series_id));
         }
         let mut selected = renderer.chart_config(id).unwrap().clone();
-        selected.picked_points = Some(crate::PickedPointsConfig {
-            refs: vec![crate::PickedPointRef {
+        selected.picked_data = Some(crate::DataSelectionsConfig {
+            refs: vec![crate::PickedDataRef::Point {
                 source_id: None,
                 series_id: edited.last().unwrap().series_id.clone(),
                 point_index: 3,

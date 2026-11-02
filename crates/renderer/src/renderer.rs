@@ -66,7 +66,7 @@ mod streaming_surface;
 use crate::axis_render;
 use crate::chart::Chart;
 use crate::color::Color;
-use crate::config::{AxisOptions, AxisScale, Config, DrawStyle, PickedDataRef, PickedPointRef};
+use crate::config::{AxisOptions, AxisScale, Config, DrawStyle, PickedDataRef};
 use crate::data::{ColumnSource, HiLoColumnSource};
 use crate::data_config::{
     DataBarBinStyleConfig, DataBarStyleConfig, DataErrorBarPointStyleConfig,

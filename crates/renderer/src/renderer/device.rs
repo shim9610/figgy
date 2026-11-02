@@ -959,13 +959,7 @@ impl TargetPipelines {
                     series_has_line_fill(&item.chart_config.draw_style, &series.config.render_type);
             }
             if style_variant(&item.chart_config.draw_style).is_some() {
-                if item.chart_config.picked_points.is_some() {
-                    need_pick_ring = true;
-                }
                 continue;
-            }
-            if item.chart_config.picked_points.is_some() {
-                need_pick_ring = true;
             }
             for series in item.series {
                 let primitives = effective_series_primitives(
@@ -995,8 +989,7 @@ impl TargetPipelines {
                 // A parallel series' rows, and the picked row's redraw when
                 // a point is picked (#141).
                 need_parallel |= primitives.parallel;
-                need_parallel_selection |= primitives.parallel
-                    && (item.chart_config.picked_points.is_some() || typed_point);
+                need_parallel_selection |= primitives.parallel && typed_point;
                 need_scatter |= primitives.scatter;
                 need_bar |= primitives.bar;
                 need_category_bars |= primitives.category_bars;
@@ -1047,14 +1040,14 @@ impl TargetPipelines {
                 // Sparse `*_style_overrides` still need the mapped shader.
                 if primitives.scatter && series.style.scatter_map.is_some() {
                     need_scatter_mapped = true;
-                    if item.chart_config.picked_points.is_some() || typed_point {
+                    if typed_point {
                         need_pick_ring_mapped = true;
                     }
                 }
                 // A ternary series draws through the ternary entries.
                 if series.config.render_type.ternary_c_column().is_some() {
                     let mapped = series.style.scatter_map.is_some();
-                    let ring = item.chart_config.picked_points.is_some() || typed_point;
+                    let ring = typed_point;
                     need_ternary[TernaryPipeline::Line as usize] |= primitives.line;
                     need_ternary[TernaryPipeline::Scatter as usize] |=
                         primitives.scatter && !mapped;
@@ -1072,7 +1065,7 @@ impl TargetPipelines {
                 // 3D entries (#132); its picks compile when it is picked.
                 if item.chart_config.view_3d().is_some() && series.config.z_column.is_some() {
                     let mapped = series.style.scatter_map.is_some();
-                    let ring = item.chart_config.picked_points.is_some() || typed_point;
+                    let ring = typed_point;
                     need_view3d[View3dPipeline::Line as usize] |= primitives.line;
                     need_view3d[View3dPipeline::Scatter as usize] |= primitives.scatter && !mapped;
                     need_view3d[View3dPipeline::ScatterMapped as usize] |=

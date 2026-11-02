@@ -46,7 +46,6 @@ pub(super) fn annotation_raster_for_chart(
         chart_title: _,
         grid: _,
         legend: _,
-        picked_points: _,
         picked_data: _,
         colorbar: _,
         draw_style,

@@ -626,7 +626,6 @@ impl Config {
             // Grid and legend are drawn once, by the base panel.
             grid: _,
             legend: _,
-            picked_points,
             picked_data,
             colorbar,
             draw_style,
@@ -709,7 +708,6 @@ impl Config {
             chart_title: title,
             grid,
             legend,
-            picked_points: picked_points.clone(),
             picked_data: picked_data.clone(),
             colorbar,
             draw_style: *draw_style,
@@ -750,7 +748,6 @@ impl Config {
             grid: _,
             legend: _,
             // The member's references are taken from the document below.
-            picked_points: _,
             picked_data: _,
             colorbar,
             draw_style,
@@ -785,7 +782,6 @@ impl Config {
             chart_title: hidden_title(chart_title),
             grid: hidden_grid(),
             legend,
-            picked_points: self.picked_points.clone(),
             picked_data: self.picked_data.clone(),
             colorbar: colorbar.as_ref().map(hidden_colorbar),
             draw_style: *draw_style,
@@ -1094,7 +1090,6 @@ impl Config {
             chart_title: _,
             grid: _,
             legend: _,
-            picked_points,
             picked_data,
             colorbar: _,
             draw_style: _,
@@ -1112,11 +1107,6 @@ impl Config {
                 LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) if i == index
             )
         };
-        if let Some(picked) = picked_points {
-            let mut picked = picked.clone();
-            picked.refs.retain(|reference| owned(&reference.series_id));
-            subplot.picked_points = Some(picked);
-        }
         if let Some(picked) = picked_data {
             let mut picked = picked.clone();
             picked.refs.retain(|reference| owned(reference.series_id()));
@@ -1142,7 +1132,7 @@ fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
 
 /// Keep only the picked references whose series `keep` accepts.
 fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
-    // Only the two selections are filtered by layer; every other field is
+    // Only the selection is filtered by layer; every other field is
     // the panel's as built.
     let Config {
         chart_area: _,
@@ -1153,7 +1143,6 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         chart_title: _,
         grid: _,
         legend: _,
-        picked_points,
         picked_data,
         colorbar: _,
         draw_style: _,
@@ -1165,9 +1154,6 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         bar_groups: _,
         line_offsets: _,
     } = panel;
-    if let Some(picked) = picked_points.as_mut() {
-        picked.refs.retain(|reference| keep(&reference.series_id));
-    }
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));
     }
@@ -1416,14 +1402,14 @@ mod tests {
         assert_ne!(after.panels[1].config, before.panels[1].config);
 
         let mut picks = cfg.clone();
-        picks.picked_points = Some(crate::config::PickedPointsConfig {
+        picks.picked_data = Some(crate::config::DataSelectionsConfig {
             refs: vec![
-                crate::config::PickedPointRef {
+                crate::config::PickedDataRef::Point {
                     source_id: None,
                     series_id: "temperature".into(),
                     point_index: 1,
                 },
-                crate::config::PickedPointRef {
+                crate::config::PickedDataRef::Point {
                     source_id: None,
                     series_id: "pressure".into(),
                     point_index: 2,
@@ -1435,13 +1421,13 @@ mod tests {
         let refs = |panel: &ExpandedPanel| {
             panel
                 .config
-                .picked_points
+                .picked_data
                 .as_ref()
                 .map(|picked| {
                     picked
                         .refs
                         .iter()
-                        .map(|r| r.series_id.clone())
+                        .map(|r| r.series_id().to_string())
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -1451,8 +1437,8 @@ mod tests {
         assert!(refs(&expansion.panels[2]).is_empty());
         // A pick of an overlay series leaves the base panel's config alone.
         let mut base_only = cfg.clone();
-        base_only.picked_points = Some(crate::config::PickedPointsConfig {
-            refs: vec![crate::config::PickedPointRef {
+        base_only.picked_data = Some(crate::config::DataSelectionsConfig {
+            refs: vec![crate::config::PickedDataRef::Point {
                 source_id: None,
                 series_id: "pressure".into(),
                 point_index: 2,
@@ -1461,12 +1447,12 @@ mod tests {
         });
         let base_only = base_only.expand().unwrap();
         assert_eq!(
-            base_only.panels[0].config.picked_points,
-            Some(crate::config::PickedPointsConfig::default())
+            base_only.panels[0].config.picked_data,
+            Some(crate::config::DataSelectionsConfig::default())
         );
         assert_eq!(
-            base_only.panels[1].config.picked_points,
-            picks.expand().unwrap().panels[1].config.picked_points
+            base_only.panels[1].config.picked_data,
+            picks.expand().unwrap().panels[1].config.picked_data
         );
     }
 
@@ -1872,25 +1858,21 @@ mod tests {
     // series: a subplot's base and overlay panels as well as the parent's.
     #[test]
     fn subplot_panels_highlight_the_document_picks_of_their_series() {
-        use crate::config::{
-            DataSelectionsConfig, PickedDataRef, PickedPointRef, PickedPointsConfig,
-        };
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
         let mut cfg = subplot_document();
         let point = |id: &str| PickedDataRef::Point {
             source_id: None,
             series_id: id.into(),
             point_index: 1,
         };
-        cfg.picked_data = Some(DataSelectionsConfig {
-            refs: ["temperature", "flow", "level", "rate"].map(point).to_vec(),
-            ..Default::default()
+        let mut refs = ["temperature", "flow", "level", "rate"].map(point).to_vec();
+        refs.push(PickedDataRef::Point {
+            source_id: None,
+            series_id: "level".into(),
+            point_index: 3,
         });
-        cfg.picked_points = Some(PickedPointsConfig {
-            refs: vec![PickedPointRef {
-                source_id: None,
-                series_id: "level".into(),
-                point_index: 3,
-            }],
+        cfg.picked_data = Some(DataSelectionsConfig {
+            refs,
             ..Default::default()
         });
         let expansion = cfg.expand().unwrap();
@@ -1914,16 +1896,10 @@ mod tests {
             [
                 vec!["temperature"],
                 vec!["flow"],
-                vec!["level"],
+                vec!["level", "level"],
                 vec!["rate"]
             ]
         );
-        let points: Vec<usize> = expansion
-            .panels
-            .iter()
-            .map(|panel| panel.config.picked_points.as_ref().unwrap().refs.len())
-            .collect();
-        assert_eq!(points, [0, 0, 1, 0]);
         // Without a document selection a subplot keeps its own.
         let mut own = subplot_document();
         own.subplots[1].config.picked_data = Some(DataSelectionsConfig {
@@ -2028,7 +2004,7 @@ mod tests {
     /// base and overlay panels draw none of them and keep everything else.
     #[test]
     fn line_offset_members_expand_into_shifted_panels() {
-        use crate::config::{PickedPointRef, PickedPointsConfig};
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
         let mut cfg = two_layer_config();
         cfg.bottom_x.min = 0.0;
         cfg.bottom_x.max = 10.0;
@@ -2037,12 +2013,12 @@ mod tests {
         cfg.left_y.max = 1000.0;
         cfg.overlays[0].series.push("p2".into());
         cfg.line_offsets = Some(offsets(&["a", "b", "p2"], 0.5, 2.0));
-        let pick = |id: &str| PickedPointRef {
+        let pick = |id: &str| PickedDataRef::Point {
             source_id: None,
             series_id: id.into(),
             point_index: 1,
         };
-        cfg.picked_points = Some(PickedPointsConfig {
+        cfg.picked_data = Some(DataSelectionsConfig {
             refs: vec![
                 pick("a"),
                 pick("b"),
@@ -2068,12 +2044,12 @@ mod tests {
         let refs = |panel: &ExpandedPanel| -> Vec<String> {
             panel
                 .config
-                .picked_points
+                .picked_data
                 .as_ref()
                 .unwrap()
                 .refs
                 .iter()
-                .map(|r| r.series_id.clone())
+                .map(|r| r.series_id().to_string())
                 .collect()
         };
         let base = &expansion.panels[0].config;

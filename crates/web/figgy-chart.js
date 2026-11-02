@@ -2323,7 +2323,6 @@ export class FiggyChartElement extends HTMLElement {
     const index = this.#kernelForCall().next_view_point_index(sourceId ?? undefined, seriesId, current, forward);
     return index === undefined ? null : index;
   }
-  set_picked_points(json) { return this.#mutateSelection("set_picked_points", json); }
   set_picked_data(json) { return this.#mutateSelection("set_picked_data", json); }
   set_clear_color(r, g, b, a) { return this.#mutateChart("set_clear_color", r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }

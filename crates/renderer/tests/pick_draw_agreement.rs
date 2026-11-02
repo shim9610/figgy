@@ -1839,7 +1839,7 @@ fn arrows_ringed() -> SeriesConfig {
 #[test]
 fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
     use renderer::config::{
-        ConstellationOptions, DrawStyle, MilkywayOptions, PickedPointRef, PickedPointsConfig,
+        ConstellationOptions, DataSelectionsConfig, DrawStyle, MilkywayOptions, PickedDataRef,
         SketchOptions,
     };
     let mut renderer = renderer();
@@ -1853,16 +1853,17 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
     const EXTRA: f32 = 4.0;
     const WIDTH_PX: f32 = 2.0;
     let ring = |chart: &mut Chart| {
-        chart.config_mut().picked_points = Some(PickedPointsConfig {
+        chart.config_mut().picked_data = Some(DataSelectionsConfig {
             visible: true,
-            refs: vec![PickedPointRef {
+            refs: vec![PickedDataRef::Point {
                 source_id: None,
                 series_id: "marker".into(),
                 point_index: 0,
             }],
-            ring_color: BLUE,
-            ring_width_px: WIDTH_PX,
-            radius_extra_px: EXTRA,
+            highlight_color: BLUE,
+            outline_width_px: WIDTH_PX,
+            point_radius_extra_px: EXTRA,
+            ..Default::default()
         });
     };
     // `geometry`: the marker's coverage edge is its painted edge (else its

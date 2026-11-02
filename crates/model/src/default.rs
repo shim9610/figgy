@@ -310,7 +310,6 @@ pub fn default_config() -> Config {
         chart_title: default_chart_title_options(),
         grid: default_grid_options(),
         legend: default_legend(),
-        picked_points: None,
         picked_data: None,
         // No z dimension until a field series needs one — see
         // `default_colorbar_options`.

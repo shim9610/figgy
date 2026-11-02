@@ -706,7 +706,7 @@ async fn large_single_phase_stream_flushes_bounded_page_before_completion() {
         .expect("packed view neighbor");
     assert_eq!(previous.as_f64(), Some(f64::from(ROWS - 2)));
     chart
-        .set_picked_points(
+        .set_picked_data(
             &serde_json::json!({
                 "visible": true,
                 "refs": [{"source_id": null, "series_id": "large-line", "point_index": ROWS - 1}],

@@ -47,7 +47,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **`rule_band`는 채움이 있는 선의 범례 띠**다. `rule: true`인 구간에 `rule_band: Color`가 있으면 수평선 아래에 그 색의 띠를 같은 고정 너비 안에 그린다. 생략하면 선만 그린다. 자동 범례(`set_series`, `apply_color_cycle`)는 `fill`이 있는 선 시리즈의 기호에 채움색을 띠 색으로 넣는다.
 - **`field_em`은 기호 영역의 너비를 고정한다.** 다음 글자까지의 간격을 `field_em × 폰트 크기`로 잡고 글리프를 가운데 놓는다. `rule: true`이면 글리프 대신 그 영역을 채우는 수평선을 그린다. `rule_dash`는 선·공백 길이를 em 단위로 지정하므로 폰트 크기에 비례한다. 범례 기호는 모양에 관계없이 전체 너비가 2.0em이다. 선은 `{"text":"—","rule":true,"field_em":2.0,"color":{...}}`, 점은 `{"text":"●","field_em":2.0,...}`, 점선은 `{"text":"—","rule":true,"field_em":2.0,"rule_dash":[0.571,0.286],...}`로 표현한다. 선과 점의 조합은 선 0.65em + 글리프 0.7em + 선 0.65em으로 구성한다.
 - **색은 0~1 범위의 RGBA 실수 값**이다. 예: `{ "r": 0.8, "g": 0.1, "b": 0.1, "a": 1.0 }`.
-- **데이터 출처 키**인 `SeriesConfig.source_id`, `PickedPointRef.source_id`, 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
+- **데이터 출처 키**인 `SeriesConfig.source_id`와 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **연속 값 매핑 키 2개**인 `DataScatterStyleConfig.point_color_map` / `point_size_map`도 `None`이면 생략한다. `point_color_map`은 `{ "column": "<id>" }`이며 색은 `Config.colorbar`가 정하므로 `colorbar`가 있어야 한다. `point_size_map`은 `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`이다. `scale`은 `"Area"`(기본값) 또는 `"Radius"`이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. 두 컬럼 모두 등록돼 있어야 하고 시리즈의 x/y 컬럼과 인덱스가 맞아야 한다. 자세한 내용은 [점 색·크기 매핑](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#점-색과-크기-매핑)을 참고한다.
 - **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>" } }` 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
@@ -56,7 +56,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
 - **선 스타일의 선택 키 3개**인 `DataLineStyleConfig.fill` / `fill_color` / `interpolation`은 기본값이면 생략한다. `fill`은 `{ "ToBaseline": 0.0 }` 또는 `{ "ToSeries": "<series_id>" }`이고, `fill_color`는 `Color`(생략하면 `line_color`의 알파를 0.25배 한 색), `interpolation`은 `"Linear"`(기본)·`"StepPre"`·`"StepPost"`·`"StepMid"`다. `ToSeries`는 같은 차트에서 같은 `x_column`을 쓰는 다른 시리즈를 가리켜야 하며, 두 시리즈 모두 상주 컬럼이어야 한다. 자세한 의미는 [면 채움과 계단선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#면-채움과-계단선)을 참고한다.
 - **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color`를 생략하면 모든 레벨을 `line.line_color`로 그린다. 목록이 레벨 수보다 짧으면 색이 없는 레벨도 `line.line_color`로 그리므로, 빈 목록 `[]`도 생략한 것과 같게 그려지지만 JSON에는 `[]`로 남는다.
-- 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_points` / `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다.
+- 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_data: {}`는 기본 선택 표시 설정으로 해석한다. 0.19 이전 문서의 `picked_points`는 읽을 때 `picked_data`의 `point` 참조로 옮기고, 저장할 때는 쓰지 않는다.
 - **`Plain` 라벨 형식**은 `{ "Plain": {} }`처럼 쓰며, `decimals`는 `None`이면, `trim_zeros`는 `false`이면 생략한다. 값만으로 라벨을 정하므로 축 스케일·눈금 간격·`significant_digits`의 영향을 받지 않는다. `decimals`를 생략하면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6`처럼 지수 표기로, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0과 소수점을 지운다. `decimals`를 주면 그 자릿수로 적고, `trim_zeros`가 `true`이면 소수 끝의 0과 소수점을 지운다. figgy-model 0.12.1 이하는 이 값을 거부한다.
 - **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며(`grid_shape`는 기본값 `"Circle"`이면 생략하고, `"Polygon"`이면 범주형 각도 축의 범주마다 고리를 현으로 잇는다) 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)과 레이더 시리즈만 그린다. `bottom_x.categories`가 있으면 각도 축은 범주형이며, `n`개 중 `i`번째 범주가 한 바퀴의 `i / n` 자리에 놓인다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
 - **평행 좌표 키** `parallel`([#141](https://github.com/shim9610/figgy/issues/141))은 `None`이면 생략한다. `{ "parallel": { "axes": [{ "min": 0.0, "max": 10.0 }, { "min": 1.0, "max": 1000.0, "scale": "Logarithmic" }] } }` 형태이며 축마다 `inverted`(기본 `false`), `scale`(기본 `"Linear"`), `label_offset`(기본 `[0, 0]`, 라벨을 끌어 옮긴 거리)은 기본값이면 생략한다. 켜면 `bottom_x`의 범주마다 그 범주 자리에 자기 범위의 세로 축을 세우고 `Parallel` 시리즈만 그린다. `bottom_x`는 축 수만큼의 범주를 가진 범주형이고 `left_y`는 선형 `0..1`이어야 하며 극좌표·삼각·3D·`overlays`·`line_offsets`와 함께 쓸 수 없다. 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#paralleloptions-configparallel)에 있다.
@@ -250,7 +250,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 ## 데이터 종류별 선택 표시(`picked_data`)
 
-`Config.picked_data`는 `pick_data` 결과의 식별자만 보관한다. `set_picked_data(json)`은 이 필드만 교체하고 JSON `null`이면 표시를 지운다. 점 전용 `picked_points`와 독립적이므로 둘을 함께 사용할 수 있다.
+`Config.picked_data`는 `pick_data` 결과의 식별자만 보관한다. `set_picked_data(json)`은 이 필드만 교체하고 JSON `null`이면 표시를 지운다. 차트의 선택은 이 필드 하나뿐이다.
 
 ```json
 {
@@ -276,7 +276,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 }
 ```
 
-각 참조에 `source_id`를 넣으면 같은 `series_id`를 가진 서로 다른 데이터 출처를 구분할 수 있다. 모든 강조는 `highlight_color`로 그린다. 점은 `picked_points`와 같은 고리를 `outline_width_px` 두께와 `point_radius_extra_px`만큼 커진 반지름으로, 히스토그램 막대와 행렬 셀은 `outline_width_px` 두께의 외곽선으로, 등고선은 `contour_width_extra_px`만큼 굵어진 선으로 표시한다. 축이나 데이터를 갱신해도 선택 표시가 데이터 위치를 따라가며, 범위를 벗어난 인덱스는 그리지 않는다.
+각 참조에 `source_id`를 넣으면 같은 `series_id`를 가진 서로 다른 데이터 출처를 구분할 수 있다. 모든 강조는 `highlight_color`로 그린다. 점은 고리를 `outline_width_px` 두께와 `point_radius_extra_px`만큼 커진 반지름으로, 히스토그램 막대와 행렬 셀은 `outline_width_px` 두께의 외곽선으로, 등고선은 `contour_width_extra_px`만큼 굵어진 선으로 표시한다. 축이나 데이터를 갱신해도 선택 표시가 데이터 위치를 따라가며, 범위를 벗어난 인덱스는 그리지 않는다.
 
 `{ "kind": "value_label", "series_id": "north", "category_index": 1 }`은 범주형 막대·박스플롯·레이더 시리즈의 값 라벨
 하나(`labels.text[category_index]`)를 가리킨다. 선택한 라벨은 라벨 테두리를 `SELECTION_PADDING`만큼 넓힌 선택 상자로
@@ -286,7 +286,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 ### 상주 선택 값 조회와 키보드 이동
 
-저수준 `FiggyChart.selection_details()`는 `Promise<string>`을 반환한다. 이 JSON 문자열을 파싱하면 `Config.picked_data.refs`의 첫 참조가 가리키는 값을 확인할 수 있다. 선택이 없거나 지원하지 않는 참조 종류(`contour_level`)이면 JSON 문자열 `"null"`을 반환한다. 시리즈나 컬럼이 없거나 표본 인덱스가 범위를 벗어나면 Promise를 거부한다. 이 메서드는 상주 GPU 풀에서 선택한 표본 값만 읽으며, 선택 판정을 다시 하거나 `Config.picked_points`를 읽지 않는다.
+저수준 `FiggyChart.selection_details()`는 `Promise<string>`을 반환한다. 이 JSON 문자열을 파싱하면 `Config.picked_data.refs`의 첫 참조가 가리키는 값을 확인할 수 있다. 선택이 없거나 지원하지 않는 참조 종류(`contour_level`)이면 JSON 문자열 `"null"`을 반환한다. 시리즈나 컬럼이 없거나 표본 인덱스가 범위를 벗어나면 Promise를 거부한다. 이 메서드는 상주 GPU 풀에서 선택한 표본 값만 읽으며, 선택 판정을 다시 하지 않는다.
 
 히스토그램 구간을 선택했을 때 파싱한 결과는 다음과 같다.
 
@@ -360,7 +360,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 ## 기본값 기준 `get_config()` 전체 형식
 
-기본 `Config`에서는 선택 키가 모두 기본값이므로 `draw_style`, `picked_points`, `picked_data`, `colorbar`, `polar`, `overlays`, `subplots`, `active_layer`, `annotations`, `line_offsets`가 JSON에 나타나지 않는다. 각 키를 생략하는 규칙과 쓰는 형식은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것)에 있다.
+기본 `Config`에서는 선택 키가 모두 기본값이므로 `draw_style`, `picked_data`, `colorbar`, `polar`, `overlays`, `subplots`, `active_layer`, `annotations`, `line_offsets`가 JSON에 나타나지 않는다. 각 키를 생략하는 규칙과 쓰는 형식은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것)에 있다.
 
 <!-- schema-sync: name=config -->
 ```json

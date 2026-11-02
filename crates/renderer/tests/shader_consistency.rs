@@ -1089,7 +1089,7 @@ fn product_source_trees() -> Vec<(&'static str, PathBuf)> {
 /// Model types whose struct patterns and literals must name every field.
 /// `LegendOptions` and `SubplotLayer` of the #46 list do not exist; their
 /// types are `Legend` and `Subplot`. `AxisTitleOptions`, `PolarOptions`,
-/// `PickedPointsConfig`, `DataSelectionsConfig`, `DataScatterStyleConfig` and
+/// `DataSelectionsConfig`, `DataSelectionsConfig`, `DataScatterStyleConfig` and
 /// `DataErrorBarPointStyleConfig` are read by converted hand-offs too.
 const REST_GUARDED_TYPES: &[&str] = &[
     "Config",
@@ -1102,7 +1102,7 @@ const REST_GUARDED_TYPES: &[&str] = &[
     "GridOptions",
     "LabelStyle",
     "PolarOptions",
-    "PickedPointsConfig",
+    "DataSelectionsConfig",
     "DataSelectionsConfig",
     "MilkywayOptions",
     "SketchOptions",

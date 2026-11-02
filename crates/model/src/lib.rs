@@ -41,10 +41,7 @@ pub use validate::ConfigError;
 pub use bounded_sources::{SeriesUpload, UploadValues};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{
-    BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef, PickedPointRef,
-    PickedPointsConfig,
-};
+pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
     BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,

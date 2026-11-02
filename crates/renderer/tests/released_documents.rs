@@ -1,7 +1,10 @@
 //! Documents written by the published figgy-model releases still parse with
 //! this source, and a document that uses no newer field serializes back to the
-//! exact bytes the release wrote. `tests/fixtures/released/README.md` says
-//! which releases wrote the fixtures and how. No GPU is needed.
+//! exact bytes the release wrote, except where 0.19 moved a fact to one owner
+//! (#160): such a document is written in the new form, which [`migrate`]
+//! spells out and which then round trips byte for byte.
+//! `tests/fixtures/released/README.md` says which releases wrote the fixtures
+//! and how. No GPU is needed.
 #![cfg(feature = "serde")]
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
@@ -25,7 +28,20 @@ macro_rules! released_documents {
                     panic!("{}: a released document no longer parses: {err}", $file)
                 });
                 let written = serde_json::to_string(&parsed).expect("serialize");
-                assert_same_document($file, fixture, &written);
+                let mut expected: serde_json::Value =
+                    serde_json::from_str(fixture).expect("fixture is JSON");
+                if !migrate(&mut expected) {
+                    assert_same_document($file, fixture, &written);
+                    return;
+                }
+                let new: serde_json::Value =
+                    serde_json::from_str(&written).expect("output is JSON");
+                if let Some(difference) = first_difference("$", &expected, &new) {
+                    panic!("{}: not the documented 0.19 form: {difference}", $file);
+                }
+                let again: $ty = serde_json::from_str(&written).expect("the new form parses");
+                let rewritten = serde_json::to_string(&again).expect("serialize");
+                assert_same_document($file, &written, &rewritten);
             }
         )*
     };
@@ -72,6 +88,64 @@ released_documents! {
     model_0_10_0_categorical_edited: CategoricalChart = "model-0.10.0-categorical-edited.json";
     model_0_10_0_boxplot_default: BoxPlotChart = "model-0.10.0-boxplot-default.json";
     model_0_10_0_boxplot_edited: BoxPlotChart = "model-0.10.0-boxplot-edited.json";
+}
+
+/// Rewrite a released document into the form 0.19 writes, the way the
+/// CHANGELOG's migration notes describe it. `false` when nothing changed.
+fn migrate(document: &mut serde_json::Value) -> bool {
+    let Some(object) = document.as_object_mut() else {
+        return false;
+    };
+    migrate_picked_points(object)
+}
+
+/// `picked_points` joins `picked_data` (#160): its refs become `point` refs
+/// after the typed ones, and its ring look becomes the highlight's when the
+/// document has no `picked_data`. Hidden points are dropped beside a typed
+/// selection.
+fn migrate_picked_points(config: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    use serde_json::{Value, json};
+    let Some(legacy) = config.remove("picked_points") else {
+        return false;
+    };
+    let points = legacy["refs"].as_array().cloned().unwrap_or_default();
+    let points = points.into_iter().map(|mut point| {
+        point
+            .as_object_mut()
+            .expect("a ref is an object")
+            .insert("kind".into(), json!("point"));
+        point
+    });
+    match config.get_mut("picked_data") {
+        Some(Value::Object(typed)) => {
+            if legacy["visible"] != json!(false) {
+                let refs = typed.entry("refs").or_insert_with(|| json!([]));
+                refs.as_array_mut().expect("refs").extend(points);
+            }
+        }
+        _ => {
+            let default =
+                serde_json::to_value(renderer::DataSelectionsConfig::default()).expect("serialize");
+            let field = |key: &str, default_key: &str| {
+                legacy
+                    .get(key)
+                    .cloned()
+                    .unwrap_or(default[default_key].clone())
+            };
+            config.insert(
+                "picked_data".into(),
+                json!({
+                    "visible": field("visible", "visible"),
+                    "refs": points.collect::<Vec<_>>(),
+                    "highlight_color": field("ring_color", "highlight_color"),
+                    "outline_width_px": field("ring_width_px", "outline_width_px"),
+                    "point_radius_extra_px": field("radius_extra_px", "point_radius_extra_px"),
+                    "contour_width_extra_px": default["contour_width_extra_px"],
+                }),
+            );
+        }
+    }
+    true
 }
 
 /// Every released categorical document opens as a Cartesian chart: the

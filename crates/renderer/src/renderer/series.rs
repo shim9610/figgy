@@ -629,16 +629,6 @@ pub(super) fn errorbar_direction_flags(rt: &DataRenderType) -> u32 {
         | (u32::from(extract_err_x(rt).is_some()) * ERRORBAR_HAS_X)
 }
 
-pub(super) fn picked_ref_matches_series(series: &SeriesConfig, picked: &PickedPointRef) -> bool {
-    if picked.series_id != series.series_id {
-        return false;
-    }
-    match picked.source_id.as_deref() {
-        Some(source_id) => series.source_id.as_deref() == Some(source_id),
-        None => true,
-    }
-}
-
 pub(super) fn picked_data_ref_matches_series(
     series: &SeriesConfig,
     picked: &PickedDataRef,

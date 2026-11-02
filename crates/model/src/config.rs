@@ -513,41 +513,6 @@ pub enum DrawStyle {
     Constellation(ConstellationOptions),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PickedPointRef {
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub source_id: Option<String>,
-    pub series_id: String,
-    pub point_index: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct PickedPointsConfig {
-    pub visible: bool,
-    pub refs: Vec<PickedPointRef>,
-    pub ring_color: Color,
-    pub ring_width_px: f32,
-    pub radius_extra_px: f32,
-}
-
-impl Default for PickedPointsConfig {
-    fn default() -> Self {
-        Self {
-            visible: true,
-            refs: Vec::new(),
-            ring_color: Color::from_rgb8(255, 215, 0),
-            ring_width_px: 2.0,
-            radius_extra_px: 3.0,
-        }
-    }
-}
-
 /// A renderer-independent reference to one selected data primitive.
 ///
 /// These records deliberately carry provenance only. Coordinates, bin edges,
@@ -881,18 +846,16 @@ pub struct Config {
     pub chart_title: ChartTitleOptions,
     pub grid: GridOptions,
     pub legend: Legend,
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub picked_points: Option<PickedPointsConfig>,
-    /// Typed point/bin/cell/contour selections. Additive to the legacy
-    /// `picked_points` field so existing documents and hosts keep their exact
-    /// point-only contract.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    /// The selected points, bins, cells, contour pieces and value labels,
+    /// and how they are highlighted: the chart's one selection (#160).
+    ///
+    /// A document written before 0.19 may also carry `picked_points`, the
+    /// former point-only selection. It is read into this field: its points
+    /// become [`PickedDataRef::Point`] refs after the ones `picked_data`
+    /// lists, and its ring colour, width and radius become the highlight's
+    /// when the document has no `picked_data`. Only `picked_data` is
+    /// written.
+    #[cfg_attr(feature = "serde", serde(flatten, with = "picked_data_wire"))]
     pub picked_data: Option<DataSelectionsConfig>,
     /// The colourbar and, with it, the chart's z scale. `None` (key absent in
     /// JSON) is a chart with no z dimension — the shape of every document
@@ -1006,7 +969,6 @@ impl Config {
             chart_title,
             grid,
             legend,
-            picked_points,
             picked_data,
             colorbar,
             draw_style,
@@ -1144,17 +1106,6 @@ impl Config {
             config.scale_in_place(s);
         }
 
-        if let Some(picked_points) = picked_points.as_mut() {
-            let PickedPointsConfig {
-                visible: _,
-                refs: _,
-                ring_color: _,
-                ring_width_px,
-                radius_extra_px,
-            } = picked_points;
-            *ring_width_px *= s;
-            *radius_extra_px *= s;
-        }
         if let Some(picked_data) = picked_data.as_mut() {
             let DataSelectionsConfig {
                 visible: _,
@@ -1593,10 +1544,7 @@ pub use crate::legend::{
 // plain function so a failure names it.
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
-    use super::{
-        Config, DataSelectionsConfig, DrawStyle, PickedDataRef, PickedPointRef, PickedPointsConfig,
-        SketchOptions,
-    };
+    use super::{Config, DataSelectionsConfig, DrawStyle, PickedDataRef, SketchOptions};
     use crate::default::default_config;
 
     /// Serialized default config — `draw_style` is `Precise`, so the JSON has
@@ -1709,7 +1657,7 @@ mod serde_tests {
     }
 
     /// The default document is the shape of documents written before
-    /// `draw_style`, `picked_points` and `picked_data` existed: `Precise` is
+    /// `draw_style` and `picked_data` existed: `Precise` is
     /// not serialized, and each missing key parses to its default.
     fn a_document_without_the_additive_keys_parses_to_their_defaults() {
         let json = default_config_json();
@@ -1720,7 +1668,6 @@ mod serde_tests {
         let cfg: Config = serde_json::from_value(json)
             .expect("pre-sketch, pre-picker and pre-data-pick document parses");
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
-        assert_eq!(cfg.picked_points, None);
         assert_eq!(cfg.picked_data, None);
     }
 
@@ -1783,48 +1730,114 @@ mod serde_tests {
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
     }
 
-    fn picked_points_empty_object_yields_defaults() {
+    fn legacy_picked_points_empty_object_yields_the_default_selection() {
         let mut json = default_config_json();
         json.as_object_mut()
             .unwrap()
             .insert("picked_points".into(), serde_json::json!({}));
         let cfg: Config = serde_json::from_value(json).expect("tag-only picked_points parses");
-        assert_eq!(cfg.picked_points, Some(PickedPointsConfig::default()));
+        assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
+        let written = serde_json::to_value(&cfg).unwrap();
+        assert!(written.get("picked_points").is_none(), "{written}");
     }
 
-    fn picked_point_refs_skip_absent_source_id() {
-        let mut cfg = default_config();
-        cfg.picked_points = Some(PickedPointsConfig {
-            refs: vec![
-                PickedPointRef {
+    /// A document written before 0.19 with only `picked_points`: its points
+    /// become point refs drawn in its ring's look.
+    fn legacy_picked_points_alone_become_the_selection() {
+        let mut json = default_config_json();
+        json.as_object_mut().unwrap().insert(
+            "picked_points".into(),
+            serde_json::json!({
+                "visible": false,
+                "refs": [
+                    {"series_id": "series-a", "point_index": 2},
+                    {"source_id": "source-a", "series_id": "series-b", "point_index": 4}
+                ],
+                "ring_color": {"r": 0.0, "g": 1.0, "b": 0.0, "a": 1.0},
+                "ring_width_px": 3.0,
+                "radius_extra_px": 2.5
+            }),
+        );
+        let cfg: Config = serde_json::from_value(json).expect("legacy picks parse");
+        assert_eq!(
+            cfg.picked_data,
+            Some(DataSelectionsConfig {
+                visible: false,
+                refs: vec![
+                    PickedDataRef::Point {
+                        source_id: None,
+                        series_id: "series-a".into(),
+                        point_index: 2,
+                    },
+                    PickedDataRef::Point {
+                        source_id: Some("source-a".into()),
+                        series_id: "series-b".into(),
+                        point_index: 4,
+                    },
+                ],
+                highlight_color: crate::color::Color::from_rgba(0.0, 1.0, 0.0, 1.0),
+                outline_width_px: 3.0,
+                point_radius_extra_px: 2.5,
+                ..DataSelectionsConfig::default()
+            })
+        );
+    }
+
+    /// Beside `picked_data`, the shown legacy points join its refs in its
+    /// look; hidden ones are left out.
+    fn legacy_picked_points_join_picked_data() {
+        let legacy = |visible: bool| {
+            let mut json = default_config_json();
+            let object = json.as_object_mut().unwrap();
+            object.insert(
+                "picked_points".into(),
+                serde_json::json!({
+                    "visible": visible,
+                    "refs": [{"series_id": "line", "point_index": 4}],
+                    "ring_width_px": 9.0
+                }),
+            );
+            object.insert(
+                "picked_data".into(),
+                serde_json::json!({
+                    "refs": [{"kind": "histogram_bin", "series_id": "hist", "bin_index": 2}]
+                }),
+            );
+            serde_json::from_value::<Config>(json)
+                .expect("both selections parse")
+                .picked_data
+                .expect("one selection")
+        };
+        let shown = legacy(true);
+        assert_eq!(shown.outline_width_px, 2.0, "picked_data keeps its look");
+        assert_eq!(
+            shown.refs,
+            vec![
+                PickedDataRef::HistogramBin {
                     source_id: None,
-                    series_id: "series-a".into(),
-                    point_index: 2,
+                    series_id: "hist".into(),
+                    bin_index: 2,
+                    half: None,
                 },
-                PickedPointRef {
-                    source_id: Some("source-a".into()),
-                    series_id: "series-b".into(),
+                PickedDataRef::Point {
+                    source_id: None,
+                    series_id: "line".into(),
                     point_index: 4,
                 },
-            ],
-            ..PickedPointsConfig::default()
-        });
-
-        let json = serde_json::to_value(&cfg).expect("serialize Config");
-        assert!(json["picked_points"]["refs"][0].get("source_id").is_none());
-        assert_eq!(json["picked_points"]["refs"][1]["source_id"], "source-a");
-        let back: Config = serde_json::from_value(json).expect("parse back");
-        assert_eq!(back.picked_points, cfg.picked_points);
+            ]
+        );
+        assert_eq!(legacy(false).refs.len(), 1);
     }
 
     #[test]
-    fn scale_scales_picked_point_pixel_dimensions() {
+    fn scale_scales_picked_data_pixel_dimensions() {
         let mut cfg = default_config();
-        cfg.picked_points = Some(PickedPointsConfig::default());
+        cfg.picked_data = Some(DataSelectionsConfig::default());
         cfg.scale_in_place(2.0);
-        let picked = cfg.picked_points.expect("picked points");
-        assert_eq!(picked.ring_width_px, 4.0);
-        assert_eq!(picked.radius_extra_px, 6.0);
+        let picked = cfg.picked_data.expect("picked data");
+        assert_eq!(picked.outline_width_px, 4.0);
+        assert_eq!(picked.point_radius_extra_px, 6.0);
+        assert_eq!(picked.contour_width_extra_px, 4.0);
     }
 
     fn picked_data_empty_object_yields_defaults() {
@@ -2032,8 +2045,9 @@ mod serde_tests {
         partial_sketch_fields_fill_remaining_defaults();
         sketch_round_trips_with_inline_fields();
         explicit_precise_mode_deserializes_to_precise();
-        picked_points_empty_object_yields_defaults();
-        picked_point_refs_skip_absent_source_id();
+        legacy_picked_points_empty_object_yields_the_default_selection();
+        legacy_picked_points_alone_become_the_selection();
+        legacy_picked_points_join_picked_data();
         picked_data_empty_object_yields_defaults();
         typed_picked_data_round_trips_with_minimal_provenance();
         constellation_tag_alone_yields_all_defaults();
@@ -2224,5 +2238,107 @@ mod category_axis_tests {
         let back: super::Config = serde_json::from_str(&text).expect("parse");
         assert_eq!(back, cfg);
         assert_eq!(serde_json::to_string(&back).expect("serialize"), text);
+    }
+}
+
+/// The document form of [`Config::picked_data`]: the `picked_data` key, and
+/// on reading also the `picked_points` key documents wrote before 0.19.
+#[cfg(feature = "serde")]
+mod picked_data_wire {
+    use super::{Color, DataSelectionsConfig, PickedDataRef};
+
+    /// The point selection documents wrote before 0.19, read only to be
+    /// folded into `picked_data`.
+    #[derive(serde::Deserialize)]
+    #[serde(default)]
+    struct LegacyPickedPoints {
+        visible: bool,
+        refs: Vec<LegacyPointRef>,
+        ring_color: Color,
+        ring_width_px: f32,
+        radius_extra_px: f32,
+    }
+
+    impl Default for LegacyPickedPoints {
+        fn default() -> Self {
+            let highlight = DataSelectionsConfig::default();
+            Self {
+                visible: highlight.visible,
+                refs: Vec::new(),
+                ring_color: highlight.highlight_color,
+                ring_width_px: highlight.outline_width_px,
+                radius_extra_px: highlight.point_radius_extra_px,
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LegacyPointRef {
+        #[serde(default)]
+        source_id: Option<String>,
+        series_id: String,
+        point_index: usize,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        picked_points: Option<LegacyPickedPoints>,
+        #[serde(default)]
+        picked_data: Option<DataSelectionsConfig>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct WireRef<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        picked_data: Option<&'a DataSelectionsConfig>,
+    }
+
+    pub(super) fn serialize<S: serde::Serializer>(
+        picked_data: &Option<DataSelectionsConfig>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(
+            &WireRef {
+                picked_data: picked_data.as_ref(),
+            },
+            serializer,
+        )
+    }
+
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<DataSelectionsConfig>, D::Error> {
+        let Wire {
+            picked_points,
+            picked_data,
+        } = <Wire as serde::Deserialize>::deserialize(deserializer)?;
+        let Some(legacy) = picked_points else {
+            return Ok(picked_data);
+        };
+        let points = legacy.refs.into_iter().map(|point| PickedDataRef::Point {
+            source_id: point.source_id,
+            series_id: point.series_id,
+            point_index: point.point_index,
+        });
+        Ok(Some(match picked_data {
+            // The typed selection keeps its own look; the points join it
+            // when they were shown.
+            Some(mut selection) => {
+                if legacy.visible {
+                    selection.refs.extend(points);
+                }
+                selection
+            }
+            None => DataSelectionsConfig {
+                visible: legacy.visible,
+                refs: points.collect(),
+                highlight_color: legacy.ring_color,
+                outline_width_px: legacy.ring_width_px,
+                point_radius_extra_px: legacy.radius_extra_px,
+                // The legacy points had no contour to widen.
+                contour_width_extra_px: DataSelectionsConfig::default().contour_width_extra_px,
+            },
+        }))
     }
 }

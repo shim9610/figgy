@@ -6,15 +6,11 @@ use crate::data_config::ViolinSide;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelectionRefFilter {
     All,
-    Legacy(usize),
+    /// Only the ref at this index of `picked_data.refs`.
     Typed(usize),
 }
 
 impl SelectionRefFilter {
-    fn accepts_legacy(self, ordinal: usize) -> bool {
-        matches!(self, Self::All) || self == Self::Legacy(ordinal)
-    }
-
     fn accepts_typed(self, ordinal: usize) -> bool {
         matches!(self, Self::All) || self == Self::Typed(ordinal)
     }
@@ -115,35 +111,14 @@ pub(super) struct PointSelectionVisual {
     pub(super) radius_extra_px: f32,
 }
 
-/// The point selections of `cfg` (the legacy ring refs and the typed point
-/// refs) with the colour and width each is drawn in.
+/// The point selections of `cfg` with the colour and width each is drawn
+/// in.
 pub(super) fn point_selection_visuals(
     chart_config: &Config,
     cfg: &SeriesConfig,
     refs: SelectionRefFilter,
 ) -> Vec<PointSelectionVisual> {
     let mut point_visuals = Vec::new();
-    if let Some(picked_cfg) = chart_config
-        .picked_points
-        .as_ref()
-        .filter(|config| config.visible && !config.refs.is_empty())
-    {
-        point_visuals.extend(
-            picked_cfg
-                .refs
-                .iter()
-                .enumerate()
-                .filter(|(ordinal, picked_ref)| {
-                    refs.accepts_legacy(*ordinal) && picked_ref_matches_series(cfg, picked_ref)
-                })
-                .map(|(_, picked_ref)| PointSelectionVisual {
-                    point_index: picked_ref.point_index,
-                    color: picked_cfg.ring_color,
-                    width_px: picked_cfg.ring_width_px,
-                    radius_extra_px: picked_cfg.radius_extra_px,
-                }),
-        );
-    }
     let typed_selections = chart_config
         .picked_data
         .as_ref()
@@ -824,7 +799,7 @@ impl PrepareContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DataSelectionsConfig, PickedPointsConfig};
+    use crate::config::DataSelectionsConfig;
     use crate::data_config::{BarOrientation, DataBarStyleOverride, DataScatterPointStyleOverride};
 
     fn declaration() -> SeriesConfig {
@@ -861,14 +836,6 @@ mod tests {
         }
     }
 
-    fn legacy(index: usize) -> PickedPointRef {
-        PickedPointRef {
-            source_id: Some("source".into()),
-            series_id: "selected".into(),
-            point_index: index,
-        }
-    }
-
     fn point(index: usize) -> PickedDataRef {
         PickedDataRef::Point {
             source_id: Some("source".into()),
@@ -881,13 +848,6 @@ mod tests {
     fn selection_ordinals_preserve_duplicates_order_and_provenance() {
         let series = declaration();
         let mut config = crate::default::default_config();
-        config.picked_points = Some(PickedPointsConfig {
-            refs: vec![legacy(10), legacy(2), legacy(10)],
-            ring_color: Color::new(1.0, 0.0, 0.0, 0.5),
-            ring_width_px: 3.0,
-            radius_extra_px: 7.0,
-            ..Default::default()
-        });
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![
                 point(10),
@@ -908,28 +868,17 @@ mod tests {
         let visuals = point_selection_visuals(&config, &series, SelectionRefFilter::All);
         assert_eq!(
             visuals.iter().map(|v| v.point_index).collect::<Vec<_>>(),
-            [10, 2, 10, 10, 2, 10]
+            [10, 2, 10]
         );
         assert_eq!(
             (
-                visuals[0].color.r,
+                visuals[0].color.g,
                 visuals[0].width_px,
                 visuals[0].radius_extra_px
-            ),
-            (1.0, 3.0, 7.0)
-        );
-        assert_eq!(
-            (
-                visuals[3].color.g,
-                visuals[3].width_px,
-                visuals[3].radius_extra_px
             ),
             (1.0, 5.0, 11.0)
         );
         for (filter, expected) in [
-            (SelectionRefFilter::Legacy(0), vec![10]),
-            (SelectionRefFilter::Legacy(1), vec![2]),
-            (SelectionRefFilter::Legacy(2), vec![10]),
             (SelectionRefFilter::Typed(0), vec![10]),
             (SelectionRefFilter::Typed(1), vec![]),
             (SelectionRefFilter::Typed(2), vec![2]),
@@ -944,16 +893,22 @@ mod tests {
                 expected
             );
         }
-        config.picked_points.as_mut().unwrap().refs[0].source_id = Some("other".into());
-        assert!(
-            point_selection_visuals(&config, &series, SelectionRefFilter::Legacy(0)).is_empty()
-        );
-        config.picked_points.as_mut().unwrap().refs[0].source_id = None;
+        let refs = &mut config.picked_data.as_mut().unwrap().refs;
+        refs[0] = PickedDataRef::Point {
+            source_id: Some("other".into()),
+            series_id: "selected".into(),
+            point_index: 10,
+        };
+        assert!(point_selection_visuals(&config, &series, SelectionRefFilter::Typed(0)).is_empty());
+        config.picked_data.as_mut().unwrap().refs[0] = PickedDataRef::Point {
+            source_id: None,
+            series_id: "selected".into(),
+            point_index: 10,
+        };
         assert_eq!(
-            point_selection_visuals(&config, &series, SelectionRefFilter::Legacy(0)).len(),
+            point_selection_visuals(&config, &series, SelectionRefFilter::Typed(0)).len(),
             1
         );
-        config.picked_points.as_mut().unwrap().visible = false;
         config.picked_data.as_mut().unwrap().visible = false;
         assert!(point_selection_visuals(&config, &series, SelectionRefFilter::All).is_empty());
     }
