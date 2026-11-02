@@ -1,0 +1,408 @@
+//! One place for every rule a chart's configuration and its series list are
+//! held to before a renderer accepts them (#160).
+//!
+//! [`Config::validate_chart`] checks the chart alone: its target, its axes,
+//! overlays, subplots, layout, texts, annotations and line offset layout.
+//! [`Config::validate_series`] checks a series list against the chart: every
+//! chart-wide series rule (category bars, box plots, range bars, radar,
+//! ternary, parallel, 3D, hexagonal grids, line offsets, polar axes) and the
+//! series ids. Both return a [`ConfigError`] that names the field and, for a
+//! series rule, the series it is about. The renderer adds only what needs
+//! its column pool (registered columns, lengths, GPU limits).
+
+use crate::config::{AxisOptions, AxisScale, Config};
+use crate::data_config::{DataRenderType, SeriesConfig};
+
+/// Why a chart's configuration or series list is refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigError {
+    /// The series the rule refused, `None` for a rule on the chart itself.
+    pub series_id: Option<String>,
+    /// The config field or rule family that failed, such as `"bottom_x"`,
+    /// `"layout"` or `"category_bars"`.
+    pub field: &'static str,
+    /// Why, as one sentence.
+    pub reason: &'static str,
+}
+
+impl ConfigError {
+    fn chart(field: &'static str, reason: &'static str) -> Self {
+        Self {
+            series_id: None,
+            field,
+            reason,
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.series_id {
+            Some(id) => write!(f, "series {id:?} ({}): {}", self.field, self.reason),
+            None => write!(f, "{}: {}", self.field, self.reason),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// An axis range's own rules: categories well formed, a finite crossing, and
+/// for a value axis finite, increasing bounds that are positive on a
+/// logarithmic scale.
+fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), ConfigError> {
+    let fail = |reason| Err(ConfigError::chart(field, reason));
+    if let Err(reason) = axis.validate_categories() {
+        return fail(reason);
+    }
+    if axis.cross_at.is_some_and(|v| !v.is_finite()) {
+        return fail("an axis crossing (`cross_at`) must be finite");
+    }
+    // A categorical axis maps its category range; `min` / `max` are ignored
+    // there.
+    if axis.categories.is_some() {
+        return Ok(());
+    }
+    if !axis.min.is_finite() || !axis.max.is_finite() {
+        return fail("axis bounds must be finite");
+    }
+    if axis.max <= axis.min {
+        return fail("axis max must be greater than min");
+    }
+    if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
+        return fail("logarithmic axis bounds must be positive");
+    }
+    Ok(())
+}
+
+impl Config {
+    /// Every rule on the chart itself, in a fixed order: a non-empty target,
+    /// the four axes and the colourbar's (finite, increasing, positive on a
+    /// log scale, a colourbar axis never categorical), the overlay axes and
+    /// layer membership, the subplot rules, the parallel axis count, the
+    /// layout (a non-empty data area), the math in every title and legend,
+    /// the annotations, the line offset layout, the overlay expansion, and
+    /// each subplot held to the same rules with its links applied.
+    pub fn validate_chart(&self) -> Result<(), ConfigError> {
+        let area = &self.chart_area.0;
+        if area.width == 0 || area.height == 0 {
+            return Err(ConfigError::chart(
+                "chart_area",
+                "the chart area must have a non-zero width and height",
+            ));
+        }
+        // The colourbar's z axis is held to the four chart axes' rules: its
+        // range means the same thing. A log colourbar with a non-positive
+        // lower bound has no `t` for its lowest colour.
+        let colorbar_axis = self.colorbar.as_ref().map(|bar| &bar.axis);
+        if colorbar_axis.is_some_and(|axis| axis.categories.is_some()) {
+            return Err(ConfigError::chart(
+                "colorbar.axis",
+                "a colourbar axis cannot be categorical",
+            ));
+        }
+        let axes = [
+            ("top_x", &self.top_x),
+            ("bottom_x", &self.bottom_x),
+            ("left_y", &self.left_y),
+            ("right_y", &self.right_y),
+        ];
+        for (field, axis) in axes
+            .into_iter()
+            .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
+        {
+            validate_axis_range(field, axis)?;
+        }
+        // Overlay y axes are ranges of the same kind, and the layer
+        // membership must be unambiguous before a series is drawn on a panel.
+        for overlay in &self.overlays {
+            validate_axis_range("overlays.y_axis", &overlay.y_axis)?;
+        }
+        self.validate_overlays().map_err(|_| {
+            ConfigError::chart(
+                "overlays",
+                "a series id may belong to at most one overlay layer",
+            )
+        })?;
+        // The subplot rules come before the layout check, which also expands
+        // each subplot, so a broken link or nesting reports as what it is.
+        self.validate_subplots()
+            .map_err(|reason| ConfigError::chart("subplots", reason))?;
+        // The parallel axis count is checked with the chart, so a series
+        // checked against it sees at least two axes.
+        if let Some(parallel) = &self.parallel {
+            parallel
+                .validate_axis_count()
+                .map_err(|reason| ConfigError::chart("parallel", reason))?;
+        }
+        self.validate().map_err(|_| {
+            ConfigError::chart(
+                "layout",
+                "margins and visual dimensions must produce a non-empty data area",
+            )
+        })?;
+        // A malformed math segment tree in a title, axis title or legend is
+        // refused like any other field (a JSON document already fails to
+        // parse); annotation texts are checked with the annotations.
+        let texts = [
+            ("chart_title", &self.chart_title.text),
+            ("legend", &self.legend.content),
+        ]
+        .into_iter()
+        .chain(axes.map(|(field, axis)| (field, &axis.title_option.text)))
+        .chain(colorbar_axis.map(|axis| ("colorbar.axis", &axis.title_option.text)))
+        .chain(self.overlays.iter().flat_map(|overlay| {
+            [("overlays.y_axis", &overlay.y_axis.title_option.text)]
+                .into_iter()
+                .chain(
+                    overlay
+                        .legend
+                        .as_ref()
+                        .map(|legend| ("overlays.legend", &legend.content)),
+                )
+        }));
+        for (field, text) in texts {
+            text.validate_math()
+                .map_err(|error| ConfigError::chart(field, error.as_str()))?;
+        }
+        // Malformed annotation styles are refused like any other field;
+        // non-finite values and anchors are not malformed, the raster skips
+        // them.
+        self.annotations
+            .validate()
+            .map_err(|reason| ConfigError::chart("annotations", reason))?;
+        self.validate_line_offset_layout()
+            .map_err(|reason| ConfigError::chart("line_offsets", reason))?;
+        if !self.overlays.is_empty() {
+            self.expand().map_err(|_| {
+                ConfigError::chart(
+                    "overlays",
+                    "the overlay layers must share one non-empty data area",
+                )
+            })?;
+        }
+        // Every subplot is a chart of its own, held to the same rules with
+        // its links applied.
+        for index in 0..self.subplots.len() {
+            self.subplot_config(index)
+                .ok_or(ConfigError::chart("subplots", "subplot index out of range"))?
+                .validate_chart()?;
+        }
+        Ok(())
+    }
+
+    /// Every rule on a series list drawn on this chart, in a fixed order:
+    /// the series ids (non-empty, unique), the category bar, box plot, range
+    /// bar, radar, ternary, parallel, 3D and hexagonal grid rules, the line
+    /// offset group, and each series against polar axes. A chart-wide rule
+    /// names the first series whose addition to the list breaks it; a rule
+    /// the empty list already breaks names none.
+    pub fn validate_series(&self, series: &[SeriesConfig]) -> Result<(), ConfigError> {
+        for (index, item) in series.iter().enumerate() {
+            let fail = |reason| ConfigError {
+                series_id: Some(item.series_id.clone()),
+                field: "series_id",
+                reason,
+            };
+            if item.series_id.is_empty() {
+                return Err(fail("series_id must not be empty"));
+            }
+            if series[..index]
+                .iter()
+                .any(|earlier| earlier.series_id == item.series_id)
+            {
+                return Err(fail("series_id must be unique within a chart"));
+            }
+        }
+        type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>;
+        let rules: [(&'static str, Rule); 10] = [
+            ("category_bars", Config::validate_category_bars),
+            ("box_plots", Config::validate_box_plots),
+            ("range_bars", Config::validate_range_bars),
+            ("radar", Config::validate_radar),
+            ("ternary", Config::validate_ternary_series),
+            ("parallel", Config::validate_parallel_series),
+            ("view_3d", Config::validate_view3d_series),
+            ("hexagonal", Config::validate_hexagonal_series),
+            ("rgb_image", Config::validate_rgb_image_series),
+            ("line_offsets", Config::validate_line_offsets),
+        ];
+        for (field, rule) in rules {
+            if let Err(reason) = rule(self, series) {
+                return Err(ConfigError {
+                    series_id: self.first_breaking(series, rule),
+                    field,
+                    reason,
+                });
+            }
+        }
+        for item in series {
+            self.validate_series_on_polar(item)
+                .map_err(|reason| ConfigError {
+                    series_id: Some(item.series_id.clone()),
+                    field: "polar",
+                    reason,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// The series whose addition to the list first breaks `rule`: the
+    /// shortest failing prefix ends with it. `None` when the empty list
+    /// already breaks it (a rule on the chart's own fields).
+    fn first_breaking(
+        &self,
+        series: &[SeriesConfig],
+        rule: fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>,
+    ) -> Option<String> {
+        (0..=series.len())
+            .find(|&end| rule(self, &series[..end]).is_err())
+            .and_then(|end| end.checked_sub(1))
+            .map(|last| series[last].series_id.clone())
+    }
+
+    /// Whether `item` can be drawn on this chart's polar axes; always `Ok`
+    /// on a chart without them. Points, lines, radar series and category
+    /// bars (as a rose, #133) are; a polar arc interpolation needs a
+    /// linearly interpolated line, since a step draws chords.
+    pub fn validate_series_on_polar(&self, item: &SeriesConfig) -> Result<(), &'static str> {
+        let Some(polar) = &self.polar else {
+            return Ok(());
+        };
+        let line = match &item.render_type {
+            DataRenderType::Scatter { .. } | DataRenderType::CategoryBars { .. } => None,
+            DataRenderType::Line { line } | DataRenderType::ScatterLine { line, .. } => {
+                Some(line.interpolation.is_linear())
+            }
+            DataRenderType::Radar { .. } => item
+                .render_type
+                .radar()
+                .map(|radar| radar.line_style().interpolation.is_linear()),
+            DataRenderType::Histogram { .. } => {
+                return Err("histogram series are not drawn on polar axes");
+            }
+            DataRenderType::Heatmap { .. }
+            | DataRenderType::RgbImage { .. }
+            | DataRenderType::HeatmapContour { .. }
+            | DataRenderType::Contour { .. } => {
+                return Err("field and contour series are not drawn on polar axes");
+            }
+            DataRenderType::ScatterErrorbarX { .. }
+            | DataRenderType::ScatterErrorbarY { .. }
+            | DataRenderType::ScatterErrorbarXY { .. }
+            | DataRenderType::LineScatterErrorbarX { .. }
+            | DataRenderType::LineScatterErrorbarY { .. }
+            | DataRenderType::LineScatterErrorbarXY { .. } => {
+                return Err("error bars are not drawn on polar axes");
+            }
+            DataRenderType::Vector { .. } => {
+                return Err("vector series are not drawn on polar axes");
+            }
+            DataRenderType::BoxPlot { .. } => {
+                return Err("box plots are not drawn on polar axes");
+            }
+            DataRenderType::RangeBars { .. } => {
+                return Err("range bars are not drawn on polar axes");
+            }
+            DataRenderType::Streamlines { .. } => {
+                return Err("streamlines are not drawn on polar axes");
+            }
+            DataRenderType::Parallel { .. } => {
+                return Err("parallel series are drawn on parallel charts, not polar axes");
+            }
+            DataRenderType::Ternary { .. } => {
+                return Err("ternary series are drawn on ternary charts, not polar axes");
+            }
+        };
+        if line == Some(false)
+            && matches!(
+                polar.interpolation,
+                crate::polar::PolarInterpolation::Arc { .. }
+            )
+        {
+            return Err(
+                "a polar arc interpolation needs a linearly interpolated line; a step \
+                 interpolation draws chords",
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::data_config::{DataScatterStyleConfig, ScatterShape};
+    use crate::default::default_config;
+    use crate::polar::PolarOptions;
+
+    fn scatter(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            z_column: None,
+            render_type: DataRenderType::Scatter {
+                scatter: DataScatterStyleConfig {
+                    point_color: Color::BLACK,
+                    point_shape: ScatterShape::CircleFilled,
+                    point_size: 3.0,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn series_ids_are_named_by_the_series_that_breaks_them() {
+        let config = default_config();
+        assert_eq!(
+            config.validate_series(&[scatter("a"), scatter("b")]),
+            Ok(())
+        );
+        let error = config
+            .validate_series(&[scatter("a"), scatter("b"), scatter("a")])
+            .unwrap_err();
+        assert_eq!(error.series_id.as_deref(), Some("a"));
+        assert_eq!(error.field, "series_id");
+        let error = config.validate_series(&[scatter("")]).unwrap_err();
+        assert_eq!(error.series_id.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_polar_chart_names_the_series_it_does_not_draw() {
+        let mut config = default_config();
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 360.0;
+        config.polar = Some(PolarOptions::default());
+        let mut vector = scatter("v");
+        vector.render_type = DataRenderType::Streamlines {
+            line: crate::data_config::DataLineStyleConfig::default(),
+            arrows: None,
+            color_map: None,
+        };
+        let error = config.validate_series(&[scatter("a"), vector]);
+        let error = error.unwrap_err();
+        assert_eq!(error.series_id.as_deref(), Some("v"));
+        assert_eq!(error.field, "polar");
+        assert_eq!(
+            default_config().validate_series_on_polar(&scatter("a")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_chart_rules_name_the_field() {
+        let mut config = default_config();
+        assert_eq!(config.validate_chart(), Ok(()));
+        config.bottom_x.max = config.bottom_x.min;
+        let error = config.validate_chart().unwrap_err();
+        assert_eq!((error.series_id, error.field), (None, "bottom_x"));
+    }
+}

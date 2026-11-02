@@ -2650,7 +2650,13 @@ impl Renderer {
                     continue;
                 }
                 validate_contour_level_count(&series.series_id, &series.render_type)?;
-                validate_polar_series(&state.config, series)?;
+                state
+                    .config
+                    .validate_series_on_polar(series)
+                    .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                        series_id: series.series_id.clone(),
+                        reason: reason.to_string(),
+                    })?;
                 preflight_contour_label_spacing(
                     &series.series_id,
                     &series.render_type,

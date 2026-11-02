@@ -572,21 +572,16 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
 
+        // The model's series rules, as at registration (#160): a chart the
+        // caller holds is checked here, since nothing registered it.
+        chart
+            .config()
+            .validate_series(series)
+            .map_err(config_error)?;
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
             validate_line_fill(&self.pool, series.iter(), config)?;
-            validate_polar_series(chart.config(), config)?;
         }
-        validate_radar_rules(chart.config(), series)?;
-        chart
-            .config()
-            .validate_view3d_series(series)
-            .map_err(|reason| FiggyError::InvalidSeriesConfig {
-                series_id: series
-                    .first()
-                    .map_or_else(String::new, |s| s.series_id.clone()),
-                reason: reason.into(),
-            })?;
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
         let orig = match scope {

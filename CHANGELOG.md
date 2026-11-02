@@ -31,6 +31,18 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **One home for the chart and series rules** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Config::validate_chart` holds every rule on the chart itself (a non-empty
+  target, finite and increasing axis ranges positive on a log scale, the
+  colourbar, overlay and subplot rules, the layout, the math in titles and
+  legends, the annotations, the line offset layout), which the renderer
+  kept before. `Config::validate_series` holds every rule on a series list
+  that needs no column data: the series ids, the category bar, box plot,
+  range bar, radar, ternary, parallel, 3D, hexagonal, image and line offset
+  rules, and `Config::validate_series_on_polar` per series. Both return a
+  `ConfigError { series_id, field, reason }`; a chart-wide rule names the
+  first series whose addition breaks it instead of the renderer guessing.
+  Additive; nothing on the wire changes.
 - **No panic paths** ([#152](https://github.com/shim9610/figgy/issues/152)).
   The TeX parser bounds group nesting at 64 levels and answers deeper input
   with `TexErrorKind::TooDeep` instead of overflowing the stack.
@@ -869,6 +881,16 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Every path checks the same rules** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  Registration, chart edits, the export of a held chart and the registered
+  draw read the model's `validate_chart` / `validate_series`, and the
+  host-owned `prepare` now refuses a series its polar axes do not draw, as
+  the other paths always did. The renderer itself checks only what needs
+  its column pool. Errors keep their variants (`InvalidChartArea`,
+  `InvalidConfig`, `InvalidSeriesConfig`); a chart-wide series rule now names
+  the series that breaks it (the first whose addition to the list fails the
+  rule) rather than the first series of its kind. `ConfigError` and the
+  `validate` module are re-exported.
 - **One export API** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The eighteen `export_panel_*` / `export_document_*` methods (RGBA, PNG,
   SVG, PDF, each with and without a clear colour) are four:
