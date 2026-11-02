@@ -211,14 +211,19 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
     let mut colors = vec![Color::new(0.0, 0.0, 0.0, 1.0); renderer::MAX_CONTOUR_LEVELS];
     colors[1023] = marker;
     let indexed = renderer
-        .export_panel_rgba_async(&contour_chart, &[contour_series(levels, colors)], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&contour_chart, &[contour_series(levels, colors)]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("index-1023 contour export");
     let indexed_reference = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(vec![2.0], vec![marker])],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(vec![2.0], vec![marker])],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("index-1023 reference export");
@@ -226,21 +231,25 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
 
     let finite = Color::new(0.0, 0.0, 1.0, 0.75);
     let non_finite = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(
-                vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
-                vec![Color::WHITE, Color::WHITE, Color::WHITE, finite],
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(
+                    vec![f64::NAN, f64::NEG_INFINITY, f64::INFINITY, 2.0],
+                    vec![Color::WHITE, Color::WHITE, Color::WHITE, finite],
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("non-finite contour export");
     let finite_reference = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(vec![2.0], vec![finite])],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(vec![2.0], vec![finite])],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("finite contour reference export");
@@ -248,55 +257,66 @@ async fn chrome_webgpu_contour_lookup_is_portable_and_complete() {
 
     let bands_chart = chart(1.0, 1.0);
     let mixed_bands = renderer
-        .export_panel_rgba_async(
-            &bands_chart,
-            &[band_series(vec![
-                f64::NAN,
-                f64::NEG_INFINITY,
-                f64::INFINITY,
-                0.5,
-            ])],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &bands_chart,
+                &[band_series(vec![
+                    f64::NAN,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    0.5,
+                ])],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("mixed non-finite bands export");
     let finite_bands = renderer
-        .export_panel_rgba_async(&bands_chart, &[band_series(vec![0.0, 0.5, 2.0, 3.0])], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&bands_chart, &[band_series(vec![0.0, 0.5, 2.0, 3.0])]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("finite bands reference export");
     assert_eq!(mixed_bands.rgba, finite_bands.rgba);
 
     let layer = Color::new(0.8, 0.2, 0.1, 1.0 / 2048.0);
     let expanded = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(
-                vec![2.0; renderer::MAX_CONTOUR_LEVELS],
-                vec![layer; renderer::MAX_CONTOUR_LEVELS],
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(
+                    vec![2.0; renderer::MAX_CONTOUR_LEVELS],
+                    vec![layer; renderer::MAX_CONTOUR_LEVELS],
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("1024-layer contour export");
     let complete = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(
-                vec![2.0],
-                vec![equivalent_layer(layer, renderer::MAX_CONTOUR_LEVELS)],
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(
+                    vec![2.0],
+                    vec![equivalent_layer(layer, renderer::MAX_CONTOUR_LEVELS)],
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("1024-layer contour reference export");
     let truncated = renderer
-        .export_panel_rgba_async(
-            &contour_chart,
-            &[contour_series(
-                vec![2.0],
-                vec![equivalent_layer(layer, 621)],
-            )],
-            1.0,
+        .export_rgba(
+            renderer::ExportSource::chart(
+                &contour_chart,
+                &[contour_series(
+                    vec![2.0],
+                    vec![equivalent_layer(layer, 621)],
+                )],
+            ),
+            renderer::ExportOptions::panel(1.0),
         )
         .await
         .expect("621-layer contour reference export");

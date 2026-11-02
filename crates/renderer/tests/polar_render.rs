@@ -217,7 +217,10 @@ fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
 
 fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
     renderer
-        .export_panel_rgba_async(chart, series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap()
 }
@@ -717,7 +720,10 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         },
     };
     match renderer
-        .export_panel_rgba_async(&chart, &[histogram], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[histogram]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .map(|_| ())
     {
@@ -735,14 +741,20 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     });
     assert!(matches!(
         renderer
-            .export_panel_rgba_async(&arc, &[line("step", stepped)], 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&arc, &[line("step", stepped)]),
+                renderer::ExportOptions::panel(1.0)
+            )
             .block_on(),
         Err(FiggyError::InvalidSeriesConfig { .. })
     ));
     let mut overlay = bare_chart(PolarOptions::default());
     overlay.config_mut().overlays.push(OverlayLayer::default());
     match renderer
-        .export_panel_rgba_async(&overlay, &[scatter("points", 4.0)], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&overlay, &[scatter("points", 4.0)]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .map(|_| ())
     {
@@ -754,14 +766,20 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     log_angle.set_x_range(1.0, 360.0);
     assert!(matches!(
         renderer
-            .export_panel_rgba_async(&log_angle, &[scatter("points", 4.0)], 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&log_angle, &[scatter("points", 4.0)]),
+                renderer::ExportOptions::panel(1.0)
+            )
             .block_on(),
         Err(FiggyError::InvalidConfig { field: "polar", .. })
     ));
     // The same series draws once the chart is valid again.
     assert!(
         renderer
-            .export_panel_rgba_async(&chart, &[scatter("points", 4.0)], 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[scatter("points", 4.0)]),
+                renderer::ExportOptions::panel(1.0)
+            )
             .block_on()
             .is_ok()
     );
@@ -794,7 +812,10 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     polar_points.series_id = "polar_points".into();
     let series = [scatter("points", 8.0), polar_points];
     let document = renderer
-        .export_document_rgba_async(&parent, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&parent, &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((document.width, document.height), (2 * WIDTH, HEIGHT));
@@ -896,7 +917,10 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
     );
     // The 2x export doubles every position.
     let img2 = renderer
-        .export_panel_rgba_async(&chart, &series, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img2.width, img2.height), (2 * WIDTH, 2 * HEIGHT));
@@ -1215,7 +1239,10 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
 
     // 2x: the same rings, at twice the pixels.
     let img2 = renderer
-        .export_panel_rgba_async(&adaptive, &series, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&adaptive, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     let scaled = adaptive.config().scaled(2.0);

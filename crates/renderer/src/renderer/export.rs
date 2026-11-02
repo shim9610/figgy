@@ -113,10 +113,88 @@ pub(crate) async fn native_export_scoped<T, E>(
 }
 
 /// What an export renders: one panel or the whole layered document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ExportScope {
+///
+/// The panel export of a layered document draws its base panel only (with
+/// the group data area); for a document without overlays or subplots the two
+/// produce byte-identical images. Vector exports (SVG, PDF) render the whole
+/// document. A radial chart has one panel, so both scopes are the same there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ExportScope {
     Panel,
+    #[default]
     Document,
+}
+
+/// How an export renders: its [`ExportScope`], its `scale` and its
+/// background.
+///
+/// - `scale` multiplies the logical size; fonts, line widths and margins
+///   scale with it. It is raised to at least [`MIN_EXPORT_SCALE`]; past the
+///   device's texture limit the export fails with
+///   [`FiggyError::GpuResourceLimit`].
+/// - `clear` is the background, fully transparent by default. A vector
+///   export draws it as a rectangle under everything.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExportOptions {
+    pub scope: ExportScope,
+    pub scale: f32,
+    pub clear: crate::color::Color,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            scope: ExportScope::Document,
+            scale: 1.0,
+            clear: crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        }
+    }
+}
+
+impl ExportOptions {
+    /// One panel at `scale`, on a transparent background.
+    pub fn panel(scale: f32) -> Self {
+        Self {
+            scope: ExportScope::Panel,
+            scale,
+            ..Self::default()
+        }
+    }
+
+    /// The whole document at `scale`, on a transparent background.
+    pub fn document(scale: f32) -> Self {
+        Self {
+            scope: ExportScope::Document,
+            scale,
+            ..Self::default()
+        }
+    }
+
+    /// These options over a background of `clear`.
+    pub fn with_clear(self, clear: crate::color::Color) -> Self {
+        Self { clear, ..self }
+    }
+}
+
+/// The chart an export renders: a chart the caller holds, or one registered
+/// with the renderer.
+#[derive(Clone, Copy)]
+pub enum ExportSource<'a> {
+    /// A chart and its series as the caller holds them.
+    Chart {
+        chart: &'a Chart,
+        series: &'a [SeriesConfig],
+    },
+    /// A chart registered with [`Renderer::register_chart`]: its stored
+    /// config and series, as they are serialized (not its display placement).
+    Registered(ChartId),
+}
+
+impl<'a> ExportSource<'a> {
+    /// [`Self::Chart`].
+    pub fn chart(chart: &'a Chart, series: &'a [SeriesConfig]) -> Self {
+        Self::Chart { chart, series }
+    }
 }
 
 /// Owned storage for the internal panels of a prepare or export call: the
@@ -258,172 +336,126 @@ impl ExportFrame {
 }
 
 impl Renderer {
-    /// Render one chart panel offscreen at `scale × original` pixel
-    /// dimensions and return an RGBA buffer. Fonts, line widths, and margins
-    /// are all scaled proportionally so the result is visually consistent.
+    /// Render `source` offscreen and read it back as straight-alpha RGBA8
+    /// (#160): the panel or the document by `options.scope`, at
+    /// `options.scale × ` its logical size, over `options.clear`.
     ///
-    /// - `scale` is raised to at least [`MIN_EXPORT_SCALE`]; past the
-    ///   device's texture limit the export fails with
-    ///   [`FiggyError::GpuResourceLimit`].
-    /// - Background is fully transparent (alpha 0).
-    /// - Output size is `chart_area × scale`.
-    /// - Encoding / saving the PNG is the caller's responsibility — use
-    ///   [`encode_png`] or [`Self::export_panel_png_bytes_async`].
-    ///
-    /// Async because the GPU→CPU readback must yield to the browser on wasm;
-    /// on native the await resolves immediately (the device is polled to
-    /// completion inline). Native callers can use the blocking
-    /// `Renderer::export_panel_rgba` wrapper instead (native only). `&mut self` for the same
-    /// reason as [`Self::paint`]: the prepare phase (arc prefixes; the
-    /// export's styled pipelines live in a per-call set instead).
-    pub async fn export_panel_rgba_async(
+    /// A series with a streamed source is rejected. Async because the
+    /// GPU→CPU readback must yield to the browser on wasm; on native the
+    /// await resolves at once (the device is polled to completion inline),
+    /// so a native caller can block on it. `&mut self` for the prepare phase
+    /// (arc prefixes); the export's styled pipelines live in a per-call set.
+    /// Encoding is the caller's: [`encode_png`] or [`Self::export_png`].
+    pub async fn export_rgba(
         &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
+        source: ExportSource<'_>,
+        options: ExportOptions,
     ) -> Result<RasterImage> {
-        self.export_panel_rgba_with_clear_async(
-            chart,
-            series,
-            scale,
-            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        )
-        .await
+        match source {
+            ExportSource::Chart { chart, series } => {
+                self.export_rgba_with_clear_scoped(
+                    chart,
+                    series,
+                    options.scale,
+                    options.clear,
+                    options.scope,
+                )
+                .await
+            }
+            ExportSource::Registered(id) => {
+                let (chart, series) = self.registered_export_state(id)?;
+                self.export_rgba_with_clear_scoped(
+                    &chart,
+                    &series,
+                    options.scale,
+                    options.clear,
+                    options.scope,
+                )
+                .await
+            }
+        }
     }
 
-    /// Render the whole document — the base layer and every overlay layer
-    /// composited in order — offscreen at `scale × original` pixel
-    /// dimensions and return an RGBA buffer. Same contract as
-    /// [`Self::export_panel_rgba_async`] otherwise; for a document without
-    /// overlays the two produce byte-identical images. The panel export of a
-    /// layered document draws its base panel only (with the group data
-    /// area), which is what a per-panel export means.
-    pub async fn export_document_rgba_async(
+    /// [`Self::export_rgba`], encoded as PNG bytes in memory. Saving them is
+    /// the caller's.
+    pub async fn export_png(
         &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<RasterImage> {
-        self.export_document_rgba_with_clear_async(
-            chart,
-            series,
-            scale,
-            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        )
-        .await
-    }
-
-    /// [`Self::export_document_rgba_async`] with an explicit clear color.
-    pub async fn export_document_rgba_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<RasterImage> {
-        self.export_rgba_with_clear_scoped(chart, series, scale, clear, ExportScope::Document)
-            .await
-    }
-
-    /// Convenience wrapper: export the document, then encode PNG bytes.
-    pub async fn export_document_png_bytes_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
+        source: ExportSource<'_>,
+        options: ExportOptions,
     ) -> Result<Vec<u8>> {
-        let img = self
-            .export_document_rgba_async(chart, series, scale)
-            .await?;
-        encode_png(&img)
+        let image = self.export_rgba(source, options).await?;
+        encode_png(&image)
     }
 
-    /// Convenience wrapper: export the document PNG with an explicit clear
-    /// color.
-    pub async fn export_document_png_bytes_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<Vec<u8>> {
-        let img = self
-            .export_document_rgba_with_clear_async(chart, series, scale, clear)
-            .await?;
-        encode_png(&img)
-    }
-
-    /// Export the whole document as an SVG document at `scale ×` resolution
-    /// (#48). The decorations are vector content from the placement the PNG
-    /// export draws with: axes, ticks, tick labels, grid, titles, legend,
-    /// colourbar, polar chrome and the annotation layer, glyphs written as
-    /// outlines. The data layer is drawn by the GPU, so each panel group's
-    /// data (fills, bodies, picked highlights, value labels) is embedded as a
-    /// PNG image of its data area, the same pixels as the PNG export; the
-    /// colourbar ramp and the Milkyway backdrop are images too, and the
-    /// Milkyway glow is omitted. The `viewBox` is in physical pixels and the
-    /// size the logical size in points (1 px = 0.75 pt).
+    /// `source`'s whole document as an SVG document at `options.scale ×`
+    /// resolution (#48). The decorations are vector content from the
+    /// placement the PNG export draws with: axes, ticks, tick labels, grid,
+    /// titles, legend, colourbar, polar chrome and the annotation layer,
+    /// glyphs written as outlines. The data layer is drawn by the GPU, so
+    /// each panel group's data (fills, bodies, picked highlights, value
+    /// labels) is embedded as a PNG image of its data area, the same pixels
+    /// as the PNG export; the colourbar ramp and the Milkyway backdrop are
+    /// images too, and the Milkyway glow is omitted. The `viewBox` is in
+    /// physical pixels and the size the logical size in points
+    /// (1 px = 0.75 pt). `options.clear` is a rectangle under everything.
     ///
-    /// `scale` is clamped as for [`Self::export_document_rgba_async`]; a
-    /// series with a streamed source is rejected, as for the PNG export.
-    /// Native callers can use the blocking `Renderer::export_document_svg`.
-    pub async fn export_document_svg_async(
+    /// A vector export renders the whole document: `ExportScope::Panel` is
+    /// refused with [`FiggyError::InvalidConfig`]. A series with a streamed
+    /// source is rejected, as for the PNG export.
+    pub async fn export_svg(
         &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
+        source: ExportSource<'_>,
+        options: ExportOptions,
     ) -> Result<String> {
-        self.export_document_svg_with_clear_async(
-            chart,
-            series,
-            scale,
-            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        )
-        .await
-    }
-
-    /// [`Self::export_document_svg_async`] over a rectangle of the clear
-    /// colour.
-    pub async fn export_document_svg_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<String> {
-        self.export_vector_scoped::<crate::vector_export::SvgOut>(chart, series, scale, clear)
+        self.export_vector::<crate::vector_export::SvgOut>(source, options)
             .await
     }
 
-    /// [`Self::export_document_svg_async`] as a one-page PDF: the page is the
-    /// logical size in points, each image a deflated RGB image with a soft
-    /// mask. Glyphs are outlines, so the text is not searchable.
-    pub async fn export_document_pdf_async(
+    /// [`Self::export_svg`] as a one-page PDF: the page is the logical size
+    /// in points, each image a deflated RGB image with a soft mask. Glyphs
+    /// are outlines, so the text is not searchable.
+    pub async fn export_pdf(
         &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
+        source: ExportSource<'_>,
+        options: ExportOptions,
     ) -> Result<Vec<u8>> {
-        self.export_document_pdf_with_clear_async(
-            chart,
-            series,
-            scale,
-            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        )
-        .await
+        self.export_vector::<crate::vector_export::PdfOut>(source, options)
+            .await
     }
 
-    /// [`Self::export_document_pdf_async`] over a rectangle of the clear
-    /// colour.
-    pub async fn export_document_pdf_with_clear_async(
+    async fn export_vector<F: crate::vector_export::VectorFile>(
         &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<Vec<u8>> {
-        self.export_vector_scoped::<crate::vector_export::PdfOut>(chart, series, scale, clear)
-            .await
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<F::Output> {
+        if options.scope != ExportScope::Document {
+            return Err(FiggyError::InvalidConfig {
+                field: "ExportOptions.scope",
+                reason: "a vector export renders the whole document",
+            });
+        }
+        match source {
+            ExportSource::Chart { chart, series } => {
+                self.export_vector_scoped::<F>(chart, series, options.scale, options.clear)
+                    .await
+            }
+            ExportSource::Registered(id) => {
+                let (chart, series) = self.registered_export_state(id)?;
+                self.export_vector_scoped::<F>(&chart, &series, options.scale, options.clear)
+                    .await
+            }
+        }
+    }
+
+    /// A registered chart's stored config, as a [`Chart`], and its series,
+    /// for an export. Configuration only is copied (rule 2): the export
+    /// prepares through `&mut self`, so it cannot borrow the registry.
+    fn registered_export_state(&self, id: ChartId) -> Result<(Chart, Vec<SeriesConfig>)> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        Ok((Chart::new(state.config.clone()), state.series.clone()))
     }
 
     /// The vector export in format `F`, with the PNG export's checks, device
@@ -472,41 +504,6 @@ impl Renderer {
     ) -> Result<F::Output> {
         let mut frame = self.prepare_export(chart, series, scale, ExportScope::Document)?;
         crate::vector_export::document_file::<F>(self, &mut frame, clear).await
-    }
-
-    /// Export a panel with an explicit clear color behind the chart.
-    ///
-    /// Wrapped in device error scopes. Export is where figgy asks for its
-    /// largest transient resources — a target texture at `scale²`, an MSAA
-    /// attachment at `scale² × samples`, and a readback buffer — and it is
-    /// `async`, so every scope pop can actually be awaited here. Native wraps
-    /// the whole export in out-of-memory, validation and internal scopes;
-    /// wasm uses short underlying `GPUDevice` OOM and internal
-    /// scopes so internal/OOM classification and host scope boundaries remain
-    /// explicit at the raw browser API boundary.
-    /// Each browser scope pair is popped synchronously before the next await,
-    /// so cancellation and a host sharing the device cannot cross its stack.
-    /// The synchronous resource creations inside run through `gpu_checked`
-    /// as well, so an out-of-memory target fails where it is created.
-    ///
-    /// A device that reports an error fails the export even when the encode
-    /// succeeded — a partially-resident target renders garbage, and returning
-    /// an image the caller would save is worse than an error.
-    ///
-    /// This method owns and completes its GPU submission, then reports a global
-    /// submission boundary to the memory ledger. A split prepare/paint host must
-    /// submit every command buffer it previously recorded from this renderer
-    /// before starting an export; opaque host command buffers cannot be observed
-    /// or retired selectively by the renderer.
-    pub async fn export_panel_rgba_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<RasterImage> {
-        self.export_rgba_with_clear_scoped(chart, series, scale, clear, ExportScope::Panel)
-            .await
     }
 
     pub(super) async fn export_rgba_with_clear_scoped(
@@ -1152,32 +1149,6 @@ impl Renderer {
             height: h,
             rgba,
         })
-    }
-
-    /// Convenience wrapper: export panel RGBA, then encode PNG bytes in
-    /// memory. Saving the bytes to disk is up to the caller.
-    pub async fn export_panel_png_bytes_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-    ) -> Result<Vec<u8>> {
-        let img = self.export_panel_rgba_async(chart, series, scale).await?;
-        encode_png(&img)
-    }
-
-    /// Convenience wrapper: export panel PNG with an explicit clear color.
-    pub async fn export_panel_png_bytes_with_clear_async(
-        &mut self,
-        chart: &Chart,
-        series: &[SeriesConfig],
-        scale: f32,
-        clear: crate::color::Color,
-    ) -> Result<Vec<u8>> {
-        let img = self
-            .export_panel_rgba_with_clear_async(chart, series, scale, clear)
-            .await?;
-        encode_png(&img)
     }
 }
 

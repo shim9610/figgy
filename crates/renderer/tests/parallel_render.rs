@@ -300,7 +300,10 @@ fn each_row_passes_through_its_axis_points_and_midpoints_at_1x_and_2x() {
     let chart = Chart::new(config.clone());
     for scale in [1.0f64, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale as f32)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale as f32),
+            )
             .block_on()
             .unwrap();
         save(&format!("parallel-rows-{scale}x"), &img);
@@ -363,7 +366,10 @@ fn inverted_and_logarithmic_axes_place_their_values() {
     let series = [series("rows", &columns, RED, None)];
     let chart = Chart::new(config.clone());
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("parallel-inverted-log", &img);
@@ -419,7 +425,10 @@ fn a_non_finite_value_breaks_the_row_at_its_axis() {
     let series = [series("nan", &columns, RED, None)];
     let chart = Chart::new(config.clone());
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("parallel-broken", &img);
@@ -496,7 +505,10 @@ fn the_pick_answers_the_row_and_the_highlight_redraws_it() {
     });
     let chart = Chart::new(highlighted);
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("parallel-selected", &img);
@@ -573,7 +585,10 @@ fn a_colour_column_colours_each_row_through_the_colorbar() {
     let series = [series("rows", &columns, RED, Some("rows_class"))];
     let chart = Chart::new(config.clone());
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("parallel-coloured", &img);
@@ -663,7 +678,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     let series = [series("rows", &columns, RED, None)];
     let chart = Chart::new(config.clone());
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("parallel-dressed", &img);
@@ -760,7 +778,10 @@ fn each_axis_has_its_own_tick_labels_hit_and_dragged() {
     named.bottom_x.label_style.label_visible = true;
     let names = Chart::new(named.clone());
     let img = r
-        .export_panel_rgba_async(&names, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&names, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let (x, _) = point_px(&named, 1, 50.0, 1.0);
@@ -842,7 +863,10 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     let config_reason = |r: &mut Renderer, config: &Config, series: Vec<SeriesConfig>| {
         let what = format!("{:?}", config.parallel);
         match r
-            .export_panel_rgba_async(&Chart::new(config.clone()), &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&Chart::new(config.clone()), &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
         {
             Err(FiggyError::InvalidConfig { field, reason }) => {
@@ -1007,7 +1031,10 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
     let chart = Chart::new(config.clone());
     let started = std::time::Instant::now();
     let img = r
-        .export_panel_rgba_async(&chart, &[series.clone()], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series.clone()]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     eprintln!(

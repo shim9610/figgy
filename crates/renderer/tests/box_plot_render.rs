@@ -1,6 +1,6 @@
 //! End-to-end pixel verification of box plot series
 //! (`DataRenderType::BoxPlot`) through the public renderer API and the
-//! headless `export_panel_rgba`: boxes over a record and a ragged outlier
+//! headless `export_rgba`: boxes over a record and a ragged outlier
 //! column in both directions at 1x and 2x, the median, whiskers, caps, mean
 //! and outliers, notches, missing boxes and clamped statistics, per-box
 //! overrides and materials, the selected box's outline, the value-axis fit
@@ -389,7 +389,10 @@ fn boxes_draw_their_statistics_in_both_directions_and_scales() {
         let series = [boxes("one", RED), boxes("two", BLUE)];
         for scale in [1.0f32, 2.0] {
             let img = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let px = |v: f64| value_px(&chart, direction, v, scale);
@@ -502,7 +505,10 @@ fn notched_boxes_narrow_at_the_median() {
     style(&mut one).show_mean = false;
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &[one.clone()], scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[one.clone()]),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let width_at = |region: Region, v: f64| {
@@ -556,11 +562,17 @@ fn missing_boxes_draw_nothing_and_unordered_statistics_are_clamped() {
     }
     for scale in [1.0f32, 2.0] {
         let first = r
-            .export_panel_rgba_async(&chart, &[a.clone()], scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[a.clone()]),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let second = r
-            .export_panel_rgba_async(&chart, &[b.clone()], scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[b.clone()]),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let px = |v: f64| value_px(&chart, direction, v, scale);
@@ -607,11 +619,17 @@ fn overrides_and_materials_restyle_only_their_box() {
     overrides(&mut overridden[0]).push(o);
     for scale in [1.0f32, 2.0] {
         let before = r
-            .export_panel_rgba_async(&chart, &plain, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &plain),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let after = r
-            .export_panel_rgba_async(&chart, &overridden, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &overridden),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let region = slot(&chart, direction, 1, scale);
@@ -640,11 +658,17 @@ fn overrides_and_materials_restyle_only_their_box() {
     });
     overrides(&mut styled[1]).push(o);
     let before = r
-        .export_panel_rgba_async(&chart, &plain, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &plain),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let after = r
-        .export_panel_rgba_async(&chart, &styled, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &styled),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let region = slot(&chart, direction, 0, 1.0);
@@ -672,11 +696,17 @@ fn overrides_and_materials_restyle_only_their_box() {
         style(s).texture_strength = 1.0;
     }
     let flat = r
-        .export_panel_rgba_async(&chart, &plain, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &plain),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let grained = r
-        .export_panel_rgba_async(&chart, &matte, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &matte),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert_ne!(flat.rgba, grained.rgba, "the material changes the shading");
@@ -716,7 +746,10 @@ fn the_selection_outline_traces_an_overridden_box() {
             let case = format!("{direction:?} {scale}x");
             chart.config_mut().picked_data = None;
             let painted = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let region = slot(&chart, direction, 1, scale);
@@ -735,7 +768,10 @@ fn the_selection_outline_traces_an_overridden_box() {
                 contour_width_extra_px: 0.0,
             });
             let outlined = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let full = (0, 0, outlined.width, outlined.height);
@@ -815,7 +851,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     let chart = chart(direction);
     let series = [boxes("one", RED), boxes("two", BLUE)];
     let before = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let mut moved = ONE;
@@ -826,7 +865,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     }
     upload_record(&mut r, "one.record", &moved);
     let after = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let region = slot(&chart, direction, 0, 1.0);
@@ -848,7 +890,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     };
     *outliers = None;
     let error = r
-        .export_panel_rgba_async(&chart, &[short], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[short]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .err()
         .expect("an error");
@@ -856,7 +901,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
     // Two groups for three categories.
     upload_outliers(&mut r, "one.outliers", &ONE_OUTLIERS[..2]);
     let error = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .err()
         .expect("an error");
@@ -868,7 +916,10 @@ fn a_replaced_record_redraws_and_mismatched_sources_are_errors() {
         ..boxes("two", BLUE)
     };
     let error = r
-        .export_panel_rgba_async(&chart, &[missing], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[missing]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .err()
         .expect("an error");
@@ -912,7 +963,10 @@ fn overlays_and_subplots_draw_their_own_box_groups() {
     }
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_document_rgba_async(&parent, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let (w, h) = (img.width, img.height);
@@ -1032,11 +1086,17 @@ fn a_box_plot_document_draws_through_the_reader() {
     let chart = Chart::new(config);
     for scale in [1.0f32, 2.0] {
         let with = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let without = r
-            .export_panel_rgba_async(&chart, &[], scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         // The document's green override (c2, b) is drawn.
@@ -1097,7 +1157,10 @@ fn the_annotation_layer_maps_categories_and_values() {
         let series = [boxes("one", RED), boxes("two", BLUE)];
         for scale in [1.0f32, 2.0] {
             let img = r
-                .export_panel_rgba_async(&chart, &series, scale)
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
                 .block_on()
                 .unwrap();
             let case = format!("{direction:?} {scale}x");
@@ -1156,11 +1219,17 @@ fn a_2x_export_is_the_1x_layout_doubled() {
         let chart = chart(direction);
         let series = [boxes("one", RED), boxes("two", BLUE)];
         let one = r
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
             .block_on()
             .unwrap();
         let two = r
-            .export_panel_rgba_async(&chart, &series, 2.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(2.0),
+            )
             .block_on()
             .unwrap();
         for k in 0..3 {
@@ -1242,7 +1311,10 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
     };
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         for k in [0, 63, 64, 100, N - 1] {
@@ -1266,7 +1338,10 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
         contour_width_extra_px: 0.0,
     });
     let outlined = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
@@ -1278,7 +1353,10 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let body = bbox(&img, region(&chart, N - 1, 1.0), is_blue).unwrap();
@@ -1360,7 +1438,10 @@ fn overrides_on_a_hundred_boxes_all_apply() {
     let series = [series];
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let da = chart.config().data_area().expect("data area");
@@ -1448,7 +1529,10 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
     let direction = CategoryBarDirection::Vertical;
     for scale in [1.0f32, 2.0] {
         let img = r
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         for k in 0..N {
@@ -1490,7 +1574,10 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
         contour_width_extra_px: 0.0,
     });
     let outlined = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
@@ -1501,7 +1588,10 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let body = bbox(&img, region(&chart, N - 1, 1.0), is_red).unwrap();

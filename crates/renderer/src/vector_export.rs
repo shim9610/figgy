@@ -1255,8 +1255,8 @@ impl GlyphSink for PartsTwin<'_> {
     }
 }
 
-/// Every part [`Renderer::export_document_svg_async`] and
-/// [`Renderer::export_document_pdf_async`] write for `chart` at `scale`
+/// Every part [`Renderer::export_svg`] and
+/// [`Renderer::export_pdf`] write for `chart` at `scale`
 /// (the clear colour's background aside), in writing order: the parts of
 /// the same passes over the same scaled, placed document, recorded through
 /// [`crate::sink::Parts`] instead of written. Test support (`cpu-twin`).

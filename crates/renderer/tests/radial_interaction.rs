@@ -99,7 +99,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         c.decorations = Default::default();
         let f = r.prepare(&c, (800, 520), scale).unwrap();
         let before = r
-            .export_rgba_async(&c, (800, 520), scale)
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
             .block_on()
             .unwrap();
         let key = DecorationId::RadialLabel(RadialTarget::main(0));
@@ -139,7 +139,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
             "edited outside labels must still reuse their raster on data hover"
         );
         let after = r
-            .export_rgba_async(&c, (800, 520), scale)
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
             .block_on()
             .unwrap();
         assert!(ink(&before, old, scale) > 20);
@@ -155,16 +155,20 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
                 serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
             assert_eq!(restored, c);
             assert_eq!(
-                r.export_rgba_async(&restored, (800, 520), scale)
-                    .block_on()
-                    .unwrap()
-                    .rgba,
+                r.export_rgba(
+                    &restored,
+                    (800, 520),
+                    renderer::ExportOptions::document(scale)
+                )
+                .block_on()
+                .unwrap()
+                .rgba,
                 after.rgba
             );
         }
         c.decorations.selected = Some(key.clone());
         let selected = r
-            .export_rgba_async(&c, (800, 520), scale)
+            .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
             .block_on()
             .unwrap();
         assert_ne!(after.rgba, selected.rgba, "selection box missing");
@@ -178,7 +182,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         assert_eq!(c.decorations, current);
         c.decorations = Default::default();
         assert_eq!(
-            r.export_rgba_async(&c, (800, 520), scale)
+            r.export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap()
                 .rgba,
@@ -211,7 +215,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
             let shown = c.clone();
             let selection = frame.selection(&shown, frame.id_of(&shown, &key)).unwrap();
             let unselected = r
-                .export_rgba_async(&c, (600, 420), scale)
+                .export_rgba(&c, (600, 420), renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap();
             c.decorations.selected = Some(key.clone());
@@ -222,7 +226,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
                 Some(label)
             );
             let selected = r
-                .export_rgba_async(&c, (600, 420), scale)
+                .export_rgba(&c, (600, 420), renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap();
             save(
@@ -258,7 +262,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
             );
             c.decorations.selected = None;
             assert_eq!(
-                r.export_rgba_async(&c, (600, 420), scale)
+                r.export_rgba(&c, (600, 420), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap()
                     .rgba,
@@ -286,7 +290,10 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
         moved.bounds(&c, moved.id_of(&c, &key)),
         Some(before.translated(20., 5.))
     ));
-    let image = r.export_rgba_async(&c, (600, 420), 2.).block_on().unwrap();
+    let image = r
+        .export_rgba(&c, (600, 420), renderer::ExportOptions::document(2.))
+        .block_on()
+        .unwrap();
     // White glyphs must be present in their measured edited bounds.
     let b = before.translated(20., 5.);
     let mut white = 0;
@@ -337,7 +344,7 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         let shown = c.clone();
                         let area = f.bounds(&shown, f.id_of(&shown, &DecorationId::DataArea));
                         let before = r
-                            .export_rgba_async(&c, (800, 600), scale)
+                            .export_rgba(&c, (800, 600), renderer::ExportOptions::document(scale))
                             .block_on()
                             .unwrap();
                         if full {
@@ -360,7 +367,11 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                                 );
                             }
                             let selected = r
-                                .export_rgba_async(&c, (800, 600), scale)
+                                .export_rgba(
+                                    &c,
+                                    (800, 600),
+                                    renderer::ExportOptions::document(scale),
+                                )
                                 .block_on()
                                 .unwrap();
                             radial_area::assert_selection_only(
@@ -384,10 +395,14 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                             c.decorations.selected = None;
                             assert_eq!(c, unselected_model);
                             assert_eq!(
-                                r.export_rgba_async(&c, (800, 600), scale)
-                                    .block_on()
-                                    .unwrap()
-                                    .rgba,
+                                r.export_rgba(
+                                    &c,
+                                    (800, 600),
+                                    renderer::ExportOptions::document(scale)
+                                )
+                                .block_on()
+                                .unwrap()
+                                .rgba,
                                 before.rgba,
                                 "selection removal did not restore {key:?} pixels"
                             );
@@ -424,7 +439,7 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                             &r.prepare(&c, (800, 600), scale).unwrap()
                         ));
                         let after = r
-                            .export_rgba_async(&c, (800, 600), scale)
+                            .export_rgba(&c, (800, 600), renderer::ExportOptions::document(scale))
                             .block_on()
                             .unwrap();
                         assert_ne!(before.rgba, after.rgba, "{key:?} edit was invisible");
@@ -434,10 +449,14 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                                 serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
                             assert_eq!(c, restored);
                             assert_eq!(
-                                r.export_rgba_async(&restored, (800, 600), scale)
-                                    .block_on()
-                                    .unwrap()
-                                    .rgba,
+                                r.export_rgba(
+                                    &restored,
+                                    (800, 600),
+                                    renderer::ExportOptions::document(scale)
+                                )
+                                .block_on()
+                                .unwrap()
+                                .rgba,
                                 after.rgba
                             );
                         }
@@ -445,10 +464,14 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         c.decorations.selected = None;
                         if full {
                             assert_eq!(
-                                r.export_rgba_async(&c, (800, 600), scale)
-                                    .block_on()
-                                    .unwrap()
-                                    .rgba,
+                                r.export_rgba(
+                                    &c,
+                                    (800, 600),
+                                    renderer::ExportOptions::document(scale)
+                                )
+                                .block_on()
+                                .unwrap()
+                                .rgba,
                                 before.rgba
                             );
                         }
@@ -507,7 +530,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                 let same = r.prepare(&c, (800, 520), scale).unwrap();
                 assert!(first.shares_annotations_with(&same));
                 let before = r
-                    .export_rgba_async(&c, (800, 520), scale)
+                    .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap();
                 let t = c.chart_title.as_mut().unwrap();
@@ -524,7 +547,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                 let edited = r.prepare(&c, (800, 520), scale).unwrap();
                 assert!(!first.shares_annotations_with(&edited));
                 let after = r
-                    .export_rgba_async(&c, (800, 520), scale)
+                    .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap();
                 assert_ne!(before.rgba, after.rgba);
@@ -533,7 +556,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                     <$renderer>::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
                 assert_eq!(
                     fresh
-                        .export_rgba_async(&c, (800, 520), scale)
+                        .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                         .block_on()
                         .unwrap()
                         .rgba,
@@ -545,7 +568,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                 let bounds = dragged.text_bounds(&c, dragged.id_of(&c, &key)).unwrap();
                 assert!(near(Some(bounds), Some(old.translated(9., 7.))));
                 let image = r
-                    .export_rgba_async(&c, (800, 520), scale)
+                    .export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap();
                 assert!(ink(&image, bounds, scale) > 20);
@@ -556,10 +579,14 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                     let restored =
                         serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
                     assert_eq!(
-                        r.export_rgba_async(&restored, (800, 520), scale)
-                            .block_on()
-                            .unwrap()
-                            .rgba,
+                        r.export_rgba(
+                            &restored,
+                            (800, 520),
+                            renderer::ExportOptions::document(scale)
+                        )
+                        .block_on()
+                        .unwrap()
+                        .rgba,
                         image.rgba
                     );
                 }
@@ -567,7 +594,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                 let hidden = r.prepare(&c, (800, 520), scale).unwrap();
                 assert!(!hidden.entries(&c).iter().any(|(_, e)| *e == key));
                 assert_ne!(
-                    r.export_rgba_async(&c, (800, 520), scale)
+                    r.export_rgba(&c, (800, 520), renderer::ExportOptions::document(scale))
                         .block_on()
                         .unwrap()
                         .rgba,
@@ -712,21 +739,24 @@ fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
             Some(NudgeResult::Moved)
         );
         r.end_frame();
-        let image = r.export_rgba_async(&full, size, scale).block_on().unwrap();
+        let image = r
+            .export_rgba(&full, size, renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
         assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
         assert!(
-            !r.export_svg_async(&full, size, scale)
+            !r.export_svg(&full, size, renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            !r.export_pdf_async(&full, size, scale)
+            !r.export_pdf(&full, size, renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap()
                 .is_empty()
         );
-        r.export_rgba_async(&dragged, size, scale)
+        r.export_rgba(&dragged, size, renderer::ExportOptions::document(scale))
             .block_on()
             .unwrap();
     }

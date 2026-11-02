@@ -509,11 +509,17 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
     );
     let series = r.chart_series(id).unwrap().to_vec();
     let one = r
-        .export_panel_rgba_async(&Chart::new(config.clone()), &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let two = r
-        .export_panel_rgba_async(&Chart::new(config.clone()), &series, 2.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));

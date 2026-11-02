@@ -380,11 +380,9 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         }
         if std::env::var_os("FIGGY_FIELD_DIAGNOSTIC_PASS_ONLY").is_some() {
             for scale in [1.0, 2.0] {
-                let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-                    &Chart::new(config.clone()),
-                    &series,
-                    scale,
-                    Color::WHITE,
+                let expected = pollster::block_on(resident.export_rgba(
+                    crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+                    crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
                 ))
                 .unwrap();
                 let [single, split] = pass_control(&mut resident, &config, &series, scale);
@@ -454,11 +452,9 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         };
         finish_display(&mut f);
         for scale in [1.0, 2.0] {
-            let expected = pollster::block_on(resident.export_panel_rgba_with_clear_async(
-                &f.chart,
-                &f.series,
-                scale,
-                Color::WHITE,
+            let expected = pollster::block_on(resident.export_rgba(
+                crate::ExportSource::chart(&f.chart, &f.series),
+                crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
             ))
             .unwrap();
             let op = f

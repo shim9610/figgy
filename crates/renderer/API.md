@@ -365,11 +365,11 @@ fn prepare_after_series_edit(
 Panel export helpers build their own scaled view and styles from the supplied
 configs. A correct PNG does not establish that a separately displayed view has
 been refreshed. Apply the same model edits to both paths. A `Config` with
-`overlays` is exported as a whole by the `export_document_*` helpers (every
+`overlays` is exported as a whole by the `export_*` methods with `ExportScope::Document` (every
 layer composited in order, every layer's decoration above every layer's data). A document with `subplots` (more charts, each with
 its own axes) exports the union of every chart area (`Config::document_area`),
 and a display fits that union with `display_config_for_surface`. The
-`export_panel_*` helpers render only the parent chart's own base layer in its
+panel exports (`ExportScope::Panel`) render only the parent chart's own base layer in its
 `chart_area`; the two are byte-identical for a document without overlays or
 subplots. See the
 [overlay layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#overlay-layers) and
@@ -405,7 +405,7 @@ async fn edit_and_export(
     chart.interaction.selected = displayed.pick(pointer)?.resolve().await?;
     chart.slices[0].color = Color::from_rgb8(50, 180, 150);
     // Export prepares the edited model at the requested resolution (1600 x 1200).
-    let image = renderer.export_rgba_async(&chart, (800, 600), 2.0).await?;
+    let image = renderer.export_rgba(&chart, (800, 600), ExportOptions::document(2.0)).await?;
     drop(displayed);
     renderer.end_frame();
     Ok(renderer::encode_png(&image)?)
@@ -506,9 +506,9 @@ Each module documents its accepted size/scale bounds; the Cartesian export scale
 contract differs from the radial chart contract.
 
 RGBA export returns pixels; PNG encoding returns bytes. The SVG export
-(`export_document_svg_async`, `RadialRenderer::export_svg_async`) returns a
-`String` and the PDF export (`export_document_pdf_async`,
-`RadialRenderer::export_pdf_async`) bytes: decorations as vector content, the
+(`export_svg`, `RadialRenderer::export_svg`) returns a
+`String` and the PDF export (`export_pdf`,
+`RadialRenderer::export_pdf`) bytes: decorations as vector content, the
 data layer as images of the PNG export's pixels (see the
 [usage guide](USAGE.md#svg-and-pdf-export)). The caller decides where
 to send or store them. Native blocking helpers and async variants are both

@@ -62,7 +62,12 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
         }
         chart = Chart::new(config);
     }
-    let image = r.export_panel_rgba_async(&chart, &series, 1.0).block_on()?;
+    let image = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()?;
     let colored = image
         .rgba
         .chunks_exact(4)

@@ -73,11 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
         let chart = Chart::new(gallery(sketch)?);
         for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
-            let image = pollster::block_on(renderer.export_document_rgba_with_clear_async(
-                &chart,
-                &[],
-                scale,
-                Color::WHITE,
+            let image = pollster::block_on(renderer.export_rgba(
+                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportOptions::document(scale).with_clear(Color::WHITE),
             ))?;
             let path = output.join(format!("{name}{suffix}.png"));
             std::fs::write(&path, encode_png(&image)?)?;

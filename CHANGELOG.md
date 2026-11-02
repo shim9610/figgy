@@ -869,6 +869,31 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **One export API** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The eighteen `export_panel_*` / `export_document_*` methods (RGBA, PNG,
+  SVG, PDF, each with and without a clear colour) are four:
+  `Renderer::export_rgba`, `export_png`, `export_svg` and `export_pdf`, each
+  taking an `ExportSource` and `ExportOptions`. `ExportSource::Chart {
+  chart, series }` (or `ExportSource::chart(&chart, &series)`) exports what
+  the caller holds; `ExportSource::Registered(id)` exports a registered
+  chart's stored config and series, so a host no longer clones them to
+  export. `ExportOptions { scope, scale, clear }` picks the panel or the
+  whole document (`ExportScope`), the scale and the background
+  (`ExportOptions::panel(scale)`, `ExportOptions::document(scale)`,
+  `.with_clear(color)`; transparent by default). A vector export renders the
+  whole document and refuses `ExportScope::Panel` with
+  `FiggyError::InvalidConfig`. `RadialRenderer` has the same four,
+  `export_rgba(chart, size, options)` and so on; its exports now honour
+  `options.clear` instead of always clearing to transparent. Migration:
+  - `export_panel_rgba_async(&chart, &series, s)` →
+    `export_rgba(ExportSource::chart(&chart, &series), ExportOptions::panel(s))`;
+    `export_document_*` → `ExportOptions::document(s)`;
+  - `*_with_clear_async(.., c)` → `.with_clear(c)` on the options;
+  - `*_png_bytes_*` → `export_png`, `*_svg_*` → `export_svg`,
+    `*_pdf_*` → `export_pdf`;
+  - `RadialRenderer::export_rgba_async(&chart, size, s)` →
+    `export_rgba(&chart, size, ExportOptions::document(s))`, and likewise
+    `export_svg_async` / `export_pdf_async`.
 - **Every `Renderer` call reports its own GPU error; `WindowedRenderer` keeps only the surface** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The trailing device-health check that only `WindowedRenderer` ran after
   each call (#158) now runs inside `Renderer`'s own methods, so a host that

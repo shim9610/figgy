@@ -323,7 +323,10 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
         .expect("register");
     let chart = renderer::Chart::new(scene.config.clone());
     let before = r
-        .export_document_png_bytes_async(&chart, &scene.series, 1.0)
+        .export_png(
+            renderer::ExportSource::chart(&chart, &scene.series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .expect("export");
     let stamp = r.chart_render_stamp(id).expect("stamp");
@@ -334,7 +337,10 @@ fn set_chart_config_applies_an_auto_laid_out_document_as_any_edit() {
     let applied = r.chart_render_stamp(id).expect("stamp");
     assert_ne!(applied, stamp, "the edit invalidates the chart");
     let after = r
-        .export_document_png_bytes_async(&renderer::Chart::new(out.clone()), &scene.series, 1.0)
+        .export_png(
+            renderer::ExportSource::chart(&renderer::Chart::new(out.clone()), &scene.series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .expect("export");
     assert_ne!(after, before);

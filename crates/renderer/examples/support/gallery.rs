@@ -93,8 +93,10 @@ pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Cha
 }
 
 pub fn save(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &Path) -> Result {
-    let img =
-        pollster::block_on(r.export_panel_rgba_with_clear_async(chart, series, 1.0, Color::WHITE))?;
+    let img = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(chart, series),
+        renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
+    ))?;
     if img.rgba.chunks_exact(4).any(|px| px[3] != 255) {
         return Err(format!("{}: white-background export is not opaque", path.display()).into());
     }

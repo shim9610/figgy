@@ -483,7 +483,10 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
     );
     for scale in [1.0, 2.0] {
         let expected = resident
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let operation = r
@@ -617,7 +620,10 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     assert_eq!(
         actual.rgba,
         resident
-            .export_panel_rgba_async(&chart, &series, 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(1.0)
+            )
             .block_on()
             .unwrap()
             .rgba
@@ -677,7 +683,10 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
             }
         }
         let expected = resident
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let actual = screen(&mut r, id, &view);
@@ -690,7 +699,10 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
         r.set_chart_config(id, chart.config().clone()).unwrap();
         pump(&mut r, id, &values);
         let expected = resident
-            .export_panel_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
             .block_on()
             .unwrap();
         let actual = screen(&mut r, id, &view);

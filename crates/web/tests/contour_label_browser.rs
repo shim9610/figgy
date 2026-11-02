@@ -242,7 +242,10 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         .expect("1024-label browser indirect readback")
         .expect("automatic contour label snapshot");
     let image = renderer
-        .export_panel_rgba_async(&chart, std::slice::from_ref(&config), 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, std::slice::from_ref(&config)),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("Chrome must consume the 1024-label indirect draw");
     let label_ink = image
@@ -273,7 +276,10 @@ async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
     let configs = [automatic_series(vec![1.0, 2.0, 3.0])];
 
     push_raw_error_scope(renderer.device(), "validation");
-    let mut export = Box::pin(renderer.export_panel_rgba_async(&chart, &configs, 1.0));
+    let mut export = Box::pin(renderer.export_rgba(
+        renderer::ExportSource::chart(&chart, &configs),
+        renderer::ExportOptions::panel(1.0),
+    ));
     let waker = Waker::from(Arc::new(NoopWake));
     let mut context = Context::from_waker(&waker);
     assert!(
@@ -292,7 +298,10 @@ async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
     );
 
     renderer
-        .export_panel_rgba_async(&chart, &configs, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &configs),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("contour export after cancellation");
 }

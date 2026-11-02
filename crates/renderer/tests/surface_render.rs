@@ -136,9 +136,12 @@ fn ridge(x: f64, y: f64) -> f64 {
 }
 
 fn export(r: &mut Renderer, config: &Config, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba_async(&Chart::new(config.clone()), series, scale)
-        .block_on()
-        .unwrap()
+    r.export_rgba(
+        renderer::ExportSource::chart(&Chart::new(config.clone()), series),
+        renderer::ExportOptions::panel(scale),
+    )
+    .block_on()
+    .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.

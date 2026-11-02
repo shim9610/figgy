@@ -1,5 +1,5 @@
 //! End-to-end verification of the vector field (quiver) render path through
-//! the public renderer API: the headless `export_panel_rgba`, the GPU pickers,
+//! the public renderer API: the headless `export_rgba`, the GPU pickers,
 //! the selection highlights and the series extent engine, and of the
 //! streamline arrowheads the vector glyph draws along a line.
 //!
@@ -300,7 +300,10 @@ fn assert_clear(img: &RasterImage, origin: (f64, f64), dx: f64, dy: f64, what: &
 
 fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
     renderer
-        .export_panel_rgba_async(chart, series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap()
 }
@@ -336,7 +339,10 @@ fn pixel_scaled_arrows_have_their_length_in_pixels_at_every_export_scale() {
     assert_clear(&img, a, 31.0, 7.0, "beside the head");
 
     let img2 = renderer
-        .export_panel_rgba_async(&chart, &series, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img2.width, img2.height), (WIDTH * 2, HEIGHT * 2));
@@ -1261,7 +1267,10 @@ fn vector_series_scale_by_their_overlay_axis() {
     chart.config_mut().overlays.push(overlay);
     let series = [points("arrows", data(1.0))];
     let img = renderer
-        .export_document_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img.width, img.height), (WIDTH, HEIGHT));
@@ -1321,7 +1330,10 @@ fn vector_series_draw_inside_their_subplot() {
     });
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
-        .export_document_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT));
@@ -1810,7 +1822,10 @@ fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
     assert!(head_at(&img, a, (1.0, 0.0), 60.0));
     assert!(no_head_at(&img, a, (1.0, 0.0), 80.0));
     let img2 = renderer
-        .export_panel_rgba_async(&chart, &series, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     let a2 = data_to_px_scaled(&chart, 0.5, 2.0, 2.0);
@@ -1927,7 +1942,10 @@ fn streamlines_scale_by_their_overlay_axis() {
     chart.config_mut().overlays.push(overlay);
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
-        .export_document_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let cfg = chart.config();
@@ -1972,7 +1990,10 @@ fn streamlines_draw_inside_their_subplot() {
     });
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer
-        .export_document_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT));

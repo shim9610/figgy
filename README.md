@@ -155,7 +155,7 @@ opening a window. `renderer` is the Rust import name of the `figgy-renderer` pac
 
 ```rust
 use renderer::{
-    Chart, Color, Renderer, RendererDevice, SeriesConfig,
+    Chart, Color, ExportOptions, ExportSource, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType},
     data_render::{create_instance, request_adapter, request_device},
@@ -230,11 +230,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
     }];
-    let image = pollster::block_on(renderer.export_panel_rgba_with_clear_async(
-        &chart,
-        &series,
-        1.0,
-        Color::WHITE,
+    let image = pollster::block_on(renderer.export_rgba(
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))?;
     let output = std::env::args_os()
         .nth(1)
@@ -286,7 +284,7 @@ upload, borrowed from the document:
 
 ```rust,ignore
 use renderer::radar::{RadarChart, RadarSeries};
-use renderer::{Category, Chart, Color, config::Config, encode_png};
+use renderer::{Category, Chart, Color, ExportOptions, ExportSource, config::Config, encode_png};
 
 let mut chart = RadarChart::default();
 chart.categories = ["Speed", "Safety", "Size", "Docs", "Tests"]
@@ -305,7 +303,11 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let image = pollster::block_on(renderer.export_panel_rgba_async(&Chart::new(config), &series, 1.0))?;
+let chart = Chart::new(config);
+let image = pollster::block_on(renderer.export_rgba(
+    ExportSource::chart(&chart, &series),
+    ExportOptions::panel(1.0),
+))?;
 std::fs::write("radar.png", encode_png(&image)?)?;
 ```
 

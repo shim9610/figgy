@@ -77,11 +77,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
     }];
-    let image = pollster::block_on(renderer.export_panel_rgba_with_clear_async(
-        &chart,
-        &series,
-        1.0,
-        Color::WHITE,
+    let image = pollster::block_on(renderer.export_rgba(
+        renderer::ExportSource::chart(&chart, &series),
+        renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))?;
     let output = std::env::args_os()
         .nth(1)

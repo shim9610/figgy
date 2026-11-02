@@ -722,7 +722,10 @@ impl eframe::App for DemoApp {
                         let (renderer, panels) = (&mut state.renderer, &state.panels);
                         for (i, panel) in panels.iter().enumerate() {
                             match renderer
-                                .export_panel_png_bytes_async(&panel.chart, &panel.series, scale)
+                                .export_png(
+                                    renderer::ExportSource::chart(&panel.chart, &panel.series),
+                                    renderer::ExportOptions::panel(scale),
+                                )
                                 .block_on()
                             {
                                 Ok(bytes) => {

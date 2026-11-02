@@ -493,32 +493,53 @@ fn document_export_composites_every_layer() {
     let series = three_series();
     let plain = Chart::new(base_config());
     let plain_document = r
-        .export_document_rgba_async(&plain, &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&plain, &series),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let plain_panel = r
-        .export_panel_rgba_async(&plain, &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&plain, &series),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let layered = Chart::new(two_overlay_config());
     let document = r
-        .export_document_rgba_async(&layered, &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&layered, &series),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let panel = r
-        .export_panel_rgba_async(&layered, &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&layered, &series),
+            crate::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     let large = r
-        .export_document_rgba_async(&layered, &series, 2.0)
+        .export_rgba(
+            crate::ExportSource::chart(&layered, &series),
+            crate::ExportOptions::document(2.0),
+        )
         .block_on()
         .unwrap();
     let large_panel = r
-        .export_panel_rgba_async(&layered, &series, 2.0)
+        .export_rgba(
+            crate::ExportSource::chart(&layered, &series),
+            crate::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     let png = r
-        .export_document_png_bytes_async(&layered, &series, 1.0)
+        .export_png(
+            crate::ExportSource::chart(&layered, &series),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     drop(fonts);
@@ -638,15 +659,24 @@ fn an_adaptive_log_axis_replans_on_every_zoom() {
     let mut exports = Vec::new();
     for scale in [1.0f32, 2.0] {
         let image = r
-            .export_document_rgba_async(&adaptive, &series, scale)
+            .export_rgba(
+                crate::ExportSource::chart(&adaptive, &series),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let other = r
-            .export_document_rgba_async(&decades, &series, scale)
+            .export_rgba(
+                crate::ExportSource::chart(&decades, &series),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let png = r
-            .export_document_png_bytes_async(&adaptive, &series, scale)
+            .export_png(
+                crate::ExportSource::chart(&adaptive, &series),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         exports.push((scale, image.width, image.rgba != other.rgba, png));
@@ -842,19 +872,31 @@ fn offset_lines_export_at_1x_and_2x() {
     let mut results = Vec::new();
     for scale in [1.0f32, 2.0] {
         let drawn = r
-            .export_document_rgba_async(&offset, &offset_series(false), scale)
+            .export_rgba(
+                crate::ExportSource::chart(&offset, &offset_series(false)),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let expected = r
-            .export_document_rgba_async(&host, &offset_series(true), scale)
+            .export_rgba(
+                crate::ExportSource::chart(&host, &offset_series(true)),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let unshifted = r
-            .export_document_rgba_async(&host, &offset_series(false), scale)
+            .export_rgba(
+                crate::ExportSource::chart(&host, &offset_series(false)),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         let png = r
-            .export_document_png_bytes_async(&offset, &offset_series(false), scale)
+            .export_png(
+                crate::ExportSource::chart(&offset, &offset_series(false)),
+                crate::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         results.push((scale, drawn, expected, unshifted, png));
@@ -956,11 +998,17 @@ fn offset_members_shift_on_their_overlay_axis() {
     assert_eq!(panels[3].left_y.max, 70.0);
     assert!(!panels[3].right_y.line_visible);
     let drawn = r
-        .export_document_rgba_async(&Chart::new(config.clone()), &series(false), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series(false)),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let expected = r
-        .export_document_rgba_async(&Chart::new(layered(false)), &series(true), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(layered(false)), &series(true)),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     drop(fonts);
@@ -1001,22 +1049,23 @@ fn offset_line_ring_sits_on_the_shifted_point() {
         config
     };
     let drawn = r
-        .export_document_rgba_async(
-            &Chart::new(select(offset_config())),
-            &offset_series(false),
-            1.0,
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(select(offset_config())), &offset_series(false)),
+            crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();
     let unselected = r
-        .export_document_rgba_async(&Chart::new(offset_config()), &offset_series(false), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(offset_config()), &offset_series(false)),
+            crate::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     let expected = r
-        .export_document_rgba_async(
-            &Chart::new(select(base_config())),
-            &offset_series(true),
-            1.0,
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(select(base_config())), &offset_series(true)),
+            crate::ExportOptions::document(1.0),
         )
         .block_on()
         .unwrap();

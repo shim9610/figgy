@@ -907,6 +907,7 @@ impl RadialRenderer {
         chart: &RadialChart,
         size: (u32, u32),
         scale: f32,
+        clear: crate::color::Color,
         out: &mut dyn crate::vector_export::VectorOut,
     ) -> Result<(), RadialError> {
         let (width, height) = self.frame_size(chart, size, scale)?;
@@ -942,7 +943,7 @@ impl RadialRenderer {
         let (_uniform, _sectors, bind_group) =
             self.bind_frame(chart, &l, (width, height), &labels)?;
         let image = self
-            .render_rgba((width, height), |pass| {
+            .render_rgba((width, height), clear, |pass| {
                 pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
                 pass.set_scissor_rect(0, 0, width, height);
                 pass.set_pipeline(&self.pipeline);
@@ -1116,22 +1117,35 @@ impl RadialRenderer {
     pub fn end_frame(&self) {
         crate::renderer::retire_on_completion(self.gpu.ledger(), self.gpu.queue());
     }
-    /// Render at the requested resolution and read back straight-alpha RGBA8.
-    /// Available on native and WASM; includes the model's current hover/selection.
-    /// Use [`crate::encode_png`] to encode the returned image separately.
-    pub async fn export_rgba_async(
+    /// Render `chart` at logical `size` and `options.scale`, over
+    /// `options.clear`, and read it back as straight-alpha RGBA8 (#160).
+    /// Available on native and WASM; includes the model's current
+    /// hover/selection. A radial chart has one panel, so `options.scope` does
+    /// not change the image. [`Self::export_png`] encodes it.
+    pub async fn export_rgba(
         &mut self,
         chart: &RadialChart,
         size: (u32, u32),
-        scale: f32,
+        options: crate::ExportOptions,
     ) -> Result<RasterImage, RadialError> {
-        let frame = self.prepare(chart, size, scale)?;
-        let annotations = self.prepare_annotations_for(&frame, chart, scale)?;
-        self.render_rgba(frame.size, |pass| {
+        let frame = self.prepare(chart, size, options.scale)?;
+        let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
+        self.render_rgba(frame.size, options.clear, |pass| {
             frame.draw(pass);
             annotations.draw_overlay(pass);
         })
         .await
+    }
+
+    /// [`Self::export_rgba`], encoded as PNG bytes in memory.
+    pub async fn export_png(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<Vec<u8>, RadialError> {
+        let image = self.export_rgba(chart, size, options).await?;
+        crate::encode_png(&image).map_err(radial_gpu_error)
     }
 
     /// Render `draw` into a cleared target of `width x height` physical
@@ -1148,18 +1162,19 @@ impl RadialRenderer {
     async fn render_rgba(
         &self,
         size: (u32, u32),
+        clear: crate::color::Color,
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<RasterImage, RadialError> {
         self.gpu.health().check().map_err(radial_gpu_error)?;
         #[cfg(not(target_arch = "wasm32"))]
         let result = crate::renderer::native_export_scoped(
             self.gpu.device(),
-            self.render_rgba_inner(size, draw),
+            self.render_rgba_inner(size, clear, draw),
             radial_gpu_error,
         )
         .await;
         #[cfg(target_arch = "wasm32")]
-        let result = self.render_rgba_inner(size, draw).await;
+        let result = self.render_rgba_inner(size, clear, draw).await;
         // The export's submission and readback have completed and its
         // transient target and readback buffer are dropped.
         self.end_frame();
@@ -1173,6 +1188,7 @@ impl RadialRenderer {
     async fn render_rgba_inner(
         &self,
         (width, height): (u32, u32),
+        clear: crate::color::Color,
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<RasterImage, RadialError> {
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
@@ -1228,7 +1244,12 @@ impl RadialRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear.r),
+                            g: f64::from(clear.g),
+                            b: f64::from(clear.b),
+                            a: f64::from(clear.a),
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1311,33 +1332,34 @@ impl RadialRenderer {
             rgba,
         })
     }
-    /// Export the chart as an SVG document at logical `size` and `scale`,
-    /// with the same checks as [`Self::prepare`]: the slices and background
-    /// as one image at `scale ×` resolution, the title, the labels with
-    /// their leader lines, the split connectors and the annotation layer as
-    /// vector content, glyphs as outlines. The SVG's `viewBox` is in physical
-    /// pixels and its size the logical size in points (1 px = 0.75 pt). Every
-    /// inside label is drawn above every slice, at its place in the PNG, and
-    /// no selection box is drawn.
-    pub async fn export_svg_async(
+    /// Export the chart as an SVG document at logical `size` and
+    /// `options.scale`, with the same checks as [`Self::prepare`]: the slices
+    /// and background (`options.clear`) as one image at `scale ×`
+    /// resolution, the title, the labels with their leader lines, the split
+    /// connectors and the annotation layer as vector content, glyphs as
+    /// outlines. The SVG's `viewBox` is in physical pixels and its size the
+    /// logical size in points (1 px = 0.75 pt). Every inside label is drawn
+    /// above every slice, at its place in the PNG, and no selection box is
+    /// drawn.
+    pub async fn export_svg(
         &mut self,
         chart: &RadialChart,
         size: (u32, u32),
-        scale: f32,
+        options: crate::ExportOptions,
     ) -> Result<String, RadialError> {
-        self.export_vector::<crate::vector_export::SvgOut>(chart, size, scale)
+        self.export_vector::<crate::vector_export::SvgOut>(chart, size, options)
             .await
     }
 
-    /// [`Self::export_svg_async`] as a one-page PDF: the page is the logical
-    /// size in points, the image a deflated RGB image with a soft mask.
-    pub async fn export_pdf_async(
+    /// [`Self::export_svg`] as a one-page PDF: the page is the logical size
+    /// in points, the image a deflated RGB image with a soft mask.
+    pub async fn export_pdf(
         &mut self,
         chart: &RadialChart,
         size: (u32, u32),
-        scale: f32,
+        options: crate::ExportOptions,
     ) -> Result<Vec<u8>, RadialError> {
-        self.export_vector::<crate::vector_export::PdfOut>(chart, size, scale)
+        self.export_vector::<crate::vector_export::PdfOut>(chart, size, options)
             .await
     }
 
@@ -1345,18 +1367,19 @@ impl RadialRenderer {
         &mut self,
         chart: &RadialChart,
         size: (u32, u32),
-        scale: f32,
+        options: crate::ExportOptions,
     ) -> Result<F::Output, RadialError> {
-        let physical = self.frame_size(chart, size, scale)?;
+        let physical = self.frame_size(chart, size, options.scale)?;
         let mut out = F::create(physical, crate::vector_export::page_points(size));
-        self.write_vector(chart, size, scale, &mut out).await?;
+        self.write_vector(chart, size, options.scale, options.clear, &mut out)
+            .await?;
         out.finish_file()
             .map_err(|e| RadialError::Gpu(e.to_string()))
     }
 }
 
-/// Every part [`RadialRenderer::export_svg_async`] and
-/// [`RadialRenderer::export_pdf_async`] write for `chart` at logical `size`
+/// Every part [`RadialRenderer::export_svg`] and
+/// [`RadialRenderer::export_pdf`] write for `chart` at logical `size`
 /// and `scale`, in writing order, recorded through
 /// [`crate::sink::Parts`] from the same label emit: the frame image, then
 /// the title, labels, leader lines, split connectors and the annotation

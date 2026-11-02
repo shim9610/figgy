@@ -1,6 +1,6 @@
 //! End-to-end pixel verification of category bars on a polar chart, a rose
 //! (`DataRenderType::CategoryBars` with `Config::polar`, #133), through the
-//! public renderer API and the headless `export_panel_rgba`: grouped and
+//! public renderer API and the headless `export_rgba`: grouped and
 //! stacked wedges at 1x and 2x, the gap between grouped wedges, the inner
 //! ring and an inverted radius axis, the pick and `step_selection`, the
 //! picked highlight, the value labels, the refused horizontal group and a
@@ -295,9 +295,12 @@ fn any_within(
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], scale: f32) -> RasterImage {
-    r.export_panel_rgba_async(chart, series, scale)
-        .block_on()
-        .unwrap()
+    r.export_rgba(
+        renderer::ExportSource::chart(chart, series),
+        renderer::ExportOptions::panel(scale),
+    )
+    .block_on()
+    .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -817,7 +820,10 @@ fn a_polar_subplot_draws_its_own_rose() {
     let series = [bars("one", RED), bars("two", BLUE)];
     for scale in [1.0, 2.0] {
         let img = r
-            .export_document_rgba_async(&chart, &series, scale)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::document(scale),
+            )
             .block_on()
             .unwrap();
         save(&format!("rose-subplot-{scale}x"), &img);
@@ -879,9 +885,12 @@ fn a_horizontal_group_on_a_polar_chart_is_refused() {
         .expect_err("a horizontal rose is refused");
     assert!(reason.contains("rose"), "{reason}");
     assert!(
-        r.export_panel_rgba_async(&chart, &series, 1.0)
-            .block_on()
-            .is_err()
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0)
+        )
+        .block_on()
+        .is_err()
     );
     assert!(
         r.register_chart(chart.config().clone(), series.to_vec())

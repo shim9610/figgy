@@ -224,7 +224,11 @@ impl FiggyRadialChart {
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
         let image = self
             .renderer
-            .export_rgba_async(&self.chart, self.size, scale)
+            .export_rgba(
+                &self.chart,
+                self.size,
+                renderer::ExportOptions::document(scale),
+            )
             .await
             .map_err(js_err)?;
         let bytes = renderer::encode_png(&image).map_err(js_err)?;
@@ -235,7 +239,11 @@ impl FiggyRadialChart {
     /// annotations as vector content.
     pub async fn export_svg(&mut self, scale: f32) -> Result<String, JsValue> {
         self.renderer
-            .export_svg_async(&self.chart, self.size, scale)
+            .export_svg(
+                &self.chart,
+                self.size,
+                renderer::ExportOptions::document(scale),
+            )
             .await
             .map_err(js_err)
     }
@@ -244,7 +252,11 @@ impl FiggyRadialChart {
     pub async fn export_pdf(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
         let bytes = self
             .renderer
-            .export_pdf_async(&self.chart, self.size, scale)
+            .export_pdf(
+                &self.chart,
+                self.size,
+                renderer::ExportOptions::document(scale),
+            )
             .await
             .map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))

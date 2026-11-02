@@ -285,7 +285,7 @@ if let Some(hit) = frame.decoration_at(chart, [120.0, 180.0]) {
     let _ = result;
 }
 let next_frame = renderer.prepare(chart, (800, 520), 2.0)?;
-// next_frame.draw(...) 또는 renderer.export_rgba_async(...).
+// next_frame.draw(...) 또는 renderer.export_rgba(...).
 # Ok(()) }
 ```
 
@@ -578,9 +578,9 @@ from its series. Series of a subplot count only where an axis is linked (see
 (`set_active_layer`, then `auto_fit_all`) or calls `auto_fit_overlay_y` /
 `auto_fit_subplot` with explicit columns.
 
-**Export.** `export_document_rgba_async` / `export_document_png_bytes_async`
+**Export.** `export_rgba` / `export_png`
 (and their `_with_clear` and blocking native variants) render the whole group
-into one image; the existing `export_panel_*` entry points stay and render the
+into one image; the existing panel exports (`ExportScope::Panel`) stay and render the
 base panel only. For a document without overlays both produce byte-identical
 images. The WASM `export_png` exports the document.
 
@@ -669,7 +669,7 @@ whole document (`Config::document_area`, the union of every chart area) to the
 surface and returns the rect where the parent's area lands;
 `GpuPickRequest::display_panel_px` is the displayed document rect
 (`fit_display_panel` of the document area). The document export renders the
-union; `export_panel_*` keeps the parent's area. The document's one annotation
+union; the panel export (`ExportScope::Panel`) keeps the parent's area. The document's one annotation
 layer stays in the parent's area: it is drawn there only, anchored in the
 parent's axes, and its items answer the pointer route
 (`ChartView::hit_test_active_layer`) only while `Annotations` is active; with
@@ -735,7 +735,7 @@ scene labels each trace at its start).
 every member's extents plus its shift (a factor of `10^shift` on a
 logarithmic axis, `Chart::line_offset_fit_extents`), and the WASM
 `auto_fit_all` does the same with the GPU extents. The document export
-(PNG at any scale, SVG and PDF) draws every member; `export_panel_*` keeps
+(PNG at any scale, SVG and PDF) draws every member; the panel export (`ExportScope::Panel`) keeps
 the base panel.
 
 **Limits.** Line kinds only, any number of members (each is a panel of its
@@ -905,7 +905,7 @@ let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 The Cartesian call order is the usual one plus the annotation branch:
 `refresh_axis*` when the raster stamp changed (it carries the annotations
 along), else `refresh_annotations` when the annotation stamp or the selection
-changed, then `prepare` / `paint`. `export_panel_*` rasterizes the layer at the
+changed, then `prepare` / `paint`. the panel export (`ExportScope::Panel`) rasterizes the layer at the
 export scale from the same scaled config as the axes, so 1× and 2× exports use
 the metrics of their hit maps.
 
@@ -923,8 +923,8 @@ the route above and name items as `"annotation_<n>"`.
 
 ## SVG and PDF export
 
-`export_document_svg_async` / `export_document_pdf_async` (and the radial
-`export_svg_async` / `export_pdf_async`) write the document a PNG export of
+`export_svg` / `export_pdf` (and the radial
+`export_svg` / `export_pdf`) write the document a PNG export of
 the same arguments draws ([#48](https://github.com/shim9610/figgy/issues/48)).
 The decorations come from the same emit the raster, the hit map and the
 selection box answer from, so every element a user can select or drag is in

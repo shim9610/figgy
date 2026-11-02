@@ -71,7 +71,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
                 .expect("label spacing cannot reject the first frame");
             assert_eq!(radial_labels(&*frame, &chart).len(), 16);
             let image = renderer
-                .export_rgba_async(&chart, (420, 280), scale)
+                .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
                 .block_on()
                 .unwrap();
             assert_pixels(&image);
@@ -104,7 +104,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_ne!(
                 image.rgba,
                 renderer
-                    .export_rgba_async(&chart, (420, 280), scale)
+                    .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap()
                     .rgba
@@ -113,7 +113,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             assert_eq!(
                 image.rgba,
                 renderer
-                    .export_rgba_async(&chart, (420, 280), scale)
+                    .export_rgba(&chart, (420, 280), renderer::ExportOptions::document(scale))
                     .block_on()
                     .unwrap()
                     .rgba
@@ -127,7 +127,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     assert_eq!(radial_labels(&*small, &chart).len(), 16);
     assert_pixels(
         &renderer
-            .export_rgba_async(&chart, (240, 200), 1.)
+            .export_rgba(&chart, (240, 200), renderer::ExportOptions::document(1.))
             .block_on()
             .unwrap(),
     );

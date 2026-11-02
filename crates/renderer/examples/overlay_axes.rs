@@ -143,8 +143,10 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     // Overlay layers are part of the document, not the base panel.
-    let image =
-        pollster::block_on(r.export_document_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    let image = pollster::block_on(r.export_rgba(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::document(1.).with_clear(bg),
+    ))?;
     save(&image, bg, &out.join("gallery-twin-axes.png"))
 }
 

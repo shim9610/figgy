@@ -230,7 +230,10 @@ fn export(
     scale: f32,
 ) -> RasterImage {
     renderer
-        .export_panel_rgba_async(&Chart::new(config.clone()), series, scale)
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(config.clone()), series),
+            renderer::ExportOptions::panel(scale),
+        )
         .block_on()
         .unwrap()
 }
@@ -660,7 +663,10 @@ fn registration_rejects_what_ternary_does_not_draw() {
     let mut unequal = bare_config();
     unequal.right_y.max = 1.0;
     let drawn = r
-        .export_panel_rgba_async(&Chart::new(unequal), std::slice::from_ref(&ok), 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(unequal), std::slice::from_ref(&ok)),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on();
     assert!(
         drawn
@@ -710,7 +716,10 @@ fn a_ternary_subplot_draws_in_its_own_cell() {
     });
     let series = [ternary("p", Some(marker_style(8.0)), None)];
     let img = r
-        .export_document_rgba_async(&Chart::new(parent), &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(parent), &series),
+            renderer::ExportOptions::document(1.0),
+        )
         .block_on()
         .unwrap();
     save("ternary-subplot", &img);
@@ -854,12 +863,18 @@ fn a_replaced_c_column_redraws() {
     let id = r.register_chart(config.clone(), series.clone()).unwrap();
     let chart = Chart::new(config.clone());
     let first = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     upload(&mut r, &after);
     let second = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     for k in 0..2 {

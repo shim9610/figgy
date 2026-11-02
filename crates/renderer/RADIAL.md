@@ -28,7 +28,7 @@
 | `RadialRenderer::prepare()` | 모델을 읽고 불변 `Arc<RadialFrame>` 반환 |
 | `RadialFrame::draw()` | 호스트가 연 render pass에 그리기 |
 | `RadialFrame::pick()` | 해당 프레임에서 보이는 조각을 GPU에서 고르는 요청. `RadialPickTicket::resolve()`가 결과를 돌려준다 |
-| `export_rgba_async()` / `export_rgba()` | 현재 모델을 그려 `RasterImage` 반환. 동기판은 네이티브 전용 |
+| `export_rgba()` / `export_png()` / `export_svg()` / `export_pdf()` | 현재 모델을 그려 반환. 배율과 배경은 `ExportOptions`로 정한다 |
 | `clear_cache()` / `end_frame()` | 내부 캐시 참조 해제 / 제출이 끝난 자원의 회수 예약 |
 
 `RadialChart::default()`는 빈 파이 차트이므로, 그리기 전에 양수 값을 가진 조각을 추가해야 한다.
@@ -64,7 +64,7 @@ chart.format_labels();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
-let image = pollster::block_on(renderer.export_rgba_async(&chart, (1000, 600), 2.0))?;
+let image = pollster::block_on(renderer.export_rgba(&chart, (1000, 600), ExportOptions::document(2.0)))?;
 std::fs::write("donut.png", encode_png(&image)?)?;
 renderer.end_frame();
 # Ok(())
@@ -82,8 +82,8 @@ UI의 일부 영역에 넣으려면 이 크기의 별도 텍스처에 그린 뒤
 
 WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용해 브라우저
 파이프라인 컴파일을 기다린다. 이후 같은 `prepare`/`draw`를 쓰고, 출력에는
-`export_rgba_async(...).await`를 사용한다.
-동기 `export_rgba`는 네이티브 전용이다. PNG 인코딩은 기존 `encode_png`를 사용한다.
+`export_rgba(...).await`나 `export_png(...).await`를 사용한다.
+네이티브에서는 같은 비동기 함수를 `pollster::block_on` 등으로 기다린다.
 
 ## 값과 분할 원
 
@@ -346,7 +346,7 @@ GPU에서 고르는 요청을 제출하고 `RadialPickTicket`을 돌려준다. `
 # -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 // 현재 선택과 호버 진행도를 포함한 스냅샷을 잡는다.
 let snapshot = chart.clone();
-let image = renderer.export_rgba_async(&snapshot, (1000, 600), 2.0).await?;
+let image = renderer.export_rgba(&snapshot, (1000, 600), ExportOptions::document(2.0)).await?;
 let png = renderer::encode_png(&image)?;
 # Ok(png)
 # }
@@ -357,7 +357,7 @@ let png = renderer::encode_png(&image)?;
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
 
-`export_svg_async(&chart, size, scale)`와 `export_pdf_async`(네이티브 동기 버전 `export_svg` /
+`export_svg(&chart, size, scale)`와 `export_pdf`(네이티브 동기 버전 `export_svg` /
 `export_pdf`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다([#48](https://github.com/shim9610/figgy/issues/48)).
 크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 라벨 없이 배치한 프레임을 캐시 없이
 만들어 이미지 한 장으로 넣는다. 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 라벨 텍스처를

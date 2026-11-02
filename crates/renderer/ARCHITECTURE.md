@@ -456,7 +456,7 @@ When `AxisOptions.scale = Logarithmic`:
 ![Requested-resolution offscreen export, resident or replayed streaming input, row readback and PNG encoding](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-en.png)
 
 ```
-export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
+export_rgba(chart, &[SeriesConfig], scale).await:
     scale ← clamp_export_scale(scale)         // ≥ MIN_EXPORT_SCALE; the device texture limit bounds the target
     chart.config().scaled(scale)               // every pixel dim scaled proportionally
         ↓
@@ -483,17 +483,17 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     Caller decides: std::fs::write / clipboard / network / ...
 ```
 
-`export_document_rgba_async` follows the same pipeline for a layered document:
+`export_rgba` follows the same pipeline for a layered document:
 the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
 the scaled document into one draw item per panel, and the panels composite
 into the same offscreen texture as on screen: the grid and data of every
 panel in layer order, then the decoration of every panel in layer order, so
-no layer's data covers another layer's axes and labels. `export_panel_*` keeps only the
+no layer's data covers another layer's axes and labels. the panel export (`ExportScope::Panel`) keeps only the
 base panel of that expansion; for a document without overlays the two images
 are byte-identical. A document with subplots exports the union of every chart
 area (`Config::document_area`): the document is placed at the target's
 origin (`place_document`) and each subplot's panels are drawn at its own
-area, while `export_panel_*` keeps the parent's area.
+area, while the panel export (`ExportScope::Panel`) keeps the parent's area.
 
 The pipeline is two functions: `prepare_export` (the checks, the scaled and
 placed document, its view, styles, pipelines and resolved panel draws, once
@@ -506,7 +506,7 @@ The SVG and PDF export ([#48](https://github.com/shim9610/figgy/issues/48),
 vector content from the same emit, over a raster data layer:
 
 ```
-export_document_svg_async / export_document_pdf_async(chart, &[SeriesConfig], scale):
+export_svg / export_pdf(chart, &[SeriesConfig], scale):
     require_resident_series(each)              // streamed sources rejected
     frame ← prepare_export(chart, series, scale, Document)
         ↓
@@ -790,7 +790,7 @@ redraw_pending = false;
 ![출력 해상도의 오프스크린 렌더링, 상주 또는 스트리밍 원본 입력, 행 청크 읽기와 PNG 인코딩](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-kr.png)
 
 ```
-export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
+export_rgba(chart, &[SeriesConfig], scale).await:
     scale ← clamp_export_scale(scale)         // ≥ MIN_EXPORT_SCALE; the device texture limit bounds the target
     chart.config().scaled(scale)               // 모든 픽셀 치수를 같은 비율로 확대
         ↓
@@ -811,9 +811,9 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     바꾸지 않음)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
-    (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 합성. 모든 패널의 격자·데이터를
+    (export_rgba: 레이어마다 한 패널을 같은 텍스처에 합성. 모든 패널의 격자·데이터를
      레이어 순서로 먼저 그리고, 모든 패널의 장식을 레이어 순서로 그 위에 그린다.
-     export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다.
+     패널 내보내기(`ExportScope::Panel`)는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다.
      서브플롯이 있으면 문서 출력은 모든 차트 영역의 합집합 크기다)
         ↓
     encode_png(&img) → Vec<u8>                      ← PNG 바이트
@@ -826,7 +826,7 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 SVG와 PDF 출력([#48](https://github.com/shim9610/figgy/issues/48), `vector_export.rs`)은 같은 프레임을 준비하고, 장식 요소는 같은 배치 함수에서 벡터로 기록하며, 데이터 층은 이미지로 넣는다.
 
 ```
-export_document_svg_async / export_document_pdf_async(chart, &[SeriesConfig], scale):
+export_svg / export_pdf(chart, &[SeriesConfig], scale):
     시리즈마다 require_resident_series      // 스트리밍 원본은 거부
     frame ← prepare_export(chart, series, scale, Document)
         ↓

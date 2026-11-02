@@ -276,7 +276,10 @@ fn every_cell_is_painted_to_its_voronoi_edge() {
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("hexbin-cells", &img);
@@ -336,7 +339,10 @@ fn columns_are_y_reads_the_grid_transposed() {
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreY)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     for c in 0..COLS {
@@ -361,7 +367,10 @@ fn the_2x_export_doubles_the_lattice() {
     let bar = colorbar();
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 2.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
         .block_on()
         .unwrap();
     assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT * 2));
@@ -520,7 +529,10 @@ fn the_selected_hexagon_outlines_its_six_edges() {
     });
     let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
     let img = r
-        .export_panel_rgba_async(&chart, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     save("hexbin-selected", &img);
@@ -713,7 +725,10 @@ fn a_four_million_cell_lattice_draws() {
     series.y_column = "bigy".into();
     let started = std::time::Instant::now();
     let img = r
-        .export_panel_rgba_async(&chart, &[series], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[series]),
+            renderer::ExportOptions::panel(1.0),
+        )
         .block_on()
         .unwrap();
     eprintln!(

@@ -66,13 +66,19 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
     };
     c.format_labels();
     let frame = r.prepare(&c, (800, 520), 2.).unwrap();
-    let before = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
+    let before = r
+        .export_rgba(&c, (800, 520), renderer::ExportOptions::document(2.))
+        .await
+        .unwrap();
     edit_radial(
         &frame,
         &mut c,
         DecorationId::RadialLabel(RadialTarget::main(0)),
     );
-    let after = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
+    let after = r
+        .export_rgba(&c, (800, 520), renderer::ExportOptions::document(2.))
+        .await
+        .unwrap();
     assert_ne!(before.rgba, after.rgba);
     assert!(
         renderer::encode_png(&after)

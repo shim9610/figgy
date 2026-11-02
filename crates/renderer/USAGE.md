@@ -544,13 +544,13 @@ The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 
 ```rust
 let bytes = renderer
-    .export_panel_png_bytes_async(&chart, &series_configs, scale)
+    .export_png(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // or clipboard / network / wherever.
 
 // If you only need RGBA:
 let img = renderer
-    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .export_rgba(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
@@ -561,9 +561,9 @@ setup example above, `std::slice::from_ref(&cfg)`) and `scale` is the export
 scale, such as `2.0`. The image is the chart area times `scale` on a fully
 transparent background. The `_with_clear_async` variants take a background
 colour as a fourth argument, for example
-`export_panel_png_bytes_with_clear_async(&chart, &series_configs, scale, Color::WHITE)`.
-`export_panel_*` draws the base chart area only. For a chart with `overlays` or
-`subplots`, `export_document_png_bytes_async` / `export_document_rgba_async`
+`export_png(&chart, &series_configs, scale, Color::WHITE)`.
+the panel export (`ExportScope::Panel`) draws the base chart area only. For a chart with `overlays` or
+`subplots`, `export_png` / `export_rgba`
 (and their `_with_clear` and blocking variants) take the same arguments and
 draw every layer and subplot into one image covering all chart areas.
 `scale` is at least `renderer::MIN_EXPORT_SCALE` (0.25; NaN and values at or below zero become it) and has no upper bound: the scaled image must fit the device's texture limit (`max_texture_dimension_2d`, commonly 8192 or 16384 px per side), and a larger export fails with `FiggyError::GpuResourceLimit` before anything is allocated.
@@ -577,16 +577,16 @@ higher pixel density (or a lower one below 1.0).
 
 ```rust
 let svg: String = renderer
-    .export_document_svg_async(&chart, &series_configs, scale)
+    .export_svg(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_document_pdf_async(&chart, &series_configs, scale)
+    .export_pdf(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;
 ```
 
-The two documents hold the same picture as `export_document_png_bytes_async`
+The two documents hold the same picture as `export_png`
 with the same arguments ([#48](https://github.com/shim9610/figgy/issues/48)).
 The decorations are vector content, written from the placement the PNG
 draws with: axes, ticks, tick labels, grid, polar rings and spokes, axis and
@@ -610,8 +610,8 @@ blocks on it with an executor such as `pollster::block_on`.
 source is rejected with `FiggyError::ColumnNotResident`, as by the PNG
 export.
 
-The radial chart exports with `RadialRenderer::export_svg_async(&chart, size,
-scale)` and `export_pdf_async` (blocking: `export_svg` / `export_pdf`): the
+The radial chart exports with `RadialRenderer::export_svg(&chart, size,
+scale)` and `export_pdf` (blocking: `export_svg` / `export_pdf`): the
 slices and background are one image, the title, labels, leader lines, split
 connectors and annotations are vector content. Every inside label is drawn
 above every slice at its place in the PNG, and no selection box is drawn.
@@ -952,7 +952,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 호스트는 한 프레임의 명령 버퍼를 모두 GPU 큐에 제출한 뒤 `renderer.end_gpu_frame()`을 한 번 호출한다. egui처럼 콜백 실행을 관리하는 호스트에서는 이전 프레임의 제출이 끝났음을 확인한 뒤 다음 프레임의 첫 prepare 직전에 호출해도 된다. 패널마다 호출하면 아직 제출하지 않은 다른 패널의 자원을 너무 일찍 회수 대상으로 넘길 수 있다.
 
-`WindowedRenderer::draw*`나 패널 내보내기(`export_panel_*`)처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
+`WindowedRenderer::draw*`나 패널 내보내기(the panel export (`ExportScope::Panel`))처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
 
 `paint_prepared`는 같은 토큰으로 여러 패스에 호출할 수 있다. `PreparedFrame`이 그리기에 필요한 입력을 보관하므로 paint 단계에서 `items`를 다시 만들거나 전달하지 않는다. 준비 후 관련 렌더러 자원이 바뀌면 아무 명령도 기록하지 않고 `FiggyError::StalePreparedFrame`을 반환한다. 다음 프레임에서 다시 `prepare`하면 된다.
 
@@ -1053,13 +1053,13 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ```rust
 let bytes = renderer
-    .export_panel_png_bytes_async(&chart, &series_configs, scale)
+    .export_png(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:
 let img = renderer
-    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .export_rgba(ExportSource::chart(&chart, &series_configs), ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
@@ -1068,9 +1068,9 @@ let img = renderer
 예제의 `series_configs`는 그릴 `SeriesConfig` 슬라이스이고(앞의 초기화 예제라면
 `std::slice::from_ref(&cfg)`), `scale`은 `2.0` 같은 출력 배율이다. 결과 이미지는 차트 영역에
 `scale`을 곱한 크기이며 배경은 완전히 투명하다. `_with_clear_async` 버전은 네 번째 인자로 배경색을
-받는다. 예: `export_panel_png_bytes_with_clear_async(&chart, &series_configs, scale, Color::WHITE)`.
-`export_panel_*`는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
-`export_document_png_bytes_async` / `export_document_rgba_async`(`_with_clear` 버전과 동기 버전 포함)로
+받는다. 예: `export_png(&chart, &series_configs, scale, Color::WHITE)`.
+the panel export (`ExportScope::Panel`)는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
+`export_png` / `export_rgba`에 `ExportScope::Document`를 주어
 레이어와 서브플롯을 이미지 한 장에 모두 그린다. 이 이미지는 모든 차트 영역을 합친 크기다.
 `scale`의 최솟값은 `renderer::MIN_EXPORT_SCALE`(0.25)이고 NaN이나 0 이하의 값은 0.25로 바꾼다. 상한은 없다. 배율을 적용한 이미지가 장치의 텍스처 크기 한도(`max_texture_dimension_2d`, 보통 한 변 8192 또는 16384픽셀) 안에 들어와야 하며, 넘으면 메모리를 잡기 전에 `FiggyError::GpuResourceLimit` 오류를 돌려준다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
@@ -1080,21 +1080,21 @@ let img = renderer
 
 ```rust
 let svg: String = renderer
-    .export_document_svg_async(&chart, &series_configs, scale)
+    .export_svg(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
     .await?;
 let pdf: Vec<u8> = renderer
-    .export_document_pdf_async(&chart, &series_configs, scale)
+    .export_pdf(ExportSource::chart(&chart, &series_configs), ExportOptions::document(scale))
     .await?;
 std::fs::write("/tmp/out.svg", svg)?;
 std::fs::write("/tmp/out.pdf", pdf)?;
 ```
 
-두 문서에는 같은 인자로 `export_document_png_bytes_async`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
+두 문서에는 같은 인자로 `export_png`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
 장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
 데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
 
 SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `pollster::block_on` 같은 실행기로 기다린다. `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
 
-원형 차트는 `RadialRenderer::export_svg_async(&chart, size, scale)`와 `export_pdf_async`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
+원형 차트는 `RadialRenderer::export_svg(&chart, size, scale)`와 `export_pdf`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 
 ---
