@@ -2119,19 +2119,14 @@ impl GpuPickEngine {
         }
         self.bundle.queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = readback.slice(..);
-        let (sender, receiver) = oneshot::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            if sender.send(result).is_err() {
-                // receiver dropped: the waiting call was cancelled
-            }
-        });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
-                device: self.bundle.device.clone(),
-                health: self.bundle.health.clone(),
-                readback,
-                receiver,
+                readback: GpuReadback::map(
+                    &self.bundle.device,
+                    &self.bundle.health,
+                    &readback,
+                    None,
+                ),
                 identities: Arc::clone(&self.registry.identities),
                 members,
                 _charge: readback_tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
@@ -2144,11 +2139,8 @@ impl GpuPickEngine {
 pub(super) enum GpuPickTicketState {
     ReadyNone,
     Pending {
-        device: wgpu::Device,
-        /// The device's health record, checked by the readback poll.
-        health: crate::renderer::DeviceHealth,
-        readback: wgpu::Buffer,
-        receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+        /// The candidates' `MAP_READ` buffer, mapped once the pick completes.
+        readback: GpuReadback,
         identities: Arc<[PickIdentity]>,
         /// How many line offset member candidates follow the final one in
         /// `readback`, in stacking order; zero for every other pick.
@@ -2191,10 +2183,7 @@ impl GpuPickTicket {
 
     pub(crate) async fn resolve_indexed(self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
         let GpuPickTicketState::Pending {
-            device: _device,
-            health,
             readback,
-            receiver,
             identities,
             members,
             // Dropped here: resolving consumes the readback buffer.
@@ -2205,45 +2194,30 @@ impl GpuPickTicket {
             return Ok(None);
         };
 
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            &health,
-            &_device,
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )
-        .map_err(GpuPickError::from_figgy)?;
-        receiver
-            .await
-            .map_err(|_| GpuPickError::MapChannelClosed)?
-            .map_err(GpuPickError::MapFailed)?;
-        let slice = readback.slice(..);
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|error| GpuPickError::Gpu(error.to_string()))?;
-        let size = CANDIDATE_BYTES as usize;
-        let candidate_at = |index: usize| {
-            *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size])
-        };
-        // Member panels composite in `line_offsets.series` order, so the
-        // last member painted under the cursor (a hit at distance 0) is what
-        // the user sees there; the final candidate's tie rule cannot say so,
-        // since a later member's fill covers an earlier member's line. With
-        // no member painted there, the nearest hit of any series answers.
-        let candidate = (1..=members)
-            .rev()
-            .map(candidate_at)
-            .find(|candidate| {
-                candidate.valid == 2 || (candidate.valid == 1 && candidate.distance_px == 0.0)
+        // The unmap is the ticket's last GPU call, so the read checks the
+        // device health after it (#158).
+        let candidate = readback
+            .read_checked(|mapped| {
+                let size = CANDIDATE_BYTES as usize;
+                let candidate_at = |index: usize| {
+                    *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size])
+                };
+                // Member panels composite in `line_offsets.series` order, so
+                // the last member painted under the cursor (a hit at distance
+                // 0) is what the user sees there; the final candidate's tie
+                // rule cannot say so, since a later member's fill covers an
+                // earlier member's line. With no member painted there, the
+                // nearest hit of any series answers.
+                (1..=members)
+                    .rev()
+                    .map(candidate_at)
+                    .find(|candidate| {
+                        candidate.valid == 2
+                            || (candidate.valid == 1 && candidate.distance_px == 0.0)
+                    })
+                    .unwrap_or_else(|| candidate_at(0))
             })
-            .unwrap_or_else(|| candidate_at(0));
-        drop(mapped);
-        readback.unmap();
-        // The unmap is the ticket's last GPU call; its error is this
-        // resolve's, not a later call's (#158).
-        health.check().map_err(GpuPickError::from_figgy)?;
+            .await?;
 
         match candidate.valid {
             0 => Ok(None),

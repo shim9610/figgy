@@ -98,6 +98,18 @@ impl GpuPickError {
     }
 }
 
+/// A readback failure in the variants a pick has always reported.
+impl From<ReadbackError> for GpuPickError {
+    fn from(error: ReadbackError) -> Self {
+        match error {
+            ReadbackError::Poll(error) | ReadbackError::Health(error) => Self::from_figgy(error),
+            ReadbackError::Canceled(_) => Self::MapChannelClosed,
+            ReadbackError::Map(error) => Self::MapFailed(error),
+            ReadbackError::Range(error) => Self::Gpu(error.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for GpuPickError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -752,20 +764,9 @@ impl GpuStreamPick {
             CANDIDATE_BYTES,
         );
         bundle.queue.submit([encoder.finish()]);
-        let (sender, receiver) = oneshot::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                if sender.send(result).is_err() {
-                    // receiver dropped: the waiting call was cancelled
-                }
-            });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
-                device: bundle.device.clone(),
-                health: bundle.health.clone(),
-                readback,
-                receiver,
+                readback: GpuReadback::map(&bundle.device, &bundle.health, &readback, None),
                 identities: self.identities,
                 // A streamed pick has no line offset members (rule 8).
                 members: 0,

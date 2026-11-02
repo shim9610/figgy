@@ -11,8 +11,6 @@
 use std::fmt;
 use std::sync::Arc;
 
-use futures_channel::oneshot;
-
 use crate::data_render::column_pool::PoolIdentity;
 use crate::data_render::{
     ColumnHandle, ColumnId, ColumnPool, ScatterStyleMapMeta, ScatterStyleOverrideGpu,
@@ -22,6 +20,7 @@ use crate::gpu_memory::{
     ChargeTally, GpuByteCharge, GpuLedger, GpuResourceKind, SharedCharge, charged_buffer,
     charged_buffer_init, shared_charge,
 };
+use crate::gpu_readback::{GpuReadback, ReadbackError};
 #[cfg(test)]
 use crate::init::observe_result;
 use crate::init::{InitEvent, finished, observe_value, started};

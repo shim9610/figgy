@@ -13,6 +13,8 @@ use std::sync::Arc;
 
 use futures_channel::oneshot;
 
+use crate::gpu_readback::{GpuReadback, ReadbackError};
+
 use crate::data::COLUMN_VALUE_BYTES;
 use crate::data_config::DataRenderType;
 use crate::data_render::ColumnHandle;
@@ -397,6 +399,20 @@ pub enum GpuErrorbarError {
 impl GpuErrorbarError {
     pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
         Self::Gpu(error.to_string())
+    }
+}
+
+/// A readback failure in the variants an extent reduction has always
+/// reported.
+impl From<ReadbackError> for GpuErrorbarError {
+    fn from(error: ReadbackError) -> Self {
+        match error {
+            ReadbackError::Poll(error) => Self::DevicePollFailed(error.to_string()),
+            ReadbackError::Health(error) => Self::from_figgy(error),
+            ReadbackError::Canceled(_) => Self::ReadbackSenderDropped,
+            ReadbackError::Map(error) => Self::ReadbackMapFailed(format!("{error:?}")),
+            ReadbackError::Range(error) => Self::ReadbackMapFailed(format!("{error:?}")),
+        }
     }
 }
 
@@ -1105,11 +1121,14 @@ impl GpuErrorbarExtentEngine {
         );
         let submission = queue.submit(std::iter::once(encoder.finish()));
         Ok(GpuExtentTicketCore {
-            device: device.clone(),
-            health: self.health.clone(),
-            readback,
-            receiver,
-            submission,
+            readback: GpuReadback::from_receiver(
+                device,
+                &self.health,
+                &readback,
+                Some(SERIES_STATE_BYTES),
+                receiver,
+                Some(submission),
+            ),
             _scratch_charge: scratch_tally
                 .into_charge(&self.ledger, GpuResourceKind::ErrorbarScratch),
             _readback_charge: readback_tally.into_charge(&self.ledger, GpuResourceKind::Readback),
@@ -1118,12 +1137,8 @@ impl GpuErrorbarExtentEngine {
 }
 
 struct GpuExtentTicketCore {
-    device: wgpu::Device,
-    /// The engine's device health record, checked by the readback poll.
-    health: crate::renderer::DeviceHealth,
-    readback: wgpu::Buffer,
-    receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
-    submission: wgpu::SubmissionIndex,
+    /// The reduced state, mapped when its submission completes.
+    readback: GpuReadback,
     /// Charges for the reduction scratch and the MAP_READ buffer. They are
     /// credited back when this core is destructured on resolve or dropped on
     /// abandonment, which is exactly when the buffers go away.
@@ -1134,46 +1149,16 @@ struct GpuExtentTicketCore {
 impl GpuExtentTicketCore {
     async fn resolve(self) -> Result<SeriesStateGpu, GpuErrorbarError> {
         let Self {
-            device,
-            health,
             readback,
-            receiver,
-            submission,
             // Dropped here: resolving destroys the scratch and the readback.
             _scratch_charge,
             _readback_charge,
         } = self;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::renderer::gpu_poll(
-            &health,
-            &device,
-            wgpu::PollType::Wait {
-                submission_index: Some(submission.clone()),
-                timeout: None,
-            },
-        )
-        .map_err(|error| GpuErrorbarError::DevicePollFailed(error.to_string()))?;
-        #[cfg(target_arch = "wasm32")]
-        {
-            // The browser device resolves the readback on its own; nothing
-            // polls it here.
-            let (_device, _submission) = (device, submission);
-        }
-
-        receiver
-            .await
-            .map_err(|_| GpuErrorbarError::ReadbackSenderDropped)?
-            .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
-        let slice = readback.slice(0..SERIES_STATE_BYTES);
-        let mapped = slice
-            .get_mapped_range()
-            .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
-        let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
-        drop(mapped);
-        readback.unmap();
-        // The unmap is the ticket's last GPU call (#158).
-        health.check().map_err(GpuErrorbarError::from_figgy)?;
+        // The unmap is the ticket's last GPU call, so the read checks the
+        // device health after it (#158).
+        let state = readback
+            .read_checked(bytemuck::pod_read_unaligned::<SeriesStateGpu>)
+            .await?;
         Ok(state)
     }
 }
@@ -1249,24 +1234,13 @@ impl GpuSeriesExtentTicket {
     pub(crate) fn try_resolve(
         &mut self,
     ) -> Result<Option<Option<GpuSeriesExtent>>, GpuErrorbarError> {
-        let Some(result) = self
+        let Some(state) = self
             .core
-            .receiver
-            .try_recv()
-            .map_err(|_| GpuErrorbarError::ReadbackSenderDropped)?
+            .readback
+            .try_read(bytemuck::pod_read_unaligned::<SeriesStateGpu>)?
         else {
             return Ok(None);
         };
-        result.map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
-        let mapped = self
-            .core
-            .readback
-            .slice(0..SERIES_STATE_BYTES)
-            .get_mapped_range()
-            .map_err(|error| GpuErrorbarError::ReadbackMapFailed(format!("{error:?}")))?;
-        let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
-        drop(mapped);
-        self.core.readback.unmap();
         decode_series_state(state).map(|extent| Some(Self::widened(self.overhang, extent)))
     }
 

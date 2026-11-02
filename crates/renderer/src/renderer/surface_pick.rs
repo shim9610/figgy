@@ -543,14 +543,8 @@ impl Renderer {
             },
         );
         self.queue.submit([encoder.finish()]);
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        readback
-            .slice(..16)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                if sender.send(result).is_err() {
-                    // The receiver was dropped: the waiting pick was cancelled.
-                }
-            });
+        let readback =
+            crate::gpu_readback::GpuReadback::map(&self.device, &self.health, &readback, Some(16));
         charges.push(crate::gpu_memory::shared_charge(
             tally,
             &self.gpu_ledger,
@@ -558,10 +552,7 @@ impl Renderer {
         ));
         Ok(crate::GpuDataPickTicket::surface(
             crate::gpu_data_pick::SurfacePickTicket {
-                device: self.device.clone(),
-                health: self.health.clone(),
                 readback,
-                receiver,
                 identities,
                 _charges: charges,
             },

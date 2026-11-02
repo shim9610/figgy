@@ -20,6 +20,7 @@ mod gpu_data_pick;
 pub mod gpu_errorbar;
 pub mod gpu_memory;
 mod gpu_pick;
+mod gpu_readback;
 pub mod init;
 pub(crate) mod line_step;
 pub mod pick;
