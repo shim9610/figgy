@@ -47,6 +47,9 @@ tiny-skia = "0.12"
 # glyph variants and assemblies) and the GSUB `ssty` script alternates of the
 # math layout (#45); swash's `read-fonts` has no MATH table.
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
+# Lock-free reads of the registered-font snapshot; registration publishes a
+# successor under its own mutex (#160).
+arc-swap = "1.7"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = { version = "0.36", optional = true, default-features = false, features = ["wgpu", "x11", "wayland"] }

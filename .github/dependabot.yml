@@ -1,0 +1,16 @@
+# Version updates for the Rust workspace and the pinned GitHub Actions (#160).
+# Security alerts are a repository setting; see SECURITY.md.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: integration/0.19
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: integration/0.19
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
