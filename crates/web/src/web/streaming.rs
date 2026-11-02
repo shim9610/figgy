@@ -724,7 +724,6 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache()?;
         Ok(())
     }
 
@@ -864,7 +863,6 @@ impl FiggyChart {
                     self.column_revisions.insert(id, revision);
                 }
                 self.next_column_revision = pending.next_column_revision;
-                self.retire_series_extent_cache()?;
             }
         }
         self.request_host_redraw();
@@ -1163,7 +1161,6 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache()?;
         Ok(())
     }
 
@@ -1219,7 +1216,6 @@ impl FiggyChart {
         self.columns = next_columns;
         self.column_revisions = next_revisions;
         self.next_column_revision = next_column_revision;
-        self.retire_series_extent_cache()?;
         self.request_host_redraw();
         Ok(())
     }

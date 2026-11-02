@@ -665,6 +665,20 @@ impl<'w> WindowedRenderer<'w> {
         self.reported(result)
     }
 
+    pub fn begin_auto_fit_all(
+        &self,
+        id: ChartId,
+        padding: f64,
+    ) -> std::result::Result<AutoFitAllTicket, crate::gpu_errorbar::GpuErrorbarError> {
+        let result = self.inner.begin_auto_fit_all(id, padding);
+        self.reported_as(result, crate::gpu_errorbar::GpuErrorbarError::from_figgy)
+    }
+
+    pub fn commit_auto_fit_all(&mut self, resolved: ResolvedAutoFitAll) -> Result<()> {
+        let result = self.inner.commit_auto_fit_all(resolved);
+        self.reported(result)
+    }
+
     pub fn commit_auto_fit_all_if_current(
         &mut self,
         token: &FitCommitToken,

@@ -419,6 +419,11 @@ pub(super) struct ChartRenderState {
     /// `None` preserves the caller-specified axis ranges.
     pub(super) stream_auto_fit_padding: Option<f64>,
     pub(super) revisions: ChartRevisions,
+    /// Each series' fit extent from the last committed whole-chart auto-fit,
+    /// by its fit stamp. A stamp names the series' columns by allocation, so a
+    /// repeated fit over unchanged columns reuses the extent instead of
+    /// rerunning the reduction; a fit replaces the whole map (#160).
+    pub(super) fit_extents: HashMap<FitSeriesStamp, Option<crate::gpu_errorbar::GpuSeriesExtent>>,
 }
 
 // GPU-only derivative; authoritative options stay in ChartRenderState.series.
@@ -2406,6 +2411,7 @@ impl Renderer {
                 selected: None,
                 stream_auto_fit_padding: None,
                 revisions: ChartRevisions::initial(chart_revision),
+                fit_extents: HashMap::new(),
             },
         );
         self.chart_order.push(id);

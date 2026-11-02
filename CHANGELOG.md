@@ -869,6 +869,20 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Whole-chart auto-fit on the renderer** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `Renderer::begin_auto_fit_all(chart, padding)` returns an
+  `AutoFitAllTicket`; `AutoFitAllTicket::resolve` awaits its reductions
+  without borrowing the renderer, and `Renderer::commit_auto_fit_all`
+  applies the result unless an axis, the fit geometry or a source column
+  changed in between (`StaleStateToken`). It fits the active layer as the
+  browser product did: a ternary layer is left as it is, a parallel chart
+  fits each axis to its columns, histograms fit from their columns'
+  statistics, every other series from its drawn GPU extent (moved by its
+  line offset), and a 3D layer's z axis to its height columns; the
+  annotation layer fits the base axes. Each series' extent is kept with the
+  chart and reused while the series' columns are unchanged, so a repeated
+  fit submits no reduction. `WindowedRenderer` has the same two methods.
+  Native hosts get the whole-chart fit the browser product had alone.
 - **No blocking wrappers** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The fourteen native wrappers that only ran `pollster::block_on` over an
   async method are removed: `Renderer` and `WindowedRenderer`
@@ -2012,6 +2026,11 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **`auto_fit_all` through the renderer** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  The wrapper calls the renderer's whole-chart fit instead of keeping its
+  own series-extent cache, and no longer starts extent reductions when
+  columns are uploaded or series change; a fit reduces what it has not seen
+  and reuses the rest. The JS API is unchanged.
 - **No panic paths** ([#152](https://github.com/shim9610/figgy/issues/152)).
   `hit_test` and `has_selection` throw a renderer error instead of
   aborting the module, `wait_submitted_work` rejects on a lost device, and

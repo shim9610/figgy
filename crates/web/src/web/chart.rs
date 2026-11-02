@@ -123,7 +123,6 @@ pub(super) async fn create_chart_kernel(
         column_revisions: HashMap::new(),
         next_column_revision: 1,
         pending_stream_handoff: None,
-        series_extents: HashMap::new(),
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
         hitmap_layer: (renderer::LayerRef::Base, 0, None),
@@ -211,11 +210,6 @@ pub fn draw_style_modes() -> Result<String, JsValue> {
     serde_json::to_string(renderer::config::DrawStyle::mode_tags()).map_err(js_err)
 }
 
-pub(super) struct PreparedSeriesExtentCache {
-    pub(super) extents: HashMap<SeriesExtentKey, Rc<SeriesExtentJob>>,
-    pub(super) ticket_jobs: Vec<(renderer::GpuSeriesExtentTicket, Rc<SeriesExtentJob>)>,
-}
-
 // ------------------------------------------------------------------
 // FiggyChart — low-level wasm kernel bound to one canvas.
 // ------------------------------------------------------------------
@@ -244,10 +238,6 @@ pub struct FiggyChart {
     /// Prepared wrapper metadata for a core handoff that is not live
     /// until the renderer reports its atomic completion.
     pub(super) pending_stream_handoff: Option<PendingStreamHandoffMetadata>,
-    /// Already-submitted exact GPU drawable-domain reductions. Cache
-    /// identity includes the normalized primitive mode and every active
-    /// role-specific column revision.
-    pub(super) series_extents: HashMap<SeriesExtentKey, Rc<SeriesExtentJob>>,
     /// Monotonic color assignment for newly registered series.
     pub(super) color_seq: usize,
     pub(super) hitmap: HitMap,
@@ -475,117 +465,6 @@ impl FiggyChart {
     pub(super) fn request_host_redraw(&mut self) {
         self.redraw_pending = true;
     }
-    pub(super) fn publish_series_extents_if_engine_ready(
-        &mut self,
-        series_cfgs: &[SeriesConfig],
-        revisions: &HashMap<String, u64>,
-        retry_failed: bool,
-    ) -> Result<(), JsValue> {
-        if !self.renderer.errorbar_extent_engine_ready() {
-            return Ok(());
-        }
-        let prepared = self.prepare_series_extent_cache(series_cfgs, revisions, retry_failed)?;
-        self.publish_series_extent_cache(prepared);
-        Ok(())
-    }
-
-    pub(super) fn prepare_series_extent_cache(
-        &self,
-        series_cfgs: &[SeriesConfig],
-        revisions: &HashMap<String, u64>,
-        retry_failed: bool,
-    ) -> Result<PreparedSeriesExtentCache, JsValue> {
-        let mut resident_series = Vec::new();
-        resident_series
-            .try_reserve(series_cfgs.len())
-            .map_err(js_err)?;
-        resident_series.extend(
-            series_cfgs
-                .iter()
-                .filter(|series| {
-                    referenced_columns(series).into_iter().all(|id| {
-                        matches!(
-                            self.renderer.logical_column(id),
-                            Some(renderer::LogicalColumn::Resident(_))
-                        )
-                    })
-                })
-                .cloned(),
-        );
-        let requests =
-            active_series_extent_requests(&resident_series, revisions).map_err(js_err)?;
-        let (extents, pending) =
-            select_series_extent_job_map(requests, &self.series_extents, retry_failed)
-                .map_err(js_err)?;
-        let mut ticket_jobs = Vec::new();
-        ticket_jobs.try_reserve(pending.len()).map_err(js_err)?;
-
-        for request in pending {
-            let job = extents.get(&request.key).cloned().ok_or_else(|| {
-                js_err("pending series extent key lost its prepared job before publication")
-            })?;
-            match self.renderer.begin_series_fit_extent(&request.series) {
-                Ok(Some(ticket)) => {
-                    #[cfg(test)]
-                    record_series_extent_submit();
-                    ticket_jobs.push((ticket, job));
-                }
-                Ok(None) => job.complete_terminal_failure(
-                    "active GPU extent request resolved to a metadata-only series".into(),
-                ),
-                Err(error) => job.complete_terminal_failure(error.to_string()),
-            }
-        }
-
-        Ok(PreparedSeriesExtentCache {
-            extents,
-            ticket_jobs,
-        })
-    }
-
-    pub(super) fn publish_series_extent_cache(&mut self, prepared: PreparedSeriesExtentCache) {
-        self.series_extents = prepared.extents;
-        for (ticket, job) in prepared.ticket_jobs {
-            Self::spawn_series_extent(ticket, job);
-        }
-    }
-
-    /// Removing series cannot create a new extent identity. Retire stale
-    /// jobs without allocating or submitting new GPU work.
-    pub(super) fn retire_series_extent_cache(&mut self) -> Result<(), JsValue> {
-        let series_cfgs = self.renderer.chart_series(self.chart_id).map_err(js_err)?;
-        let revisions = &self.column_revisions;
-        self.series_extents.retain(|key, _| {
-            series_cfgs
-                .iter()
-                .any(|cfg| series_extent_key_matches_config(key, cfg, revisions))
-        });
-        Ok(())
-    }
-
-    pub(super) fn spawn_series_extent(
-        ticket: renderer::GpuSeriesExtentTicket,
-        job: Rc<SeriesExtentJob>,
-    ) {
-        spawn_local(async move {
-            match ticket.resolve().await {
-                Ok(extent) => job.complete_success(extent.map(|extent| SeriesFitExtent {
-                    x: FitExtent {
-                        min: extent.x.min,
-                        max: extent.x.max,
-                        min_positive: extent.x.min_positive,
-                    },
-                    y: FitExtent {
-                        min: extent.y.min,
-                        max: extent.y.max,
-                        min_positive: extent.y.min_positive,
-                    },
-                })),
-                Err(error) => job.complete_retryable_failure(error.to_string()),
-            }
-        });
-    }
-
     pub(super) fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
         for id in referenced_columns(cfg) {
             if self.renderer.logical_column(id).is_none() {
@@ -801,11 +680,6 @@ impl FiggyChart {
             proposed.try_reserve(1).map_err(js_err)?;
             proposed.push(cfg.clone());
         }
-        let prepared_extents = if self.renderer.errorbar_extent_engine_ready() {
-            Some(self.prepare_series_extent_cache(&proposed, &self.column_revisions, false)?)
-        } else {
-            None
-        };
         let mut next_styles = Vec::new();
         next_styles.try_reserve(proposed.len()).map_err(js_err)?;
         for series in &proposed {
@@ -856,9 +730,6 @@ impl FiggyChart {
         self.styles = next_styles;
         self.labels = next_labels;
         self.color_seq = next_color_seq;
-        if let Some(prepared_extents) = prepared_extents {
-            self.publish_series_extent_cache(prepared_extents);
-        }
         Ok(())
     }
 
@@ -928,7 +799,6 @@ impl FiggyChart {
         self.replace_chart_state(config, series)?;
         self.styles.remove(i);
         self.labels.remove(i);
-        self.retire_series_extent_cache()?;
         Ok(true)
     }
 
@@ -1125,9 +995,6 @@ impl FiggyChart {
         self.labels = new_labels;
         self.styles = new_styles;
         self.color_seq = new_len.max(self.color_seq);
-        let extent_series = self.chart_series()?.to_vec();
-        let extent_revisions = self.column_revisions.clone();
-        self.publish_series_extents_if_engine_ready(&extent_series, &extent_revisions, false)?;
         Ok(())
     }
 

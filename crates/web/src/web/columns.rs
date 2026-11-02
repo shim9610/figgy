@@ -249,56 +249,16 @@ impl FiggyChart {
             len,
         )
         .map_err(js_err)?;
-        let ordered_requests =
-            active_series_extent_requests(self.chart_series()?, &metadata.revisions)
-                .map_err(js_err)?;
-        let (future_series_extents, pending_series_extents) =
-            select_series_extent_job_map(ordered_requests, &self.series_extents, false)
-                .map_err(js_err)?;
-        let mut ticket_jobs = Vec::new();
-        ticket_jobs
-            .try_reserve(pending_series_extents.len())
-            .map_err(js_err)?;
-        let engine_ready = self.renderer.errorbar_extent_engine_ready();
 
         let guard = match source {
             ColumnUploadSource::Scalar(source) => self.renderer.begin_upsert_column(id, source),
             ColumnUploadSource::HiLo(source) => self.renderer.begin_upsert_hilo_column(id, source),
         }
         .map_err(column_registration_error)?;
-        if engine_ready {
-            for request in &pending_series_extents {
-                let ticket = guard
-                    .begin_series_fit_extent(&request.series)
-                    .map_err(js_err)?
-                    .ok_or_else(|| {
-                        js_err("active GPU extent request resolved to a metadata-only series")
-                    })?;
-                #[cfg(test)]
-                record_series_extent_submit();
-                let job = future_series_extents
-                    .get(&request.key)
-                    .cloned()
-                    .ok_or_else(|| {
-                        js_err("pending series extent key lost its prepared job before commit")
-                    })?;
-                ticket_jobs.push((ticket, job));
-            }
-        }
-        let prepared_series_extents = PreparedSeriesExtentCache {
-            extents: if engine_ready {
-                future_series_extents
-            } else {
-                self.series_extents.clone()
-            },
-            ticket_jobs,
-        };
-
         guard.commit();
         self.columns = metadata.columns;
         self.column_revisions = metadata.revisions;
         self.next_column_revision = metadata.next_revision;
-        self.publish_series_extent_cache(prepared_series_extents);
         Ok(())
     }
 
@@ -641,7 +601,6 @@ impl FiggyChart {
         self.styles
             .retain(|_| keep_iter.next().is_some_and(|keep| *keep));
         self.labels = next_labels;
-        self.retire_series_extent_cache()?;
         if self.renderer.pool().slot(id).is_some() {
             return Err(js_err(
                 "internal: the renderer reported a removed column that is still in the pool",
@@ -698,12 +657,6 @@ impl FiggyChart {
                     .map_err(js_err)?,
             );
         }
-        let retained_extents = retain_valid_series_extent_jobs(
-            &declarations.series,
-            &metadata.revisions,
-            &self.series_extents,
-        )
-        .map_err(js_err)?;
         let PreparedDemoDeclarations {
             config,
             series,
@@ -739,7 +692,6 @@ impl FiggyChart {
         self.styles = styles;
         self.labels = labels;
         self.color_seq = color_seq;
-        self.series_extents = retained_extents;
         Ok(())
     }
 }
