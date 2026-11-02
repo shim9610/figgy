@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("adapter: {:?}", adapter.get_info());
     let (device, queue) = request_device_async(&adapter).block_on()?;
     let gpu = RendererDevice::new(device, queue);
-    let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut renderer = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut cases = Vec::new();
     for (name, material) in [
         ("matte", Material::Matte),

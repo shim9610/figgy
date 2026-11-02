@@ -2745,7 +2745,7 @@ pub(super) fn browser_scope_failure(resource: &'static str, reason: String) -> F
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) struct BrowserErrorScopes {
+pub(crate) struct BrowserErrorScopes {
     pub(super) device: wgpu::webgpu::GpuDevice,
     pub(super) pop: js_sys::Function,
     pub(super) active: u8,
@@ -2754,7 +2754,7 @@ pub(super) struct BrowserErrorScopes {
 
 #[cfg(target_arch = "wasm32")]
 impl BrowserErrorScopes {
-    pub(super) fn push(device: &wgpu::Device, resource: &'static str) -> Result<Self> {
+    pub(crate) fn push(device: &wgpu::Device, resource: &'static str) -> Result<Self> {
         use wasm_bindgen::JsValue;
 
         let device = device.as_webgpu().cloned().ok_or_else(|| {
@@ -2804,7 +2804,7 @@ impl BrowserErrorScopes {
             .map_err(|_| "GPUDevice.popErrorScope did not return a Promise".to_owned())
     }
 
-    pub(super) fn request_all(mut self) -> BrowserPendingErrorScopes {
+    pub(crate) fn request_all(mut self) -> BrowserPendingErrorScopes {
         // Request both pops before returning to JS. Once popErrorScope has
         // returned its Promise, that scope no longer occupies the device
         // stack while the Promise is awaited.
@@ -2837,7 +2837,7 @@ impl Drop for BrowserErrorScopes {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) struct BrowserPendingErrorScopes {
+pub(crate) struct BrowserPendingErrorScopes {
     pub(super) internal: std::result::Result<js_sys::Promise, String>,
     pub(super) out_of_memory: std::result::Result<js_sys::Promise, String>,
     pub(super) resource: &'static str,
@@ -2845,7 +2845,7 @@ pub(super) struct BrowserPendingErrorScopes {
 
 #[cfg(target_arch = "wasm32")]
 impl BrowserPendingErrorScopes {
-    pub(super) async fn finish(self) -> Result<()> {
+    pub(crate) async fn finish(self) -> Result<()> {
         let internal = browser_await_error_scope(self.internal).await;
         let out_of_memory = browser_await_error_scope(self.out_of_memory).await;
         finish_browser_error_scopes(self.resource, internal, out_of_memory)

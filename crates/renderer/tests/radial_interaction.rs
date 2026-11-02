@@ -83,7 +83,7 @@ fn save(name: &str, img: &RasterImage) {
 #[test]
 fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
     let _guard = LOCK.lock().unwrap();
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
         title: "Editable donut labels".into(),
         style: RadialStyle::three_dimensional(),
@@ -191,7 +191,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
 #[test]
 fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
     let _guard = LOCK.lock().unwrap();
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
         labels: RadialLabels::Inside,
         slices: vec![RadialSlice::new("High", 1., Color::from_rgb8(20, 65, 115))],
@@ -325,7 +325,7 @@ fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
             check!($renderer, $charts, $keys, |_: &_, _: &_| {})
         };
         ($renderer:ident, $charts:expr, $keys:expr, $geometry:expr) => {{
-            let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut r = $renderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let geometry = $geometry;
             for (variant, mut c) in $charts.into_iter().enumerate() {
                 let full = variant == 0;
@@ -497,7 +497,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
     // separately compare title vs label crops at both output scales.
     macro_rules! check {
         ($renderer:ty, $chart:expr) => {{
-            let mut r = <$renderer>::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            let mut r = <$renderer>::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c = $chart;
             c.title = "Title H2O".into();
             c.normalize_title();
@@ -529,7 +529,8 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                     .unwrap();
                 assert_ne!(before.rgba, after.rgba);
                 // The cached renderer must match a fresh renderer for the edit.
-                let mut fresh = <$renderer>::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+                let mut fresh =
+                    <$renderer>::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
                 assert_eq!(
                     fresh
                         .export_rgba_async(&c, (800, 520), scale)
@@ -601,7 +602,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
 #[test]
 fn a_chart_other_than_the_prepared_one_answers_nothing_and_never_panics() {
     let _guard = LOCK.lock().unwrap();
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let size = (800, 520);
     let slice = |i: usize, value: f64| {
         RadialSlice::new(

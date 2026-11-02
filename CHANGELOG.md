@@ -869,6 +869,18 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Radial exports are guarded like every other export** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `RadialRenderer::export_rgba_async`, `export_svg_async` and
+  `export_pdf_async` check the device health before and after the export,
+  render inside out-of-memory, validation and internal error scopes (around
+  the whole render on native, from the first resource to the readback in the
+  browser), and attach the completion of their transient target and readback
+  buffer through `end_frame`. A GPU error during a radial export now fails it
+  with `RadialError::Gpu` instead of surfacing on a later call. The radial
+  constructors follow `Renderer::try_new`, which they always were in effect
+  (they return a `Result`). Migration: `RadialRenderer::new` is
+  `RadialRenderer::try_new`, and `RadialRenderer::new_async` is
+  `RadialRenderer::try_new_async`; the arguments are unchanged.
 - **One GPU ledger and budget per device bundle** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `RendererDevice::new` creates the ledger, and every `Renderer`,
   `WindowedRenderer` and `RadialRenderer` built from the bundle or its clones

@@ -29,7 +29,7 @@ fn gpu() -> RendererDevice {
     RendererDevice::new(d.clone(), q.clone())
 }
 fn renderer() -> RadialRenderer {
-    RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
+    RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
 
 const SIZE: (u32, u32) = (600, 600);

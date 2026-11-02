@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     pie.format_labels();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut radial = RadialRenderer::new(gpu, format)?;
+    let mut radial = RadialRenderer::try_new(gpu, format)?;
     let image = radial.export_rgba_async(&pie, (800, 520), 2.).block_on()?;
     std::fs::write(output.join("pie.png"), encode_png(&image)?)?;
     Ok(())

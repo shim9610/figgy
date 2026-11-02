@@ -21,7 +21,7 @@ fn red_top(rgba: &[u8], width: u32) -> usize {
 }
 
 pub async fn check(gpu: RendererDevice) {
-    let mut r = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut chart = RadialChart {
         kind: RadialKind::Donut { inner_radius: 0.45 },
         labels: RadialLabels::Inside,

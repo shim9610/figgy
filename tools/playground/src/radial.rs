@@ -81,7 +81,7 @@ impl RadialHost {
     pub fn create(gpu: RendererDevice, kind: SceneKind) -> Result<Self, String> {
         let chart = scenes::radial::document(kind);
         Ok(Self {
-            renderer: RadialRenderer::new(gpu, FORMAT).map_err(|e| e.to_string())?,
+            renderer: RadialRenderer::try_new(gpu, FORMAT).map_err(|e| e.to_string())?,
             initial: chart.clone(),
             chart,
             frame: None,

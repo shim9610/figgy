@@ -201,7 +201,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
 
 // 4–5. The same named-value contract, with two very different material choices.
 fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
-    let mut r = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut r = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut chart = RadialChart {
         title: "Studio time / a creative week".into(),
         slices: vec![

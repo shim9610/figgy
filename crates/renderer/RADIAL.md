@@ -7,7 +7,7 @@
 브라우저에서는 브라우저용 제품인 `crates/web`의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
 히트맵·선택·드래그·PNG 출력을 노출한다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
-원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다. `RadialRenderer::new_async`는
+원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다. `RadialRenderer::try_new_async`는
 0.17.0부터, [주석 층](#주석-층)과 차트의 `chart_title`·`active_layer` 필드는 0.18.0부터 쓸 수 있다.
 
 ## API 구성
@@ -44,7 +44,7 @@ use renderer::{
 # let instance = renderer::data_render::create_instance();
 # let adapter = pollster::block_on(renderer::data_render::request_adapter_async(&instance))?;
 # let (device, queue) = pollster::block_on(renderer::data_render::request_device_async(&adapter))?;
-let mut renderer = RadialRenderer::new(
+let mut renderer = RadialRenderer::try_new(
     RendererDevice::new(device, queue),
     wgpu::TextureFormat::Rgba8Unorm,
 )?;
@@ -80,7 +80,7 @@ RGBA8/BGRA8 포맷, `frame.size()` 크기, sample count 1이어야 한다. 가�
 장치의 텍스처 크기 한도를 넘을 수 없다. `draw`는 viewport와 scissor를 타깃 전체로 설정한다.
 UI의 일부 영역에 넣으려면 이 크기의 별도 텍스처에 그린 뒤 호스트가 배치한다.
 
-WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 브라우저
+WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용해 브라우저
 파이프라인 컴파일을 기다린다. 이후 같은 `prepare`/`draw`를 쓰고, 출력에는
 `export_rgba_async(...).await`를 사용한다.
 동기 `export_rgba`는 네이티브 전용이다. PNG 인코딩은 기존 `encode_png`를 사용한다.
