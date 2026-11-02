@@ -17,10 +17,11 @@ at the time. The first crates.io publication is recorded below.
 
 Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
-written by model 0.12 and earlier parse; they re-serialize byte for byte
-except where a fact that was stored twice now has one owner (#160), which
-the migration notes name: such a document is written once in the new form
-and round trips byte for byte from then on. The new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
+written by model 0.12 and earlier parse, read back as the same value after a
+save and export the same image before and after it. Where a fact that was
+stored twice now has one owner (#160), which the migration notes name, the
+document is written in the new form and re-serializes unchanged from then on;
+every other document still re-serializes byte for byte. The new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection,
@@ -2635,6 +2636,17 @@ entries above describe the changes.
   gone (13b), and the radial scene has no exclusion.
 
 ### Tests and guards
+
+- **Older documents are checked by what they draw** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `tests/released_documents.rs` no longer requires the released bytes back:
+  each released document must parse, read back as the same value after a
+  save, and re-serialize unchanged from the save on.
+  `tests/released_documents_render.rs` exports every released chart
+  document (configs, radial charts, and the categorical, box plot and radar
+  documents through their readers) at 1x and 2x before and after the save
+  and requires identical pixels; an empty default document must be refused
+  for the same reason on both sides, and an edited one must draw. CLAUDE.md
+  states the rule.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `vector_render` places the heads at fixed arc spacing along the tangent,

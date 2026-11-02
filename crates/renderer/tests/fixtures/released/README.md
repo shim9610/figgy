@@ -32,5 +32,9 @@ They were produced by a throwaway program outside the repository that depends
 on `figgy-model = "=<version>"`, builds each document with that release's own
 types and helpers, writes it, and checks that the release parses it back to
 the same bytes. `tests/released_documents.rs` parses every file here with the
-current types and requires the same bytes back. Do not edit or regenerate
-these files: they record what was published.
+current types, saves it, and requires the save to read back as the same value
+and to re-serialize unchanged. `tests/released_documents_render.rs` exports
+every chart document here at 1x and 2x before and after that save and requires
+the same pixels. The current JSON may differ from these bytes where a later
+release gave a fact one owner (the CHANGELOG's migration notes say where). Do
+not edit or regenerate these files: they record what was published.

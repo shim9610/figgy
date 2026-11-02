@@ -1,10 +1,10 @@
-//! Documents written by the published figgy-model releases still parse with
-//! this source, and a document that uses no newer field serializes back to the
-//! exact bytes the release wrote, except where 0.19 moved a fact to one owner
-//! (#160): such a document is written in the new form, which [`migrate`]
-//! spells out and which then round trips byte for byte.
-//! `tests/fixtures/released/README.md` says which releases wrote the fixtures
-//! and how. No GPU is needed.
+//! Documents written by the published figgy-model releases keep working
+//! with this source (CLAUDE.md): each parses, reads back as the same model
+//! value after a save, and its saved form re-serializes unchanged. The JSON
+//! may come out in a newer form, as where 0.19 gave a fact one owner (#160).
+//! That the document also draws the same before and after the save is
+//! `released_documents_render.rs`. `tests/fixtures/released/README.md` says
+//! which releases wrote the fixtures and how. No GPU is needed.
 #![cfg(feature = "serde")]
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
@@ -14,8 +14,8 @@ use renderer::{BoxPlotChart, CategoricalChart, Config, RadarChart, RadialChart, 
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/released");
 
-/// One test per fixture: parse with this source's type, serialize again, and
-/// require the fixture's bytes back.
+/// One test per fixture: parse it with this source's type, save it, read the
+/// save back as the same value, and save that unchanged.
 macro_rules! released_documents {
     ($($test:ident: $ty:ty = $file:literal;)*) => {
         const FIXTURES: &[&str] = &[$($file),*];
@@ -28,18 +28,10 @@ macro_rules! released_documents {
                     panic!("{}: a released document no longer parses: {err}", $file)
                 });
                 let written = serde_json::to_string(&parsed).expect("serialize");
-                let mut expected: serde_json::Value =
-                    serde_json::from_str(fixture).expect("fixture is JSON");
-                if !migrate($file, &mut expected) {
-                    assert_same_document($file, fixture, &written);
-                    return;
-                }
-                let new: serde_json::Value =
-                    serde_json::from_str(&written).expect("output is JSON");
-                if let Some(difference) = first_difference("$", &expected, &new) {
-                    panic!("{}: not the documented 0.19 form: {difference}", $file);
-                }
-                let again: $ty = serde_json::from_str(&written).expect("the new form parses");
+                let again: $ty = serde_json::from_str(&written).unwrap_or_else(|err| {
+                    panic!("{}: the saved document no longer parses: {err}", $file)
+                });
+                assert!(again == parsed, "{}: the save reads back as another value", $file);
                 let rewritten = serde_json::to_string(&again).expect("serialize");
                 assert_same_document($file, &written, &rewritten);
             }
@@ -88,98 +80,6 @@ released_documents! {
     model_0_10_0_categorical_edited: CategoricalChart = "model-0.10.0-categorical-edited.json";
     model_0_10_0_boxplot_default: BoxPlotChart = "model-0.10.0-boxplot-default.json";
     model_0_10_0_boxplot_edited: BoxPlotChart = "model-0.10.0-boxplot-edited.json";
-}
-
-/// Rewrite a released document into the form 0.19 writes, the way the
-/// CHANGELOG's migration notes describe it. `false` when nothing changed.
-fn migrate(file: &str, document: &mut serde_json::Value) -> bool {
-    let Some(object) = document.as_object_mut() else {
-        return false;
-    };
-    if file.contains("-radial-") {
-        return migrate_radial_title(object);
-    }
-    migrate_picked_points(object)
-}
-
-/// A radial chart's plain `title` becomes its `chart_title` (#160): drawn in
-/// the document's font at 1.5 × `font_size` and in `label_color` when the
-/// document has no `chart_title`, dropped beside one, and removed when it is
-/// empty.
-fn migrate_radial_title(chart: &mut serde_json::Map<String, serde_json::Value>) -> bool {
-    use serde_json::json;
-    let Some(title) = chart.remove("title") else {
-        return false;
-    };
-    let title = title.as_str().expect("a plain title").to_owned();
-    if chart.get("chart_title").is_none_or(|t| t.is_null()) && !title.is_empty() {
-        let color: renderer::Color =
-            serde_json::from_value(chart["label_color"].clone()).expect("label colour");
-        let plain = renderer::config::ChartTitleOptions::from_legacy_plain(
-            &title,
-            chart["font_family"].as_str().expect("font family"),
-            chart["font_size"].as_f64().expect("font size") as f32,
-            color,
-        );
-        // Through the JSON text, as the chart writes its `f32` fields.
-        let text: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&plain.text).expect("serialize"))
-                .expect("JSON");
-        chart.insert(
-            "chart_title".into(),
-            json!({"visible": plain.visible, "text": text}),
-        );
-    }
-    true
-}
-
-/// `picked_points` joins `picked_data` (#160): its refs become `point` refs
-/// after the typed ones, and its ring look becomes the highlight's when the
-/// document has no `picked_data`. Hidden points are dropped beside a typed
-/// selection.
-fn migrate_picked_points(config: &mut serde_json::Map<String, serde_json::Value>) -> bool {
-    use serde_json::{Value, json};
-    let Some(legacy) = config.remove("picked_points") else {
-        return false;
-    };
-    let points = legacy["refs"].as_array().cloned().unwrap_or_default();
-    let points = points.into_iter().map(|mut point| {
-        point
-            .as_object_mut()
-            .expect("a ref is an object")
-            .insert("kind".into(), json!("point"));
-        point
-    });
-    match config.get_mut("picked_data") {
-        Some(Value::Object(typed)) => {
-            if legacy["visible"] != json!(false) {
-                let refs = typed.entry("refs").or_insert_with(|| json!([]));
-                refs.as_array_mut().expect("refs").extend(points);
-            }
-        }
-        _ => {
-            let default =
-                serde_json::to_value(renderer::DataSelectionsConfig::default()).expect("serialize");
-            let field = |key: &str, default_key: &str| {
-                legacy
-                    .get(key)
-                    .cloned()
-                    .unwrap_or(default[default_key].clone())
-            };
-            config.insert(
-                "picked_data".into(),
-                json!({
-                    "visible": field("visible", "visible"),
-                    "refs": points.collect::<Vec<_>>(),
-                    "highlight_color": field("ring_color", "highlight_color"),
-                    "outline_width_px": field("ring_width_px", "outline_width_px"),
-                    "point_radius_extra_px": field("radius_extra_px", "point_radius_extra_px"),
-                    "contour_width_extra_px": default["contour_width_extra_px"],
-                }),
-            );
-        }
-    }
-    true
 }
 
 /// Every released categorical document opens as a Cartesian chart: the
@@ -288,8 +188,9 @@ fn every_released_fixture_has_a_test() {
     assert_eq!(on_disk, listed);
 }
 
-/// Byte equality, with a failure message that names the first differing JSON
-/// path and both values instead of two long one-line documents.
+/// Byte equality of two saves of one document, with a failure message that
+/// names the first differing JSON path and both values instead of two long
+/// one-line documents.
 fn assert_same_document(file: &str, fixture: &str, written: &str) {
     if fixture == written {
         return;
@@ -308,7 +209,7 @@ fn assert_same_document(file: &str, fixture: &str, written: &str) {
             around(written, at),
         )
     });
-    panic!("{file}: re-serialized document differs from the released bytes: {difference}");
+    panic!("{file}: a second save differs from the first: {difference}");
 }
 
 /// About 40 bytes either side of `at`, cut on character boundaries.
