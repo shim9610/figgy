@@ -966,13 +966,12 @@ impl CartesianHost {
             }
             // The polar coordinate system: a radar chart's spoke layout and
             // ring shape.
+            let categorical = config.bottom_x.categories.is_some();
             if let Some(polar) = config.polar_mut() {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut polar.clockwise, "clockwise");
                     let mut polygon = polar.grid_shape() == renderer::GridShape::Polygon;
-                    if config.bottom_x.categories.is_some()
-                        && ui.checkbox(&mut polygon, "polygon grid").changed()
-                    {
+                    if categorical && ui.checkbox(&mut polygon, "polygon grid").changed() {
                         polar.grid_shape = Some(if polygon {
                             renderer::GridShape::Polygon
                         } else {
@@ -1153,8 +1152,7 @@ impl CartesianHost {
                         | AnnotationKind::Polygon { style, .. } => {
                             let mut filled = style.fill.is_some();
                             if ui.checkbox(&mut filled, "fill").changed() {
-                                style.fill =
-                                    filled.then_some(Color::new(0.3, 0.5, 0.9, 0.25));
+                                style.fill = filled.then_some(Color::new(0.3, 0.5, 0.9, 0.25));
                             }
                             if let Some(fill) = &mut style.fill {
                                 color(ui, "fill colour", fill);
@@ -1178,18 +1176,30 @@ impl CartesianHost {
             let exported = if ui.button("Export document PNG").clicked() {
                 Some((
                     "png",
-                    r.export_png(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on(),
+                    r.export_png(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    )
+                    .block_on(),
                 ))
             } else if ui.button("Export document SVG").clicked() {
                 Some((
                     "svg",
-                    r.export_svg(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on()
-                        .map(String::into_bytes),
+                    r.export_svg(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    )
+                    .block_on()
+                    .map(String::into_bytes),
                 ))
             } else if ui.button("Export document PDF").clicked() {
                 Some((
                     "pdf",
-                    r.export_pdf(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(self.export_scale)).block_on(),
+                    r.export_pdf(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    )
+                    .block_on(),
                 ))
             } else {
                 None
@@ -1506,21 +1516,27 @@ fn draw_style_index(style: &DrawStyle) -> usize {
 
 fn render_type_name(t: &DataRenderType) -> &'static str {
     match t {
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: None, errors: None }) => "scatter",
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, .. }) => "line",
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: Some(_), errors: None }) => "scatter+line",
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: None, errors: Some(_) }) => "scatter+errors",
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(_), line: Some(_), errors: Some(_) }) => "line+scatter+errors",
+        DataRenderType::Xy(xy) => {
+            match (xy.scatter.is_some(), xy.line.is_some(), xy.errors.is_some()) {
+                (false, ..) => "line",
+                (true, false, false) => "scatter",
+                (true, true, false) => "scatter+line",
+                (true, false, true) => "scatter+errors",
+                (true, true, true) => "line+scatter+errors",
+            }
+        }
         DataRenderType::Histogram { .. } => "histogram",
         DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::BoxPlot { .. } => "box plot",
         DataRenderType::RangeBars { .. } => "range bars",
         DataRenderType::Ternary { .. } => "ternary",
         DataRenderType::Radar { .. } => "radar",
-        DataRenderType::Field(renderer::data_config::FieldSeries { contour: None, .. }) => "heatmap",
         DataRenderType::RgbImage { .. } => "image",
-        DataRenderType::Field(renderer::data_config::FieldSeries { fill: None, .. }) => "contour",
-        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(_), contour: Some(_), surface: _ }) => "heatmap+contour",
+        DataRenderType::Field(field) => match (field.fill.is_some(), field.contour.is_some()) {
+            (_, false) => "heatmap",
+            (false, true) => "contour",
+            (true, true) => "heatmap+contour",
+        },
         DataRenderType::Vector { .. } => "vector",
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
@@ -1627,7 +1643,10 @@ fn scatter_controls(
 /// The scatter style of a render type that draws markers.
 fn scatter_of(t: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
     match t {
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), .. }) => Some(scatter),
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            ..
+        }) => Some(scatter),
         _ => None,
     }
 }
@@ -1791,7 +1810,17 @@ fn series_controls(
     r: &Renderer,
 ) {
     match &mut s.render_type {
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(line), errors: None }) => line_controls(ui, line),
+        DataRenderType::Xy(xy) => {
+            if let Some(scatter) = &mut xy.scatter {
+                scatter_controls(ui, scatter, columns, r);
+            }
+            if let Some(line) = &mut xy.line {
+                line_controls(ui, line);
+            }
+            if let Some(errors) = &mut xy.errors {
+                error_controls(ui, &mut errors.style);
+            }
+        }
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
         DataRenderType::Parallel { line, .. } => line_controls(ui, line),
@@ -1803,24 +1832,6 @@ fn series_controls(
             if let Some(line) = line {
                 line_controls(ui, line);
             }
-        }
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: None }) => scatter_controls(ui, scatter, columns, r),
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: None }) => {
-            scatter_controls(ui, scatter, columns, r);
-            line_controls(ui, line);
-        }
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: None, style: err_style }) })
-        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: None, y: Some(_), style: err_style }) })
-        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: None, errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: Some(_), style: err_style }) }) => {
-            scatter_controls(ui, scatter, columns, r);
-            error_controls(ui, err_style);
-        }
-        DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: None, style: err_style }) })
-        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: None, y: Some(_), style: err_style }) })
-        | DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scatter), line: Some(line), errors: Some(renderer::data_config::ErrorBars { x: Some(_), y: Some(_), style: err_style }) }) => {
-            scatter_controls(ui, scatter, columns, r);
-            line_controls(ui, line);
-            error_controls(ui, err_style);
         }
         DataRenderType::Histogram { bar } => {
             color(ui, "fill", &mut bar.fill_color);
@@ -1927,14 +1938,19 @@ fn series_controls(
             slider(ui, "marker size", &mut size, 1.0..=24.0);
             style.marker_size_px = Some(size);
         }
-        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(fill), contour: None, surface: _ }) => {
-            slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
-            choice(
-                ui,
-                "shading",
-                &mut fill.shading,
-                &[Shading::Interpolated, Shading::Flat],
-            );
+        DataRenderType::Field(field) => {
+            if let Some(fill) = &mut field.fill {
+                slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+                choice(
+                    ui,
+                    "shading",
+                    &mut fill.shading,
+                    &[Shading::Interpolated, Shading::Flat],
+                );
+            }
+            if let Some(contour) = &mut field.contour {
+                contour_controls(ui, contour, config);
+            }
         }
         // An image's channels are its data; its look is the opacity and the
         // shading, and the range the bytes map through.
@@ -1956,17 +1972,6 @@ fn series_controls(
                 ui.add(egui::DragValue::new(&mut range[0]).speed(0.5));
                 ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
             });
-        }
-        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: None, contour: Some(contour), .. }) => contour_controls(ui, contour, config),
-        DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(fill), contour: Some(contour), surface: _ }) => {
-            slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
-            choice(
-                ui,
-                "shading",
-                &mut fill.shading,
-                &[Shading::Interpolated, Shading::Flat],
-            );
-            contour_controls(ui, contour, config);
         }
         DataRenderType::Vector { components, style } => {
             vector_controls(ui, components, style, columns);
@@ -2155,8 +2160,7 @@ fn layer_columns<'a>(
         .filter(|s| {
             !matches!(
                 s.render_type,
-                DataRenderType::Field(_)
-                    | DataRenderType::RgbImage { .. }
+                DataRenderType::Field(_) | DataRenderType::RgbImage { .. }
             )
         })
         .collect();
@@ -2269,12 +2273,14 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
 /// direction. Both ends of a band must live in the same chart.
 fn fill_partners(series: &[SeriesConfig], id: &str) -> Vec<String> {
     let fills_to = |s: &SeriesConfig| match &s.render_type {
-        DataRenderType::Xy(renderer::data_config::XySeries { line: Some(line), errors: None, .. }) => {
-            match &line.fill {
-                Some(LineFill::ToSeries(other)) => Some(other.clone()),
-                _ => None,
-            }
-        }
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            line: Some(line),
+            errors: None,
+            ..
+        }) => match &line.fill {
+            Some(LineFill::ToSeries(other)) => Some(other.clone()),
+            _ => None,
+        },
         _ => None,
     };
     let mut out: Vec<String> = series
@@ -2551,7 +2557,11 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             .map_err(|e| format!("{name}: {e}"))?;
         let chart = Chart::new(r.chart_config(id).unwrap().clone());
         let png = r
-            .export_png(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::document(1.0)).block_on()
+            .export_png(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::document(1.0),
+            )
+            .block_on()
             .map_err(|e| format!("{name} export: {e}"))?;
         step += 1;
         let path = dir.join(format!("{step:02}_{name}.png"));
@@ -2602,14 +2612,24 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     // The field scene with its label workarounds: no box, no level 0.
     {
         let mut scene = scenes::build(r, SceneKind::Field, big_data::START_POINTS).map_err(e)?;
-        if let DataRenderType::Field(renderer::data_config::FieldSeries { matrix: _, fill: Some(_), contour: Some(contour), surface: _ }) = &mut scene.series[0].render_type {
+        if let DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: _,
+            fill: Some(_),
+            contour: Some(contour),
+            surface: _,
+        }) = &mut scene.series[0].render_type
+        {
             contour.levels.retain(|l| *l != 0.0);
             if let Some(l) = contour.labels.as_mut() {
                 l.bg_color = None;
             }
         }
         let png = r
-            .export_png(renderer::ExportSource::chart(&Chart::new(scene.config), &scene.series), renderer::ExportOptions::document(2.0)).block_on()
+            .export_png(
+                renderer::ExportSource::chart(&Chart::new(scene.config), &scene.series),
+                renderer::ExportOptions::document(2.0),
+            )
+            .block_on()
             .map_err(e)?;
         std::fs::write(dir.join("scene_field_clean_2x.png"), png).map_err(|e| e.to_string())?;
         println!("ok  field without box / level 0");
@@ -2621,17 +2641,29 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {
             let png = r
-                .export_png(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
+                .export_png(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
             let svg = r
-                .export_svg(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
+                .export_svg(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
             std::fs::write(&path, svg).map_err(|e| e.to_string())?;
             let pdf = r
-                .export_pdf(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
+                .export_pdf(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
             std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
@@ -2659,12 +2691,24 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             r.set_chart_config(id, c.clone())
                 .map_err(|e| format!("{name}: {e}"))?;
             let png = r
-                .export_png(renderer::ExportSource::chart(&Chart::new(c.clone()), &scene.series), renderer::ExportOptions::document(1.0)).block_on()
+                .export_png(
+                    renderer::ExportSource::chart(&Chart::new(c.clone()), &scene.series),
+                    renderer::ExportOptions::document(1.0),
+                )
+                .block_on()
                 .map_err(e)?;
             std::fs::write(dir.join(format!("{name}.png")), png).map_err(|e| e.to_string())?;
         }
         let mut scatter = scene.series.clone();
-        scatter[0].render_type = DataRenderType::Xy(renderer::data_config::XySeries { scatter: Some(scenes::scatter_style(renderer::Color::BLACK, ScatterShape::Circle, 3.0)), line: None, errors: None });
+        scatter[0].render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scenes::scatter_style(
+                renderer::Color::BLACK,
+                ScatterShape::Circle,
+                3.0,
+            )),
+            line: None,
+            errors: None,
+        });
         if r.set_chart_series(id, scatter).is_ok() {
             return Err("a line offset member without a line was accepted".into());
         }
@@ -2689,7 +2733,11 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         let chart = Chart::new(r.chart_config(id).map_err(e)?.clone());
         for scale in [1.0f32, 2.0] {
             let png = r
-                .export_png(renderer::ExportSource::chart(&chart, &scene.series), renderer::ExportOptions::document(scale)).block_on()
+                .export_png(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
                 .map_err(e)?;
             let path = dir.join(format!("scene_longlabels_auto_layout_{scale}x.png"));
             std::fs::write(&path, png).map_err(|e| e.to_string())?;

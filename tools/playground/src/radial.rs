@@ -383,7 +383,12 @@ impl RadialHost {
                 Some((
                     "png",
                     self.renderer
-                        .export_rgba(&self.chart, self.size, renderer::ExportOptions::document(2.0)).block_on()
+                        .export_rgba(
+                            &self.chart,
+                            self.size,
+                            renderer::ExportOptions::document(2.0),
+                        )
+                        .block_on()
                         .map_err(|e| e.to_string())
                         .and_then(|img| renderer::encode_png(&img).map_err(|e| e.to_string())),
                 ))
@@ -391,7 +396,12 @@ impl RadialHost {
                 Some((
                     "svg",
                     self.renderer
-                        .export_svg(&self.chart, self.size, renderer::ExportOptions::document(2.0)).block_on()
+                        .export_svg(
+                            &self.chart,
+                            self.size,
+                            renderer::ExportOptions::document(2.0),
+                        )
+                        .block_on()
                         .map(String::into_bytes)
                         .map_err(|e| e.to_string()),
                 ))
@@ -399,7 +409,12 @@ impl RadialHost {
                 Some((
                     "pdf",
                     self.renderer
-                        .export_pdf(&self.chart, self.size, renderer::ExportOptions::document(2.0)).block_on()
+                        .export_pdf(
+                            &self.chart,
+                            self.size,
+                            renderer::ExportOptions::document(2.0),
+                        )
+                        .block_on()
                         .map_err(|e| e.to_string()),
                 ))
             } else {
