@@ -1537,84 +1537,9 @@ pub(super) fn validate_renderer_series(
     config: &Config,
     series: &[SeriesConfig],
 ) -> Result<()> {
-    // The category bar rules are the chart's: its bar groups, their axes and
-    // every bar series' style, labels and overrides.
-    if let Err(reason) = config.validate_category_bars(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.category_bars().is_some())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
-    // The box plot rules are the chart's too: its box groups, their axes and
-    // every box series' style, labels and overrides.
-    if let Err(reason) = config.validate_box_plots(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.box_plot().is_some())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
-    // The range bar rules are the chart's too: their groups, their axes,
-    // and every range series' columns, style and labels.
-    if let Err(reason) = config.validate_range_bars(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.range_bars().is_some())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
-    validate_radar_rules(config, series)?;
-    // A ternary chart draws only ternary series, and a ternary series needs
-    // a ternary chart; its line is linear and unfilled.
-    if let Err(reason) = config.validate_ternary_series(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.ternary_c_column().is_some())
-                .or(series.first())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
-    // A parallel chart draws only parallel series, and a parallel series
-    // needs a parallel chart; each names one column per axis, its line
-    // solid and linear without a fill (#141).
-    if let Err(reason) = config.validate_parallel_series(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.parallel().is_some())
-                .or(series.first())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
-    // A 3D chart draws heatmaps as surfaces and contours on its floor; a
-    // surface's look and colour grid are checked wherever they are set.
-    if let Err(reason) = config.validate_view3d_series(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| {
-                    !matches!(
-                        s.render_type,
-                        crate::data_config::DataRenderType::Heatmap { .. }
-                            | crate::data_config::DataRenderType::Contour { .. }
-                            | crate::data_config::DataRenderType::HeatmapContour { .. }
-                    )
-                })
-                .or(series.first())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
+    // Every rule on the series list that needs no column pool is the
+    // model's (#160): ids, the chart-wide kinds' rules and polar axes.
+    config.validate_series(series).map_err(config_error)?;
     // A hexagonal grid (#134) is a flat heatmap on linear axes of a flat
     // chart, and its coordinate columns are uniform: the lattice the shader
     // walks is the one the data describes.
@@ -1622,16 +1547,6 @@ pub(super) fn validate_renderer_series(
         extract_matrix(&item.render_type)
             .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
     };
-    if let Err(reason) = config.validate_hexagonal_series(series) {
-        return Err(FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| hexagonal(s))
-                .or(series.first())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        });
-    }
     for item in series.iter().filter(|item| hexagonal(item)) {
         for (role, id) in [("x", &item.x_column), ("y", &item.y_column)] {
             if pool.uniform_step(id).is_none() {
@@ -1646,31 +1561,7 @@ pub(super) fn validate_renderer_series(
             }
         }
     }
-    // The line offset group is the chart's too: its members, their kinds
-    // and the fills between them.
-    config
-        .validate_line_offsets(series)
-        .map_err(|reason| FiggyError::InvalidConfig {
-            field: "line_offsets",
-            reason,
-        })?;
-    for (index, item) in series.iter().enumerate() {
-        if item.series_id.is_empty() {
-            return Err(FiggyError::InvalidSeriesConfig {
-                series_id: item.series_id.clone(),
-                reason: "series_id must not be empty".to_string(),
-            });
-        }
-        if series[..index]
-            .iter()
-            .any(|earlier| earlier.series_id == item.series_id)
-        {
-            return Err(FiggyError::InvalidSeriesConfig {
-                series_id: item.series_id.clone(),
-                reason: "series_id must be unique within a chart".to_string(),
-            });
-        }
-
+    for item in series {
         if let Some(Err(e)) = item.label.as_ref().map(|label| label.validate_math()) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: item.series_id.clone(),
@@ -1754,7 +1645,6 @@ pub(super) fn validate_renderer_series(
         validate_contour_level_count(&item.series_id, &item.render_type)?;
         validate_contour_label_config(&item.series_id, &item.render_type)?;
         validate_line_fill(pool, series.iter(), item)?;
-        validate_polar_series(config, item)?;
         // Every axis column of a parallel series is read on the GPU, and
         // its colour column maps through the colourbar (#141).
         if let Some(parallel) = item.render_type.parallel() {
@@ -1785,12 +1675,6 @@ pub(super) fn validate_renderer_series(
         }
         // An image's other two channels alike (#139), after its own rules.
         if let Some([_, green, blue]) = item.render_type.rgb_image() {
-            if let Err(reason) = config.validate_rgb_image_series(std::slice::from_ref(item)) {
-                return Err(FiggyError::InvalidSeriesConfig {
-                    series_id: item.series_id.clone(),
-                    reason: reason.to_string(),
-                });
-            }
             for column in green.columns.iter().chain(&blue.columns) {
                 validate_registered_column(pool, column)?;
             }
@@ -1860,94 +1744,25 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
         })
 }
 
-/// The series a polar chart draws: scatter markers, lines (with fills) and
-/// radar polygons. Histograms, fields, contours, error bars, vectors,
-/// category bars, box plots and streamlines have no polar form and are rejected rather
-/// than drawn on the wrong axes; an arc interpolation needs a linearly
-/// interpolated line.
-/// The radar rules of a chart, at registration and at export: a polar chart
-/// with a categorical angle axis, chord edges, any number of series (#107)
-/// and every series' style and labels (`Config::validate_radar`).
-pub(super) fn validate_radar_rules(config: &Config, series: &[SeriesConfig]) -> Result<()> {
-    config
-        .validate_radar(series)
-        .map_err(|reason| FiggyError::InvalidSeriesConfig {
-            series_id: series
-                .iter()
-                .find(|s| s.render_type.radar().is_some())
-                .map_or_else(String::new, |s| s.series_id.clone()),
-            reason: reason.to_string(),
-        })
-}
-
-pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Result<()> {
-    let Some(polar) = &config.polar else {
-        return Ok(());
-    };
-    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
-        series_id: item.series_id.clone(),
-        reason: reason.to_owned(),
-    };
-    match &item.render_type {
-        DataRenderType::Scatter { .. }
-        | DataRenderType::Line { .. }
-        | DataRenderType::ScatterLine { .. }
-        | DataRenderType::Radar { .. } => {}
-        DataRenderType::Histogram { .. } => {
-            return Err(invalid("histogram series are not drawn on polar axes"));
-        }
-        DataRenderType::Heatmap { .. }
-        | DataRenderType::RgbImage { .. }
-        | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Contour { .. } => {
-            return Err(invalid(
-                "field and contour series are not drawn on polar axes",
-            ));
-        }
-        DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. }
-        | DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. } => {
-            return Err(invalid("error bars are not drawn on polar axes"));
-        }
-        DataRenderType::Vector { .. } => {
-            return Err(invalid("vector series are not drawn on polar axes"));
-        }
-        // Category bars fan around the centre as a rose (#133); the model's
-        // category bar rules hold the group vertical.
-        DataRenderType::CategoryBars { .. } => {}
-        DataRenderType::BoxPlot { .. } => {
-            return Err(invalid("box plots are not drawn on polar axes"));
-        }
-        DataRenderType::RangeBars { .. } => {
-            return Err(invalid("range bars are not drawn on polar axes"));
-        }
-        DataRenderType::Streamlines { .. } => {
-            return Err(invalid("streamlines are not drawn on polar axes"));
-        }
-        DataRenderType::Parallel { .. } => {
-            return Err(invalid(
-                "parallel series are drawn on parallel charts, not polar axes",
-            ));
-        }
-        DataRenderType::Ternary { .. } => {
-            return Err(invalid(
-                "ternary series are drawn on ternary charts, not polar axes",
-            ));
-        }
+/// A model rule's refusal as the renderer's error: a series rule names its
+/// series; a chart-wide rule that names none reports its field
+/// (`InvalidConfig`), as the line offset group always did, or an empty series
+/// id for the other kinds' rules.
+pub(super) fn config_error(error: crate::ConfigError) -> FiggyError {
+    match error.series_id {
+        Some(series_id) => FiggyError::InvalidSeriesConfig {
+            series_id,
+            reason: error.reason.to_string(),
+        },
+        None if error.field == "line_offsets" => FiggyError::InvalidConfig {
+            field: error.field,
+            reason: error.reason,
+        },
+        None => FiggyError::InvalidSeriesConfig {
+            series_id: String::new(),
+            reason: error.reason.to_string(),
+        },
     }
-    if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =
-        (extract_line(&item.render_type), polar.interpolation)
-        && !line.interpolation.is_linear()
-    {
-        return Err(invalid(
-            "a polar arc interpolation needs a linearly interpolated line; a step \
-             interpolation draws chords",
-        ));
-    }
-    Ok(())
 }
 
 /// A vector series' own rules: a valid style, registered component columns,

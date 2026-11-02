@@ -121,6 +121,14 @@ impl PrepareContext<'_> {
                     series.config.series_id.as_str(),
                     &series.config.render_type,
                 )?;
+                // The host-owned path checks polar axes too, as registration
+                // and export do (#160).
+                item.chart_config
+                    .validate_series_on_polar(series.config)
+                    .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                        series_id: series.config.series_id.clone(),
+                        reason: reason.to_string(),
+                    })?;
                 validate_line_fill(
                     self.pool,
                     item.series.iter().map(|series| series.config),

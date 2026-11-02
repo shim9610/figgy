@@ -32,6 +32,8 @@ pub mod select;
 pub mod sink;
 pub mod text;
 pub mod tick;
+pub mod validate;
+pub use validate::ConfigError;
 
 // Public API re-exports.
 pub use bounded_sources::{SeriesUpload, UploadValues};
