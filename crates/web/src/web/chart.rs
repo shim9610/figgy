@@ -1061,8 +1061,13 @@ impl FiggyChart {
                         .values
                         .box_fields()
                         .ok_or_else(|| js_err("a box plot record upload has fields"))?;
+                    // Each field names itself (#160): the record is paired by
+                    // name, never by the position of the schema's entries.
                     let sources: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
-                        (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
+                        (
+                            renderer::BoxField::ALL[k].name(),
+                            &fields[k] as &dyn ColumnSource,
+                        )
                     });
                     self.renderer
                         .upsert_record(
