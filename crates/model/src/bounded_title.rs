@@ -117,31 +117,41 @@ mod tests {
         title.text.segments[0].color = Some(Color::new(1., 0., 0., f32::NAN));
         assert!(title.validate().is_err());
     }
+    /// A radial document written before 0.19 with a plain `title`: the
+    /// title is read in the document's font, keeps that look when the font
+    /// changes, and only `chart_title` is written (#160).
     #[cfg(feature = "serde")]
     #[test]
-    fn the_radial_title_freezes_its_style_and_round_trips() {
-        macro_rules! check {
-            ($chart:ty, $color:ident) => {{
-                let mut chart = <$chart>::default();
-                chart.title = "A²".into();
-                chart.font_size = 16.;
-                let old = serde_json::to_value(&chart).unwrap();
-                assert!(old.get("chart_title").is_none());
-                chart = serde_json::from_value(old).unwrap();
-                let expected = chart.resolved_title();
-                chart.normalize_title();
-                chart.font_size = 28.;
-                chart.$color = Color::WHITE;
-                chart.font_family = "Another font".into();
-                chart.normalize_title();
-                assert_eq!(chart.resolved_title(), expected);
-                chart.chart_title.as_mut().unwrap().text.align = crate::text::TextAlign::Right;
-                chart.chart_title.as_mut().unwrap().visible = false;
-                let copy: $chart =
-                    serde_json::from_str(&serde_json::to_string(&chart).unwrap()).unwrap();
-                assert_eq!(copy, chart);
-            }};
-        }
-        check!(crate::RadialChart, label_color);
+    fn the_legacy_radial_title_is_read_in_its_style_and_round_trips() {
+        let mut old = serde_json::to_value(crate::RadialChart {
+            font_size: 16.,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(old.get("title").is_none() && old.get("chart_title").is_none());
+        old["title"] = "A²".into();
+        let mut chart: crate::RadialChart = serde_json::from_value(old).unwrap();
+        let expected = crate::config::ChartTitleOptions::from_legacy_plain(
+            "A²",
+            "sans-serif",
+            16.,
+            chart.label_color,
+        );
+        assert_eq!(chart.chart_title.as_ref(), Some(&expected));
+        chart.font_size = 28.;
+        chart.label_color = Color::WHITE;
+        chart.font_family = "Another font".into();
+        assert_eq!(chart.resolved_title(), expected);
+        chart.chart_title.as_mut().unwrap().text.align = crate::text::TextAlign::Right;
+        chart.chart_title.as_mut().unwrap().visible = false;
+        let json = serde_json::to_value(&chart).unwrap();
+        assert!(json.get("title").is_none(), "{json}");
+        let copy: crate::RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(copy, chart);
+        // A rich title wins over a legacy one, as it was drawn.
+        let mut both = serde_json::to_value(&chart).unwrap();
+        both["title"] = "ignored".into();
+        let read: crate::RadialChart = serde_json::from_value(both).unwrap();
+        assert_eq!(read.chart_title, chart.chart_title);
     }
 }

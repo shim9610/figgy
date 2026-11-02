@@ -424,13 +424,14 @@ the title is centred in the chart's own title band across the canvas through
 `RadarChart` hold `chart_title: BoundedTitleOptions { visible, text: RichText }`;
 those three documents are read into a Cartesian or polar `Config`, whose chart
 title the rich title becomes.
-When present it is authoritative. The legacy plain `title` is a fallback only. Call
-`RadialChart::normalize_title()` once when loading an old radial document into
-an editor: it copies its title, family, color and former `font_size * 1.5` size
-into the independent rich document. Later label size/color/family edits do not
-alter that document. Native code can set `chart_title` directly; the old plain
-API remains available. A legacy document's title (its `chart_title`, or its
-plain `title` in its font) is read into the `Config`'s chart title.
+It is the radial chart's only title (#160). `RadialChart::set_title_text(text)`
+makes a plain title in the chart's current family, `font_size * 1.5` and label
+colour; later label size/color/family edits do not alter it. A radial document
+written before 0.19 may carry the former plain `title` string: without a
+`chart_title` it is read into one in the document's font, the way it was drawn,
+and only `chart_title` is written. A legacy categorical, box plot or radar
+document's title (its `chart_title`, or its plain `title` in its font) is read
+into the `Config`'s chart title.
 
 The existing `DecorationId::ChartTitle` and `decorations.offsets` remain the only
 position authority. Do not add a second host-side title offset or HTML overlay.
@@ -447,9 +448,9 @@ the Cartesian title rules. The label font fields control label text, not an
 explicit title.
 
 Multi-line titles also support `text.align` (`TextAlign::Left`, `Center`, or
-`Right`) inside the measured text block. `RadialChart::normalize_title()` preserves legacy
-appearance by using `Left`; existing saved rich titles without `align` also
-read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
+`Right`) inside the measured text block. A plain title (`set_title_text`, or a
+legacy plain `title` read from a document) uses `Left`; existing saved rich
+titles without `align` also read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
 `..Default::default()`).
 
 Run `cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles`

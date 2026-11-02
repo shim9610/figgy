@@ -14,11 +14,11 @@ pub use selection::assert_selection_with_rerasterized_label;
 pub async fn check(gpu: RendererDevice) {
     let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut c = RadialChart {
-        title: "Resize data area".into(),
         slices: vec![RadialSlice::new("A", 1., Color::from_rgb8(220, 70, 40))],
         labels: RadialLabels::Inside,
         ..Default::default()
     };
+    c.set_title_text("Resize data area");
     c.format_labels();
     for scale in [1., 2.] {
         c.decorations = Default::default();

@@ -105,7 +105,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
-    c.title = "Radial title".into();
+    c.set_title_text("Radial title");
     c.labels = RadialLabels::Outside;
     c.font_size = 12.0;
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
@@ -160,7 +160,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         ("texture scale", Box::new(|c| c.style.texture_scale = 3.0)),
         ("light", Box::new(|c| c.style.light = [0.8, 0.5, 0.4])),
         ("shadow", Box::new(|c| c.style.shadow = true)),
-        ("title", Box::new(|c| c.title = "Updated title".into())),
+        ("title", Box::new(|c| c.set_title_text("Updated title"))),
         ("labels", Box::new(|c| c.labels = RadialLabels::None)),
         ("font", Box::new(|c| c.font_family = "Comic Neue".into())),
         ("font size", Box::new(|c| c.font_size = 16.0)),
@@ -978,7 +978,7 @@ fn radial_title_wider_than_the_canvas_is_clipped() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
-    c.title = "A title that is far wider than the canvas it is drawn on".into();
+    c.set_title_text("A title that is far wider than the canvas it is drawn on");
     c.font_size = 24.0;
     let frame = r
         .prepare(&c, (320, 320), 1.0)
@@ -1084,7 +1084,6 @@ fn radial_ssot_fields_are_explicit() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let RadialChart {
         decorations: _,
-        title: _,
         chart_title: _,
         // Layer foundation: `active_layer` only routes interaction and never
         // changes pixels; `annotations` is the container the annotation layer

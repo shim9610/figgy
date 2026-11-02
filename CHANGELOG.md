@@ -33,6 +33,22 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **One radial title** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `RadialChart::title`, the plain string drawn in the chart's font when
+  `chart_title` was absent, is removed with `normalize_title`:
+  `chart_title` is the chart's only title. `RadialChart::set_title_text`
+  makes a plain title in the chart's current font at 1.5 × `font_size` and
+  in `label_color`, keeping an existing title's visibility; an empty text
+  removes the title. A document that still carries `title` is read into
+  `chart_title` in the document's font when it has none (an empty `title`
+  reads as no title, and a `title` beside a `chart_title` is dropped, as it
+  was never drawn), and only `chart_title` is written. Behaviour change: a
+  plain title no longer follows a later edit of `font_family`, `font_size`
+  or `label_color`; call `set_title_text` again. Migration:
+  - `chart.title = text.into()` → `chart.set_title_text(text)`;
+  - `RadialChart { title: text.into(), .. }` → build the chart, then
+    `set_title_text(text)` once its font is set;
+  - `chart.normalize_title()` → nothing (the title is already rich).
 - **One selection per chart** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Config::picked_points` (`PickedPointsConfig`, `PickedPointRef`), the
   point-only selection drawn beside `picked_data`, is removed:
