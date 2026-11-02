@@ -7,7 +7,8 @@ use super::*;
 ///
 /// Clones retain the same identity. Equality is allocation identity rather
 /// than a numeric stamp, so independently-created pools cannot compare as the
-/// same while either identity is live.
+/// same while either identity is live. See "Identity and staleness checks" in
+/// `ARCHITECTURE.md`.
 #[derive(Clone)]
 pub(crate) struct PoolIdentity(Arc<PoolIdentityInner>);
 

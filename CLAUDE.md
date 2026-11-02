@@ -105,5 +105,9 @@ follow-up.
   byte-identically. Breaking Rust literals get a CHANGELOG migration note.
 - Check external facts at the source. Publication state comes from the
   crates.io index, not from wording in the docs.
+- Telling objects apart and detecting stale tokens reuse one of the patterns
+  in "Identity and staleness checks" in `crates/renderer/ARCHITECTURE.md`
+  (issued number, allocation identity, shared storage, generation). A new
+  pattern needs the maintainer's approval in the issue (rule 7).
 - Do not put model identifiers in code or docs. A commit trailer or PR
   footer naming the model that wrote it is fine.
