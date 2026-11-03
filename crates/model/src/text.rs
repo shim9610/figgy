@@ -166,6 +166,13 @@ pub struct RichSegment {
     /// The math node and slot this segment belongs to: its direct parent.
     /// `None` outside math nodes.
     pub math_parent: Option<MathSlot>,
+    /// The series a legend symbol segment stands for
+    /// ([`crate::legend::series_symbol_segments`] sets it). Legend updates
+    /// pair a symbol with its series by this id, not by position, so an
+    /// entry keeps its own series' mark when series are reordered or one has
+    /// no entry. `None` on every other segment, and on symbols written
+    /// before the field existed.
+    pub series_id: Option<String>,
 }
 
 /// The wire form of [`RichSegment`]. `char_set` is two keys on the wire, so
@@ -205,6 +212,8 @@ mod segment_serde {
         math_node: Option<&'a MathNode>,
         #[serde(skip_serializing_if = "Option::is_none")]
         math_parent: Option<&'a MathSlot>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        series_id: Option<&'a str>,
     }
 
     impl<'a> From<&'a RichSegment> for RichSegmentOut<'a> {
@@ -226,6 +235,7 @@ mod segment_serde {
                 rule_band: seg.rule_band.as_ref(),
                 math_node: seg.math_node.as_ref(),
                 math_parent: seg.math_parent.as_ref(),
+                series_id: seg.series_id.as_deref(),
             }
         }
     }
@@ -260,6 +270,10 @@ mod segment_serde {
         math_node: Option<MathNode>,
         #[serde(default)]
         math_parent: Option<MathSlot>,
+        /// Additive: absent in every document written before legend symbols
+        /// named their series.
+        #[serde(default)]
+        series_id: Option<String>,
     }
 
     /// The error for a segment that names two character sets.
@@ -292,6 +306,7 @@ mod segment_serde {
                 rule_band: wire.rule_band,
                 math_node: wire.math_node,
                 math_parent: wire.math_parent,
+                series_id: wire.series_id,
             })
         }
     }
@@ -361,6 +376,7 @@ impl RichSegment {
             rule_band: None,
             math_node: None,
             math_parent: None,
+            series_id: None,
         }
     }
 

@@ -384,27 +384,30 @@ fn prepare_demo_declarations(
                 errors: None,
             }),
         };
-        if let Some(index) = existing {
-            series[index] = item.clone();
-            renderer::config::set_legend_entry_label(
+        // The legend entry is the one that stands for this series, not
+        // the entry at the series' position.
+        let entry =
+            renderer::config::legend_entry_of_series(&config.legend.content, &series, series_id);
+        let symbol = renderer::config::series_symbol_segments(
+            &item,
+            config.colorbar.as_ref().map(|bar| &bar.colormap),
+        );
+        match existing {
+            Some(index) => series[index] = item.clone(),
+            None => series.push(item.clone()),
+        }
+        match entry {
+            Some(index) => renderer::config::set_legend_entry_label(
                 &mut config.legend.content,
                 index,
-                renderer::config::series_symbol_segments(
-                    &item,
-                    config.colorbar.as_ref().map(|bar| &bar.colormap),
-                ),
+                symbol,
                 rich_label.segments,
-            );
-        } else {
-            series.push(item.clone());
-            renderer::config::append_legend_entry_rich(
+            ),
+            None => renderer::config::append_legend_entry_rich(
                 &mut config.legend.content,
-                renderer::config::series_symbol_segments(
-                    &item,
-                    config.colorbar.as_ref().map(|bar| &bar.colormap),
-                ),
+                symbol,
                 rich_label.segments,
-            );
+            ),
         }
         config.legend.visible = true;
     }
@@ -1111,6 +1114,37 @@ mod tests {
         assert_eq!(repeated.config, first.config);
         assert_eq!(repeated.series, first.series);
         assert_eq!(repeated.color_seq, first.color_seq);
+    }
+
+    /// The demo's legend entries are found by the series they stand for: a
+    /// host series without a label sits before them, so their entries are
+    /// not at their series' positions, and loading the demo again restyles
+    /// them in place instead of relabeling a neighbour or adding a row.
+    #[test]
+    fn demo_legend_entries_follow_their_series_past_an_unlabeled_one() {
+        let config = renderer::default::default_config();
+        let host = vec![line_series("host", "host-x", "host-y")];
+        assert!(host[0].label.is_none());
+        let first =
+            prepare_demo_declarations(&config, &host, renderer::ColorCycle::Classic, 1).unwrap();
+        let repeated = prepare_demo_declarations(
+            &first.config,
+            &first.series,
+            renderer::ColorCycle::Classic,
+            first.color_seq,
+        )
+        .unwrap();
+        let content = &repeated.config.legend.content;
+        assert_eq!(renderer::config::legend_entry_count(content), 2);
+        assert_eq!(
+            renderer::config::legend_entry_series_id(content, 0),
+            Some("sine")
+        );
+        assert_eq!(
+            renderer::config::legend_entry_series_id(content, 1),
+            Some("rc")
+        );
+        assert_eq!(repeated.config, first.config);
     }
 
     #[test]

@@ -976,4 +976,11 @@ Interaction contracts:
   its rule; `series_symbol_segments` emits it and `RichSegment.rule_band`
   stores it, inside the fixed-width symbol field, so legend hit bounds do not
   change.
+- A legend symbol names the series it stands for (`RichSegment.series_id`,
+  set by `series_symbol_segments`). `update_legend_symbols_preserving_text`,
+  `legend_entry_of_series` and `legend_entry_series_id` pair entries with
+  series by that id, so reordering series, or a series without an entry,
+  never moves a mark to another entry's text. A symbol written before the
+  field existed pairs by position, as before, and names its series once it
+  is restyled.
 

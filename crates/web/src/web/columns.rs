@@ -368,8 +368,20 @@ impl FiggyChart {
         );
         let mut next_config = self.chart_config()?.clone();
         if self.legend_auto_managed {
-            for &index in removed.iter().rev() {
-                renderer::config::remove_legend_entry(&mut next_config.legend.content, index);
+            let content = &mut next_config.legend.content;
+            // The entries of the removed series: the series a symbol names,
+            // or, for a symbol that names none, the series at its position.
+            for index in (0..renderer::config::legend_entry_count(content)).rev() {
+                let gone = match renderer::config::legend_entry_series_id(content, index) {
+                    Some(series_id) => old_series
+                        .iter()
+                        .zip(&keep)
+                        .any(|(cfg, keep)| !keep && cfg.series_id == series_id),
+                    None => keep.get(index).is_some_and(|keep| !keep),
+                };
+                if gone {
+                    renderer::config::remove_legend_entry(content, index);
+                }
             }
             next_config.legend.visible = !next_config.legend.content.segments.is_empty();
         } else {
