@@ -142,11 +142,34 @@ pub fn prune_numeric_labels(
             |index| kept_bounds(ladder, index),
         ),
     };
+    // On a broken linear axis (#200) the stride counts on the unbroken
+    // walk, so each piece keeps the round multiples it would keep without
+    // the cut, not a cadence carried over from the piece before.
+    let grid = (ladder.is_none()
+        && axis.scale == crate::config::AxisScale::Linear
+        && axis.categories.is_none()
+        && crate::layout::BreakMap::of(axis).is_broken())
+    .then(|| {
+        crate::tick::major_ticks(axis)
+            .next()
+            .map(|first| (first, effective_major_spacing(axis)))
+    })
+    .flatten()
+    .filter(|&(_, spacing)| spacing.is_finite() && spacing > 0.0);
+    let grid_index = |index: usize, value: f64| {
+        grid.and_then(|(first, spacing)| {
+            let k = (value - first) / spacing;
+            ((k - k.round()).abs() < 1e-6 && k >= -0.5).then(|| k.round() as usize)
+        })
+        .unwrap_or(index)
+    };
     labels
         .into_iter()
         .filter(|label| kept(ladder, label))
         .enumerate()
-        .filter_map(|(index, label)| (index % stride == 0).then_some(label))
+        .filter_map(|(index, label)| {
+            (grid_index(index, label.value) % stride == 0).then_some(label)
+        })
         .collect()
 }
 

@@ -806,3 +806,254 @@ fn a_streamed_source_on_a_broken_axis_is_refused() {
     r.inspect_streaming_capability(id).unwrap();
     r.remove_chart(id).unwrap();
 }
+
+const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
+const CYAN: Color = Color::from_rgb8(0, 255, 255);
+const BLACK: Color = Color::from_rgb8(0, 0, 0);
+
+/// A line in black with `color` markers on its points: the kind a line
+/// offset member must be.
+fn line_markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
+    let mut series = line(id, x, y, BLACK, None);
+    let marker = markers(id, x, y, color);
+    if let (DataRenderType::Xy(xy), DataRenderType::Xy(m)) =
+        (&mut series.render_type, marker.render_type)
+    {
+        xy.scatter = m.scatter;
+    }
+    series
+}
+
+/// Where the panel drawing `series_id` places `(x, y)` in a document export
+/// at `scale`: its own data area and axes (`Config::expand`).
+fn panel_px(config: &renderer::Config, series_id: &str, x: f64, y: f64, scale: f32) -> (f32, f32) {
+    let scaled = config.scaled(scale);
+    let expansion = scaled.expand().unwrap();
+    let panel = &expansion.panels[scaled.panel_of_series(series_id)].config;
+    let da = panel.data_area().unwrap().0;
+    (
+        da.x as f32 + da.width as f32 * renderer::layout::axis_fraction(x, &panel.bottom_x),
+        da.y as f32 + da.height as f32 * (1.0 - renderer::layout::axis_fraction(y, &panel.left_y)),
+    )
+}
+
+/// An overlay cut on its own `y_axis`, a subplot cut on its own axes and
+/// line offset members of a broken axis each draw their marks on their
+/// panel's pieces, in both styles, at 1x and 2x.
+#[test]
+fn overlays_subplots_and_line_offsets_draw_their_pieces() {
+    let mut r = renderer();
+    let column = |r: &mut Renderer, id: &str, v: &[f64]| upload(r, id, v.to_vec());
+    column(&mut r, "bx", &[2.0, 8.0]);
+    column(&mut r, "by", &[5.0, 95.0]);
+    column(&mut r, "oy", &[15.0, 185.0]);
+    column(&mut r, "ly", &[5.0, 92.0]);
+    column(&mut r, "mx", &[5.0, 5.0]);
+    column(&mut r, "my", &[2.0, 98.0]);
+    column(&mut r, "lx", &[1.5, 8.5]);
+    // Apart on screen, clear of the data area's edges and off the
+    // members' lines, which cross x = 5 in the gap: no mark covers another.
+    let points = |id: &str| -> (Vec<f64>, Vec<f64>) {
+        match id {
+            "m" => (vec![5.0, 5.0], vec![2.0, 98.0]),
+            "ov" => (vec![5.0, 5.0], vec![15.0, 185.0]),
+            "lo0" | "lo1" => (vec![1.5, 8.5], vec![5.0, 92.0]),
+            _ => (vec![2.0, 8.0], vec![5.0, 95.0]),
+        }
+    };
+    for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
+        let mut base = config(0.0, 100.0, &[(10.0, 90.0)]);
+        if let Some(breaks) = base.left_y.breaks.as_mut() {
+            breaks.style = style;
+        }
+        let mut sub = with_x_cuts(base.clone(), &[(4.0, 6.0)]);
+        sub.chart_area.0.y = HEIGHT;
+        let mut overlay = renderer::OverlayLayer::default();
+        overlay.y_axis.min = 0.0;
+        overlay.y_axis.max = 200.0;
+        overlay.y_axis.breaks = base.left_y.breaks.clone().map(|breaks| AxisBreaks {
+            ranges: vec![AxisBreak::new(20.0, 180.0)],
+            ..breaks
+        });
+        overlay.series = vec!["ov".into()];
+        let mut document = base.clone();
+        document.overlays.push(overlay);
+        document.subplots.push(renderer::Subplot {
+            config: sub,
+            series: vec!["sub".into()],
+            link_x: None,
+            link_y: None,
+        });
+        document.line_offsets = Some(renderer::data_config::LineOffsets {
+            series: vec!["lo0".into(), "lo1".into()],
+            // Far enough apart that no member's line covers the other's
+            // markers.
+            step_y: 3.0,
+            step_x: -0.6,
+        });
+        let series = [
+            markers("m", "mx", "my", RED),
+            markers("ov", "mx", "oy", BLUE),
+            markers("sub", "bx", "by", GREEN),
+            line_markers("lo0", "lx", "ly", MAGENTA),
+            line_markers("lo1", "lx", "ly", CYAN),
+        ];
+        let chart = Chart::new(document.clone());
+        for scale in [1.0f32, 2.0] {
+            let img = r
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .block_on()
+                .unwrap();
+            if let Ok(dir) = std::env::var("FIGGY_BREAK_DUMP") {
+                std::fs::write(
+                    format!(
+                        "{dir}/layered-{style:?}-{scale}x-{}x{}.rgba",
+                        img.width, img.height
+                    ),
+                    &img.rgba,
+                )
+                .unwrap();
+            }
+            for (id, color) in [
+                ("m", RED),
+                ("ov", BLUE),
+                ("sub", GREEN),
+                ("lo0", MAGENTA),
+                ("lo1", CYAN),
+            ] {
+                let (xs, ys) = points(id);
+                for (&x, &y) in xs.iter().zip(&ys) {
+                    let (cx, cy) = panel_px(&document, id, x, y, scale);
+                    let (mx, my) =
+                        centroid(&img, cx, cy, 10.0 * scale, is(color)).unwrap_or_else(|| {
+                            panic!("{style:?} {scale}x {id}: no marker at ({x}, {y})")
+                        });
+                    assert!(
+                        (mx - cx).abs() < 1.0 && (my - cy).abs() < 1.0,
+                        "{style:?} {scale}x {id} ({x}, {y}): marker at ({mx}, {my}), panel at ({cx}, {cy})"
+                    );
+                }
+            }
+            // The members' lines cross the gap: their own gaps fall on
+            // the base's, so nothing of them shows inside it. The axes'
+            // break marks reach a few pixels in from the edges.
+            let (x0, _, w, _) = data_area(&document, scale);
+            let inset = (8.0 * scale) as u32;
+            let inked = gap_rows(&document, scale, 1.0)
+                .flat_map(|y| (x0 as u32 + inset..(x0 + w) as u32 - inset).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let p = pixel(&img, x, y);
+                    p[3] > 0 && p[..3].iter().any(|&c| c < 200)
+                })
+                .count();
+            assert_eq!(inked, 0, "{style:?} {scale}x: ink inside the base's gap");
+        }
+    }
+}
+
+/// The picked highlight is drawn with its mark, at the mark's piece and its
+/// shift, on the screen and in the export, and never in a gap.
+#[test]
+fn the_picked_highlight_rings_the_mark_on_its_piece() {
+    let mut r = renderer();
+    let points = [(1.0, 5.0), (8.5, 95.0)];
+    upload(&mut r, "x", points.iter().map(|p| p.0).collect());
+    upload(&mut r, "y", points.iter().map(|p| p.1).collect());
+    let series = [markers("m", "x", "y", RED)];
+    const GOLD: Color = Color::from_rgb8(255, 215, 0);
+    for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
+        let mut plain = with_x_cuts(config(0.0, 100.0, &[(10.0, 90.0)]), &[(4.0, 7.0)]);
+        for axis in [&mut plain.bottom_x, &mut plain.left_y] {
+            if let Some(breaks) = axis.breaks.as_mut() {
+                breaks.style = style;
+            }
+        }
+        for (index, &(x, y)) in points.iter().enumerate() {
+            let mut picked = plain.clone();
+            picked.picked_data = Some(renderer::DataSelectionsConfig {
+                refs: vec![renderer::PickedDataRef::Point {
+                    source_id: None,
+                    series_id: "m".into(),
+                    point_index: index,
+                }],
+                ..Default::default()
+            });
+            let mut images = vec![(1.0, screen(&mut r, &picked, &series))];
+            for scale in [1.0f32, 2.0] {
+                images.push((scale, export(&mut r, &picked, &series, scale)));
+            }
+            for (scale, img) in images {
+                let (cx, cy) = (col_of(&picked, x, scale), row_of(&picked, y, scale));
+                let ring = centroid(&img, cx, cy, 14.0 * scale, is(GOLD)).unwrap_or_else(|| {
+                    panic!("{style:?} {scale}x point {index}: no highlight at ({cx}, {cy})")
+                });
+                assert!(
+                    (ring.0 - cx).abs() < 1.5 && (ring.1 - cy).abs() < 1.5,
+                    "{style:?} {scale}x point {index}: ring at {ring:?}, mark at ({cx}, {cy})"
+                );
+                assert_eq!(
+                    count_in_rows(&img, gap_rows(&picked, scale, 1.0), is(GOLD)),
+                    0,
+                    "{style:?} {scale}x: highlight in the gap"
+                );
+            }
+        }
+    }
+}
+
+/// The annotation layer follows the pieces: a span and a reference line
+/// across the gap are drawn on both sides of it and not inside it, in both
+/// styles, at 1x and 2x.
+#[test]
+fn annotations_across_a_gap_are_drawn_per_piece() {
+    use renderer::{Annotation, AnnotationAxis, AnnotationKind};
+    let mut r = renderer();
+    upload(&mut r, "x", vec![1.0]);
+    upload(&mut r, "y", vec![5.0]);
+    let series = [markers("m", "x", "y", RED)];
+    for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
+        let mut config = config(0.0, 100.0, &[(10.0, 90.0)]);
+        if let Some(breaks) = config.left_y.breaks.as_mut() {
+            breaks.style = style;
+        }
+        config.annotations.items = vec![
+            Annotation::new(AnnotationKind::Span {
+                axis: AnnotationAxis::Y,
+                from: 5.0,
+                to: 95.0,
+                fill: GREEN,
+            }),
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::X,
+                value: 7.0,
+                style: renderer::AnnotationLineStyle {
+                    color: BLUE,
+                    width: 3.0,
+                    ..Default::default()
+                },
+                label: None,
+            }),
+        ];
+        for scale in [1.0f32, 2.0] {
+            let img = export(&mut r, &config, &series, scale);
+            let gap = gap_rows(&config, scale, 1.0);
+            for (name, color) in [("span", GREEN), ("line", BLUE)] {
+                assert_eq!(
+                    count_in_rows(&img, gap.clone(), is(color)),
+                    0,
+                    "{style:?} {scale}x: the {name} inside the gap"
+                );
+                let below = gap.end + 2..gap.end + 4;
+                let above = gap.start.saturating_sub(4)..gap.start.saturating_sub(2);
+                assert!(
+                    count_in_rows(&img, below, is(color)) > 0
+                        && count_in_rows(&img, above, is(color)) > 0,
+                    "{style:?} {scale}x: the {name} on both sides of the gap"
+                );
+            }
+        }
+    }
+}

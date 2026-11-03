@@ -813,15 +813,29 @@ fn shift_axis(axis: &mut AxisOptions, by: f64) {
     }
     let (min, max) = axis.data_range();
     axis.categories = None;
+    // The cut ranges move with the range, so the member's gaps fall where
+    // its owner's do (#200).
+    let cuts = axis
+        .breaks
+        .as_mut()
+        .map_or(&mut [][..], |breaks| breaks.ranges.as_mut_slice());
     match axis.scale {
         AxisScale::Linear => {
             axis.min = min - by;
             axis.max = max - by;
+            for cut in cuts {
+                cut.from -= by;
+                cut.to -= by;
+            }
         }
         AxisScale::Logarithmic => {
             let factor = 10f64.powf(by);
             axis.min = min / factor;
             axis.max = max / factor;
+            for cut in cuts {
+                cut.from /= factor;
+                cut.to /= factor;
+            }
         }
     }
 }
@@ -2131,6 +2145,60 @@ mod tests {
         assert_eq!(after.panels[1], expansion.panels[1]);
         assert_eq!(after.panels[2], expansion.panels[2]);
         assert_ne!(after.panels[3], expansion.panels[3]);
+    }
+
+    /// A member's cut ranges move with its shifted range, so its pieces and
+    /// gaps fall where its owner's do, in data units on a linear axis and
+    /// in decades on a log one (#200).
+    #[test]
+    fn line_offset_members_keep_their_owners_gaps() {
+        use crate::config::{AxisBreak, AxisBreakStyle, AxisBreaks};
+        let mut cfg = two_layer_config();
+        cfg.bottom_x.min = 0.0;
+        cfg.bottom_x.max = 10.0;
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.left_y.min = 1.0;
+        cfg.left_y.max = 1e6;
+        let cut = |from, to, style| {
+            Some(AxisBreaks {
+                ranges: vec![AxisBreak::new(from, to)],
+                style,
+                ..AxisBreaks::default()
+            })
+        };
+        cfg.bottom_x.breaks = cut(3.0, 6.0, AxisBreakStyle::Continuous);
+        cfg.left_y.breaks = cut(100.0, 1e4, AxisBreakStyle::Panels);
+        cfg.line_offsets = Some(offsets(&["a", "b"], 0.5, 2.0));
+        let expansion = cfg.expand().unwrap();
+        let base = &expansion.panels[0].config;
+        for index in [2, 3] {
+            let member = &expansion.panels[index].config;
+            for (own, owner) in [
+                (&member.bottom_x, &base.bottom_x),
+                (&member.left_y, &base.left_y),
+            ] {
+                let (own, owner) = (
+                    crate::layout::BreakMap::of(own),
+                    crate::layout::BreakMap::of(owner),
+                );
+                assert_eq!(own.knots().len(), 1);
+                let (a, b) = (own.knots()[0], owner.knots()[0]);
+                assert!(
+                    (a.start - b.start).abs() < 1e-9 && (a.end - b.end).abs() < 1e-9,
+                    "panel {index}: {a:?} vs {b:?}"
+                );
+            }
+            assert_eq!(
+                member.left_y.breaks.as_ref().map(|b| b.style),
+                Some(AxisBreakStyle::Panels)
+            );
+        }
+        // The second member is shifted by 2 on x and half a decade on y.
+        let b = &expansion.panels[3].config;
+        let x = &b.bottom_x.breaks.as_ref().unwrap().ranges[0];
+        assert_eq!((x.from, x.to), (1.0, 4.0));
+        let y = &b.left_y.breaks.as_ref().unwrap().ranges[0];
+        assert!((y.from - 100.0 * 10f64.powf(-0.5)).abs() < 1e-9);
     }
 
     /// A subplot's line offsets are its own: its members expand among its

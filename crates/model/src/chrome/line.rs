@@ -447,6 +447,45 @@ mod break_tests {
         }
     }
 
+    /// Crowded labels on a broken axis are thinned on the unbroken walk:
+    /// every piece keeps round multiples of the kept step, not a cadence
+    /// carried over from the piece below.
+    #[test]
+    fn each_piece_keeps_the_round_labels_of_the_unbroken_axis() {
+        struct Tall;
+        impl MeasureText for Tall {
+            fn measure_rich(&self, _: &RichText) -> TextExtents {
+                TextExtents {
+                    width: 20.0,
+                    ascent: 8.0,
+                    descent: 2.0,
+                }
+            }
+        }
+        let mut axis = broken(BreakMark::None);
+        axis.major_spacing = 0.2;
+        if let Some(breaks) = axis.breaks.as_mut() {
+            breaks.ranges = vec![AxisBreak::new(10.0, 90.0)];
+        }
+        let majors = major_tick_values_for_axis(&axis, Side::Left, &PLOT, &Tall);
+        let labels =
+            crate::chrome::visible_numeric_labels(&axis, Side::Left, &Tall, &majors, |v| {
+                value_to_screen(v, &axis, Side::Left, &PLOT)
+            });
+        let values: Vec<f64> = labels.iter().map(|l| l.value).collect();
+        assert!(values.len() >= 4, "{values:?}");
+        let step = values[1] - values[0];
+        assert!(step > 0.2, "the labels were thinned: {values:?}");
+        assert!(values.iter().any(|&v| v > 90.0), "{values:?}");
+        for v in &values {
+            let k = v / step;
+            assert!(
+                (k - k.round()).abs() < 1e-6,
+                "{v} is no multiple of {step}: {values:?}"
+            );
+        }
+    }
+
     /// The frames of the pieces along each gap: only on a `Panels` axis
     /// that asks for them, one across the plot at each edge of the gap.
     #[test]
