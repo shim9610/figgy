@@ -1057,3 +1057,252 @@ fn annotations_across_a_gap_are_drawn_per_piece() {
         }
     }
 }
+
+/// The cost of the pieces (rule 10: measured, never capped). A million
+/// markers on a chart cut three times on each axis, 4 × 4 `Panels` pieces,
+/// against the same chart unbroken: every piece draws the panel's series
+/// once, so the draw cost grows with the piece count, and a pick runs once
+/// whatever the pieces. The times are printed, not asserted; every marker
+/// is drawn on its piece (one checked).
+#[test]
+fn sixteen_pieces_over_a_million_points_draw_and_pick() {
+    use std::time::Instant;
+    const N: usize = 1_000_000;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Rgba8Unorm,
+        64 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.enable_gpu_picking().unwrap();
+    // A deterministic spread over 0..100 on both axes.
+    let spread = |seed: u64| -> Vec<f64> {
+        (0..N as u64)
+            .map(|i| {
+                let mut x = i
+                    .wrapping_add(seed.wrapping_mul(0xD1B5_4A32_D192_ED03))
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                x ^= x >> 33;
+                x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+                x ^= x >> 33;
+                (x as f64 / u64::MAX as f64) * 100.0
+            })
+            .collect()
+    };
+    upload(&mut r, "x", spread(1));
+    upload(&mut r, "y", spread(2));
+    let cuts = [(20.0, 30.0), (45.0, 55.0), (70.0, 80.0)];
+    let mut broken = config(0.0, 100.0, &cuts);
+    broken.bottom_x.max = 100.0;
+    let broken = panels(with_x_cuts(broken, &cuts));
+    let mut whole = broken.clone();
+    whole.bottom_x.breaks = None;
+    whole.left_y.breaks = None;
+    let series = [markers("m", "x", "y", RED)];
+    let mut median = |config: &renderer::Config| {
+        let mut times: Vec<f64> = (0..3)
+            .map(|_| {
+                let start = Instant::now();
+                let _ = export(&mut r, config, &series, 1.0);
+                start.elapsed().as_secs_f64() * 1e3
+            })
+            .collect();
+        times.sort_by(f64::total_cmp);
+        times[1]
+    };
+    let (whole_ms, broken_ms) = (median(&whole), median(&broken));
+    let mut pick_ms = |config: &renderer::Config| {
+        let at = (col_of(config, 10.0, 1.0), row_of(config, 10.0, 1.0));
+        let start = Instant::now();
+        let hit = pick_at(&mut r, config, &series, at, 1.0);
+        (start.elapsed().as_secs_f64() * 1e3, hit)
+    };
+    // The first pick builds the pick pipelines; it is not timed.
+    let _ = pick_ms(&whole);
+    let (whole_pick, _) = pick_ms(&whole);
+    let (broken_pick, hit) = pick_ms(&broken);
+    eprintln!(
+        "{N} markers, export 1x median of 3: unbroken {whole_ms:.1} ms, 4 x 4 pieces \
+         {broken_ms:.1} ms; pick (with registration): unbroken {whole_pick:.1} ms, \
+         4 x 4 pieces {broken_pick:.1} ms"
+    );
+    assert!(
+        hit.is_some(),
+        "a dense spread has a marker under the cursor"
+    );
+    let img = export(&mut r, &broken, &series, 1.0);
+    let (cx, cy) = (col_of(&broken, 90.0, 1.0), row_of(&broken, 90.0, 1.0));
+    assert!(
+        centroid(&img, cx, cy, 4.0, is(RED)).is_some(),
+        "the last piece draws its markers"
+    );
+}
+
+/// Bar charts, where a cut is used most: category bars in both directions
+/// and both styles, a tall bar crossing the gap and short ones below it.
+/// The tall bar is drawn on both pieces and its end lands where the value
+/// axis places it; no bar is drawn inside the gap; the short ones end on
+/// the first piece (#200).
+#[test]
+fn category_bars_cross_a_value_axis_cut() {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarDirection, CategoryBarMode, CategoryBarStyle,
+    };
+    let mut r = renderer();
+    upload(&mut r, "pos", vec![0.0, 1.0, 2.0]);
+    let values = [12.0, 96.0, 25.0];
+    upload(&mut r, "val", values.to_vec());
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
+            let mut config = config(0.0, 100.0, &[]);
+            config.left_y.breaks = None;
+            let categories = Some(vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]);
+            let cut = Some(AxisBreaks {
+                ranges: vec![AxisBreak::new(30.0, 85.0)],
+                style,
+                gap: 0.1,
+                mark: BreakMark::None,
+                frame_each_panel: false,
+            });
+            let (x, y) = match direction {
+                CategoryBarDirection::Vertical => {
+                    config.bottom_x.categories = categories;
+                    config.left_y.breaks = cut;
+                    ("pos", "val")
+                }
+                CategoryBarDirection::Horizontal => {
+                    config.left_y.categories = categories;
+                    config.bottom_x.min = 0.0;
+                    config.bottom_x.max = 100.0;
+                    config.bottom_x.breaks = cut;
+                    ("val", "pos")
+                }
+            };
+            config.bar_groups = Some(BarGroups {
+                mode: CategoryBarMode::Grouped,
+                direction,
+                group_width: 0.8,
+                bar_gap: 4.0,
+            });
+            let series = [SeriesConfig {
+                series_id: "bars".into(),
+                source_id: None,
+                label: None,
+                x_column: x.into(),
+                y_column: y.into(),
+                z_column: None,
+                render_type: DataRenderType::CategoryBars {
+                    color: RED,
+                    style: CategoryBarStyle {
+                        material: renderer::Material::Flat,
+                        corner_radius: 0.0,
+                        outline: false,
+                        ..CategoryBarStyle::default()
+                    },
+                    labels: Default::default(),
+                    label_format: Default::default(),
+                    overrides: None,
+                },
+            }];
+            for scale in [1.0f32, 2.0] {
+                let img = export(&mut r, &config, &series, scale);
+                if let Ok(dir) = std::env::var("FIGGY_BREAK_DUMP") {
+                    std::fs::write(
+                        format!(
+                            "{dir}/bars-{direction:?}-{style:?}-{scale}x-{}x{}.rgba",
+                            img.width, img.height
+                        ),
+                        &img.rgba,
+                    )
+                    .unwrap();
+                }
+                let vertical = direction == CategoryBarDirection::Vertical;
+                let axis = if vertical {
+                    &config.left_y
+                } else {
+                    &config.bottom_x
+                };
+                let (dx, dy, dw, dh) = data_area(&config, scale);
+                // The value axis' pixel of `v` and the category centre `k`.
+                let value_px = |v: f64| {
+                    let f = renderer::layout::axis_fraction(v, axis);
+                    if vertical {
+                        dy + dh * (1.0 - f)
+                    } else {
+                        dx + dw * f
+                    }
+                };
+                let centre = |k: usize| {
+                    let f = (k as f32 + 0.5) / 3.0;
+                    if vertical {
+                        dx + dw * f
+                    } else {
+                        dy + dh * (1.0 - f)
+                    }
+                };
+                // The red run along the value axis through category `k`.
+                let run = |k: usize| -> Vec<f32> {
+                    let c = centre(k) as u32;
+                    let len = if vertical { img.height } else { img.width };
+                    (0..len)
+                        .filter(|&i| {
+                            let (px, py) = if vertical { (c, i) } else { (i, c) };
+                            is(RED)(pixel(&img, px, py))
+                        })
+                        .map(|i| i as f32 + 0.5)
+                        .collect()
+                };
+                let gap = {
+                    let map = renderer::layout::BreakMap::of(axis);
+                    let k = map.knots()[0];
+                    let (lo, hi) = (k.start, k.end);
+                    let to_px = |t: f64| {
+                        if vertical {
+                            dy + dh * (1.0 - t as f32)
+                        } else {
+                            dx + dw * t as f32
+                        }
+                    };
+                    let (p, q) = (to_px(lo), to_px(hi));
+                    (p.min(q) + 1.0, p.max(q) - 1.0)
+                };
+                for (k, &v) in values.iter().enumerate() {
+                    let px = run(k);
+                    let tag = format!("{direction:?} {style:?} {scale}x bar {k} ({v})");
+                    assert!(!px.is_empty(), "{tag}: not drawn");
+                    assert!(
+                        px.iter().all(|&p| p < gap.0 || p > gap.1),
+                        "{tag}: drawn inside the gap {gap:?}"
+                    );
+                    // The value end: the far end from the baseline at 0.
+                    let end = if vertical {
+                        px.iter().copied().fold(f32::INFINITY, f32::min)
+                    } else {
+                        px.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+                    };
+                    let expected = value_px(v);
+                    assert!(
+                        (end - expected).abs() <= 1.5,
+                        "{tag}: ends at {end}, the axis puts {v} at {expected}"
+                    );
+                    // The tall bar shows on both sides of the gap.
+                    if v > 85.0 {
+                        assert!(
+                            px.iter().any(|&p| p < gap.0) && px.iter().any(|&p| p > gap.1),
+                            "{tag}: not on both pieces"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

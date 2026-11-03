@@ -61,6 +61,21 @@ pub struct Config {
 | `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)) |
 | `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
 | `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade, as every log axis did before the field existed. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
+| `breaks` | `Option<AxisBreaks>` | Ranges cut out of the axis ([#200](https://github.com/shim9610/figgy/issues/200)): see [`AxisBreaks`](#axisbreaks). `None` (default, omitted from JSON) draws the axis whole. Allowed on `bottom_x`, `left_y` and an overlay's `y_axis` of a rectangular chart; `top_x` and `right_y` take their partner's cuts at the same fractions of their own range when drawn (`layout::mirrored_breaks`), and a colourbar axis, a polar, ternary, 3D or parallel chart refuse them. The range helpers and a view state keep it, and a subplot link copies it with the range |
+
+<a id="axisbreaks"></a>
+### `AxisBreaks`
+Ranges cut out of a value axis ([#200](https://github.com/shim9610/figgy/issues/200)). The axis draws the rest, each cut as a gap marked on the axis line; the pieces between the cuts share the axis length in proportion to their spans (in decades on a logarithmic axis), at one scale. A cut outside the current range (after a zoom or an auto-fit) has no effect, and one that overlaps an end is cut at the end.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ranges` | `Vec<AxisBreak { from, to }>` | The cut ranges in data units: finite, `from < to`, sorted and not overlapping, at most `MAX_AXIS_BREAKS` (3), positive on a logarithmic axis |
+| `style` | `AxisBreakStyle` | `Continuous` (default): one axis, linear within each piece; a line crossing a gap is the straight segment between its two drawn points, hidden inside the gap. `Panels`: each piece is a linear axis of its own; a line crossing a gap is drawn in each piece at its own slope and clipped at the piece's edge. Markers, bars and cells look the same in both |
+| `gap` | f32 | Width of each gap as a fraction of the axis length, `0..=MAX_AXIS_BREAK_GAP` (0.2); default 0.03. A fraction, so a 2x export is the 1x layout doubled |
+| `mark` | `BreakMark` | `Slash { size, color, width }` (default: 6 px, 1 px, `color: None`) draws a slash pair at each gap on the axis line, in `color` or, when it is `None` (omitted from JSON), the axis line's colour; `None` draws none. The marks are part of the axis element. The size and width scale with the export scale |
+| `frame_each_panel` | bool | Default `true`, in both styles: each piece draws its own frame along the gaps, a line across the plot at each gap edge in the axis line's style, so the pieces read as separate panels. The frames are part of the axis element: they move with `line_offset`, and the axis is then hit on its drawn parts rather than its box. `false` leaves only the marks |
+
+Nothing is drawn inside a gap: data, its picked highlight and value labels, grid lines, spans and reference lines are drawn per piece. No tick or tick label falls inside a cut. On a linear axis the major spacing steps down the 1, 2, 5 × 10^k ladder while some piece would hold fewer than two majors (`tick::effective_major_spacing`), so a short piece keeps at least two round ticks; crowded labels are thinned on the unbroken tick grid, so each piece keeps round values. A pick whose cursor is in a gap answers nothing; under `Panels` a pick in a piece answers what that piece draws. A data anchor or reference line inside a cut is skipped as `OutOfRange`; a span with an end inside a cut keeps its visible part. Streamed sources are refused (`STREAMED_BREAK_REASON`), and a hexagonal grid is refused on a `Continuous` broken axis (its lattice would not be uniform). Line offset members carry their owner's cuts shifted with their range.
 
 ### `LabelStyle`
 | Field | Type | Meaning |
@@ -1215,6 +1230,21 @@ pub struct Config {
 | `major_tick_length / minor_tick_length` | f32 | 눈금 길이(px) |
 | `cross_at` | `Option<f64>` | 축선이 수직인 축과 만나는 위치를 그 축의 값으로 정한다(위·아래 축은 `left_y`, 왼쪽·오른쪽 축은 `bottom_x`의 값). 그리기 영역 안으로 제한하며 축선과 그 히트 영역만 옮기고 눈금·라벨·제목은 그대로 둔다. 유한해야 하며 극좌표 차트에서는 무시한다. `None`(기본값, JSON에서 생략)이면 축선은 가장자리에 있다 |
 | `log_ticks` | `LogTickPolicy` | 로그축의 주 눈금을 정하는 방식([#42](https://github.com/shim9610/figgy/issues/42)). `Decades`(기본값, JSON에서 생략)는 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `Adaptive`는 `major_spacing`을 쓰지 않고 범위만 보고 주 눈금을 고른다(`tick::log_ladder`). 범위가 6 decade보다 넓으면 n decade마다 놓고(`n`은 `tick::axis_major_spacing`), 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 `tick::LOG_LADDER_MIN_MAJORS`(4)개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9배 위치 가운데 주 눈금이 아닌 곳이다. 라벨이 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되 라벨이 2개 미만이 되는 단계로는 내려가지 않고, 그래도 겹치면 2개, 5개, 10개마다 하나씩 남긴다. 눈금과 격자선은 그대로 두며, 이 방식에는 `LogDecadeStepAdjusted` 경고를 내지 않는다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하므로 확대·축소하면 눈금을 새 범위에 맞게 다시 고른다. 연결된 서브플롯 축은 눈금 간격과 함께 이 값을 복사한다 |
+| `breaks` | `Option<AxisBreaks>` | 축에서 잘라낼 구간([#200](https://github.com/shim9610/figgy/issues/200)). 자세한 내용은 아래 [`AxisBreaks`](#axisbreaks-ko)를 참고한다. `None`(기본값, JSON에서 생략)이면 축을 자르지 않는다. 직교 차트의 `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있다. `top_x`와 `right_y`는 그릴 때 짝이 되는 축의 구간을 자기 범위의 같은 비율 위치로 옮겨 쓴다(`layout::mirrored_breaks`). 색상 막대 축과 극좌표·삼각좌표·3D·평행 좌표 차트는 이 값을 거부한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하고, 연결된 서브플롯 축은 범위와 함께 복사한다 |
+
+<a id="axisbreaks-ko"></a>
+### `AxisBreaks`
+값 축에서 잘라낼 구간이다([#200](https://github.com/shim9610/figgy/issues/200)). 축은 나머지 부분만 그리고, 잘라낸 구간마다 빈칸을 두어 축선에 표시한다. 구간 사이의 조각들은 각자의 폭(로그축은 decade 수)에 비례해 축 길이를 나누므로 모두 같은 배율로 그려진다. 확대·축소나 자동 맞춤 뒤 현재 범위 밖에 있는 구간은 아무 영향이 없고, 범위 끝에 걸친 구간은 끝에서 잘린다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `ranges` | `Vec<AxisBreak { from, to }>` | 잘라낼 구간(데이터 단위). 유한하고 `from < to`이며, 정렬되어 서로 겹치지 않아야 한다. 최대 `MAX_AXIS_BREAKS`(3)개이고 로그축에서는 양수여야 한다 |
+| `style` | `AxisBreakStyle` | `Continuous`(기본값)는 하나의 축으로 그리며 조각 안에서는 선형이다. 빈칸을 지나는 선은 양쪽에 그려진 두 점을 잇는 직선이고 빈칸 안에서는 가려진다. `Panels`는 조각마다 독립된 선형 축으로 그린다. 빈칸을 지나는 선은 각 조각에서 그 조각의 기울기로 그리고 조각 경계에서 자른다. 점 기호·막대·셀은 두 방식에서 똑같이 보인다 |
+| `gap` | f32 | 빈칸 하나의 폭. 축 길이에 대한 비율이며 `0..=MAX_AXIS_BREAK_GAP`(0.2), 기본값 0.03이다. 비율이므로 2배 내보내기는 1배 배치를 그대로 두 배로 키운 것이다 |
+| `mark` | `BreakMark` | `Slash { size, color, width }`(기본값: 6 px, 1 px, `color: None`)는 축선의 빈칸 양쪽에 빗금 한 쌍을 그린다. 색은 `color`를 쓰고, `None`(JSON에서 생략)이면 축선 색을 쓴다. `BreakMark::None`은 빗금을 그리지 않는다. 빗금은 축 요소의 일부다. 크기와 두께는 내보내기 배율을 따른다 |
+| `frame_each_panel` | bool | 기본값 `true`이며 두 방식 모두에 적용된다. 각 조각이 빈칸 쪽에도 자기 테두리를 그린다. 빈칸 양쪽 경계마다 플롯을 가로지르는 선을 축선 스타일로 그려서 조각들이 서로 다른 칸으로 보이게 한다. 테두리는 축 요소의 일부라서 `line_offset`을 따라 움직이고, 이때 축은 상자가 아니라 그려진 선 위에서만 선택된다. `false`이면 빗금만 남는다 |
+
+빈칸 안에는 아무것도 그리지 않는다. 데이터와 선택 강조, 값 라벨, 격자선, 구간(span)과 기준선 주석은 조각마다 그린다. 잘라낸 구간 안에는 눈금과 눈금 라벨을 두지 않는다. 선형축에서는 주 눈금이 2개 미만인 조각이 있으면 간격을 1·2·5 × 10^k 단계로 한 단계씩 줄인다(`tick::effective_major_spacing`). 그래서 짧은 조각에도 깔끔한 값의 주 눈금이 2개 이상 남는다. 라벨이 겹칠 때는 자르기 전 눈금 격자를 기준으로 줄이므로 조각마다 깔끔한 값이 남는다. 빈칸 안을 가리킨 피킹은 아무것도 반환하지 않고, `Panels`에서 조각 안을 가리킨 피킹은 그 조각에 그려진 것을 반환한다. 잘라낸 구간 안의 데이터 앵커와 기준선은 `OutOfRange`로 건너뛰고, 한쪽 끝이 구간 안에 있는 span은 보이는 부분만 그린다. 스트리밍 소스는 거부하고(`STREAMED_BREAK_REASON`), `Continuous`로 끊긴 축의 육각 격자도 격자가 균일하지 않게 되므로 거부한다. 라인 오프셋 멤버는 범위를 옮긴 만큼 소유 축의 구간도 함께 옮겨 쓴다.
 
 ### `LabelStyle`
 | 필드 | 타입 | 의미 |

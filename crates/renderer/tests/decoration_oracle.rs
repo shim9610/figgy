@@ -241,6 +241,26 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
+        scene: "BrokenAxes",
+        layer: "*",
+        element: "*axis_left",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*axis_right*",
+        reason: "a piece frame (#200) runs under the opposite axis's inward tick at \
+                 the gap edge, whose box takes those pixels, as at the axis corners",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "BrokenAxes",
+        layer: "*",
+        element: "*axis_left",
+        inv: Inv::I2,
+        detail: "*points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the same overlap at 2x: the opposite axis's inward tick at the gap edge owns \
+                 the last pixels under a piece frame's end (#200)",
+        issue: "#38",
+    },
+    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_*",
@@ -943,6 +963,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Image => "Image",
         SceneKind::Sunburst => "Sunburst",
         SceneKind::Parallel => "Parallel",
+        SceneKind::BrokenAxes => "BrokenAxes",
     }
 }
 

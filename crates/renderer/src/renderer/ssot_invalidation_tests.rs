@@ -801,23 +801,22 @@ fn break_edits() -> Vec<Edit> {
         Work::Prefix,
         Pixels::Changed,
     );
-    // `Continuous` ignores the piece frames: the raster is redone (its
-    // config changed) and draws the same pixels.
+    // The piece frames are chrome in either style.
     push(
         "bottom_x.breaks.frame_each_panel (Continuous)",
         |c| {
             if let Some(b) = c.bottom_x.breaks.as_mut() {
-                b.frame_each_panel = true;
+                b.frame_each_panel = false;
             }
         },
         Work::Prefix,
-        Pixels::Unchanged,
+        Pixels::Changed,
     );
     push(
         "left_y.breaks.frame_each_panel (Panels)",
         |c| {
             if let Some(b) = c.left_y.breaks.as_mut() {
-                b.frame_each_panel = true;
+                b.frame_each_panel = false;
             }
         },
         Work::Prefix,

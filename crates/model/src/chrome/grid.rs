@@ -13,10 +13,11 @@ use crate::line::LineStylePreset;
 /// them, like the rectangular grid always did.
 pub fn emit_grid(config: &Config, plot: &RectF, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     let g = &config.grid;
-    let x_top = plot.y;
-    let x_bot = plot.y + plot.height;
-    let y_left = plot.x;
-    let y_right = plot.x + plot.width;
+    // A grid line across a broken axis is drawn per piece and leaves its
+    // gaps empty, like the data (#200): vertical lines over `left_y`'s
+    // pieces, horizontal ones over `bottom_x`'s.
+    let (ys, ny) = piece_spans(&config.left_y, plot, true);
+    let (xs, nx) = piece_spans(&config.bottom_x, plot, false);
 
     let mut line = |a: (f32, f32),
                     b: (f32, f32),
@@ -24,18 +25,29 @@ pub fn emit_grid(config: &Config, plot: &RectF, measure: &dyn MeasureText, sink:
                     width: f32,
                     style: &LineStylePreset,
                     tag: &str| {
-        sink.stroke(
-            Slot::Below,
-            [a.0, a.1],
-            [b.0, b.1],
-            &StrokeStyle {
-                width,
-                color: *color,
-                dash: style.pattern(),
-                tag,
-            },
-        );
+        let vertical = a.0 == b.0;
+        let spans = if vertical { &ys[..ny] } else { &xs[..nx] };
+        for &(lo, hi) in spans {
+            let (p, q) = if vertical {
+                ((a.0, lo), (b.0, hi))
+            } else {
+                ((lo, a.1), (hi, b.1))
+            };
+            sink.stroke(
+                Slot::Below,
+                [p.0, p.1],
+                [q.0, q.1],
+                &StrokeStyle {
+                    width,
+                    color: *color,
+                    dash: style.pattern(),
+                    tag,
+                },
+            );
+        }
     };
+    let (x_top, x_bot) = (plot.y, plot.y + plot.height);
+    let (y_left, y_right) = (plot.x, plot.x + plot.width);
 
     // Draw minor first so major can paint over it.
     if g.show_minor_x {
@@ -107,4 +119,44 @@ pub fn emit_grid(config: &Config, plot: &RectF, measure: &dyn MeasureText, sink:
             );
         }
     }
+}
+
+/// The screen spans of `axis`' pieces along the plot (#200), ascending: `y`
+/// spans of a vertical axis, `x` spans of a horizontal one; the whole edge
+/// when the axis is unbroken.
+fn piece_spans(
+    axis: &AxisOptions,
+    plot: &RectF,
+    vertical: bool,
+) -> ([(f32, f32); crate::config::MAX_AXIS_BREAKS + 1], usize) {
+    let full = if vertical {
+        (plot.y, plot.y + plot.height)
+    } else {
+        (plot.x, plot.x + plot.width)
+    };
+    let mut out = [full; crate::config::MAX_AXIS_BREAKS + 1];
+    let map = crate::layout::BreakMap::of(axis);
+    if !map.is_broken() {
+        return (out, 1);
+    }
+    let mut count = 0;
+    for ((a, b), slot) in map.pieces().zip(out.iter_mut()) {
+        let (a, b) = if axis.inverted {
+            (1.0 - b, 1.0 - a)
+        } else {
+            (a, b)
+        };
+        let (a, b) = (a as f32, b as f32);
+        *slot = if vertical {
+            (
+                plot.y + plot.height * (1.0 - b),
+                plot.y + plot.height * (1.0 - a),
+            )
+        } else {
+            (plot.x + plot.width * a, plot.x + plot.width * b)
+        };
+        count += 1;
+    }
+    out[..count].sort_by(|p, q| p.0.total_cmp(&q.0));
+    (out, count)
 }

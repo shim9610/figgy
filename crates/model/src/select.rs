@@ -1243,13 +1243,30 @@ impl Selectable for AxisElement {
         })
     }
 
+    /// Per part also when the axis frames its pieces (#200): its frames
+    /// cross the plot, so its box would cover the data.
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar().is_some() || cfg.ternary().is_some() || cfg.view_3d().is_some()
+        cfg.polar().is_some()
+            || cfg.ternary().is_some()
+            || cfg.view_3d().is_some()
+            || on_drawn_panel(cfg, |panel| frames_pieces(panel, &self.side))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
         Some(self)
     }
+}
+
+/// Whether the axis on `side` of `cfg` draws the frames of its pieces
+/// (#200).
+fn frames_pieces(cfg: &Config, side: &Side) -> bool {
+    matches!(
+        &axis_of(cfg, side).breaks,
+        Some(crate::config::AxisBreaks {
+            frame_each_panel: true,
+            ..
+        })
+    ) && crate::layout::BreakMap::of(axis_of(cfg, side)).is_broken()
 }
 
 impl Selectable for AxisLabelElement {

@@ -51,12 +51,8 @@ pub fn emit_axis_strokes(
                 AxisStroke::Break(k, end) => format!("axis_break_{}_{k}_{end}", side_tag(&side)),
                 AxisStroke::Frame(k, end) => format!("axis_frame_{}_{k}_{end}", side_tag(&side)),
             };
-            let (off_x, off_y) = match stroke {
-                AxisStroke::Frame(..) => (0.0, 0.0),
-                _ => (off_x, off_y),
-            };
-            // A break mark is drawn in its own style, solid; every other
-            // stroke in the axis line's.
+            // A break mark is drawn in its own width, solid, in its colour
+            // or the line's; every other stroke in the axis line's style.
             let (width, color, dash) = match (stroke, &axis.breaks) {
                 (
                     AxisStroke::Break(..),
@@ -66,7 +62,7 @@ pub fn emit_axis_strokes(
                     }),
                 ) => (
                     *width,
-                    *color,
+                    color.unwrap_or(axis.line_color),
                     crate::line::LineStylePreset::Solid.pattern(),
                 ),
                 _ => (axis.line_width, axis.line_color, dash),
@@ -158,10 +154,10 @@ pub enum AxisStroke {
     /// One slash of break mark `k` (#200): `0` at the gap's start, `1` at
     /// its end, in the axis' visual order.
     Break(usize, usize),
-    /// The frame of a `Panels` piece along gap `k` when the axis has
+    /// The frame of a piece along gap `k` when the axis has
     /// `frame_each_panel` (#200): the edge at the gap's start (`0`) or end
-    /// (`1`), across the plot from the axis' side to the opposite one. Not
-    /// moved by the axis' `line_offset`: it is an edge of the plot.
+    /// (`1`), across the plot from the axis' side to the opposite one. Part
+    /// of the axis element, so it moves with the axis' `line_offset`.
     Frame(usize, usize),
 }
 
@@ -204,8 +200,8 @@ pub fn each_axis_stroke(
 
 /// The line of a broken axis (#200) from `p0` to `p1` (its
 /// [`axis_anchor`]): one segment per piece, then the slashes of each gap's
-/// mark when the axis draws one, then on a `Panels` axis with
-/// `frame_each_panel` the pieces' edges along each gap. The pieces' bands
+/// mark when the axis draws one, then with `frame_each_panel` the pieces'
+/// edges along each gap. The pieces' bands
 /// are in visual order: from the left on a horizontal axis and from the
 /// bottom on a vertical one.
 fn each_broken_axis_line(
@@ -240,17 +236,25 @@ fn each_broken_axis_line(
         each(AxisStroke::Line, at(a), at(b));
     }
     if let Some(crate::config::AxisBreaks {
-        style: crate::config::AxisBreakStyle::Panels,
         frame_each_panel: true,
         ..
     }) = &axis.breaks
     {
-        // From the plot's edge on the axis' side to the opposite edge, at
-        // the edge lines' pixel centres (`axis_anchor`).
-        let ((x0, y0), (x1, y1)) = (
+        // From the axis' edge line (`axis_anchor`) to the opposite one,
+        // stopping a line width short of the opposite line's centre (the
+        // width scales with the export): the frame meets that line
+        // without sharing its ink, so each pixel belongs to one axis.
+        let ((mut x0, mut y0), (mut x1, mut y1)) = (
             axis_anchor(Side::Left, plot, None).0,
             axis_anchor(Side::Right, plot, None).1,
         );
+        let short = axis.line_width.max(0.5);
+        match side {
+            Side::Left => x1 -= short,
+            Side::Right => x0 += short,
+            Side::Bottom => y0 += short,
+            Side::Top => y1 -= short,
+        }
         for (k, knot) in map.knots().iter().enumerate() {
             let (a, b) = visual((knot.start, knot.end));
             for (end, f) in [a, b].into_iter().enumerate() {
@@ -486,15 +490,127 @@ mod break_tests {
         }
     }
 
-    /// The frames of the pieces along each gap: only on a `Panels` axis
-    /// that asks for them, one across the plot at each edge of the gap.
+    /// Grid lines across a broken axis are drawn per piece: none crosses a
+    /// gap, and every line reaches both outer edges.
     #[test]
-    fn a_panels_axis_frames_each_piece_along_the_gap_when_asked() {
+    fn grid_lines_leave_the_gaps_empty() {
+        let mut config = crate::default::default_config();
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 10.0;
+        config.bottom_x.major_spacing = 1.0;
+        config.left_y = broken(BreakMark::None);
+        config.grid.show_major_x = true;
+        config.grid.show_major_y = true;
+        config.grid.show_minor_x = false;
+        config.grid.show_minor_y = false;
+        let map = crate::layout::BreakMap::of(&config.left_y);
+        let knot = map.knots()[0];
+        let gap = (
+            PLOT.y + PLOT.height * (1.0 - knot.end as f32),
+            PLOT.y + PLOT.height * (1.0 - knot.start as f32),
+        );
+        let mut segments = Vec::new();
+        crate::chrome::grid::emit_grid(
+            &config,
+            &PLOT,
+            &NoMeasure,
+            &mut crate::sink::Parts(&mut |part| {
+                if let crate::sink::DrawnPart::Segment { a, b, .. } = part {
+                    segments.push((a, b));
+                }
+            }),
+        );
+        let vertical: Vec<_> = segments.iter().filter(|(a, b)| a[0] == b[0]).collect();
+        assert!(!vertical.is_empty());
+        for (a, b) in &vertical {
+            let (lo, hi) = (a[1].min(b[1]), a[1].max(b[1]));
+            assert!(
+                hi <= gap.0 + 1e-3 || lo >= gap.1 - 1e-3,
+                "{a:?}-{b:?} crosses {gap:?}"
+            );
+        }
+        // Each vertical line is two segments, one per piece.
+        assert_eq!(vertical.len() % 2, 0);
+        assert!(vertical.iter().any(|(a, _)| (a[1] - PLOT.y).abs() < 1e-3));
+        assert!(
+            vertical
+                .iter()
+                .any(|(_, b)| (b[1] - (PLOT.y + PLOT.height)).abs() < 1e-3)
+        );
+    }
+
+    /// A top or right axis is drawn with its partner's cuts at the same
+    /// raw fractions, in its own units and direction: one piece layout,
+    /// no tick in a gap.
+    #[test]
+    fn a_top_or_right_axis_takes_its_partners_cuts() {
+        let mut config = crate::default::default_config();
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 100.0;
+        config.bottom_x.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(20.0, 70.0)],
+            ..AxisBreaks::default()
+        });
+        // The top axis in other units (twice the bottom's), the right axis
+        // mirroring an unbroken left axis.
+        config.top_x.min = 0.0;
+        config.top_x.max = 200.0;
+        config.top_x.major_spacing = 20.0;
+        for inverted in [false, true] {
+            config.top_x.inverted = inverted;
+            let top = crate::chrome::drawn_axis(&config, &Side::Top);
+            let cuts = &top.breaks.as_ref().unwrap().ranges;
+            let expected = if inverted {
+                (60.0, 160.0)
+            } else {
+                (40.0, 140.0)
+            };
+            assert!(
+                (cuts[0].from - expected.0).abs() < 1e-9 && (cuts[0].to - expected.1).abs() < 1e-9,
+                "{cuts:?}"
+            );
+            let (a, b) = (
+                crate::layout::BreakMap::of(&top),
+                crate::layout::BreakMap::of(&config.bottom_x),
+            );
+            // The same gap on screen: mirrored back on an inverted axis.
+            let (ka, kb) = (a.knots()[0], b.knots()[0]);
+            let visual = if inverted {
+                (1.0 - ka.end, 1.0 - ka.start)
+            } else {
+                (ka.start, ka.end)
+            };
+            assert!(
+                (visual.0 - kb.start).abs() < 1e-9 && (visual.1 - kb.end).abs() < 1e-9,
+                "one piece layout: {ka:?} vs {kb:?}"
+            );
+            let majors = major_tick_values_for_axis(&top, Side::Top, &PLOT, &NoMeasure);
+            assert!(
+                majors.iter().all(|&v| !(v > expected.0 && v < expected.1)),
+                "{majors:?}"
+            );
+            assert!(!top.breaks.as_ref().unwrap().frame_each_panel);
+        }
+        let right = crate::chrome::drawn_axis(&config, &Side::Right);
+        assert_eq!(right.breaks, None, "the left axis is unbroken");
+        // An axis with cuts of its own keeps them.
+        config.top_x.breaks = Some(AxisBreaks::default());
+        assert_eq!(
+            crate::chrome::drawn_axis(&config, &Side::Top).breaks,
+            Some(AxisBreaks::default())
+        );
+    }
+
+    /// The frames of the pieces along each gap, in either style when the
+    /// axis asks for them: one across the plot at each edge of the gap.
+    #[test]
+    fn a_broken_axis_frames_each_piece_along_the_gap_when_asked() {
         use crate::config::AxisBreakStyle;
         for (style, frame, expected) in [
             (AxisBreakStyle::Panels, true, 2),
             (AxisBreakStyle::Panels, false, 0),
-            (AxisBreakStyle::Continuous, true, 0),
+            (AxisBreakStyle::Continuous, true, 2),
+            (AxisBreakStyle::Continuous, false, 0),
         ] {
             for side in [Side::Left, Side::Bottom] {
                 let mut axis = broken(BreakMark::None);
@@ -524,11 +640,19 @@ mod break_tests {
                     if matches!(side, Side::Left) {
                         let y = PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f;
                         assert!((a.1 - y).abs() < 1e-3 && (b.1 - y).abs() < 1e-3);
-                        assert_eq!((a.0, b.0), (PLOT.x + 0.5, PLOT.x + PLOT.width - 0.5));
+                        let short = axis.line_width;
+                        assert_eq!(
+                            (a.0, b.0),
+                            (PLOT.x + 0.5, PLOT.x + PLOT.width - 0.5 - short)
+                        );
                     } else {
                         let x = PLOT.x + 0.5 + (PLOT.width - 1.0) * f;
                         assert!((a.0 - x).abs() < 1e-3 && (b.0 - x).abs() < 1e-3);
-                        assert_eq!((a.1, b.1), (PLOT.y + 0.5, PLOT.y + PLOT.height - 0.5));
+                        let short = axis.line_width;
+                        assert_eq!(
+                            (a.1, b.1),
+                            (PLOT.y + 0.5 + short, PLOT.y + PLOT.height - 0.5)
+                        );
                     }
                 }
             }

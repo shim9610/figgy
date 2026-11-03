@@ -27,8 +27,8 @@ every other document still re-serializes byte for byte. The new keys (`"math"`, 
 `offsets`, the `value_label` selection,
 the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 `Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
-the ternary series' `region`, `view_3d` and the heatmaps' `surface`) are
-additive.
+the ternary series' `region`, `view_3d`, the heatmaps' `surface` and the
+axes' `breaks`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -1014,6 +1014,46 @@ additive.
   `Config` and does the same. A caller that zipped `panel_layers()` with
   `Expansion::panels` keeps working; one that assumed each layer appears
   once checks `panel_member(index)`.
+
+- **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+  `AxisOptions` gains `breaks: Option<AxisBreaks>`: ranges cut out of a
+  value axis. `AxisBreaks { ranges: Vec<AxisBreak { from, to }>, style,
+  gap, mark, frame_each_panel }` with `AxisBreakStyle::{Continuous, Panels}`
+  and `BreakMark::{None, Slash { size, color: Option<Color>, width }}`
+  (`None` draws in the axis line's colour); `MAX_AXIS_BREAKS`
+  (3) cuts per axis and gaps up to `MAX_AXIS_BREAK_GAP` (0.2) of the axis
+  length. `AxisOptions::validate_breaks` (called by `Config::validate`)
+  refuses non-finite, empty, unsorted or overlapping ranges, non-positive
+  ones on a log axis and an out-of-range gap; breaks on `top_x`,
+  `right_y` or a colourbar axis, and on polar, ternary, 3D or parallel
+  charts, are refused too, and a hexagonal grid on a `Continuous` broken
+  axis. `layout::BreakMap` (`of`, `remap`, `unmap`, `pieces`,
+  `raw_pieces`, `knots`, `scale`) is the piece layout every consumer
+  shares: the pieces split the axis in proportion to their spans at one
+  scale, each cut drawn as its gap. `layout::axis_fraction`,
+  `AxisSpace` (gains `breaks`; `fraction` is `None` inside a cut, new
+  `fraction_across_gaps`) and `value_in_cut` follow it, so ticks, grid
+  lines and labels skip the cuts, and grid lines are drawn per piece;
+  `tick::effective_major_spacing` steps a broken linear axis' spacing down
+  the 1, 2, 5 × 10^k ladder while a piece would hold fewer than two majors,
+  and crowded labels are thinned on the unbroken grid, so each piece keeps
+  round values. The
+  axis line is drawn per piece with the mark's slashes
+  (`AxisStroke::Break`) and, with `frame_each_panel` (default `true`, in
+  both styles), each piece's edges along the gaps (`AxisStroke::Frame`),
+  all part of
+  the axis element: they move with its `line_offset`, and an axis that
+  frames its pieces is hit per part, so its frames do not make the plot
+  select it.
+  `layout::mirrored_breaks` gives `top_x` and `right_y` their partner's
+  cuts at the same fractions when drawn. Spans and reference lines across
+  a gap are emitted per piece. `scale_in_place` scales the mark;
+  `copy_axis_range`, the hidden overlay axis and the line offset members
+  carry the cuts (a member's move with its range). Migration: an
+  `AxisOptions { .. }` literal or exhaustive destructuring names `breaks`
+  (`None` keeps the former drawing); an `AxisSpace` literal names
+  `breaks: BreakMap::IDENTITY`; an exhaustive `match` on `AxisStroke`
+  adds `Break(..)` and `Frame(..)` arms.
 
 <a id="unreleased-renderer"></a>
 
@@ -2427,6 +2467,29 @@ additive.
     `radial_layout.rs` is removed), and the export `prepare_export` /
     `paint_export`.
 
+- **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+  The renderer draws `AxisOptions::breaks` in both styles. `Continuous`:
+  `ScatterTransform` gains `breaks: [[f32; 4]; 6]` and `break_info: [f32;
+  4]` (the uniform grows from 176 to 288 bytes, `PickQueryParamsGpu` from 592 to
+  704), and `axis_pair_to_t` remaps data `t` through the cut table
+  (`cut_remap`) in every module that places data through it, the pick
+  modules included. `Panels`: the transform maps the axis at its first
+  piece, and each shifted piece is drawn with a uniform of its own whose
+  panel offset is moved by the piece's shift, so a mark crossing a gap
+  keeps its own slope in each piece. In both styles the data slot (fills,
+  bodies, picked highlights and value labels, on the screen and in the
+  resident and export composites) is drawn once per piece, scissored to
+  it, so nothing is drawn in a gap; no shader masks a fragment. A pick
+  whose cursor is in a gap answers nothing, and under `Panels` the cursor
+  and the data-area clip are moved back by the piece's shift. Streamed
+  sources on a broken axis are refused with `STREAMED_BREAK_REASON`; the
+  cut ranges, style and gap move the view revision
+  (`break_geometry_equal`), the mark and frames only the raster.
+  The shader pipeline contract is regenerated. Migration: a
+  `ScatterTransform { .. }` literal adds `breaks: NO_BREAKS` and
+  `break_info: NO_BREAK_INFO` (`data_render::NO_BREAKS`,
+  `NO_BREAK_INFO`).
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -2656,6 +2719,11 @@ additive.
   operation gate and reject a chart shown from a stream before calling the
   kernel. The web demo (`index.html`) has SVG and PDF buttons beside the PNG
   one.
+
+- **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+  `set_config` takes an axis' `breaks` and `get_config` writes it back,
+  leaving it out where absent; nothing else is new in the wrapper. A
+  streamed chart with breaks is refused as the renderer refuses it.
 
 <a id="unreleased-bounded-migration"></a>
 
@@ -3039,6 +3107,24 @@ entries above describe the changes.
   during stream replay; the playground has SVG and PDF export buttons and
   its selftest exports every scene in the three formats.
 
+- **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+  `tests/axis_break_render.rs` checks, at 1x and 2x and in both styles
+  where they differ: markers on every piece where the chrome places them
+  (both axes broken, either inverted, a log axis cut in decades); nothing
+  in a gap from a line, a fill, a highlight or an annotation; a `Panels`
+  line keeps its slope per piece; a cut outside the range changes no
+  pixel; picks per piece and none in a gap; the screen path draws what
+  the export does; overlays, subplots and line offset members on broken
+  axes, their gaps on their owner's; the picked highlight on its piece;
+  spans and reference lines per piece; and the streamed refusal. The
+  model tests cover the break map, validation, serde, the chrome, label
+  thinning, `mirrored_breaks`, member cuts and annotation clipping; the
+  SSOT suite every break edit (ranges, style, gap, mark, frames, an
+  overlay's breaks). The playground gains a **Broken axes** scene (both
+  styles, a log Y cut), which the decoration oracle sweeps, and the
+  browser tests a broken axis' JSON round trip and its upper labels'
+  hit and drag. Each new check was mutation tested.
+
 ### Documentation
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
@@ -3143,6 +3229,12 @@ entries above describe the changes.
   interaction, `RADIAL.md` the radial export, `API.md` the return types. The
   Korean text (the Korean sections of `USAGE.md` and `ARCHITECTURE.md`, and
   `WASM.md` and `RADIAL.md`) is written in Korean.
+
+- **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+  `CONFIG.md` (both languages) gains the `breaks` row and the
+  `AxisBreaks` section, `SCHEMA.md` (in Korean) the JSON form and its
+  rules, and `SHADER_COMMON.md` the `Transform` break table and the cut
+  remap.
 
 <a id="release-0181"></a>
 

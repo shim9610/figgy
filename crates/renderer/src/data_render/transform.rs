@@ -73,9 +73,9 @@ pub struct ScatterTransform {
 }
 
 /// The break table entries of an unbroken chart.
-pub(crate) const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
+pub const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
 /// The break info of an unbroken chart.
-pub(crate) const NO_BREAK_INFO: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+pub const NO_BREAK_INFO: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// `(breaks, break_info)` of [`ScatterTransform`] for the x axis `x` and
 /// the y axis `y`: their [`crate::layout::BreakMap`]s in the shader's `t`,

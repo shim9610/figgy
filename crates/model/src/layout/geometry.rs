@@ -162,6 +162,58 @@ fn raw_axis_t(value: f64, axis: &AxisOptions) -> Option<f64> {
     }
 }
 
+/// The value at raw `t` of `axis`' range, the inverse of [`raw_axis_t`].
+fn value_at_raw_t(t: f64, axis: &AxisOptions) -> Option<f64> {
+    let v = match axis.scale {
+        AxisScale::Linear => axis.min + t * (axis.max - axis.min),
+        AxisScale::Logarithmic => {
+            let (min, max) = guarded_log_range(axis.min, axis.max);
+            if min <= 0.0 || max <= 0.0 {
+                return None;
+            }
+            10f64.powf(min.log10() + t * (max.log10() - min.log10()))
+        }
+    };
+    v.is_finite().then_some(v)
+}
+
+/// The cuts a top or right axis is drawn with (#200): its partner's
+/// (`bottom_x`'s or `left_y`'s) cut ranges at the same raw fractions, in
+/// its own units, so the two share one piece layout and the axis draws no
+/// tick in a gap. `None` when the partner is unbroken, or `axis` has cuts
+/// of its own (an overlay panel's) or either axis is categorical. The
+/// partner draws the piece frames, so the mirror does not.
+pub fn mirrored_breaks(
+    axis: &AxisOptions,
+    partner: &AxisOptions,
+) -> Option<crate::config::AxisBreaks> {
+    let breaks = partner.breaks.as_ref()?;
+    if axis.breaks.is_some()
+        || axis.categories.is_some()
+        || partner.categories.is_some()
+        || !BreakMap::of(partner).is_broken()
+    {
+        return None;
+    }
+    let flip = axis.inverted != partner.inverted;
+    let mut ranges = breaks
+        .ranges
+        .iter()
+        .map(|cut| {
+            let (a, b) = (raw_axis_t(cut.from, partner)?, raw_axis_t(cut.to, partner)?);
+            let (a, b) = if flip { (1.0 - b, 1.0 - a) } else { (a, b) };
+            let (from, to) = (value_at_raw_t(a, axis)?, value_at_raw_t(b, axis)?);
+            Some(crate::config::AxisBreak::new(from.min(to), from.max(to)))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    ranges.sort_by(|a, b| a.from.total_cmp(&b.from));
+    Some(crate::config::AxisBreaks {
+        ranges,
+        frame_each_panel: false,
+        ..breaks.clone()
+    })
+}
+
 /// Whether `value` lies strictly inside one of `axis`' cut ranges (#200),
 /// clamped to the range as [`BreakMap::of`] clamps them: such a value is not
 /// drawn, so no tick, grid line or tick label is placed at it.

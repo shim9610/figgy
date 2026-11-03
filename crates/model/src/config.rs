@@ -143,20 +143,21 @@ pub struct AxisBreaks {
     pub gap: f32,
     /// What marks each gap on the axis line.
     pub mark: BreakMark,
-    /// `Panels` only: whether each piece draws its own frame along the
-    /// gaps. Ignored by `Continuous`.
+    /// Whether each piece draws its own frame along the gaps: a line across
+    /// the plot at each edge of each gap, in the axis line's style, so the
+    /// pieces read as separate panels. Default `true`, in both styles.
     pub frame_each_panel: bool,
 }
 
 impl Default for AxisBreaks {
-    /// No range, `Continuous`, a 3 % gap and slash marks.
+    /// No range, `Continuous`, a 3 % gap, slash marks and framed pieces.
     fn default() -> Self {
         Self {
             ranges: Vec::new(),
             style: AxisBreakStyle::default(),
             gap: 0.03,
             mark: BreakMark::default(),
-            frame_each_panel: false,
+            frame_each_panel: true,
         }
     }
 }
@@ -199,20 +200,26 @@ pub enum AxisBreakStyle {
 pub enum BreakMark {
     None,
     /// Two parallel diagonal strokes across the axis line at the gap's edges,
-    /// `size` pixels long.
+    /// `size` pixels long, `width` wide, in `color` or, when it is `None`
+    /// (the default, omitted from JSON), the axis line's colour. The marks
+    /// are part of the axis that draws them.
     Slash {
         size: f32,
-        color: Color,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        color: Option<Color>,
         width: f32,
     },
 }
 
 impl Default for BreakMark {
-    /// 6 px dark grey slashes, 1 px wide.
+    /// 6 px slashes, 1 px wide, in the axis line's colour.
     fn default() -> Self {
         Self::Slash {
             size: 6.0,
-            color: Color::new(0.2, 0.2, 0.2, 1.0),
+            color: None,
             width: 1.0,
         }
     }
@@ -430,7 +437,7 @@ impl AxisOptions {
             return Err("a break gap must be between 0 and 0.2 of the axis");
         }
         if let BreakMark::Slash { size, color, width } = &breaks.mark {
-            let channels = [color.r, color.g, color.b, color.a];
+            let channels = color.map_or([0.0; 4], |c| [c.r, c.g, c.b, c.a]);
             if !(0.0..=64.0).contains(size)
                 || !(0.0..=16.0).contains(width)
                 || !channels.iter().all(|c| (0.0..=1.0).contains(c))
@@ -2560,7 +2567,7 @@ mod axis_break_config_tests {
                 |b| {
                     b.mark = BreakMark::Slash {
                         size: 100.0,
-                        color: Color::BLACK,
+                        color: Some(Color::BLACK),
                         width: 1.0,
                     }
                 },
@@ -2642,7 +2649,7 @@ mod axis_break_config_tests {
         let mut config = config;
         config.left_y.breaks = Some(AxisBreaks {
             style: AxisBreakStyle::Panels,
-            frame_each_panel: true,
+            frame_each_panel: false,
             ..broken()
         });
         let text = serde_json::to_string(&config).unwrap();

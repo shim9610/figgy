@@ -595,10 +595,15 @@ impl PreparedCategoryBarLayer {
         }
     }
 
-    fn layer(&self) -> data_render::ColumnCategoryBarLayer<'_> {
+    /// The layer bound to `transform`, or its own transform when `None`
+    /// (a shifted `Panels` piece, #200).
+    fn layer_with<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::ColumnCategoryBarLayer<'a> {
         data_render::ColumnCategoryBarLayer {
             pipeline: &self.pipeline,
-            transform_bg: &self.transform_bg,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
             style_bg: &self.style_bg,
             data: self.data.clone(),
             count: self.count,
@@ -1264,15 +1269,18 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
-            violin: self.violin.as_ref().map(PreparedCategoryBarLayer::layer),
+            violin: self
+                .violin
+                .as_ref()
+                .map(|layer| layer.layer_with(transform)),
             category_bars: self
                 .category_bars
                 .as_ref()
-                .map(PreparedCategoryBarLayer::layer),
+                .map(|layer| layer.layer_with(transform)),
             box_points: self
                 .box_points
                 .as_ref()
-                .map(PreparedCategoryBarLayer::layer),
+                .map(|layer| layer.layer_with(transform)),
             vector: self
                 .vector
                 .as_ref()

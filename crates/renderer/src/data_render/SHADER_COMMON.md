@@ -112,7 +112,7 @@ reuse the line stroke and its fragment stage.
 
 ## 1. `Transform` 유니폼(group 0, binding 0)
 
-`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 144바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 그리고 극좌표용 `vec4<f32>` 2개(오프셋 112·128)로 구성된다.
+`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 288바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 극좌표용 `vec4<f32>` 2개(오프셋 112·128), 삼각좌표용 `vec4<f32>` 2개(오프셋 144·160), 끊긴 축의 `array<vec4<f32>, 6>` 하나(오프셋 176, 간격 16바이트)와 `vec4<f32>` 하나(오프셋 272)로 구성된다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
 The code is the fragment [`data_render/common/transform.wgsl`](common/transform.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
@@ -125,6 +125,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
 | `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer/registry.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
+| `breaks`, `break_info` | 끊긴 축([#200](https://github.com/shim9610/figgy/issues/200))의 잘라낸 구간 표. `breaks[0..3]`은 X축, `breaks[3..6]`은 Y축이며 각 원소는 `(from, to, start, end)`다. `from..to`는 잘라낸 값의 원래 `t` 구간, `start..end`는 그 구간을 그리는 빈칸이다(반전된 축은 `data_min`·`data_max`를 맞바꾼 `t`로 뒤집어 담는다). `break_info`는 (X 구간 수, Y 구간 수, X 조각 배율, Y 조각 배율)이며 구간 수가 0이면 항등 변환이다. CPU에서 `data_render::break_constants`가 `layout::BreakMap`으로 채운다. `Panels` 스타일 축은 이 표를 쓰지 않는다(구간 수 0). 그 축은 첫 조각의 선형 사상으로 그리고, 조각마다 `data_to_panel_offset`을 옮긴 변환을 따로 바인딩한다(`renderer::composite::DataPieces`). |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer/style.rs` (`[f32; 12]`). |
 
 **대응하는 CPU 구조체:** `src/data_render/transform.rs::ScatterTransform`
@@ -403,6 +404,22 @@ recombined display value (`hi + lo`) before comparing against the log-transforme
 axis bounds.
 
 The code is the fragment [`data_render/common/projection.wgsl`](common/projection.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
+
+**Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
+`axis_pair_to_t` takes the axis' `AxisCuts` (`cuts_of(transform.breaks,
+transform.break_info, axis)`) and remaps the data `t` through `cut_remap`
+before the panel affine: linear at the piece scale inside each piece and
+linear across each cut onto its gap, so the map is continuous, increasing
+and one-to-one. The knots are unrolled, since a dynamic index into a value
+array is not portable. `cut_unmap` is its inverse (the contour label anchor
+walks back from panel `t`), and `cut_scale` is the slope inside a piece:
+the vector and line pick modules multiply their panel scale by it so pixel
+lengths agree with the draw. Entries that never draw on a broken axis
+(category bars, polar samples, the 3D projection) pass `no_cuts()`. Nothing
+is masked in a shader: the gaps are left out by drawing the data slot once
+per piece, scissored to it, and a pick whose cursor is in a gap is refused
+on the CPU. CPU twin: `layout::BreakMap::remap` / `unmap`, which the axis
+chrome and the annotation layer place with.
 
 ---
 

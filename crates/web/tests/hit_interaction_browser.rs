@@ -409,3 +409,52 @@ async fn an_adaptive_log_axis_round_trips_and_its_2e4_label_hits_and_drags() {
     let written: serde_json::Value = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
     assert_eq!(written["colorbar"]["axis"]["log_ticks"], "Adaptive");
 }
+
+// Broken axes (#200) through the JSON SSoT: `set_config` takes `breaks` on
+// `left_y`, `get_config` writes it back and leaves it out where absent, and
+// a tick label on the upper piece hits as the side's tick labels and drags
+// with them.
+#[wasm_bindgen_test(async)]
+async fn a_broken_axis_round_trips_and_its_upper_labels_hit_and_drag() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json");
+    assert!(json["left_y"].get("breaks").is_none());
+    json["chart_area"] = serde_json::json!({ "x": 0, "y": 0, "width": 960, "height": 640 });
+    json["left_y"]["min"] = 0.0.into();
+    json["left_y"]["max"] = 100.0.into();
+    json["left_y"]["major_spacing"] = 10.0.into();
+    json["left_y"]["breaks"] = serde_json::json!({
+        "ranges": [{ "from": 15.0, "to": 85.0 }],
+        "style": "Panels",
+        "gap": 0.05,
+    });
+    chart
+        .set_config(&json.to_string())
+        .expect("set broken config");
+    let written: serde_json::Value =
+        serde_json::from_str(&chart.get_config().unwrap()).expect("config json");
+    assert_eq!(written["left_y"]["breaks"]["style"], "Panels");
+    assert_eq!(written["left_y"]["breaks"]["ranges"][0]["to"], 85.0);
+    assert!(written["bottom_x"].get("breaks").is_none());
+    let cfg = chart_config(&chart);
+    assert_eq!(
+        cfg.left_y.breaks.as_ref().map(|b| b.style),
+        Some(renderer::config::AxisBreakStyle::Panels)
+    );
+
+    let label = label_starting_with(&cfg, Side::Left, '9');
+    let (cx, cy) = label.center();
+    assert_eq!(
+        chart.hit_test(cx, cy).unwrap().as_deref(),
+        Some("tick_labels_left")
+    );
+    assert!(chart.on_press(cx, cy).expect("press the labels"));
+    chart.on_move(5.0, 12.0).expect("drag the labels");
+    chart.on_release();
+    let cfg = chart_config(&chart);
+    let moved = label_starting_with(&cfg, Side::Left, '9');
+    assert_eq!((moved.x - label.x, moved.y - label.y), (5.0, 12.0));
+}
