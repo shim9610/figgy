@@ -753,3 +753,56 @@ fn the_screen_draws_each_panels_piece_where_the_export_does() {
         "screen: data in the gap"
     );
 }
+
+#[test]
+fn a_streamed_source_on_a_broken_axis_is_refused() {
+    let mut r = renderer();
+    let streamed = |id: &str| renderer::StreamColumn {
+        id: id.into(),
+        len: 4,
+        revision: 1,
+        encoding: renderer::StreamEncoding::ScalarF32,
+        replay: renderer::StreamReplay::RandomAccess,
+        statistics: renderer::StreamStatistics::Unknown,
+    };
+    r.register_streamed_columns(vec![streamed("st_x"), streamed("st_y")])
+        .unwrap();
+    let series = vec![markers("m", "st_x", "st_y", RED)];
+    let refused = |config: renderer::Config, r: &mut Renderer| {
+        let id = r
+            .register_chart(config, series.clone())
+            .expect("registration admits the columns; the streaming inspector names the rule");
+        let result = r.inspect_streaming_capability(id);
+        r.remove_chart(id).unwrap();
+        match result {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+                assert_eq!(series_id, "m");
+                assert_eq!(
+                    reason,
+                    "broken axes require GPU-resident columns; streamed sources are not supported"
+                );
+            }
+            other => panic!(
+                "expected the streamed rejection, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    };
+    for style in [AxisBreakStyle::Continuous, AxisBreakStyle::Panels] {
+        let mut y = config(0.0, 100.0, &[(10.0, 90.0)]);
+        if let Some(breaks) = y.left_y.breaks.as_mut() {
+            breaks.style = style;
+        }
+        let x = with_x_cuts(y.clone(), &[(4.0, 6.0)]);
+        let mut x_only = x.clone();
+        x_only.left_y.breaks = None;
+        refused(y, &mut r);
+        refused(x_only, &mut r);
+    }
+    // The same chart without breaks streams.
+    let mut plain = config(0.0, 100.0, &[]);
+    plain.left_y.breaks = None;
+    let id = r.register_chart(plain, series.clone()).unwrap();
+    r.inspect_streaming_capability(id).unwrap();
+    r.remove_chart(id).unwrap();
+}

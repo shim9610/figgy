@@ -143,6 +143,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
     left.chart_area == right.chart_area
         && AxisViewState::from_axis(&left.bottom_x) == AxisViewState::from_axis(&right.bottom_x)
         && AxisViewState::from_axis(&left.left_y) == AxisViewState::from_axis(&right.left_y)
+        && super::registry::break_geometry_equal(&left.bottom_x, &right.bottom_x)
+        && super::registry::break_geometry_equal(&left.left_y, &right.left_y)
         && left.data_area().ok().map(|area| area.0)
             == right.data_area().ok().map(|area| area.0)
         && overlay_geometry_equal(left, right)
