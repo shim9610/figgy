@@ -80,6 +80,39 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
     }
     return color;
 }
+// Flat, level, unlit and unoutlined sectors (#41). At depth and tilt zero a
+// sector is hit exactly where its footprint is at most zero, at a depth that
+// is the same at every pixel, in a Flat colour that does not depend on where
+// it is hit. The footprint changes by at most sqrt(2) times the distance
+// moved, so when every sector's footprint at the pixel center is at least
+// `margin` pixels from zero, every antialiasing sample lies on the same side
+// of every footprint and `scene` returns this one colour for each of them.
+// Otherwise, or when a sector needs another feature, `exact` is false and the
+// samples are taken.
+struct FlatPixel { exact: bool, color: vec4<f32> };
+fn flat_pixel(pixel: vec2<f32>,margin: f32) -> FlatPixel {
+    var color=vec4(globals.background.rgb*globals.background.a,globals.background.a);
+    var closest=10000.0;
+    for(var i=0u;i<u32(globals.size.z);i++) {
+        let s=sectors[i];
+        if u32(s.material.params.x)!=MATERIAL_FLAT || s.arc.w>0.0 || s.arc.z!=0.0 || s.light.w>0.0
+            || (max(s.outline.x,max(s.outline.y,s.outline.z))>0.0 && s.outline.w>0.0) {
+            return FlatPixel(false,color);
+        }
+        let mid=s.arc.x+s.arc.y*0.5;
+        let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid));
+        let d=footprint((pixel-center)/s.geometry.z,s);
+        // Also false for a NaN distance.
+        if !(abs(d)*s.geometry.z>=margin) { return FlatPixel(false,color); }
+        // `hit_sector`'s depth at zero tilt: the ray starts at 3 - lift.
+        let t=max((s.arc.w-(3.0-s.rounding.z))/-1.0,0.0);
+        if d<=0.0 && t<closest {
+            closest=t;
+            color=vec4(min(s.color.rgb+vec3(s.material.finish.w),vec3(1.0)),1.0);
+        }
+    }
+    return FlatPixel(true,color);
+}
 // Outside labels stay fixed during interaction. Inside glyphs translate with
 // their slice by sampling the unchanged full-resolution annotation texture.
 fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
@@ -119,9 +152,20 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
 }
 @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
     var color=vec4(0.0);let grid=u32(globals.size.w);
-    for(var y=0u;y<grid;y++) { for(var x=0u;x<grid;x++) {
-        color+=scene(p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5);
-    }}
+    // The samples lie within 0.48 px of the center (a 3x3 grid's corner);
+    // 0.75 px covers that times sqrt(2).
+    let flat=flat_pixel(p.xy,0.75);
+    // Branch once, outside the sample loops: the same choice made per sample
+    // inside them left some pixels zero on lavapipe (Mesa 25.2.8).
+    if flat.exact {
+        // The same sum in the same order as the samples, so the pixel is
+        // bit-identical to theirs.
+        for(var k=0u;k<grid*grid;k++) { color+=flat.color; }
+    } else {
+        for(var y=0u;y<grid;y++) { for(var x=0u;x<grid;x++) {
+            color+=scene(p.xy+(vec2(f32(x),f32(y))+0.5)/f32(grid)-0.5);
+        }}
+    }
     color/=f32(grid*grid);
     let text=label_pixel(p.xy);
     color=text+color*(1.0-text.a);

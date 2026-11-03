@@ -1567,3 +1567,105 @@ fn a_split_past_the_slices_is_refused_by_prepare_and_every_export() {
     r.prepare(&chart(), size, 1.0).unwrap();
     drain(&r);
 }
+
+/// The Flat fast path (#41): a level, unlit, unoutlined Flat chart shades a
+/// pixel once when no sector edge is near it, instead of once per
+/// antialiasing sample. An outline with a fully transparent colour changes no
+/// pixel but sends every pixel through the sampled path, so both exports must
+/// match byte for byte: pies and donuts, many slices, gaps, rounded corners,
+/// explode, hover lift, moving inside labels and a detail chart, at 1x and 2x.
+#[test]
+fn a_flat_chart_draws_the_same_pixels_as_its_sampled_path() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let palette = [
+        Color::from_rgb8(217, 76, 64),
+        Color::from_rgb8(64, 128, 217),
+        Color::from_rgb8(76, 178, 89),
+        Color::from_rgb8(242, 204, 51),
+    ];
+    let slices = |n: usize| -> Vec<RadialSlice> {
+        (0..n)
+            .map(|i| RadialSlice::new(format!("S{i}"), 1.0 + (i * 7 % 5) as f64, palette[i % 4]))
+            .collect()
+    };
+    let donut = RadialKind::Donut { inner_radius: 0.55 };
+    let mut cases = Vec::new();
+    for (n, kind) in [
+        (1, RadialKind::Pie),
+        (3, RadialKind::Pie),
+        (12, donut),
+        (40, donut),
+    ] {
+        let mut c = chart();
+        c.kind = kind;
+        c.slices = slices(n);
+        cases.push(c);
+    }
+    let mut c = chart();
+    c.kind = donut;
+    c.slices = slices(5);
+    c.style.gap_degrees = 3.0;
+    c.style.inner_corner = 0.05;
+    c.style.outer_corner = 0.08;
+    cases.push(c);
+    let mut c = chart();
+    c.slices = slices(6);
+    c.slices[1].explode = 0.2;
+    c.slices[4].explode = 0.35;
+    c.interaction.hovered = Some(RadialTarget::main(2));
+    c.interaction.hover_progress = 0.6;
+    cases.push(c);
+    let mut c = chart();
+    c.kind = donut;
+    c.slices = slices(6);
+    c.labels = RadialLabels::Inside;
+    c.font_size = 12.0;
+    c.interaction.hovered = Some(RadialTarget::main(1));
+    c.interaction.hover_progress = 1.0;
+    c.background = Color::new(0.1, 0.2, 0.3, 0.5);
+    c.format_labels();
+    cases.push(c);
+    let mut c = chart();
+    c.kind = donut;
+    c.split = Some(RadialSplit {
+        slice_index: 1,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 25.0, Color::from_rgb8(0, 200, 150)),
+            RadialSlice::new("E", 50.0, Color::from_rgb8(220, 180, 80)),
+        ],
+    });
+    cases.push(c);
+    let mut r = renderer();
+    for (index, flat) in cases.iter().enumerate() {
+        let mut sampled = flat.clone();
+        sampled.style.outline.rim = true;
+        sampled.style.outline.separators = true;
+        sampled.style.outline.color = Color::new(0.0, 0.0, 0.0, 0.0);
+        for (size, scale) in [((480, 300), 1.0), ((333, 257), 2.0)] {
+            let export = |r: &mut RadialRenderer, c: &RadialChart| {
+                r.export_rgba(c, size, renderer::ExportOptions::document(scale))
+                    .block_on()
+                    .unwrap()
+                    .rgba
+            };
+            let fast = export(&mut r, flat);
+            let slow = export(&mut r, &sampled);
+            let colored = fast
+                .chunks_exact(4)
+                .filter(|p| p[0] != p[1] || p[1] != p[2])
+                .count();
+            assert!(colored > 1000, "case {index} at {scale}x drew no slices");
+            let differing = fast
+                .chunks_exact(4)
+                .zip(slow.chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert_eq!(
+                differing, 0,
+                "case {index} at {scale}x: {differing} pixels differ"
+            );
+            drain(&r);
+        }
+    }
+}
