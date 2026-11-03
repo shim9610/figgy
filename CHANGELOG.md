@@ -34,6 +34,19 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **A legend symbol names its series** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `RichSegment` gains `series_id: Option<String>`, and
+  `series_symbol_segments` sets it on the symbol it makes.
+  `update_legend_symbols_preserving_text` pairs each entry with the series
+  its symbol names. Before, it paired the i-th entry with the i-th series.
+  So an entry now keeps its own mark when series are reordered or when a
+  series has no entry; before, a series without a label shifted every later
+  entry onto its neighbour's mark. New `legend_entry_of_series(content,
+  series, id)` and `legend_entry_series_id(content, index)` find an entry
+  by its series. The key is additive (written only when set); a symbol
+  without it, from an older document, still pairs by position and names
+  its series once it is restyled. Migration: code that builds a
+  `RichSegment` with every field listed adds `series_id: None`.
 - **`Column` holds values only** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `Column<T>` loses its `min` and `max` fields: the renderer measures a
   column's statistics while it uploads the values, so a stored copy could
@@ -2340,6 +2353,13 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Legend rows follow their series** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  `set_series_label`, `remove_series`, `remove_column`, `add_line_series`,
+  `set_series` and `load_demo` find a series' legend row by the series its
+  symbol names. They no longer use the series' position. Before, a series
+  without a label put every later row out of step: relabeling or removing
+  a series edited its neighbour's row, and loading the demo again added a
+  duplicate row.
 - **`set_picked_points` is removed** ([#160](https://github.com/shim9610/figgy/issues/160)).
   The chart has one selection, `Config.picked_data`. Migration:
   `set_picked_points(JSON.stringify({ refs: [{ series_id, point_index }],

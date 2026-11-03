@@ -557,6 +557,11 @@ A heatmap's mark is a swatch of the chart's colour map: six bands sampled
 from `colorbar.colormap`, filling the same field (empty without a colour bar).
 Composition helpers: `symbol_segments(kind, color)`,
 `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`.
+A symbol from `series_symbol_segments` names its series
+(`RichSegment.series_id`), and `update_legend_symbols_preserving_text`,
+`legend_entry_of_series(content, series, id)` and
+`legend_entry_series_id(content, index)` pair entries with series by that id
+rather than by position; a symbol without one pairs by position.
 
 ### `DataSelectionsConfig`
 
@@ -1451,7 +1456,7 @@ pub struct Config {
 | `bg_color, border_color` | `Color` | 박스 배경 / 테두리 |
 
 범례 기호는 `field_em`으로 너비를 고정한 텍스트 구간이다. 모양에 관계없이 `SYMBOL_FIELD_EM`, 즉 폰트 크기의 2배 너비를 차지한다. 선 기호는 `rule: true`로 구간 전체에 수평선을 그리고, 점 기호는 가운데에 `● ■ ▲ …` 같은 글리프를 놓는다. 선과 점을 함께 표시할 때도 전체 너비는 같다.
-점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 히트맵 기호는 차트 컬러맵 견본이다. `colorbar.colormap`에서 뽑은 여섯 색 띠로 같은 구간을 채우며, 색상 막대가 없으면 빈 구간이다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`을 사용한다.
+점선·도트 패턴은 `rule_dash`에 저장하므로 범례에도 `LineStylePreset`의 선 모양이 반영된다. 자동으로 만든 항목은 `심볼 + ' ' + '\t' + 라벨` 형식이며, 탭을 기준으로 라벨이 정렬된다. 히트맵 기호는 차트 컬러맵 견본이다. `colorbar.colormap`에서 뽑은 여섯 색 띠로 같은 구간을 채우며, 색상 막대가 없으면 빈 구간이다. 직접 구성할 때는 `symbol_segments(kind, color)`, `series_symbol_segments(cfg, colormap)`, `append_legend_entry(content, symbol, label)`을 사용한다. `series_symbol_segments`가 만든 기호에는 시리즈 id(`RichSegment.series_id`)가 들어가며, 기호 갱신과 `legend_entry_of_series` / `legend_entry_series_id`는 위치 대신 이 id로 항목과 시리즈를 짝짓는다. id가 없는 기호는 위치로 짝짓는다.
 
 ### `DataSelectionsConfig`
 

@@ -626,6 +626,11 @@ impl FiggyChart {
             }),
         };
         self.ensure_columns_exist(&cfg)?;
+        let legend_entry = renderer::config::legend_entry_of_series(
+            &self.chart_config()?.legend.content,
+            &current,
+            series_id,
+        );
         let mut proposed = current;
         if let Some(index) = existing {
             proposed[index] = cfg.clone();
@@ -638,7 +643,7 @@ impl FiggyChart {
             .map_err(js_err)?;
         let mut next_config = self.chart_config()?.clone();
         if label_changed && let Some(label) = rich_label {
-            match existing {
+            match legend_entry {
                 Some(index) => renderer::config::set_legend_entry_label(
                     &mut next_config.legend.content,
                     index,
@@ -681,9 +686,12 @@ impl FiggyChart {
             return Ok(false);
         };
         let mut config = self.chart_config()?.clone();
+        let entry =
+            renderer::config::legend_entry_of_series(&config.legend.content, &series, series_id);
         if label.is_empty() {
             series[i].label = None;
-            if renderer::config::remove_legend_entry(&mut config.legend.content, i)
+            if let Some(entry) = entry
+                && renderer::config::remove_legend_entry(&mut config.legend.content, entry)
                 && config.legend.content.segments.is_empty()
             {
                 config.legend.visible = false;
@@ -691,15 +699,23 @@ impl FiggyChart {
         } else {
             let label = self.label_text(label)?;
             series[i].label = Some(label.clone());
-            renderer::config::set_legend_entry_label(
-                &mut config.legend.content,
-                i,
-                renderer::config::series_symbol_segments(
-                    &series[i],
-                    config.colorbar.as_ref().map(|bar| &bar.colormap),
-                ),
-                label.segments,
+            let symbol = renderer::config::series_symbol_segments(
+                &series[i],
+                config.colorbar.as_ref().map(|bar| &bar.colormap),
             );
+            match entry {
+                Some(entry) => renderer::config::set_legend_entry_label(
+                    &mut config.legend.content,
+                    entry,
+                    symbol,
+                    label.segments,
+                ),
+                None => renderer::config::append_legend_entry_rich(
+                    &mut config.legend.content,
+                    symbol,
+                    label.segments,
+                ),
+            }
             config.legend.visible = true;
         }
         self.replace_chart_state(config, series)?;
@@ -715,10 +731,13 @@ impl FiggyChart {
         let Some(i) = series.iter().position(|c| c.series_id == series_id) else {
             return Ok(false);
         };
-        series.remove(i);
         let mut config = self.chart_config()?.clone();
+        let entry =
+            renderer::config::legend_entry_of_series(&config.legend.content, &series, series_id);
+        series.remove(i);
         if self.legend_auto_managed {
-            if renderer::config::remove_legend_entry(&mut config.legend.content, i)
+            if let Some(entry) = entry
+                && renderer::config::remove_legend_entry(&mut config.legend.content, entry)
                 && config.legend.content.segments.is_empty()
             {
                 config.legend.visible = false;
@@ -863,26 +882,35 @@ impl FiggyChart {
             .map_err(js_err)?;
         let mut config = self.chart_config()?.clone();
         if self.legend_auto_managed {
-            let existing = renderer::config::legend_entry_count(&config.legend.content);
-            renderer::config::update_legend_symbols_preserving_text(
-                &mut config.legend.content,
-                &new_series,
-                config.colorbar.as_ref().map(|bar| &bar.colormap),
-            );
-            if existing > new_series.len() {
-                for index in (new_series.len()..existing).rev() {
-                    renderer::config::remove_legend_entry(&mut config.legend.content, index);
+            let colormap = config.colorbar.as_ref().map(|bar| &bar.colormap);
+            let content = &mut config.legend.content;
+            // Entries pair with series by the series their symbol names
+            // (a symbol that names none pairs by position): drop the
+            // entries whose series is gone, restyle the rest, and add one
+            // for each labeled series without an entry.
+            for index in (0..renderer::config::legend_entry_count(content)).rev() {
+                let kept = match renderer::config::legend_entry_series_id(content, index) {
+                    Some(series_id) => new_series.iter().any(|cfg| cfg.series_id == series_id),
+                    None => index < new_series.len(),
+                };
+                if !kept {
+                    renderer::config::remove_legend_entry(content, index);
                 }
             }
-            for index in existing..new_series.len() {
-                if let Some(label) = new_series[index].label.clone() {
+            renderer::config::update_legend_symbols_preserving_text(content, &new_series, colormap);
+            for cfg in &new_series {
+                if let Some(label) = &cfg.label
+                    && renderer::config::legend_entry_of_series(
+                        content,
+                        &new_series,
+                        &cfg.series_id,
+                    )
+                    .is_none()
+                {
                     renderer::config::append_legend_entry_rich(
-                        &mut config.legend.content,
-                        renderer::config::series_symbol_segments(
-                            &new_series[index],
-                            config.colorbar.as_ref().map(|bar| &bar.colormap),
-                        ),
-                        label.segments,
+                        content,
+                        renderer::config::series_symbol_segments(cfg, colormap),
+                        label.segments.clone(),
                     );
                 }
             }

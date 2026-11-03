@@ -352,6 +352,16 @@ fn colormap_symbol(map: &ColorMap) -> Vec<RichSegment> {
 ///
 /// [`DataLineStyleConfig::effective_fill_color`]: crate::data_config::DataLineStyleConfig::effective_fill_color
 pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegment> {
+    let mut symbol = series_mark(cfg, colormap);
+    // The symbol names its series, so updates pair it by id (`series_id`).
+    for segment in &mut symbol {
+        segment.series_id = Some(cfg.series_id.clone());
+    }
+    symbol
+}
+
+/// The mark that stands for `cfg`, before it is tagged with its series.
+fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegment> {
     match &cfg.render_type {
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
@@ -529,6 +539,29 @@ struct LegendEntrySpan {
     remove: Range<usize>,
 }
 
+impl LegendEntrySpan {
+    /// The series this entry's symbol names; `None` for a symbol that names
+    /// none (a hand-made symbol, or one written before symbols named their
+    /// series).
+    fn series_id<'a>(&self, content: &'a RichText) -> Option<&'a str> {
+        content.segments[self.symbol.start].series_id.as_deref()
+    }
+}
+
+/// The series entry `position` stands for: the series its symbol names, or,
+/// for a symbol that names none, the series at the same position (how every
+/// entry was paired before symbols named their series).
+fn entry_series<'s>(
+    named: Option<&str>,
+    position: usize,
+    series: &'s [SeriesConfig],
+) -> Option<&'s SeriesConfig> {
+    match named {
+        Some(id) => series.iter().find(|cfg| cfg.series_id == id),
+        None => series.get(position),
+    }
+}
+
 fn is_plain_space(seg: &RichSegment) -> bool {
     seg.text == ' '
         && !seg.bold
@@ -608,10 +641,15 @@ pub fn legend_entry_count(content: &RichText) -> usize {
     legend_entry_spans(content).len()
 }
 
-/// Replace recognized entry symbols in order and keep every user text segment
-/// untouched. Custom layouts that do not expose the auto symbol+tab shape are
-/// left unchanged. `colormap` is the chart's colourbar map, which a heatmap
-/// mark shows ([`series_symbol_segments`]).
+/// Replace each recognized entry's symbol with its series' current mark and
+/// keep every user text segment untouched. An entry is paired with the
+/// series its symbol names ([`RichSegment::series_id`]), so series order and
+/// series without an entry do not matter; a symbol that names no series is
+/// paired by position. An entry whose series is gone keeps its symbol.
+/// Custom layouts that do not expose the auto symbol+tab shape are left
+/// unchanged. `colormap` is the chart's colourbar map, which a heatmap mark
+/// shows ([`series_symbol_segments`]). Returns the number of symbols
+/// replaced.
 pub fn update_legend_symbols_preserving_text(
     content: &mut RichText,
     series: &[SeriesConfig],
@@ -619,13 +657,46 @@ pub fn update_legend_symbols_preserving_text(
 ) -> usize {
     let spans = legend_entry_spans(content);
     let mut replaced = 0;
-    for (span, cfg) in spans.into_iter().zip(series.iter()).rev() {
-        content
-            .segments
-            .splice(span.symbol, series_symbol_segments(cfg, colormap));
+    // From the last entry, so a splice leaves earlier spans in place.
+    for (position, span) in spans.into_iter().enumerate().rev() {
+        let Some(cfg) = entry_series(span.series_id(content), position, series) else {
+            continue;
+        };
+        let symbol = series_symbol_segments(cfg, colormap);
+        content.segments.splice(span.symbol, symbol);
         replaced += 1;
     }
     replaced
+}
+
+/// The entry that stands for series `series_id`: the one whose symbol names
+/// it, or, when no symbol names it, the entry at the series' position in
+/// `series` if that entry's symbol names no series (a legend written before
+/// symbols named their series). `None` when the series has no entry.
+pub fn legend_entry_of_series(
+    content: &RichText,
+    series: &[SeriesConfig],
+    series_id: &str,
+) -> Option<usize> {
+    let spans = legend_entry_spans(content);
+    if let Some(index) = spans
+        .iter()
+        .position(|span| span.series_id(content) == Some(series_id))
+    {
+        return Some(index);
+    }
+    let position = series.iter().position(|cfg| cfg.series_id == series_id)?;
+    spans
+        .get(position)
+        .filter(|span| span.series_id(content).is_none())
+        .map(|_| position)
+}
+
+/// The series entry `entry_index`'s symbol names, if it names one.
+pub fn legend_entry_series_id(content: &RichText, entry_index: usize) -> Option<&str> {
+    legend_entry_spans(content)
+        .get(entry_index)
+        .and_then(|span| span.series_id(content))
 }
 
 /// Set one recognized legend entry label while preserving the surrounding
@@ -1102,5 +1173,153 @@ mod tests {
             series.len(),
             "every series must own exactly one entry, or later symbols shift"
         );
+    }
+
+    fn named(id: &str, color: Color) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            ..line_cfg(color)
+        }
+    }
+
+    /// The colour of entry `i`'s symbol.
+    fn entry_color(content: &RichText, i: usize) -> Option<Color> {
+        legend_entry_spans(content)
+            .get(i)
+            .and_then(|span| content.segments[span.symbol.start].color)
+    }
+
+    fn entry_label(content: &RichText, i: usize) -> String {
+        let span = &legend_entry_spans(content)[i];
+        content.segments[span.text.clone()]
+            .iter()
+            .map(|seg| seg.text)
+            .collect()
+    }
+
+    // The auto legend lists only the series that have a label. With an
+    // unlabeled series first, the one entry is the second series', and a
+    // restyle must give it the second series' symbol, not the first's.
+    #[test]
+    fn a_restyle_keeps_each_symbol_with_its_series_when_one_has_no_entry() {
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let blue = Color::new(0.0, 0.0, 1.0, 1.0);
+        let green = Color::new(0.0, 1.0, 0.0, 1.0);
+        let unlabeled = named("a", red);
+        let labeled = named("b", blue);
+        let mut content = empty_content();
+        append_legend_entry(&mut content, series_symbol_segments(&labeled, None), "B");
+
+        let restyled = named("b", green);
+        update_legend_symbols_preserving_text(&mut content, &[unlabeled, restyled], None);
+
+        assert_eq!(legend_entry_count(&content), 1);
+        assert_eq!(entry_label(&content, 0), "B");
+        assert_eq!(entry_color(&content, 0), Some(green));
+    }
+
+    // Reordering the series does not move symbols between entries.
+    #[test]
+    fn a_reorder_keeps_each_symbol_with_its_series() {
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let blue = Color::new(0.0, 0.0, 1.0, 1.0);
+        let a = named("a", red);
+        let b = named("b", blue);
+        let mut content = empty_content();
+        append_legend_entry(&mut content, series_symbol_segments(&a, None), "A");
+        append_legend_entry(&mut content, series_symbol_segments(&b, None), "B");
+
+        update_legend_symbols_preserving_text(&mut content, &[b, a], None);
+
+        assert_eq!(entry_label(&content, 0), "A");
+        assert_eq!(entry_color(&content, 0), Some(red));
+        assert_eq!(entry_label(&content, 1), "B");
+        assert_eq!(entry_color(&content, 1), Some(blue));
+    }
+
+    // A symbol names its series, and the entry is found by that name.
+    #[test]
+    fn an_entry_is_found_by_the_series_its_symbol_names() {
+        let a = named("a", Color::BLACK);
+        let b = named("b", Color::BLACK);
+        let c = named("c", Color::BLACK);
+        let mut content = empty_content();
+        append_legend_entry(&mut content, series_symbol_segments(&c, None), "C");
+        append_legend_entry(&mut content, series_symbol_segments(&a, None), "A");
+        let series = [a, b, c];
+
+        assert_eq!(legend_entry_of_series(&content, &series, "a"), Some(1));
+        assert_eq!(legend_entry_of_series(&content, &series, "c"), Some(0));
+        assert_eq!(legend_entry_of_series(&content, &series, "b"), None);
+        assert_eq!(legend_entry_series_id(&content, 0), Some("c"));
+        assert_eq!(legend_entry_series_id(&content, 5), None);
+    }
+
+    // A legend written before symbols named their series pairs by position,
+    // as it always did, and a restyle names the series from then on.
+    #[test]
+    fn symbols_that_name_no_series_pair_by_position() {
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let blue = Color::new(0.0, 0.0, 1.0, 1.0);
+        let a = named("a", red);
+        let b = named("b", blue);
+        let mut content = empty_content();
+        append_legend_entry(
+            &mut content,
+            symbol_segments(&LegendEntryKind::Line, Color::BLACK),
+            "A",
+        );
+        append_legend_entry(
+            &mut content,
+            symbol_segments(&LegendEntryKind::Line, Color::BLACK),
+            "B",
+        );
+        let series = [a, b];
+        assert_eq!(legend_entry_series_id(&content, 0), None);
+        assert_eq!(legend_entry_of_series(&content, &series, "b"), Some(1));
+
+        assert_eq!(
+            update_legend_symbols_preserving_text(&mut content, &series, None),
+            2
+        );
+        assert_eq!(entry_color(&content, 0), Some(red));
+        assert_eq!(entry_color(&content, 1), Some(blue));
+        assert_eq!(legend_entry_series_id(&content, 1), Some("b"));
+    }
+
+    // An entry whose series is gone keeps its symbol and its text.
+    #[test]
+    fn an_entry_whose_series_is_gone_keeps_its_symbol() {
+        let red = Color::new(1.0, 0.0, 0.0, 1.0);
+        let gone = named("gone", red);
+        let mut content = empty_content();
+        append_legend_entry(&mut content, series_symbol_segments(&gone, None), "Gone");
+        let before = content.clone();
+
+        let replaced =
+            update_legend_symbols_preserving_text(&mut content, &[named("x", Color::BLACK)], None);
+
+        assert_eq!(replaced, 0);
+        assert_eq!(content, before);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_series_id_round_trips_and_is_absent_from_other_segments() {
+        let mut content = empty_content();
+        append_legend_entry(
+            &mut content,
+            series_symbol_segments(&named("a", Color::BLACK), None),
+            "A",
+        );
+        let json = serde_json::to_string(&content).unwrap();
+        assert_eq!(json.matches("\"series_id\":\"a\"").count(), 1);
+        let back: RichText = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, content);
+        // A document written before the field still parses: no id.
+        let plain = serde_json::to_string(&RichSegment::plain('x')).unwrap();
+        assert!(!plain.contains("series_id"));
+        let parsed: RichSegment = serde_json::from_str(&plain).unwrap();
+        assert_eq!(parsed.series_id, None);
     }
 }
