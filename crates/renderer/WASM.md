@@ -39,7 +39,6 @@ cargo check --locked -p figgy-renderer --target wasm32-unknown-unknown
 | `model` | 기본 의존성 없음; 선택적 `serde` (순수 Rust) | ✅ |
 | CPU 래스터 (축/라벨/텍스트) | `tiny-skia` + `fontdb` + `swash` — 전부 순수 Rust | ✅ |
 | GPU | `wgpu` 30 — 웹에서는 WebGPU 백엔드 | ✅ |
-| 동기 실행기 | `pollster` — **네이티브 빌드 전용 의존성** | ❌ 컴파일 제외 |
 
 CPU 렌더링에는 순수 Rust로 구현된 tiny-skia·fontdb·swash를 사용한다.
 
@@ -53,15 +52,23 @@ Liberation Sans 네 가지 글꼴을 내장하므로 웹에서도 이 폰트의 
 
 | 동기 API(네이티브 전용) | 비동기 API(모든 플랫폼) | 내용 |
 |---|---|---|
-| `Renderer::for_window` | `Renderer::for_window_async` | surface·adapter·device 초기화 |
-| — | `gpu::request_adapter_async` | 어댑터 요청. 네이티브에서는 `pollster::block_on` 등으로 기다린다 |
-| — | `gpu::request_adapter_for_surface_async` | surface와 맞는 어댑터 요청 |
-| — | `gpu::request_device_async` | 장치와 큐 요청 |
-| — | `Renderer::export_rgba` / `export_png` / `export_svg` / `export_pdf` | GPU→CPU readback. `ExportOptions`의 `scope`로 패널 하나 또는 모든 레이어를 합성한 문서를 고른다. 네이티브에서는 `pollster::block_on` 등으로 기다린다 |
+| `Renderer::for_window_blocking` | `Renderer::for_window_async` | surface·adapter·device 초기화 |
+| `Renderer::prewarm_all_blocking` / `PipelinePreparation::compile_blocking` / `ensure_errorbar_extent_engine_blocking` | `prewarm_all` / `compile` / `ensure_errorbar_extent_engine` | 파이프라인 준비. 웹에서는 브라우저의 비동기 컴파일을 기다리고 단계마다 실행을 넘긴다. 네이티브에서는 기다리는 곳이 없다 |
+| `gpu::request_adapter_blocking` | `gpu::request_adapter_async` | 어댑터 요청 |
+| `gpu::request_adapter_for_surface_blocking` | `gpu::request_adapter_for_surface_async` | surface와 맞는 어댑터 요청 |
+| `gpu::request_device_blocking` / `request_device_with_blocking` | `gpu::request_device_async` | 장치와 큐 요청 |
+| `Renderer::export_rgba_blocking` / `export_png_blocking` / `export_svg_blocking` / `export_pdf_blocking` | `Renderer::export_rgba` / `export_png` / `export_svg` / `export_pdf` | GPU→CPU readback. `ExportOptions`의 `scope`로 패널 하나 또는 모든 레이어를 합성한 문서를 고른다 |
 | — | `Renderer::wait_idle`(동기, 모든 플랫폼) | 네이티브에서는 장치 작업이 끝날 때까지 대기하고, 웹에서는 아무 작업도 하지 않는다 |
-| — | `Renderer::wait_submitted_work` / `WindowedRenderer::first_frame_ready` / `warm_up` | 첫 `queue.submit()` 이후 GPU 작업 완료 대기 |
+| `Renderer::wait_submitted_work_blocking` | `Renderer::wait_submitted_work` / `WindowedRenderer::first_frame_ready` / `warm_up` | 첫 `queue.submit()` 이후 GPU 작업 완료 대기 |
+| 티켓의 `resolve_blocking` | 티켓의 `resolve` | 픽·extent·원형 차트 픽 결과 읽기. 기다리지 않고 확인하는 `try_resolve`는 모든 플랫폼에 있다 |
 
-동기 버전은 비동기 함수를 `pollster::block_on`으로 감싼 래퍼다. 이미지 출력의 GPU 결과 읽기는 `map_async` 완료를 `futures_channel::oneshot`으로 기다린다. 네이티브에서는 `device.poll(Wait)`로 완료를 처리하고, 웹에서는 `await`로 JavaScript 이벤트 루프에 실행을 넘긴다.
+GPU 결과를 기다리는 방법은 세 가지이고 결과는 같다(#160). 작업 준비와 제출, 결과 해석은 한 벌이고 기다리는 방법만 다르다.
+
+- 비동기(`resolve`, `export_png` 등): 웹에서는 브라우저가 장치를 처리하고 `await`가 JavaScript 이벤트 루프에 실행을 넘긴다. 네이티브에서는 `RendererDevice::new`가 장치 묶음마다 띄운 poll 스레드가 장치를 처리하므로, future는 작업이 끝날 때까지 `Pending`을 돌려준다.
+- 동기(`_blocking`, 네이티브 전용): 호출한 스레드에서 `device.poll(Wait)`로 기다린다.
+- 확인(`try_resolve`): 기다리지 않고 결과가 있으면 돌려주고, 없으면 티켓을 돌려준다.
+
+동기 함수만 쓰는 네이티브 호스트는 `RendererDevice::blocking`으로 poll 스레드 없는 장치 묶음을 만든다. 이 묶음에서 비동기 대기를 부르면 `FiggyError::AsyncWaitUnavailable`을 돌려준다.
 
 웹 이미지 출력은 같은 wgpu 장치의 `GPUDevice.pushErrorScope` / `popErrorScope`로 메모리 부족과 내부 오류를 확인한다. 오류 범위가 비동기 함수 전체에 걸쳐 열린 채 남지 않도록 자원 생성·렌더 제출과 각 결과 읽기 제출을 별도의 동기 구간으로 처리한다. 각 구간은 `push → 명령 기록·제출·매핑 요청 → pop 요청`을 마친 뒤 반환된 Promise만 기다린다.
 
@@ -400,7 +407,7 @@ const png = await withKernelOperation((chart) => chart.export_png(2.0));
 
 `<figgy-chart>` 래퍼는 비동기 커널 작업을 위해 연결 세대를 확인하는 게이트를 이미 갖고 있다. 경쟁하는 앱 호출은 `"figgy chart is busy"`로 거부하며, 일반적인 호출 대기열이 아니다. 래퍼를 쓸 때는 래퍼에 있는 메서드를 저수준 커널로 우회해 호출하지 않는다. 래퍼에 없는 메서드는 [`element.kernel`](#figgy-chart-kernel)로 호출한다. 연결 해제와 재연결을 지원하는 호스트는 [3.9절](#39-async-메서드와-객체-잠금-필독)의 수명 규칙도 따라야 한다.
 
-출력 함수는 모두 비동기다. 네이티브 호스트는 `pollster::block_on` 같은 실행기로 기다린다.
+출력 함수는 모두 비동기다. 네이티브 Rust 호스트는 같은 future를 기다리거나 `_blocking` 함수를 쓴다.
 
 #### SVG와 PDF 내보내기
 
@@ -495,7 +502,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 - **메인 스레드 사용**: 축·장식의 CPU 렌더링은 메인 스레드에서 실행한다. 이 래스터는 축·라벨·장식이나 캔버스 크기가 바뀐 프레임에서만 다시 실행하며, 비용은 캔버스 크기·글자 수·환경에 따라 달라진다. `FiggyChart.create`와 `FiggyBoundedChart.create`는 `HtmlCanvasElement`만 받으므로 이 패키지는 Web Worker에서 실행할 수 없다. Worker에서 그리려면 `OffscreenCanvas`를 `wgpu::SurfaceTarget`으로 넘기는 래퍼를 Rust로 직접 작성한다. SharedArrayBuffer를 쓰는 WASM 스레드를 사용하려면 서버의 COOP/COEP 헤더로 교차 출처 격리를 설정해야 한다.
 - **WebGPU 지원**: HTTPS나 루프백 주소에서 `navigator.gpu` 존재 여부와 어댑터·장치 요청 성공을 확인한다. 지원 여부는 브라우저 버전뿐 아니라 OS·GPU·드라이버·브라우저 정책에 따라 다르다. 이 렌더러는 컴퓨트·스토리지 버퍼와 WebGPU 초기화를 사용하므로 wgpu의 `webgl` 기능만 켜서 WebGL2로 대체할 수 없다. 일반 환경에서는 브라우저의 기본 GPU 선택을 따른다. 실제 GPU가 없는 Linux 검증 환경에서만 별도 실행 설정으로 SwiftShader Vulkan을 사용할 수 있다.
 - **폰트**: 내장 Liberation Sans에는 한중일 문자가 없다. 한글을 표시하려면 `register_font(Uint8Array)`로 TTF/OTF/TTC 파일을 등록한다. 반환된 글꼴 이름을 `font`에 지정하면 그 폰트로 그린다. 지정하지 않아도 선택한 폰트에 없는 한글은 글자마다 등록 폰트에서 찾아 그린다. fontdb는 WOFF2를 읽지 못한다. 스케치 모드는 내장 Comic Neue(OFL)를 사용한다. 이 폰트에 없는 한중일·그리스 문자 등은 글자마다 `font`의 폰트로 그리고, 그 폰트에도 없으면 등록 폰트와 Liberation Sans에서 찾는다. 따라서 등록한 한글 폰트는 스케치 모드에서도 사용할 수 있다.
-- **동기 대기 금지**: WASM에서 `pollster::block_on`을 사용하면 교착 상태가 발생할 수 있다. 구현은 비동기로 작성하고 동기 래퍼는 `#[cfg(not(target_arch = "wasm32"))]`로 네이티브에서만 빌드한다.
+- **동기 대기 금지**: WASM에서는 스레드를 막고 기다리면 교착 상태가 발생할 수 있다. `_blocking` 함수는 `#[cfg(not(target_arch = "wasm32"))]`로 네이티브에서만 빌드한다.
 
 ## 5. 빌드 산출물(`crates/web` → `pkg/`)
 

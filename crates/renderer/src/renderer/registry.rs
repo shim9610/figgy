@@ -3626,51 +3626,84 @@ impl Renderer {
 
     async fn release_unused_pool_memory_unreported(&mut self, minimum_capacity: u64) -> Result<()> {
         self.wait_submitted_work().await?;
-        self.pool.release_backup();
-        self.end_gpu_frame();
+        self.release_pool_backup();
         self.wait_submitted_work().await?;
-
-        let target = self.pool.used_bytes().max(minimum_capacity);
-        if target < self.pool.capacity() {
-            let result = (|| -> Result<()> {
-                let relayout = self.pool.begin_relayout(
-                    pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
-                    target,
-                )?;
-                let picker = if relayout.relocated() {
-                    match self.picker.active.as_ref().map(|active| active.chart_id) {
-                        Some(chart_id) => {
-                            let state = self
-                                .chart_states
-                                .get(&chart_id)
-                                .ok_or(FiggyError::UnknownChart { id: chart_id })?;
-                            let plan =
-                                PickChartPlan::for_active_layer(&state.config, &state.series)?;
-                            self.picker.prepare_active_pool_mutation(
-                                relayout.pool(),
-                                chart_id,
-                                plan,
-                                &[],
-                            )?
-                        }
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                relayout.commit();
-                if let Some(picker) = picker {
-                    picker.commit();
-                }
-                self.pending_defrag = false;
-                Ok(())
-            })();
-            self.end_gpu_frame();
+        if let Some(result) = self.relayout_pool_to_used(minimum_capacity) {
             let waited = self.wait_submitted_work().await;
             result?;
             waited?;
         }
         Ok(())
+    }
+
+    /// [`Self::release_unused_pool_memory`], polling the device on this
+    /// thread for each wait.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn release_unused_pool_memory_blocking(&mut self, minimum_capacity: u64) -> Result<()> {
+        let result = (|| {
+            self.wait_submitted_work_blocking()?;
+            self.release_pool_backup();
+            self.wait_submitted_work_blocking()?;
+            if let Some(result) = self.relayout_pool_to_used(minimum_capacity) {
+                let waited = self.wait_submitted_work_blocking();
+                result?;
+                waited?;
+            }
+            Ok(())
+        })();
+        self.reported(result)
+    }
+
+    /// The release's first step, once the queued work is done: drop the
+    /// backup slab and end the frame.
+    fn release_pool_backup(&mut self) {
+        self.pool.release_backup();
+        self.end_gpu_frame();
+    }
+
+    /// The release's second step, once the backup's release has completed:
+    /// relayout the pool to its used bytes (at least `minimum_capacity`),
+    /// and end the frame. `None` when the pool is already that small; the
+    /// relayout's result otherwise, to return after its work is waited for.
+    fn relayout_pool_to_used(&mut self, minimum_capacity: u64) -> Option<Result<()>> {
+        let target = self.pool.used_bytes().max(minimum_capacity);
+        if target >= self.pool.capacity() {
+            return None;
+        }
+        let result = (|| -> Result<()> {
+            let relayout = self.pool.begin_relayout(
+                pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger),
+                target,
+            )?;
+            let picker = if relayout.relocated() {
+                match self.picker.active.as_ref().map(|active| active.chart_id) {
+                    Some(chart_id) => {
+                        let state = self
+                            .chart_states
+                            .get(&chart_id)
+                            .ok_or(FiggyError::UnknownChart { id: chart_id })?;
+                        let plan = PickChartPlan::for_active_layer(&state.config, &state.series)?;
+                        self.picker.prepare_active_pool_mutation(
+                            relayout.pool(),
+                            chart_id,
+                            plan,
+                            &[],
+                        )?
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+            relayout.commit();
+            if let Some(picker) = picker {
+                picker.commit();
+            }
+            self.pending_defrag = false;
+            Ok(())
+        })();
+        self.end_gpu_frame();
+        Some(result)
     }
 
     pub fn has_pending_maintenance(&self) -> bool {

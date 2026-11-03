@@ -34,7 +34,7 @@ fn wave(phase: f32, scale: f32) -> crate::Column<f32> {
 fn renderer(format: wgpu::TextureFormat, samples: u32) -> Renderer {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         format,
         1 << 20,
         samples,

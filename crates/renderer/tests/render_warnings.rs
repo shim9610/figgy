@@ -33,7 +33,7 @@ fn host_frame(renderer: &mut Renderer, view: &mut ChartView, chart: &mut Chart) 
 fn a_refreshed_view_reports_the_substituted_spacing_until_it_is_fixed() {
     let (device, queue) = test_gpu::device();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

@@ -122,7 +122,7 @@ impl FiggyRadialChart {
             canvas.height(),
         )
         .map_err(js_err)?;
-        let gpu = RendererDevice::new(device, queue);
+        let gpu = RendererDevice::new(device, queue).map_err(js_err)?;
         let mut renderer = RadialRenderer::try_new_async(gpu.clone(), config.format)
             .await
             .map_err(js_err)?;

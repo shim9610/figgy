@@ -1,7 +1,7 @@
 //! Use the actual common HitMap -> Selectable -> Draggable path, then render
 //! and inspect pixels. A successful data pick does not cover decoration editing.
 #![cfg(not(target_arch = "wasm32"))]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{
@@ -15,7 +15,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 fn gpu() -> RendererDevice {
     static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone())
+    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
 }
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
@@ -315,7 +315,7 @@ mod radial_area;
 #[test]
 fn radial_area_select_resize_move_pick_and_export() {
     let _guard = LOCK.lock().unwrap();
-    pollster::block_on(radial_area::check(gpu()));
+    test_gpu::block_on(radial_area::check(gpu()));
 }
 
 #[test]

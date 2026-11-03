@@ -1,5 +1,5 @@
 use super::*;
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
     crate::Column { data }
@@ -18,7 +18,7 @@ fn setup(
 ) {
     let (device, queue) = data_render::shared_device().expect("stream replay test requires GPU");
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4096,
     )
@@ -207,7 +207,7 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
         let status = renderer.stream_status(id).unwrap();
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             16384,
         )
@@ -224,7 +224,8 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
                     .is_err()
             );
             pump(&mut renderer, operation, &x, &y);
-            let actual = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
                 .export_rgba(
                     crate::ExportSource::chart(&chart, &series),
@@ -250,7 +251,8 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
                     }])
                     .unwrap(),
             );
-            pollster::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
+            crate::test_gpu::block_on(renderer.cancel_stream_operation_and_wait(operation))
+                .unwrap();
         }
     }
 }
@@ -268,10 +270,10 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
     latest.chart_title.text.segments = crate::text::rich_segments_from_text("Latest decoration");
     renderer.set_chart_config(id, latest.clone()).unwrap();
     pump(&mut renderer, first, &x, &y);
-    let old_export = pollster::block_on(renderer.finish_stream_export(first)).unwrap();
+    let old_export = crate::test_gpu::block_on(renderer.finish_stream_export(first)).unwrap();
     let (device, queue) = data_render::shared_device().unwrap();
     let mut resident = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         16384,
     )
@@ -293,7 +295,7 @@ fn completed_stream_export_uses_latest_decoration_without_restarting_data() {
         .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 3)
         .unwrap();
     pump(&mut renderer, second, &x, &y);
-    let new_export = pollster::block_on(renderer.finish_stream_export(second)).unwrap();
+    let new_export = crate::test_gpu::block_on(renderer.finish_stream_export(second)).unwrap();
     let new_expected = resident
         .export_rgba(
             crate::ExportSource::chart(&Chart::new(latest), &series),
@@ -363,7 +365,7 @@ fn streamed_operations_reject_stale_supply_cancel_idempotently_and_keep_display(
     );
     assert!(renderer.request_stream_operation_ranges(operation).is_err());
     assert_eq!(renderer.active_stream_job(id), screen);
-    pollster::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
+    crate::test_gpu::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
     assert_eq!(renderer.streaming_usage().in_flight_chunks, 0);
 }
 
@@ -375,7 +377,7 @@ fn streamed_pick_matches_resident_and_preserves_display() {
         let snapshot = renderer.auto_stream_snapshot(job.unwrap()).unwrap();
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             16384,
         )
@@ -396,7 +398,7 @@ fn streamed_pick_matches_resident_and_preserves_display() {
                 display_scale: 1.0,
                 max_distance_px: 20.0,
             };
-            let expected = pollster::block_on(
+            let expected = crate::test_gpu::block_on(
                 resident
                     .pick_chart_data(resident_id, request)
                     .unwrap()
@@ -404,25 +406,28 @@ fn streamed_pick_matches_resident_and_preserves_display() {
             )
             .unwrap();
             let operation =
-                pollster::block_on(renderer.begin_stream_pick_data(id, position, 20.0, 11))
+                crate::test_gpu::block_on(renderer.begin_stream_pick_data(id, position, 20.0, 11))
                     .unwrap();
             pump(&mut renderer, operation, &x, &y);
-            let actual = pollster::block_on(renderer.finish_stream_pick_data(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(renderer.finish_stream_pick_data(operation)).unwrap();
             assert_eq!(
                 actual,
                 expected,
                 "histogram={histogram}, position={position:?}, chart={:?}",
                 chart.config().chart_area
             );
-            let expected_point =
-                pollster::block_on(resident.pick_chart(resident_id, request).unwrap().resolve())
-                    .unwrap();
+            let expected_point = crate::test_gpu::block_on(
+                resident.pick_chart(resident_id, request).unwrap().resolve(),
+            )
+            .unwrap();
             let point_operation =
-                pollster::block_on(renderer.begin_stream_pick_point(id, position, 20.0, 5))
+                crate::test_gpu::block_on(renderer.begin_stream_pick_point(id, position, 20.0, 5))
                     .unwrap();
             pump(&mut renderer, point_operation, &x, &y);
             let actual_point =
-                pollster::block_on(renderer.finish_stream_pick_point(point_operation)).unwrap();
+                crate::test_gpu::block_on(renderer.finish_stream_pick_point(point_operation))
+                    .unwrap();
             assert_eq!(actual_point, expected_point);
             assert_eq!(renderer.active_stream_job(id), job);
         }
@@ -467,23 +472,23 @@ fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_re
         .ensure_target_format(wgpu::TextureFormat::Rgba8Unorm)
         .unwrap();
     pump(&mut renderer, operation, &x, &y);
-    let actual = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+    let actual = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
     let (device, queue) = data_render::shared_device().unwrap();
     let mut resident = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         16384,
     )
     .unwrap();
     resident.add_column("x", &x).unwrap();
     resident.add_column("y", &y).unwrap();
-    let expected = pollster::block_on(resident.export_rgba(
+    let expected = crate::test_gpu::block_on(resident.export_rgba(
         crate::ExportSource::chart(&chart, &series),
         crate::ExportOptions::panel(2.0).with_clear(Color::WHITE),
     ))
     .unwrap();
     assert_eq!(actual.rgba, expected.rgba);
-    pollster::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
+    crate::test_gpu::block_on(renderer.cancel_stream_operation_and_wait(operation)).unwrap();
     assert_eq!(renderer.streaming_usage().in_flight_chunks, 0);
 }
 
@@ -633,7 +638,7 @@ fn wide_stream(
 ) {
     let (device, queue) = data_render::shared_device().expect("stream test requires GPU");
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -925,9 +930,12 @@ fn completed_auto_streams_keep_their_pages_sources_and_styles_per_series() {
                     );
                     assert_eq!(page.chunk.columns.len(), page.ranges.len());
                 }
-                let picked =
-                    pollster::block_on(renderer.pick_chart_view_cache(id, [120.0, 90.0], 40.0))
-                        .unwrap();
+                let picked = crate::test_gpu::block_on(renderer.pick_chart_view_cache(
+                    id,
+                    [120.0, 90.0],
+                    40.0,
+                ))
+                .unwrap();
                 if let Some(point) = picked {
                     assert!(series.iter().any(|s| s.series_id == point.series_id));
                 }
@@ -938,7 +946,7 @@ fn completed_auto_streams_keep_their_pages_sources_and_styles_per_series() {
             .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 7)
             .unwrap();
         pump_wide(&mut renderer, operation, &values);
-        let image = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+        let image = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
         assert_eq!(image.rgba.len(), (image.width * image.height * 4) as usize);
         assert!(image.rgba.chunks_exact(4).any(|p| p[3] != 0));
     }
@@ -955,7 +963,7 @@ fn a_resident_handoff_snapshot_covers_every_series_column() {
     for count in [1usize, 50] {
         let (device, queue) = data_render::shared_device().expect("stream test requires GPU");
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -1104,7 +1112,7 @@ fn a_resident_handoff_snapshot_covers_every_series_column() {
             .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 7)
             .unwrap();
         pump_wide(&mut renderer, operation, &values);
-        let image = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+        let image = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
         assert!(image.rgba.chunks_exact(4).any(|p| p[3] != 0));
     }
 }
@@ -1184,7 +1192,8 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
         assert_eq!(snapshot.styles.styles.len(), edited.len());
         drop(snapshot);
         let picked =
-            pollster::block_on(renderer.pick_chart_view_cache(id, [120.0, 90.0], 40.0)).unwrap();
+            crate::test_gpu::block_on(renderer.pick_chart_view_cache(id, [120.0, 90.0], 40.0))
+                .unwrap();
         if let Some(point) = &picked {
             assert!(edited.iter().any(|s| s.series_id == point.series_id));
         }
@@ -1239,7 +1248,7 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
             .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 7)
             .unwrap();
         pump_wide(&mut renderer, operation, &values);
-        let image = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+        let image = crate::test_gpu::block_on(renderer.finish_stream_export(operation)).unwrap();
         assert!(image.rgba.chunks_exact(4).any(|p| p[3] != 0));
     }
 }

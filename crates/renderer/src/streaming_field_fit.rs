@@ -199,7 +199,7 @@ impl Renderer {
                 .readback
                 .as_mut()
                 .ok_or(FiggyError::internal("a field fit readback was begun above"))?;
-            let resolved = match readback.try_resolve() {
+            let resolved = match readback.try_resolve_unpolled() {
                 Ok(resolved) => resolved,
                 Err(error) => {
                     fit.readback = None;

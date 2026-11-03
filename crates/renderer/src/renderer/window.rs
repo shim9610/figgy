@@ -36,6 +36,17 @@ impl<'w> WindowedRenderer<'w> {
         Renderer::for_window_async_observed(target, size, pool_capacity_bytes, observer).await
     }
 
+    /// [`Self::for_window_async_observed`] on native, without an executor.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_window_blocking_observed(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<Self> {
+        Renderer::for_window_blocking_observed(target, size, pool_capacity_bytes, observer)
+    }
+
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
@@ -264,6 +275,29 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.health.check()
     }
 
+    /// [`Self::first_frame_ready`], polling the device on this thread until
+    /// the frame's work completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn first_frame_ready_blocking(
+        &mut self,
+        clear: crate::color::Color,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<()> {
+        self.draw(clear, items)?;
+        self.inner.wait_submitted_work_blocking()?;
+        self.inner.health.check()
+    }
+
+    /// Alias for `Self::first_frame_ready_blocking`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn warm_up_blocking(
+        &mut self,
+        clear: crate::color::Color,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<()> {
+        self.first_frame_ready_blocking(clear, items)
+    }
+
     /// Alias for [`Self::first_frame_ready`].
     pub async fn warm_up(
         &mut self,
@@ -378,23 +412,12 @@ impl Renderer {
         minimal: bool,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
-        let instance = observe_value(observer, "window", "instance", data_render::create_instance);
-        // wgpu reports surface failures as `CreateSurfaceError`; there is no
-        // device yet whose error scopes could capture anything else.
-        let surface = observe_result(observer, "window", "surface", || {
-            data_render::create_surface_for_window(&instance, target).map_err(|e| {
-                FiggyError::SurfaceCreationFailed {
-                    reason: format!("{e}"),
-                }
-            })
-        })?;
-
+        let (instance, surface) = window_surface(target, observer)?;
         started(observer, "window", "adapter");
         let adapter = data_render::request_adapter_for_surface_async(&instance, &surface)
             .await
             .map_err(|_| FiggyError::AdapterUnavailable)?;
         finished(observer, "window", "adapter");
-
         started(observer, "window", "device");
         let (device, queue) = data_render::request_device_async(&adapter)
             .await
@@ -402,64 +425,154 @@ impl Renderer {
                 reason: format!("{e}"),
             })?;
         finished(observer, "window", "device");
-        // The bundle registers the device's lost callback and error handler
-        // before figgy uses the device, once for this device.
-        let gpu = RendererDevice::new(device, queue);
-        let device = gpu.device().clone();
-        let surface_config = observe_result(observer, "window", "configure", || {
-            data_render::try_configure_surface(
-                &surface,
-                &adapter,
-                &device,
-                size.0.max(1),
-                size.1.max(1),
-            )
-        })?;
-
-        let caps = RendererDeviceCaps::from_device(&device);
-        // Probing MSAA decides the sample count the renderer's pipelines are
-        // compiled against, so it has to happen before the renderer exists.
-        // The target is charged to the bundle's ledger, which the renderer
-        // shares: one ledger per device bundle, this target included.
-        let gpu_ledger = Arc::clone(gpu.ledger());
-        let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
-        let (target_sample_count, msaa_target) =
-            observe_result(observer, "window", "figgy frame msaa target", || {
-                match create_msaa_target(
-                    &device,
-                    &gpu_ledger,
-                    caps,
-                    "figgy frame msaa target",
-                    surface_config.width,
-                    surface_config.height,
-                    surface_config.format,
-                    preferred_sample_count,
-                ) {
-                    Ok(target) => Ok((preferred_sample_count, target)),
-                    Err(_) if preferred_sample_count > 1 => Ok((1, None)),
-                    Err(e) => Err(e),
-                }
-            })?;
-
+        let target = window_target(&surface, &adapter, device, queue, size, observer)?;
         let inner = Renderer::try_new_with_sample_count_observed_async(
-            gpu,
-            surface_config.format,
+            target.gpu,
+            target.surface_config.format,
             pool_capacity_bytes,
-            target_sample_count,
+            target.sample_count,
             minimal,
             observer,
         )
         .await?;
-
         Ok(WindowedRenderer {
             inner,
             surface,
-            surface_config,
-            msaa_target,
+            surface_config: target.surface_config,
+            msaa_target: target.msaa_target,
             _instance: instance,
             _adapter: adapter,
         })
     }
+
+    /// [`Self::for_window_async`] on native, without an executor: wgpu
+    /// completes the adapter and device requests when they are made, and a
+    /// native device compiles each pipeline when it is created.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_window_blocking<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+    ) -> Result<WindowedRenderer<'w>> {
+        let mut observer = |_| {};
+        Self::for_window_blocking_observed(target, size, pool_capacity_bytes, &mut observer)
+    }
+
+    /// [`Self::for_window_async_observed`] on native, without an executor.
+    /// The browser-only minimal warmup has no native counterpart, so
+    /// [`Self::for_window_minimal_async_observed`] builds the same renderer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_window_blocking_observed<'w>(
+        target: impl Into<wgpu::SurfaceTarget<'w>>,
+        size: (u32, u32),
+        pool_capacity_bytes: u64,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<WindowedRenderer<'w>> {
+        let (instance, surface) = window_surface(target, observer)?;
+        started(observer, "window", "adapter");
+        let adapter = data_render::request_adapter_for_surface_blocking(&instance, &surface)?;
+        finished(observer, "window", "adapter");
+        started(observer, "window", "device");
+        let (device, queue) = data_render::request_device_blocking(&adapter)?;
+        finished(observer, "window", "device");
+        let target = window_target(&surface, &adapter, device, queue, size, observer)?;
+        let inner = Renderer::try_new_with_sample_count_observed(
+            target.gpu,
+            target.surface_config.format,
+            pool_capacity_bytes,
+            target.sample_count,
+            observer,
+        )?;
+        Ok(WindowedRenderer {
+            inner,
+            surface,
+            surface_config: target.surface_config,
+            msaa_target: target.msaa_target,
+            _instance: instance,
+            _adapter: adapter,
+        })
+    }
+}
+
+/// A window's instance and surface: the first step of every windowed
+/// constructor.
+fn window_surface<'w>(
+    target: impl Into<wgpu::SurfaceTarget<'w>>,
+    observer: &mut dyn FnMut(InitEvent),
+) -> Result<(wgpu::Instance, wgpu::Surface<'w>)> {
+    let instance = observe_value(observer, "window", "instance", data_render::create_instance);
+    // wgpu reports surface failures as `CreateSurfaceError`; there is no
+    // device yet whose error scopes could capture anything else.
+    let surface = observe_result(observer, "window", "surface", || {
+        data_render::create_surface_for_window(&instance, target).map_err(|e| {
+            FiggyError::SurfaceCreationFailed {
+                reason: format!("{e}"),
+            }
+        })
+    })?;
+    Ok((instance, surface))
+}
+
+/// What a windowed renderer is built on once its device exists: the device
+/// bundle, the configured surface and the frame's sample count and MSAA
+/// target.
+struct WindowTarget {
+    gpu: RendererDevice,
+    surface_config: wgpu::SurfaceConfiguration,
+    sample_count: u32,
+    msaa_target: Option<MsaaTarget>,
+}
+
+/// Bundle the device, configure the surface and probe the frame's MSAA.
+fn window_target(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    size: (u32, u32),
+    observer: &mut dyn FnMut(InitEvent),
+) -> Result<WindowTarget> {
+    // The bundle registers the device's lost callback and error handler
+    // before figgy uses the device, once for this device.
+    let gpu = RendererDevice::new(device, queue)?;
+    let device = gpu.device().clone();
+    let surface_config = observe_result(observer, "window", "configure", || {
+        data_render::try_configure_surface(surface, adapter, &device, size.0.max(1), size.1.max(1))
+    })?;
+
+    let caps = RendererDeviceCaps::from_device(&device);
+    // Probing MSAA decides the sample count the renderer's pipelines are
+    // compiled against, so it has to happen before the renderer exists.
+    // The target is charged to the bundle's ledger, which the renderer
+    // shares: one ledger per device bundle, this target included.
+    let gpu_ledger = Arc::clone(gpu.ledger());
+    let preferred_sample_count = preferred_msaa_sample_count(caps, surface_config.format);
+    let (target_sample_count, msaa_target) = observe_result(
+        observer,
+        "window",
+        "figgy frame msaa target",
+        || match create_msaa_target(
+            &device,
+            &gpu_ledger,
+            caps,
+            "figgy frame msaa target",
+            surface_config.width,
+            surface_config.height,
+            surface_config.format,
+            preferred_sample_count,
+        ) {
+            Ok(target) => Ok((preferred_sample_count, target)),
+            Err(_) if preferred_sample_count > 1 => Ok((1, None)),
+            Err(e) => Err(e),
+        },
+    )?;
+
+    Ok(WindowTarget {
+        gpu,
+        surface_config,
+        sample_count: target_sample_count,
+        msaa_target,
+    })
 }
 
 impl<'w> std::ops::Deref for WindowedRenderer<'w> {

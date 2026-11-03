@@ -1,9 +1,8 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
-use pollster::FutureExt as _;
 use renderer::{
     Color, Material, RendererDevice, encode_png,
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     radial::*,
 };
 use std::path::PathBuf;
@@ -45,10 +44,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "target/radial-gallery".into());
     std::fs::create_dir_all(&directory)?;
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(device, queue);
+    let (device, queue) = request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     let mut renderer = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut cases = Vec::new();
     for (name, material) in [
@@ -160,9 +159,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, mut chart) in cases {
         // The drawn label strings are written once each case is edited.
         chart.format_labels();
-        let img = renderer
-            .export_rgba(&chart, (900, 620), renderer::ExportOptions::document(1.0))
-            .block_on()?;
+        let img = renderer.export_rgba_blocking(
+            &chart,
+            (900, 620),
+            renderer::ExportOptions::document(1.0),
+        )?;
         std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
         renderer.end_frame();
         gpu.device().poll(wgpu::PollType::Wait {

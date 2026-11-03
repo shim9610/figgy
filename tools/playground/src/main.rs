@@ -23,7 +23,6 @@
 //! Run:
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
-use pollster::FutureExt as _;
 mod big_data;
 mod cartesian;
 mod radial;
@@ -67,7 +66,7 @@ impl Gpu {
         let size = window.inner_size();
         let instance = gpu::create_instance();
         let surface = gpu::create_surface_for_window(&instance, window)?;
-        let adapter = gpu::request_adapter_for_surface_async(&instance, &surface).block_on()?;
+        let adapter = gpu::request_adapter_for_surface_blocking(&instance, &surface)?;
         eprintln!("[gpu] adapter: {:?}", adapter.get_info());
         let (device, queue) = request_device(&adapter)?;
         let limits = device.limits();
@@ -101,7 +100,7 @@ impl Gpu {
     }
 
     fn renderer_device(&self) -> RendererDevice {
-        RendererDevice::new(self.device.clone(), self.queue.clone())
+        RendererDevice::new(self.device.clone(), self.queue.clone()).expect("figgy poll thread")
     }
 }
 
@@ -109,9 +108,7 @@ impl Gpu {
 /// buffer at 256 MiB and a storage binding at 128 MiB; the column pool is one
 /// buffer, so 100 million resident points (1.6 GB of hi/lo pairs) need what
 /// the GPU actually allows. Every other limit stays at the baseline.
-fn request_device(
-    adapter: &wgpu::Adapter,
-) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+fn request_device(adapter: &wgpu::Adapter) -> renderer::Result<(wgpu::Device, wgpu::Queue)> {
     let supported = adapter.limits();
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("figgy playground device"),
@@ -125,7 +122,7 @@ fn request_device(
         memory_hints: wgpu::MemoryHints::Performance,
         trace: wgpu::Trace::Off,
     };
-    pollster::block_on(adapter.request_device(&descriptor))
+    gpu::request_device_with_blocking(adapter, &descriptor)
 }
 
 /// What the scene code needs from the host while egui runs.
@@ -518,13 +515,9 @@ impl Drop for App {
 fn main() {
     if std::env::args().any(|a| a == "--selftest") {
         let instance = gpu::create_instance();
-        let adapter = gpu::request_adapter_async(&instance)
-            .block_on()
-            .expect("adapter");
-        let (d, q) = gpu::request_device_async(&adapter)
-            .block_on()
-            .expect("device");
-        let gpu = RendererDevice::new(d, q);
+        let adapter = gpu::request_adapter_blocking(&instance).expect("adapter");
+        let (d, q) = gpu::request_device_blocking(&adapter).expect("device");
+        let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
         let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Bgra8Unorm, POOL_CAPACITY)
             .expect("renderer");
         match cartesian::selftest(&mut r) {

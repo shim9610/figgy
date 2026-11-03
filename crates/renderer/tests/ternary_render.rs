@@ -7,7 +7,7 @@
 //! through `Config::ternary_geometry`, so a wrong corner, normalization or
 //! component order fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -57,7 +57,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         64 * 1024 * 1024,
     )
@@ -270,7 +270,7 @@ fn pick(
         display_scale: scale,
         max_distance_px: reach,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     r.remove_chart(id).unwrap();
     hit
 }

@@ -105,11 +105,60 @@ pub(crate) async fn native_export_scoped<T, E>(
     let internal = internal.pop().await;
     let validation = validation.pop().await;
     let out_of_memory = out_of_memory.pop().await;
+    settle_export_scopes(rendered, [out_of_memory, validation, internal], gpu)
+}
+
+/// [`native_export_scoped`] for a blocking export: the same scopes around
+/// `work`, popped at once.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_export_scoped_blocking<T, E>(
+    device: &wgpu::Device,
+    work: impl FnOnce() -> std::result::Result<T, E>,
+    gpu: impl FnOnce(FiggyError) -> E,
+) -> std::result::Result<T, E> {
+    let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let rendered = work();
+    // Popped in reverse push order, every one, before any is inspected.
+    let internal = pop_scope_now(internal);
+    let validation = pop_scope_now(validation);
+    let out_of_memory = pop_scope_now(out_of_memory);
+    let popped = match (out_of_memory, validation, internal) {
+        (Ok(out_of_memory), Ok(validation), Ok(internal)) => [out_of_memory, validation, internal],
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+            drop(rendered);
+            return Err(gpu(error));
+        }
+    };
+    settle_export_scopes(rendered, popped, gpu)
+}
+
+/// An export's result after its scopes are popped: an error the export
+/// returned itself first, then the first captured GPU error in
+/// out-of-memory, validation, internal order.
+#[cfg(not(target_arch = "wasm32"))]
+fn settle_export_scopes<T, E>(
+    rendered: std::result::Result<T, E>,
+    popped: [Option<wgpu::Error>; 3],
+    gpu: impl FnOnce(FiggyError) -> E,
+) -> std::result::Result<T, E> {
     let rendered = rendered?;
+    let [out_of_memory, validation, internal] = popped;
     match out_of_memory.or(validation).or(internal) {
         Some(error) => Err(gpu(gpu_error("figgy export", error))),
         None => Ok(rendered),
     }
+}
+
+/// Pop a native error scope without waiting (see
+/// [`crate::gpu_readback::ready_now`]): a pop that is not ready is reported
+/// as an internal error, never waited for.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pop_scope_now(scope: wgpu::ErrorScopeGuard) -> Result<Option<wgpu::Error>> {
+    crate::gpu_readback::ready_now(scope.pop()).ok_or(FiggyError::internal(
+        "a native wgpu error scope pops at once",
+    ))
 }
 
 /// What an export renders: one panel or the whole layered document.
@@ -340,10 +389,9 @@ impl Renderer {
     /// (#160): the panel or the document by `options.scope`, at
     /// `options.scale × ` its logical size, over `options.clear`.
     ///
-    /// A series with a streamed source is rejected. Async because the
-    /// GPU→CPU readback must yield to the browser on wasm; on native the
-    /// await resolves at once (the device is polled to completion inline),
-    /// so a native caller can block on it. `&mut self` for the prepare phase
+    /// A series with a streamed source is rejected. On native the bundle's
+    /// poll thread completes the readback (see [`RendererDevice::new`]);
+    /// `Self::export_rgba_blocking` waits on the caller's thread instead. `&mut self` for the prepare phase
     /// (arc prefixes); the export's styled pipelines live in a per-call set.
     /// Encoding is the caller's: [`encode_png`] or [`Self::export_png`].
     pub async fn export_rgba(
@@ -423,17 +471,123 @@ impl Renderer {
             .await
     }
 
+    /// [`Self::export_rgba`], polling the device on this thread until the
+    /// readback completes. Works on a bundle built with
+    /// `RendererDevice::blocking` as with [`RendererDevice::new`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_rgba_blocking(
+        &mut self,
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<RasterImage> {
+        let (chart, series);
+        let (chart, series) = match source {
+            ExportSource::Chart { chart, series } => (chart, series),
+            ExportSource::Registered(id) => {
+                (chart, series) = self.registered_export_state(id)?;
+                (&chart, series.as_slice())
+            }
+        };
+        self.export_begin(series)?;
+        let device = self.device.clone();
+        let result = native_export_scoped_blocking(
+            &device,
+            || {
+                let mut frame = self.prepare_export(chart, series, options.scale, options.scope)?;
+                let panels = 0..frame.items.len();
+                self.paint_export_blocking(&mut frame, panels, true, options.clear)
+            },
+            std::convert::identity,
+        );
+        self.export_end(result)
+    }
+
+    /// [`Self::export_png`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_png_blocking(
+        &mut self,
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<Vec<u8>> {
+        let image = self.export_rgba_blocking(source, options)?;
+        encode_png(&image)
+    }
+
+    /// [`Self::export_svg`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_svg_blocking(
+        &mut self,
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<String> {
+        self.export_vector_blocking::<crate::vector_export::SvgOut>(source, options)
+    }
+
+    /// [`Self::export_pdf`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_pdf_blocking(
+        &mut self,
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<Vec<u8>> {
+        self.export_vector_blocking::<crate::vector_export::PdfOut>(source, options)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_vector_blocking<F: crate::vector_export::VectorFile>(
+        &mut self,
+        source: ExportSource<'_>,
+        options: ExportOptions,
+    ) -> Result<F::Output> {
+        check_vector_scope(options)?;
+        let (chart, series);
+        let (chart, series) = match source {
+            ExportSource::Chart { chart, series } => (chart, series),
+            ExportSource::Registered(id) => {
+                (chart, series) = self.registered_export_state(id)?;
+                (&chart, series.as_slice())
+            }
+        };
+        self.export_begin(series)?;
+        let device = self.device.clone();
+        let result = native_export_scoped_blocking(
+            &device,
+            || {
+                let mut frame =
+                    self.prepare_export(chart, series, options.scale, ExportScope::Document)?;
+                crate::vector_export::document_file_blocking::<F>(self, &mut frame, options.clear)
+            },
+            std::convert::identity,
+        );
+        self.export_end(result)
+    }
+
+    /// The checks every export makes before it renders.
+    fn export_begin(&self, series: &[SeriesConfig]) -> Result<()> {
+        self.health.check()?;
+        for item in series {
+            self.require_resident_series(item)?;
+        }
+        Ok(())
+    }
+
+    /// Every export submission and readback has completed and the export's
+    /// transient owners are dropped: end the frame, and fail the export on a
+    /// GPU error that reached the uncaptured-error handler meanwhile (a
+    /// browser scope resolves asynchronously).
+    fn export_end<T>(&mut self, result: Result<T>) -> Result<T> {
+        self.end_gpu_frame();
+        let value = result?;
+        self.health.check()?;
+        Ok(value)
+    }
+
     async fn export_vector<F: crate::vector_export::VectorFile>(
         &mut self,
         source: ExportSource<'_>,
         options: ExportOptions,
     ) -> Result<F::Output> {
-        if options.scope != ExportScope::Document {
-            return Err(FiggyError::InvalidConfig {
-                field: "ExportOptions.scope",
-                reason: "a vector export renders the whole document",
-            });
-        }
+        check_vector_scope(options)?;
         match source {
             ExportSource::Chart { chart, series } => {
                 self.export_vector_scoped::<F>(chart, series, options.scale, options.clear)
@@ -468,10 +622,7 @@ impl Renderer {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<F::Output> {
-        self.health.check()?;
-        for item in series {
-            self.require_resident_series(item)?;
-        }
+        self.export_begin(series)?;
         #[cfg(target_arch = "wasm32")]
         let result = self
             .export_vector_inner::<F>(chart, series, scale, clear)
@@ -487,12 +638,7 @@ impl Renderer {
             )
             .await
         };
-        self.end_gpu_frame();
-        let image = result?;
-        // A GPU error that reached the uncaptured-error handler during the
-        // export (a browser scope resolves asynchronously) fails it too.
-        self.health.check()?;
-        Ok(image)
+        self.export_end(result)
     }
 
     async fn export_vector_inner<F: crate::vector_export::VectorFile>(
@@ -514,10 +660,7 @@ impl Renderer {
         clear: crate::color::Color,
         scope: ExportScope,
     ) -> Result<RasterImage> {
-        self.health.check()?;
-        for item in series {
-            self.require_resident_series(item)?;
-        }
+        self.export_begin(series)?;
         #[cfg(target_arch = "wasm32")]
         let result = self
             .export_rgba_with_clear_inner(chart, series, scale, clear, scope)
@@ -533,14 +676,7 @@ impl Renderer {
             )
             .await
         };
-        // Every export submission and readback has completed and all transient
-        // owners inside the inner future have been dropped.
-        self.end_gpu_frame();
-        let image = result?;
-        // A GPU error that reached the uncaptured-error handler during the
-        // export (a browser scope resolves asynchronously) fails it too.
-        self.health.check()?;
-        Ok(image)
+        self.export_end(result)
     }
 
     pub(super) async fn export_rgba_with_clear_inner(
@@ -971,6 +1107,56 @@ impl Renderer {
         chrome: bool,
         clear: crate::color::Color,
     ) -> Result<RasterImage> {
+        let mut job = self.paint_export_draw(frame, panels, chrome, clear)?;
+        #[cfg(target_arch = "wasm32")]
+        if let Some(scopes) = job.draw_scopes.take() {
+            scopes.request_all().finish().await?;
+        }
+        while let Some(mut chunk) = job.next_chunk(self)? {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(scopes) = chunk.scopes.take() {
+                scopes.request_all().finish().await?;
+            }
+            // On native the bundle's poll thread completes the map; in the
+            // browser the device polls itself.
+            chunk.readback.wait().await.map_err(export_readback_error)?;
+            job.consume(chunk)?;
+        }
+        Ok(job.into_image())
+    }
+
+    /// [`Self::paint_export`], polling the device on this thread for each
+    /// chunk's map.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn paint_export_blocking(
+        &self,
+        frame: &mut ExportFrame,
+        panels: std::ops::Range<usize>,
+        chrome: bool,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        let mut job = self.paint_export_draw(frame, panels, chrome, clear)?;
+        while let Some(mut chunk) = job.next_chunk(self)? {
+            chunk
+                .readback
+                .wait_blocking()
+                .map_err(export_readback_error)?;
+            job.consume(chunk)?;
+        }
+        Ok(job.into_image())
+    }
+
+    /// The draw half of [`Self::paint_export`]: render the panels into the
+    /// target and allocate the readback, returning the job that reads the
+    /// target back chunk by chunk. Everything but the waits is here or in
+    /// [`ExportReadback`], so the waiting drivers share it.
+    fn paint_export_draw(
+        &self,
+        frame: &mut ExportFrame,
+        panels: std::ops::Range<usize>,
+        chrome: bool,
+        clear: crate::color::Color,
+    ) -> Result<ExportReadback> {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = match frame.browser_scopes.take() {
             Some(scopes) => scopes,
@@ -1062,11 +1248,7 @@ impl Renderer {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        #[cfg(target_arch = "wasm32")]
-        browser_scopes.request_all().finish().await?;
-
         // 7) Texture → readback buffer in row chunks.
-        let bgra = false;
         let rgba_len = u64::from(w)
             .checked_mul(u64::from(h))
             .and_then(|px| px.checked_mul(4))
@@ -1083,91 +1265,174 @@ impl Renderer {
                 reason: error.to_string(),
             })?;
         rgba.resize(rgba_len, 0);
-        let mut y0 = 0;
-        while y0 < h {
-            #[cfg(target_arch = "wasm32")]
-            let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export readback")?;
-
-            let rows = rows_per_chunk.min(h - y0);
-            let chunk_size = padded_bpr_u64 * u64::from(rows);
-            let mut copy_encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("figgy export copy encoder"),
-                    });
-            copy_encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: target_tex,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &readback,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bpr),
-                        rows_per_image: Some(rows),
-                    },
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: rows,
-                    depth_or_array_layers: 1,
-                },
-            );
-            self.queue.submit(std::iter::once(copy_encoder.finish()));
-
-            let chunk = GpuReadback::map(&self.device, &self.health, &readback, Some(chunk_size));
-
-            #[cfg(target_arch = "wasm32")]
-            browser_scopes.request_all().finish().await?;
-
-            // Native: the read drives the device to completion, so the map
-            // resolves at once. On wasm the browser polls the device and the
-            // read yields to the JS event loop instead.
-            chunk
-                .read(|mapped| {
-                    for local_y in 0..rows {
-                        let src_off = (local_y * padded_bpr) as usize;
-                        let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
-                        let row = &mapped[src_off..src_off + unpadded_bpr as usize];
-                        for i in 0..(w as usize) {
-                            let p = i * 4;
-                            let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
-                            let (r, g, b, a) = if bgra {
-                                (b2, b1, b0, b3)
-                            } else {
-                                (b0, b1, b2, b3)
-                            };
-                            let (or, og, ob) = if a == 0 || a == 255 {
-                                (r, g, b)
-                            } else {
-                                let a_f = a as f32 / 255.0;
-                                (
-                                    ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                                    ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                                    ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
-                                )
-                            };
-                            rgba[dst_off + p] = or;
-                            rgba[dst_off + p + 1] = og;
-                            rgba[dst_off + p + 2] = ob;
-                            rgba[dst_off + p + 3] = a;
-                        }
-                    }
-                })
-                .await
-                .map_err(export_readback_error)?;
-            y0 += rows;
-        }
-
-        Ok(RasterImage {
-            width: w,
-            height: h,
+        Ok(ExportReadback {
+            target: wgpu::Texture::clone(target_tex),
+            readback,
+            size: (w, h),
+            unpadded_bpr,
+            padded_bpr,
+            rows_per_chunk,
             rgba,
+            y0: 0,
+            #[cfg(target_arch = "wasm32")]
+            draw_scopes: Some(browser_scopes),
         })
     }
+}
+
+/// The read half of an export: the target, copied into the readback buffer
+/// and read back one chunk of rows at a time, written into the straight-
+/// alpha RGBA image. The waits between a chunk's copy and its read are the
+/// driver's ([`Renderer::paint_export`] or its `_blocking` twin); every
+/// other step is here, once.
+pub(crate) struct ExportReadback {
+    target: wgpu::Texture,
+    readback: TrackedBuffer,
+    size: (u32, u32),
+    unpadded_bpr: u32,
+    padded_bpr: u32,
+    rows_per_chunk: u32,
+    rgba: Vec<u8>,
+    /// The first row not yet read back.
+    y0: u32,
+    /// The draw's browser error scopes, finished before the first chunk.
+    #[cfg(target_arch = "wasm32")]
+    draw_scopes: Option<BrowserErrorScopes>,
+}
+
+/// One chunk's copy, submitted, with its map requested.
+pub(crate) struct ExportChunk {
+    readback: GpuReadback,
+    rows: u32,
+    /// The copy's browser error scopes, finished before the chunk's wait.
+    #[cfg(target_arch = "wasm32")]
+    scopes: Option<BrowserErrorScopes>,
+}
+
+impl ExportReadback {
+    /// Copy the next chunk of rows into the readback buffer and request its
+    /// map; `None` once every row has been read.
+    fn next_chunk(&mut self, renderer: &Renderer) -> Result<Option<ExportChunk>> {
+        let (w, h) = self.size;
+        if self.y0 >= h {
+            return Ok(None);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let scopes = BrowserErrorScopes::push(&renderer.device, "figgy export readback")?;
+
+        let rows = self.rows_per_chunk.min(h - self.y0);
+        let chunk_size = u64::from(self.padded_bpr) * u64::from(rows);
+        let mut copy_encoder =
+            renderer
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy export copy encoder"),
+                });
+        copy_encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.target,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: self.y0,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_bpr),
+                    rows_per_image: Some(rows),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+        renderer
+            .queue
+            .submit(std::iter::once(copy_encoder.finish()));
+        let readback = GpuReadback::map(
+            &renderer.device,
+            &renderer.health,
+            &self.readback,
+            Some(chunk_size),
+        );
+        Ok(Some(ExportChunk {
+            readback,
+            rows,
+            #[cfg(target_arch = "wasm32")]
+            scopes: Some(scopes),
+        }))
+    }
+
+    /// After the chunk's wait: write its rows into the image, un-
+    /// premultiplied, and move to the next chunk.
+    fn consume(&mut self, mut chunk: ExportChunk) -> Result<()> {
+        let w = self.size.0;
+        let (y0, rows) = (self.y0, chunk.rows);
+        let (unpadded_bpr, padded_bpr) = (self.unpadded_bpr, self.padded_bpr);
+        let rgba = &mut self.rgba;
+        let bgra = false;
+        chunk
+            .readback
+            .finish(|mapped| {
+                for local_y in 0..rows {
+                    let src_off = (local_y * padded_bpr) as usize;
+                    let dst_off = ((y0 + local_y) * unpadded_bpr) as usize;
+                    let row = &mapped[src_off..src_off + unpadded_bpr as usize];
+                    for i in 0..(w as usize) {
+                        let p = i * 4;
+                        let (b0, b1, b2, b3) = (row[p], row[p + 1], row[p + 2], row[p + 3]);
+                        let (r, g, b, a) = if bgra {
+                            (b2, b1, b0, b3)
+                        } else {
+                            (b0, b1, b2, b3)
+                        };
+                        let (or, og, ob) = if a == 0 || a == 255 {
+                            (r, g, b)
+                        } else {
+                            let a_f = a as f32 / 255.0;
+                            (
+                                ((r as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                                ((g as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                                ((b as f32 / a_f).round().clamp(0.0, 255.0)) as u8,
+                            )
+                        };
+                        rgba[dst_off + p] = or;
+                        rgba[dst_off + p + 1] = og;
+                        rgba[dst_off + p + 2] = ob;
+                        rgba[dst_off + p + 3] = a;
+                    }
+                }
+            })
+            .map_err(export_readback_error)?;
+        self.y0 += rows;
+        Ok(())
+    }
+
+    fn into_image(self) -> RasterImage {
+        RasterImage {
+            width: self.size.0,
+            height: self.size.1,
+            rgba: self.rgba,
+        }
+    }
+}
+
+/// A vector export renders the whole document.
+fn check_vector_scope(options: ExportOptions) -> Result<()> {
+    if options.scope != ExportScope::Document {
+        return Err(FiggyError::InvalidConfig {
+            field: "ExportOptions.scope",
+            reason: "a vector export renders the whole document",
+        });
+    }
+    Ok(())
 }
 
 /// A readback failure as an export has always reported it.

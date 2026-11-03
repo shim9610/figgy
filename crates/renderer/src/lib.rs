@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![doc = "\n## First chart: render a PNG\n\nThis is the complete native `line` example. With the `renderer`, `wgpu` and `pollster` dependencies above, copy it into `src/main.rs` and run `cargo run`. Rendering needs a working adapter; building the documentation does not.\n\n```rust,no_run\n"]
+#![doc = "\n## First chart: render a PNG\n\nThis is the complete native `line` example. With the `renderer` and `wgpu` dependencies above, copy it into `src/main.rs` and run `cargo run`. Rendering needs a working adapter; building the documentation does not.\n\n```rust,no_run\n"]
 #![doc = include_str!("../examples/line.rs")]
 #![doc = "\n```\n\nFor embedding, reuse your host's device/queue instead of the example's adapter setup. For editing, picking and exporting the current state, follow the workflow below.\n"]
 #![doc = include_str!("../API.md")]
@@ -35,6 +35,11 @@ pub mod gpu {
         reconfigure_surface, render_clear, request_adapter_async,
         request_adapter_for_surface_async, request_device_async, try_configure_surface,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::data_render::{
+        request_adapter_blocking, request_adapter_for_surface_blocking, request_device_blocking,
+        request_device_with_blocking,
+    };
 }
 /// Contour label placement constants, for the renderer's own tests.
 #[doc(hidden)]
@@ -43,6 +48,8 @@ mod gpu_data_pick;
 pub mod gpu_extent;
 pub mod gpu_memory;
 mod gpu_pick;
+#[cfg(not(target_arch = "wasm32"))]
+mod gpu_poller;
 mod gpu_readback;
 pub mod init;
 pub(crate) mod line_step;
@@ -125,6 +132,7 @@ pub use gpu_memory::{
     ResidentAdmissionStatus,
 };
 pub use gpu_pick::{GpuPickError, GpuPickTicket};
+pub use gpu_readback::TryResolve;
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
 pub use pick::{PickedData, PickedPoint};
 pub use preset::{AxisPreset, ColorCycle};

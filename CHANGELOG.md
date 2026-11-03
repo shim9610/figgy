@@ -1019,6 +1019,66 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Native GPU waits: awaited, blocking or checked** ([#160](https://github.com/shim9610/figgy/issues/160)).
+  On native an awaited readback no longer polls the device on the awaiting
+  thread: `RendererDevice::new` starts one poll thread per device bundle,
+  which completes every awaited wait, so the future returns `Pending` until
+  the work is done. The thread holds no lock (two atomic counters and its
+  park token), parks while nothing is pending and exits once the bundle's
+  clones, its renderers and engines and every pending ticket are gone;
+  `tools/loom-poller` model-checks its protocol with loom. Each wait now
+  comes in three forms with the same result, sharing the work's submit and
+  its synchronous finish:
+  - awaited: `resolve`, `export_rgba` / `export_png` / `export_svg` /
+    `export_pdf`, `wait_submitted_work`, as before;
+  - blocking (native): `GpuPickTicket::resolve_blocking`,
+    `GpuDataPickTicket::resolve_blocking`,
+    `GpuSeriesExtentTicket::resolve_blocking`,
+    `GpuErrorbarExtentTicket::resolve_blocking`,
+    `RadialPickTicket::resolve_blocking`,
+    `Renderer::export_rgba_blocking` / `export_png_blocking` /
+    `export_svg_blocking` / `export_pdf_blocking`, the same four on
+    `RadialRenderer`, and `Renderer::wait_submitted_work_blocking`. They poll
+    the device on the calling thread; no executor is needed;
+  - checked: `try_resolve(self)` on each of the five tickets returns the new
+    `TryResolve::Ready(result)` or `TryResolve::Pending(ticket)` without
+    waiting, for a UI that checks a hover pick each frame.
+
+  A streamed series' pick resolves by `resolve` only: its blocking and
+  checked forms fail with the new `GpuPickError::Streamed` (rule 8).
+
+  Every other call that waited for the GPU or initialized pipelines
+  asynchronously gains a native `_blocking` twin that shares its steps:
+  `AutoFitAllTicket::resolve_blocking` and `try_resolve`,
+  `Renderer::release_unused_pool_memory_blocking`,
+  `WindowedRenderer::first_frame_ready_blocking` / `warm_up_blocking`,
+  `Renderer::prewarm_all_blocking` / `prewarm_all_observed_blocking`,
+  `PipelinePreparation::compile_blocking`,
+  `Renderer::ensure_errorbar_extent_engine_blocking`,
+  `Renderer::for_window_blocking` / `for_window_blocking_observed` (and
+  `WindowedRenderer::for_window_blocking_observed`), and
+  `gpu::request_adapter_blocking`, `gpu::request_adapter_for_surface_blocking`,
+  `gpu::request_device_blocking` and `gpu::request_device_with_blocking`
+  (a host's own `DeviceDescriptor`). The asynchronous initializers keep
+  their browser waits; on native nothing in them waits, and the twins run
+  the same steps without an executor. The repository no longer depends on
+  `pollster`: examples, the playground and the guides use the blocking
+  forms, and the tests run the async API on a small executor in
+  `tests/support/gpu.rs`.
+
+  *Migration:* `RendererDevice::new(device, queue)` returns
+  `Result<RendererDevice>`: add `?` (it fails with the new
+  `FiggyError::PollThreadStartFailed` when the OS cannot start the thread).
+  A native host that makes blocking calls only can build the bundle with
+  the new `RendererDevice::blocking(device, queue)`, which starts no thread;
+  an awaited wait on such a bundle fails with the new
+  `FiggyError::AsyncWaitUnavailable` instead of never completing. A native
+  caller that blocked on an export, a `resolve`, a prewarm, a window
+  constructor or an adapter or device request with `pollster::block_on`
+  can call the `_blocking` form instead and drop the executor dependency. `FiggyError` and `GpuPickError`
+  gain the variants above, so an exhaustive `match` on them needs the new
+  arms.
+
 - **The renderer owns the column statistics** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `ColumnSource` and `HiLoColumnSource` no longer ask the host for `min()`
   and `max()`. The upload's `ColumnPairWriter` records the finite minimum,

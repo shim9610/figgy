@@ -952,6 +952,58 @@ fn write_pass(
     result
 }
 
+/// Writes a document's passes in order. A data pass is handed back to the
+/// driver, which paints that panel group on the GPU and waits for it
+/// ([`write_document`], or its `_blocking` twin); every other pass is
+/// written here.
+pub(crate) struct DocumentWriter {
+    passes: Passes,
+}
+
+impl DocumentWriter {
+    pub(crate) fn new() -> Self {
+        Self {
+            passes: Passes::new(),
+        }
+    }
+
+    /// Write passes into `out` up to the next data pass with an image area,
+    /// and return its panel range and area; `None` once every pass is
+    /// written.
+    pub(crate) fn next_data(
+        &mut self,
+        frame: &ExportFrame,
+        out: &mut dyn VectorOut,
+    ) -> Result<Option<(std::ops::Range<usize>, Rect)>> {
+        while let Some(pass) = self.passes.next(frame.chart.config(), frame.panels()) {
+            match pass {
+                Pass::Data(range) => {
+                    if let Some(area) = group_image_area(frame.panels(), range.clone(), frame.size)
+                    {
+                        return Ok(Some((range, area)));
+                    }
+                }
+                pass => write_pass(out, frame.chart.config(), frame.panels(), &pass)?,
+            }
+        }
+        Ok(None)
+    }
+
+    /// Write a data pass's painted group image, cropped to its area.
+    pub(crate) fn write_image(
+        out: &mut dyn VectorOut,
+        area: Rect,
+        mut image: RasterImage,
+    ) -> Result<()> {
+        crop_in_place(&mut image, area);
+        out.image([area.x as i32, area.y as i32], &image)
+    }
+}
+
+/// The clear colour of a data group's image: transparent, so the vector
+/// content under it shows.
+const DATA_IMAGE_CLEAR: Color = Color::new(0.0, 0.0, 0.0, 0.0);
+
 /// Write the document of `frame` into `out`: every pass in order, the data
 /// images painted by the GPU one panel group at a time.
 pub(crate) async fn write_document(
@@ -959,21 +1011,28 @@ pub(crate) async fn write_document(
     frame: &mut ExportFrame,
     out: &mut dyn VectorOut,
 ) -> Result<()> {
-    let mut passes = Passes::new();
-    while let Some(pass) = passes.next(frame.chart.config(), frame.panels()) {
-        match pass {
-            Pass::Data(range) => {
-                let Some(area) = group_image_area(frame.panels(), range.clone(), frame.size) else {
-                    continue;
-                };
-                let mut image = renderer
-                    .paint_export(frame, range, false, Color::new(0.0, 0.0, 0.0, 0.0))
-                    .await?;
-                crop_in_place(&mut image, area);
-                out.image([area.x as i32, area.y as i32], &image)?;
-            }
-            pass => write_pass(out, frame.chart.config(), frame.panels(), &pass)?,
-        }
+    let mut writer = DocumentWriter::new();
+    while let Some((range, area)) = writer.next_data(frame, out)? {
+        let image = renderer
+            .paint_export(frame, range, false, DATA_IMAGE_CLEAR)
+            .await?;
+        DocumentWriter::write_image(out, area, image)?;
+    }
+    Ok(())
+}
+
+/// [`write_document`], polling the device on this thread for each data
+/// group's readback.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn write_document_blocking(
+    renderer: &Renderer,
+    frame: &mut ExportFrame,
+    out: &mut dyn VectorOut,
+) -> Result<()> {
+    let mut writer = DocumentWriter::new();
+    while let Some((range, area)) = writer.next_data(frame, out)? {
+        let image = renderer.paint_export_blocking(frame, range, false, DATA_IMAGE_CLEAR)?;
+        DocumentWriter::write_image(out, area, image)?;
     }
     Ok(())
 }
@@ -1033,6 +1092,19 @@ pub(crate) async fn document_file<F: VectorFile>(
     let mut out = F::create(frame.size, page_points(frame.logical));
     write_background(&mut out, frame.size, clear);
     write_document(renderer, frame, &mut out).await?;
+    out.finish_file()
+}
+
+/// [`document_file`], polling the device on this thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn document_file_blocking<F: VectorFile>(
+    renderer: &Renderer,
+    frame: &mut ExportFrame,
+    clear: Color,
+) -> Result<F::Output> {
+    let mut out = F::create(frame.size, page_points(frame.logical));
+    write_background(&mut out, frame.size, clear);
+    write_document_blocking(renderer, frame, &mut out)?;
     out.finish_file()
 }
 
@@ -1612,7 +1684,7 @@ mod tests {
     fn the_export_frame_keeps_its_panels_through_the_document_loop() {
         let (device, queue) = crate::data_render::shared_device().unwrap();
         let mut renderer = Renderer::try_new(
-            crate::RendererDevice::new(device, queue),
+            crate::RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -1635,9 +1707,10 @@ mod tests {
                     };
                     assert!(range.end <= n);
                     let area = group_image_area(frame.panels(), range.clone(), size);
-                    let mut image =
-                        pollster::block_on(renderer.paint_export(&mut frame, range, false, clear))
-                            .unwrap();
+                    let mut image = crate::test_gpu::block_on(
+                        renderer.paint_export(&mut frame, range, false, clear),
+                    )
+                    .unwrap();
                     assert_eq!(frame.panels().len(), n, "a paint changed the panels");
                     assert_eq!((image.width, image.height), size);
                     assert_eq!(image.rgba.len(), (size.0 * size.1 * 4) as usize);
@@ -1653,10 +1726,14 @@ mod tests {
                 let mut frame = renderer
                     .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)
                     .unwrap();
-                let svg = pollster::block_on(document_file::<SvgOut>(&renderer, &mut frame, clear));
+                let svg = crate::test_gpu::block_on(document_file::<SvgOut>(
+                    &renderer, &mut frame, clear,
+                ));
                 assert!(svg.unwrap().ends_with("</svg>\n"));
                 assert_eq!(frame.panels().len(), n);
-                let pdf = pollster::block_on(document_file::<PdfOut>(&renderer, &mut frame, clear));
+                let pdf = crate::test_gpu::block_on(document_file::<PdfOut>(
+                    &renderer, &mut frame, clear,
+                ));
                 assert!(pdf.unwrap().ends_with(b"%%EOF\n"));
                 assert_eq!(frame.panels().len(), n);
                 drop(frame);

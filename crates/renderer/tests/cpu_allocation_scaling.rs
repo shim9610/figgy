@@ -102,7 +102,7 @@ fn no_gpu(context: &str) {
 }
 
 fn settle_gpu(renderer: &Renderer) {
-    pollster::block_on(renderer.wait_submitted_work()).unwrap();
+    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 const COLUMN_VALUE_BYTES: u64 = 8;
@@ -126,7 +126,7 @@ fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
     let (device, queue) = test_gpu::device();
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_bytes,
         )

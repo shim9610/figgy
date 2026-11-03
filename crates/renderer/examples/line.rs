@@ -1,23 +1,22 @@
 //! Minimal native line chart: upload two columns and write a PNG.
 //! cargo run --locked -p figgy-renderer --example line
-use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType},
     default, encode_png,
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     layout::{ChartArea, Rect},
     line::LineStylePreset,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
+    let (device, queue) = request_device_blocking(&adapter)?;
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue)?,
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024, // initial GPU column pool size in bytes
     )?;
@@ -65,10 +64,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             errors: None,
         }),
     }];
-    let image = pollster::block_on(renderer.export_rgba(
+    let image = renderer.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
-    ))?;
+    )?;
     let output = std::env::args_os()
         .nth(1)
         .unwrap_or_else(|| "line.png".into());

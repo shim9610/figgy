@@ -7,7 +7,7 @@
 //! oracle's `auto_layout_*` tests.
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/playground_scenes.rs"]
 mod scenes;
 #[path = "support/gpu.rs"]
@@ -26,7 +26,7 @@ const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/r
 
 fn renderer() -> Renderer {
     let (device, queue) = test_gpu::device();
-    let gpu = RendererDevice::new(device, queue);
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES).expect("renderer")
 }
 

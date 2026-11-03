@@ -792,6 +792,20 @@ impl Renderer {
         self.finish_errorbar_extent_engine_preparation(warm_result)
     }
 
+    /// [`Self::ensure_errorbar_extent_engine`], without waiting: a native
+    /// device compiles the pipelines when they are created.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn ensure_errorbar_extent_engine_blocking(
+        &mut self,
+    ) -> std::result::Result<(), crate::gpu_extent::GpuExtentError> {
+        let result = if self.errorbar_extent_engine.is_some() {
+            Ok(())
+        } else {
+            self.finish_errorbar_extent_engine_preparation(Ok(()))
+        };
+        self.reported_as(result, crate::gpu_extent::GpuExtentError::from_figgy)
+    }
+
     pub(super) fn finish_errorbar_extent_engine_preparation(
         &mut self,
         warm_result: std::result::Result<(), crate::gpu_extent::GpuExtentError>,
@@ -954,10 +968,57 @@ pub struct ResolvedAutoFitAll {
 }
 
 impl AutoFitAllTicket {
-    /// Wait for every reduction this fit submitted.
+    /// Wait for every reduction this fit submitted: the bundle's poll thread
+    /// completes the waits on native (see [`crate::RendererDevice::new`]).
     pub async fn resolve(
-        self,
+        mut self,
     ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
+        for job in &mut self.series {
+            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
+                ticket.wait().await?;
+            }
+        }
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until every
+    /// reduction completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(
+        mut self,
+    ) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
+        for job in &mut self.series {
+            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
+                ticket.wait_blocking()?;
+            }
+        }
+        self.finish()
+    }
+
+    /// The fit if every reduction has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> std::result::Result<
+        crate::TryResolve<ResolvedAutoFitAll, Self>,
+        crate::gpu_extent::GpuExtentError,
+    > {
+        let mut ready = true;
+        for job in &mut self.series {
+            if let AutoFitSeriesExtent::Pending(ticket) = &mut job.extent {
+                // Every one, so the first call hands every wait to the poll
+                // thread.
+                ready &= ticket.poll_ready()?;
+            }
+        }
+        if !ready {
+            return Ok(crate::TryResolve::Pending(self));
+        }
+        self.finish().map(crate::TryResolve::Ready)
+    }
+
+    /// After every wait: the extents, for [`Renderer::commit_auto_fit_all`].
+    fn finish(self) -> std::result::Result<ResolvedAutoFitAll, crate::gpu_extent::GpuExtentError> {
         let mut series = Vec::new();
         series.try_reserve(self.series.len()).map_err(|error| {
             crate::gpu_extent::GpuExtentError::from_figgy(FiggyError::StateAllocationFailed {
@@ -967,7 +1028,7 @@ impl AutoFitAllTicket {
         })?;
         for job in self.series {
             let extent = match job.extent {
-                AutoFitSeriesExtent::Pending(ticket) => ticket.resolve().await?,
+                AutoFitSeriesExtent::Pending(mut ticket) => ticket.finish()?,
                 AutoFitSeriesExtent::Known(extent) => extent,
             };
             series.push((job.stamp, job.x, job.y, extent));

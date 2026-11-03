@@ -6,7 +6,7 @@ use crate::data_config::{
     ContourConfig, DataErrorBarPointStyleOverride, DataScatterPointStyleOverride, FieldFillConfig,
     FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
 };
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 use std::cell::{Cell, RefCell};
 
 struct RangeOnly<'a> {
@@ -336,7 +336,8 @@ fn compare_isolated_stream_chunks(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(resident.device.clone(), resident.queue.clone()),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone())
+            .expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -565,7 +566,8 @@ fn compare_stream_phase_pairs(
         .unwrap();
     let count = fixture[0].1.data.len();
     let mut streamed = Renderer::try_new_with_sample_count(
-        RendererDevice::new(resident.device.clone(), resident.queue.clone()),
+        RendererDevice::new(resident.device.clone(), resident.queue.clone())
+            .expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8192,
         samples,
@@ -798,7 +800,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
     let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(device.clone(), queue.clone()),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             8192,
         )
@@ -970,7 +972,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
         );
         return;
     }
-    let expected = pollster::block_on(resident.export_rgba(
+    let expected = crate::test_gpu::block_on(resident.export_rgba(
         crate::ExportSource::chart(&Chart::new(config.clone()), &series),
         crate::ExportOptions::panel(1.0).with_clear(Color::WHITE),
     ))
@@ -1089,7 +1091,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }
         }
-        let actual = pollster::block_on(streamed.finish_stream_export(operation)).unwrap();
+        let actual = crate::test_gpu::block_on(streamed.finish_stream_export(operation)).unwrap();
         assert!(
             mismatch(
                 &expected.rgba,
@@ -1144,7 +1146,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                 let (device, queue) =
                     data_render::shared_device().expect("styled stream GPU required");
                 let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(device, queue),
+                    RendererDevice::new(device, queue).expect("figgy poll thread"),
                     wgpu::TextureFormat::Rgba8Unorm,
                     8192,
                     samples,
@@ -1331,7 +1333,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
         for (mode, style) in styles().into_iter().enumerate() {
             let (device, queue) = data_render::shared_device().expect("styled stream GPU required");
             let mut r = Renderer::try_new_with_sample_count(
-                RendererDevice::new(device, queue),
+                RendererDevice::new(device, queue).expect("figgy poll thread"),
                 wgpu::TextureFormat::Rgba8Unorm,
                 4096,
                 samples,

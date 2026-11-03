@@ -17,7 +17,6 @@
 //! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
 use renderer::{
     Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, encode_png, gpu,
     radar::*,
@@ -62,12 +61,10 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
         }
         chart = Chart::new(config);
     }
-    let image = r
-        .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()?;
+    let image = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &series),
+        renderer::ExportOptions::panel(1.0),
+    )?;
     let colored = image
         .rgba
         .chunks_exact(4)
@@ -92,10 +89,10 @@ fn main() -> Result {
     );
     std::fs::create_dir_all(&dir)?;
     let instance = gpu::create_instance();
-    let adapter = gpu::request_adapter_async(&instance).block_on()?;
+    let adapter = gpu::request_adapter_blocking(&instance)?;
     eprintln!("Radar adapter: {:?}", adapter.get_info());
-    let (d, q) = gpu::request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(d, q);
+    let (d, q) = gpu::request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
     let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = RadarChart {
         title: "Build quality".into(),

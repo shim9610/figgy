@@ -10,7 +10,7 @@
 //! wrong ring or over the wrong span fails rather than passes.
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use renderer::radial::*;
@@ -26,7 +26,7 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn gpu() -> RendererDevice {
     static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone())
+    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
 }
 fn renderer() -> RadialRenderer {
     RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()

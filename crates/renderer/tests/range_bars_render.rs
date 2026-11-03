@@ -11,7 +11,7 @@
 //! colour predicate attributes every pixel to one part. Expected extents
 //! come from the same data area and axis ranges the renderer draws with.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -65,7 +65,7 @@ fn col(data: Vec<f64>) -> Column<f64> {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -405,7 +405,7 @@ fn registered_pick(
         display_scale: scale,
         max_distance_px: reach,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     r.remove_chart(id).unwrap();
     match hit {
         Some(renderer::PickedData::HistogramBin {
@@ -1023,7 +1023,7 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+            match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
                 Some(renderer::PickedData::HistogramBin {
                     series_id,
                     bin_index,
@@ -1169,7 +1169,7 @@ fn three_thousand_rows_draw_pick_and_highlight() {
         max_distance_px: 0.0,
     };
     let started = std::time::Instant::now();
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     eprintln!("range bar pick over {N} rows: {:?}", started.elapsed());
     assert!(
         matches!(&hit, Some(renderer::PickedData::HistogramBin { bin_index, .. }) if *bin_index == N - 1),
@@ -1227,7 +1227,7 @@ fn three_thousand_rows_draw_pick_and_highlight() {
         .register_chart(chart.config().clone(), series.to_vec())
         .unwrap();
     let started = std::time::Instant::now();
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     let pick = started.elapsed();
     assert!(hit.is_some(), "a bar under the pointer of {BIG} rows");
     eprintln!("range bars over {BIG} rows: export {draw:?}, pick {pick:?}");

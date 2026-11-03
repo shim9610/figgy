@@ -98,7 +98,7 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
         let displayed = snapshot.config.clone();
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -106,8 +106,8 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
         for (id, values) in &f.columns {
             resident.add_hilo_column(*id, values).unwrap();
         }
-        pollster::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
-        let expected_fit = pollster::block_on(
+        crate::test_gpu::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
+        let expected_fit = crate::test_gpu::block_on(
             resident
                 .begin_series_fit_extent(&f.series[0])
                 .unwrap()
@@ -132,7 +132,7 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
             display_scale: 1.0,
             max_distance_px: 5.0,
         };
-        let expected = pollster::block_on(
+        let expected = crate::test_gpu::block_on(
             resident
                 .pick_chart_data(resident_id, query)
                 .unwrap()
@@ -144,10 +144,11 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
             "chart-space query remains valid outside raster target"
         );
         let operation =
-            pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+            crate::test_gpu::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+                .unwrap();
         pump_pick(&mut f, operation);
         assert_eq!(
-            pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap(),
+            crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap(),
             expected
         );
     }
@@ -193,8 +194,10 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
                 area.y as f32 + area.height as f32 * 0.61,
             ];
             Some(
-                pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
-                    .unwrap(),
+                crate::test_gpu::block_on(
+                    f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2),
+                )
+                .unwrap(),
             )
         } else {
             None
@@ -268,7 +271,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
         if let Some(op) = operation {
             pump_pick(&mut f, op);
             assert!(
-                pollster::block_on(f.renderer.finish_stream_pick_data(op))
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(op))
                     .unwrap()
                     .is_some()
             );

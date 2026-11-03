@@ -1046,10 +1046,10 @@ mod tests {
 
     fn gpu() -> (wgpu::Device, wgpu::Queue) {
         let instance = super::super::create_instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+        let adapter = crate::test_gpu::block_on(instance.request_adapter(&Default::default()))
             .expect("stream field GPU test cannot skip");
         eprintln!("stream field helper adapter: {:?}", adapter.get_info());
-        pollster::block_on(adapter.request_device(&Default::default())).unwrap()
+        crate::test_gpu::block_on(adapter.request_device(&Default::default())).unwrap()
     }
 
     fn submit_step(

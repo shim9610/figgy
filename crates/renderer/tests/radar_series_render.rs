@@ -15,7 +15,7 @@
 //! with.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -65,7 +65,7 @@ fn col(data: Vec<f64>) -> Column<f64> {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -944,7 +944,7 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
     let values: Vec<f64> = (0..N).map(|i| 0.7 + 0.2 * (i as f64 * 0.3).cos()).collect();
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1005,7 +1005,7 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
         .unwrap()
         .expect("the last vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("many", N - 1));
@@ -1046,7 +1046,7 @@ fn twenty_radar_series_draw_pick_and_highlight() {
     let radius = |k: usize| 0.05 + 0.045 * k as f64;
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1104,7 +1104,7 @@ fn twenty_radar_series_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 2.0,
     };
-    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+    let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
         .unwrap()
         .expect("the last series' vertex picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("s19", 3));

@@ -9,7 +9,7 @@
 //! channel read from the wrong table, a wrong neighbour or a cell painted
 //! past its edge fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -81,7 +81,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer_with(budget: u64) -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         budget,
     )
@@ -661,7 +661,7 @@ fn the_pick_answers_the_cell_and_the_selection_steps_the_grid() {
     r.enable_gpu_picking().unwrap();
     let id = r.register_chart(chart.config().clone(), series).unwrap();
     let mut pick = |at: (f64, f64)| {
-        cell(pollster::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
+        cell(test_gpu::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
     };
     for c in 0..COLS {
         for row in 0..ROWS {
@@ -1029,7 +1029,7 @@ fn a_two_thousand_square_image_draws_and_picks() {
     let started = std::time::Instant::now();
     let at = data_to_px(&chart, c as f64, row as f64, 1.0);
     let picked =
-        cell(pollster::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap());
+        cell(test_gpu::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap());
     eprintln!("picked in {:?}", started.elapsed());
     // The pixel covers several cells at this size; the pick answers one of
     // the cells under it.

@@ -1030,7 +1030,7 @@ mod tests {
             .unwrap();
         let (device, queue) = data_render::shared_device().expect("selection parity GPU required");
         let mut renderer = Renderer::try_new_with_sample_count(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
             1,

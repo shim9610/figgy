@@ -13,7 +13,7 @@
 //! Expected extents come from the same data area and axis ranges the
 //! renderer draws with.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -121,7 +121,7 @@ fn upload_record(r: &mut Renderer, id: &str) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         16 * 1024 * 1024,
     )
@@ -375,7 +375,7 @@ fn pick(
         display_scale: scale,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     r.remove_chart(id).unwrap();
     hit
 }
@@ -1145,13 +1145,13 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     assert!(
         matches!(&hit, Some(renderer::PickedData::HistogramBin { bin_index, .. }) if *bin_index == N - 1),
         "{hit:?}"
     );
     let started = std::time::Instant::now();
-    let _ = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     eprintln!(
         "violin pick over {N} categories of {POINTS} curve points: {:?}",
         started.elapsed()
@@ -1218,9 +1218,9 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
             display_scale: 1.0,
             max_distance_px: 4.0,
         };
-        let _ = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
         let started = std::time::Instant::now();
-        let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
         let pick = started.elapsed();
         assert!(
             matches!(&hit, Some(renderer::PickedData::Point { .. })),

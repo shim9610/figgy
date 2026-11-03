@@ -52,7 +52,7 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         .await
         .expect("Chrome WebGPU device required");
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4096,
     )

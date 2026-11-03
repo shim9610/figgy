@@ -1,5 +1,5 @@
 use super::*;
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
     crate::Column { data }
@@ -39,7 +39,7 @@ fn parity_with_samples(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(device.clone(), queue.clone()),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             (n as u64 * 32).max(4096),
             samples,
@@ -310,7 +310,7 @@ fn parity_with_samples(
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }
         }
-        let actual = pollster::block_on(streamed.finish_stream_export(operation)).unwrap();
+        let actual = crate::test_gpu::block_on(streamed.finish_stream_export(operation)).unwrap();
         let expected = resident
             .export_rgba(
                 crate::ExportSource::chart(&chart, &series),
@@ -412,7 +412,7 @@ fn stream_arc_exact_constellation_dash_and_dot() {
 fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

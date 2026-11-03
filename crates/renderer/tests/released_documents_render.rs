@@ -7,7 +7,7 @@
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -28,7 +28,7 @@ const RADIAL_SIZE: (u32, u32) = (1000, 700);
 fn device() -> RendererDevice {
     static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(test_gpu::device);
-    RendererDevice::new(device.clone(), queue.clone())
+    RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread")
 }
 
 fn read<T: serde::de::DeserializeOwned>(file: &str) -> T {

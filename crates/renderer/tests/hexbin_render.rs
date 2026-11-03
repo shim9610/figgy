@@ -8,7 +8,7 @@
 //! half the row pitch in the odd columns), so a wrong centre, a wrong
 //! neighbour or a cell painted past its Voronoi edge fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -106,7 +106,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer_with(budget: u64) -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         budget,
     )
@@ -428,7 +428,7 @@ fn the_pick_answers_the_painted_cell() {
     r.enable_gpu_picking().unwrap();
     let id = r.register_chart(chart.config().clone(), series).unwrap();
     let mut pick = |at: (f64, f64)| {
-        cell(pollster::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
+        cell(test_gpu::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
     };
     for c in 0..COLS {
         for row in 0..ROWS {
@@ -576,13 +576,13 @@ fn the_selected_hexagon_outlines_its_six_edges() {
 fn the_fit_reaches_the_hexagons_overhang() {
     let mut r = renderer();
     let ids = upload(&mut r, &MatrixOrientation::ColumnsAreX);
-    pollster::block_on(r.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(r.ensure_errorbar_extent_engine()).unwrap();
     let series = hexbin(&ids, MatrixOrientation::ColumnsAreX);
     let ticket = r
         .begin_series_fit_extent(&series)
         .unwrap()
         .expect("a field fit");
-    let extent = pollster::block_on(ticket.resolve())
+    let extent = test_gpu::block_on(ticket.resolve())
         .unwrap()
         .expect("a drawable extent");
     let close = |a: f64, b: f64| (a - b).abs() < 1e-6;

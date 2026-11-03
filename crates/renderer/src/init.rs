@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn async_observe_matches_sync_pairs_when_yield_is_noop() {
         let mut events = Vec::new();
-        let value = pollster::block_on(observe_value_async(
+        let value = crate::test_gpu::block_on(observe_value_async(
             &mut |event| events.push(event),
             "test",
             "async",

@@ -10,7 +10,7 @@
 //! expected positions come from the chart's own data area and ratio
 //! anchors.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
 #[path = "support/gpu.rs"]
@@ -61,7 +61,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )

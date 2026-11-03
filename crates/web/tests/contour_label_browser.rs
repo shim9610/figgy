@@ -78,7 +78,7 @@ async fn renderer() -> Renderer {
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )

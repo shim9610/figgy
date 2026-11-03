@@ -11,7 +11,7 @@
 //! painted edge and a sparse grid elsewhere. A pixel counts as painted when
 //! it differs from the series-free export.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/edge_band.rs"]
 mod edge_band;
 #[path = "support/random_curves.rs"]
@@ -120,7 +120,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 pub fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -301,7 +301,7 @@ impl Probe {
     /// The point pick at the centre of export pixel `(x, y)`.
     pub fn pick(&self, renderer: &mut Renderer, x: u32, y: u32, max: f32) -> Option<PickedPoint> {
         let request = self.request(x as f32 + 0.5, y as f32 + 0.5, max);
-        pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
+        test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
     /// Whether the zero-distance region of `subject` ends within [`TIE_PX`]
@@ -313,7 +313,7 @@ impl Probe {
             .into_iter()
             .any(|(dx, dy)| {
                 let request = self.request(cx + dx, cy + dy, 0.0);
-                pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve())
+                test_gpu::block_on(renderer.pick_chart(self.id, request).unwrap().resolve())
                     .unwrap()
                     .filter(|hit| hit.series_id == subject)
                     .is_none_or(|hit| hit.distance_px > 0.0)
@@ -328,7 +328,7 @@ impl Probe {
         max: f32,
     ) -> Option<renderer::PickedData> {
         let request = self.request(x, y, max);
-        pollster::block_on(
+        test_gpu::block_on(
             renderer
                 .pick_chart_data(self.id, request)
                 .unwrap()
@@ -346,7 +346,7 @@ impl Probe {
         max: f32,
     ) -> Option<renderer::PickedData> {
         let request = self.request(x as f32 + 0.5, y as f32 + 0.5, max);
-        pollster::block_on(
+        test_gpu::block_on(
             renderer
                 .pick_chart_data(self.id, request)
                 .unwrap()
@@ -2754,7 +2754,7 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 );
                 // The GPU and the CPU pickers find it there.
                 let at = (expected.0 as f32, expected.1 as f32);
-                let gpu = pollster::block_on(
+                let gpu = test_gpu::block_on(
                     renderer
                         .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
                         .unwrap()

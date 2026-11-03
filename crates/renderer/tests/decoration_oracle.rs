@@ -63,7 +63,7 @@
 //! chart and the annotation layer.
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[allow(dead_code)]
@@ -906,7 +906,7 @@ fn auto_layout_i7_hit_map_entries_are_the_emitted_elements() {
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue)
+    RendererDevice::new(device, queue).expect("figgy poll thread")
 }
 
 fn scene_name(kind: SceneKind) -> &'static str {

@@ -1,6 +1,6 @@
 //! A crowded first frame must remain renderable and editable through the shared API.
 #![cfg(not(target_arch = "wasm32"))]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
@@ -10,7 +10,7 @@ use radial_decorations::Decorations;
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue)
+    RendererDevice::new(device, queue).expect("figgy poll thread")
 }
 
 /// The slice labels of a radial frame.

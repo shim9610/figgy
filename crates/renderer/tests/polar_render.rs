@@ -6,7 +6,7 @@
 //! lands on through `Config::polar_geometry`, so a wrong angle, direction,
 //! radius or sector fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -54,7 +54,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -605,7 +605,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
             )
         };
         let mut gpu = |at: (f64, f64), max: f32| {
-            pollster::block_on(
+            test_gpu::block_on(
                 renderer
                     .pick_chart(id, pick_request(&chart, at, max))
                     .unwrap()
@@ -659,7 +659,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let config = chart.config();
     let inside = polar_px(config, 90.0, 1.0);
     let outside = polar_px(config, 200.0, 0.5);
-    let hit = pollster::block_on(
+    let hit = test_gpu::block_on(
         renderer
             .pick_chart(id, pick_request(&chart, inside, 2.0))
             .unwrap()
@@ -667,7 +667,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     )
     .unwrap();
     assert_eq!(hit.map(|h| h.point_index), Some(1));
-    let miss = pollster::block_on(
+    let miss = test_gpu::block_on(
         renderer
             .pick_chart(id, pick_request(&chart, outside, 2.0))
             .unwrap()

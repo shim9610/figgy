@@ -50,9 +50,9 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
             (count, edge)
         });
     }
-    pollster::block_on(r.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(r.ensure_errorbar_extent_engine()).unwrap();
     let ticket = r.begin_series_fit_extent(series).ok()??;
-    let extent = pollster::block_on(ticket.resolve()).ok()??;
+    let extent = crate::test_gpu::block_on(ticket.resolve()).ok()??;
     Some((fit_extent(&extent.x), fit_extent(&extent.y)))
 }
 

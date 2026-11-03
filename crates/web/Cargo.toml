@@ -50,9 +50,5 @@ console_error_panic_hook = "0.1"
 # (`series_extent_mutation_tests.rs`).
 serde = { version = "1", features = ["derive"] }
 
-# Native tests block on the renderer's async device setup (#160).
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pollster = "1.0"
-
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

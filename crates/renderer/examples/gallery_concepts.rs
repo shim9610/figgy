@@ -10,7 +10,6 @@
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -27,7 +26,7 @@ use renderer::{
         ContourConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout, MatrixOrientation,
         MatrixRef, Shading,
     },
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     radial::*,
 };
 use std::path::Path;
@@ -76,10 +75,10 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
         ));
         chart = chart.with_legend_entry(label, color, 3.5, LegendEntryKind::Line);
     }
-    let image = pollster::block_on(r.export_rgba(
+    let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),
-    ))?;
+    )?;
     save(&image, bg, &out.join("concept-observability.png"))
 }
 
@@ -130,10 +129,10 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
         ));
         chart = chart.with_legend_entry(label, color, 3., LegendEntryKind::Line);
     }
-    let image = pollster::block_on(r.export_rgba(
+    let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),
-    ))?;
+    )?;
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
@@ -203,10 +202,10 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
     r.add_columns(&columns)?;
     let mut cartesian = renderer::Chart::new(config);
     cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
-    let image = pollster::block_on(r.export_rgba(
+    let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&cartesian, &specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),
-    ))?;
+    )?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }
 
@@ -247,9 +246,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
     };
     chart.set_title_text("Studio time / a creative week");
     chart.format_labels();
-    let image = r
-        .export_rgba(&chart, SIZE, renderer::ExportOptions::document(1.))
-        .block_on()?;
+    let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
 
@@ -279,9 +276,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         ..Default::default()
     };
     chart.format_labels();
-    let image = r
-        .export_rgba(&chart, SIZE, renderer::ExportOptions::document(1.))
-        .block_on()?;
+    let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();
     Ok(())
@@ -363,20 +358,20 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.label_style.font_size = 18.;
     bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
-    let image = pollster::block_on(r.export_rgba(
+    let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),
-    ))?;
+    )?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }
 
 fn main() -> Result {
     let out = gallery::output_directory("target/concepts")?;
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(device, queue);
+    let (device, queue) = request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     let mut r = Renderer::try_new(
         gpu.clone(),
         wgpu::TextureFormat::Rgba8Unorm,

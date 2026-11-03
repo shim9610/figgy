@@ -11,8 +11,7 @@
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use futures_channel::oneshot;
-
+use crate::TryResolve;
 use crate::gpu_readback::{GpuReadback, ReadbackError};
 
 use crate::data::COLUMN_VALUE_BYTES;
@@ -1103,25 +1102,21 @@ impl GpuErrorbarExtentEngine {
 
         let final_buffer = if current_is_a { &scratch_a } else { &scratch_b };
         encoder.copy_buffer_to_buffer(final_buffer, 0, &readback, 0, SERIES_STATE_BYTES);
-        let (sender, receiver) = oneshot::channel();
+        let (callback, map) = crate::gpu_readback::completion(&self.health);
         encoder.map_buffer_on_submit(
             &readback,
             wgpu::MapMode::Read,
             0..SERIES_STATE_BYTES,
-            move |result| {
-                if sender.send(result).is_err() {
-                    // receiver dropped: the waiting call was cancelled
-                }
-            },
+            callback,
         );
         let submission = queue.submit(std::iter::once(encoder.finish()));
         Ok(GpuExtentTicketCore {
-            readback: GpuReadback::from_receiver(
+            readback: GpuReadback::from_completion(
                 device,
                 &self.health,
                 &readback,
                 Some(SERIES_STATE_BYTES),
-                receiver,
+                map,
                 Some(submission),
             ),
             _scratch_charge: scratch_tally
@@ -1142,19 +1137,26 @@ struct GpuExtentTicketCore {
 }
 
 impl GpuExtentTicketCore {
-    async fn resolve(self) -> Result<SeriesStateGpu, GpuExtentError> {
-        let Self {
-            readback,
-            // Dropped here: resolving destroys the scratch and the readback.
-            _scratch_charge,
-            _readback_charge,
-        } = self;
-        // The unmap is the ticket's last GPU call, so the read checks the
-        // device health after it (#158).
-        let state = readback
-            .read_checked(bytemuck::pod_read_unaligned::<SeriesStateGpu>)
-            .await?;
-        Ok(state)
+    async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        Ok(self.readback.wait().await?)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        Ok(self.readback.wait_blocking()?)
+    }
+
+    fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        Ok(self.readback.poll_ready()?)
+    }
+
+    /// After a wait: the reduced state. The unmap is the ticket's last GPU
+    /// call, so the read checks the device health after it (#158).
+    /// Dropping the ticket afterwards destroys the scratch and the readback.
+    fn finish(&mut self) -> Result<SeriesStateGpu, GpuExtentError> {
+        Ok(self
+            .readback
+            .finish_checked(bytemuck::pod_read_unaligned::<SeriesStateGpu>)?)
     }
 }
 
@@ -1224,25 +1226,64 @@ impl GpuSeriesExtentTicket {
     pub(crate) const FIELD_BYTES: u64 =
         SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
 
-    /// Nonblocking counterpart used by renderer-owned streaming continuations.
-    /// `None` means pending; `Some(None)` is a completed empty drawable extent.
-    pub(crate) fn try_resolve(
+    /// Nonblocking check used by renderer-owned streaming continuations,
+    /// which drive the device themselves: it neither polls nor hands the
+    /// wait to the poll thread. `None` means pending; `Some(None)` is a
+    /// completed empty drawable extent.
+    pub(crate) fn try_resolve_unpolled(
         &mut self,
     ) -> Result<Option<Option<GpuSeriesExtent>>, GpuExtentError> {
-        let Some(state) = self
-            .core
-            .readback
-            .try_read(bytemuck::pod_read_unaligned::<SeriesStateGpu>)?
-        else {
+        if !self.core.readback.try_receive()? {
             return Ok(None);
-        };
-        decode_series_state(state).map(|extent| Some(Self::widened(self.overhang, extent)))
+        }
+        self.finish().map(Some)
     }
 
-    pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
-        let overhang = self.overhang;
-        decode_series_state(self.core.resolve().await?)
-            .map(|extent| Self::widened(overhang, extent))
+    /// Wait for the extent: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        self.wait().await?;
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the work
+    /// completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        self.wait_blocking()?;
+        self.finish()
+    }
+
+    /// The extent if the work has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> Result<TryResolve<Option<GpuSeriesExtent>, Self>, GpuExtentError> {
+        if !self.core.poll_ready()? {
+            return Ok(TryResolve::Pending(self));
+        }
+        self.finish().map(TryResolve::Ready)
+    }
+
+    /// Await the reduction; see [`Self::resolve`].
+    pub(crate) async fn wait(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait().await
+    }
+
+    /// Poll the device on this thread until the reduction completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn wait_blocking(&mut self) -> Result<(), GpuExtentError> {
+        self.core.wait_blocking()
+    }
+
+    /// Whether the reduction has completed, without blocking.
+    pub(crate) fn poll_ready(&mut self) -> Result<bool, GpuExtentError> {
+        self.core.poll_ready()
+    }
+
+    /// After a wait: the decoded extent.
+    pub(crate) fn finish(&mut self) -> Result<Option<GpuSeriesExtent>, GpuExtentError> {
+        decode_series_state(self.core.finish()?).map(|extent| Self::widened(self.overhang, extent))
     }
 }
 
@@ -1252,9 +1293,34 @@ pub struct GpuErrorbarExtentTicket {
 }
 
 impl GpuErrorbarExtentTicket {
-    pub async fn resolve(self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
-        let state = self.core.resolve().await?;
-        decode_axis_state(state.x)
+    /// Wait for the extent: the bundle's poll thread completes the wait on
+    /// native (see [`crate::RendererDevice::new`]).
+    pub async fn resolve(mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        self.core.wait().await?;
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the work
+    /// completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        self.core.wait_blocking()?;
+        self.finish()
+    }
+
+    /// The extent if the work has completed, or the ticket back, without
+    /// blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> Result<TryResolve<Option<GpuErrorbarExtent>, Self>, GpuExtentError> {
+        if !self.core.poll_ready()? {
+            return Ok(TryResolve::Pending(self));
+        }
+        self.finish().map(TryResolve::Ready)
+    }
+
+    fn finish(&mut self) -> Result<Option<GpuErrorbarExtent>, GpuExtentError> {
+        decode_axis_state(self.core.finish()?.x)
     }
 }
 
@@ -1440,7 +1506,7 @@ mod tests {
         mode: GpuSeriesExtentMode,
         columns: GpuSeriesExtentColumns,
     ) -> Option<GpuSeriesExtent> {
-        pollster::block_on(
+        crate::test_gpu::block_on(
             engine
                 .begin_series(device, queue, pool.buffer(), mode, columns)
                 .unwrap()
@@ -1457,7 +1523,7 @@ mod tests {
         mode: GpuFieldExtentMode,
         columns: GpuFieldExtentColumns,
     ) -> GpuSeriesExtent {
-        pollster::block_on(
+        crate::test_gpu::block_on(
             engine
                 .begin_field(device, queue, pool.buffer(), mode, columns)
                 .unwrap()
@@ -1515,7 +1581,8 @@ mod tests {
             "field-fit-y",
             vec![-2.5, -2.3, 2.3, 2.5],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
 
         let samples = resolve_field(
             &engine,
@@ -1604,8 +1671,9 @@ mod tests {
             "legacy-upper",
             vec![100.0, f32::NAN],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
-        let extent = pollster::block_on(
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = crate::test_gpu::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
                 .unwrap()
@@ -1655,8 +1723,9 @@ mod tests {
             "legacy-many-upper",
             vec![7.0; 1000],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
-        let extent = pollster::block_on(
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
+        let extent = crate::test_gpu::block_on(
             engine
                 .begin(&device, &queue, pool.buffer(), values, lower, upper)
                 .unwrap()
@@ -1687,7 +1756,7 @@ mod tests {
             "legacy-max-error",
             vec![f32::MAX],
         );
-        let overflow = pollster::block_on(
+        let overflow = crate::test_gpu::block_on(
             engine
                 .begin(
                     &device,
@@ -1727,7 +1796,8 @@ mod tests {
         );
         let lower = add_f32(&mut pool, &device, &queue, "series-x-lower", vec![5.0, 0.0]);
         let upper = add_f32(&mut pool, &device, &queue, "series-x-upper", vec![0.0, 5.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1774,7 +1844,8 @@ mod tests {
             "line-y",
             vec![0.0, 1.0, f32::NAN, 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1830,7 +1901,8 @@ mod tests {
             vec![f32::NAN, 3.0],
         );
         let y_hi = add_f32(&mut pool, &device, &queue, "modes-y-hi", vec![1000.0, 4.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         for mode in [
             GpuSeriesExtentMode::Points,
             GpuSeriesExtentMode::PointsX,
@@ -1911,7 +1983,8 @@ mod tests {
             "paired-invalid-hi",
             vec![100.0; 3],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -1953,7 +2026,8 @@ mod tests {
             "one-infinite-hi",
             vec![f32::INFINITY],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2002,7 +2076,8 @@ mod tests {
         let x_upper = add_f32(&mut pool, &device, &queue, "six-domain-x-hi", vec![1.0; 3]);
         let y_lower = add_f32(&mut pool, &device, &queue, "six-domain-y-lo", vec![2.0]);
         let y_upper = add_f32(&mut pool, &device, &queue, "six-domain-y-hi", vec![2.0]);
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2043,7 +2118,8 @@ mod tests {
             "subnormal-y",
             vec![tiny * 2.0, tiny * 3.0],
         );
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2103,7 +2179,8 @@ mod tests {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2154,7 +2231,8 @@ mod tests {
             let (hi, lo) = split_f64_to_f32_pair(value);
             hi as f64 + lo as f64
         };
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         let extent = resolve_series(
             &engine,
             &device,
@@ -2172,7 +2250,8 @@ mod tests {
     fn reduction_boundaries_and_reuse_have_bounded_first_completion() {
         let ledger = std::sync::Arc::new(crate::gpu_memory::GpuLedger::new());
         let (device, queue) = crate::data_render::shared_device().expect("required adapter");
-        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()));
+        let engine = GpuErrorbarExtentEngine::new_tracked(&device, Arc::new(GpuLedger::new()))
+            .with_health(crate::renderer::DeviceHealth::polled_for_test(&device));
         for count in [1_usize, 63, 64, 65, 127, 128, 129, 4097] {
             let mut pool = ColumnPool::new(
                 crate::data_render::GpuAllocCtx::new(&device, &queue, &ledger),

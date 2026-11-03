@@ -10,7 +10,7 @@
 //! categorical axis's positions, so a wrong axis, a wrong normalization or
 //! a row drawn through the wrong column fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -84,7 +84,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer_with(budget: u64) -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         budget,
     )
@@ -466,7 +466,7 @@ fn the_pick_answers_the_row_and_the_highlight_redraws_it() {
     r.enable_gpu_picking().unwrap();
     let id = r.register_chart(config.clone(), series.clone()).unwrap();
     let mut pick = |at: (f64, f64)| {
-        row_of(pollster::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
+        row_of(test_gpu::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap())
     };
     for (k, row) in ROWS.iter().enumerate() {
         for i in 0..AXES - 1 {
@@ -1053,7 +1053,7 @@ fn a_million_rows_over_eight_axes_draw_and_pick() {
     let id = r.register_chart(config, vec![series]).unwrap();
     let started = std::time::Instant::now();
     let picked =
-        row_of(pollster::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap());
+        row_of(test_gpu::block_on(r.pick_chart_data(id, request(at)).unwrap().resolve()).unwrap());
     eprintln!("picked in {:?}", started.elapsed());
     assert!(picked.is_some(), "a row under the cursor");
 }

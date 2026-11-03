@@ -137,7 +137,6 @@
 [dependencies]
 renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
-pollster = "1"
 ```
 
 `version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.1과
@@ -207,7 +206,7 @@ config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y
 for upload in &uploads {
     renderer.add_column(upload.column.clone(), &upload.values)?;
 }
-let image = pollster::block_on(renderer.export_rgba(renderer::ExportSource::chart(&Chart::new(config), &series), renderer::ExportOptions::panel(1.0)))?;
+let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&Chart::new(config), &series), renderer::ExportOptions::panel(1.0))?;
 std::fs::write("radar.png", encode_png(&image)?)?;
 ```
 

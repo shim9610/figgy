@@ -8,13 +8,12 @@
 //!
 //! Writes `math-gallery.png` (1200 × 1600), `math-gallery@2x.png`, and the
 //! sketch pair `math-gallery-sketch.png` and `math-gallery-sketch@2x.png`.
-use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Config, Renderer, RendererDevice,
     annotation::{Anchor, Annotation, AnnotationKind},
     config::{DrawStyle, TickVisibility},
     default, encode_png,
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     layout::{ChartArea, Rect},
     text::RichText,
 };
@@ -65,18 +64,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("target/math-gallery"));
     std::fs::create_dir_all(&output)?;
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(device, queue);
+    let (device, queue) = request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 16 << 20)?;
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
         let chart = Chart::new(gallery(sketch)?);
         for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
-            let image = pollster::block_on(renderer.export_rgba(
+            let image = renderer.export_rgba_blocking(
                 renderer::ExportSource::chart(&chart, &[]),
                 renderer::ExportOptions::document(scale).with_clear(Color::WHITE),
-            ))?;
+            )?;
             let path = output.join(format!("{name}{suffix}.png"));
             std::fs::write(&path, encode_png(&image)?)?;
             eprintln!(

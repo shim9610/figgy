@@ -27,7 +27,7 @@ fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             1024 * 1024,
         )
@@ -82,9 +82,9 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
     }
     assert!(!renderer.errorbar_extent_engine_ready());
 
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
     assert!(renderer.errorbar_extent_engine_ready());
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let shared_renderer = &renderer;
     // A live ticket owns reduction scratch and a MAP_READ buffer; both are
@@ -102,7 +102,7 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
         pending.report()
     );
 
-    let extent = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let extent = test_gpu::block_on(ticket.resolve()).unwrap().unwrap();
     assert_eq!((extent.x.min, extent.x.max), (1.0, 2.0));
     assert_eq!((extent.y.min, extent.y.max), (10.0, 20.0));
 
@@ -129,7 +129,7 @@ fn prepared_engine_reads_provisional_upsert_without_publishing_rollback() {
     renderer
         .add_hilo_column("y", &col_f64(vec![10.0, 20.0]))
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let provisional_ticket = {
         let provisional = renderer
@@ -139,12 +139,12 @@ fn prepared_engine_reads_provisional_upsert_without_publishing_rollback() {
             .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
             .unwrap()
     };
-    let provisional = pollster::block_on(provisional_ticket.resolve())
+    let provisional = test_gpu::block_on(provisional_ticket.resolve())
         .unwrap()
         .unwrap();
     assert_eq!((provisional.x.min, provisional.x.max), (100.0, 200.0));
 
-    let rolled_back = pollster::block_on(
+    let rolled_back = test_gpu::block_on(
         renderer
             .begin_series_extent(GpuSeriesExtentMode::Points, point_columns())
             .unwrap()

@@ -4,7 +4,6 @@
 //! exact physical size. The host renders that frame (the chart, then the
 //! annotation layer) into an offscreen texture and egui shows it as an image.
 
-use pollster::FutureExt as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -383,12 +382,11 @@ impl RadialHost {
                 Some((
                     "png",
                     self.renderer
-                        .export_rgba(
+                        .export_rgba_blocking(
                             &self.chart,
                             self.size,
                             renderer::ExportOptions::document(2.0),
                         )
-                        .block_on()
                         .map_err(|e| e.to_string())
                         .and_then(|img| renderer::encode_png(&img).map_err(|e| e.to_string())),
                 ))
@@ -396,12 +394,11 @@ impl RadialHost {
                 Some((
                     "svg",
                     self.renderer
-                        .export_svg(
+                        .export_svg_blocking(
                             &self.chart,
                             self.size,
                             renderer::ExportOptions::document(2.0),
                         )
-                        .block_on()
                         .map(String::into_bytes)
                         .map_err(|e| e.to_string()),
                 ))
@@ -409,12 +406,11 @@ impl RadialHost {
                 Some((
                     "pdf",
                     self.renderer
-                        .export_pdf(
+                        .export_pdf_blocking(
                             &self.chart,
                             self.size,
                             renderer::ExportOptions::document(2.0),
                         )
-                        .block_on()
                         .map_err(|e| e.to_string()),
                 ))
             } else {
