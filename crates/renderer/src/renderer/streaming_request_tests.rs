@@ -6872,6 +6872,10 @@ fn stream_tickets_name_the_ranges_their_slots_reserved() {
 /// sources with 1 and 4 slots, one chunk's source failing its write: after
 /// every step the slot count has not shrunk and is within the limit, and
 /// with one slot the failed slot is the one the rest of the stream reuses.
+///
+/// The retry right after the failure, before anything polls the device, finds
+/// the failed slot still remapping: with one slot it gets backpressure, as a
+/// fresh request with no free slot does, and succeeds after the remap (#154).
 #[test]
 fn stream_staging_slots_only_grow_within_the_slot_limit() {
     struct Source {
@@ -6902,7 +6906,9 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
     }
 
     for slots in [1usize, 4] {
-        let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+        // A device of its own: no other test's poll runs the remap callback
+        // between the failure and the retry.
+        let (device, queue) = crate::test_gpu::device();
         let mut r = Renderer::try_new(
             RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -6967,6 +6973,12 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
         ];
         let mut count = 0;
         let mut failures = 0;
+        let mut retry_backpressure = 0;
+        let mut after_failure = false;
+        // From the failure until the retried ticket is submitted: the ticket
+        // keeps its request reservation, so backpressure waits for the slot's
+        // remap alone.
+        let mut retrying = false;
         let mut steps = 0;
         loop {
             steps += 1;
@@ -6979,16 +6991,28 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
             );
             assert!(now <= slots, "{now} staging slots for {slots}");
             count = now;
+            if std::mem::take(&mut after_failure) {
+                match &step {
+                    Ok(crate::StreamingProgress::Backpressure { .. }) => retry_backpressure += 1,
+                    Ok(crate::StreamingProgress::Submitted { .. }) => {
+                        assert!(slots > 1, "the retry took the slot that is remapping")
+                    }
+                    other => panic!("slots {slots}: the retry answered {other:?}"),
+                }
+            }
             match step {
                 Err(FiggyError::InvalidStreamSource { id, .. }) => {
                     assert_eq!(id, "x");
                     failures += 1;
-                    // The failed slot is remapped; let its map callback
-                    // run before the same ticket is supplied again.
-                    r.wait_idle().unwrap();
+                    after_failure = true;
+                    retrying = true;
                 }
                 Err(error) => panic!("slots {slots} step {steps} count {count}: {error:?}"),
-                Ok(crate::StreamingProgress::Submitted { .. }) => {}
+                Ok(crate::StreamingProgress::Submitted { .. }) => retrying = false,
+                Ok(crate::StreamingProgress::Backpressure { .. }) if retrying => {
+                    r.service_gpu_completions().unwrap();
+                    std::thread::yield_now();
+                }
                 Ok(crate::StreamingProgress::Backpressure { .. }) => wait_stream_slots(&mut r, 0),
                 Ok(crate::StreamingProgress::AllSubmitted { total_primitives }) => {
                     assert_eq!(total_primitives, 50);
@@ -6997,6 +7021,12 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
             }
         }
         assert_eq!(failures, 1);
+        if slots == 1 {
+            assert_eq!(
+                retry_backpressure, 1,
+                "the early retry was not backpressured"
+            );
+        }
         assert!(count >= 1, "the column sources were staged without a slot");
         if slots == 1 {
             assert_eq!(count, 1, "the failed slot was not reused");

@@ -1030,6 +1030,13 @@ additive.
   480×300 with 3 slices fell from 14.1–19.4 to 4.1–4.6 ms, 960×600 with 3
   slices from 60.5–63.5 to 14.7–19.3 ms, and 480×300 with 12 slices from
   38.5–46.4 to 11.6–14.0 ms. No API changes.
+- **A stream retry waits for its staging slot** ([#154](https://github.com/shim9610/figgy/issues/154)).
+  When a chunk's `ColumnSource` fails its write into a reused staging slot,
+  the slot remaps before it can take data again. A retry of the same ticket
+  before that remap completed failed with
+  `StaleStateToken("…WrongState")`; it now returns
+  `StreamingProgress::Backpressure`, the answer a fresh request gets when no
+  staging slot is free, and succeeds once the remap has run. No API changes.
 - **Native GPU waits: awaited, blocking or checked** ([#160](https://github.com/shim9610/figgy/issues/160)).
   On native an awaited readback no longer polls the device on the awaiting
   thread: `RendererDevice::new` starts one poll thread per device bundle,

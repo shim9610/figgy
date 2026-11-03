@@ -362,6 +362,26 @@ impl StreamStagingSlot {
     }
 }
 
+impl StreamDrawCursor {
+    /// Whether a chunk staged from column sources must wait for a staging
+    /// slot: every slot the limit allows exists and none is free. A slot whose
+    /// remap failed fails the request instead.
+    fn staging_backpressure(&self, max_slots: usize) -> StreamResult<bool> {
+        if self
+            .staging_slots
+            .iter()
+            .any(|slot| slot.state.load(Ordering::Acquire) == 3)
+        {
+            return Err(StreamRequestError::Upload(ChunkUploadError::MappingFailed));
+        }
+        Ok(self.staging_slots.len() >= max_slots
+            && !self
+                .staging_slots
+                .iter()
+                .any(|slot| slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0))
+    }
+}
+
 struct StreamDrawCursor {
     job: StreamJob,
     series: usize,
@@ -4484,6 +4504,12 @@ impl Renderer {
             .find(|draw| draw.job == job)
             .ok_or(StreamError::WrongState)?;
         if let Some(ticket) = draw.pending {
+            // A retry of a ticket whose source failed waits for the staging
+            // slot it was handed back to finish remapping, as a fresh request
+            // with no free slot does (#154).
+            if draw.staging_backpressure(runtime.scheduler.limits().max_slots)? {
+                return Ok(StreamDrawRequestStatus::Backpressure);
+            }
             return Ok(StreamDrawRequestStatus::Ready(ticket));
         }
         let series_list = auto_snapshot.as_ref().map_or_else(
@@ -4543,19 +4569,7 @@ impl Renderer {
                     .clone();
                 return self.request_stream_arc(job, &config, &names, total + 1);
             }
-            if draw
-                .staging_slots
-                .iter()
-                .any(|slot| slot.state.load(Ordering::Acquire) == 3)
-            {
-                return Err(StreamRequestError::Upload(ChunkUploadError::MappingFailed));
-            }
-            if draw.staging_slots.len() >= runtime.scheduler.limits().max_slots
-                && !draw
-                    .staging_slots
-                    .iter()
-                    .any(|slot| slot.ticket.is_none() && slot.state.load(Ordering::Acquire) == 0)
-            {
+            if draw.staging_backpressure(runtime.scheduler.limits().max_slots)? {
                 return Ok(StreamDrawRequestStatus::Backpressure);
             }
             let primitives = (total - draw.offset).min(draw.max_primitives);
