@@ -48,14 +48,31 @@ pub fn emit_axis_strokes(
             let tag = match stroke {
                 AxisStroke::Line => format!("axis_{}", side_tag(&side)),
                 AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
+                AxisStroke::Break(k, end) => format!("axis_break_{}_{k}_{end}", side_tag(&side)),
+            };
+            // A break mark is drawn in its own style, solid; every other
+            // stroke in the axis line's.
+            let (width, color, dash) = match (stroke, &axis.breaks) {
+                (
+                    AxisStroke::Break(..),
+                    Some(crate::config::AxisBreaks {
+                        mark: crate::config::BreakMark::Slash { width, color, .. },
+                        ..
+                    }),
+                ) => (
+                    *width,
+                    *color,
+                    crate::line::LineStylePreset::Solid.pattern(),
+                ),
+                _ => (axis.line_width, axis.line_color, dash),
             };
             sink.stroke(
                 Slot::Above,
                 [a.0 + off_x, a.1 + off_y],
                 [b.0 + off_x, b.1 + off_y],
                 &StrokeStyle {
-                    width: axis.line_width,
-                    color: axis.line_color,
+                    width,
+                    color,
                     dash,
                     tag: &tag,
                 },
@@ -133,6 +150,9 @@ pub fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, plot: &RectF)
 pub enum AxisStroke {
     Line,
     Tick(usize),
+    /// One slash of break mark `k` (#200): `0` at the gap's start, `1` at
+    /// its end, in the axis' visual order.
+    Break(usize, usize),
 }
 
 /// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
@@ -149,7 +169,12 @@ pub fn each_axis_stroke(
 ) {
     if axis.line_visible {
         let (p0, p1) = axis_anchor(side.clone(), plot, cross);
-        each(AxisStroke::Line, p0, p1);
+        let map = crate::layout::BreakMap::of(axis);
+        if map.is_broken() {
+            each_broken_axis_line(axis, &map, side.clone(), p0, p1, &mut each);
+        } else {
+            each(AxisStroke::Line, p0, p1);
+        }
     }
     if axis.tick == TickVisibility::None {
         return;
@@ -163,6 +188,64 @@ pub fn each_axis_stroke(
         let pos = value_to_screen(value, axis, side.clone(), plot);
         if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
             each(AxisStroke::Tick(i), a, b);
+        }
+    }
+}
+
+/// The line of a broken axis (#200) from `p0` to `p1` (its
+/// [`axis_anchor`]): one segment per piece, then the slashes of each gap's
+/// mark when the axis draws one. The pieces' bands are in visual order: from
+/// the left on a horizontal axis and from the bottom on a vertical one.
+fn each_broken_axis_line(
+    axis: &AxisOptions,
+    map: &crate::layout::BreakMap,
+    side: Side,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    each: &mut impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
+) {
+    let horizontal = matches!(side, Side::Top | Side::Bottom);
+    // The point at visual fraction `f` along the line: `p0` is the left end
+    // of a horizontal line and the top end of a vertical one.
+    let at = |f: f64| {
+        let f = f as f32;
+        if horizontal {
+            (p0.0 + (p1.0 - p0.0) * f, p0.1)
+        } else {
+            (p0.0, p1.1 + (p0.1 - p1.1) * f)
+        }
+    };
+    let visual = |(a, b): (f64, f64)| {
+        if axis.inverted {
+            (1.0 - b, 1.0 - a)
+        } else {
+            (a, b)
+        }
+    };
+    for band in map.pieces() {
+        let (a, b) = visual(band);
+        each(AxisStroke::Line, at(a), at(b));
+    }
+    let Some(crate::config::AxisBreaks {
+        mark: crate::config::BreakMark::Slash { size, .. },
+        ..
+    }) = &axis.breaks
+    else {
+        return;
+    };
+    // Each slash leans 60 degrees from the line: across it by `size`, along
+    // it by half that.
+    let (along, across) = (size * 0.25, size * 0.5);
+    for (k, knot) in map.knots().iter().enumerate() {
+        let (a, b) = visual((knot.start, knot.end));
+        for (end, f) in [a, b].into_iter().enumerate() {
+            let (x, y) = at(f);
+            let (u, v) = if horizontal {
+                ((x - along, y + across), (x + along, y - across))
+            } else {
+                ((x - across, y + along), (x + across, y - along))
+            };
+            each(AxisStroke::Break(k, end), u, v);
         }
     }
 }

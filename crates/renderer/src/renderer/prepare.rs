@@ -259,6 +259,9 @@ impl PrepareContext<'_> {
                 width: item.data_area.width,
                 height: item.data_area.height,
             };
+            let Some(pieces) = item.data_pieces.relative_to(panel.x, panel.y) else {
+                continue;
+            };
             let probe = ResidentDisplayProbe {
                 size: (w, h),
                 data_area,
@@ -349,7 +352,7 @@ impl PrepareContext<'_> {
                             depth: depth.as_ref(),
                         },
                         (w, h),
-                        data_area,
+                        &pieces,
                         &series_list,
                     );
                     i
@@ -514,6 +517,13 @@ impl PrepareContext<'_> {
                     .data_area()
                     .map(|area| area.0)
                     .unwrap_or(item.view.panel_rect),
+                data_pieces: super::composite::DataPieces::of(
+                    item.chart_config,
+                    item.chart_config
+                        .data_area()
+                        .map(|area| area.0)
+                        .unwrap_or(item.view.panel_rect),
+                ),
                 axis_pipeline: pipelines.axis.clone(),
                 series: layers
                     .into_iter()
@@ -689,7 +699,7 @@ pub(super) fn draw_panel_composite(
     encoder: &mut wgpu::CommandEncoder,
     targets: PanelCompositeTargets<'_>,
     (w, h): (u32, u32),
-    data_area: Rect,
+    data: &super::composite::DataPieces,
     series_list: &[data_render::SeriesLayers<'_>],
 ) {
     let three_d = series_list.iter().any(|s| {
@@ -701,14 +711,21 @@ pub(super) fn draw_panel_composite(
     // state and so cannot join a pass that has the attachment. The colour
     // target is kept between the two and resolved by the second.
     let two_passes = targets.depth.is_some() && !three_d;
-    let scissor = |pass: &mut wgpu::RenderPass<'_>| {
+    // Each piece of the data area in turn (#200): the whole area on an
+    // unbroken chart.
+    let scissor = |pass: &mut wgpu::RenderPass<'_>, piece: &Rect| {
         pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
         pass.set_scissor_rect(
-            data_area.x,
-            data_area.y,
-            data_area.width.min(w - data_area.x),
-            data_area.height.min(h - data_area.y),
+            piece.x,
+            piece.y,
+            piece.width.min(w.saturating_sub(piece.x)),
+            piece.height.min(h.saturating_sub(piece.y)),
         );
+    };
+    let pieces = || {
+        data.rects()
+            .iter()
+            .filter(|piece| piece.x < w && piece.y < h)
     };
     let final_store = if targets.resolve.is_some() {
         wgpu::StoreOp::Discard
@@ -746,17 +763,19 @@ pub(super) fn draw_panel_composite(
             }),
             ..Default::default()
         });
-        scissor(&mut pass);
         // The ternary region fills first, into the stencil, under every
         // fill and body; a 3D panel then draws its surfaces, a flat one
         // its bodies (in the second pass when the stencil is attached).
-        if targets.depth.is_some() {
-            data_render::issue_series_regions(&mut pass, series_list);
-        }
-        if three_d {
-            data_render::issue_series_surfaces(&mut pass, series_list);
-        } else if !two_passes {
-            data_render::issue_series_bodies(&mut pass, series_list);
+        for piece in pieces() {
+            scissor(&mut pass, piece);
+            if targets.depth.is_some() {
+                data_render::issue_series_regions(&mut pass, series_list);
+            }
+            if three_d {
+                data_render::issue_series_surfaces(&mut pass, series_list);
+            } else if !two_passes {
+                data_render::issue_series_bodies(&mut pass, series_list);
+            }
         }
     }
     if two_passes {
@@ -773,7 +792,9 @@ pub(super) fn draw_panel_composite(
             })],
             ..Default::default()
         });
-        scissor(&mut pass);
-        data_render::issue_series_bodies(&mut pass, series_list);
+        for piece in pieces() {
+            scissor(&mut pass, piece);
+            data_render::issue_series_bodies(&mut pass, series_list);
+        }
     }
 }

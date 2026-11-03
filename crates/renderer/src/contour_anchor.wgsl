@@ -128,12 +128,14 @@ fn t_to_pair(t: f32, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log:
 }
 
 fn t_to_pair_x(t: f32) -> vec2<f32> {
-    let data_t = (t - transform.data_to_panel_offset.x) / transform.data_to_panel_scale.x;
+    let data_t = cut_unmap(cuts_of(transform.breaks, transform.break_info, 0u),
+        (t - transform.data_to_panel_offset.x) / transform.data_to_panel_scale.x);
     return t_to_pair(data_t, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
 }
 
 fn t_to_pair_y(t: f32) -> vec2<f32> {
-    let data_t = (t - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    let data_t = cut_unmap(cuts_of(transform.breaks, transform.break_info, 1u),
+        (t - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y);
     return t_to_pair(data_t, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
 }
 

@@ -17,10 +17,14 @@ pub fn major_tick_values_for_axis(
     plot: &RectF,
     measure: &dyn MeasureText,
 ) -> Vec<f64> {
-    if let Some(plan) = timestamp_tick_plan(axis, side, plot, measure) {
-        return plan.majors.into_iter().map(|tick| tick.value).collect();
-    }
-    major_tick_values(axis)
+    let mut values = match timestamp_tick_plan(axis, side, plot, measure) {
+        Some(plan) => plan.majors.into_iter().map(|tick| tick.value).collect(),
+        None => major_tick_values(axis),
+    };
+    // A broken axis draws no tick inside a cut (#200); each piece keeps the
+    // axis' own spacing.
+    values.retain(|&v| !crate::layout::value_in_cut(axis, v));
+    values
 }
 
 pub fn minor_tick_values_for_axis(
@@ -29,10 +33,12 @@ pub fn minor_tick_values_for_axis(
     plot: &RectF,
     measure: &dyn MeasureText,
 ) -> Vec<f64> {
-    if let Some(plan) = timestamp_tick_plan(axis, side, plot, measure) {
-        return plan.minor_values;
-    }
-    minor_tick_values(axis)
+    let mut values = match timestamp_tick_plan(axis, side, plot, measure) {
+        Some(plan) => plan.minor_values,
+        None => minor_tick_values(axis),
+    };
+    values.retain(|&v| !crate::layout::value_in_cut(axis, v));
+    values
 }
 
 pub const LABEL_COLLISION_GAP: f32 = 8.0;

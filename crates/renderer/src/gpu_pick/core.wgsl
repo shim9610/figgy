@@ -76,6 +76,9 @@ struct Transform {
     polar_extent: vec4<f32>,
     ternary_lt: vec4<f32>,
     ternary_r: vec4<f32>,
+    // Broken axes (#200), as the draw's `Transform`.
+    breaks: array<vec4<f32>, 6>,
+    break_info: vec4<f32>,
 };
 
 struct PickQueryParams {
@@ -271,7 +274,8 @@ fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
     let tr = pick_query_params.transform;
     let t = axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
-        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis]);
+        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis],
+        cuts_of(tr.breaks, tr.break_info, axis));
     if axis == 0u {
         return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
     }

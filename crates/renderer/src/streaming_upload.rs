@@ -1000,6 +1000,8 @@ mod tests {
                     polar_extent: [0.; 4],
                     ternary_lt: [0.0; 4],
                     ternary_r: [0.0; 4],
+                    breaks: crate::data_render::NO_BREAKS,
+                    break_info: crate::data_render::NO_BREAK_INFO,
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);

@@ -162,6 +162,17 @@ fn raw_axis_t(value: f64, axis: &AxisOptions) -> Option<f64> {
     }
 }
 
+/// Whether `value` lies strictly inside one of `axis`' cut ranges (#200),
+/// clamped to the range as [`BreakMap::of`] clamps them: such a value is not
+/// drawn, so no tick, grid line or tick label is placed at it.
+pub fn value_in_cut(axis: &AxisOptions, value: f64) -> bool {
+    let map = BreakMap::of(axis);
+    if !map.is_broken() {
+        return false;
+    }
+    raw_axis_t(value, axis).is_some_and(|t| map.knots().iter().any(|k| t > k.from && t < k.to))
+}
+
 /// One cut of a broken axis in `t` space (#200): the raw interval
 /// `from..to` of the cut values is drawn as the gap `start..end`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

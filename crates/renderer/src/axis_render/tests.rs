@@ -2343,6 +2343,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         |stroke, a, b| match stroke {
             AxisStroke::Line => line = Some((a, b)),
             AxisStroke::Tick(_) => ticks.push(a),
+            AxisStroke::Break(..) => panic!("the categorical axis has no breaks"),
         },
     );
     assert_eq!(line, Some(((80.75, 340.25), (680.25, 340.25))));

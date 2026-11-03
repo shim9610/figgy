@@ -13,7 +13,8 @@ fn polar_sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
     if (t.polar_angle.x < 0.5) {
         return true;
     }
-    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y);
+    // A polar radius: polar charts have no breaks.
+    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y, no_cuts());
     let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
     return rt >= 0.0;
 }

@@ -1064,12 +1064,17 @@ impl Renderer {
                     depth: Some(&depth_view),
                 },
                 (w, h),
-                Rect {
-                    x: data_x,
-                    y: data_y,
-                    width: item.data_area.width,
-                    height: item.data_area.height,
-                },
+                &item
+                    .data_pieces
+                    .relative_to(panel.x, panel.y)
+                    .unwrap_or_else(|| {
+                        super::composite::DataPieces::whole(Rect {
+                            x: data_x,
+                            y: data_y,
+                            width: item.data_area.width,
+                            height: item.data_area.height,
+                        })
+                    }),
                 &series_list,
             );
             let bind_group = data_render::create_texture_bind_group(

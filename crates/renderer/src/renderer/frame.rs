@@ -731,6 +731,9 @@ impl PreparedView {
 pub(super) struct PreparedItem {
     pub(super) view: PreparedView,
     pub(super) data_area: Rect,
+    /// The rects the data slot is drawn in: the data area, or its pieces on
+    /// a broken axis (#200).
+    pub(super) data_pieces: super::composite::DataPieces,
     pub(super) axis_pipeline: wgpu::RenderPipeline,
     pub(super) series: Vec<PreparedSeries>,
     pub(super) stream_display: Option<streaming_runtime::StreamDisplayPacket>,
@@ -2844,6 +2847,14 @@ impl Renderer {
                         .data_area()
                         .map(|area| area.0)
                         .unwrap_or(item.view.panel_rect),
+                    // A streamed chart has no breaks (rule 8).
+                    data_pieces: super::composite::DataPieces::whole(
+                        state
+                            .config
+                            .data_area()
+                            .map(|area| area.0)
+                            .unwrap_or(item.view.panel_rect),
+                    ),
                     axis_pipeline: self.pipelines.axis.clone(),
                     series: Vec::new(),
                     stream_display: Some(display),
@@ -3182,7 +3193,7 @@ impl Renderer {
                     pass,
                     target_size,
                     panel_rect,
-                    item.data_area,
+                    &item.data_pieces,
                     &super::composite::PanelChrome {
                         below: chrome.then_some(AxisLayer {
                             pipeline: &item.axis_pipeline,

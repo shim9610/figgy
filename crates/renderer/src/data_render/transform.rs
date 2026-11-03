@@ -5,9 +5,11 @@ use super::*;
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 176 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
-/// offset 64, stride 16, two polar `vec4<f32>` at 112 and 128 and two
-/// ternary `vec4<f32>` at 144 and 160, WGSL uniform layout). Pixel sizes (point radius, cap half-length) live in
+/// 288 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
+/// offset 64, stride 16, two polar `vec4<f32>` at 112 and 128, two
+/// ternary `vec4<f32>` at 144 and 160, the break table
+/// `array<vec4<f32>, 6>` at 176 and its `vec4<f32>` info at 272, WGSL
+/// uniform layout). Pixel sizes (point radius, cap half-length) live in
 /// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -57,7 +59,56 @@ pub struct ScatterTransform {
     pub ternary_lt: [f32; 4], // offset 144
     /// `(R.x, R.y, flag, 0)`: the corner R (c's 100 %) in NDC and 1 for a
     /// ternary chart.
-    pub ternary_r: [f32; 4], // offset 160 → 176 byte
+    pub ternary_r: [f32; 4], // offset 160
+    /// Broken axes (#200): up to [`MAX_AXIS_BREAKS`](crate::config::MAX_AXIS_BREAKS)
+    /// cuts per axis, x in `[0, 3)` and y in `[3, 6)`, each `(from, to,
+    /// start, end)`: the raw `t` interval of the cut values and the gap it
+    /// is drawn as ([`crate::layout::BreakKnot`]), in the shader's `t`,
+    /// which the `inverted` swap of `data_min` / `data_max` has already
+    /// mirrored. Unused entries are zero.
+    pub breaks: [[f32; 4]; 6], // offset 176
+    /// `(cuts on x, cuts on y, piece scale x, piece scale y)`; zero cuts is
+    /// the identity.
+    pub break_info: [f32; 4], // offset 272 → 288 byte
+}
+
+/// The break table entries of an unbroken chart.
+pub(crate) const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
+/// The break info of an unbroken chart.
+pub(crate) const NO_BREAK_INFO: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// `(breaks, break_info)` of [`ScatterTransform`] for the x axis `x` and
+/// the y axis `y`: their [`crate::layout::BreakMap`]s in the shader's `t`,
+/// mirrored on an inverted axis, where the shader's `t` runs from the
+/// axis' far end.
+pub(crate) fn break_constants(
+    x: &crate::config::AxisOptions,
+    y: &crate::config::AxisOptions,
+) -> ([[f32; 4]; 6], [f32; 4]) {
+    let mut breaks = NO_BREAKS;
+    let mut info = NO_BREAK_INFO;
+    for (axis, options) in [x, y].into_iter().enumerate() {
+        let map = crate::layout::BreakMap::of(options);
+        let knots = map.knots();
+        info[axis] = knots.len() as f32;
+        info[2 + axis] = map.scale() as f32;
+        for (k, knot) in knots.iter().enumerate() {
+            let entry = if options.inverted {
+                // The mirror of the cuts: the last one first.
+                let knot = knots[knots.len() - 1 - k];
+                [
+                    1.0 - knot.to,
+                    1.0 - knot.from,
+                    1.0 - knot.end,
+                    1.0 - knot.start,
+                ]
+            } else {
+                [knot.from, knot.to, knot.start, knot.end]
+            };
+            breaks[3 * axis + k] = entry.map(|v| v as f32);
+        }
+    }
+    (breaks, info)
 }
 
 /// Admission headroom for one immutable streamed point/errorbar transform.
@@ -242,6 +293,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
     let (polar_angle, polar_extent) = transform_constants(config);
     let (ternary_lt, ternary_r) = ternary_constants(config, *ca, chart_w, chart_h);
+    let (breaks, break_info) = break_constants(&config.bottom_x, &config.left_y);
     ScatterTransform {
         data_min: [min_x_hi, min_y_hi],
         data_max: [max_x_hi, max_y_hi],
@@ -256,6 +308,8 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         polar_extent,
         ternary_lt,
         ternary_r,
+        breaks,
+        break_info,
     }
 }
 

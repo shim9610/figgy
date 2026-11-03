@@ -132,7 +132,8 @@ fn category_invalid() -> CategoryBar {
 /// fraction between the inner ring and the ring, as `polar_ndc` places it.
 fn category_radius_px(v: vec2<f32>) -> f32 {
     let t = transform;
-    let ty = axis_pair_to_t(v, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y);
+    // A polar radius: polar charts have no breaks.
+    let ty = axis_pair_to_t(v, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y, no_cuts());
     let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
     return mix(t.polar_angle.w, 1.0, max(rt, 0.0)) * t.polar_extent.w;
 }
