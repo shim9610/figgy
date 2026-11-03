@@ -1019,6 +1019,17 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
+  A radial chart whose sectors are all Flat, level (no tilt or depth),
+  unlit and unoutlined shaded every pixel once per antialiasing sample (4).
+  A pixel whose center lies at least 0.75 px inside or outside every
+  sector's footprint now takes one evaluation, which equals each sample's;
+  pixels near an edge, and every other style, still take all the samples.
+  The image is byte-identical. The #41 benchmark's donut on lavapipe (Mesa
+  25.2.8, 4 CPUs), warm pass, median of 15 frames in each of three runs:
+  480×300 with 3 slices fell from 14.1–19.4 to 4.1–4.6 ms, 960×600 with 3
+  slices from 60.5–63.5 to 14.7–19.3 ms, and 480×300 with 12 slices from
+  38.5–46.4 to 11.6–14.0 ms. No API changes.
 - **Native GPU waits: awaited, blocking or checked** ([#160](https://github.com/shim9610/figgy/issues/160)).
   On native an awaited readback no longer polls the device on the awaiting
   thread: `RendererDevice::new` starts one poll thread per device bundle,
