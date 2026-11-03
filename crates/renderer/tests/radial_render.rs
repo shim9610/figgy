@@ -1,6 +1,6 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use renderer::{Color, Material, RendererDevice, radial::*};
@@ -13,7 +13,7 @@ static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn gpu() -> RendererDevice {
     static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone())
+    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
 }
 fn chart() -> RadialChart {
     RadialChart {
@@ -1510,7 +1510,7 @@ mod radial_export;
 #[test]
 fn radial_png_preserves_hover_progress_and_persistent_selection() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    pollster::block_on(radial_export::check(gpu()));
+    test_gpu::block_on(radial_export::check(gpu()));
 }
 /// RADIAL_CHART_VALIDATED (#152): the layout reads a validated chart only.
 /// A split naming a slice at or past the chart's slices is refused as

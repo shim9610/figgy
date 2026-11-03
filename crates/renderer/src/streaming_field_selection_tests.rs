@@ -149,7 +149,7 @@ fn heatmap_selection_matches_resident_with_bounded_axis_neighbours() {
         assert_eq!(f.renderer.active_stream_job(f.id), original_job);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -163,7 +163,7 @@ fn heatmap_selection_matches_resident_with_bounded_axis_neighbours() {
                 .begin_stream_export(f.id, scale, Color::new(0.0, 0.0, 0.0, 0.0), 8)
                 .unwrap();
             pump_with_selection(&mut f, op);
-            let actual = pollster::block_on(f.renderer.finish_stream_export(op)).unwrap();
+            let actual = crate::test_gpu::block_on(f.renderer.finish_stream_export(op)).unwrap();
             let expected = resident
                 .export_rgba(
                     crate::ExportSource::chart(&f.chart, &f.series),

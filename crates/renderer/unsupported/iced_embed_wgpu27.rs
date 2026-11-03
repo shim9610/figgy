@@ -97,7 +97,7 @@ impl FiggyPipeline {
         let device = Arc::new(device.clone());
         let queue = Arc::new(queue.clone());
         let mut renderer =
-            match Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY) {
+            match Renderer::try_new(RendererDevice::new(device, queue).expect("figgy poll thread"), format, POOL_CAPACITY) {
                 Ok(renderer) => renderer,
                 Err(e) => {
                     let message = format!("Renderer init failed: {e}");

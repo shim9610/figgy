@@ -4,9 +4,9 @@
 //! is always a fresh renderer given the final state.
 use super::*;
 use crate::layout::{ChartArea, Rect};
+use crate::test_gpu::BlockOn as _;
 use crate::text::RichText;
 use crate::{CellRef, HitMap, LayerRef, OverlayLayer, Subplot, SubplotAxis, WarningAxis};
-use pollster::FutureExt as _;
 
 const UPPER: Rect = Rect {
     x: 0,
@@ -22,7 +22,7 @@ fn column(data: Vec<f32>) -> crate::Column<f32> {
 fn renderer() -> Renderer {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         1,
@@ -561,7 +561,9 @@ fn a_subplot_document_is_displayed_and_picked_as_one_document() {
             },
         )
         .unwrap();
-    let picked = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let picked = crate::test_gpu::block_on(ticket.resolve())
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.series_id, "s1");
     assert_eq!(picked.point_index, 3);
 }
@@ -912,7 +914,7 @@ fn subplot_members_draw_shifted_in_their_own_area() {
         display_scale: 1.0,
         max_distance_px: 3.0,
     };
-    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+    let hit = crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
         .unwrap()
         .expect("the shifted subplot member picks");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));

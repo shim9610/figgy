@@ -6,7 +6,6 @@
 //! into `labels.text` by the reader).
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
     RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, encode_png,
@@ -76,12 +75,10 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
         chart
     };
-    let image = r
-        .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
-            renderer::ExportOptions::panel(1.0),
-        )
-        .block_on()?;
+    let image = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &series),
+        renderer::ExportOptions::panel(1.0),
+    )?;
     let colored = image
         .rgba
         .chunks_exact(4)
@@ -106,10 +103,10 @@ fn main() -> Result {
     );
     std::fs::create_dir_all(&dir)?;
     let instance = gpu::create_instance();
-    let adapter = gpu::request_adapter_async(&instance).block_on()?;
+    let adapter = gpu::request_adapter_blocking(&instance)?;
     eprintln!("Boxplot adapter: {:?}", adapter.get_info());
-    let (d, q) = gpu::request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(d, q);
+    let (d, q) = gpu::request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
     let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),

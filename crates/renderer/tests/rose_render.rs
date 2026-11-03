@@ -15,7 +15,7 @@
 //! wedges side by side in the categories' order, `bar_gap` pixels apart at
 //! the ring.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -77,7 +77,7 @@ fn col(data: Vec<f64>) -> Column<f64> {
 fn renderer(columns: &[(&str, &[f64])]) -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -558,7 +558,7 @@ fn the_pick_answers_the_wedge_and_the_selection_steps_the_categories() {
     let (centre, _, _) = geometry(&chart, 1.0);
     let pick = |r: &mut Renderer, (x, y): (f64, f64)| {
         let request = pick_request(x, y, WIDTH, HEIGHT, 1.0);
-        match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+        match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
             Some(renderer::PickedData::HistogramBin {
                 series_id,
                 bin_index,
@@ -967,7 +967,7 @@ fn a_four_thousand_category_rose_of_four_stacked_series_draws_and_picks() {
         .register_chart(chart.config().clone(), series.clone())
         .unwrap();
     let started = std::time::Instant::now();
-    let hit = pollster::block_on(
+    let hit = test_gpu::block_on(
         r.pick_chart_data(id, pick_request(p.0, p.1, SIDE, SIDE, 1.0))
             .unwrap()
             .resolve(),

@@ -10,7 +10,7 @@
 //! from the same data area and axis ranges the renderer draws with.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -77,7 +77,7 @@ fn col(data: Vec<f64>) -> Column<f64> {
 fn renderer(one: &[f64], two: &[f64]) -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -755,7 +755,7 @@ fn a_stack_uploaded_column_by_column_fits_as_one_batch() {
     let batched = renderer(&one, &two);
     let (device, queue) = shared_device();
     let mut apart = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -873,7 +873,7 @@ fn a_categorical_document_draws_as_category_bars() {
     });
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1081,7 +1081,7 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+            match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
                 Some(renderer::PickedData::HistogramBin { series_id, .. }) => Some(series_id),
                 _ => None,
             }
@@ -1211,7 +1211,7 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     assert!(
         matches!(
             &hit,
@@ -1403,7 +1403,7 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     assert!(
         matches!(
             &hit,
@@ -1432,7 +1432,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
     const WIDE: u32 = 4000;
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1502,7 +1502,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
             display_scale: 1.0,
             max_distance_px: 0.0,
         };
-        pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+        test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
     };
     r.enable_gpu_picking().unwrap();
 
@@ -1661,7 +1661,7 @@ fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
             max_distance_px: 0.0,
         };
         let start = std::time::Instant::now();
-        let _ = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let _ = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
         let pick = start.elapsed();
         eprintln!(
             "stacked group of {members} series over {N} categories: export {draw:?}, pick {pick:?}"

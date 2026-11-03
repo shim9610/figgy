@@ -35,7 +35,6 @@
 //!   to resize it, or drag inside the area to move it (size preserved,
 //!   ticks and data follow).
 
-use pollster::FutureExt as _;
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
@@ -518,13 +517,11 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
 
         // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = match Renderer::for_window_async(
+        let mut renderer = match Renderer::for_window_blocking(
             Arc::clone(&window),
             (size.width, size.height),
             POOL_CAPACITY,
-        )
-        .block_on()
-        {
+        ) {
             Ok(renderer) => renderer,
             Err(e) => {
                 eprintln!("[init] {e}");
@@ -784,13 +781,10 @@ impl App {
             return;
         };
         for (i, panel) in self.panels.iter().enumerate() {
-            match renderer
-                .export_png(
-                    renderer::ExportSource::chart(&panel.chart, &panel.series),
-                    renderer::ExportOptions::panel(EXPORT_SCALE),
-                )
-                .block_on()
-            {
+            match renderer.export_png_blocking(
+                renderer::ExportSource::chart(&panel.chart, &panel.series),
+                renderer::ExportOptions::panel(EXPORT_SCALE),
+            ) {
                 Ok(bytes) => {
                     let path = format!("/tmp/figgy_winit_panel_{i}.png");
                     if let Err(e) = std::fs::write(&path, &bytes) {

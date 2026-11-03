@@ -8,7 +8,7 @@
 //! on through `Config::project_3d`, so a wrong axis, camera or depth order
 //! fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -46,7 +46,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         64 * 1024 * 1024,
     )
@@ -215,7 +215,7 @@ fn the_id_pick_answers_the_sample_under_the_cursor() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+            test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
         };
         let cell = |picked| match picked {
             Some(renderer::PickedData::MatrixCell {
@@ -252,7 +252,7 @@ fn the_id_pick_answers_the_sample_under_the_cursor() {
             display_scale: scale,
             max_distance_px: 0.0,
         };
-        let miss = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let miss = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
         assert_eq!(miss, None, "{scale}x");
     }
 }
@@ -374,7 +374,7 @@ fn contours_draw_and_pick_on_the_floor() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+    match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
         Some(renderer::PickedData::ContourLevel {
             series_id,
             level_index,
@@ -732,7 +732,7 @@ fn the_z_fit_spans_the_heights() {
 fn a_grid_past_four_million_quads_draws() {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         512 * 1024 * 1024,
     )
@@ -1018,7 +1018,7 @@ fn the_id_pick_answers_markers_and_segment_ends() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+            test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
         };
         let point = |picked: Option<renderer::PickedData>| match picked {
             Some(renderer::PickedData::Point {
@@ -1228,7 +1228,7 @@ fn the_screen_draws_the_marks() {
 fn a_million_row_trajectory_draws_and_picks() {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         256 * 1024 * 1024,
     )
@@ -1268,7 +1268,7 @@ fn a_million_row_trajectory_draws_and_picks() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let picked = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     // The nearest mark under the cursor answers: a row whose marker covers
     // the last row's pixel and lies no deeper than it (the end of the helix
     // is where its strands cross on screen).

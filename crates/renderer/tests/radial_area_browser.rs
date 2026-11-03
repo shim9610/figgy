@@ -14,5 +14,5 @@ async fn radial_area_select_resize_move_pick_and_export_on_webgpu() {
         .unwrap();
     let (device, queue) = renderer::gpu::request_device_async(&adapter).await.unwrap();
     assert!(device.as_webgpu().is_some());
-    radial_area::check(RendererDevice::new(device, queue)).await;
+    radial_area::check(RendererDevice::new(device, queue).expect("figgy poll thread")).await;
 }

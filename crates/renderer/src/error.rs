@@ -161,6 +161,20 @@ pub enum FiggyError {
     DeviceLost {
         reason: String,
     },
+
+    /// The OS could not start the native poll thread of a
+    /// [`RendererDevice`](crate::RendererDevice), which completes
+    /// asynchronous GPU waits. `RendererDevice::blocking`
+    /// builds a bundle without one.
+    PollThreadStartFailed {
+        reason: String,
+    },
+
+    /// An asynchronous GPU wait on a bundle built with
+    /// `RendererDevice::blocking`: it has
+    /// no poll thread to complete the wait. Use the `_blocking` call, or
+    /// build the bundle with [`RendererDevice::new`](crate::RendererDevice::new).
+    AsyncWaitUnavailable,
 }
 
 impl std::fmt::Display for FiggyError {
@@ -241,6 +255,13 @@ impl std::fmt::Display for FiggyError {
                 write!(f, "{resource}: GPU error: {reason}")
             }
             Self::DeviceLost { reason } => write!(f, "wgpu device lost: {reason}"),
+            Self::PollThreadStartFailed { reason } => {
+                write!(f, "could not start the GPU poll thread: {reason}")
+            }
+            Self::AsyncWaitUnavailable => write!(
+                f,
+                "asynchronous GPU wait on a blocking-only device bundle (no poll thread)"
+            ),
         }
     }
 }

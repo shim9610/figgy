@@ -254,6 +254,21 @@ identity mapping captured at submission. Later chart or pool mutations, and
 even dropping the renderer, cannot remap that ticket's eventual
 `source_id` / `series_id` result.
 
+GPU waits (#160). wgpu runs a map or submitted-work callback only inside a
+device poll or a submit. Every wait goes through `gpu_readback.rs`: a
+`Completion` pairs the callback with its result, and a ticket or export is
+split into its submit, its wait and a synchronous finish, so the awaited,
+blocking and checked (`try_resolve`) waits share every step but the wait.
+On native, `RendererDevice::new` starts one poll thread per bundle
+(`gpu_poller.rs`): it holds two counters and its park token, no lock, polls
+while a wait is registered and parks otherwise. Its owners are the bundle's
+health record, held by every clone, renderer and engine of the bundle, and
+the mark of every wait not yet settled; it exits once none is left and
+nothing is pending, and nobody joins it. The thread reads only whether the
+device is lost, never the uncaptured-error count, which stays the host
+call's to report. `tools/loom-poller` model-checks the protocol with loom;
+`RendererDevice::blocking` builds a bundle without the thread.
+
 The browser public surface follows the same boundary. The `<figgy-chart>`
 facade owns the shadow canvas, ready promise, rAF loop, ResizeObserver/DPR
 handling, pointer mapping, async-operation busy gate, and id register/unregister
@@ -472,7 +487,8 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     height adapts to the device's max buffer size, so readback never needs a
     whole-image buffer; the target must still fit the device texture limit)
         ↓
-    map_async (+ inline Wait poll on native, browser-yielding await on wasm)
+    map_async; the wait is the driver's: awaited (the bundle's poll thread
+    on native, the browser on wasm) or blocking (the caller polls)
         ↓
     premul→straight α conversion, padding rows removed (no channel swap —
     the target is RGBA already)
@@ -635,6 +651,18 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 직접 지정한 라벨 배치도 불변 자원이다. 같은 `ChartView`를 다시 작성하거나 참조 컬럼을 교체하거나 풀·출력 파이프라인을 재구성하면 기존 토큰은 무효가 된다. 호스트는 이 변경 전에 토큰으로 기록한 명령 버퍼를 제출해야 한다.
 
 상주 `add_column`은 업로드할 때만 `ColumnSource`를 빌린다. 이후에는 GPU 컬럼과 자동 범위 맞춤용 최소·최대·최소 양수 값만 보관한다. 원본 참조나 점별 CPU 도형 정보는 유지하지 않는다. 점선·스케치·은하수 선에 필요한 누적 경로 길이도 GPU 풀을 스캔해 계산한다. 비상주 경로에서는 소스 메타데이터와 제한된 GPU 작업 상태만 유지하며, 호스트가 원본을 다시 공급할 수 있어야 한다. 렌더러는 원본 전체의 CPU 복사본을 보관하지 않는다.
+
+GPU 결과 대기(#160). wgpu는 map이나 제출 작업 완료 콜백을 장치 poll이나 submit 안에서만
+실행한다. 모든 대기는 `gpu_readback.rs`를 거친다. `Completion`이 콜백과 결과를 묶고,
+티켓과 내보내기는 제출, 대기, 동기 마무리로 나뉜다. 그래서 비동기, 동기, 확인
+(`try_resolve`) 대기가 대기 단계만 빼고 모든 단계를 함께 쓴다. 네이티브에서
+`RendererDevice::new`는 장치 묶음마다 poll 스레드를 하나 띄운다(`gpu_poller.rs`). 이
+스레드는 잠금 없이 카운터 두 개와 park 토큰만 쓰고, 등록된 대기가 있으면 poll하고 없으면
+잠든다. 소유자는 묶음의 health 기록(묶음의 복제본, 렌더러, 엔진이 모두 가진다)과 아직
+끝나지 않은 대기의 표식이다. 소유자가 모두 사라지고 기다리는 작업도 없으면 스스로
+끝나며, 아무도 join하지 않는다. 스레드는 장치 유실 여부만 읽고 처리되지 않은 오류
+개수는 읽지 않는다. 그 오류는 호스트 호출이 보고한다. `tools/loom-poller`가 loom으로
+프로토콜을 검증한다. `RendererDevice::blocking`은 스레드 없는 묶음을 만든다.
 
 ### 메모리 계상과 회수
 

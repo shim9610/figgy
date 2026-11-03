@@ -49,7 +49,7 @@ async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
         .unwrap();
     let (device, queue) = renderer::gpu::request_device_async(&adapter).await.unwrap();
     assert!(device.as_webgpu().is_some());
-    let gpu = RendererDevice::new(device, queue);
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     let mut r = RadialRenderer::try_new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)
         .await
         .unwrap();
@@ -96,5 +96,5 @@ async fn radial_png_preserves_hover_progress_and_persistent_selection_on_webgpu(
         .unwrap();
     let (device, queue) = renderer::gpu::request_device_async(&adapter).await.unwrap();
     assert!(device.as_webgpu().is_some());
-    radial_export::check(RendererDevice::new(device, queue)).await;
+    radial_export::check(RendererDevice::new(device, queue).expect("figgy poll thread")).await;
 }

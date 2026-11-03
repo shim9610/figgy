@@ -442,7 +442,7 @@ impl LabApp {
         // read back below — 5 columns × 4 bytes per point, ~10% slack for
         // allocator alignment.
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             render_state.target_format,
             POOL_TARGET_BYTES,
         )

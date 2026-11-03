@@ -19,7 +19,7 @@ fn renderer() -> Renderer {
         (device, queue)
     });
     Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

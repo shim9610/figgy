@@ -454,15 +454,56 @@ impl RadialPickTicket {
     fn none() -> Self {
         Self { pending: None }
     }
-    /// The slice the GPU picked, or `None` where no sector is drawn.
-    pub async fn resolve(self) -> Result<Option<RadialTarget>, RadialError> {
-        let Some(pending) = self.pending else {
+    /// The slice the GPU picked, or `None` where no sector is drawn. The
+    /// bundle's poll thread completes the wait on native (see
+    /// [`RendererDevice::new`]).
+    pub async fn resolve(mut self) -> Result<Option<RadialTarget>, RadialError> {
+        if let Some(pending) = &mut self.pending {
+            pending
+                .readback
+                .wait()
+                .await
+                .map_err(radial_readback_error)?;
+        }
+        self.finish()
+    }
+
+    /// [`Self::resolve`], polling the device on this thread until the pick
+    /// completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn resolve_blocking(mut self) -> Result<Option<RadialTarget>, RadialError> {
+        if let Some(pending) = &mut self.pending {
+            pending
+                .readback
+                .wait_blocking()
+                .map_err(radial_readback_error)?;
+        }
+        self.finish()
+    }
+
+    /// The pick if it has completed, or the ticket back, without blocking.
+    pub fn try_resolve(
+        mut self,
+    ) -> Result<crate::TryResolve<Option<RadialTarget>, Self>, RadialError> {
+        if let Some(pending) = &mut self.pending
+            && !pending
+                .readback
+                .poll_ready()
+                .map_err(radial_readback_error)?
+        {
+            return Ok(crate::TryResolve::Pending(self));
+        }
+        self.finish().map(crate::TryResolve::Ready)
+    }
+
+    /// After a wait: the sector the result names.
+    fn finish(&mut self) -> Result<Option<RadialTarget>, RadialError> {
+        let Some(mut pending) = self.pending.take() else {
             return Ok(None);
         };
         let result = pending
             .readback
-            .read(|mapped| *bytemuck::from_bytes::<RadialPickResultGpu>(mapped))
-            .await
+            .finish(|mapped| *bytemuck::from_bytes::<RadialPickResultGpu>(mapped))
             .map_err(radial_readback_error)?;
         if result.hit == 0 {
             return Ok(None);
@@ -475,6 +516,28 @@ impl RadialPickTicket {
             .map(Some)
             .ok_or_else(|| RadialError::Gpu("radial pick returned no sector of the frame".into()))
     }
+}
+
+/// A radial export's submitted render: the target copied into the
+/// readback buffer, its map requested.
+struct RadialRgbaJob {
+    readback: GpuReadback,
+    size: (u32, u32),
+    stride: u64,
+    _target: TrackedTexture,
+    _buffer: TrackedBuffer,
+    #[cfg(target_arch = "wasm32")]
+    scopes: Option<crate::renderer::BrowserErrorScopes>,
+}
+
+/// A radial vector export's frame, bound for its one image render.
+struct RadialVectorFrame {
+    size: (u32, u32),
+    layout: layout::Layout,
+    bind_group: wgpu::BindGroup,
+    _labels: TrackedTexture,
+    _uniform: TrackedBuffer,
+    _sectors: TrackedBuffer,
 }
 
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
@@ -910,6 +973,40 @@ impl RadialRenderer {
         clear: crate::color::Color,
         out: &mut dyn crate::vector_export::VectorOut,
     ) -> Result<(), RadialError> {
+        let frame = self.vector_frame(chart, size, scale)?;
+        let image = self
+            .render_rgba(frame.size, clear, |pass| {
+                self.draw_vector_frame(pass, &frame)
+            })
+            .await?;
+        self.write_vector_rest(chart, size, scale, &frame, image, out)
+    }
+
+    /// [`Self::write_vector`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn write_vector_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        clear: crate::color::Color,
+        out: &mut dyn crate::vector_export::VectorOut,
+    ) -> Result<(), RadialError> {
+        let frame = self.vector_frame(chart, size, scale)?;
+        let image = self.render_rgba_blocking(frame.size, clear, |pass| {
+            self.draw_vector_frame(pass, &frame)
+        })?;
+        self.write_vector_rest(chart, size, scale, &frame, image, out)
+    }
+
+    /// The vector export's frame: laid out without labels, bound to a
+    /// zeroed label texture.
+    fn vector_frame(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<RadialVectorFrame, RadialError> {
         let (width, height) = self.frame_size(chart, size, scale)?;
         let count = chart.node_count();
         self.admit(
@@ -940,17 +1037,40 @@ impl RadialRenderer {
         )
         .map_err(radial_gpu_error)?;
         let labels = TrackedTexture::new(self.gpu.ledger(), GpuResourceKind::PanelTexture, labels);
-        let (_uniform, _sectors, bind_group) =
+        let (uniform, sectors, bind_group) =
             self.bind_frame(chart, &l, (width, height), &labels)?;
-        let image = self
-            .render_rgba((width, height), clear, |pass| {
-                pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
-                pass.set_scissor_rect(0, 0, width, height);
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            })
-            .await?;
+        Ok(RadialVectorFrame {
+            size: (width, height),
+            layout: l,
+            bind_group,
+            _labels: labels,
+            _uniform: uniform,
+            _sectors: sectors,
+        })
+    }
+
+    fn draw_vector_frame(&self, pass: &mut wgpu::RenderPass<'_>, frame: &RadialVectorFrame) {
+        let (width, height) = frame.size;
+        pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
+        pass.set_scissor_rect(0, 0, width, height);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &frame.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// After the frame image: write it, then the title, labels, leader
+    /// lines, split connectors and annotation overlay as vector content.
+    fn write_vector_rest(
+        &self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        frame: &RadialVectorFrame,
+        image: RasterImage,
+        out: &mut dyn crate::vector_export::VectorOut,
+    ) -> Result<(), RadialError> {
+        let (width, height) = frame.size;
+        let l = &frame.layout;
         let failed = |e: crate::FiggyError| RadialError::Gpu(e.to_string());
         out.image([0, 0], &image).map_err(failed)?;
         drop(image);
@@ -1137,6 +1257,35 @@ impl RadialRenderer {
         .await
     }
 
+    /// [`Self::export_rgba`], polling the device on this thread until the
+    /// readback completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_rgba_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<RasterImage, RadialError> {
+        let frame = self.prepare(chart, size, options.scale)?;
+        let annotations = self.prepare_annotations_for(&frame, chart, options.scale)?;
+        self.render_rgba_blocking(frame.size, options.clear, |pass| {
+            frame.draw(pass);
+            annotations.draw_overlay(pass);
+        })
+    }
+
+    /// [`Self::export_png`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_png_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<Vec<u8>, RadialError> {
+        let image = self.export_rgba_blocking(chart, size, options)?;
+        crate::encode_png(&image).map_err(radial_gpu_error)
+    }
+
     /// [`Self::export_rgba`], encoded as PNG bytes in memory.
     pub async fn export_png(
         &mut self,
@@ -1175,22 +1324,73 @@ impl RadialRenderer {
         .await;
         #[cfg(target_arch = "wasm32")]
         let result = self.render_rgba_inner(size, clear, draw).await;
-        // The export's submission and readback have completed and its
-        // transient target and readback buffer are dropped.
+        self.render_rgba_end(result)
+    }
+
+    /// [`Self::render_rgba`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_rgba_blocking(
+        &self,
+        size: (u32, u32),
+        clear: crate::color::Color,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<RasterImage, RadialError> {
+        self.gpu.health().check().map_err(radial_gpu_error)?;
+        let result = crate::renderer::native_export_scoped_blocking(
+            self.gpu.device(),
+            || {
+                let mut job = self.render_rgba_submit(size, clear, draw)?;
+                job.readback
+                    .wait_blocking()
+                    .map_err(radial_readback_error)?;
+                self.render_rgba_finish(job)
+            },
+            radial_gpu_error,
+        );
+        self.render_rgba_end(result)
+    }
+
+    /// The export's submission and readback have completed and its
+    /// transient target and readback buffer are dropped: end the frame, and
+    /// fail the export on a GPU error that reached the uncaptured-error
+    /// handler meanwhile (a browser scope resolves asynchronously).
+    fn render_rgba_end(
+        &self,
+        result: Result<RasterImage, RadialError>,
+    ) -> Result<RasterImage, RadialError> {
         self.end_frame();
         let image = result?;
-        // A GPU error that reached the uncaptured-error handler during the
-        // export (a browser scope resolves asynchronously) fails it too.
         self.gpu.health().check().map_err(radial_gpu_error)?;
         Ok(image)
     }
 
     async fn render_rgba_inner(
         &self,
-        (width, height): (u32, u32),
+        size: (u32, u32),
         clear: crate::color::Color,
         draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
     ) -> Result<RasterImage, RadialError> {
+        let mut job = self.render_rgba_submit(size, clear, draw)?;
+        #[cfg(target_arch = "wasm32")]
+        if let Some(scopes) = job.scopes.take() {
+            scopes
+                .request_all()
+                .finish()
+                .await
+                .map_err(radial_gpu_error)?;
+        }
+        job.readback.wait().await.map_err(radial_readback_error)?;
+        self.render_rgba_finish(job)
+    }
+
+    /// The draw half of a radial export: render `draw` into a cleared
+    /// target, copy it into the readback buffer and request the map.
+    fn render_rgba_submit(
+        &self,
+        (width, height): (u32, u32),
+        clear: crate::color::Color,
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<RadialRgbaJob, RadialError> {
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
         let bytes = stride * u64::from(height);
         if bytes > self.gpu.device().limits().max_buffer_size {
@@ -1280,21 +1480,31 @@ impl RadialRenderer {
         );
         self.gpu.queue().submit([encoder.finish()]);
         let readback = GpuReadback::map(device, self.gpu.health(), &buffer, None);
-        #[cfg(target_arch = "wasm32")]
-        browser_scopes
-            .request_all()
-            .finish()
-            .await
-            .map_err(radial_gpu_error)?;
-        let mut rgba = readback
-            .read(|data| {
+        Ok(RadialRgbaJob {
+            readback,
+            size: (width, height),
+            stride,
+            _target: target,
+            _buffer: buffer,
+            #[cfg(target_arch = "wasm32")]
+            scopes: Some(browser_scopes),
+        })
+    }
+
+    /// After the job's wait: read the target back as straight-alpha RGBA8
+    /// (linear, whatever the format's encoding).
+    fn render_rgba_finish(&self, mut job: RadialRgbaJob) -> Result<RasterImage, RadialError> {
+        let (width, height) = job.size;
+        let stride = job.stride;
+        let mut rgba = job
+            .readback
+            .finish(|data| {
                 let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
                 for row in data.chunks_exact(stride as usize) {
                     rgba.extend_from_slice(&row[..width as usize * 4]);
                 }
                 rgba
             })
-            .await
             .map_err(radial_readback_error)?;
         for pixel in rgba.chunks_exact_mut(4) {
             if matches!(
@@ -1361,6 +1571,42 @@ impl RadialRenderer {
     ) -> Result<Vec<u8>, RadialError> {
         self.export_vector::<crate::vector_export::PdfOut>(chart, size, options)
             .await
+    }
+
+    /// [`Self::export_svg`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_svg_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<String, RadialError> {
+        self.export_vector_blocking::<crate::vector_export::SvgOut>(chart, size, options)
+    }
+
+    /// [`Self::export_pdf`], polling the device on this thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_pdf_blocking(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<Vec<u8>, RadialError> {
+        self.export_vector_blocking::<crate::vector_export::PdfOut>(chart, size, options)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn export_vector_blocking<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        options: crate::ExportOptions,
+    ) -> Result<F::Output, RadialError> {
+        let physical = self.frame_size(chart, size, options.scale)?;
+        let mut out = F::create(physical, crate::vector_export::page_points(size));
+        self.write_vector_blocking(chart, size, options.scale, options.clear, &mut out)?;
+        out.finish_file()
+            .map_err(|e| RadialError::Gpu(e.to_string()))
     }
 
     async fn export_vector<F: crate::vector_export::VectorFile>(

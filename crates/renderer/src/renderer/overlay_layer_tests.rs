@@ -4,9 +4,9 @@
 //! given the final state, never the implementation's own invalidation rule.
 use super::*;
 use crate::layout::{ChartArea, Rect};
+use crate::test_gpu::BlockOn as _;
 use crate::text::RichText;
 use crate::{HitMap, LayerRef, OverlayLayer, WarningAxis};
-use pollster::FutureExt as _;
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -31,7 +31,7 @@ fn columns() -> [(&'static str, crate::Column<f32>); 4] {
 fn renderer() -> Renderer {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         1,
@@ -858,7 +858,7 @@ fn offset_pick(
         display_scale: 1.0,
         max_distance_px,
     };
-    pollster::block_on(r.pick_chart(id, request).unwrap().resolve()).unwrap()
+    crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve()).unwrap()
 }
 
 // The members draw exactly where a host-shifted copy draws, at 1x and 2x,

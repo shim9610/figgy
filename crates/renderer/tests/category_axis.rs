@@ -10,7 +10,7 @@
 //! it picks, highlights and anchors annotations at the category positions.
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -146,7 +146,7 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue)
+    RendererDevice::new(device, queue).expect("figgy poll thread")
 }
 
 fn upload(r: &mut Renderer, id: &str, data: Vec<f64>) {
@@ -265,7 +265,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
             display_scale: 1.0,
             max_distance_px: 3.0,
         };
-        let picked = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        let picked = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
             .unwrap()
             .expect("a marker at its category");
         assert_eq!((picked.series_id.as_str(), picked.point_index), ("m", i));

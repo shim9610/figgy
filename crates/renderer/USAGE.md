@@ -47,9 +47,10 @@ model types without the renderer depends on
 `model = { package = "figgy-model", version = "0.12.1" }`.
 
 For a local checkout, replace `version` with a `path` relative to the consuming
-application's `Cargo.toml`. A standalone program that calls `pollster::block_on`
-(as [examples/line.rs](examples/line.rs) does) must also declare `pollster = "1.0"`.
-Crate examples already have access to this dependency through the renderer manifest.
+application's `Cargo.toml`. A native program needs no async executor: every call
+that waits for the GPU has a `_blocking` form (see
+[GPU results](#gpu-results-awaited-blocking-or-checked)), as
+[examples/line.rs](examples/line.rs) uses.
 
 ### Host crates
 
@@ -135,11 +136,11 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // One-line setup — figgy owns instance/adapter/device/queue/surface/swap chain.
-let mut renderer = pollster::block_on(Renderer::for_window_async(
+let mut renderer = Renderer::for_window_blocking(
     Arc::clone(&window),
     (size.width, size.height),
     16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
-)).unwrap();
+).unwrap();
 
 // renderer.add_column takes `&dyn ColumnSource`.
 // Implement the trait on your own type (see `ColumnSource` section below) — Vec, ndarray,
@@ -400,6 +401,42 @@ Full version: [examples/egui_embed.rs](examples/egui_embed.rs). That example
 does not call `end_gpu_frame`; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
 is a host that calls it once after `queue.submit`.
 
+### GPU results: awaited, blocking or checked
+
+A pick, an extent, a radial pick, an export and `wait_submitted_work` read a
+GPU result back. Each can be waited for in three ways, with the same result
+(#160): preparing and submitting the work, and decoding its result, are
+written once, and only the wait differs.
+
+| Wait | Calls | Where it waits |
+|---|---|---|
+| Awaited | `ticket.resolve().await`, `renderer.export_png(..).await`, `wait_submitted_work().await` | Native: the device bundle's poll thread polls the device and the future is `Pending` until the work completes. Browser: the browser polls the device. |
+| Blocking (native) | `ticket.resolve_blocking()`, `export_png_blocking(..)`, `wait_submitted_work_blocking()` | The calling thread polls the device until the work completes. |
+| Checked | `ticket.try_resolve()` | Never waits: `TryResolve::Ready(result)` once the work has completed, `TryResolve::Pending(ticket)` before, to check again on a later frame. |
+
+`RendererDevice::new` starts one poll thread per device bundle on native,
+shared by the bundle's clones, its renderers and every pending ticket. The
+thread parks while nothing is pending and exits once all of them are gone. A
+host that makes blocking calls only builds the bundle with
+`RendererDevice::blocking`, which starts no thread; an awaited wait on it
+fails with `FiggyError::AsyncWaitUnavailable` instead of never completing.
+A ticket on a streamed series resolves by `resolve` only
+(`GpuPickError::Streamed`, rule 8).
+
+In an immediate-mode UI a hover pick fits `try_resolve`: submit the pick on
+a pointer move, keep the ticket next to the panel, and check it each frame.
+No thread blocks and the ticket needs no lock:
+
+```rust
+// Sketch: `pending: Option<GpuPickTicket>` lives in the panel's state.
+if let Some(ticket) = pending.take() {
+    match ticket.try_resolve()? {
+        renderer::TryResolve::Ready(hit) => hover = hit,
+        renderer::TryResolve::Pending(ticket) => pending = Some(ticket),
+    }
+}
+```
+
 ### iced integration status
 
 The retained [iced integration source](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)
@@ -575,8 +612,9 @@ The SVG's `viewBox` is in physical pixels and its `width` / `height`, like
 the PDF page, are the logical size in points (1 px = 0.75 pt), so a 2x export
 has the same page size with twice the image resolution. `scale` is clamped
 as for the PNG export, and the `_with_clear_async` variants paint the clear
-colour as a rectangle under everything. Every export is async; a native host
-blocks on it with an executor such as `pollster::block_on`.
+colour as a rectangle under everything. Every export is async, and a native
+host can also call its `_blocking` twin (see
+[GPU results](#gpu-results-awaited-blocking-or-checked)).
 `WindowedRenderer` has the same four methods. A series with a streamed
 source is rejected with `FiggyError::ColumnNotResident`, as by the PNG
 export.
@@ -624,9 +662,9 @@ wgpu     = "30"
 크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 의존성으로 지정한다.
 
 로컬 체크아웃을 쓰려면 `version` 대신 `path = "../figgy/crates/renderer"`처럼 애플리케이션의
-`Cargo.toml` 기준 경로를 지정한다. [examples/line.rs](examples/line.rs)처럼
-`pollster::block_on`을 직접 호출하는 독립 프로그램은 `pollster = "1.0"`도 의존성에 추가한다.
-저장소의 예제는 렌더러 manifest를 통해 이 의존성을 이미 쓸 수 있다.
+`Cargo.toml` 기준 경로를 지정한다. 네이티브 프로그램에는 비동기 실행기가 필요 없다. GPU를
+기다리는 호출에는 모두 `_blocking` 형태가 있다([GPU 결과](#gpu-결과-비동기-동기-확인)).
+[examples/line.rs](examples/line.rs)도 이 형태를 쓴다.
 
 ### 호스트 크레이트
 
@@ -704,11 +742,11 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // 한 줄로 초기화한다. instance·adapter·device·queue·surface·swap chain은 모두 figgy가 소유한다.
-let mut renderer = pollster::block_on(Renderer::for_window_async(
+let mut renderer = Renderer::for_window_blocking(
     Arc::clone(&window),
     (size.width, size.height),
     16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
-)).unwrap();
+).unwrap();
 
 // renderer.add_column은 `&dyn ColumnSource`를 받는다.
 // 사용하는 데이터 타입에 트레이트를 구현하면(아래 `ColumnSource` 절 참고) Vec, ndarray,
@@ -907,6 +945,39 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
 
+### GPU 결과: 비동기, 동기, 확인
+
+픽, extent, 원형 차트 픽, 내보내기와 `wait_submitted_work`는 GPU 결과를 읽어 온다.
+세 가지 방법으로 기다릴 수 있고 결과는 같다(#160). 작업 준비와 제출, 결과 해석은 한
+벌이고 기다리는 방법만 다르다.
+
+| 대기 | 호출 | 기다리는 곳 |
+|---|---|---|
+| 비동기 | `ticket.resolve().await`, `renderer.export_png(..).await`, `wait_submitted_work().await` | 네이티브: 장치 묶음의 poll 스레드가 장치를 처리하고, future는 작업이 끝날 때까지 `Pending`을 돌려준다. 브라우저: 브라우저가 장치를 처리한다. |
+| 동기(네이티브) | `ticket.resolve_blocking()`, `export_png_blocking(..)`, `wait_submitted_work_blocking()` | 호출한 스레드가 작업이 끝날 때까지 장치를 처리한다. |
+| 확인 | `ticket.try_resolve()` | 기다리지 않는다. 작업이 끝났으면 `TryResolve::Ready(결과)`, 아니면 `TryResolve::Pending(티켓)`을 돌려주므로 다음 프레임에 다시 확인한다. |
+
+네이티브에서 `RendererDevice::new`는 장치 묶음마다 poll 스레드를 하나 띄운다. 묶음의
+복제본, 묶음으로 만든 렌더러, 기다리는 티켓이 이 스레드를 함께 소유한다. 기다리는 작업이
+없으면 스레드는 잠들고, 소유자가 모두 사라지면 끝난다. 동기 함수만 쓰는 호스트는
+`RendererDevice::blocking`으로 스레드 없는 묶음을 만든다. 이 묶음에서 비동기 대기를
+부르면 끝나지 않는 대신 `FiggyError::AsyncWaitUnavailable`을 돌려준다. 스트리밍
+시리즈의 티켓은 `resolve`로만 읽는다(`GpuPickError::Streamed`, 규칙 8).
+
+즉시 모드 UI의 호버 픽에는 `try_resolve`가 맞는다. 포인터가 움직일 때 픽을 제출하고,
+티켓을 패널 상태에 두었다가 매 프레임 확인한다. 막히는 스레드도 없고 티켓에 잠금도
+필요 없다.
+
+```rust
+// 개요: `pending: Option<GpuPickTicket>`은 패널 상태에 둔다.
+if let Some(ticket) = pending.take() {
+    match ticket.try_resolve()? {
+        renderer::TryResolve::Ready(hit) => hover = hit,
+        renderer::TryResolve::Pending(ticket) => pending = Some(ticket),
+    }
+}
+```
+
 ### iced 통합 상태
 
 [보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
@@ -1038,7 +1109,7 @@ std::fs::write("/tmp/out.pdf", pdf)?;
 장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
 데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
 
-SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `pollster::block_on` 같은 실행기로 기다린다. `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
+SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `_blocking` 함수도 쓸 수 있다([GPU 결과](#gpu-결과-비동기-동기-확인)). `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
 
 원형 차트는 `RadialRenderer::export_svg(&chart, size, scale)`와 `export_pdf`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 

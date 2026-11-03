@@ -85,6 +85,9 @@ pub enum GpuPickError {
     Internal(&'static str),
     /// The GPU reported an error during a pick.
     Gpu(String),
+    /// A blocking or nonblocking resolve of a pick on a streamed series:
+    /// streaming keeps its asynchronous `resolve` only (rule 8).
+    Streamed,
 }
 
 impl GpuPickError {
@@ -114,6 +117,10 @@ impl fmt::Display for GpuPickError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PickerDisabled => write!(f, "GPU picking is not enabled for this renderer"),
+            Self::Streamed => write!(
+                f,
+                "a streamed series' pick resolves asynchronously only (resolve)"
+            ),
             Self::UnknownChart(id) => write!(f, "unknown GPU pick chart id: {id:?}"),
             Self::DeviceLimit {
                 resource,

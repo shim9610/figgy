@@ -23,7 +23,6 @@ Add these dependencies to your application's `Cargo.toml`:
 [dependencies]
 renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
-pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
@@ -40,8 +39,11 @@ The crate root page of the API documentation shows the example after this
 README. From a source checkout, run
 `cargo run --locked -p figgy-renderer --example line -- line.png`.
 
-The application needs its own `wgpu` and `pollster` dependencies for this example.
-Hosts with an async executor can await export directly instead of using pollster.
+The application needs its own `wgpu` dependency for this example and no async
+executor: it requests the adapter and device with `gpu::request_adapter_blocking`
+and `gpu::request_device_blocking` and exports with `export_rgba_blocking`. A host
+with an async executor awaits the `_async` requests and `export_rgba` instead,
+which the device bundle's poll thread completes.
 Hosts that already own a matching wgpu 30 device/queue can share them through
 `RendererDevice`. They do not need a second device or a particular GUI toolkit.
 

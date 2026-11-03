@@ -227,7 +227,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         2 * 1024 * 1024,
     )

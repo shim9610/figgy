@@ -9,7 +9,7 @@
 //! matches a predicate. Expected positions are computed through the chart's
 //! own data area and axis range, the same mapping the GPU transform uses.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -43,7 +43,7 @@ fn shared_device() -> (wgpu::Device, wgpu::Queue) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -1415,7 +1415,7 @@ fn offset_lines_report_unshifted_values() {
             display_scale: 1.0,
             max_distance_px: 2.0,
         };
-        let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
             .unwrap()
             .expect("the shifted point picks");
         assert_eq!((hit.series_id.as_str(), hit.point_index), ("high", index));
@@ -1432,7 +1432,7 @@ fn offset_lines_report_unshifted_values() {
             ],
             ..request
         };
-        let low = pollster::block_on(r.pick_chart(id, unshifted).unwrap().resolve())
+        let low = test_gpu::block_on(r.pick_chart(id, unshifted).unwrap().resolve())
             .unwrap()
             .expect("the first member is unshifted");
         assert_eq!((low.series_id.as_str(), low.point_index), ("low", index));
@@ -1506,7 +1506,7 @@ fn forty_offset_members_draw_and_pick() {
             display_scale: 1.0,
             max_distance_px: 2.0,
         };
-        let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
             .unwrap()
             .expect("the shifted member picks");
         assert_eq!(

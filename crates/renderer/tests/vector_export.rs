@@ -17,7 +17,7 @@
 //!   rejection, the sketch and Milkyway styles and the radial chart.
 #![cfg(not(target_arch = "wasm32"))]
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/pdf_structure.rs"]
 mod pdf_structure;
 #[path = "support/playground_scenes.rs"]
@@ -55,7 +55,7 @@ const TOLERANCE: f32 = 0.01;
 
 fn gpu() -> RendererDevice {
     let (device, queue) = test_gpu::device();
-    RendererDevice::new(device, queue)
+    RendererDevice::new(device, queue).expect("figgy poll thread")
 }
 
 fn renderer(gpu: &RendererDevice) -> Renderer {
@@ -585,7 +585,7 @@ fn the_clear_colour_is_a_background_rectangle() {
         renderer::ExportSource::chart(&chart, &scene.series),
         renderer::ExportOptions::document(1.0).with_clear(clear),
     );
-    let svg = pollster::block_on(svg).unwrap();
+    let svg = test_gpu::block_on(svg).unwrap();
     assert!(
         svg.contains("<path fill=\"#1a334d\" d=\"M0 0L"),
         "the background's colour"
@@ -602,7 +602,7 @@ fn the_clear_colour_is_a_background_rectangle() {
         ReadPart::Part(renderer::DrawnPart::Rect(full), None)
     );
     assert_eq!(&cleared.parts[1..], &plain.parts[..]);
-    let pdf = pollster::block_on(r.export_pdf(
+    let pdf = test_gpu::block_on(r.export_pdf(
         renderer::ExportSource::chart(&chart, &scene.series),
         renderer::ExportOptions::document(1.0).with_clear(clear),
     ))

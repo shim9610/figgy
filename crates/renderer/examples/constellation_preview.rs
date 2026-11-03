@@ -1,13 +1,12 @@
 //! README Constellation preview: stars at sparse source points, joined by lines.
 //! cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png
 //! Constellation uses ScatterLine; Milkyway uses Line in its separate preview.
-use pollster::FutureExt as _;
 use renderer::config::{ConstellationOptions, DrawStyle, LegendCorner, LegendEntryKind};
 use renderer::data::Column;
 use renderer::data_config::{
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape,
 };
-use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
+use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
@@ -27,11 +26,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(parent)?;
     }
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
+    let (device, queue) = request_device_blocking(&adapter)?;
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8 * 1024 * 1024,
     )?;
@@ -137,14 +136,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }
-    let img = pollster::block_on(r.export_rgba(
+    let img = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0).with_clear(bg),
-    ))?;
-    let empty = pollster::block_on(r.export_rgba(
+    )?;
+    let empty = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &[]),
         renderer::ExportOptions::panel(1.0).with_clear(bg),
-    ))?;
+    )?;
     let changed = img
         .rgba
         .chunks_exact(4)

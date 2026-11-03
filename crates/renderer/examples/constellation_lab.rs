@@ -77,8 +77,12 @@ fn build_state(
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
 ) -> Result<FiggyState, String> {
-    let mut renderer = Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY)
-        .map_err(|e| format!("Renderer init failed: {e}"))?;
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        format,
+        POOL_CAPACITY,
+    )
+    .map_err(|e| format!("Renderer init failed: {e}"))?;
 
     // Sparse constellation data: the intended use case is 5-10 source points,
     // not a densely sampled curve.

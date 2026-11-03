@@ -282,10 +282,9 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::Duration;
 
-    use pollster::FutureExt as _;
     use renderer::data::COLUMN_VALUE_BYTES;
     use renderer::data_render::column_pool::ALIGN;
-    use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
+    use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
     use renderer::{AllocError, ColumnHandle, ColumnPool};
     use wgpu::{BufferDescriptor, BufferUsages};
 
@@ -294,8 +293,8 @@ mod tests {
         DEVICE
             .get_or_init(|| {
                 let instance = create_instance();
-                let adapter = request_adapter_async(&instance).block_on().ok()?;
-                let (device, queue) = request_device_async(&adapter).block_on().ok()?;
+                let adapter = request_adapter_blocking(&instance).ok()?;
+                let (device, queue) = request_device_blocking(&adapter).ok()?;
                 Some((device, queue))
             })
             .as_ref()

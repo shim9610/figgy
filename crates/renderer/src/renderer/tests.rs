@@ -2,7 +2,7 @@ use super::*;
 
 /// The column ids the replacement tests upload, the browser demo's.
 const DEMO_COLUMN_IDS: [&str; 4] = ["demo_x", "demo_sin", "demo_t", "demo_rc"];
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 
 /// Wait until every retired GPU charge of `renderer` has completed. A
 /// completion callback can run on another test's polling thread on the
@@ -110,7 +110,7 @@ fn state_test_renderer_with_capacity(pool_capacity: u64) -> Option<Renderer> {
     let (device, queue) = crate::data_render::shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device.clone(), queue.clone()),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_capacity,
         )
@@ -1010,7 +1010,7 @@ fn typed_gpu_pick_returns_histogram_bin_without_cpu_bar_bounds() {
         .register_chart(config.clone(), vec![series])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
-    let picked = pollster::block_on(
+    let picked = crate::test_gpu::block_on(
         renderer
             .pick_chart_data(chart, typed_pick_request(&config, position))
             .unwrap()
@@ -1074,7 +1074,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
     renderer.enable_gpu_picking().unwrap();
 
     // Raw bin 1 spans x=1..2, but its overridden bar spans x=1.4..1.6.
-    let outside = pollster::block_on(
+    let outside = crate::test_gpu::block_on(
         renderer
             .pick_chart_data(
                 chart,
@@ -1089,7 +1089,7 @@ fn typed_gpu_pick_uses_the_overridden_histogram_width() {
         "raw bin area outside the narrow bar was picked"
     );
 
-    let inside = pollster::block_on(
+    let inside = crate::test_gpu::block_on(
         renderer
             .pick_chart_data(
                 chart,
@@ -1148,7 +1148,7 @@ fn typed_gpu_pick_returns_canonical_heatmap_cell_indices() {
         .register_chart(config.clone(), vec![series])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
-    let picked = pollster::block_on(
+    let picked = crate::test_gpu::block_on(
         renderer
             .pick_chart_data(chart, typed_pick_request(&config, position))
             .unwrap()
@@ -1222,7 +1222,7 @@ fn typed_gpu_pick_prefers_heatmap_contour_level_over_containing_cell() {
         .register_chart(config.clone(), vec![series])
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
-    let picked = pollster::block_on(
+    let picked = crate::test_gpu::block_on(
         renderer
             .pick_chart_data(chart, typed_pick_request(&config, position))
             .unwrap()
@@ -1768,7 +1768,9 @@ fn picker_ticket_resolves_after_chart_registry_pool_and_renderer_drop() {
     renderer.remove_chart(chart).unwrap();
     drop(renderer);
 
-    let picked = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let picked = crate::test_gpu::block_on(ticket.resolve())
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.source_id.as_deref(), Some("source"));
     assert_eq!(picked.series_id, "point");
     assert_eq!(picked.point_index, 0);
@@ -3047,8 +3049,8 @@ fn renderer_field_fit_resolves_the_same_sample_endpoints_as_contour_draw() {
     };
     matrix.grid_layout = crate::data_config::GridLayout::Edges;
 
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
-    let extent = pollster::block_on(
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    let extent = crate::test_gpu::block_on(
         renderer
             .begin_series_fit_extent(&series)
             .unwrap()
@@ -4744,7 +4746,7 @@ fn renderer_begins_errorbar_extent_from_current_column_ids() {
         return;
     };
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -4758,7 +4760,7 @@ fn renderer_begins_errorbar_extent_from_current_column_ids() {
     renderer
         .add_column("fit-upper", &col_f64(vec![1.0, 5.0]))
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     match renderer.begin_errorbar_extent("fit-value", "missing", "fit-upper") {
         Err(crate::gpu_extent::GpuExtentError::UnknownColumn { role, id }) => {
@@ -4771,7 +4773,9 @@ fn renderer_begins_errorbar_extent_from_current_column_ids() {
     let ticket = renderer
         .begin_errorbar_extent("fit-value", "fit-lower", "fit-upper")
         .unwrap();
-    let extent = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let extent = crate::test_gpu::block_on(ticket.resolve())
+        .unwrap()
+        .unwrap();
     assert_eq!(extent.min, -1.0);
     assert_eq!(extent.max, 15.0);
     assert_eq!(extent.min_positive, Some(1.0));
@@ -4783,7 +4787,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
         return;
     };
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -4794,7 +4798,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
     renderer
         .add_column("series-fit-y", &col_f64(vec![10.0, 20.0]))
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
     let ids = crate::gpu_extent::GpuSeriesExtentColumnIds {
         x: "series-fit-x",
         y: "series-fit-y",
@@ -4832,11 +4836,11 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
             .begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::Points, ids)
             .unwrap()
     };
-    let provisional = pollster::block_on(rollback_ticket.resolve())
+    let provisional = crate::test_gpu::block_on(rollback_ticket.resolve())
         .unwrap()
         .unwrap();
     assert_eq!((provisional.x.min, provisional.x.max), (100.0, 200.0));
-    let rolled_back = pollster::block_on(
+    let rolled_back = crate::test_gpu::block_on(
         renderer
             .begin_series_extent(crate::gpu_extent::GpuSeriesExtentMode::Points, ids)
             .unwrap()
@@ -4856,7 +4860,7 @@ fn renderer_series_extent_uses_role_checked_provisional_mappings() {
         upsert.commit();
         ticket
     };
-    let committed = pollster::block_on(committed_ticket.resolve())
+    let committed = crate::test_gpu::block_on(committed_ticket.resolve())
         .unwrap()
         .unwrap();
     assert_eq!((committed.x.min, committed.x.max), (300.0, 400.0));
@@ -4902,7 +4906,7 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
     assert!(!renderer.errorbar_extent_engine_ready());
-    pollster::block_on(renderer.wait_submitted_work()).unwrap();
+    crate::test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 #[test]
@@ -4911,7 +4915,8 @@ fn full_prewarm_materializes_every_deferred_pipeline() {
         return;
     };
     let mut events = Vec::new();
-    pollster::block_on(renderer.prewarm_all_observed(&mut |event| events.push(event))).unwrap();
+    crate::test_gpu::block_on(renderer.prewarm_all_observed(&mut |event| events.push(event)))
+        .unwrap();
 
     assert!(renderer.pipelines.line.is_some());
     assert!(renderer.pipelines.scatter.is_some());
@@ -5341,7 +5346,7 @@ fn point_constellation_scatterline_exports() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5415,7 +5420,7 @@ fn all_scatter_shapes_export_visible_markers() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5519,7 +5524,7 @@ fn xy_errorbar_does_not_require_zero_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5569,7 +5574,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -5639,7 +5644,7 @@ fn errorbar_style_index_colors_points_independently() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7345,7 +7350,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7395,7 +7400,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
     assert!(r.pool().slot("__zero").is_none());
 
     let mut export_renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7541,7 +7546,7 @@ fn two_line_series_both_render() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7630,7 +7635,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7730,7 +7735,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -7845,7 +7850,7 @@ fn space_background_rebakes_only_on_key_change() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7908,7 +7913,7 @@ fn milkyway_export_zero_dust_zero_nebula_has_plain_background() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -7980,7 +7985,7 @@ fn gpu_arc_prefix_matches_cpu_reference() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -8109,7 +8114,7 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -8243,7 +8248,7 @@ fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -8391,7 +8396,7 @@ fn arc_prefix_cache_never_exceeds_limit_on_new_series_churn() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -8444,7 +8449,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -9167,9 +9172,10 @@ fn automatic_contour_label_indirect_count_is_exactly_1024() {
     }];
 
     let prepared = renderer.prepare(&items).unwrap();
-    let count = pollster::block_on(renderer.contour_label_instance_count_for_test(&prepared, 0, 0))
-        .unwrap()
-        .expect("automatic contour label snapshot");
+    let count =
+        crate::test_gpu::block_on(renderer.contour_label_instance_count_for_test(&prepared, 0, 0))
+            .unwrap()
+            .expect("automatic contour label snapshot");
     assert_eq!(count, 1024, "native indirect label count must be exact");
 }
 
@@ -9456,7 +9462,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
     use crate::streaming_upload::{ChunkUploadBudget, record_chunk};
     let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -9722,7 +9728,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
     let (device, queue) = crate::data_render::shared_device()
         .expect("registered preparation regression requires a GPU adapter");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )
@@ -9896,7 +9902,7 @@ fn registered_prepare_preflight_failure_preserves_live_token() {
     let (device, queue) = crate::data_render::shared_device()
         .expect("registered preparation regression requires a GPU adapter");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )
@@ -9965,7 +9971,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -10040,7 +10046,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
     chart.set_x_range(0.0, 1.0);
 
     let mut foreign = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -10188,7 +10194,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -10341,7 +10347,7 @@ fn log_auto_fit_clamps_to_smallest_positive_uploaded_value() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -10380,7 +10386,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10507,7 +10513,7 @@ fn hide_axis_lines(config: &mut crate::Config) {
 fn precise_zoom_keeps_connections_to_distant_endpoints() {
     let (device, queue) = crate::data_render::shared_device().expect("GPU required");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -10609,7 +10615,7 @@ fn dense_line_has_no_gaps() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10720,7 +10726,7 @@ fn solid_line_exports_analytic_aa_fringe() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10806,7 +10812,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -10968,7 +10974,7 @@ fn dashed_curve_runs_match_pattern() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -11123,7 +11129,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
         return;
     };
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -11222,7 +11228,7 @@ fn renderer_init_and_add_column() {
     };
 
     let mut r = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue.clone()),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         1024 * 1024,
     )
@@ -11465,7 +11471,7 @@ fn pool_cleanup_releases_capacity_after_delete_and_keeps_survivor() {
     let old_handle = renderer.handle_for("keep").unwrap();
     let before = renderer.gpu_memory_usage().total_bytes();
 
-    pollster::block_on(renderer.release_unused_pool_memory(16 * 1024)).unwrap();
+    crate::test_gpu::block_on(renderer.release_unused_pool_memory(16 * 1024)).unwrap();
 
     assert_eq!(renderer.pool().capacity(), 16 * 1024);
     assert_eq!(renderer.pool().backup_bytes(), 0);
@@ -11496,7 +11502,7 @@ fn pool_cleanup_rebinds_active_picker_to_shrunk_primary() {
     renderer.prepare_gpu_picking_for_chart(chart).unwrap();
     let picker_generation = active_picker(&renderer).engine.registry_generation();
 
-    pollster::block_on(renderer.release_unused_pool_memory(16 * 1024)).unwrap();
+    crate::test_gpu::block_on(renderer.release_unused_pool_memory(16 * 1024)).unwrap();
 
     assert_eq!(renderer.pool().capacity(), 16 * 1024);
     assert!(active_picker(&renderer).engine.registry_generation() > picker_generation);
@@ -11520,7 +11526,7 @@ fn pool_cleanup_picker_failure_preserves_original_pool() {
     let handle = renderer.handle_for("x").unwrap();
     active_picker(&renderer).engine.fail_next_registry_prepare();
 
-    assert!(pollster::block_on(renderer.release_unused_pool_memory(16 * 1024)).is_err());
+    assert!(crate::test_gpu::block_on(renderer.release_unused_pool_memory(16 * 1024)).is_err());
 
     assert_eq!(renderer.pool().capacity(), 1024 * 1024);
     assert!(renderer.is_valid_handle(&handle));
@@ -14652,7 +14658,7 @@ fn chart_view_size_mismatch_is_an_error() {
 fn waits_on_a_destroyed_device_return_device_lost() {
     let (device, queue) = crate::test_gpu::device();
     let renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue),
+        RendererDevice::new(device.clone(), queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )
@@ -14669,7 +14675,7 @@ fn waits_on_a_destroyed_device_return_device_lost() {
         matches!(result, Err(FiggyError::DeviceLost { .. })),
         "polling a destroyed device returned {result:?}"
     );
-    let result = pollster::block_on(renderer.wait_submitted_work());
+    let result = crate::test_gpu::block_on(renderer.wait_submitted_work());
     assert!(
         matches!(result, Err(FiggyError::DeviceLost { .. })),
         "waiting for work on a destroyed device returned {result:?}"
@@ -14682,7 +14688,7 @@ fn waits_on_a_destroyed_device_return_device_lost() {
 fn a_call_returns_the_gpu_error_it_raised() {
     let (device, queue) = crate::test_gpu::device();
     let renderer = Renderer::try_new(
-        RendererDevice::new(device.clone(), queue),
+        RendererDevice::new(device.clone(), queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         1024 * 1024,
     )
@@ -14743,7 +14749,9 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         "health.check()",
         "self.draw_prepared(",
         "self.first_frame_ready(",
+        "self.first_frame_ready_blocking(",
         "Renderer::for_window_async_observed(",
+        "Renderer::for_window_blocking_observed(",
         // `Renderer` calls that run the check themselves (#160).
         "self.inner.pick_chart(",
         "self.inner.pick_chart_data(",
@@ -15399,7 +15407,7 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
     let pick = |renderer: &mut Renderer, x: f64| {
         let mut request = typed_pick_request(&config, typed_pick_position(&config, x, 4.0));
         request.max_distance_px = 2.0;
-        pollster::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
+        crate::test_gpu::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
     };
     let hit = pick(&mut renderer, 1.0).expect("the painted bar picks");
     assert_eq!(
@@ -15443,7 +15451,7 @@ fn whole_chart_auto_fit_fits_the_union_and_reuses_unchanged_extents() {
         renderer.begin_auto_fit_all(chart, 0.0),
         Err(crate::gpu_extent::GpuExtentError::EngineNotReady)
     ));
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
     assert!(
@@ -15453,7 +15461,7 @@ fn whole_chart_auto_fit_fits_the_union_and_reuses_unchanged_extents() {
             .all(|job| matches!(job.extent, fit::AutoFitSeriesExtent::Pending(_))),
         "the first fit reduces every series"
     );
-    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    let resolved = crate::test_gpu::block_on(ticket.resolve()).unwrap();
     renderer.commit_auto_fit_all(resolved).unwrap();
     let config = renderer.chart_config(chart).unwrap();
     assert_eq!((config.bottom_x.min, config.bottom_x.max), (-4.0, 3.0));
@@ -15480,7 +15488,7 @@ fn whole_chart_auto_fit_fits_the_union_and_reuses_unchanged_extents() {
         .map(|job| matches!(job.extent, fit::AutoFitSeriesExtent::Pending(_)))
         .collect();
     assert_eq!(pending, [false, true]);
-    let resolved = pollster::block_on(changed.resolve()).unwrap();
+    let resolved = crate::test_gpu::block_on(changed.resolve()).unwrap();
     renderer.commit_auto_fit_all(resolved).unwrap();
     assert_eq!(renderer.chart_config(chart).unwrap().left_y.max, 20.0);
 }
@@ -15500,13 +15508,13 @@ fn whole_chart_auto_fit_refuses_a_stale_resolution() {
             vec![state_test_line("s", "x", "y")],
         )
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
     let before = renderer.chart_config(chart).unwrap().clone();
     let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
     renderer
         .upsert_column("y", &col_f64(vec![0.0, 5.0]))
         .unwrap();
-    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    let resolved = crate::test_gpu::block_on(ticket.resolve()).unwrap();
     assert!(matches!(
         renderer.commit_auto_fit_all(resolved),
         Err(FiggyError::StaleStateToken { .. })
@@ -15560,7 +15568,7 @@ fn whole_chart_auto_fit_fits_a_histogram_from_its_columns() {
     // No engine: a histogram needs none.
     let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
     assert!(ticket.series.is_empty());
-    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    let resolved = crate::test_gpu::block_on(ticket.resolve()).unwrap();
     renderer.commit_auto_fit_all(resolved).unwrap();
     let config = renderer.chart_config(chart).unwrap();
     assert_eq!((config.bottom_x.min, config.bottom_x.max), (0.0, 2.0));
@@ -15589,14 +15597,413 @@ fn whole_chart_auto_fit_takes_every_series() {
     let chart = renderer
         .register_chart(crate::default::default_config(), series)
         .unwrap();
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    crate::test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
     let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
     assert_eq!(ticket.series.len(), SERIES);
-    let resolved = pollster::block_on(ticket.resolve()).unwrap();
+    let resolved = crate::test_gpu::block_on(ticket.resolve()).unwrap();
     renderer.commit_auto_fit_all(resolved).unwrap();
     let config = renderer.chart_config(chart).unwrap();
     assert_eq!(
         (config.bottom_x.min, config.bottom_x.max),
         (0.0, SERIES as f64)
     );
+}
+
+// Native GPU waits (#160): an awaited, a blocking and a nonblocking resolve
+// of the same work agree, a blocking-only bundle waits on the caller and
+// refuses asynchronous waits, and a lost device fails a pending wait.
+
+fn wait_test_renderer(gpu: RendererDevice) -> Renderer {
+    Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 1024 * 1024)
+        .expect("required GPU test: renderer initialization failed")
+}
+
+fn shared_bundle() -> RendererDevice {
+    let (device, queue) = crate::data_render::shared_device().expect("required GPU test");
+    RendererDevice::new(device, queue).expect("figgy poll thread")
+}
+
+fn shared_blocking_bundle() -> RendererDevice {
+    let (device, queue) = crate::data_render::shared_device().expect("required GPU test");
+    RendererDevice::blocking(device, queue)
+}
+
+/// One scatter point at the centre of a 320×240 chart, pickable, and the
+/// request that picks it.
+fn wait_test_chart(renderer: &mut Renderer) -> (ChartId, GpuPickRequest, Config) {
+    renderer.add_column("x", &col_f64(vec![0.0])).unwrap();
+    renderer.add_column("y", &col_f64(vec![0.0])).unwrap();
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 240,
+    });
+    config.bottom_x.min = -1.0;
+    config.bottom_x.max = 1.0;
+    config.left_y.min = -1.0;
+    config.left_y.max = 1.0;
+    let chart = renderer
+        .register_chart(
+            config.clone(),
+            vec![state_test_scatter("point", Some("source"), "x", "y")],
+        )
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let (display, panel, scale) = display_config_for_surface(&config, (320, 240));
+    let area = display.data_area().unwrap().0;
+    let request = GpuPickRequest {
+        canvas_position_px: [
+            area.x as f32 + area.width as f32 * 0.5,
+            area.y as f32 + area.height as f32 * 0.5,
+        ],
+        display_panel_px: panel,
+        display_scale: scale,
+        max_distance_px: 20.0,
+    };
+    (chart, request, config)
+}
+
+/// Check `ticket` until it is ready, without polling the device on this
+/// thread: the bundle's poll thread (or, without one, the check itself)
+/// completes it.
+fn check_until_ready(
+    mut ticket: crate::gpu_pick::GpuPickTicket,
+) -> Option<crate::pick::PickedPoint> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match ticket.try_resolve().unwrap() {
+            crate::TryResolve::Ready(picked) => return picked,
+            crate::TryResolve::Pending(pending) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the pick never completed"
+                );
+                ticket = pending;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pick_resolves_alike_awaited_blocking_and_checked() {
+    let mut renderer = wait_test_renderer(shared_bundle());
+    let (chart, request, _) = wait_test_chart(&mut renderer);
+    let awaited =
+        crate::test_gpu::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap();
+    let blocked = renderer
+        .pick_chart(chart, request)
+        .unwrap()
+        .resolve_blocking()
+        .unwrap();
+    let checked = check_until_ready(renderer.pick_chart(chart, request).unwrap());
+    let picked = awaited.clone().expect("the point picks");
+    assert_eq!(
+        (picked.series_id.as_str(), picked.point_index),
+        ("point", 0)
+    );
+    assert_eq!(blocked, awaited);
+    assert_eq!(checked, awaited);
+}
+
+#[test]
+fn an_awaited_pick_returns_pending_until_its_work_completes() {
+    // The future registers its wait with the poll thread and returns
+    // `Pending` instead of polling the device itself; the poll thread's
+    // completion wakes it.
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct Flag(AtomicBool, std::thread::Thread);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+            self.1.unpark();
+        }
+    }
+
+    let mut renderer = wait_test_renderer(shared_bundle());
+    let (chart, request, _) = wait_test_chart(&mut renderer);
+    let woken = Arc::new(Flag(AtomicBool::new(false), std::thread::current()));
+    let waker = Waker::from(Arc::clone(&woken));
+    let mut context = Context::from_waker(&waker);
+    let mut resolve = std::pin::pin!(renderer.pick_chart(chart, request).unwrap().resolve());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut polls = 0;
+    let picked = loop {
+        polls += 1;
+        if let Poll::Ready(picked) = resolve.as_mut().poll(&mut context) {
+            break picked.unwrap();
+        }
+        // Pending: only the waker may make progress now.
+        while !woken.0.swap(false, Ordering::AcqRel) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the poll thread never woke the pending pick"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(10));
+        }
+    };
+    assert!(picked.is_some());
+    assert!(polls >= 1);
+}
+
+#[test]
+fn an_export_is_the_same_awaited_and_blocking() {
+    let mut renderer = wait_test_renderer(shared_bundle());
+    let (chart, _, _) = wait_test_chart(&mut renderer);
+    let options = crate::ExportOptions::panel(1.0);
+    let awaited = crate::test_gpu::block_on(
+        renderer.export_png(crate::ExportSource::Registered(chart), options),
+    )
+    .unwrap();
+    let blocked = renderer
+        .export_png_blocking(crate::ExportSource::Registered(chart), options)
+        .unwrap();
+    assert_eq!(awaited, blocked);
+    let options = crate::ExportOptions::default();
+    let awaited = crate::test_gpu::block_on(
+        renderer.export_svg(crate::ExportSource::Registered(chart), options),
+    )
+    .unwrap();
+    let blocked = renderer
+        .export_svg_blocking(crate::ExportSource::Registered(chart), options)
+        .unwrap();
+    assert_eq!(awaited, blocked);
+    crate::test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    renderer.wait_submitted_work_blocking().unwrap();
+}
+
+#[test]
+fn a_blocking_bundle_waits_on_the_caller_and_refuses_async_waits() {
+    let mut renderer = wait_test_renderer(shared_blocking_bundle());
+    let (chart, request, _) = wait_test_chart(&mut renderer);
+    let blocked = renderer
+        .pick_chart(chart, request)
+        .unwrap()
+        .resolve_blocking()
+        .unwrap();
+    assert!(blocked.is_some());
+    // Without a poll thread each check polls the device once, without
+    // waiting, so checking alone completes the pick.
+    assert_eq!(
+        check_until_ready(renderer.pick_chart(chart, request).unwrap()),
+        blocked
+    );
+    let refused = crate::test_gpu::block_on(renderer.pick_chart(chart, request).unwrap().resolve())
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(&FiggyError::AsyncWaitUnavailable.to_string()),
+        "{refused}"
+    );
+    let options = crate::ExportOptions::panel(1.0);
+    let image = renderer
+        .export_png_blocking(crate::ExportSource::Registered(chart), options)
+        .unwrap();
+    assert!(!image.is_empty());
+    assert!(matches!(
+        crate::test_gpu::block_on(
+            renderer.export_png(crate::ExportSource::Registered(chart), options)
+        ),
+        Err(FiggyError::AsyncWaitUnavailable)
+    ));
+    renderer.wait_submitted_work_blocking().unwrap();
+    assert!(matches!(
+        crate::test_gpu::block_on(renderer.wait_submitted_work()),
+        Err(FiggyError::AsyncWaitUnavailable)
+    ));
+}
+
+#[test]
+fn a_ticket_outliving_its_renderer_and_bundle_is_served() {
+    // The ticket's wait keeps the poll thread: dropping every renderer and
+    // bundle first does not strand it.
+    let mut renderer = wait_test_renderer(shared_bundle());
+    let (chart, request, _) = wait_test_chart(&mut renderer);
+    let ticket = renderer.pick_chart(chart, request).unwrap();
+    drop(renderer);
+    let picked = crate::test_gpu::block_on(ticket.resolve()).unwrap();
+    assert!(picked.is_some());
+}
+
+#[test]
+fn a_lost_device_fails_every_kind_of_wait_instead_of_hanging() {
+    // A device of its own: destroying it must not reach the shared one.
+    let (device, queue) = crate::test_gpu::device();
+    let mut renderer =
+        wait_test_renderer(RendererDevice::new(device.clone(), queue).expect("figgy poll thread"));
+    let (chart, request, _) = wait_test_chart(&mut renderer);
+    let tickets: Vec<_> = (0..3)
+        .map(|_| renderer.pick_chart(chart, request).unwrap())
+        .collect();
+    device.destroy();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let [blocked, awaited, checked]: [_; 3] = tickets.try_into().ok().unwrap();
+        // The blocking wait polls the device and learns of the loss there;
+        // every later wait of any kind then reports it.
+        let blocked = blocked.resolve_blocking().map(|_| ());
+        let awaited = crate::test_gpu::block_on(awaited.resolve()).map(|_| ());
+        let checked = checked.try_resolve().map(|_| ());
+        let _ = sender.send((blocked, awaited, checked));
+    });
+    let (blocked, awaited, checked) = receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("a wait on a lost device hung");
+    assert!(blocked.is_err(), "{blocked:?}");
+    assert!(awaited.is_err(), "{awaited:?}");
+    assert!(checked.is_err(), "{checked:?}");
+}
+
+// The blocking twins of the initializers and the remaining waits (#160) run
+// the same steps as the awaited forms: the same observer events, the same
+// pipelines, the same results.
+
+#[test]
+fn a_prewarm_runs_the_same_steps_awaited_and_blocking() {
+    let mut awaited = wait_test_renderer(shared_bundle());
+    let mut blocked = wait_test_renderer(shared_blocking_bundle());
+    let mut awaited_events = Vec::new();
+    crate::test_gpu::block_on(awaited.prewarm_all_observed(&mut |e| awaited_events.push(e)))
+        .unwrap();
+    let mut blocked_events = Vec::new();
+    blocked
+        .prewarm_all_observed_blocking(&mut |e| blocked_events.push(e))
+        .unwrap();
+    assert!(!awaited_events.is_empty());
+    assert_eq!(blocked_events, awaited_events);
+    for feature in PreparationFeature::ALL {
+        assert!(awaited.preparation_ready(feature), "{feature:?}");
+        assert!(blocked.preparation_ready(feature), "{feature:?}");
+    }
+}
+
+#[test]
+fn a_preparation_compiles_the_same_steps_awaited_and_blocking() {
+    for feature in PreparationFeature::ALL {
+        let mut awaited = wait_test_renderer(shared_bundle());
+        let mut blocked = wait_test_renderer(shared_blocking_bundle());
+        let mut awaited_events = Vec::new();
+        let prepared = crate::test_gpu::block_on(
+            awaited
+                .begin_preparation(feature)
+                .expect("a fresh renderer needs every feature")
+                .compile(&mut |e| awaited_events.push(e)),
+        )
+        .unwrap();
+        awaited.install_preparation(prepared).unwrap();
+        let mut blocked_events = Vec::new();
+        let prepared = blocked
+            .begin_preparation(feature)
+            .expect("a fresh renderer needs every feature")
+            .compile_blocking(&mut |e| blocked_events.push(e))
+            .unwrap();
+        blocked.install_preparation(prepared).unwrap();
+        assert_eq!(blocked_events, awaited_events, "{feature:?}");
+        assert!(awaited.preparation_ready(feature), "{feature:?}");
+        assert!(blocked.preparation_ready(feature), "{feature:?}");
+    }
+}
+
+#[test]
+fn an_auto_fit_resolves_alike_awaited_blocking_and_checked() {
+    let fitted =
+        |resolve: &dyn Fn(&mut Renderer, fit::AutoFitAllTicket) -> fit::ResolvedAutoFitAll| {
+            let mut renderer = wait_test_renderer(shared_bundle());
+            renderer
+                .add_column("ax", &col_f64(vec![0.0, 1.0, 2.0]))
+                .unwrap();
+            renderer
+                .add_column("ay", &col_f64(vec![5.0, 6.0, 7.0]))
+                .unwrap();
+            renderer
+                .add_column("bx", &col_f64(vec![-4.0, 3.0]))
+                .unwrap();
+            renderer.add_column("by", &col_f64(vec![1.0, 9.0])).unwrap();
+            let chart = renderer
+                .register_chart(
+                    crate::default::default_config(),
+                    vec![
+                        state_test_line("a", "ax", "ay"),
+                        state_test_line("b", "bx", "by"),
+                    ],
+                )
+                .unwrap();
+            renderer.ensure_errorbar_extent_engine_blocking().unwrap();
+            let ticket = renderer.begin_auto_fit_all(chart, 0.0).unwrap();
+            let resolved = resolve(&mut renderer, ticket);
+            renderer.commit_auto_fit_all(resolved).unwrap();
+            let config = renderer.chart_config(chart).unwrap();
+            (
+                config.bottom_x.min,
+                config.bottom_x.max,
+                config.left_y.min,
+                config.left_y.max,
+            )
+        };
+    let awaited = fitted(&|_, ticket| crate::test_gpu::block_on(ticket.resolve()).unwrap());
+    let blocked = fitted(&|_, ticket| ticket.resolve_blocking().unwrap());
+    let checked = fitted(&|_, mut ticket| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            match ticket.try_resolve().unwrap() {
+                crate::TryResolve::Ready(resolved) => return resolved,
+                crate::TryResolve::Pending(pending) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the fit never completed"
+                    );
+                    ticket = pending;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
+    });
+    assert_eq!(awaited, (-4.0, 3.0, 1.0, 9.0));
+    assert_eq!(blocked, awaited);
+    assert_eq!(checked, awaited);
+}
+
+#[test]
+fn releasing_unused_pool_memory_blocking_matches_the_awaited_release() {
+    let released = |blocking: bool| {
+        let mut renderer = wait_test_renderer(shared_bundle());
+        renderer
+            .add_column("keep", &col_f64(vec![1.0, 2.0, 3.0]))
+            .unwrap();
+        renderer
+            .add_column("drop", &col_f64(vec![4.0, 5.0, 6.0]))
+            .unwrap();
+        renderer.remove_column("drop").unwrap();
+        if blocking {
+            renderer
+                .release_unused_pool_memory_blocking(16 * 1024)
+                .unwrap();
+        } else {
+            crate::test_gpu::block_on(renderer.release_unused_pool_memory(16 * 1024)).unwrap();
+        }
+        (
+            renderer.pool().capacity(),
+            renderer.pool().backup_bytes(),
+            renderer.pool().slot("keep").unwrap().len_values,
+        )
+    };
+    assert_eq!(released(true), released(false));
+    assert_eq!(released(true), (16 * 1024, 0, 3));
+}
+
+#[test]
+fn the_blocking_adapter_and_device_requests_open_a_device() {
+    let instance = crate::test_gpu::instance();
+    let adapter = crate::gpu::request_adapter_blocking(&instance).unwrap();
+    let (device, queue) = crate::gpu::request_device_blocking(&adapter).unwrap();
+    let mut renderer = wait_test_renderer(RendererDevice::blocking(device, queue));
+    renderer.wait_submitted_work_blocking().unwrap();
+    renderer.prewarm_all_blocking().unwrap();
 }

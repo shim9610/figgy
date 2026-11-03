@@ -2,7 +2,7 @@
 //! frame, its own cache beside the frame and label raster caches, export
 //! parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/radial_decorations.rs"]
 mod radial_decorations;
 #[path = "support/gpu.rs"]
@@ -19,7 +19,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 fn gpu() -> RendererDevice {
     static GPU: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (d, q) = GPU.get_or_init(test_gpu::device);
-    RendererDevice::new(d.clone(), q.clone())
+    RendererDevice::new(d.clone(), q.clone()).expect("figgy poll thread")
 }
 const SIZE: (u32, u32) = (800, 520);
 

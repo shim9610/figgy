@@ -3,7 +3,7 @@ use crate::config::DataSelectionsConfig;
 use crate::data_config::{
     BarOrientation, DataBarBinStyleConfig, DataBarStyleOverride, DataScatterPointStyleOverride,
 };
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
     crate::Column { data }
@@ -50,7 +50,7 @@ fn fixture_with_display(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(device.clone(), queue.clone()),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             8192,
             4,
@@ -307,7 +307,7 @@ fn finish_export(
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
     }
-    pollster::block_on(r.finish_stream_export(operation)).unwrap()
+    crate::test_gpu::block_on(r.finish_stream_export(operation)).unwrap()
 }
 
 #[cfg(test)]

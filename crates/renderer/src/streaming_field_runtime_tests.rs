@@ -1,5 +1,5 @@
 use super::*;
-use pollster::FutureExt as _;
+use crate::test_gpu::BlockOn as _;
 
 #[path = "streaming_field_selection_tests.rs"]
 mod selection_tests;
@@ -60,7 +60,7 @@ fn setup_columns_with_budget(
 ) -> Fixture {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         samples,
@@ -270,7 +270,7 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
         let job = f.renderer.active_stream_job(f.id);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -284,7 +284,8 @@ fn heatmap_runtime_exports_match_resident_lattice_and_duplicate_columns() {
                 .begin_stream_export(f.id, scale, Color::new(0.0, 0.0, 0.0, 0.0), io)
                 .unwrap();
             pump(&mut f, Some(operation));
-            let actual = pollster::block_on(f.renderer.finish_stream_export(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(f.renderer.finish_stream_export(operation)).unwrap();
             let expected = resident
                 .export_rgba(
                     crate::ExportSource::chart(&f.chart, &f.series),
@@ -390,7 +391,7 @@ fn heatmap_runtime_fit_uses_exact_gpu_lattice_and_cached_refit() {
         finish_display(&mut f);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -398,12 +399,14 @@ fn heatmap_runtime_fit_uses_exact_gpu_lattice_and_cached_refit() {
         for (id, column) in &f.columns {
             resident.add_hilo_column(*id, column).unwrap();
         }
-        pollster::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
+        crate::test_gpu::block_on(resident.ensure_errorbar_extent_engine()).unwrap();
         let ticket = resident
             .begin_series_fit_extent(&f.series[0])
             .unwrap()
             .unwrap();
-        let expected = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+        let expected = crate::test_gpu::block_on(ticket.resolve())
+            .unwrap()
+            .unwrap();
         let mut expected_config = f.chart.config().clone();
         let x = crate::FitExtent {
             min: expected.x.min,
@@ -584,7 +587,7 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
         finish_display(&mut f);
         let (device, queue) = data_render::shared_device().unwrap();
         let mut resident = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -618,25 +621,29 @@ fn heatmap_runtime_typed_pick_matches_global_cells_without_z_replay() {
                 display_scale: 1.0,
                 max_distance_px: 5.0,
             };
-            let expected =
-                pollster::block_on(resident.pick_chart_data(chart_id, query).unwrap().resolve())
-                    .unwrap();
-            let operation =
-                pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
-                    .unwrap();
+            let expected = crate::test_gpu::block_on(
+                resident.pick_chart_data(chart_id, query).unwrap().resolve(),
+            )
+            .unwrap();
+            let operation = crate::test_gpu::block_on(
+                f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2),
+            )
+            .unwrap();
             pump_pick(&mut f, operation);
-            let actual = pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
+            let actual =
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
             assert_eq!(actual, expected, "case={case} fraction={fraction:?}");
-            let legacy =
-                pollster::block_on(f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2))
-                    .unwrap();
+            let legacy = crate::test_gpu::block_on(
+                f.renderer.begin_stream_pick_point(f.id, position, 5.0, 2),
+            )
+            .unwrap();
             assert_eq!(
                 pump_pick(&mut f, legacy),
                 0,
                 "legacy point picker skips matrix inputs"
             );
             assert!(
-                pollster::block_on(f.renderer.finish_stream_pick_point(legacy))
+                crate::test_gpu::block_on(f.renderer.finish_stream_pick_point(legacy))
                     .unwrap()
                     .is_none()
             );
@@ -961,7 +968,7 @@ fn setup_grid(
 ) -> Fixture {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )

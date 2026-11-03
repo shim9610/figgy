@@ -607,7 +607,8 @@ impl Default for DemoApp {
 impl DemoApp {
     fn initialize(&mut self, render_state: &egui_wgpu::RenderState) -> renderer::Result<()> {
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(render_state.device.clone(), render_state.queue.clone()),
+            RendererDevice::new(render_state.device.clone(), render_state.queue.clone())
+                .expect("figgy poll thread"),
             render_state.target_format,
             POOL_CAPACITY,
         )?;

@@ -15,7 +15,7 @@
 //! data area and axis ranges the renderer draws with.
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -135,7 +135,7 @@ fn upload_outliers(r: &mut Renderer, id: &str, groups: &[&[f64]]) {
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -999,7 +999,7 @@ fn overlays_and_subplots_draw_their_own_box_groups() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+            match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
                 Some(renderer::PickedData::HistogramBin {
                     series_id,
                     bin_index,
@@ -1043,7 +1043,7 @@ fn a_box_plot_document_draws_through_the_reader() {
     });
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1262,7 +1262,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
     const WIDE: u32 = 3000;
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1373,7 +1373,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     assert!(
         matches!(
             &hit,
@@ -1394,7 +1394,7 @@ fn overrides_on_a_hundred_boxes_all_apply() {
     const WIDE: u32 = 2000;
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1473,7 +1473,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
     const WIDE: u32 = 4000;
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1606,7 +1606,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
         display_scale: 1.0,
         max_distance_px: 0.0,
     };
-    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     assert!(
         matches!(
             &hit,

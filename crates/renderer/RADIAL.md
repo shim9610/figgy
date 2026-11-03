@@ -42,10 +42,10 @@ use renderer::{
 };
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let instance = renderer::gpu::create_instance();
-# let adapter = pollster::block_on(renderer::gpu::request_adapter_async(&instance))?;
-# let (device, queue) = pollster::block_on(renderer::gpu::request_device_async(&adapter))?;
+# let adapter = renderer::gpu::request_adapter_blocking(&instance)?;
+# let (device, queue) = renderer::gpu::request_device_blocking(&adapter)?;
 let mut renderer = RadialRenderer::try_new(
-    RendererDevice::new(device, queue),
+    RendererDevice::new(device, queue)?,
     wgpu::TextureFormat::Rgba8Unorm,
 )?;
 let mut chart = RadialChart {
@@ -65,7 +65,7 @@ chart.format_labels();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
-let image = pollster::block_on(renderer.export_rgba(&chart, (1000, 600), renderer::ExportOptions::document(2.0)))?;
+let image = renderer.export_rgba_blocking(&chart, (1000, 600), renderer::ExportOptions::document(2.0))?;
 std::fs::write("donut.png", encode_png(&image)?)?;
 renderer.end_frame();
 # Ok(())
@@ -84,7 +84,7 @@ UI의 일부 영역에 넣으려면 이 크기의 별도 텍스처에 그린 뒤
 WASM 생성에는 `RadialRenderer::try_new_async(gpu, format).await`를 사용해 브라우저
 파이프라인 컴파일을 기다린다. 이후 같은 `prepare`/`draw`를 쓰고, 출력에는
 `export_rgba(...).await`나 `export_png(...).await`를 사용한다.
-네이티브에서는 같은 비동기 함수를 `pollster::block_on` 등으로 기다린다.
+네이티브에서는 비동기 함수를 그대로 기다려도 되고(장치 묶음의 poll 스레드가 완료한다), `export_rgba_blocking` 같은 `_blocking` 함수로 호출한 스레드에서 기다려도 된다.
 
 ## 값과 분할 원
 

@@ -1,10 +1,9 @@
 //! An independent rich title on a pie chart.
 //! cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles
-use pollster::FutureExt as _;
 use renderer::{
     BoundedTitleOptions, Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice,
     TextAlign, encode_png,
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
 };
 use std::path::PathBuf;
 
@@ -15,10 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from("target/radial-titles"));
     std::fs::create_dir_all(&output)?;
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
-    let gpu = RendererDevice::new(device, queue);
+    let (device, queue) = request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
     let color = Color::from_rgb8(70, 130, 180);
     let mut title =
         BoundedTitleOptions::from_legacy("Independent title\nH2O", "sans-serif", 16., Color::BLACK);
@@ -49,9 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pie.format_labels();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut radial = RadialRenderer::try_new(gpu, format)?;
-    let image = radial
-        .export_rgba(&pie, (800, 520), renderer::ExportOptions::document(2.))
-        .block_on()?;
+    let image =
+        radial.export_rgba_blocking(&pie, (800, 520), renderer::ExportOptions::document(2.))?;
     std::fs::write(output.join("pie.png"), encode_png(&image)?)?;
     Ok(())
 }

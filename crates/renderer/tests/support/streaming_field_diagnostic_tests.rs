@@ -296,7 +296,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
     let (device, queue) = (device, queue);
     let make = || {
         Renderer::try_new(
-            RendererDevice::new(device.clone(), queue.clone()),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             4096,
         )
@@ -381,7 +381,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         }
         if std::env::var_os("FIGGY_FIELD_DIAGNOSTIC_PASS_ONLY").is_some() {
             for scale in [1.0, 2.0] {
-                let expected = pollster::block_on(resident.export_rgba(
+                let expected = crate::test_gpu::block_on(resident.export_rgba(
                     crate::ExportSource::chart(&Chart::new(config.clone()), &series),
                     crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
                 ))
@@ -453,7 +453,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
         };
         finish_display(&mut f);
         for scale in [1.0, 2.0] {
-            let expected = pollster::block_on(resident.export_rgba(
+            let expected = crate::test_gpu::block_on(resident.export_rgba(
                 crate::ExportSource::chart(&f.chart, &f.series),
                 crate::ExportOptions::panel(scale).with_clear(Color::WHITE),
             ))
@@ -463,7 +463,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
                 .begin_stream_export(f.id, scale, Color::WHITE, 2)
                 .unwrap();
             pump_export(&mut f, op);
-            let actual = pollster::block_on(f.renderer.finish_stream_export(op)).unwrap();
+            let actual = crate::test_gpu::block_on(f.renderer.finish_stream_export(op)).unwrap();
             compare(
                 &format!("selected-{selected}-scale-{scale}-resident-stream"),
                 &expected,

@@ -21,6 +21,14 @@ pub async fn request_adapter_async(
     instance.request_adapter(&options).await
 }
 
+/// [`request_adapter_async`] without an executor (native): wgpu completes
+/// the request when it is made. Fails with [`crate::FiggyError::AdapterUnavailable`]
+/// on headless / driver-less environments.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_adapter_blocking(instance: &wgpu::Instance) -> crate::Result<wgpu::Adapter> {
+    adapter_now(request_adapter_async(instance))
+}
+
 /// Create a wgpu `Surface` for any window-like target. figgy itself does not
 /// depend on winit; the caller passes its own window handle (winit / egui /
 /// iced / ...). Using an `Arc<Window>` yields a `Surface<'static>` since
@@ -48,6 +56,26 @@ pub async fn request_adapter_for_surface_async(
     instance.request_adapter(&options).await
 }
 
+/// [`request_adapter_for_surface_async`] without an executor (native).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_adapter_for_surface_blocking(
+    instance: &wgpu::Instance,
+    surface: &wgpu::Surface<'_>,
+) -> crate::Result<wgpu::Adapter> {
+    adapter_now(request_adapter_for_surface_async(instance, surface))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn adapter_now(
+    request: impl std::future::Future<Output = Result<wgpu::Adapter, wgpu::RequestAdapterError>>,
+) -> crate::Result<wgpu::Adapter> {
+    crate::gpu_readback::ready_now(request)
+        .ok_or(crate::FiggyError::internal(
+            "a native wgpu adapter request completes at once",
+        ))?
+        .map_err(|_| crate::FiggyError::AdapterUnavailable)
+}
+
 /// Open a logical device and its queue with the adapter's supported limits,
 /// so the largest column the pool can hold is the hardware's, not the WebGPU
 /// baseline's 128 MiB binding (#107).
@@ -63,6 +91,41 @@ pub async fn request_device_async(
         trace: wgpu::Trace::Off,
     };
     adapter.request_device(&descriptor).await
+}
+
+/// [`request_device_async`] without an executor (native): wgpu opens the
+/// device when the request is made.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_device_blocking(
+    adapter: &wgpu::Adapter,
+) -> crate::Result<(wgpu::Device, wgpu::Queue)> {
+    device_now(request_device_async(adapter))
+}
+
+/// Open a device with the host's own `descriptor`, without an executor
+/// (native), for a host that needs other limits or features than
+/// `request_device_blocking` asks for.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn request_device_with_blocking(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> crate::Result<(wgpu::Device, wgpu::Queue)> {
+    device_now(adapter.request_device(descriptor))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn device_now(
+    request: impl std::future::Future<
+        Output = Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>,
+    >,
+) -> crate::Result<(wgpu::Device, wgpu::Queue)> {
+    crate::gpu_readback::ready_now(request)
+        .ok_or(crate::FiggyError::internal(
+            "a native wgpu device request completes at once",
+        ))?
+        .map_err(|error| crate::FiggyError::DeviceCreationFailed {
+            reason: error.to_string(),
+        })
 }
 
 /// One wgpu device+queue shared by every unit test in this binary.

@@ -117,7 +117,7 @@ fn resolve_pick(
     pool: &ColumnPool,
     query: GpuPickQuery,
 ) -> Option<PickedPoint> {
-    pollster::block_on(engine.pick(pool, query).unwrap().resolve()).unwrap()
+    crate::test_gpu::block_on(engine.pick(pool, query).unwrap().resolve()).unwrap()
 }
 
 fn resolve_pick_scaled(
@@ -126,7 +126,7 @@ fn resolve_pick_scaled(
     query: GpuPickQuery,
     display_scale: f32,
 ) -> Option<PickedPoint> {
-    pollster::block_on(
+    crate::test_gpu::block_on(
         engine
             .pick_with_display_scale(pool, query, display_scale)
             .unwrap()
@@ -524,7 +524,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
         device.clone(),
         queue.clone(),
         Arc::new(GpuLedger::new()),
-        crate::renderer::DeviceHealth::default(),
+        crate::renderer::DeviceHealth::polled_for_test(&device),
         &mut |event| events.push(event),
     )
     .unwrap();
@@ -730,7 +730,8 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
                             queue.submit([encoder.finish()]);
                         }
                     }
-                    let actual = pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
+                    let actual =
+                        crate::test_gpu::block_on(stream.finish().unwrap().resolve()).unwrap();
                     // Bit parity needs the same compiled code: every
                     // chunk scanned with its resident series' variant.
                     // Drivers that compile two variants differently
@@ -798,7 +799,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         device.clone(),
         queue.clone(),
         Arc::new(GpuLedger::new()),
-        crate::renderer::DeviceHealth::default(),
+        crate::renderer::DeviceHealth::polled_for_test(&device),
         &mut |_| {},
     )
     .unwrap();
@@ -868,7 +869,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             .unwrap();
         assert_eq!(scratch.charged_bytes(), bytes);
         queue.submit([encoder.finish()]);
-        let answer = pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
+        let answer = crate::test_gpu::block_on(stream.finish().unwrap().resolve()).unwrap();
         if let Some(expected_local_index) = expected_local_index {
             let answer = answer.unwrap_or_else(|| {
                 panic!("owned primitive at cursor was missed: line={line}, cursor={cursor:?}")
@@ -2005,8 +2006,8 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
     drop(engine);
     drop(pool);
 
-    let right = pollster::block_on(right.resolve()).unwrap().unwrap();
-    let left = pollster::block_on(left.resolve()).unwrap().unwrap();
+    let right = crate::test_gpu::block_on(right.resolve()).unwrap().unwrap();
+    let left = crate::test_gpu::block_on(left.resolve()).unwrap().unwrap();
     assert_eq!(right.source_id.as_deref(), Some("overlap-source"));
     assert_eq!(right.series_id, "overlap-series");
     assert_eq!(right.point_index, (point_count - 1) * 3 / 4);
@@ -2966,7 +2967,7 @@ fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
         .unwrap();
     assert_eq!(inserted.index(), 1);
 
-    let tied = pollster::block_on(
+    let tied = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([50.0, 50.0]))
             .unwrap()
@@ -2976,7 +2977,7 @@ fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
     .unwrap();
     assert_eq!(tied.series_id, "last");
     engine.remove_series_at(2).unwrap();
-    let middle = pollster::block_on(
+    let middle = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([50.0, 50.0]))
             .unwrap()
@@ -3002,7 +3003,7 @@ fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
         ),
         Err(GpuPickError::InvalidSeriesIndex { index: 3, len: 2 })
     ));
-    let unchanged = pollster::block_on(
+    let unchanged = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([50.0, 50.0]))
             .unwrap()
@@ -3016,7 +3017,7 @@ fn insertion_preserves_position_allows_tail_and_is_failure_atomic() {
         .insert_series_at(2, &pool, scatter_descriptor("tail", "pick-ix", "pick-iy"))
         .unwrap();
     assert_eq!(appended.index(), 2);
-    let tail = pollster::block_on(
+    let tail = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([50.0, 50.0]))
             .unwrap()
@@ -3066,7 +3067,7 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
         .replace_series_at(0, &pool, scatter_descriptor("c", "pick-cx", "pick-cy"))
         .unwrap();
     assert_eq!(replacement.index(), 0);
-    let tied = pollster::block_on(
+    let tied = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([80.0, 50.0]))
             .unwrap()
@@ -3077,7 +3078,7 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
     assert_eq!(tied.series_id, "b");
 
     engine.remove_series_at(1).unwrap();
-    let no_stale = pollster::block_on(
+    let no_stale = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([20.0, 50.0]))
             .unwrap()
@@ -3086,7 +3087,7 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
     .unwrap();
     assert!(no_stale.is_none());
 
-    let remaining = pollster::block_on(
+    let remaining = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([80.0, 50.0]))
             .unwrap()
@@ -3099,7 +3100,7 @@ fn registry_mutation_preserves_order_and_clears_stale_reduction_slots() {
 
     engine.clear_series();
     assert!(
-        pollster::block_on(
+        crate::test_gpu::block_on(
             engine
                 .pick(&pool, test_query([80.0, 50.0]))
                 .unwrap()
@@ -3189,7 +3190,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
         )
         .unwrap();
 
-    let before = pollster::block_on(
+    let before = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([40.0, 40.0]))
             .unwrap()
@@ -3215,7 +3216,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
     ));
     engine.rebind_columns(&pool).unwrap();
 
-    let after = pollster::block_on(
+    let after = crate::test_gpu::block_on(
         engine
             .pick(&pool, test_query([40.0, 40.0]))
             .unwrap()
@@ -3787,7 +3788,7 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
                 (CANDIDATE_BYTES * (1 + members as u64), members),
                 "{asked} members of {count}"
             );
-            pollster::block_on(ticket.resolve()).unwrap();
+            crate::test_gpu::block_on(ticket.resolve()).unwrap();
         }
     }
     // A shrinking and a growing registry between two picks: each ticket
@@ -3805,6 +3806,6 @@ fn a_pick_readback_holds_one_candidate_per_clamped_member() {
     let grown = submit(&engine, 100);
     assert_eq!(sized(&grown), (CANDIDATE_BYTES * 41, 40));
     for ticket in [before, shrunk, grown] {
-        pollster::block_on(ticket.resolve()).unwrap();
+        crate::test_gpu::block_on(ticket.resolve()).unwrap();
     }
 }

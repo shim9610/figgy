@@ -1552,11 +1552,12 @@ mod replay_product_tests {
     #[test]
     fn product_bind_and_record_helpers_preserve_256_257_and_carry_bits() {
         let instance = wgpu::Instance::default();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("arc replay requires GPU adapter");
+        let adapter = crate::test_gpu::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .expect("arc replay requires GPU adapter");
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            crate::test_gpu::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("arc replay requires GPU device");
         let max_workgroups = adapter.limits().max_compute_workgroups_per_dimension;
         assert!(adapter.limits().max_compute_workgroup_size_x >= WG);

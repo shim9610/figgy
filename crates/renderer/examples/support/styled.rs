@@ -119,8 +119,8 @@ pub fn export(
     specs: &[renderer::SeriesConfig],
     bg: Color,
 ) -> Result<RasterImage> {
-    Ok(pollster::block_on(r.export_rgba(
+    Ok(r.export_rgba_blocking(
         renderer::ExportSource::chart(chart, specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),
-    ))?)
+    )?)
 }

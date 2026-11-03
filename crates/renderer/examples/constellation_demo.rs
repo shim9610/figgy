@@ -4,7 +4,6 @@
 //! Run: `cargo run -p figgy-renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
 
-use pollster::FutureExt as _;
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
@@ -13,7 +12,7 @@ use renderer::data_config::{
     ScatterShape, SeriesConfig,
 };
 use renderer::default;
-use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
+use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
@@ -36,11 +35,10 @@ fn over_space(img: &mut RasterImage) {
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
     let mut img = r
-        .export_rgba(
+        .export_rgba_blocking(
             renderer::ExportSource::chart(chart, series),
             renderer::ExportOptions::panel(1.0),
         )
-        .block_on()
         .expect("export");
     over_space(&mut img);
     let ink = img
@@ -115,10 +113,10 @@ fn build_chart(style: DrawStyle) -> Chart {
 
 fn main() {
     let inst = create_instance();
-    let adapter = request_adapter_async(&inst).block_on().expect("adapter");
-    let (device, queue) = request_device_async(&adapter).block_on().expect("device");
+    let adapter = request_adapter_blocking(&inst).expect("adapter");
+    let (device, queue) = request_device_blocking(&adapter).expect("device");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -256,11 +254,10 @@ fn main() {
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
     let mut img = r
-        .export_rgba(
+        .export_rgba_blocking(
             renderer::ExportSource::chart(&spec_chart(), &spec_distinct),
             renderer::ExportOptions::panel(2.0),
         )
-        .block_on()
         .expect("export");
     over_space(&mut img);
     std::fs::write(

@@ -158,7 +158,7 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
     for samples in [1, 4] {
         let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
         let mut r = Renderer::try_new_with_sample_count(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
             samples,
@@ -617,7 +617,7 @@ fn mapped_base_style_storage_is_preflighted_and_charged_once() {
 fn six_distinct_errorbar_columns_obey_request_column_limit_before_job_start() {
     let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -698,7 +698,7 @@ fn histogram_cursor_requests_one_extra_edge_but_not_one_extra_value() {
     ] {
         let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -793,7 +793,7 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                 let (device, queue) =
                     crate::data_render::shared_device().expect("stream GPU required");
                 let mut r = Renderer::try_new_with_sample_count(
-                    RendererDevice::new(device, queue),
+                    RendererDevice::new(device, queue).expect("figgy poll thread"),
                     wgpu::TextureFormat::Rgba8Unorm,
                     4096,
                     samples,
@@ -1001,7 +1001,7 @@ fn streamed_histogram_same_id_edges_and_values_match_resident() {
     let values: Vec<f32> = (0..17).map(|i| i as f32 * 0.25).collect();
     let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -1102,7 +1102,7 @@ fn streamed_histogram_same_id_edges_and_values_match_resident() {
 fn malformed_first_histogram_supply_is_allocation_free_and_retryable_at_cap() {
     let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -1232,7 +1232,7 @@ fn renderer(slots: usize) -> (Renderer, ChartId, ChartId) {
     let (device, queue) =
         crate::data_render::shared_device().expect("stream request tests require GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -1365,7 +1365,7 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
         crate::AutoStreamingRangeRequest::Complete { .. }
     ));
     let area = narrowed.data_area().unwrap().0;
-    let hit = pollster::block_on(r.pick_chart_view_cache(
+    let hit = crate::test_gpu::block_on(r.pick_chart_view_cache(
         chart_id,
         [
             area.x as f32 + area.width as f32 * 0.5,
@@ -1454,7 +1454,7 @@ fn packed_view_pick_reduces_across_bounded_submission_batches() {
     );
     assert_eq!(r.view_cache_test_status(chart_id).unwrap().0, 9);
     let area = config.data_area().unwrap().0;
-    let hit = pollster::block_on(r.pick_chart_view_cache(
+    let hit = crate::test_gpu::block_on(r.pick_chart_view_cache(
         chart_id,
         [
             area.x as f32 + area.width as f32 * 0.4,
@@ -1743,7 +1743,7 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
         .unwrap();
     let cached_pixels = read_draw_target(&cached, &cached.stream_target_test(cached_id).unwrap());
     let area = narrow.data_area().unwrap().0;
-    let hit = pollster::block_on(cached.pick_chart_view_cache(
+    let hit = crate::test_gpu::block_on(cached.pick_chart_view_cache(
         cached_id,
         [
             area.x as f32 + area.width as f32 * 0.1,
@@ -2030,7 +2030,7 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
         for samples in [1, 4] {
             let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
             let mut r = Renderer::try_new_with_sample_count(
-                RendererDevice::new(device, queue),
+                RendererDevice::new(device, queue).expect("figgy poll thread"),
                 format,
                 4096,
                 samples,
@@ -2337,7 +2337,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
         for mode in 0..9 {
             let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
             let mut r = Renderer::try_new_with_sample_count(
-                RendererDevice::new(device, queue),
+                RendererDevice::new(device, queue).expect("figgy poll thread"),
                 wgpu::TextureFormat::Rgba8Unorm,
                 4096,
                 samples,
@@ -4549,7 +4549,7 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
     let (device, queue) =
         crate::data_render::shared_device().expect("stream handoff test requires GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -4752,7 +4752,7 @@ fn cancelling_resident_range_handoff_discards_only_the_candidate_stream() {
     let (device, queue) =
         crate::data_render::shared_device().expect("stream handoff test requires GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -4809,7 +4809,7 @@ fn newer_resident_range_handoff_replaces_only_the_automatic_candidate() {
     let (device, queue) =
         crate::data_render::shared_device().expect("stream handoff test requires GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -4889,7 +4889,7 @@ fn mixed_closure_handoff_keeps_both_old_authorities_until_one_stream_commit() {
     let (device, queue) =
         crate::data_render::shared_device().expect("mixed handoff test requires GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -4993,7 +4993,7 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
     let (device, queue) =
         crate::data_render::shared_device().expect("stream handoff test requires GPU");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -5740,7 +5740,7 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
     }
     let (device, queue) = crate::data_render::shared_device().unwrap();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -5928,7 +5928,7 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
     for (samples, histogram) in [(1, false), (4, false), (1, true), (4, true)] {
         let (device, queue) = crate::data_render::shared_device().unwrap();
         let mut r = Renderer::try_new_with_sample_count(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
             samples,
@@ -6737,7 +6737,7 @@ fn seven_column_declaration(id: &str) -> SeriesConfig {
 fn ticket_renderer(slots: usize) -> Renderer {
     let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
@@ -6904,7 +6904,7 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
     for slots in [1usize, 4] {
         let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
         let mut r = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )

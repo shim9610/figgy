@@ -1135,7 +1135,7 @@ mod tests {
             })
             .unwrap();
         assert!(
-            pollster::block_on(scope.pop()).is_none(),
+            crate::test_gpu::block_on(scope.pop()).is_none(),
             "recorded work must remain valid"
         );
         assert_eq!(ledger.snapshot().retired_bytes(), 16);
@@ -1148,7 +1148,7 @@ mod tests {
         encoder.clear_buffer(&raw, 0, None);
         queue.submit([encoder.finish()]);
         assert!(
-            pollster::block_on(scope.pop()).is_some(),
+            crate::test_gpu::block_on(scope.pop()).is_some(),
             "retired allocation was not destroyed"
         );
     }

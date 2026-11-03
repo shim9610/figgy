@@ -168,31 +168,64 @@ fn failure(reason: impl std::fmt::Display) -> FiggyError {
         reason: reason.to_string(),
     }
 }
+/// The picker's shaders, borrowed from a preparation's pipelines.
+macro_rules! picker_shaders {
+    ($job:expr) => {
+        crate::gpu_data_pick::DataPickShaders {
+            bar: &$job.pipelines.shaders.bar,
+            field: &$job.pipelines.shaders.field,
+            vector_grid: &$job.pipelines.shaders.vector_grid,
+            line: &$job.pipelines.shaders.line,
+        }
+    };
+}
+
+/// A preparation's [`PrewarmLayouts`], borrowed field by field so that
+/// `pipelines` stays free for the prewarm's `&mut`.
+macro_rules! preparation_layouts {
+    ($job:expr, $contour:expr) => {
+        PrewarmLayouts {
+            device: &$job.device,
+            queue: &$job.queue,
+            transform_bgl: &$job.transform,
+            style_bgl: &$job.style,
+            per_point_style_map_bgl: &$job.mapped,
+            point_value_map_bgl: &$job.value_map,
+            data_selection_bgl: &$job.selection,
+            field_bgl: &$job.field,
+            vector_bgl: &$job.vector,
+            category_bar_data_bgl: &$job.category_bar,
+            parallel_bgl: &$job.parallel,
+            star_data_bgl: &$job.star,
+            label_pipelines: $contour,
+            feature: Some($job.feature),
+            surface_format: $job.format,
+        }
+    };
+}
+
 impl PipelinePreparation {
     pub fn feature(&self) -> PreparationFeature {
         self.feature
     }
+    /// Compile the feature's pipelines. In the browser this awaits
+    /// WebGPU's asynchronous compiler and yields between pipelines; on
+    /// native nothing waits, and `Self::compile_blocking` does the same
+    /// work without an executor.
     pub async fn compile(
         mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<PreparedPipelines> {
-        let mut contour = None;
-        let mut arc = None;
-        let mut extent = None;
-        let mut picker = RendererPicker::disabled();
+        let mut parts = CompiledParts::new();
         if self.feature == PreparationFeature::Picking {
-            picker
+            parts
+                .picker
                 .enable_observed_async(
                     self.device.clone(),
                     self.queue.clone(),
                     self.ledger.clone(),
                     self.health.clone(),
-                    crate::gpu_data_pick::DataPickShaders {
-                        bar: &self.pipelines.shaders.bar,
-                        field: &self.pipelines.shaders.field,
-                        vector_grid: &self.pipelines.shaders.vector_grid,
-                        line: &self.pipelines.shaders.line,
-                    },
+                    picker_shaders!(self),
                     &self.transform,
                     &self.field,
                     &self.mapped,
@@ -230,33 +263,14 @@ impl PipelinePreparation {
                 )
                 .await
                 .map_err(failure)?;
-                contour = Some(crate::gpu_contour::ContourLabelPipelines::new(
-                    &self.device,
-                    &self.field,
-                ));
+                parts.contour = Some(self.contour_pipelines());
             }
+            let layouts = preparation_layouts!(self, parts.contour.as_ref());
             self.pipelines
-                .prewarm_all_observed(
-                    &self.device,
-                    &self.queue,
-                    &self.transform,
-                    &self.style,
-                    &self.mapped,
-                    &self.value_map,
-                    &self.selection,
-                    &self.field,
-                    &self.vector,
-                    &self.category_bar,
-                    &self.parallel,
-                    &self.star,
-                    contour.as_ref(),
-                    Some(self.feature),
-                    self.format,
-                    observer,
-                )
+                .prewarm_all_observed(&layouts, observer)
                 .await;
             if self.feature == PreparationFeature::Basic {
-                arc = Some(
+                parts.arc = Some(
                     data_render::line_arc::create_arc_scan_pipelines_observed_async(
                         &self.device,
                         observer,
@@ -267,24 +281,95 @@ impl PipelinePreparation {
                 crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device)
                     .await
                     .map_err(failure)?;
-                extent = Some(
-                    crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(
-                        &self.device,
-                        self.ledger.clone(),
-                    )
-                    .with_health(self.health.clone()),
-                );
+                parts.extent = Some(self.extent_engine());
             }
         }
-        Ok(PreparedPipelines {
+        Ok(self.prepared(parts))
+    }
+
+    /// [`Self::compile`] on native, without an executor: a native device
+    /// compiles each pipeline when it is created, so nothing waits.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compile_blocking(
+        mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<PreparedPipelines> {
+        let mut parts = CompiledParts::new();
+        if self.feature == PreparationFeature::Picking {
+            parts
+                .picker
+                .enable_observed(
+                    self.device.clone(),
+                    self.queue.clone(),
+                    self.ledger.clone(),
+                    self.health.clone(),
+                    picker_shaders!(self),
+                    &self.transform,
+                    &self.field,
+                    &self.mapped,
+                    &self.vector,
+                    &self.category_bar,
+                    &self.parallel,
+                    observer,
+                )
+                .map_err(failure)?;
+        } else {
+            if self.feature == PreparationFeature::Fields {
+                parts.contour = Some(self.contour_pipelines());
+            }
+            let layouts = preparation_layouts!(self, parts.contour.as_ref());
+            self.pipelines
+                .prewarm_all_observed_blocking(&layouts, observer);
+            if self.feature == PreparationFeature::Basic {
+                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+                    &self.device,
+                    observer,
+                ));
+                parts.extent = Some(self.extent_engine());
+            }
+        }
+        Ok(self.prepared(parts))
+    }
+
+    fn contour_pipelines(&self) -> crate::gpu_contour::ContourLabelPipelines {
+        crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field)
+    }
+
+    fn extent_engine(&self) -> crate::gpu_extent::GpuErrorbarExtentEngine {
+        crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(&self.device, self.ledger.clone())
+            .with_health(self.health.clone())
+    }
+
+    fn prepared(self, parts: CompiledParts) -> PreparedPipelines {
+        PreparedPipelines {
             job: self,
-            contour,
-            arc,
-            extent,
-            picker,
-        })
+            contour: parts.contour,
+            arc: parts.arc,
+            extent: parts.extent,
+            picker: parts.picker,
+        }
     }
 }
+
+/// What a compile builds besides the job's own pipelines.
+struct CompiledParts {
+    contour: Option<crate::gpu_contour::ContourLabelPipelines>,
+    arc: Option<data_render::line_arc::ArcScanPipelines>,
+    extent: Option<crate::gpu_extent::GpuErrorbarExtentEngine>,
+    picker: RendererPicker,
+}
+
+impl CompiledParts {
+    fn new() -> Self {
+        Self {
+            contour: None,
+            arc: None,
+            extent: None,
+            picker: RendererPicker::disabled(),
+        }
+    }
+}
+
 impl Renderer {
     pub fn preparation_ready(&self, feature: PreparationFeature) -> bool {
         let p = &self.pipelines;
@@ -613,7 +698,7 @@ mod tests {
     fn renderer() -> Renderer {
         let (device, queue) = crate::test_gpu::device();
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -635,7 +720,7 @@ mod tests {
             let mut observer = |_| {};
             let future = job.compile(&mut observer);
             r.set_chart_config(id, config.clone()).unwrap();
-            let prepared = pollster::block_on(future).unwrap();
+            let prepared = crate::test_gpu::block_on(future).unwrap();
             r.install_preparation(prepared).unwrap();
             assert_eq!(r.chart_config(id).unwrap(), &config);
             assert!(r.preparation_ready(feature));
@@ -645,7 +730,7 @@ mod tests {
     #[test]
     fn detached_preparation_rejects_replaced_target_and_other_renderer() {
         let mut r = renderer();
-        let prepared = pollster::block_on(
+        let prepared = crate::test_gpu::block_on(
             r.begin_preparation(PreparationFeature::Sketch)
                 .unwrap()
                 .compile(&mut |_| {}),
@@ -659,7 +744,7 @@ mod tests {
         assert!(!r.preparation_ready(PreparationFeature::Sketch));
         let job = r.begin_preparation(PreparationFeature::Sketch).unwrap();
         drop(r);
-        let prepared = pollster::block_on(job.compile(&mut |_| {})).unwrap();
+        let prepared = crate::test_gpu::block_on(job.compile(&mut |_| {})).unwrap();
         let mut replacement = renderer();
         assert!(matches!(
             replacement.install_preparation(prepared),

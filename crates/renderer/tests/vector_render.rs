@@ -7,7 +7,7 @@
 //! renderer per test, and assertions that name the pixel a data coordinate
 //! lands on, so a wrong projection, pivot or scale fails rather than passes.
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -70,7 +70,7 @@ fn try_renderer() -> Option<Renderer> {
     let (device, queue) = shared_device()?;
     Some(
         Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Bgra8Unorm,
             4 * 1024 * 1024,
         )
@@ -1023,7 +1023,7 @@ fn point_vectors_pick_on_the_drawn_arrow() {
         .unwrap();
     renderer.enable_gpu_picking().unwrap();
     let pick = |renderer: &mut Renderer, request| {
-        pollster::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap()
+        test_gpu::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap()
     };
 
     // A 40 px arrow along +x: a 4 px shaft to x = 30, then a 10 px head.
@@ -1109,7 +1109,7 @@ fn grid_vectors_pick_the_arrow_drawn_for_each_cell() {
             .unwrap();
         renderer.enable_gpu_picking().unwrap();
         let pick = |renderer: &mut Renderer, request| {
-            pollster::block_on(renderer.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+            test_gpu::block_on(renderer.pick_chart_data(id, request).unwrap().resolve()).unwrap()
         };
         let what = format!("{orientation:?}");
 
@@ -1355,7 +1355,7 @@ fn resolve_extent(renderer: &Renderer, series: &SeriesConfig) -> GpuSeriesExtent
         .begin_series_fit_extent(series)
         .unwrap()
         .expect("a vector series has an extent");
-    pollster::block_on(ticket.resolve()).unwrap().unwrap()
+    test_gpu::block_on(ticket.resolve()).unwrap().unwrap()
 }
 
 /// Auto fit includes the tips of data-scaled point vectors, because a tip is
@@ -1371,7 +1371,7 @@ fn series_extent_includes_data_scaled_tips_only() {
         &[(1.0, 1.0), (2.0, 2.0)],
         &[(3.0, 0.5), (-1.0, 4.0)],
     );
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
+    test_gpu::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
 
     let ext = resolve_extent(&renderer, &points("arrows", data(1.0)));
     assert_eq!(

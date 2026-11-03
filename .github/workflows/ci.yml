@@ -159,6 +159,7 @@ jobs:
           workspaces: |
             . -> target
             tools/playground -> target
+            tools/loom-poller -> target
       - name: Install Linux build and Vulkan prerequisites
         if: steps.scope.outputs.checks == 'true'
         run: |
@@ -187,6 +188,12 @@ jobs:
         if: steps.scope.outputs.checks == 'true'
         working-directory: tools/playground
         run: cargo run --locked -- --selftest
+      - name: Poll thread protocol under loom
+        # Every interleaving of the native poll thread's model tests, up to
+        # the preemption bound in `crates/renderer/src/gpu_poller.rs` (#160).
+        if: steps.scope.outputs.checks == 'true'
+        working-directory: tools/loom-poller
+        run: cargo test --locked --release
       - name: Upload the selftest scenes
         if: always() && steps.scope.outputs.checks == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

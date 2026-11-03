@@ -68,10 +68,6 @@ web-sys = { version = "0.3", features = ["Window"] }
 # iced = { version = "0.14", optional = true, features = ["wgpu"] }
 # iced_wgpu = { version = "0.14", optional = true }
 
-# Native tests and examples block on the async API themselves (#160).
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pollster = "1.0"
-
 [dev-dependencies]
 # The crate's own tests enable `cpu-twin`, so the CPU picker in
 # `tests/support/cpu_twin.rs` compiles for `cargo test` only.
@@ -119,3 +115,8 @@ required-features = ["egui_demo"]
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+# `cfg(loom)` is set only by `tools/loom-poller`, which model-checks the
+# poll thread's protocol in `src/gpu_poller.rs` (#160).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }

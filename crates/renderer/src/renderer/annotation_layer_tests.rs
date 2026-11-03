@@ -7,9 +7,9 @@ use crate::annotation::{
 };
 use crate::config::LegendCorner;
 use crate::layout::{ChartArea, NudgeResult, RectF};
+use crate::test_gpu::BlockOn as _;
 use crate::text::RichText;
 use crate::{AnnotationSkip, LayerRef, RenderWarning, SelectionGeometry};
-use pollster::FutureExt as _;
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -86,7 +86,7 @@ fn annotated_config() -> Config {
 fn fixture(config: &Config) -> (Renderer, ChartId) {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         1,

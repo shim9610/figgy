@@ -820,10 +820,11 @@ mod stream_tests {
 
     fn gpu() -> (wgpu::Device, wgpu::Queue) {
         let instance = create_instance();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("stream histogram GPU test requires an adapter");
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        let adapter = crate::test_gpu::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .expect("stream histogram GPU test requires an adapter");
+        crate::test_gpu::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .expect("stream histogram GPU device creation failed")
     }
 

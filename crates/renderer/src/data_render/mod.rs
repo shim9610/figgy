@@ -91,7 +91,7 @@ const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 176);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pollster::FutureExt as _;
+    use crate::test_gpu::BlockOn as _;
 
     #[test]
     fn contour_lookup_uses_finite_prefixes_numeric_indices_and_block_metadata() {

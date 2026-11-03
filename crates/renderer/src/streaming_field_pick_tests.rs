@@ -13,12 +13,14 @@ fn heatmap_runtime_typed_pick_submission_failure_retries_without_advancing() {
         area.y as f32 + area.height as f32 * 0.61,
     ];
     let baseline =
-        pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+        crate::test_gpu::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+            .unwrap();
     pump_pick(&mut f, baseline);
-    let expected = pollster::block_on(f.renderer.finish_stream_pick_data(baseline)).unwrap();
+    let expected = crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(baseline)).unwrap();
     assert!(expected.is_some());
     let operation =
-        pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+        crate::test_gpu::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+            .unwrap();
     let mut rejected = 0;
     for _ in 0..1000 {
         match f
@@ -93,11 +95,12 @@ fn heatmap_runtime_typed_pick_submission_failure_retries_without_advancing() {
         }
     }
     assert!(rejected > 1);
-    let actual = pollster::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
+    let actual = crate::test_gpu::block_on(f.renderer.finish_stream_pick_data(operation)).unwrap();
     assert_eq!(actual, expected);
 
     let cancelled =
-        pollster::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2)).unwrap();
+        crate::test_gpu::block_on(f.renderer.begin_stream_pick_data(f.id, position, 5.0, 2))
+            .unwrap();
     let crate::AutoStreamingRangeRequest::Ready { ranges, .. } = f
         .renderer
         .request_stream_operation_ranges(cancelled)

@@ -1,12 +1,11 @@
 //! Shared native device setup, presentation defaults and PNG checks for gallery examples.
 //! Chart data and series definitions live in each example, not in this module.
-use pollster::FutureExt as _;
 use renderer::{
     Chart, Color, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape},
     default, encode_png,
-    gpu::{create_instance, request_adapter_async, request_device_async},
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     layout::{ChartArea, Rect},
     line::LineStylePreset,
 };
@@ -91,10 +90,10 @@ pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Cha
 }
 
 pub fn save(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &Path) -> Result {
-    let img = pollster::block_on(r.export_rgba(
+    let img = r.export_rgba_blocking(
         renderer::ExportSource::chart(chart, series),
         renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
-    ))?;
+    )?;
     if img.rgba.chunks_exact(4).any(|px| px[3] != 255) {
         return Err(format!("{}: white-background export is not opaque", path.display()).into());
     }
@@ -128,11 +127,11 @@ pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
     // Instance and adapter stay alive until rendering and readback finish.
     // Software GPU selection belongs to the environment, not the example.
     let instance = create_instance();
-    let adapter = request_adapter_async(&instance).block_on()?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Gallery adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_async(&adapter).block_on()?;
+    let (device, queue) = request_device_blocking(&adapter)?;
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         16 * 1024 * 1024,
     )?;

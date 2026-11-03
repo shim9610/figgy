@@ -25,13 +25,41 @@ pub struct RendererDevice {
 
 impl RendererDevice {
     /// Bundle a wgpu device and queue that came from the same `request_device`
-    /// result or host render state.
+    /// result or host render state, for blocking and asynchronous calls.
     ///
     /// Registers the device's device-lost callback and uncaptured-error
     /// handler, so figgy reports a lost device and every GPU error as a
     /// [`FiggyError`] instead of wgpu's default panic. wgpu keeps one of each
     /// per device: build one bundle per device and clone it.
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+    ///
+    /// On native this also starts the bundle's poll thread, which completes
+    /// asynchronous GPU waits (readbacks, exports, `wait_submitted_work`):
+    /// wgpu completes a wait only inside a device poll, and nothing else
+    /// polls a native device. The thread parks while no wait is pending and
+    /// exits once every clone of the bundle and every pending wait is gone.
+    /// Fails with [`FiggyError::PollThreadStartFailed`] when the OS cannot
+    /// start it. A host that only makes blocking calls builds the bundle with
+    /// `Self::blocking` instead, which starts no thread. In the browser the
+    /// device polls itself and no thread is started.
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut bundle = Self::without_poller(device, queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        bundle.health.start_poller(&bundle.device)?;
+        Ok(bundle)
+    }
+
+    /// Bundle a device and queue for blocking calls only, without a poll
+    /// thread: every `_blocking` call polls the device on the caller's
+    /// thread. An asynchronous GPU wait on this bundle fails with
+    /// [`FiggyError::AsyncWaitUnavailable`] instead of never completing.
+    /// Registers the same callbacks as [`Self::new`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn blocking(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self::without_poller(device, queue)
+    }
+
+    fn without_poller(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let health = DeviceHealth::watch(&device);
         Self {
             device,
@@ -1540,33 +1568,83 @@ impl TargetPipelines {
     /// first chart so a later render-type/style switch cannot move shader
     /// compilation back onto the interaction that requested it.
     #[allow(clippy::too_many_arguments)]
+    /// Create the pipelines [`Self::prewarm_pipelines`] creates, yielding to
+    /// the browser after each one (no yield on native).
     pub(super) async fn prewarm_all_observed(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        transform_bgl: &wgpu::BindGroupLayout,
-        style_bgl: &wgpu::BindGroupLayout,
-        per_point_style_map_bgl: &wgpu::BindGroupLayout,
-        point_value_map_bgl: &wgpu::BindGroupLayout,
-        data_selection_bgl: &wgpu::BindGroupLayout,
-        field_bgl: &wgpu::BindGroupLayout,
-        vector_bgl: &wgpu::BindGroupLayout,
-        category_bar_data_bgl: &wgpu::BindGroupLayout,
-        parallel_bgl: &wgpu::BindGroupLayout,
-        star_data_bgl: &wgpu::BindGroupLayout,
-        label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
-        feature: Option<PreparationFeature>,
-        surface_format: wgpu::TextureFormat,
+        layouts: &PrewarmLayouts<'_>,
         observer: &mut dyn FnMut(InitEvent),
     ) {
+        loop {
+            let (done, created) = self.prewarm_pipelines(layouts, observer, Some(1));
+            if created > 0 {
+                crate::init::yield_init_frame().await;
+            }
+            if done {
+                return;
+            }
+        }
+    }
+
+    /// [`Self::prewarm_all_observed`] in one call, without yielding.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn prewarm_all_observed_blocking(
+        &mut self,
+        layouts: &PrewarmLayouts<'_>,
+        observer: &mut dyn FnMut(InitEvent),
+    ) {
+        // Without a budget the core never pauses: it creates every pipeline.
+        self.prewarm_pipelines(layouts, observer, None);
+    }
+
+    /// Create every pipeline `feature` (all of them for `None`) needs and
+    /// does not have yet, at most `budget` of them (`None`: no limit). Returns
+    /// whether every one exists now, and how many this call created. Each
+    /// pipeline is created once: a call after a paused one goes on where it
+    /// stopped. The waiting drivers are [`Self::prewarm_all_observed`], which
+    /// yields to the browser after each pipeline, and
+    /// `Self::prewarm_all_observed_blocking`.
+    fn prewarm_pipelines(
+        &mut self,
+        layouts: &PrewarmLayouts<'_>,
+        observer: &mut dyn FnMut(InitEvent),
+        budget: Option<usize>,
+    ) -> (bool, usize) {
+        let PrewarmLayouts {
+            device,
+            queue,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            point_value_map_bgl,
+            data_selection_bgl,
+            field_bgl,
+            vector_bgl,
+            category_bar_data_bgl,
+            parallel_bgl,
+            star_data_bgl,
+            label_pipelines,
+            feature,
+            surface_format,
+        } = *layouts;
+        let mut created = 0usize;
+        macro_rules! prewarm_step {
+            ($observer:expr, $scope:expr, $stage:expr, $create:expr $(,)?) => {{
+                if budget == Some(created) {
+                    return (false, created);
+                }
+                created += 1;
+                crate::init::observe_value($observer, $scope, $stage, $create)
+            }};
+        }
         macro_rules! ensure {
             ($field:ident, $stage:literal, $create:expr) => {
                 if self.$field.is_none()
                     && feature.is_none_or(|f| f.includes_field(stringify!($field)))
                 {
-                    self.$field = Some(
-                        observe_value_async(observer, "renderer.prewarm", $stage, || $create).await,
-                    );
+                    self.$field = Some(prewarm_step!(observer, "renderer.prewarm", $stage, || {
+                        $create
+                    }));
                 }
             };
         }
@@ -1713,8 +1791,11 @@ impl TargetPipelines {
             if self.ternary[kind as usize].is_none()
                 && feature.is_none_or(|f| f.includes_field("ternary"))
             {
-                self.ternary[kind as usize] = Some(
-                    observe_value_async(observer, "renderer.prewarm", kind.stage(), || {
+                self.ternary[kind as usize] = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    kind.stage(),
+                    || {
                         create_ternary_pipeline(
                             kind,
                             device,
@@ -1728,9 +1809,8 @@ impl TargetPipelines {
                             surface_format,
                             self.sample_count,
                         )
-                    })
-                    .await,
-                );
+                    }
+                ));
             }
         }
         ensure!(
@@ -1816,31 +1896,28 @@ impl TargetPipelines {
                 &mut self.bar_category
             };
             if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_category")) {
-                *slot = Some(
-                    observe_value_async(
-                        observer,
-                        "renderer.prewarm",
-                        if selection {
-                            "selected category bar"
-                        } else {
-                            "category bars"
-                        },
-                        || {
-                            data_render::create_category_bar_pipeline_with_sample_count(
-                                device,
-                                &self.shaders.bar,
-                                transform_bgl,
-                                style_bgl,
-                                per_point_style_map_bgl,
-                                category_bar_data_bgl,
-                                surface_format,
-                                self.sample_count,
-                                selection,
-                            )
-                        },
-                    )
-                    .await,
-                );
+                *slot = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    if selection {
+                        "selected category bar"
+                    } else {
+                        "category bars"
+                    },
+                    || {
+                        data_render::create_category_bar_pipeline_with_sample_count(
+                            device,
+                            &self.shaders.bar,
+                            transform_bgl,
+                            style_bgl,
+                            per_point_style_map_bgl,
+                            category_bar_data_bgl,
+                            surface_format,
+                            self.sample_count,
+                            selection,
+                        )
+                    },
+                ));
             }
         }
         for selection in [false, true] {
@@ -1850,31 +1927,28 @@ impl TargetPipelines {
                 &mut self.bar_box_plot
             };
             if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_box_plot")) {
-                *slot = Some(
-                    observe_value_async(
-                        observer,
-                        "renderer.prewarm",
-                        if selection {
-                            "selected box"
-                        } else {
-                            "box plots"
-                        },
-                        || {
-                            data_render::create_box_plot_pipeline_with_sample_count(
-                                device,
-                                &self.shaders.bar,
-                                transform_bgl,
-                                style_bgl,
-                                per_point_style_map_bgl,
-                                category_bar_data_bgl,
-                                surface_format,
-                                self.sample_count,
-                                selection,
-                            )
-                        },
-                    )
-                    .await,
-                );
+                *slot = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    if selection {
+                        "selected box"
+                    } else {
+                        "box plots"
+                    },
+                    || {
+                        data_render::create_box_plot_pipeline_with_sample_count(
+                            device,
+                            &self.shaders.bar,
+                            transform_bgl,
+                            style_bgl,
+                            per_point_style_map_bgl,
+                            category_bar_data_bgl,
+                            surface_format,
+                            self.sample_count,
+                            selection,
+                        )
+                    },
+                ));
             }
         }
         for selection in [false, true] {
@@ -1884,31 +1958,28 @@ impl TargetPipelines {
                 &mut self.bar_range
             };
             if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_range")) {
-                *slot = Some(
-                    observe_value_async(
-                        observer,
-                        "renderer.prewarm",
-                        if selection {
-                            "selected range bar"
-                        } else {
-                            "range bars"
-                        },
-                        || {
-                            data_render::create_range_bar_pipeline_with_sample_count(
-                                device,
-                                &self.shaders.bar,
-                                transform_bgl,
-                                style_bgl,
-                                per_point_style_map_bgl,
-                                category_bar_data_bgl,
-                                surface_format,
-                                self.sample_count,
-                                selection,
-                            )
-                        },
-                    )
-                    .await,
-                );
+                *slot = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    if selection {
+                        "selected range bar"
+                    } else {
+                        "range bars"
+                    },
+                    || {
+                        data_render::create_range_bar_pipeline_with_sample_count(
+                            device,
+                            &self.shaders.bar,
+                            transform_bgl,
+                            style_bgl,
+                            per_point_style_map_bgl,
+                            category_bar_data_bgl,
+                            surface_format,
+                            self.sample_count,
+                            selection,
+                        )
+                    },
+                ));
             }
         }
         for (points, selection) in [(false, false), (false, true), (true, false), (true, true)] {
@@ -1927,23 +1998,20 @@ impl TargetPipelines {
                 ),
             };
             if slot.is_none() && feature.is_none_or(|f| f.includes_field(field)) {
-                *slot = Some(
-                    observe_value_async(observer, "renderer.prewarm", label, || {
-                        data_render::create_violin_pipeline_with_sample_count(
-                            device,
-                            &self.shaders.bar,
-                            transform_bgl,
-                            style_bgl,
-                            per_point_style_map_bgl,
-                            category_bar_data_bgl,
-                            surface_format,
-                            self.sample_count,
-                            points,
-                            selection,
-                        )
-                    })
-                    .await,
-                );
+                *slot = Some(prewarm_step!(observer, "renderer.prewarm", label, || {
+                    data_render::create_violin_pipeline_with_sample_count(
+                        device,
+                        &self.shaders.bar,
+                        transform_bgl,
+                        style_bgl,
+                        per_point_style_map_bgl,
+                        category_bar_data_bgl,
+                        surface_format,
+                        self.sample_count,
+                        points,
+                        selection,
+                    )
+                }));
             }
         }
         for selection in [false, true] {
@@ -1954,31 +2022,28 @@ impl TargetPipelines {
             };
             if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_value_label")) {
                 let value_label_bgl = data_render::create_value_label_bind_group_layout(device);
-                *slot = Some(
-                    observe_value_async(
-                        observer,
-                        "renderer.prewarm",
-                        if selection {
-                            "selected value label"
-                        } else {
-                            "value labels"
-                        },
-                        || {
-                            data_render::create_value_label_pipeline_with_sample_count(
-                                device,
-                                &self.shaders.bar,
-                                transform_bgl,
-                                &value_label_bgl,
-                                per_point_style_map_bgl,
-                                category_bar_data_bgl,
-                                surface_format,
-                                self.sample_count,
-                                selection,
-                            )
-                        },
-                    )
-                    .await,
-                );
+                *slot = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    if selection {
+                        "selected value label"
+                    } else {
+                        "value labels"
+                    },
+                    || {
+                        data_render::create_value_label_pipeline_with_sample_count(
+                            device,
+                            &self.shaders.bar,
+                            transform_bgl,
+                            &value_label_bgl,
+                            per_point_style_map_bgl,
+                            category_bar_data_bgl,
+                            surface_format,
+                            self.sample_count,
+                            selection,
+                        )
+                    },
+                ));
             }
         }
         ensure!(
@@ -2122,7 +2187,7 @@ impl TargetPipelines {
             {
                 continue;
             }
-            let set = observe_value_async(observer, "renderer.prewarm", stage, || {
+            let set = prewarm_step!(observer, "renderer.prewarm", stage, || {
                 create_style_set(
                     key,
                     device,
@@ -2134,10 +2199,10 @@ impl TargetPipelines {
                     surface_format,
                     self.sample_count,
                 )
-            })
-            .await;
+            });
             self.styled.insert(key, set);
         }
+        (true, created)
     }
 
     /// Draw-phase lookup: the cached set for the item's style, `None` for
@@ -2146,6 +2211,76 @@ impl TargetPipelines {
     /// instead of panicking.
     pub(super) fn style_set(&self, style: &DrawStyle) -> Option<&StyleSet> {
         style_variant(style).and_then(|v| self.styled.get(&v.key))
+    }
+}
+
+/// The device and layouts a pipeline prewarm builds with, for
+/// [`TargetPipelines::prewarm_all_observed`] and its `_blocking` twin.
+#[derive(Clone, Copy)]
+pub(super) struct PrewarmLayouts<'a> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) queue: &'a wgpu::Queue,
+    pub(super) transform_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) style_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) point_value_map_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) data_selection_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) field_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) vector_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) category_bar_data_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) parallel_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) star_data_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) label_pipelines: Option<&'a crate::gpu_contour::ContourLabelPipelines>,
+    pub(super) feature: Option<PreparationFeature>,
+    pub(super) surface_format: wgpu::TextureFormat,
+}
+
+/// A renderer's [`PrewarmLayouts`], borrowed field by field so that
+/// `pipelines` stays free for the prewarm's `&mut`.
+macro_rules! renderer_prewarm_layouts {
+    ($renderer:expr) => {
+        PrewarmLayouts {
+            device: &$renderer.device,
+            queue: &$renderer.queue,
+            transform_bgl: &$renderer.transform_bgl,
+            style_bgl: &$renderer.style_bgl,
+            per_point_style_map_bgl: &$renderer.per_point_style_map_bgl,
+            point_value_map_bgl: &$renderer.point_value_map_bgl,
+            data_selection_bgl: &$renderer.data_selection_bgl,
+            field_bgl: &$renderer.field_bgl,
+            vector_bgl: &$renderer.vector_bgl,
+            category_bar_data_bgl: &$renderer.category_bar_data_bgl,
+            parallel_bgl: &$renderer.parallel_bgl,
+            star_data_bgl: &$renderer.star_data_bgl,
+            label_pipelines: $renderer.contour_label_pipelines.as_ref(),
+            feature: None,
+            surface_format: $renderer.surface_format,
+        }
+    };
+}
+/// A renderer prewarm's mesh stages, in order.
+#[derive(Clone, Copy)]
+enum PrewarmMeshStage {
+    Surface,
+    View3d,
+    TernaryRegion,
+}
+
+impl PrewarmMeshStage {
+    const ALL: [Self; 3] = [Self::Surface, Self::View3d, Self::TernaryRegion];
+}
+
+fn prewarm_extent_failure(error: crate::gpu_extent::GpuExtentError) -> FiggyError {
+    FiggyError::GpuResourceAllocationFailed {
+        resource: "fit extent compute pipelines",
+        reason: error.to_string(),
+    }
+}
+
+fn prewarm_picking_failure(error: crate::gpu_pick::GpuPickError) -> FiggyError {
+    FiggyError::GpuResourceAllocationFailed {
+        resource: "point picking compute pipelines",
+        reason: error.to_string(),
     }
 }
 
@@ -2484,7 +2619,8 @@ pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyErro
 }
 
 /// The health of one wgpu device: whether it was lost, and how many errors
-/// reached its uncaptured-error handler.
+/// reached its uncaptured-error handler; on native also the bundle's poll
+/// thread, when it has one.
 ///
 /// [`RendererDevice::new`] registers the device-lost callback and the
 /// uncaptured-error handler once; every renderer and engine built from that
@@ -2492,9 +2628,17 @@ pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyErro
 /// device, so a host that registers its own after building the bundle
 /// replaces figgy's, and figgy then learns of a loss only from the failures
 /// it causes.
+///
+/// Every clone owns the poll thread (`gpu_poller.rs`): it lives as long as
+/// some renderer, engine or ticket of the bundle holds the record, or a wait
+/// is pending.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DeviceHealth {
     state: Arc<DeviceHealthState>,
+    /// `None` for a `RendererDevice::blocking` bundle and a record not
+    /// built from a bundle.
+    #[cfg(not(target_arch = "wasm32"))]
+    poller: Option<crate::gpu_poller::Poller>,
 }
 
 #[derive(Debug, Default)]
@@ -2560,6 +2704,67 @@ impl DeviceHealth {
 
     pub(crate) fn is_lost(&self) -> bool {
         self.state.lost.get().is_some()
+    }
+
+    /// Start the poll thread over `device`, the device this record watches.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_poller(&mut self, device: &wgpu::Device) -> Result<()> {
+        let drive = DevicePoll {
+            device: device.clone(),
+            state: Arc::clone(&self.state),
+        };
+        let poller = crate::gpu_poller::Poller::start(drive).map_err(|error| {
+            FiggyError::PollThreadStartFailed {
+                reason: error.0.to_string(),
+            }
+        })?;
+        self.poller = Some(poller);
+        Ok(())
+    }
+
+    /// A record with a poll thread over `device` and no callbacks: for the
+    /// tests that build engines without a bundle, so their asynchronous
+    /// waits complete.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn polled_for_test(device: &wgpu::Device) -> Self {
+        let mut health = Self::default();
+        health.start_poller(device).expect("figgy poll thread");
+        health
+    }
+
+    /// The bundle's poll thread; `None` without one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn poller(&self) -> Option<&crate::gpu_poller::Poller> {
+        self.poller.as_ref()
+    }
+}
+
+/// What the poll thread polls: the device, and the health state it reads
+/// without the poller, so the thread does not own itself.
+///
+/// The thread reads only whether the device is lost. It never takes the
+/// error count that [`DeviceHealth::check`] reports: those errors belong to
+/// the host call whose work caused them, not to the background poll.
+#[cfg(not(target_arch = "wasm32"))]
+struct DevicePoll {
+    device: wgpu::Device,
+    state: Arc<DeviceHealthState>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::gpu_poller::Drive for DevicePoll {
+    fn wait(&self) -> bool {
+        if self.state.lost.get().is_some() {
+            return false;
+        }
+        // As in `gpu_poll`: wgpu 30 panics in a poll on a lost device.
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+        }));
+        matches!(polled, Ok(Ok(_)))
     }
 }
 
@@ -3757,90 +3962,17 @@ impl Renderer {
                 resource: "contour label compute pipelines",
                 reason,
             })?;
-            self.contour_label_pipelines = Some(
-                observe_value_async(observer, "renderer.prewarm", "contour label engine", || {
-                    crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field_bgl)
-                })
-                .await,
-            );
+            self.prewarm_contour_labels(observer);
+            crate::init::yield_init_frame().await;
         }
-
+        let layouts = renderer_prewarm_layouts!(self);
         self.pipelines
-            .prewarm_all_observed(
-                &self.device,
-                &self.queue,
-                &self.transform_bgl,
-                &self.style_bgl,
-                &self.per_point_style_map_bgl,
-                &self.point_value_map_bgl,
-                &self.data_selection_bgl,
-                &self.field_bgl,
-                &self.vector_bgl,
-                &self.category_bar_data_bgl,
-                &self.parallel_bgl,
-                &self.star_data_bgl,
-                self.contour_label_pipelines.as_ref(),
-                None,
-                self.surface_format,
-                observer,
-            )
+            .prewarm_all_observed(&layouts, observer)
             .await;
-
-        // The 3D surface and its floor contours (`Config.view_3d`).
-        started(observer, "renderer.prewarm", "surface");
-        for pass in data_render::surface_mesh::SurfacePass::ALL {
-            self.pipelines.ensure_surface_pass(
-                &self.device,
-                [
-                    &self.transform_bgl,
-                    &self.style_bgl,
-                    &self.field_bgl,
-                    &self.surface_bgl,
-                ],
-                self.surface_format,
-                pass,
-            );
+        for stage in PrewarmMeshStage::ALL {
+            self.prewarm_mesh_stage(stage, observer);
+            crate::init::yield_init_frame().await;
         }
-        finished(observer, "renderer.prewarm", "surface");
-        crate::init::yield_init_frame().await;
-
-        // The 3D scatter and line entries (#132).
-        for kind in View3dPipeline::ALL {
-            if self.pipelines.view3d[kind as usize].is_none() {
-                started(observer, "renderer.prewarm", kind.stage());
-                self.pipelines.ensure_view3d_pass(
-                    &self.device,
-                    [
-                        &self.transform_bgl,
-                        &self.style_bgl,
-                        &self.per_point_style_map_bgl,
-                        &self.surface_bgl,
-                        &self.view3d_value_map_bgl,
-                    ],
-                    self.surface_format,
-                    kind,
-                );
-                finished(observer, "renderer.prewarm", kind.stage());
-            }
-        }
-        crate::init::yield_init_frame().await;
-
-        // A ternary series' region fill (`TernaryRegionStyle`).
-        started(observer, "renderer.prewarm", "ternary region");
-        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
-            self.pipelines.ensure_ternary_region_pass(
-                &self.device,
-                &self.transform_bgl,
-                &self.region_bgl,
-                self.surface_format,
-                pass,
-            );
-        }
-        // The ring-start scan the region draw and pick read (#49).
-        self.pipelines.ensure_ternary_region_scan(&self.device);
-        finished(observer, "renderer.prewarm", "ternary region");
-        crate::init::yield_init_frame().await;
-
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(
                 data_render::line_arc::create_arc_scan_pipelines_observed_async(
@@ -3854,29 +3986,146 @@ impl Renderer {
                 })?,
             );
         }
-
         if self.errorbar_extent_engine.is_none() {
             started(observer, "renderer.prewarm", "fit extent compute");
             self.ensure_errorbar_extent_engine()
                 .await
-                .map_err(|error| FiggyError::GpuResourceAllocationFailed {
-                    resource: "fit extent compute pipelines",
-                    reason: error.to_string(),
-                })?;
+                .map_err(prewarm_extent_failure)?;
             finished(observer, "renderer.prewarm", "fit extent compute");
             crate::init::yield_init_frame().await;
         }
-
         started(observer, "renderer.prewarm", "point picking compute");
         self.enable_gpu_picking_observed_async(observer)
             .await
-            .map_err(|error| FiggyError::GpuResourceAllocationFailed {
-                resource: "point picking compute pipelines",
-                reason: error.to_string(),
-            })?;
+            .map_err(prewarm_picking_failure)?;
         finished(observer, "renderer.prewarm", "point picking compute");
         crate::init::yield_init_frame().await;
         Ok(())
+    }
+
+    /// [`Self::prewarm_all_observed`], creating every pipeline on this thread
+    /// without waiting: on native nothing in a prewarm waits but the
+    /// browser's yields, which this one has none of.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prewarm_all_observed_blocking(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<()> {
+        let result = self.prewarm_all_observed_blocking_unreported(observer);
+        self.reported(result)
+    }
+
+    /// [`Self::prewarm_all`], without waiting.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn prewarm_all_blocking(&mut self) -> Result<()> {
+        let mut noop = |_| {};
+        self.prewarm_all_observed_blocking(&mut noop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prewarm_all_observed_blocking_unreported(
+        &mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<()> {
+        self.health.check()?;
+        if self.contour_label_pipelines.is_none() {
+            self.prewarm_contour_labels(observer);
+        }
+        let layouts = renderer_prewarm_layouts!(self);
+        self.pipelines
+            .prewarm_all_observed_blocking(&layouts, observer);
+        for stage in PrewarmMeshStage::ALL {
+            self.prewarm_mesh_stage(stage, observer);
+        }
+        if self.arc_pipelines.is_none() {
+            self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+                &self.device,
+                observer,
+            ));
+        }
+        if self.errorbar_extent_engine.is_none() {
+            started(observer, "renderer.prewarm", "fit extent compute");
+            self.ensure_errorbar_extent_engine_blocking()
+                .map_err(prewarm_extent_failure)?;
+            finished(observer, "renderer.prewarm", "fit extent compute");
+        }
+        started(observer, "renderer.prewarm", "point picking compute");
+        self.enable_gpu_picking_observed(observer)
+            .map_err(prewarm_picking_failure)?;
+        finished(observer, "renderer.prewarm", "point picking compute");
+        Ok(())
+    }
+
+    fn prewarm_contour_labels(&mut self, observer: &mut dyn FnMut(InitEvent)) {
+        let pipelines = crate::init::observe_value(
+            observer,
+            "renderer.prewarm",
+            "contour label engine",
+            || crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field_bgl),
+        );
+        self.contour_label_pipelines = Some(pipelines);
+    }
+
+    /// One of a prewarm's mesh stages: the 3D surface and its floor
+    /// contours, the 3D scatter and line entries, or the ternary region.
+    fn prewarm_mesh_stage(&mut self, stage: PrewarmMeshStage, observer: &mut dyn FnMut(InitEvent)) {
+        match stage {
+            PrewarmMeshStage::Surface => {
+                // The 3D surface and its floor contours (`Config.view_3d`).
+                started(observer, "renderer.prewarm", "surface");
+                for pass in data_render::surface_mesh::SurfacePass::ALL {
+                    self.pipelines.ensure_surface_pass(
+                        &self.device,
+                        [
+                            &self.transform_bgl,
+                            &self.style_bgl,
+                            &self.field_bgl,
+                            &self.surface_bgl,
+                        ],
+                        self.surface_format,
+                        pass,
+                    );
+                }
+                finished(observer, "renderer.prewarm", "surface");
+            }
+            PrewarmMeshStage::View3d => {
+                // The 3D scatter and line entries (#132).
+                for kind in View3dPipeline::ALL {
+                    if self.pipelines.view3d[kind as usize].is_none() {
+                        started(observer, "renderer.prewarm", kind.stage());
+                        self.pipelines.ensure_view3d_pass(
+                            &self.device,
+                            [
+                                &self.transform_bgl,
+                                &self.style_bgl,
+                                &self.per_point_style_map_bgl,
+                                &self.surface_bgl,
+                                &self.view3d_value_map_bgl,
+                            ],
+                            self.surface_format,
+                            kind,
+                        );
+                        finished(observer, "renderer.prewarm", kind.stage());
+                    }
+                }
+            }
+            PrewarmMeshStage::TernaryRegion => {
+                // A ternary series' region fill (`TernaryRegionStyle`).
+                started(observer, "renderer.prewarm", "ternary region");
+                for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+                    self.pipelines.ensure_ternary_region_pass(
+                        &self.device,
+                        &self.transform_bgl,
+                        &self.region_bgl,
+                        self.surface_format,
+                        pass,
+                    );
+                }
+                // The ring-start scan the region draw and pick read (#49).
+                self.pipelines.ensure_ternary_region_scan(&self.device);
+                finished(observer, "renderer.prewarm", "ternary region");
+            }
+        }
     }
 
     /// Prepare the resident Cartesian groups described by [`Self::prewarm_all_observed`]
@@ -3895,33 +4144,49 @@ impl Renderer {
     ///
     /// This does not submit a frame. Hosts that have not drawn yet should call
     /// [`WindowedRenderer::first_frame_ready`] or draw first. On native the
-    /// device is polled so the callback can resolve; on wasm the browser
-    /// delivers `onSubmittedWorkDone`. A lost device, a failed poll or a
-    /// completion callback that never runs is returned as an error (#152).
+    /// bundle's poll thread completes the wait (see [`RendererDevice::new`]);
+    /// on wasm the browser delivers `onSubmittedWorkDone`. A lost device, a
+    /// failed poll or a completion callback that never runs is returned as an
+    /// error (#152).
     pub async fn wait_submitted_work(&self) -> Result<()> {
         self.health.check()?;
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        self.queue.on_submitted_work_done(move || {
-            if sender.send(()).is_err() {
-                // Receiver dropped: the waiting call was cancelled.
+        let mut done = self.submitted_work_done();
+        let waited = done.wait(&self.health).await;
+        self.submitted_work_waited(waited)
+    }
+
+    /// [`Self::wait_submitted_work`], polling the device on this thread
+    /// until the work completes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_submitted_work_blocking(&self) -> Result<()> {
+        self.health.check()?;
+        let mut done = self.submitted_work_done();
+        let waited = done.wait_blocking(&self.health, &self.device, None);
+        self.submitted_work_waited(waited)
+    }
+
+    /// The completion of the work submitted so far.
+    fn submitted_work_done(&self) -> crate::gpu_readback::Completion<()> {
+        let (callback, done) = crate::gpu_readback::completion(&self.health);
+        self.queue.on_submitted_work_done(move || callback(()));
+        done
+    }
+
+    fn submitted_work_waited(
+        &self,
+        waited: std::result::Result<(), crate::gpu_readback::ReadbackError>,
+    ) -> Result<()> {
+        match waited {
+            Ok(()) => {}
+            Err(crate::gpu_readback::ReadbackError::Poll(error)) => return Err(error),
+            Err(_) => {
+                // wgpu drops the callback without running it when the device
+                // is lost; anything else is a broken completion contract.
+                self.health.check()?;
+                return Err(FiggyError::internal(
+                    "the submitted-work callback was dropped without running",
+                ));
             }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        gpu_poll(
-            &self.health,
-            &self.device,
-            wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            },
-        )?;
-        if receiver.await.is_err() {
-            // wgpu drops the callback without running it when the device is
-            // lost; anything else is a broken completion contract.
-            self.health.check()?;
-            return Err(FiggyError::internal(
-                "the submitted-work callback was dropped without running",
-            ));
         }
         self.health.check()
     }

@@ -13,7 +13,7 @@
 //! data area and axis ranges the renderer draws with, and the label sizes
 //! from the one text stack (`measure_plain_text`).
 
-use pollster::FutureExt as _;
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -77,7 +77,7 @@ const RADAR: [f64; 4] = [0.6, 0.5, 0.7, 0.4];
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
@@ -1109,7 +1109,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+            test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
         };
         // The overlay's label picks on the overlay's layer.
         let mut config = parent.config().clone();
@@ -1178,7 +1178,7 @@ fn a_label_picks_with_its_series_and_category_over_the_data_under_it() {
                 display_scale: scale,
                 max_distance_px: 0.0,
             };
-            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+            test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
         };
         for k in 0..3 {
             let region = slot(&chart, direction, k, scale);
@@ -1252,7 +1252,7 @@ fn pick_at(
         display_scale: scale,
         max_distance_px: 0.0,
     };
-    let picked = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let picked = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
     r.remove_chart(id).unwrap();
     picked
 }
