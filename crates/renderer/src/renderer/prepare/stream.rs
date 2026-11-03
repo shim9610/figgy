@@ -54,6 +54,17 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_STREAMLINES_REASON.into(),
             });
         }
+        // Streaming is not extended to broken axes (rule 8, #200).
+        if [&config.bottom_x, &config.left_y]
+            .into_iter()
+            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .any(|axis| axis.breaks.as_ref().is_some_and(|b| !b.ranges.is_empty()))
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_BREAK_REASON.into(),
+            });
+        }
         // Streaming is not extended to polar charts.
         if config.polar().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

@@ -55,10 +55,10 @@ fn px_to_clip(px: vec2<f32>) -> vec4<f32> {
 fn axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
     if (axis == 0u) {
         let range = fma(1.0, transform.data_max.x - transform.data_min.x, transform.data_max_lo.x - transform.data_min_lo.x);
-        return axis_px_per_unit_at(range, transform.data_to_panel_scale.x, transform.scale_log.x, transform.pixel_to_ndc.x, pair);
+        return axis_px_per_unit_at(range, transform.data_to_panel_scale.x * cut_scale(cuts_of(transform.breaks, transform.break_info, 0u)), transform.scale_log.x, transform.pixel_to_ndc.x, pair);
     }
     let range = fma(1.0, transform.data_max.y - transform.data_min.y, transform.data_max_lo.y - transform.data_min_lo.y);
-    return axis_px_per_unit_at(range, transform.data_to_panel_scale.y, transform.scale_log.y, transform.pixel_to_ndc.y, pair);
+    return axis_px_per_unit_at(range, transform.data_to_panel_scale.y * cut_scale(cuts_of(transform.breaks, transform.break_info, 1u)), transform.scale_log.y, transform.pixel_to_ndc.y, pair);
 }
 
 /// Project one sample. `mode` is a `VECTOR_SCALE_*` constant and `scale` the

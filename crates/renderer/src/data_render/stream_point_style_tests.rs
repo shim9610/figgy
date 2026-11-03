@@ -41,6 +41,8 @@ mod tests {
             polar_extent: [0.0; 4],
             ternary_lt: [0.0; 4],
             ternary_r: [0.0; 4],
+            breaks: crate::data_render::NO_BREAKS,
+            break_info: crate::data_render::NO_BREAK_INFO,
         }
     }
 

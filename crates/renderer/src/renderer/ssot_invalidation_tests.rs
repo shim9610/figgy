@@ -219,6 +219,28 @@ fn edits() -> Vec<Edit> {
             streams: false,
         });
     }
+    // A cut through the drawn line (#200); see `break_edits` for the rest.
+    // The stream pass rejects broken axes, so these are resident only.
+    for (name, apply) in [
+        (
+            "bottom_x.breaks (None -> Some)",
+            (|c: &mut Config| c.bottom_x.breaks = Some(cut(0.4, 0.55))) as fn(&mut Config),
+        ),
+        ("left_y.breaks (None -> Some)", |c| {
+            c.left_y.breaks = Some(cut(0.45, 0.6))
+        }),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Packed,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: false,
+        });
+    }
     edit!(bottom_x.inverted, true, Replay);
     edit!(left_y.inverted, true, Replay);
     edit!(top_x.inverted, true, Prefix);
@@ -677,6 +699,132 @@ fn baseline_with_log_axes() -> Config {
     c
 }
 
+/// A break cutting `from..to` out of an axis, `Continuous` with the default
+/// gap and mark (#200).
+fn cut(from: f64, to: f64) -> crate::config::AxisBreaks {
+    crate::config::AxisBreaks {
+        ranges: vec![crate::config::AxisBreak::new(from, to)],
+        ..Default::default()
+    }
+}
+
+/// The baseline with `bottom_x` cut `Continuous` and `left_y` cut `Panels`,
+/// both through the drawn line.
+fn baseline_with_breaks() -> Config {
+    let mut c = baseline();
+    c.bottom_x.breaks = Some(cut(0.4, 0.55));
+    c.left_y.breaks = Some(crate::config::AxisBreaks {
+        style: crate::config::AxisBreakStyle::Panels,
+        ..cut(0.45, 0.6)
+    });
+    c
+}
+
+/// Break edits (#200): the cut ranges, style and gap move the data's
+/// pixels and the piece layout, so they are data-area edits; the mark and
+/// the piece frames are chrome. None of these documents stream: the stream
+/// pass rejects broken axes as a contract of its own.
+fn break_edits() -> Vec<Edit> {
+    use crate::config::{AxisBreak, AxisBreakStyle, BreakMark};
+    let mut cases = Vec::new();
+    let mut push = |name, apply, work, pixels| {
+        cases.push(Edit {
+            name,
+            apply,
+            work,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels,
+            streams: false,
+        });
+    };
+    push(
+        "bottom_x.breaks (Some -> None)",
+        (|c: &mut Config| c.bottom_x.breaks = None) as fn(&mut Config),
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "left_y.breaks (Some -> None)",
+        |c| c.left_y.breaks = None,
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "bottom_x.breaks.ranges (one -> two)",
+        |c| {
+            if let Some(b) = c.bottom_x.breaks.as_mut() {
+                b.ranges.push(AxisBreak::new(0.7, 0.8));
+            }
+        },
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "bottom_x.breaks.style (Continuous -> Panels)",
+        |c| {
+            if let Some(b) = c.bottom_x.breaks.as_mut() {
+                b.style = AxisBreakStyle::Panels;
+            }
+        },
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "left_y.breaks.style (Panels -> Continuous)",
+        |c| {
+            if let Some(b) = c.left_y.breaks.as_mut() {
+                b.style = AxisBreakStyle::Continuous;
+            }
+        },
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "left_y.breaks.gap",
+        |c| {
+            if let Some(b) = c.left_y.breaks.as_mut() {
+                b.gap = 0.12;
+            }
+        },
+        Work::Packed,
+        Pixels::Changed,
+    );
+    push(
+        "bottom_x.breaks.mark (Slash -> None)",
+        |c| {
+            if let Some(b) = c.bottom_x.breaks.as_mut() {
+                b.mark = BreakMark::None;
+            }
+        },
+        Work::Prefix,
+        Pixels::Changed,
+    );
+    // The piece frames are chrome in either style.
+    push(
+        "bottom_x.breaks.frame_each_panel (Continuous)",
+        |c| {
+            if let Some(b) = c.bottom_x.breaks.as_mut() {
+                b.frame_each_panel = false;
+            }
+        },
+        Work::Prefix,
+        Pixels::Changed,
+    );
+    push(
+        "left_y.breaks.frame_each_panel (Panels)",
+        |c| {
+            if let Some(b) = c.left_y.breaks.as_mut() {
+                b.frame_each_panel = false;
+            }
+        },
+        Work::Prefix,
+        Pixels::Changed,
+    );
+    cases
+}
+
 fn log_tick_edits() -> Vec<Edit> {
     let mut cases = Vec::new();
     for (name, apply) in [
@@ -822,6 +970,7 @@ fn overlay_edits() -> Vec<Edit> {
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
     // The baseline overlay axis is linear, which ignores the policy.
     overlay!(y_axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    overlay!(y_axis.breaks, Some(cut(0.6, 1.2)), Packed, Changed);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -1329,6 +1478,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
         (baseline_with_log_axes(), log_tick_edits()),
+        (baseline_with_breaks(), break_edits()),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
@@ -1526,6 +1676,7 @@ fn config_fields_are_classified() {
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
+        breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix
     } = top_x;
     let LabelStyle {
         visible: _,

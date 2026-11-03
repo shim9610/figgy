@@ -31,12 +31,16 @@ pub(in crate::renderer) struct ArcResultKey {
     pub(in crate::renderer) x_allocation_epoch: u64,
     pub(in crate::renderer) y_allocation_epoch: u64,
     /// The arc scan reads the first 64 bytes of `ScatterTransform`, its
-    /// polar words (`polar_angle`, `polar_extent`) and its ternary words
-    /// (`ternary_lt`, `ternary_r`); the style parameters between them are
-    /// left out, so a style change does not retraverse the data.
+    /// polar words (`polar_angle`, `polar_extent`), its ternary words
+    /// (`ternary_lt`, `ternary_r`) and its break words (`breaks`,
+    /// `break_info`, #200); the style parameters are left out, so a style
+    /// change does not retraverse the data.
     pub(in crate::renderer) geometry_transform_bits: [u32; 16],
     pub(in crate::renderer) polar_transform_bits: [u32; 8],
     pub(in crate::renderer) ternary_transform_bits: [u32; 8],
+    /// The broken axes' cut table and info (#200): a cut moves every
+    /// sample past it, so the arc lengths change with it.
+    pub(in crate::renderer) break_transform_bits: [u32; 28],
     /// A ternary line's third component or a 3D line's height: its element
     /// base and allocation epoch (the chord lengths are measured through it).
     pub(in crate::renderer) c: Option<(u32, u64)>,
@@ -260,6 +264,8 @@ impl PrepareContext<'_> {
         polar_transform_bits.copy_from_slice(&transform_bits[28..36]);
         let mut ternary_transform_bits = [0u32; 8];
         ternary_transform_bits.copy_from_slice(&transform_bits[36..44]);
+        let mut break_transform_bits = [0u32; 28];
+        break_transform_bits.copy_from_slice(&transform_bits[44..72]);
         let key = ArcResultKey {
             n,
             x_base,
@@ -270,6 +276,7 @@ impl PrepareContext<'_> {
             geometry_transform_bits,
             polar_transform_bits,
             ternary_transform_bits,
+            break_transform_bits,
             c,
             view3d_bits: third
                 .and_then(|third| third.camera())

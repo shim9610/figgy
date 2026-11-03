@@ -199,8 +199,8 @@ mod tests {
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
         assert_eq!(sizes[0], 513 * ARC_PAIR_BYTES);
-        // The last is the transform, `ScatterTransform`'s 176 bytes.
-        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 176]);
+        // The last is the transform, `ScatterTransform`'s 288 bytes.
+        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 288]);
         assert_eq!(&sizes[6..12], &[32; 6]);
         assert_eq!(&sizes[12..], &[16, 8, 16]);
 
@@ -1577,6 +1577,8 @@ mod replay_product_tests {
             polar_extent: [0.0; 4],
             ternary_lt: [0.0; 4],
             ternary_r: [0.0; 4],
+            breaks: crate::data_render::NO_BREAKS,
+            break_info: crate::data_render::NO_BREAK_INFO,
         };
         let transform_buf = init(&device, &transform);
         let transform_bg = pipelines.replay_transform_bind_group(&device, &transform_buf);

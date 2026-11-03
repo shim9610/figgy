@@ -452,10 +452,67 @@ pub fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
 /// falls back to [`automatic_linear_spacing`] instead of blanking the axis.
 /// Callers must have validated the range as finite and non-empty.
 pub fn effective_major_spacing(axis: &AxisOptions) -> f64 {
-    match major_spacing_rejection(axis) {
+    let spacing = match major_spacing_rejection(axis) {
         None => axis.major_spacing,
         Some(_) => automatic_linear_spacing(axis),
+    };
+    spacing_for_pieces(axis, spacing)
+}
+
+/// The spacing a broken linear axis (#200) walks: `spacing` stepped down
+/// the 1, 2, 5 × 10^k ladder while some piece would hold fewer than two
+/// majors, so a short piece is not left with one tick and one label. The
+/// majors stay on absolute multiples, and crowded labels are still thinned
+/// on the walk. An unbroken, logarithmic or categorical axis, and a step
+/// the range could not walk, keep `spacing`.
+fn spacing_for_pieces(axis: &AxisOptions, spacing: f64) -> f64 {
+    if axis.scale != AxisScale::Linear || axis.categories.is_some() {
+        return spacing;
     }
+    let map = crate::layout::BreakMap::of(axis);
+    if !map.is_broken() || !(spacing.is_finite() && spacing > 0.0) {
+        return spacing;
+    }
+    let span = axis.max - axis.min;
+    // Majors on absolute multiples of `step` inside `lo..=hi`.
+    let majors = |lo: f64, hi: f64, step: f64| {
+        let tolerance = 1e-9;
+        ((hi / step + tolerance).floor() - (lo / step - tolerance).ceil() + 1.0).max(0.0)
+    };
+    let short = |step: f64| {
+        map.raw_pieces().any(|(a, b)| {
+            let (p, q) = (axis.min + a * span, axis.min + b * span);
+            majors(p.min(q), p.max(q), step) < 2.0
+        })
+    };
+    let mut step = spacing;
+    // Each rung divides the step by 2 or 2.5; the interval budget below
+    // ends the walk long before the bound.
+    for _ in 0..64 {
+        if !short(step) {
+            break;
+        }
+        let decade = 10f64.powf(step.log10().floor());
+        let leading = step / decade;
+        let next = if leading > 5.0 + 1e-9 {
+            5.0 * decade
+        } else if leading > 2.0 + 1e-9 {
+            2.0 * decade
+        } else if leading > 1.0 + 1e-9 {
+            decade
+        } else {
+            0.5 * decade
+        };
+        if !(next.is_finite() && next > 0.0)
+            || !range_in_spacing_units(axis, next)
+                .is_some_and(|units| units <= MAX_MAJOR_INTERVALS as f64)
+            || !spacing_advances_range(axis, next)
+        {
+            break;
+        }
+        step = next;
+    }
+    step
 }
 
 /// Why [`effective_major_spacing`] does not walk `axis.major_spacing`, or
@@ -1938,5 +1995,41 @@ mod tests {
         let a = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
         let b = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 100.0, 6).unwrap();
         assert_eq!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod piece_spacing_tests {
+    use super::*;
+    use crate::config::{AxisBreak, AxisBreaks};
+
+    /// A short piece gets at least two majors: the spacing steps down the
+    /// 1-2-5 ladder from what the range alone would pick, the ticks stay
+    /// round, and an unbroken axis keeps its spacing (#200).
+    #[test]
+    fn a_short_piece_keeps_two_majors() {
+        let mut axis = crate::default::default_axis_options_y();
+        axis.min = 0.0;
+        axis.max = 100.0;
+        axis.major_spacing = 20.0;
+        assert_eq!(effective_major_spacing(&axis), 20.0);
+        axis.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(30.0, 85.0)],
+            ..AxisBreaks::default()
+        });
+        assert_eq!(effective_major_spacing(&axis), 10.0);
+        let majors: Vec<f64> = major_ticks(&axis)
+            .filter(|&v| !crate::layout::value_in_cut(&axis, v))
+            .collect();
+        assert_eq!(majors, vec![0.0, 10.0, 20.0, 30.0, 90.0, 100.0]);
+        // A piece of 0.3 units on a 0..100 axis.
+        axis.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(0.3, 99.0)],
+            ..AxisBreaks::default()
+        });
+        let step = effective_major_spacing(&axis);
+        assert!(step <= 0.2 + 1e-12, "{step}");
+        let k = (step / 10f64.powf(step.log10().floor())).round();
+        assert!([1.0, 2.0, 5.0].contains(&k), "{step} is off the ladder");
     }
 }

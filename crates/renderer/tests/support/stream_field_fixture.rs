@@ -134,6 +134,8 @@ pub(super) fn fixture_data(case: Fixture) -> SourceFixture {
         polar_extent: [0.0; 4],
         ternary_lt: [0.0; 4],
         ternary_r: [0.0; 4],
+        breaks: [[0.0; 4]; 6],
+        break_info: [0.0, 0.0, 1.0, 1.0],
     };
     if case.log {
         transform.data_min = transform.data_min.map(f32::log10);

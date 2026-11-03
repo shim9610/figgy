@@ -130,6 +130,8 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 |---|---|
 | `scale` (AxisScale) | `"Linear"` `"Logarithmic"` |
 | `log_ticks` (LogTickPolicy) | `"Decades"` `"Adaptive"` |
+| `breaks.style` (AxisBreakStyle) | `"Continuous"` `"Panels"` |
+| `breaks.mark` (BreakMark) | `"None"` `{ "Slash": { "size": 6.0, "width": 1.0 } }` `{ "Slash": { "size": 6.0, "color": { ... }, "width": 1.0 } }` |
 | `tick` (TickVisibility) | `"None"` `"Outside"` `"Inside"` `"Both"` |
 | `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` `"Degrees"` `"Radians"` `{ "Plain": {} }` `{ "Plain": { "decimals": 1, "trim_zeros": true } }` |
 | `unit` (TimestampUnit) | `"Seconds"` `"Milliseconds"` `"Microseconds"` `"Nanoseconds"` |
@@ -237,6 +239,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - `scale`을 바꾸면 `major_spacing`의 단위도 달라진다. `Linear`는 데이터 단위이고 `Logarithmic`은 10배 간격인 decade 단위다. 예를 들어 `1.0`은 값이 10배 커질 때마다 주 눈금을 놓는다. 범위가 10배 간격보다 좁으면 주 눈금이 없을 수도 있다.
 - 로그축의 `min` / `max`에는 양수를 지정한다.
 - 로그축의 주 눈금은 축의 `log_ticks`가 정한다(#42). 기본값 `"Decades"`는 JSON에 쓰지 않으며, 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `"Adaptive"`는 `major_spacing`을 무시하고 범위만 보고 주 눈금을 고른다. 범위가 6 decade보다 넓으면 n decade마다 놓고, 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 4개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9 × 10^k 가운데 주 눈금이 아닌 값이다. 라벨이 서로 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되, 라벨이 2개 미만이 되는 단계로는 내려가지 않는다. 그래도 겹치면 남은 라벨을 2개, 5개, 10개마다 하나씩 남긴다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 다시 맞추는 편의 함수(`auto_fit_*`)는 이 값을 바꾸지 않으므로, 확대·축소한 뒤에도 새 범위에 맞게 눈금을 다시 고른다. 연결된 서브플롯 축은 대상 축의 값을 따르고, 색상 막대 축은 `set_colorbar_axis`로도 바꿀 수 있다. figgy-model 0.12.1 이하는 이 키를 무시한다.
+- 축의 `breaks`는 축에서 잘라낼 구간이다(#200). 키가 없으면(기본값) 축을 자르지 않으며, `get_config`도 이 키를 쓰지 않는다. 예: `"breaks": { "ranges": [{ "from": 15, "to": 85 }], "style": "Panels", "gap": 0.05 }`. 빠진 키는 기본값(`"style": "Continuous"`, `"gap": 0.03`, 축선 색의 6 px 빗금, 조각 테두리 `"frame_each_panel": true`)을 쓴다. 빗금의 `color`를 생략하면 축선 색으로 그린다. `ranges`는 데이터 단위로 정렬되어 겹치지 않아야 하고 최대 3개이며, `gap`은 축 길이에 대한 비율(0~0.2)이다. `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있고, `top_x`·`right_y`는 짝이 되는 축의 구간을 같은 비율 위치로 따라 그린다. 극좌표·삼각좌표·3D·평행 좌표 차트와 색상 막대 축, 스트리밍 소스는 이 키를 거부한다. 빈칸 안에는 데이터·강조·주석을 그리지 않고, 빈칸을 가리킨 피킹은 아무것도 반환하지 않는다. figgy-model 0.12.1 이하는 이 키를 무시한다.
 - `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다. 독립 함수 `autoLayout(configJson)`은 라벨과 제목이 겹치지 않도록 `out_margin`, 축 제목의 `offset_y`, `label_style.format`을 고친 설정 JSON을 반환한다(#44). 범위와 시리즈는 바꾸지 않으며, 결과는 `set_config()`로 적용한다.
 - `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
 - `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.

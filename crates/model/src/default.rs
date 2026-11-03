@@ -107,6 +107,7 @@ pub fn default_axis_options_x() -> AxisOptions {
         categories: None,
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 
@@ -134,6 +135,7 @@ pub fn default_axis_options_y() -> AxisOptions {
         categories: None,
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 
@@ -171,6 +173,7 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         categories: None,
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 

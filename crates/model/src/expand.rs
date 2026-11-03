@@ -48,7 +48,8 @@
 //! them by the same rule.
 
 use crate::config::{
-    AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config, TickVisibility,
+    AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
+    TickVisibility,
 };
 use crate::default::{
     default_axis_options_x, default_axis_options_y, default_chart_title_options,
@@ -677,6 +678,9 @@ impl Config {
                 cross_at: _,
                 // The hidden left axis draws no ticks.
                 log_ticks: _,
+                // The hidden left axis maps the overlay's range, cut by the
+                // overlay's own breaks (`hidden_axis` below).
+                breaks: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, default_axis_options_y());
             left.out_margin = *out_margin;
@@ -809,15 +813,29 @@ fn shift_axis(axis: &mut AxisOptions, by: f64) {
     }
     let (min, max) = axis.data_range();
     axis.categories = None;
+    // The cut ranges move with the range, so the member's gaps fall where
+    // its owner's do (#200).
+    let cuts = axis
+        .breaks
+        .as_mut()
+        .map_or(&mut [][..], |breaks| breaks.ranges.as_mut_slice());
     match axis.scale {
         AxisScale::Linear => {
             axis.min = min - by;
             axis.max = max - by;
+            for cut in cuts {
+                cut.from -= by;
+                cut.to -= by;
+            }
         }
         AxisScale::Logarithmic => {
             let factor = 10f64.powf(by);
             axis.min = min / factor;
             axis.max = max / factor;
+            for cut in cuts {
+                cut.from /= factor;
+                cut.to /= factor;
+            }
         }
     }
 }
@@ -890,6 +908,8 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         cross_at: _,
         // The hidden colourbar draws no ticks.
         log_ticks: _,
+        // A colourbar axis has no breaks (validation refuses them).
+        breaks: _,
     } = axis;
     let mut hidden = default_colorbar_options();
     hidden.visible = false;
@@ -930,6 +950,9 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         cross_at: _,
         // The log tick ladder is tick spacing too.
         log_ticks,
+        // The cut ranges are part of the mapping, so a linked axis maps
+        // exactly like its target.
+        breaks,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -939,6 +962,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.minor_count = *minor_count;
     to.log_ticks = *log_ticks;
     to.categories.clone_from(categories);
+    to.breaks.clone_from(breaks);
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -946,7 +970,15 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
 /// a range writer such as a view state re-derives it from an unchanged range;
 /// it travels with the edited range instead.
 fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
-    fn range(axis: &AxisOptions) -> (AxisScale, f64, f64, bool, Option<&[Category]>) {
+    type Range<'a> = (
+        AxisScale,
+        f64,
+        f64,
+        bool,
+        Option<&'a [Category]>,
+        Option<&'a AxisBreaks>,
+    );
+    fn range(axis: &AxisOptions) -> Range<'_> {
         let AxisOptions {
             scale,
             min,
@@ -972,8 +1004,17 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             cross_at: _,
             // Tick spacing travels with the edited range (see above).
             log_ticks: _,
+            // The cut ranges are part of the mapping.
+            breaks,
         } = axis;
-        (scale.clone(), *min, *max, *inverted, categories.as_deref())
+        (
+            scale.clone(),
+            *min,
+            *max,
+            *inverted,
+            categories.as_deref(),
+            breaks.as_ref(),
+        )
     }
     range(a) == range(b)
 }
@@ -1011,6 +1052,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: _,
         // A hidden axis draws no ticks, so its tick policy is the template's.
         log_ticks: _,
+        // The cut ranges are part of the transform the hidden axis carries.
+        breaks,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1033,6 +1076,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         categories: _,
         cross_at: _,
         log_ticks,
+        breaks: _,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -1056,6 +1100,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         categories: categories.clone(),
         cross_at: None,
         log_ticks,
+        breaks: breaks.clone(),
     }
     .with_hidden_text()
 }
@@ -2100,6 +2145,60 @@ mod tests {
         assert_eq!(after.panels[1], expansion.panels[1]);
         assert_eq!(after.panels[2], expansion.panels[2]);
         assert_ne!(after.panels[3], expansion.panels[3]);
+    }
+
+    /// A member's cut ranges move with its shifted range, so its pieces and
+    /// gaps fall where its owner's do, in data units on a linear axis and
+    /// in decades on a log one (#200).
+    #[test]
+    fn line_offset_members_keep_their_owners_gaps() {
+        use crate::config::{AxisBreak, AxisBreakStyle, AxisBreaks};
+        let mut cfg = two_layer_config();
+        cfg.bottom_x.min = 0.0;
+        cfg.bottom_x.max = 10.0;
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.left_y.min = 1.0;
+        cfg.left_y.max = 1e6;
+        let cut = |from, to, style| {
+            Some(AxisBreaks {
+                ranges: vec![AxisBreak::new(from, to)],
+                style,
+                ..AxisBreaks::default()
+            })
+        };
+        cfg.bottom_x.breaks = cut(3.0, 6.0, AxisBreakStyle::Continuous);
+        cfg.left_y.breaks = cut(100.0, 1e4, AxisBreakStyle::Panels);
+        cfg.line_offsets = Some(offsets(&["a", "b"], 0.5, 2.0));
+        let expansion = cfg.expand().unwrap();
+        let base = &expansion.panels[0].config;
+        for index in [2, 3] {
+            let member = &expansion.panels[index].config;
+            for (own, owner) in [
+                (&member.bottom_x, &base.bottom_x),
+                (&member.left_y, &base.left_y),
+            ] {
+                let (own, owner) = (
+                    crate::layout::BreakMap::of(own),
+                    crate::layout::BreakMap::of(owner),
+                );
+                assert_eq!(own.knots().len(), 1);
+                let (a, b) = (own.knots()[0], owner.knots()[0]);
+                assert!(
+                    (a.start - b.start).abs() < 1e-9 && (a.end - b.end).abs() < 1e-9,
+                    "panel {index}: {a:?} vs {b:?}"
+                );
+            }
+            assert_eq!(
+                member.left_y.breaks.as_ref().map(|b| b.style),
+                Some(AxisBreakStyle::Panels)
+            );
+        }
+        // The second member is shifted by 2 on x and half a decade on y.
+        let b = &expansion.panels[3].config;
+        let x = &b.bottom_x.breaks.as_ref().unwrap().ranges[0];
+        assert_eq!((x.from, x.to), (1.0, 4.0));
+        let y = &b.left_y.breaks.as_ref().unwrap().ranges[0];
+        assert!((y.from - 100.0 * 10f64.powf(-0.5)).abs() < 1e-9);
     }
 
     /// A subplot's line offsets are its own: its members expand among its

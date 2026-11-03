@@ -438,6 +438,8 @@ mod tests {
                     polar_extent,
                     ternary_lt,
                     ternary_r,
+                    breaks,
+                    break_info,
                 }
             )
             .with(module, wgsl)

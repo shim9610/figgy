@@ -79,6 +79,7 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
     AxisSpace {
         map,
         inverted: axis.inverted,
+        breaks: crate::layout::BreakMap::of(axis),
     }
 }
 
@@ -1035,10 +1036,12 @@ mod tests {
             x: AxisSpace {
                 map: AxisMap::Linear { min: 0., max: 10. },
                 inverted: false,
+                breaks: crate::layout::BreakMap::IDENTITY,
             },
             y: AxisSpace {
                 map: AxisMap::Linear { min: 0., max: 1. },
                 inverted: false,
+                breaks: crate::layout::BreakMap::IDENTITY,
             },
         }
     }

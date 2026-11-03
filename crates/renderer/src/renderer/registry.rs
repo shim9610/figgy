@@ -63,6 +63,9 @@ impl AxisViewState {
             cross_at: _,
             // Which ticks a log axis draws, not how data maps.
             log_ticks: _,
+            // A view moves the range; the cut ranges stay on the axis as
+            // they are, like the tick policy (#200).
+            breaks: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),
@@ -278,8 +281,34 @@ pub(super) fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
     left.overlays.len() == right.overlays.len()
         && left.overlays.iter().zip(&right.overlays).all(|(a, b)| {
             AxisViewState::from_axis(&a.y_axis) == AxisViewState::from_axis(&b.y_axis)
+                && break_geometry_equal(&a.y_axis, &b.y_axis)
                 && a.series == b.series
         })
+}
+
+/// Whether two axes' breaks map data to the same pixels (#200): the same
+/// cut ranges, style and gap. The mark and the piece frames are chrome.
+pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> bool {
+    fn geometry(
+        axis: &AxisOptions,
+    ) -> Option<(
+        &[crate::config::AxisBreak],
+        crate::config::AxisBreakStyle,
+        f32,
+    )> {
+        axis.breaks.as_ref().map(|breaks| {
+            let crate::config::AxisBreaks {
+                ranges,
+                style,
+                gap,
+                // Drawn on the axis line, not part of the mapping.
+                mark: _,
+                frame_each_panel: _,
+            } = breaks;
+            (ranges.as_slice(), *style, *gap)
+        })
+    }
+    geometry(left) == geometry(right)
 }
 
 /// Whether two configs map data to the same pixels in every subplot: the

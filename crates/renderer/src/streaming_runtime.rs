@@ -52,6 +52,11 @@ pub(crate) const STREAMED_HEXAGONAL_REASON: &str =
 pub(crate) const STREAMED_TERNARY_REASON: &str =
     "ternary series require GPU-resident columns; streamed sources are not supported";
 
+/// Why a streamed series on a broken axis is rejected (CLAUDE.md rule 8,
+/// #200): the gap mask and the `Panels` piece transforms are resident-only.
+pub(crate) const STREAMED_BREAK_REASON: &str =
+    "broken axes require GPU-resident columns; streamed sources are not supported";
+
 /// Why a streamed image series is rejected (CLAUDE.md rule 8, #139).
 pub(crate) const STREAMED_IMAGE_REASON: &str =
     "image series require GPU-resident columns; streamed sources are not supported";

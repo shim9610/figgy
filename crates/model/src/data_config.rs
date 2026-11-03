@@ -5048,6 +5048,19 @@ impl crate::config::Config {
             if self.bottom_x.scale != AxisScale::Linear || self.left_y.scale != AxisScale::Linear {
                 return Err("a hexagonal grid needs linear x and y axes: its lattice is uniform");
             }
+            // A `Continuous` break remaps the axis, so the lattice would not
+            // be uniform; each `Panels` piece is linear and keeps it (#200).
+            let continuous_cut = |axis: &crate::config::AxisOptions| {
+                axis.breaks.as_ref().is_some_and(|breaks| {
+                    !breaks.ranges.is_empty()
+                        && breaks.style == crate::config::AxisBreakStyle::Continuous
+                })
+            };
+            if continuous_cut(&self.bottom_x) || continuous_cut(&self.left_y) {
+                return Err(
+                    "a hexagonal grid's lattice is uniform: not on a Continuous broken axis",
+                );
+            }
         }
         Ok(())
     }
@@ -9225,6 +9238,28 @@ mod hexagonal_tests {
             log.validate_hexagonal_series(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]),
             Err("a hexagonal grid needs linear x and y axes: its lattice is uniform")
         );
+        for style in [
+            crate::config::AxisBreakStyle::Continuous,
+            crate::config::AxisBreakStyle::Panels,
+        ] {
+            let mut broken = config.clone();
+            broken.bottom_x.breaks = Some(crate::config::AxisBreaks {
+                ranges: vec![crate::config::AxisBreak::new(0.2, 0.4)],
+                style,
+                ..Default::default()
+            });
+            let expected = match style {
+                crate::config::AxisBreakStyle::Continuous => {
+                    Err("a hexagonal grid's lattice is uniform: not on a Continuous broken axis")
+                }
+                crate::config::AxisBreakStyle::Panels => Ok(()),
+            };
+            assert_eq!(
+                broken.validate_hexagonal_series(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]),
+                expected,
+                "{style:?}"
+            );
+        }
         let mut three_d = config.clone();
         three_d.set_view_3d(Some(View3d::default()));
         let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];

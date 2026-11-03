@@ -35,7 +35,15 @@ struct Transform {
     //             1 for a ternary chart
     ternary_lt: vec4<f32>,
     ternary_r: vec4<f32>,
-};  // 176 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128; ternary vec4s at 144 and 160)
+    // Broken axes (#200): up to three cuts per axis, x in [0, 3) and y in
+    // [3, 6), each (from, to, start, end) in this t (the inverted swap of
+    // data_min / data_max applied): the raw interval of the cut values and
+    // the gap it is drawn as. CPU twin: `layout::BreakMap`.
+    breaks: array<vec4<f32>, 6>,
+    // (cuts on x, cuts on y, piece scale x, piece scale y); zero cuts is the
+    // identity.
+    break_info: vec4<f32>,
+};  // 288 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128; ternary vec4s at 144 and 160; breaks at 176, stride 16; break_info at 272)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 

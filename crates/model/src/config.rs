@@ -107,6 +107,124 @@ impl LogTickPolicy {
     }
 }
 
+/// The most ranges one axis may cut out ([`AxisBreaks::ranges`], #200). A
+/// bound on configuration, not on data: three cuts leave four pieces, past
+/// what still reads as one axis, and the bound sizes the break tables of the
+/// renderer's transform.
+pub const MAX_AXIS_BREAKS: usize = 3;
+
+/// The widest gap a cut range may be drawn as, as a fraction of the axis
+/// length ([`AxisBreaks::gap`]). Three gaps at this width leave 40 % of the
+/// axis to its pieces.
+pub const MAX_AXIS_BREAK_GAP: f32 = 0.2;
+
+/// Ranges cut out of a value axis (#200): the axis draws the rest, each cut
+/// shown as a gap of [`Self::gap`] of the axis length, marked by
+/// [`Self::mark`]. The pieces between the cuts share the axis length in
+/// proportion to their spans (in decades on a logarithmic axis).
+///
+/// A cut outside the axis' current range (after a zoom or an auto-fit) has
+/// no effect; one that overlaps an end is cut at the end. See
+/// [`AxisBreakStyle`] for how a mark that crosses a gap is drawn.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct AxisBreaks {
+    /// The cut ranges, in data units, sorted and not overlapping; at most
+    /// [`MAX_AXIS_BREAKS`].
+    pub ranges: Vec<AxisBreak>,
+    pub style: AxisBreakStyle,
+    /// The width of each gap as a fraction of the axis length, in
+    /// `0..=`[`MAX_AXIS_BREAK_GAP`]. A fraction rather than pixels, so the
+    /// 2x export is the 1x layout doubled.
+    pub gap: f32,
+    /// What marks each gap on the axis line.
+    pub mark: BreakMark,
+    /// Whether each piece draws its own frame along the gaps: a line across
+    /// the plot at each edge of each gap, in the axis line's style, so the
+    /// pieces read as separate panels. Default `true`, in both styles.
+    pub frame_each_panel: bool,
+}
+
+impl Default for AxisBreaks {
+    /// No range, `Continuous`, a 3 % gap, slash marks and framed pieces.
+    fn default() -> Self {
+        Self {
+            ranges: Vec::new(),
+            style: AxisBreakStyle::default(),
+            gap: 0.03,
+            mark: BreakMark::default(),
+            frame_each_panel: true,
+        }
+    }
+}
+
+/// One range cut out of an axis: the values from `from` to `to` are not
+/// drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AxisBreak {
+    pub from: f64,
+    pub to: f64,
+}
+
+impl AxisBreak {
+    pub fn new(from: f64, to: f64) -> Self {
+        Self { from, to }
+    }
+}
+
+/// How a broken axis draws a mark that crosses a gap (#200). Marks aligned
+/// with the axes (markers, bars, cells, error bars) look the same in both;
+/// lines, fills, contours and arrows differ in slope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AxisBreakStyle {
+    /// One axis, linear (or logarithmic) within each piece: a line that
+    /// crosses a gap is the straight line between its two drawn points,
+    /// hidden inside the gap.
+    #[default]
+    Continuous,
+    /// Every piece is an axis of its own, drawn as a panel of its own: a
+    /// line that crosses a gap is drawn in each piece at that piece's scale
+    /// and clipped at the piece's edge.
+    Panels,
+}
+
+/// What marks a gap of a broken axis on the axis line.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BreakMark {
+    None,
+    /// Two parallel diagonal strokes across the axis line at the gap's edges,
+    /// `size` pixels long, `width` wide, in `color` or, when it is `None`
+    /// (the default, omitted from JSON), the axis line's colour. The marks
+    /// are part of the axis that draws them.
+    Slash {
+        size: f32,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        color: Option<Color>,
+        width: f32,
+    },
+}
+
+impl Default for BreakMark {
+    /// 6 px slashes, 1 px wide, in the axis line's colour.
+    fn default() -> Self {
+        Self::Slash {
+            size: 6.0,
+            color: None,
+            width: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TickVisibility {
@@ -226,6 +344,16 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "LogTickPolicy::is_decades")
     )]
     pub log_ticks: LogTickPolicy,
+
+    /// Ranges cut out of a value axis (#200). `None` (the default, omitted
+    /// from JSON) draws the whole range. Allowed on `bottom_x`, `left_y` and
+    /// an overlay's `y_axis` of a rectangular chart; a categorical axis,
+    /// polar, ternary and 3D charts and streamed series refuse it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub breaks: Option<AxisBreaks>,
 }
 
 /// One category of a categorical axis ([`AxisOptions::categories`]): a stable
@@ -273,6 +401,53 @@ impl AxisOptions {
             Some(n) => (-0.5, n as f64 - 0.5),
             None => (self.min, self.max),
         }
+    }
+
+    /// The rules [`Self::breaks`] is held to (#200); an axis without breaks
+    /// always passes. At most [`MAX_AXIS_BREAKS`] finite ranges with
+    /// `from < to`, sorted and not touching, positive on a logarithmic
+    /// axis; a gap in `0..=`[`MAX_AXIS_BREAK_GAP`]; a mark of finite size in
+    /// `0..=64` px and width in `0..=16` px with a colour in range; and a
+    /// numeric axis, since a categorical axis has no range to cut.
+    pub fn validate_breaks(&self) -> Result<(), &'static str> {
+        let Some(breaks) = &self.breaks else {
+            return Ok(());
+        };
+        if self.categories.is_some() {
+            return Err("a categorical axis cannot be broken");
+        }
+        if breaks.ranges.len() > MAX_AXIS_BREAKS {
+            return Err("an axis can cut out at most three ranges");
+        }
+        let log = matches!(self.scale, AxisScale::Logarithmic);
+        let mut last = f64::NEG_INFINITY;
+        for cut in &breaks.ranges {
+            if !cut.from.is_finite() || !cut.to.is_finite() || cut.from >= cut.to {
+                return Err("a cut range needs finite bounds with from < to");
+            }
+            if log && cut.from <= 0.0 {
+                return Err("a cut range on a logarithmic axis must be positive");
+            }
+            if cut.from <= last {
+                return Err("cut ranges must be sorted and must not touch");
+            }
+            last = cut.to;
+        }
+        if !(0.0..=MAX_AXIS_BREAK_GAP).contains(&breaks.gap) {
+            return Err("a break gap must be between 0 and 0.2 of the axis");
+        }
+        if let BreakMark::Slash { size, color, width } = &breaks.mark {
+            let channels = color.map_or([0.0; 4], |c| [c.r, c.g, c.b, c.a]);
+            if !(0.0..=64.0).contains(size)
+                || !(0.0..=16.0).contains(width)
+                || !channels.iter().all(|c| (0.0..=1.0).contains(c))
+            {
+                return Err(
+                    "a break mark needs a size in 0..=64, a width in 0..=16 and a colour in range",
+                );
+            }
+        }
+        Ok(())
     }
 
     /// The rules a categorical axis is held to; a numeric axis always passes.
@@ -1242,7 +1417,25 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         cross_at: _,
         // A tick policy, not pixels.
         log_ticks: _,
+        // The gap is a fraction of the axis; the mark is in pixels.
+        breaks,
     } = axis;
+    if let Some(AxisBreaks {
+        ranges: _,
+        style: _,
+        gap: _,
+        mark,
+        frame_each_panel: _,
+    }) = breaks
+        && let BreakMark::Slash {
+            size,
+            color: _,
+            width,
+        } = mark
+    {
+        *size *= s;
+        *width *= s;
+    }
     let LabelStyle {
         visible: _,
         color: _,
@@ -2341,5 +2534,159 @@ mod picked_data_wire {
                 contour_width_extra_px: DataSelectionsConfig::default().contour_width_extra_px,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod axis_break_config_tests {
+    //! The rules and the serialized form of [`AxisBreaks`] (#200).
+    use super::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Color, Config};
+    use crate::default::default_config;
+
+    fn broken() -> AxisBreaks {
+        AxisBreaks {
+            ranges: vec![AxisBreak::new(10.0, 20.0), AxisBreak::new(40.0, 50.0)],
+            ..AxisBreaks::default()
+        }
+    }
+
+    #[test]
+    fn breaks_are_validated_on_the_axis() {
+        let mut config = default_config();
+        config.left_y.min = 0.0;
+        config.left_y.max = 100.0;
+        config.left_y.breaks = Some(broken());
+        assert_eq!(config.validate_chart(), Ok(()));
+        let cases: [(fn(&mut AxisBreaks), &str); 6] = [
+            (|b| b.ranges.push(AxisBreak::new(60.0, 61.0)), ""),
+            (|b| b.ranges.reverse(), "sorted"),
+            (|b| b.ranges[1].from = 20.0, "touch"),
+            (|b| b.ranges[0].to = 5.0, "from < to"),
+            (|b| b.gap = 0.3, "gap"),
+            (
+                |b| {
+                    b.mark = BreakMark::Slash {
+                        size: 100.0,
+                        color: Some(Color::BLACK),
+                        width: 1.0,
+                    }
+                },
+                "mark",
+            ),
+        ];
+        for (index, (edit, reason)) in cases.into_iter().enumerate() {
+            let mut config = config.clone();
+            edit(config.left_y.breaks.as_mut().unwrap());
+            let result = config.validate_chart();
+            if index == 0 {
+                // Three cuts are allowed; a fourth is not.
+                assert_eq!(result, Ok(()));
+                config
+                    .left_y
+                    .breaks
+                    .as_mut()
+                    .unwrap()
+                    .ranges
+                    .push(AxisBreak::new(70.0, 71.0));
+                let error = config.validate_chart().unwrap_err();
+                assert!(error.reason.contains("at most three"), "{error}");
+                continue;
+            }
+            let error = result.unwrap_err();
+            assert_eq!(error.field, "left_y");
+            assert!(error.reason.contains(reason), "{error}");
+        }
+    }
+
+    #[test]
+    fn breaks_go_only_on_the_data_axes_of_a_rectangular_chart() {
+        for field in ["top_x", "right_y"] {
+            let mut config = default_config();
+            match field {
+                "top_x" => config.top_x.breaks = Some(broken()),
+                _ => config.right_y.breaks = Some(broken()),
+            }
+            assert_eq!(config.validate_chart().unwrap_err().field, field);
+        }
+        let mut config = default_config();
+        config.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
+        config.bottom_x.breaks = Some(broken());
+        assert!(
+            config
+                .validate_chart()
+                .unwrap_err()
+                .reason
+                .contains("categorical")
+        );
+        let mut config = default_config();
+        config.left_y.min = 0.0;
+        config.left_y.max = 100.0;
+        config.left_y.breaks = Some(broken());
+        config.coordinates = crate::coordinates::Coordinates::Polar(Default::default());
+        assert_eq!(config.validate_chart().unwrap_err().field, "coordinates");
+        let mut log = default_config();
+        log.left_y.scale = super::AxisScale::Logarithmic;
+        log.left_y.min = 1.0;
+        log.left_y.max = 1e6;
+        log.left_y.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(-1.0, 10.0)],
+            ..AxisBreaks::default()
+        });
+        assert!(
+            log.validate_chart()
+                .unwrap_err()
+                .reason
+                .contains("positive")
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn breaks_round_trip_and_are_omitted_when_absent() {
+        let config: Config = default_config();
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(json["left_y"].get("breaks").is_none());
+        let mut config = config;
+        config.left_y.breaks = Some(AxisBreaks {
+            style: AxisBreakStyle::Panels,
+            frame_each_panel: false,
+            ..broken()
+        });
+        let text = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        // A document naming only the ranges takes the defaults.
+        let mut json = serde_json::to_value(default_config()).unwrap();
+        json["left_y"]["breaks"] = serde_json::json!({"ranges": [{"from": 1.0, "to": 2.0}]});
+        let parsed: Config = serde_json::from_value(json).unwrap();
+        let breaks = parsed.left_y.breaks.unwrap();
+        assert_eq!(breaks.style, AxisBreakStyle::Continuous);
+        assert_eq!(breaks.gap, AxisBreaks::default().gap);
+    }
+
+    #[test]
+    fn the_export_scale_scales_the_mark_but_not_the_gap() {
+        let mut config = default_config();
+        config.left_y.breaks = Some(broken());
+        let mut scaled = config.clone();
+        scaled.scale_in_place(2.0);
+        let (a, b) = (
+            config.left_y.breaks.as_ref().unwrap(),
+            scaled.left_y.breaks.as_ref().unwrap(),
+        );
+        assert_eq!(a.gap, b.gap);
+        let (
+            BreakMark::Slash { size, width, .. },
+            BreakMark::Slash {
+                size: s2,
+                width: w2,
+                ..
+            },
+        ) = (&a.mark, &b.mark)
+        else {
+            panic!("slash marks")
+        };
+        assert_eq!((*s2, *w2), (size * 2.0, width * 2.0));
     }
 }

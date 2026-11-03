@@ -1,7 +1,8 @@
 //! Tier 2 of #46: leaf mutations against `ArcResultKey`. The key reads the
-//! transform's first 16 words (data range and pixel geometry) and its last
-//! 8 (polar), leaving out words 16..28, the style parameters: a style edit
-//! must not retraverse the data, so the arc prefix must not read them.
+//! transform's first 16 words (data range and pixel geometry) and every
+//! word after the style parameters (polar, ternary and the broken axes'
+//! cut table), leaving out words 16..28: a style edit must not retraverse
+//! the data, so the arc prefix must not read them.
 //!
 //! For every leaf of a dashed-line chart's `Config`, in each draw style,
 //! the edited transform goes through `ensure_arc_prefix` under the series
@@ -134,7 +135,7 @@ fn every_config_leaf_the_arc_key_leaves_out_keeps_the_arc_prefix() {
                     // The key changed: a new scan.
                     return Outcome::Held;
                 }
-                let words = |config: &Config| -> [u32; 44] {
+                let words = |config: &Config| -> [u32; 72] {
                     bytemuck::cast(data_render::scatter_transform_from_config(config))
                 };
                 if words(&next)[16..28] != words(&config)[16..28] {
@@ -179,5 +180,49 @@ fn every_config_leaf_the_arc_key_leaves_out_keeps_the_arc_prefix() {
         "{} config leaves change the arc prefix while ArcResultKey matches:\n{}",
         total.gaps.len(),
         total.gaps.join("\n")
+    );
+}
+
+/// A cut moves every sample past it, so the arc lengths change: the key
+/// reads the transform's break words (#200), and a break edit scans again
+/// to the prefix a fresh scan of the edited chart gives.
+#[test]
+fn a_break_edit_rescans_the_arc_prefix() {
+    let Some(mut r) = state_test_renderer() else {
+        return;
+    };
+    let n = 64;
+    r.add_column(
+        "arc_x",
+        &col_f64(
+            (0..n)
+                .map(|i| 0.01 + 0.99 * i as f64 / (n - 1) as f64)
+                .collect(),
+        ),
+    )
+    .unwrap();
+    r.add_column(
+        "arc_y",
+        &col_f64((0..n).map(|i| 0.5 + 0.4 * (i as f64 * 0.3).sin()).collect()),
+    )
+    .unwrap();
+    let config = baseline(DrawStyle::Precise);
+    let mut cut = config.clone();
+    cut.left_y.breaks = Some(crate::config::AxisBreaks {
+        ranges: vec![crate::config::AxisBreak::new(0.4, 0.6)],
+        ..Default::default()
+    });
+    let (before, len) = arc(&mut r, "arc-break", &config).expect("the baseline scans");
+    let (after, after_len) = arc(&mut r, "arc-break", &cut).expect("the cut chart scans");
+    assert!(after != before, "the break edit reused the unbroken prefix");
+    let (fresh, fresh_len) = arc(&mut r, "arc-break-fresh", &cut).expect("a fresh scan");
+    assert_eq!(
+        read_buffer(&r, &after, after_len),
+        read_buffer(&r, &fresh, fresh_len)
+    );
+    assert_ne!(
+        read_buffer(&r, &before, len),
+        read_buffer(&r, &fresh, fresh_len),
+        "the cut changes the arc lengths"
     );
 }

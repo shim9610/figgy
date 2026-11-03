@@ -36,14 +36,14 @@ struct View3d {
 /// not the panel placement the flat draws add.
 fn view3d_axis_t(pair: vec2<f32>, axis: u32) -> f32 {
     if (axis == 0u) {
-        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, 1.0, 0.0);
+        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, 1.0, 0.0, no_cuts());
     }
-    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, 1.0, 0.0);
+    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, 1.0, 0.0, no_cuts());
 }
 
 /// The axis fraction of a height on `right_y`.
 fn view3d_z_t(pair: vec2<f32>) -> f32 {
-    return axis_pair_to_t(pair, view3d.z_min.x, view3d.z_max.x, view3d.z_min.y, view3d.z_max.y, view3d.flags.x, 1.0, 0.0);
+    return axis_pair_to_t(pair, view3d.z_min.x, view3d.z_max.x, view3d.z_min.y, view3d.z_max.y, view3d.flags.x, 1.0, 0.0, no_cuts());
 }
 
 /// Clip position of box point `t` in the composite target, with depth.

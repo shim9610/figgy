@@ -89,6 +89,10 @@ pub fn emit_parallel_axis_strokes(
                     format!("paxis_{i}")
                 }
                 AxisStroke::Tick(k) => format!("ptick_{i}_{k}"),
+                // A parallel axis has no breaks (a parallel chart refuses
+                // them), so its walk never reports one.
+                AxisStroke::Break(k, end) => format!("pbreak_{i}_{k}_{end}"),
+                AxisStroke::Frame(k, end) => format!("pframe_{i}_{k}_{end}"),
             };
             sink.stroke(
                 Slot::Above,

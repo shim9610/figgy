@@ -77,11 +77,15 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
         parallel::emit_parallel_axes(config, &da, measure, sink);
     } else {
         emit_grid(config, &plot, measure, sink);
+        let (top, right) = (
+            drawn_axis(config, &Side::Top),
+            drawn_axis(config, &Side::Right),
+        );
         for (axis, side) in [
-            (&config.top_x, Side::Top),
+            (top.as_ref(), Side::Top),
             (&config.bottom_x, Side::Bottom),
             (&config.left_y, Side::Left),
-            (&config.right_y, Side::Right),
+            (right.as_ref(), Side::Right),
         ] {
             let cross = crate::layout::axis_cross(config, &side);
             emit_axis(axis, side, &plot, cross, measure, sink);
@@ -95,6 +99,26 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
     }
     emit_element(config, &Element::ChartTitle, measure, sink);
     emit_element(config, &Element::Legend, measure, sink);
+}
+
+/// The axis on `side` as the chrome draws it: a top or right axis with
+/// its partner's cuts ([`crate::layout::mirrored_breaks`], #200), every
+/// other axis as it is.
+pub(crate) fn drawn_axis<'a>(config: &'a Config, side: &Side) -> std::borrow::Cow<'a, AxisOptions> {
+    let (axis, partner) = match side {
+        Side::Top => (&config.top_x, &config.bottom_x),
+        Side::Bottom => return std::borrow::Cow::Borrowed(&config.bottom_x),
+        Side::Left => return std::borrow::Cow::Borrowed(&config.left_y),
+        Side::Right => (&config.right_y, &config.left_y),
+    };
+    match crate::layout::mirrored_breaks(axis, partner) {
+        Some(breaks) => {
+            let mut mirrored = axis.clone();
+            mirrored.breaks = Some(breaks);
+            std::borrow::Cow::Owned(mirrored)
+        }
+        None => std::borrow::Cow::Borrowed(axis),
+    }
 }
 
 /// Place the parts of decoration `element` this module lays out: tick
@@ -117,11 +141,15 @@ pub fn emit_part_of(
                 | Element::ColorBarAxis
         );
     };
+    let (top, right) = (
+        drawn_axis(config, &Side::Top),
+        drawn_axis(config, &Side::Right),
+    );
     let axis_of = |side: &Side| match side {
-        Side::Top => &config.top_x,
+        Side::Top => top.as_ref(),
         Side::Bottom => &config.bottom_x,
         Side::Left => &config.left_y,
-        Side::Right => &config.right_y,
+        Side::Right => right.as_ref(),
     };
     match element {
         Element::AxisLabel(side) if config.polar().is_some() => match side {
@@ -319,6 +347,10 @@ pub fn emit_colorbar_axis_strokes(
         let tag = match stroke {
             AxisStroke::Line => "axis_colorbar".to_string(),
             AxisStroke::Tick(i) => format!("tick_colorbar_{i}"),
+            // A colourbar axis has no breaks (validation refuses them), so
+            // its walk never reports one.
+            AxisStroke::Break(k, end) => format!("axis_break_colorbar_{k}_{end}"),
+            AxisStroke::Frame(k, end) => format!("axis_frame_colorbar_{k}_{end}"),
         };
         sink.stroke(
             Slot::Above,

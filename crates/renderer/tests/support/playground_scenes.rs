@@ -69,10 +69,11 @@ pub enum SceneKind {
     Image,
     Sunburst,
     Parallel,
+    BrokenAxes,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 32] = [
+    pub const ALL: [SceneKind; 33] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -105,6 +106,7 @@ impl SceneKind {
         SceneKind::Image,
         SceneKind::Sunburst,
         SceneKind::Parallel,
+        SceneKind::BrokenAxes,
     ];
 
     pub fn label(self) -> &'static str {
@@ -141,6 +143,7 @@ impl SceneKind {
             SceneKind::Image => "Image (RGB test card)",
             SceneKind::Sunburst => "Sunburst (nested rings)",
             SceneKind::Parallel => "Parallel coordinates",
+            SceneKind::BrokenAxes => "Broken axes (two peaks)",
         }
     }
 
@@ -278,6 +281,12 @@ impl SceneKind {
                  per flower across four axes with their own ranges, coloured by \
                  species through the colourbar. Pick a row and step with the \
                  arrows; drag an axis's labels."
+            }
+            SceneKind::BrokenAxes => {
+                "Ranges cut out of an axis (AxisOptions.breaks). Above, Continuous \
+                 joins the pieces into one axis; below, Panels draws each piece at \
+                 its own scale over a logarithmic Y cut between the two peaks. Pick \
+                 either peak; drag the tick labels."
             }
         }
     }
@@ -474,6 +483,7 @@ pub fn build(
         SceneKind::Rose => rose(r),
         SceneKind::Image => image(r),
         SceneKind::Parallel => parallel(r),
+        SceneKind::BrokenAxes => broken_axes(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -3428,6 +3438,128 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     )];
     Ok(CartesianScene {
         config: chart.config().clone(),
+        series,
+    })
+}
+
+/// Broken axes (#200): a spectrum with two peaks far apart, at channels 5
+/// and 95, the empty middle cut out of X. The upper chart joins the pieces
+/// into one axis (`Continuous`); the lower one draws each piece at its own
+/// scale (`Panels`) over a logarithmic Y cut between the two peaks'
+/// magnitudes. Both frame their pieces (the default).
+fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, AxisScale};
+    let x = linspace(0.0, 100.0, 801);
+    let peak = |x: f64, at: f64, width: f64| (-((x - at) / width).powi(2)).exp();
+    upload(r, "brk_x", x.clone())?;
+    upload(
+        r,
+        "brk_lin",
+        x.iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                4.0 + 38.0 * peak(x, 5.0, 1.4) + 60.0 * peak(x, 95.0, 1.8) + 0.8 * noise(61, i)
+            })
+            .collect(),
+    )?;
+    upload(
+        r,
+        "brk_log",
+        x.iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                (3.0 + 40.0 * peak(x, 5.0, 1.4) + 3.0e5 * peak(x, 95.0, 1.8))
+                    * (1.0 + 0.15 * noise(62, i))
+            })
+            .collect(),
+    )?;
+    let cut = |style, from, to| {
+        Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(from, to)],
+            style,
+            gap: 0.03,
+            ..AxisBreaks::default()
+        })
+    };
+    let (w, h) = (DOC_W, DOC_H / 2);
+    let mut config = base_config(
+        "Continuous: one axis, the middle cut out",
+        "Channel",
+        "Counts",
+    );
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    });
+    config.bottom_x.breaks = cut(AxisBreakStyle::Continuous, 12.0, 88.0);
+    let mut lower = base_config(
+        "Panels: each piece its own scale, log Y",
+        "Channel",
+        "Counts",
+    );
+    lower.chart_area = ChartArea(Rect {
+        x: 0,
+        y: h,
+        width: w,
+        height: h,
+    });
+    lower.left_y.scale = AxisScale::Logarithmic;
+    lower.right_y.scale = AxisScale::Logarithmic;
+    lower.bottom_x.breaks = cut(AxisBreakStyle::Panels, 12.0, 88.0);
+    lower.left_y.breaks = cut(AxisBreakStyle::Panels, 300.0, 1.0e4);
+    config.subplots = vec![Subplot {
+        config: lower,
+        series: vec!["peaks_log".into()],
+        link_x: None,
+        link_y: None,
+    }];
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 100.0);
+    chart.auto_fit_y(r.pool(), "brk_lin", 0.1)?;
+    chart.set_subplot_x_range(0, 0.0, 100.0);
+    chart.with_axis_range_change(|c| {
+        // Each piece keeps the axis' own spacing: one fine enough for the
+        // pieces left of the cut, not for the whole range.
+        for chart in [&mut *c] {
+            chart.bottom_x.major_spacing = 4.0;
+            chart.top_x.major_spacing = 4.0;
+        }
+        let lower = &mut c.subplots[0].config;
+        lower.bottom_x.major_spacing = 4.0;
+        lower.top_x.major_spacing = 4.0;
+        for axis in [&mut lower.left_y, &mut lower.right_y] {
+            axis.min = 1.0;
+            axis.max = 1.0e6;
+            axis.major_spacing = 1.0;
+            axis.label_style.format = LabelFormat::Power;
+        }
+    });
+    let series = vec![
+        series(
+            "peaks",
+            "brk_x",
+            "brk_lin",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.0)),
+                errors: None,
+            }),
+        ),
+        series(
+            "peaks_log",
+            "brk_x",
+            "brk_log",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(176, 64, 32), 2.0)),
+                errors: None,
+            }),
+        ),
+    ];
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
         series,
     })
 }

@@ -18,7 +18,7 @@ use crate::color::Color;
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::AnnotationLayer;
-use crate::layout::{NudgeReject, NudgeResult, RectF, span_fraction};
+use crate::layout::{BreakMap, NudgeReject, NudgeResult, RectF, span_fraction};
 use crate::line::LineStylePreset;
 use crate::resize::{HANDLE_SIZE, Resizable, ResizeHandle};
 use crate::select::{SELECTION_PADDING, Selectable};
@@ -496,17 +496,43 @@ pub struct AxisSpace {
     /// right to left, for `Y` from top to bottom. A horizontal bar chart's
     /// category axis is inverted because its first category is at the top.
     pub inverted: bool,
+    /// The axis' cut ranges (#200), applied to a linear or logarithmic map:
+    /// a value inside a cut has no position and a fraction inside a gap no
+    /// value. [`BreakMap::IDENTITY`] on an unbroken axis.
+    pub breaks: BreakMap,
 }
 
 impl AxisSpace {
     pub const NONE: Self = Self {
         map: AxisMap::None,
         inverted: false,
+        breaks: BreakMap::IDENTITY,
     };
 
     /// Where `value` falls along the axis, as a fraction measured from the
     /// axis' visual start (left or bottom). Not clamped.
     pub fn fraction(&self, value: f64) -> Option<f64> {
+        let t = self.raw_t(value)?;
+        if self
+            .breaks
+            .knots()
+            .iter()
+            .any(|knot| t > knot.from && t < knot.to)
+        {
+            return None;
+        }
+        self.drawn(t)
+    }
+
+    /// [`Self::fraction`] through the gaps of a broken axis (#200): a value
+    /// inside a cut lands inside its gap, where the cut is mapped linearly.
+    /// For a span, whose drawn parts are then clipped to the pieces.
+    pub fn fraction_across_gaps(&self, value: f64) -> Option<f64> {
+        self.drawn(self.raw_t(value)?)
+    }
+
+    /// Raw `t` along the axis' unbroken map, before the break remap.
+    fn raw_t(&self, value: f64) -> Option<f64> {
         if !value.is_finite() {
             return None;
         }
@@ -521,7 +547,30 @@ impl AxisSpace {
             }
             AxisMap::None => return None,
         };
+        Some(t)
+    }
+
+    /// The visual fraction raw `t` is drawn at.
+    fn drawn(&self, t: f64) -> Option<f64> {
+        let t = self.breaks.remap(t);
         Some(if self.inverted { 1.0 - t } else { t })
+    }
+
+    /// The axis' pieces as visual fractions in ascending order: the whole
+    /// axis when it is unbroken (#200).
+    fn visual_pieces(&self) -> ([(f64, f64); crate::config::MAX_AXIS_BREAKS + 1], usize) {
+        let mut out = [(0.0, 1.0); crate::config::MAX_AXIS_BREAKS + 1];
+        let mut count = 0;
+        for ((a, b), slot) in self.breaks.pieces().zip(out.iter_mut()) {
+            *slot = if self.inverted {
+                (1.0 - b, 1.0 - a)
+            } else {
+                (a, b)
+            };
+            count += 1;
+        }
+        out[..count].sort_by(|p, q| p.0.total_cmp(&q.0));
+        (out, count.max(1))
     }
 
     /// The value at `fraction` of the axis, the inverse of [`Self::fraction`].
@@ -534,6 +583,7 @@ impl AxisSpace {
         } else {
             fraction
         };
+        let t = self.breaks.unmap(t)?;
         let v = match self.map {
             AxisMap::Linear { min, max } => min + t * (max - min),
             AxisMap::Log { min, max } => {
@@ -602,6 +652,36 @@ impl PixelSpace {
         match axis {
             AnnotationAxis::X => self.plot.x + t as f32 * self.plot.width,
             AnnotationAxis::Y => self.plot.y + self.plot.height - t as f32 * self.plot.height,
+        }
+    }
+
+    /// Whether either axis is broken (#200).
+    fn is_broken(&self) -> bool {
+        self.x.breaks.is_broken() || self.y.breaks.is_broken()
+    }
+
+    /// Each piece of the plot a broken axis leaves (#200), in pixels: the
+    /// bands of `x` across times the bands of `y` down.
+    fn each_piece_rect(&self, mut each: impl FnMut(RectF)) {
+        let (xs, nx) = self.x.visual_pieces();
+        let (ys, ny) = self.y.visual_pieces();
+        for &(x0, x1) in &xs[..nx] {
+            for &(y0, y1) in &ys[..ny] {
+                let (left, right) = (
+                    self.fraction_to_px(AnnotationAxis::X, x0),
+                    self.fraction_to_px(AnnotationAxis::X, x1),
+                );
+                let (bottom, top) = (
+                    self.fraction_to_px(AnnotationAxis::Y, y0),
+                    self.fraction_to_px(AnnotationAxis::Y, y1),
+                );
+                each(RectF {
+                    x: left,
+                    y: top,
+                    width: right - left,
+                    height: bottom - top,
+                });
+            }
         }
     }
 
@@ -939,10 +1019,64 @@ impl AnnotationElement {
     /// one placement its bounds, hit test, selection box and pixels share.
     /// A hidden, absent or unplaceable item places nothing.
     pub fn emit(&self, cfg: &AnnotationLayer, sink: &mut dyn Sink) -> bool {
-        if let (Some(item), Some(geometry)) = (cfg.items.get(self.index), self.geometry(cfg)) {
-            emit_annotation(&item.kind, &geometry, self.text.as_ref(), sink);
+        let (Some(item), Some(geometry)) = (cfg.items.get(self.index), self.geometry(cfg)) else {
+            return true;
+        };
+        // A span or reference line across a broken axis' gap is drawn per
+        // piece and never inside a gap, like the data (#200); a line's
+        // label once, on its first part.
+        if self.space.is_broken()
+            && matches!(
+                geometry,
+                AnnotationGeometry::Span(_) | AnnotationGeometry::Line { .. }
+            )
+        {
+            let mut text = self.text.as_ref();
+            self.space.each_piece_rect(|piece| {
+                if let Some(part) = clip_to_piece(&geometry, &piece) {
+                    emit_annotation(&item.kind, &part, text.take(), sink);
+                }
+            });
+            return true;
         }
+        emit_annotation(&item.kind, &geometry, self.text.as_ref(), sink);
         true
+    }
+}
+
+/// The part of a span's rectangle or an axis-aligned reference line inside
+/// `piece`, or `None` when nothing of it is (#200).
+fn clip_to_piece(geometry: &AnnotationGeometry, piece: &RectF) -> Option<AnnotationGeometry> {
+    let (px0, px1) = (piece.x, piece.x + piece.width);
+    let (py0, py1) = (piece.y, piece.y + piece.height);
+    match geometry {
+        AnnotationGeometry::Span(rect) => {
+            let x0 = rect.x.max(px0);
+            let x1 = (rect.x + rect.width).min(px1);
+            let y0 = rect.y.max(py0);
+            let y1 = (rect.y + rect.height).min(py1);
+            (x1 > x0 && y1 > y0).then_some(AnnotationGeometry::Span(RectF {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            }))
+        }
+        AnnotationGeometry::Line { a, b } if a[1] == b[1] => {
+            let (x0, x1) = (a[0].min(b[0]).max(px0), a[0].max(b[0]).min(px1));
+            (x1 > x0 && a[1] >= py0 && a[1] <= py1).then_some(AnnotationGeometry::Line {
+                a: [x0, a[1]],
+                b: [x1, a[1]],
+            })
+        }
+        AnnotationGeometry::Line { a, b } => {
+            let (y0, y1) = (a[1].min(b[1]).max(py0), a[1].max(b[1]).min(py1));
+            (y1 > y0 && a[0] >= px0 && a[0] <= px1).then_some(AnnotationGeometry::Line {
+                a: [a[0], y0],
+                b: [a[0], y1],
+            })
+        }
+        _ => Some(geometry.clone()),
     }
 }
 
@@ -1045,7 +1179,12 @@ pub fn geometry(
             })
         }
         AnnotationKind::Span { axis, from, to, .. } => {
-            let (ta, tb) = (space.fraction(*axis, *from)?, space.fraction(*axis, *to)?);
+            // An end inside a cut lands in its gap; the drawn parts are
+            // clipped to the pieces (`AnnotationElement::emit`).
+            let (ta, tb) = (
+                space.axis(*axis).fraction_across_gaps(*from)?,
+                space.axis(*axis).fraction_across_gaps(*to)?,
+            );
             let (lo, hi) = (ta.min(tb), ta.max(tb));
             if hi < 0.0 || lo > 1.0 {
                 return None;
@@ -1849,6 +1988,7 @@ mod tests {
             x: AxisSpace {
                 map: AxisMap::Linear { min: 0., max: 10. },
                 inverted: false,
+                breaks: BreakMap::IDENTITY,
             },
             y: AxisSpace {
                 map: AxisMap::Log {
@@ -1856,7 +1996,77 @@ mod tests {
                     max: 1000.,
                 },
                 inverted: false,
+                breaks: BreakMap::IDENTITY,
             },
+        }
+    }
+
+    /// `space()` with x cut at 4..6 (a 10 % gap) (#200).
+    fn broken_space(inverted: bool) -> PixelSpace {
+        let mut axis = crate::default::default_axis_options_x();
+        axis.min = 0.0;
+        axis.max = 10.0;
+        axis.inverted = inverted;
+        axis.breaks = Some(crate::config::AxisBreaks {
+            ranges: vec![crate::config::AxisBreak::new(4.0, 6.0)],
+            gap: 0.1,
+            ..Default::default()
+        });
+        let mut space = space();
+        space.x.breaks = BreakMap::of(&axis);
+        space.x.inverted = inverted;
+        space
+    }
+
+    /// Spans and reference lines across a gap are drawn per piece; a span
+    /// with an end inside a cut keeps its visible part, and a reference
+    /// line inside a cut has no position (#200).
+    #[test]
+    fn spans_and_reference_lines_are_clipped_to_the_pieces() {
+        for inverted in [false, true] {
+            let space = broken_space(inverted);
+            let (mut pieces, mut parts) = (Vec::new(), Vec::new());
+            space.each_piece_rect(|piece| pieces.push(piece));
+            assert_eq!(pieces.len(), 2);
+            let gap = (pieces[0].x + pieces[0].width, pieces[1].x);
+            assert!(gap.1 - gap.0 > 25.0, "{gap:?}");
+            let span = |from, to| AnnotationKind::Span {
+                axis: AnnotationAxis::X,
+                from,
+                to,
+                fill: Color::BLACK,
+            };
+            let clipped = |kind: &AnnotationKind, parts: &mut Vec<AnnotationGeometry>| {
+                parts.clear();
+                let geometry = geometry(kind, &space, None).unwrap();
+                space.each_piece_rect(|piece| parts.extend(clip_to_piece(&geometry, &piece)));
+            };
+            clipped(&span(2.0, 8.0), &mut parts);
+            assert_eq!(parts.len(), 2, "a span across the gap: {parts:?}");
+            for part in &parts {
+                let AnnotationGeometry::Span(r) = part else {
+                    panic!("{part:?}")
+                };
+                assert!(
+                    r.x + r.width <= gap.0 + 1e-3 || r.x >= gap.1 - 1e-3,
+                    "{r:?} in {gap:?}"
+                );
+            }
+            clipped(&span(5.0, 8.0), &mut parts);
+            assert_eq!(parts.len(), 1, "an end inside the cut: {parts:?}");
+            clipped(&span(4.5, 5.5), &mut parts);
+            assert!(parts.is_empty(), "a span inside the cut draws nothing");
+            let line = |axis, value| AnnotationKind::ReferenceLine {
+                axis,
+                value,
+                style: Default::default(),
+                label: None,
+            };
+            clipped(&line(AnnotationAxis::Y, 10.0), &mut parts);
+            assert_eq!(parts.len(), 2, "a Y line across the x gap: {parts:?}");
+            clipped(&line(AnnotationAxis::X, 8.0), &mut parts);
+            assert_eq!(parts.len(), 1);
+            assert_eq!(geometry(&line(AnnotationAxis::X, 5.0), &space, None), None);
         }
     }
 
@@ -1915,6 +2125,7 @@ mod tests {
         let category = AxisSpace {
             map: AxisMap::Index { count: 4 },
             inverted: true,
+            breaks: BreakMap::IDENTITY,
         };
         assert_eq!(category.fraction(0.), Some(1. - 0.125));
         assert_eq!(category.value(1. - 0.125), Some(0.));
@@ -2424,6 +2635,7 @@ mod tests {
         no_axes.x = AxisSpace {
             map: AxisMap::None,
             inverted: false,
+            breaks: BreakMap::IDENTITY,
         };
         no_axes.y = no_axes.x;
         let data = shape(AnnotationKind::Rect {
