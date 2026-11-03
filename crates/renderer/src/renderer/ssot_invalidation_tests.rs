@@ -1526,6 +1526,7 @@ fn config_fields_are_classified() {
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
+        breaks: _,     // break_edits(): Packed (the transform and the piece layout)
     } = top_x;
     let LabelStyle {
         visible: _,

@@ -48,7 +48,8 @@
 //! them by the same rule.
 
 use crate::config::{
-    AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config, TickVisibility,
+    AxisBreaks, AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config,
+    TickVisibility,
 };
 use crate::default::{
     default_axis_options_x, default_axis_options_y, default_chart_title_options,
@@ -677,6 +678,9 @@ impl Config {
                 cross_at: _,
                 // The hidden left axis draws no ticks.
                 log_ticks: _,
+                // The hidden left axis maps the overlay's range, cut by the
+                // overlay's own breaks (`hidden_axis` below).
+                breaks: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, default_axis_options_y());
             left.out_margin = *out_margin;
@@ -890,6 +894,8 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         cross_at: _,
         // The hidden colourbar draws no ticks.
         log_ticks: _,
+        // A colourbar axis has no breaks (validation refuses them).
+        breaks: _,
     } = axis;
     let mut hidden = default_colorbar_options();
     hidden.visible = false;
@@ -930,6 +936,9 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         cross_at: _,
         // The log tick ladder is tick spacing too.
         log_ticks,
+        // The cut ranges are part of the mapping, so a linked axis maps
+        // exactly like its target.
+        breaks,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -939,6 +948,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.minor_count = *minor_count;
     to.log_ticks = *log_ticks;
     to.categories.clone_from(categories);
+    to.breaks.clone_from(breaks);
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -946,7 +956,15 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
 /// a range writer such as a view state re-derives it from an unchanged range;
 /// it travels with the edited range instead.
 fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
-    fn range(axis: &AxisOptions) -> (AxisScale, f64, f64, bool, Option<&[Category]>) {
+    type Range<'a> = (
+        AxisScale,
+        f64,
+        f64,
+        bool,
+        Option<&'a [Category]>,
+        Option<&'a AxisBreaks>,
+    );
+    fn range(axis: &AxisOptions) -> Range<'_> {
         let AxisOptions {
             scale,
             min,
@@ -972,8 +990,17 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             cross_at: _,
             // Tick spacing travels with the edited range (see above).
             log_ticks: _,
+            // The cut ranges are part of the mapping.
+            breaks,
         } = axis;
-        (scale.clone(), *min, *max, *inverted, categories.as_deref())
+        (
+            scale.clone(),
+            *min,
+            *max,
+            *inverted,
+            categories.as_deref(),
+            breaks.as_ref(),
+        )
     }
     range(a) == range(b)
 }
@@ -1011,6 +1038,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         cross_at: _,
         // A hidden axis draws no ticks, so its tick policy is the template's.
         log_ticks: _,
+        // The cut ranges are part of the transform the hidden axis carries.
+        breaks,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -1033,6 +1062,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         categories: _,
         cross_at: _,
         log_ticks,
+        breaks: _,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -1056,6 +1086,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         categories: categories.clone(),
         cross_at: None,
         log_ticks,
+        breaks: breaks.clone(),
     }
     .with_hidden_text()
 }

@@ -54,6 +54,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if let Err(reason) = axis.validate_categories() {
         return fail(reason);
     }
+    if let Err(reason) = axis.validate_breaks() {
+        return fail(reason);
+    }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail("an axis crossing (`cross_at`) must be finite");
     }
@@ -111,6 +114,30 @@ impl Config {
             .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
         {
             validate_axis_range(field, axis)?;
+        }
+        // Breaks (#200) cut the data axes of a rectangular chart: the x and
+        // y the data is placed on, and an overlay's own y. The secondary
+        // axes and the colourbar draw no data of their own to cut, and the
+        // other coordinate systems have no straight value axis.
+        for (field, axis) in [("top_x", &self.top_x), ("right_y", &self.right_y)]
+            .into_iter()
+            .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
+        {
+            if axis.breaks.is_some() {
+                return Err(ConfigError::chart(
+                    field,
+                    "breaks go on bottom_x, left_y or an overlay's y_axis",
+                ));
+            }
+        }
+        let broken = self.bottom_x.breaks.is_some()
+            || self.left_y.breaks.is_some()
+            || self.overlays.iter().any(|o| o.y_axis.breaks.is_some());
+        if broken && !matches!(self.coordinates, crate::coordinates::Coordinates::Cartesian) {
+            return Err(ConfigError::chart(
+                "coordinates",
+                "a broken axis needs a rectangular chart",
+            ));
         }
         // Overlay y axes are ranges of the same kind, and the layer
         // membership must be unambiguous before a series is drawn on a panel.

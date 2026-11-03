@@ -18,7 +18,7 @@ use crate::color::Color;
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::AnnotationLayer;
-use crate::layout::{NudgeReject, NudgeResult, RectF, span_fraction};
+use crate::layout::{BreakMap, NudgeReject, NudgeResult, RectF, span_fraction};
 use crate::line::LineStylePreset;
 use crate::resize::{HANDLE_SIZE, Resizable, ResizeHandle};
 use crate::select::{SELECTION_PADDING, Selectable};
@@ -496,12 +496,17 @@ pub struct AxisSpace {
     /// right to left, for `Y` from top to bottom. A horizontal bar chart's
     /// category axis is inverted because its first category is at the top.
     pub inverted: bool,
+    /// The axis' cut ranges (#200), applied to a linear or logarithmic map:
+    /// a value inside a cut has no position and a fraction inside a gap no
+    /// value. [`BreakMap::IDENTITY`] on an unbroken axis.
+    pub breaks: BreakMap,
 }
 
 impl AxisSpace {
     pub const NONE: Self = Self {
         map: AxisMap::None,
         inverted: false,
+        breaks: BreakMap::IDENTITY,
     };
 
     /// Where `value` falls along the axis, as a fraction measured from the
@@ -521,6 +526,15 @@ impl AxisSpace {
             }
             AxisMap::None => return None,
         };
+        if self
+            .breaks
+            .knots()
+            .iter()
+            .any(|knot| t > knot.from && t < knot.to)
+        {
+            return None;
+        }
+        let t = self.breaks.remap(t);
         Some(if self.inverted { 1.0 - t } else { t })
     }
 
@@ -534,6 +548,7 @@ impl AxisSpace {
         } else {
             fraction
         };
+        let t = self.breaks.unmap(t)?;
         let v = match self.map {
             AxisMap::Linear { min, max } => min + t * (max - min),
             AxisMap::Log { min, max } => {
@@ -1849,6 +1864,7 @@ mod tests {
             x: AxisSpace {
                 map: AxisMap::Linear { min: 0., max: 10. },
                 inverted: false,
+                breaks: BreakMap::IDENTITY,
             },
             y: AxisSpace {
                 map: AxisMap::Log {
@@ -1856,6 +1872,7 @@ mod tests {
                     max: 1000.,
                 },
                 inverted: false,
+                breaks: BreakMap::IDENTITY,
             },
         }
     }
@@ -1915,6 +1932,7 @@ mod tests {
         let category = AxisSpace {
             map: AxisMap::Index { count: 4 },
             inverted: true,
+            breaks: BreakMap::IDENTITY,
         };
         assert_eq!(category.fraction(0.), Some(1. - 0.125));
         assert_eq!(category.value(1. - 0.125), Some(0.));
@@ -2424,6 +2442,7 @@ mod tests {
         no_axes.x = AxisSpace {
             map: AxisMap::None,
             inverted: false,
+            breaks: BreakMap::IDENTITY,
         };
         no_axes.y = no_axes.x;
         let data = shape(AnnotationKind::Rect {

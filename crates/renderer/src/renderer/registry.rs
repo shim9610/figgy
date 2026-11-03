@@ -63,6 +63,9 @@ impl AxisViewState {
             cross_at: _,
             // Which ticks a log axis draws, not how data maps.
             log_ticks: _,
+            // A view moves the range; the cut ranges stay on the axis as
+            // they are, like the tick policy (#200).
+            breaks: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),

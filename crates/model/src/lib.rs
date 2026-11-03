@@ -52,7 +52,10 @@ pub use validate::ConfigError;
 pub use bounded_sources::{SeriesUpload, UploadValues};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
-pub use config::{BarAlign, ColorBarOptions, Config, DataSelectionsConfig, PickedDataRef};
+pub use config::{
+    AxisBreak, AxisBreakStyle, AxisBreaks, BarAlign, BreakMark, ColorBarOptions, Config,
+    DataSelectionsConfig, MAX_AXIS_BREAK_GAP, MAX_AXIS_BREAKS, PickedDataRef,
+};
 pub use data::{Column, ColumnId};
 pub use data_config::{
     BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
