@@ -1069,7 +1069,9 @@ axes' `breaks`) are additive.
   25.2.8, 4 CPUs), warm pass, median of 15 frames in each of three runs:
   480×300 with 3 slices fell from 14.1–19.4 to 4.1–4.6 ms, 960×600 with 3
   slices from 60.5–63.5 to 14.7–19.3 ms, and 480×300 with 12 slices from
-  38.5–46.4 to 11.6–14.0 ms. No API changes.
+  38.5–46.4 to 11.6–14.0 ms. A chart whose first sector is not Flat skips
+  the check: on Apple M4 (Metal) the check alone cost a Ceramic donut 5–8%
+  per pass. No API changes.
 - **A stream retry waits for its staging slot** ([#154](https://github.com/shim9610/figgy/issues/154)).
   When a chunk's `ColumnSource` fails its write into a reused staging slot,
   the slot remaps before it can take data again. A retry of the same ticket

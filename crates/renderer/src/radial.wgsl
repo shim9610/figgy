@@ -153,8 +153,11 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
 @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32> {
     var color=vec4(0.0);let grid=u32(globals.size.w);
     // The samples lie within 0.48 px of the center (a 3x3 grid's corner);
-    // 0.75 px covers that times sqrt(2).
-    let flat=flat_pixel(p.xy,0.75);
+    // 0.75 px covers that times sqrt(2). `flat_pixel` refuses a chart whose
+    // first sector is not Flat at that sector, so such a chart skips the call:
+    // entering it at every pixel cost a Ceramic donut 5% on Apple M4 (#41).
+    var flat=FlatPixel(false,vec4(0.0));
+    if globals.size.z<1.0 || u32(sectors[0].material.params.x)==MATERIAL_FLAT { flat=flat_pixel(p.xy,0.75); }
     // Branch once, outside the sample loops: the same choice made per sample
     // inside them left some pixels zero on lavapipe (Mesa 25.2.8).
     if flat.exact {
