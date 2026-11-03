@@ -354,3 +354,80 @@ fn cuts_outside_the_range_and_no_breaks_draw_the_same_pixels() {
         );
     }
 }
+
+/// What a data pick at `at` (image pixels) on the chart at `scale` answers,
+/// as `(series_id, point index)`.
+fn pick_at(
+    r: &mut Renderer,
+    config: &renderer::Config,
+    series: &[SeriesConfig],
+    at: (f32, f32),
+    scale: f32,
+) -> Option<(String, usize)> {
+    let id = r.register_chart(config.clone(), series.to_vec()).unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0, at.1],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: (WIDTH as f32 * scale) as u32,
+            height: (HEIGHT as f32 * scale) as u32,
+        },
+        display_scale: scale,
+        max_distance_px: 6.0 * scale,
+    };
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    r.remove_chart(id).unwrap();
+    match hit {
+        Some(renderer::PickedData::Point {
+            series_id,
+            point_index,
+            ..
+        }) => Some((series_id, point_index)),
+        Some(other) => panic!("unexpected pick {other:?}"),
+        None => None,
+    }
+}
+
+#[test]
+fn a_pick_hits_what_each_piece_draws_and_nothing_in_a_gap() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    upload(&mut r, "mx", vec![2.0, 8.0]);
+    upload(&mut r, "my", vec![5.0, 95.0]);
+    upload(&mut r, "lx", vec![1.0, 9.0]);
+    upload(&mut r, "ly", vec![5.0, 95.0]);
+    let config = config(0.0, 100.0, &[(10.0, 90.0)]);
+    let series = [
+        markers("m", "mx", "my", RED),
+        line("l", "lx", "ly", BLUE, None),
+    ];
+    for scale in [1.0f32, 2.0] {
+        // Each marker, on its own piece.
+        for (index, (x, y)) in [(2.0, 5.0), (8.0, 95.0)].into_iter().enumerate() {
+            let at = (col_of(&config, x, scale), row_of(&config, y, scale));
+            assert_eq!(
+                pick_at(&mut r, &config, &series, at, scale),
+                Some(("m".into(), index)),
+                "{scale}x marker {index}"
+            );
+        }
+        // The line where it is drawn, just below the gap, and where it
+        // crosses the gap, which draws nothing.
+        let (x0, y0) = (col_of(&config, 1.0, scale), row_of(&config, 5.0, scale));
+        let (x1, y1) = (col_of(&config, 9.0, scale), row_of(&config, 95.0, scale));
+        let on_line = |y: f32| (x0 + (x1 - x0) * (y - y0) / (y1 - y0), y);
+        let gap = gap_rows(&config, scale, 1.0);
+        let below = on_line(gap.end as f32 + 4.0 * scale);
+        assert!(
+            matches!(pick_at(&mut r, &config, &series, below, scale), Some((ref id, _)) if id == "l"),
+            "{scale}x the line below the gap"
+        );
+        let middle = on_line((gap.start + gap.end) as f32 / 2.0);
+        assert_eq!(
+            pick_at(&mut r, &config, &series, middle, scale),
+            None,
+            "{scale}x the line inside the gap"
+        );
+    }
+}

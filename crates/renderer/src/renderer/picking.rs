@@ -20,6 +20,37 @@ pub struct GpuPickRequest {
     pub max_distance_px: f32,
 }
 
+/// `request` as the pick of `panel` (the active layer's panel as displayed)
+/// answers it: unchanged, except that a cursor inside a gap of a broken
+/// axis (#200), inside the data area but in none of its pieces, where
+/// nothing is drawn, picks as a cursor far off the chart with no reach, so
+/// it hits nothing. Both the point pick and the typed data pick go through
+/// it.
+fn pick_request_outside_gaps(panel: &Config, request: GpuPickRequest) -> GpuPickRequest {
+    let Ok(area) = panel.data_area() else {
+        return request;
+    };
+    let pieces = super::composite::DataPieces::of(panel, area.0);
+    if pieces.rects().len() <= 1 {
+        return request;
+    }
+    let [x, y] = request.canvas_position_px;
+    let inside = |r: &Rect| {
+        x >= r.x as f32
+            && x < (r.x + r.width) as f32
+            && y >= r.y as f32
+            && y < (r.y + r.height) as f32
+    };
+    if !inside(&area.0) || pieces.rects().iter().any(inside) {
+        return request;
+    }
+    GpuPickRequest {
+        canvas_position_px: [-1.0e6, -1.0e6],
+        max_distance_px: 0.0,
+        ..request
+    }
+}
+
 /// The arrows the vector shader draws for a point vector series, in the
 /// picker's terms: the same columns, scale mode, pivot and sizes
 /// (`Renderer::ensure_vector_scratch`), in logical pixels.
@@ -1792,6 +1823,7 @@ impl Renderer {
         );
         let inputs = active_layer_pick_inputs(&displayed, &state.series)?;
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
+        let request = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
         // The line offset members are the last registered series, each
         // drawn (and its arc prefix scanned) at its own panel's transform.
@@ -2006,6 +2038,7 @@ impl Renderer {
                 .collect();
             (inputs.panel, inputs.series, display_config, members, styles)
         };
+        let request = pick_request_outside_gaps(&display_config, request);
 
         // A 3D chart's surfaces, markers and strokes are picked by their ID
         // render: the draw's own rasterizer and depth test, so a hidden

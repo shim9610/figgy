@@ -309,3 +309,103 @@ pub fn tick_segment(
         TickVisibility::Both => Some((inside, outside)),
     }
 }
+
+#[cfg(test)]
+mod break_tests {
+    //! The chrome of a broken axis (#200): no tick inside a cut, the line
+    //! drawn per piece and a slash pair at each gap.
+    use super::*;
+    use crate::config::{AxisBreak, AxisBreaks, BreakMark};
+    use crate::default::default_axis_options_y;
+    use crate::text::{RichText, TextExtents};
+
+    struct NoMeasure;
+    impl MeasureText for NoMeasure {
+        fn measure_rich(&self, _: &RichText) -> TextExtents {
+            TextExtents {
+                width: 0.0,
+                ascent: 0.0,
+                descent: 0.0,
+            }
+        }
+    }
+
+    fn broken(mark: BreakMark) -> AxisOptions {
+        let mut axis = default_axis_options_y();
+        axis.min = 0.0;
+        axis.max = 100.0;
+        axis.major_spacing = 10.0;
+        axis.minor_count = 1;
+        axis.line_visible = true;
+        axis.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(15.0, 85.0)],
+            gap: 0.1,
+            mark,
+            ..AxisBreaks::default()
+        });
+        axis
+    }
+
+    const PLOT: RectF = RectF {
+        x: 50.0,
+        y: 20.0,
+        width: 300.0,
+        height: 200.0,
+    };
+
+    #[test]
+    fn no_tick_falls_inside_a_cut() {
+        let axis = broken(BreakMark::None);
+        let majors = major_tick_values_for_axis(&axis, Side::Left, &PLOT, &NoMeasure);
+        assert_eq!(majors, vec![0.0, 10.0, 90.0, 100.0]);
+        let minors = minor_tick_values_for_axis(&axis, Side::Left, &PLOT, &NoMeasure);
+        assert!(
+            minors.iter().all(|&v| !(v > 15.0 && v < 85.0)),
+            "{minors:?}"
+        );
+        assert!(!minors.is_empty());
+    }
+
+    #[test]
+    fn the_line_is_drawn_per_piece_with_a_slash_pair_per_gap() {
+        for (mark, slashes) in [(BreakMark::None, 0), (BreakMark::default(), 2)] {
+            let axis = broken(mark);
+            let majors = major_tick_values_for_axis(&axis, Side::Left, &PLOT, &NoMeasure);
+            let (mut lines, mut marks) = (Vec::new(), Vec::new());
+            each_axis_stroke(
+                &axis,
+                Side::Left,
+                &PLOT,
+                None,
+                &NoMeasure,
+                &majors,
+                |stroke, a, b| match stroke {
+                    AxisStroke::Line => lines.push((a, b)),
+                    AxisStroke::Break(k, end) => marks.push((k, end, a, b)),
+                    AxisStroke::Tick(_) => {}
+                },
+            );
+            assert_eq!(lines.len(), 2, "one segment per piece");
+            assert_eq!(marks.len(), slashes);
+            // Neither segment crosses the gap: the lower piece ends where
+            // the gap starts and the upper one begins where it ends.
+            let map = crate::layout::BreakMap::of(&axis);
+            let knot = map.knots()[0];
+            let y_at = |f: f64| PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f as f32;
+            let (lower, upper) = (lines[0], lines[1]);
+            assert!((lower.1.1 - y_at(knot.start)).abs() < 1e-3, "{lower:?}");
+            assert!((upper.0.1 - y_at(knot.end)).abs() < 1e-3, "{upper:?}");
+            for (_, end, a, b) in &marks {
+                let y = if *end == 0 {
+                    y_at(knot.start)
+                } else {
+                    y_at(knot.end)
+                };
+                assert!(
+                    ((a.1 + b.1) / 2.0 - y).abs() < 1e-3,
+                    "slash centred on its gap edge"
+                );
+            }
+        }
+    }
+}
