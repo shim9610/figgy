@@ -1019,6 +1019,13 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **A stream retry waits for its staging slot** ([#154](https://github.com/shim9610/figgy/issues/154)).
+  When a chunk's `ColumnSource` fails its write into a reused staging slot,
+  the slot remaps before it can take data again. A retry of the same ticket
+  before that remap completed failed with
+  `StaleStateToken("…WrongState")`; it now returns
+  `StreamingProgress::Backpressure`, the answer a fresh request gets when no
+  staging slot is free, and succeeds once the remap has run. No API changes.
 - **Native GPU waits: awaited, blocking or checked** ([#160](https://github.com/shim9610/figgy/issues/160)).
   On native an awaited readback no longer polls the device on the awaiting
   thread: `RendererDevice::new` starts one poll thread per device bundle,
