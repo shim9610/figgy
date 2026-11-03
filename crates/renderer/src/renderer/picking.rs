@@ -24,15 +24,22 @@ pub struct GpuPickRequest {
 /// answers it: unchanged, except that a cursor inside a gap of a broken
 /// axis (#200), inside the data area but in none of its pieces, where
 /// nothing is drawn, picks as a cursor far off the chart with no reach, so
-/// it hits nothing. Both the point pick and the typed data pick go through
-/// it.
-fn pick_request_outside_gaps(panel: &Config, request: GpuPickRequest) -> GpuPickRequest {
+/// it hits nothing, and a cursor in a shifted piece of a `Panels` axis is
+/// moved back by the piece's shift. Both the point pick and the typed data
+/// pick go through it. The second value is how far the cursor moved: the
+/// data-area clip the picker checks the cursor against moves with it, so
+/// a moved cursor is inside the moved clip exactly when it was inside the
+/// data area.
+fn pick_request_outside_gaps(
+    panel: &Config,
+    request: GpuPickRequest,
+) -> (GpuPickRequest, [f32; 2]) {
     let Ok(area) = panel.data_area() else {
-        return request;
+        return (request, [0.0; 2]);
     };
     let pieces = super::composite::DataPieces::of(panel, area.0);
     if pieces.rects().len() <= 1 {
-        return request;
+        return (request, [0.0; 2]);
     }
     let [x, y] = request.canvas_position_px;
     let inside = |r: &Rect| {
@@ -41,14 +48,33 @@ fn pick_request_outside_gaps(panel: &Config, request: GpuPickRequest) -> GpuPick
             && y >= r.y as f32
             && y < (r.y + r.height) as f32
     };
-    if !inside(&area.0) || pieces.rects().iter().any(inside) {
-        return request;
+    if !inside(&area.0) {
+        return (request, [0.0; 2]);
     }
-    GpuPickRequest {
+    // A piece of a `Panels` axis is drawn at the panel's transform shifted
+    // by its shift (`DataPieces`), so the cursor is picked shifted back.
+    if let Some((_, shift)) = pieces
+        .rects()
+        .iter()
+        .zip(pieces.shifts())
+        .find(|(rect, _)| inside(rect))
+    {
+        let offset = [
+            -(shift[0] * f64::from(area.0.width)) as f32,
+            (shift[1] * f64::from(area.0.height)) as f32,
+        ];
+        let request = GpuPickRequest {
+            canvas_position_px: [x + offset[0], y + offset[1]],
+            ..request
+        };
+        return (request, offset);
+    }
+    let request = GpuPickRequest {
         canvas_position_px: [-1.0e6, -1.0e6],
         max_distance_px: 0.0,
         ..request
-    }
+    };
+    (request, [0.0; 2])
 }
 
 /// The arrows the vector shader draws for a point vector series, in the
@@ -1823,7 +1849,7 @@ impl Renderer {
         );
         let inputs = active_layer_pick_inputs(&displayed, &state.series)?;
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
-        let request = pick_request_outside_gaps(display_config, request);
+        let (request, moved) = pick_request_outside_gaps(display_config, request);
         let transform = data_render::scatter_transform_from_config(display_config);
         // The line offset members are the last registered series, each
         // drawn (and its arc prefix scanned) at its own panel's transform.
@@ -1911,8 +1937,8 @@ impl Renderer {
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
             [
-                rect.x as f32,
-                rect.y as f32,
+                rect.x as f32 + moved[0],
+                rect.y as f32 + moved[1],
                 rect.width as f32,
                 rect.height as f32,
             ]
@@ -2038,7 +2064,10 @@ impl Renderer {
                 .collect();
             (inputs.panel, inputs.series, display_config, members, styles)
         };
-        let request = pick_request_outside_gaps(&display_config, request);
+        // `pick_chart` moves the cursor itself, so it gets the request as
+        // given; everything else here reads it moved.
+        let given = request;
+        let (request, moved) = pick_request_outside_gaps(&display_config, request);
 
         // A 3D chart's surfaces, markers and strokes are picked by their ID
         // render: the draw's own rasterizer and depth test, so a hidden
@@ -2048,7 +2077,7 @@ impl Renderer {
         }
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
-        let point_ticket = self.pick_chart(id, request)?;
+        let point_ticket = self.pick_chart(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
 
         let mut data_series = Vec::new();
@@ -2481,8 +2510,8 @@ impl Renderer {
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
             [
-                rect.x as f32,
-                rect.y as f32,
+                rect.x as f32 + moved[0],
+                rect.y as f32 + moved[1],
                 rect.width as f32,
                 rect.height as f32,
             ]

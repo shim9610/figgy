@@ -322,6 +322,7 @@ pub fn emit_colorbar_axis_strokes(
             // A colourbar axis has no breaks (validation refuses them), so
             // its walk never reports one.
             AxisStroke::Break(k, end) => format!("axis_break_colorbar_{k}_{end}"),
+            AxisStroke::Frame(k, end) => format!("axis_frame_colorbar_{k}_{end}"),
         };
         sink.stroke(
             Slot::Above,

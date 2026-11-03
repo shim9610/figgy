@@ -41,7 +41,7 @@ use crate::sink::Slot;
 
 /// The most rects a panel's data is drawn in: a piece per cut plus one on
 /// each axis (#200).
-const MAX_DATA_PIECES: usize =
+pub(crate) const MAX_DATA_PIECES: usize =
     (crate::config::MAX_AXIS_BREAKS + 1) * (crate::config::MAX_AXIS_BREAKS + 1);
 
 /// An empty rect, filling the unused pieces.
@@ -56,10 +56,48 @@ const NO_RECT: Rect = Rect {
 /// broken axis one rect per piece, so nothing is drawn in a gap. Each draw
 /// of the data slot is scissored to each rect in turn; a mark crossing a gap
 /// is drawn once per piece it reaches and shows only inside them.
+///
+/// On a `Panels` axis each piece also carries its shift: how far its linear
+/// map is moved from the first piece's, the map the panel's transform holds
+/// (`data_render::panels_scale`), as a fraction of the data area (right on
+/// x, up on y). Every shift is zero on a `Continuous` axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DataPieces {
     rects: [Rect; MAX_DATA_PIECES],
+    shifts: [[f64; 2]; MAX_DATA_PIECES],
     count: usize,
+}
+
+/// One axis' pieces in the drawn direction (left to right, bottom to top,
+/// which is the shader's `t`: an inverted axis is mirrored), each as its
+/// pixel band of the area's `len` pixels and its `Panels` shift.
+fn axis_bands(
+    axis: &crate::config::AxisOptions,
+    len: u32,
+) -> (
+    [((u32, u32), f64); crate::config::MAX_AXIS_BREAKS + 1],
+    usize,
+) {
+    let map = crate::layout::BreakMap::of(axis);
+    let panels = crate::data_render::panels_scale(axis);
+    let mut out = [((0u32, len), 0.0); crate::config::MAX_AXIS_BREAKS + 1];
+    let mut count = 0;
+    let px = |t: f64| (t.clamp(0.0, 1.0) * f64::from(len)).round() as u32;
+    for (drawn, raw) in map.pieces().zip(map.raw_pieces()) {
+        let ((a, b), raw_start) = if axis.inverted {
+            ((1.0 - drawn.1, 1.0 - drawn.0), 1.0 - raw.1)
+        } else {
+            (drawn, raw.0)
+        };
+        let shift = panels.map_or(0.0, |scale| a - raw_start * scale);
+        if px(b) > px(a) {
+            out[count] = ((px(a), px(b)), shift);
+            count += 1;
+        }
+    }
+    // The drawn order of a mirrored axis runs the other way.
+    out[..count].sort_by_key(|((a, _), _)| *a);
+    (out, count)
 }
 
 impl DataPieces {
@@ -67,49 +105,37 @@ impl DataPieces {
     pub(crate) fn whole(area: Rect) -> Self {
         let mut rects = [NO_RECT; MAX_DATA_PIECES];
         rects[0] = area;
-        Self { rects, count: 1 }
+        Self {
+            rects,
+            shifts: [[0.0; 2]; MAX_DATA_PIECES],
+            count: 1,
+        }
     }
 
     /// The pieces of `area` that `config`'s broken axes leave
     /// ([`crate::layout::BreakMap`]): the bands of `bottom_x` across and of
-    /// `left_y` up, mirrored on an inverted axis, rounded to whole pixels.
+    /// `left_y` up, rounded to whole pixels.
     pub(crate) fn of(config: &crate::config::Config, area: Rect) -> Self {
-        let bands = |axis: &crate::config::AxisOptions, len: u32| {
-            let map = crate::layout::BreakMap::of(axis);
-            let mut out = [(0u32, len); crate::config::MAX_AXIS_BREAKS + 1];
-            let mut count = 0;
-            for (a, b) in map.pieces() {
-                let (a, b) = if axis.inverted {
-                    (1.0 - b, 1.0 - a)
-                } else {
-                    (a, b)
-                };
-                let px = |t: f64| (t.clamp(0.0, 1.0) * f64::from(len)).round() as u32;
-                if px(b) > px(a) {
-                    out[count] = (px(a), px(b));
-                    count += 1;
-                }
-            }
-            (out, count)
-        };
-        let (xs, nx) = bands(&config.bottom_x, area.width);
-        let (ys, ny) = bands(&config.left_y, area.height);
+        let (xs, nx) = axis_bands(&config.bottom_x, area.width);
+        let (ys, ny) = axis_bands(&config.left_y, area.height);
         if nx <= 1 && ny <= 1 {
             return Self::whole(area);
         }
         let mut pieces = Self {
             rects: [NO_RECT; MAX_DATA_PIECES],
+            shifts: [[0.0; 2]; MAX_DATA_PIECES],
             count: 0,
         };
-        for &(x0, x1) in &xs[..nx] {
+        for &((x0, x1), sx) in &xs[..nx] {
             // A y band is measured up from the bottom of the area.
-            for &(y0, y1) in &ys[..ny] {
+            for &((y0, y1), sy) in &ys[..ny] {
                 pieces.rects[pieces.count] = Rect {
                     x: area.x + x0,
                     y: area.y + (area.height - y1),
                     width: x1 - x0,
                     height: y1 - y0,
                 };
+                pieces.shifts[pieces.count] = [sx, sy];
                 pieces.count += 1;
             }
         }
@@ -118,6 +144,16 @@ impl DataPieces {
 
     pub(crate) fn rects(&self) -> &[Rect] {
         &self.rects[..self.count]
+    }
+
+    /// Each piece's `Panels` shift, as a fraction of the data area.
+    pub(crate) fn shifts(&self) -> &[[f64; 2]] {
+        &self.shifts[..self.count]
+    }
+
+    /// Whether some piece is drawn at a shifted map (`Panels`).
+    pub(crate) fn shifted(&self) -> bool {
+        self.shifts().iter().any(|s| s[0] != 0.0 || s[1] != 0.0)
     }
 
     /// The same pieces relative to `(x, y)`; `None` when a piece starts
@@ -129,6 +165,42 @@ impl DataPieces {
             rect.y = rect.y.checked_sub(y)?;
         }
         Some(out)
+    }
+}
+
+/// The series layers each data piece is drawn with (#200): the panel's own
+/// list for every piece, or on a `Panels` axis a list per shifted piece,
+/// bound to that piece's transform.
+#[derive(Clone, Copy)]
+pub(crate) struct PieceSeries<'s, 'a> {
+    lists: [&'s [SeriesLayers<'a>]; MAX_DATA_PIECES],
+}
+
+impl<'s, 'a> PieceSeries<'s, 'a> {
+    /// The same list for every piece.
+    pub(crate) fn shared(list: &'s [SeriesLayers<'a>]) -> Self {
+        Self {
+            lists: [list; MAX_DATA_PIECES],
+        }
+    }
+
+    /// `own[k]` for a piece drawn at its own transform, `base` for the rest.
+    pub(crate) fn of(
+        base: &'s [SeriesLayers<'a>],
+        own: &'s [Option<Vec<SeriesLayers<'a>>>; MAX_DATA_PIECES],
+    ) -> Self {
+        let mut lists = [base; MAX_DATA_PIECES];
+        for (list, own) in lists.iter_mut().zip(own) {
+            if let Some(own) = own {
+                *list = own;
+            }
+        }
+        Self { lists }
+    }
+
+    /// The list piece `k` is drawn with.
+    pub(crate) fn piece(&self, k: usize) -> &'s [SeriesLayers<'a>] {
+        self.lists.get(k).copied().unwrap_or(&[])
     }
 }
 
@@ -174,7 +246,7 @@ pub(crate) fn draw_chart_panel(
     panel_rect: Rect,
     data: &DataPieces,
     chrome: &PanelChrome<'_>,
-    series_list: &[SeriesLayers<'_>],
+    series: PieceSeries<'_, '_>,
     cached_bodies: Option<AxisLayer<'_>>,
     slot: Slot,
 ) {
@@ -201,10 +273,11 @@ pub(crate) fn draw_chart_panel(
     let data_scissor = |pass: &mut wgpu::RenderPass<'_>, piece: Rect| {
         pass.set_scissor_rect(piece.x, piece.y, piece.width, piece.height);
     };
+    // Each piece with the series layers it is drawn with.
     let pieces = || {
-        data.rects()
-            .iter()
-            .filter_map(|&piece| clamp_rect_to_target(piece, target_size))
+        data.rects().iter().enumerate().filter_map(|(k, &piece)| {
+            clamp_rect_to_target(piece, target_size).map(|rect| (rect, series.piece(k)))
+        })
     };
     let blit = |pass: &mut wgpu::RenderPass<'_>, layer: &AxisLayer<'_>| {
         pass.set_pipeline(layer.pipeline);
@@ -236,13 +309,13 @@ pub(crate) fn draw_chart_panel(
                     blit(pass, &layer);
                 }
                 None => {
-                    for piece in pieces() {
+                    for (piece, series_list) in pieces() {
                         data_scissor(pass, piece);
                         crate::data_render::issue_series_bodies(pass, series_list);
                     }
                 }
             }
-            for piece in pieces() {
+            for (piece, series_list) in pieces() {
                 data_scissor(pass, piece);
                 for s in series_list {
                     crate::data_render::issue_series_picked(pass, s);
@@ -297,7 +370,7 @@ pub fn draw_chart_panel_columnar(
             // A host-issued panel draws its whole data area.
             &DataPieces::whole(data_area),
             &chrome,
-            series_list,
+            PieceSeries::shared(series_list),
             None,
             slot,
         );

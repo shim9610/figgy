@@ -88,6 +88,11 @@ pub(crate) fn break_constants(
     let mut breaks = NO_BREAKS;
     let mut info = NO_BREAK_INFO;
     for (axis, options) in [x, y].into_iter().enumerate() {
+        // A `Panels` axis has no cut remap: each piece is drawn at its own
+        // linear map ([`panels_scale`], `DataPieces`).
+        if panels_scale(options).is_some() {
+            continue;
+        }
         let map = crate::layout::BreakMap::of(options);
         let knots = map.knots();
         info[axis] = knots.len() as f32;
@@ -109,6 +114,20 @@ pub(crate) fn break_constants(
         }
     }
     (breaks, info)
+}
+
+/// The piece scale of a broken axis drawn as [`AxisBreakStyle::Panels`]
+/// (#200), `None` for any other axis. Such an axis' transform maps data at
+/// its first piece's linear map (the shader's `t` times this scale) and each
+/// piece is drawn with that map moved by the piece's shift, so every piece
+/// keeps its own linear scale and a mark crossing a gap is clipped at each
+/// piece's edge.
+///
+/// [`AxisBreakStyle::Panels`]: crate::config::AxisBreakStyle::Panels
+pub(crate) fn panels_scale(axis: &crate::config::AxisOptions) -> Option<f64> {
+    let style = axis.breaks.as_ref()?.style;
+    let map = crate::layout::BreakMap::of(axis);
+    (style == crate::config::AxisBreakStyle::Panels && map.is_broken()).then(|| map.scale())
 }
 
 /// Admission headroom for one immutable streamed point/errorbar transform.
@@ -287,6 +306,13 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
 
     let (data_min_x, data_max_x) = orient_axis(data_min_x, data_max_x, config.bottom_x.inverted);
     let (data_min_y, data_max_y) = orient_axis(data_min_y, data_max_y, config.left_y.inverted);
+    // A `Panels` axis maps at its first piece's linear map: `t` times the
+    // piece scale, a range shortened by that factor from its start.
+    let at_first_piece = |min: f64, max: f64, axis: &crate::config::AxisOptions| {
+        panels_scale(axis).map_or(max, |scale| min + (max - min) / scale)
+    };
+    let data_max_x = at_first_piece(data_min_x, data_max_x, &config.bottom_x);
+    let data_max_y = at_first_piece(data_min_y, data_max_y, &config.left_y);
     let (min_x_hi, min_x_lo) = crate::data::split_f64_to_f32_pair(data_min_x);
     let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(data_max_x);
     let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);

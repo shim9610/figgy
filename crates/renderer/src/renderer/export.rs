@@ -1050,6 +1050,7 @@ impl Renderer {
                 .map(|texture| texture.create_view(&Default::default()));
             let depth_view = depth.create_view(&Default::default());
             let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+            let own = item.own_piece_layers();
             let encoder = encoder.get_or_insert_with(|| {
                 self.device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1075,7 +1076,7 @@ impl Renderer {
                             height: item.data_area.height,
                         })
                     }),
-                &series_list,
+                super::composite::PieceSeries::of(&series_list, &own),
             );
             let bind_group = data_render::create_texture_bind_group(
                 &self.device,

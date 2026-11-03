@@ -3,8 +3,9 @@
 //! where the axis chrome places them (`layout::axis_fraction`, the CPU twin
 //! of the shader's cut remap), nothing is drawn inside a gap, a line or a
 //! fill crossing a gap shows only inside the pieces, a logarithmic axis is
-//! cut in decades, cuts outside the range change no pixel, and every check
-//! holds at 1x and 2x.
+//! cut in decades, cuts outside the range change no pixel, a `Panels` axis
+//! draws each piece at its own linear map, and every check holds at 1x and
+//! 2x.
 //!
 //! Grid, legend, title and axis lines are off, and every mark has its own
 //! pure colour, so a colour predicate attributes every pixel to one mark.
@@ -430,4 +431,325 @@ fn a_pick_hits_what_each_piece_draws_and_nothing_in_a_gap() {
             "{scale}x the line inside the gap"
         );
     }
+}
+
+/// `config` with every broken axis drawn as `Panels`.
+fn panels(mut config: renderer::Config) -> renderer::Config {
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        if let Some(breaks) = axis.breaks.as_mut() {
+            breaks.style = AxisBreakStyle::Panels;
+        }
+    }
+    config
+}
+
+/// `config` with `bottom_x` cut by `cuts` as well.
+fn with_x_cuts(mut config: renderer::Config, cuts: &[(f64, f64)]) -> renderer::Config {
+    config.bottom_x.breaks = config.left_y.breaks.clone().map(|breaks| AxisBreaks {
+        ranges: cuts.iter().map(|&(a, b)| AxisBreak::new(a, b)).collect(),
+        ..breaks
+    });
+    config
+}
+
+#[test]
+fn panels_markers_on_every_piece_land_where_the_chrome_places_them() {
+    let mut r = renderer();
+    // A marker in each of the four pieces of a chart broken on both axes,
+    // and one at each edge of the x cut.
+    let points = [
+        (1.0, 5.0),
+        (8.5, 5.0),
+        (1.0, 95.0),
+        (8.5, 95.0),
+        (3.5, 50.0),
+        (7.5, 92.0),
+    ];
+    upload(&mut r, "x", points.iter().map(|p| p.0).collect());
+    upload(&mut r, "y", points.iter().map(|p| p.1).collect());
+    let y_only = panels(config(0.0, 100.0, &[(10.0, 90.0)]));
+    let both = panels(with_x_cuts(
+        config(0.0, 100.0, &[(10.0, 90.0)]),
+        &[(4.0, 7.0)],
+    ));
+    let mut x_inverted = both.clone();
+    x_inverted.bottom_x.inverted = true;
+    let mut y_inverted = both.clone();
+    y_inverted.left_y.inverted = true;
+    let series = [markers("m", "x", "y", RED)];
+    for config in [&y_only, &both, &x_inverted, &y_inverted] {
+        for scale in [1.0f32, 2.0] {
+            let img = export(&mut r, config, &series, scale);
+            for &(x, y) in &points {
+                if renderer::layout::value_in_cut(&config.bottom_x, x)
+                    || renderer::layout::value_in_cut(&config.left_y, y)
+                {
+                    continue;
+                }
+                let (cx, cy) = (col_of(config, x, scale), row_of(config, y, scale));
+                let (mx, my) = centroid(&img, cx, cy, 10.0 * scale, is(RED))
+                    .unwrap_or_else(|| panic!("{scale}x: no marker for ({x}, {y})"));
+                assert!(
+                    (mx - cx).abs() < 1.0 && (my - cy).abs() < 1.0,
+                    "{scale}x ({x}, {y}): marker at ({mx}, {my}), chrome at ({cx}, {cy}), \
+                     inverted x {} y {}",
+                    config.bottom_x.inverted,
+                    config.left_y.inverted,
+                );
+            }
+        }
+    }
+}
+
+/// Where the straight line through `(1, 5)` and `(9, 95)` is at `y`.
+fn true_line_x(y: f64) -> f64 {
+    1.0 + (y - 5.0) * 8.0 / 90.0
+}
+
+#[test]
+fn a_panels_line_keeps_its_own_slope_in_each_piece() {
+    let mut r = renderer();
+    upload(&mut r, "x", vec![1.0, 9.0]);
+    upload(&mut r, "y", vec![5.0, 95.0]);
+    let config = panels(config(0.0, 100.0, &[(10.0, 90.0)]));
+    let series = [line("l", "x", "y", BLUE, Some(LineFill::ToBaseline(0.0)))];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        let gap = gap_rows(&config, scale, 1.0);
+        assert_eq!(
+            count_in_rows(&img, gap.clone(), is(BLUE)),
+            0,
+            "{scale}x line in the gap"
+        );
+        assert_eq!(
+            count_in_rows(&img, gap, is(GREEN)),
+            0,
+            "{scale}x fill in the gap"
+        );
+        // Each piece draws the true line at its own map, so near each edge
+        // of the gap the line is where the data puts it, not on a straight
+        // segment between the two pieces (a `Continuous` axis would put it
+        // 50 px and more away).
+        for y in [6.0, 8.5, 91.5, 94.0] {
+            let row = row_of(&config, y, scale);
+            let x = col_of(&config, true_line_x(y), scale);
+            let found = (0..img.width)
+                .filter(|&c| is(BLUE)(pixel(&img, c, row as u32)))
+                .collect::<Vec<_>>();
+            assert!(
+                found
+                    .iter()
+                    .any(|&c| (c as f32 + 0.5 - x).abs() < 2.5 * scale),
+                "{scale}x y = {y}: line at {found:?}, data at {x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_panels_pick_hits_what_each_piece_draws() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    upload(&mut r, "mx", vec![2.0, 8.0]);
+    upload(&mut r, "my", vec![5.0, 95.0]);
+    upload(&mut r, "lx", vec![1.0, 9.0]);
+    upload(&mut r, "ly", vec![5.0, 95.0]);
+    let config = panels(with_x_cuts(
+        config(0.0, 100.0, &[(10.0, 90.0)]),
+        &[(4.0, 6.0)],
+    ));
+    let series = [
+        markers("m", "mx", "my", RED),
+        line("l", "lx", "ly", BLUE, None),
+    ];
+    for scale in [1.0f32, 2.0] {
+        for (index, (x, y)) in [(2.0, 5.0), (8.0, 95.0)].into_iter().enumerate() {
+            let at = (col_of(&config, x, scale), row_of(&config, y, scale));
+            assert_eq!(
+                pick_at(&mut r, &config, &series, at, scale),
+                Some(("m".into(), index)),
+                "{scale}x marker {index}"
+            );
+        }
+        // The line where the top right piece draws it, and nothing where
+        // a straight segment across the gap would be.
+        let y = 93.0;
+        let drawn = (
+            col_of(&config, true_line_x(y), scale),
+            row_of(&config, y, scale),
+        );
+        assert!(
+            matches!(pick_at(&mut r, &config, &series, drawn, scale), Some((ref id, _)) if id == "l"),
+            "{scale}x the line in the top right piece"
+        );
+        let gap = gap_rows(&config, scale, 1.0);
+        let middle = (
+            col_of(&config, true_line_x(50.0), scale),
+            (gap.start + gap.end) as f32 / 2.0,
+        );
+        assert_eq!(
+            pick_at(&mut r, &config, &series, middle, scale),
+            None,
+            "{scale}x the line inside the gap"
+        );
+    }
+}
+
+/// The chart as the screen path draws it at 1x: `prepare` and
+/// `paint_prepared` into a target of the chart's size, through the resident
+/// composite and the live picked slot.
+fn screen(r: &mut Renderer, config: &renderer::Config, series: &[SeriesConfig]) -> RasterImage {
+    let chart = Chart::new(config.clone());
+    let rect = config.chart_area.0;
+    let view = r.create_chart_view(&chart, rect).unwrap();
+    let styles: Vec<_> = series
+        .iter()
+        .map(|cfg| r.create_style_for_series(cfg).unwrap())
+        .collect();
+    let drawn: Vec<_> = series
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| renderer::Series { config, style })
+        .collect();
+    let items = [renderer::ChartDrawItem {
+        view: &view,
+        chart_config: chart.config(),
+        series: &drawn,
+    }];
+    let prepared = r.prepare(&items).unwrap();
+    let (w, h) = (rect.width, rect.height);
+    let device = r.device().clone();
+    let queue = r.queue().clone();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("axis break screen target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("axis break screen readback"),
+        size: u64::from(row) * u64::from(h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("axis break screen paint"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        r.paint_prepared(&mut pass, (w, h), &prepared).unwrap();
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    drop(prepared);
+    r.end_gpu_frame();
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    let data = slice.get_mapped_range().unwrap();
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let start = (y * row) as usize;
+        rgba.extend_from_slice(&data[start..start + (w * 4) as usize]);
+    }
+    drop(data);
+    buffer.unmap();
+    RasterImage {
+        width: w,
+        height: h,
+        rgba,
+    }
+}
+
+#[test]
+fn the_screen_draws_each_panels_piece_where_the_export_does() {
+    let mut r = renderer();
+    let points = [(1.0, 5.0), (8.5, 5.0), (1.0, 95.0), (8.5, 95.0)];
+    upload(&mut r, "x", points.iter().map(|p| p.0).collect());
+    upload(&mut r, "y", points.iter().map(|p| p.1).collect());
+    upload(&mut r, "lx", vec![1.0, 9.0]);
+    upload(&mut r, "ly", vec![5.0, 95.0]);
+    let config = panels(with_x_cuts(
+        config(0.0, 100.0, &[(10.0, 90.0)]),
+        &[(4.0, 7.0)],
+    ));
+    let series = [
+        line("l", "lx", "ly", BLUE, None),
+        markers("m", "x", "y", RED),
+    ];
+    let img = screen(&mut r, &config, &series);
+    for &(x, y) in &points {
+        let (cx, cy) = (col_of(&config, x, 1.0), row_of(&config, y, 1.0));
+        let (mx, my) = centroid(&img, cx, cy, 10.0, is(RED))
+            .unwrap_or_else(|| panic!("screen: no marker for ({x}, {y})"));
+        assert!(
+            (mx - cx).abs() < 1.0 && (my - cy).abs() < 1.0,
+            "screen ({x}, {y}): marker at ({mx}, {my}), chrome at ({cx}, {cy})"
+        );
+    }
+    let y = 93.0;
+    let (row, x) = (
+        row_of(&config, y, 1.0) as u32,
+        col_of(&config, true_line_x(y), 1.0),
+    );
+    let found = (0..img.width)
+        .filter(|&c| is(BLUE)(pixel(&img, c, row)))
+        .collect::<Vec<_>>();
+    assert!(
+        found.iter().any(|&c| (c as f32 + 0.5 - x).abs() < 2.5),
+        "screen y = {y}: line at {found:?}, data at {x}"
+    );
+    assert_eq!(
+        count_in_rows(&img, gap_rows(&config, 1.0, 1.0), |p| is(RED)(p)
+            || is(BLUE)(p)),
+        0,
+        "screen: data in the gap"
+    );
 }

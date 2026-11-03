@@ -294,9 +294,15 @@ impl PreparedLineLayer {
     }
 
     fn borrow(&self) -> ColumnLineLayer<'_> {
+        self.borrow_with(None)
+    }
+
+    /// The layer as drawn with `transform` in place of its own transform
+    /// bind group when given: a `Panels` piece's moved map (#200).
+    fn borrow_with<'a>(&'a self, transform: Option<&'a wgpu::BindGroup>) -> ColumnLineLayer<'a> {
         ColumnLineLayer {
             pipeline: &self.pipeline,
-            transform_bg: &self.transform_bg,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
             style_bg: &self.style_bg,
             pool_buffer: &self.pool_buffer,
             x: self.x,
@@ -358,9 +364,15 @@ impl PreparedScatterLayer {
     }
 
     fn borrow(&self) -> ColumnScatterLayer<'_> {
+        self.borrow_with(None)
+    }
+
+    /// The layer as drawn with `transform` in place of its own transform
+    /// bind group when given: a `Panels` piece's moved map (#200).
+    fn borrow_with<'a>(&'a self, transform: Option<&'a wgpu::BindGroup>) -> ColumnScatterLayer<'a> {
         ColumnScatterLayer {
             pipeline: &self.pipeline,
-            transform_bg: &self.transform_bg,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
             style_bg: &self.style_bg,
             style_map_bg: self.style_map_bg.as_ref(),
             value_map_bg: self.value_map_bg.as_ref(),
@@ -734,6 +746,10 @@ pub(super) struct PreparedItem {
     /// The rects the data slot is drawn in: the data area, or its pieces on
     /// a broken axis (#200).
     pub(super) data_pieces: super::composite::DataPieces,
+    /// The transform each shifted piece of a `Panels` axis is drawn at
+    /// (#200): the panel's own, offset by the piece's shift. `None` for a
+    /// piece drawn at the panel's transform.
+    pub(super) piece_transforms: [Option<PieceTransform>; super::composite::MAX_DATA_PIECES],
     pub(super) axis_pipeline: wgpu::RenderPipeline,
     pub(super) series: Vec<PreparedSeries>,
     pub(super) stream_display: Option<streaming_runtime::StreamDisplayPacket>,
@@ -743,6 +759,37 @@ pub(super) struct PreparedItem {
     /// [`column_fingerprint`] of the columns this panel's series read through
     /// the pool lookup (grid columns come from the scratch receipts).
     pub(super) column_fingerprint: u64,
+}
+
+/// One piece's transform uniform and its bind group (#200).
+pub(super) struct PieceTransform {
+    pub(super) _buffer: TrackedBuffer,
+    pub(super) bind_group: wgpu::BindGroup,
+}
+
+/// No piece drawn at its own transform.
+pub(super) fn no_piece_transforms() -> [Option<PieceTransform>; super::composite::MAX_DATA_PIECES] {
+    std::array::from_fn(|_| None)
+}
+
+/// The series layers of each piece drawn at its own transform (#200);
+/// `None` for the pieces that read the panel's list.
+pub(super) type OwnPieceLayers<'a> =
+    [Option<Vec<data_render::SeriesLayers<'a>>>; super::composite::MAX_DATA_PIECES];
+
+impl PreparedItem {
+    /// The series layers of each piece drawn at its own transform.
+    pub(super) fn own_piece_layers(&self) -> OwnPieceLayers<'_> {
+        std::array::from_fn(|k| {
+            let transform = self.piece_transforms.get(k)?.as_ref()?;
+            Some(
+                self.series
+                    .iter()
+                    .map(|series| series.layers_with(Some(&transform.bind_group)))
+                    .collect(),
+            )
+        })
+    }
 }
 
 /// An order-independent fingerprint of `(column id, allocation epoch)` pairs:
@@ -1163,13 +1210,24 @@ impl PreparedSeries {
     }
 
     pub(super) fn layers(&self) -> data_render::SeriesLayers<'_> {
+        self.layers_with(None)
+    }
+
+    /// [`Self::layers`] with `transform` in place of every 2D layer's own
+    /// transform bind group when given: the layers a `Panels` piece draws,
+    /// at its moved map (#200). The 3D, ternary region and parallel layers
+    /// keep theirs: those charts have no breaks.
+    pub(super) fn layers_with<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::SeriesLayers<'a> {
         data_render::SeriesLayers {
             area: self
                 .area
                 .as_ref()
                 .map(|layer| data_render::ColumnAreaLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: &layer.style_bg,
                     pool_buffer: &layer.pool_buffer,
                     x: layer.x,
@@ -1190,7 +1248,7 @@ impl PreparedSeries {
                 .as_ref()
                 .map(|layer| data_render::ColumnFieldLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
                     charge: Arc::clone(&layer.charge),
@@ -1199,7 +1257,7 @@ impl PreparedSeries {
             bar: self.bar.as_ref().map(|layer| data_render::ColumnBarLayer {
                 envelope: layer.envelope.clone(),
                 pipeline: &layer.pipeline,
-                transform_bg: &layer.transform_bg,
+                transform_bg: transform.unwrap_or(&layer.transform_bg),
                 style_bg: &layer.style_bg,
                 style_map_bg: layer.style_map_bg.as_ref(),
                 pool_buffer: &layer.pool_buffer,
@@ -1220,7 +1278,7 @@ impl PreparedSeries {
                 .as_ref()
                 .map(|layer| data_render::vector::ColumnVectorLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     vector_bg: layer.vector_bg.clone(),
                     charge: Arc::clone(&layer.charge),
@@ -1235,7 +1293,7 @@ impl PreparedSeries {
                 .as_ref()
                 .map(|layer| data_render::ColumnContourLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     field_bg: layer.field_bg.clone(),
                     charge: Arc::clone(&layer.charge),
@@ -1250,7 +1308,7 @@ impl PreparedSeries {
                 }),
             errorbar: self.errorbar.as_ref().map(|layer| ColumnErrorBarDraw {
                 pipeline: &layer.pipeline,
-                transform_bg: &layer.transform_bg,
+                transform_bg: transform.unwrap_or(&layer.transform_bg),
                 style_bg: &layer.style_bg,
                 style_map_bg: layer.style_map_bg.as_ref(),
                 pool_buffer: &layer.pool_buffer,
@@ -1262,7 +1320,7 @@ impl PreparedSeries {
                 err_x_hi: layer.err_x_hi,
                 style_index: layer.style_index,
             }),
-            line: self.line.as_ref().map(PreparedLineLayer::borrow),
+            line: self.line.as_ref().map(|layer| layer.borrow_with(transform)),
             parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
             line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),
             scatter_3d: self.scatter_3d.as_ref().map(PreparedScatterLayer::borrow),
@@ -1271,19 +1329,22 @@ impl PreparedSeries {
                 .as_ref()
                 .map(|layer| data_render::ColumnStarLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: &layer.style_bg,
                     texture_bg: &layer.texture_bg,
                     star_bg: &layer.star_bg,
                     indirect: &layer.indirect,
                 }),
-            scatter: self.scatter.as_ref().map(PreparedScatterLayer::borrow),
+            scatter: self
+                .scatter
+                .as_ref()
+                .map(|layer| layer.borrow_with(transform)),
             selected_bars: self
                 .selected_bars
                 .iter()
                 .map(|layer| ColumnBarSelectionLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     style_map_bg: layer.style_map_bg.as_ref(),
                     pool_buffer: &layer.pool_buffer,
@@ -1299,7 +1360,7 @@ impl PreparedSeries {
                 .iter()
                 .map(|layer| ColumnFieldSelectionLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     selection_bg: layer.selection_bg.clone(),
                     selection_charge: Arc::clone(&layer.selection_charge),
                     field_bg: layer.field_bg.clone(),
@@ -1312,7 +1373,7 @@ impl PreparedSeries {
                 .iter()
                 .map(|layer| ColumnPickRingLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     style_bg: layer.style_bg.clone(),
                     style_map_bg: layer.style_map_bg.as_ref(),
                     value_map_bg: layer.value_map_bg.as_ref(),
@@ -1331,7 +1392,7 @@ impl PreparedSeries {
             value_labels: self.value_labels.as_ref().map(|layer| {
                 data_render::ColumnValueLabelLayer {
                     pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
+                    transform_bg: transform.unwrap_or(&layer.transform_bg),
                     labels: layer.labels.clone(),
                     data: layer.data.clone(),
                     selected: layer
@@ -2848,6 +2909,7 @@ impl Renderer {
                         .map(|area| area.0)
                         .unwrap_or(item.view.panel_rect),
                     // A streamed chart has no breaks (rule 8).
+                    piece_transforms: no_piece_transforms(),
                     data_pieces: super::composite::DataPieces::whole(
                         state
                             .config
@@ -3156,12 +3218,14 @@ impl Renderer {
                 let panel_rect = item.view.panel_rect;
                 // The series layers are read by the data slot only.
                 let series_list: Vec<_>;
-                let series_layers: &[data_render::SeriesLayers<'_>] = match slot {
+                let own: OwnPieceLayers<'_>;
+                let series_layers = match slot {
                     crate::sink::Slot::Below => {
                         series_list = item.series.iter().map(PreparedSeries::layers).collect();
-                        &series_list
+                        own = item.own_piece_layers();
+                        super::composite::PieceSeries::of(&series_list, &own)
                     }
-                    crate::sink::Slot::Above => &[],
+                    crate::sink::Slot::Above => super::composite::PieceSeries::shared(&[]),
                 };
                 // Without the chrome only the data slot is drawn.
                 let (annotation_underlay, annotation_overlay) = if chrome {

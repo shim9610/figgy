@@ -344,6 +344,7 @@ impl PrepareContext<'_> {
                         .map(|texture| texture.create_view(&Default::default()));
                     let series_list: Vec<_> =
                         item.series.iter().map(PreparedSeries::layers).collect();
+                    let own = item.own_piece_layers();
                     draw_panel_composite(
                         encoder,
                         PanelCompositeTargets {
@@ -353,7 +354,7 @@ impl PrepareContext<'_> {
                         },
                         (w, h),
                         &pieces,
-                        &series_list,
+                        super::composite::PieceSeries::of(&series_list, &own),
                     );
                     i
                 }
@@ -506,6 +507,14 @@ impl PrepareContext<'_> {
                 column_sources.entry(id).or_insert(allocation_epoch);
             }
 
+            let data_pieces = super::composite::DataPieces::of(
+                item.chart_config,
+                item.chart_config
+                    .data_area()
+                    .map(|area| area.0)
+                    .unwrap_or(item.view.panel_rect),
+            );
+            let piece_transforms = self.piece_transforms(item.chart_config, &data_pieces);
             prepared.push(PreparedItem {
                 view: PreparedView::capture(
                     item.view,
@@ -517,13 +526,8 @@ impl PrepareContext<'_> {
                     .data_area()
                     .map(|area| area.0)
                     .unwrap_or(item.view.panel_rect),
-                data_pieces: super::composite::DataPieces::of(
-                    item.chart_config,
-                    item.chart_config
-                        .data_area()
-                        .map(|area| area.0)
-                        .unwrap_or(item.view.panel_rect),
-                ),
+                data_pieces,
+                piece_transforms,
                 axis_pipeline: pipelines.axis.clone(),
                 series: layers
                     .into_iter()
@@ -543,6 +547,46 @@ impl PrepareContext<'_> {
             });
         }
         Ok((prepared, column_sources))
+    }
+
+    /// The transform of each shifted piece of a `Panels` axis (#200): the
+    /// panel's transform with its offset moved by the piece's shift, in the
+    /// same panel `t` the offset is in.
+    fn piece_transforms(
+        &self,
+        config: &crate::config::Config,
+        pieces: &super::composite::DataPieces,
+    ) -> [Option<super::frame::PieceTransform>; super::composite::MAX_DATA_PIECES] {
+        let mut out = super::frame::no_piece_transforms();
+        if !pieces.shifted() {
+            return out;
+        }
+        let base = data_render::scatter_transform_from_config(config);
+        for (slot, shift) in out.iter_mut().zip(pieces.shifts()) {
+            if shift[0] == 0.0 && shift[1] == 0.0 {
+                continue;
+            }
+            let mut transform = base;
+            for axis in 0..2 {
+                transform.data_to_panel_offset[axis] +=
+                    (shift[axis] * f64::from(base.data_to_panel_scale[axis])) as f32;
+            }
+            let buffer = TrackedBuffer::new(
+                self.gpu_ledger,
+                GpuResourceKind::Uniform,
+                data_render::create_scatter_transform_uniform_buffer(self.device, &transform),
+            );
+            let bind_group = data_render::create_scatter_transform_bind_group(
+                self.device,
+                self.transform_bgl,
+                &buffer,
+            );
+            *slot = Some(super::frame::PieceTransform {
+                _buffer: buffer,
+                bind_group,
+            });
+        }
+        out
     }
 
     /// The value-map buffers a mapped scatter series on a 3D chart binds
@@ -700,9 +744,9 @@ pub(super) fn draw_panel_composite(
     targets: PanelCompositeTargets<'_>,
     (w, h): (u32, u32),
     data: &super::composite::DataPieces,
-    series_list: &[data_render::SeriesLayers<'_>],
+    series: super::composite::PieceSeries<'_, '_>,
 ) {
-    let three_d = series_list.iter().any(|s| {
+    let three_d = series.piece(0).iter().any(|s| {
         s.surface.is_some() || s.floor.is_some() || s.line_3d.is_some() || s.scatter_3d.is_some()
     });
     // A flat panel with the stencil attachment (a ternary chart with a
@@ -722,10 +766,13 @@ pub(super) fn draw_panel_composite(
             piece.height.min(h.saturating_sub(piece.y)),
         );
     };
+    // Each piece with the series layers it is drawn with.
     let pieces = || {
         data.rects()
             .iter()
-            .filter(|piece| piece.x < w && piece.y < h)
+            .enumerate()
+            .filter(|(_, piece)| piece.x < w && piece.y < h)
+            .map(|(k, piece)| (piece, series.piece(k)))
     };
     let final_store = if targets.resolve.is_some() {
         wgpu::StoreOp::Discard
@@ -766,7 +813,7 @@ pub(super) fn draw_panel_composite(
         // The ternary region fills first, into the stencil, under every
         // fill and body; a 3D panel then draws its surfaces, a flat one
         // its bodies (in the second pass when the stencil is attached).
-        for piece in pieces() {
+        for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
             if targets.depth.is_some() {
                 data_render::issue_series_regions(&mut pass, series_list);
@@ -792,7 +839,7 @@ pub(super) fn draw_panel_composite(
             })],
             ..Default::default()
         });
-        for piece in pieces() {
+        for (piece, series_list) in pieces() {
             scissor(&mut pass, piece);
             data_render::issue_series_bodies(&mut pass, series_list);
         }
