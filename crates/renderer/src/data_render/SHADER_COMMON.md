@@ -35,7 +35,7 @@ To change shared shader code:
 | `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
-| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
+| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
 | `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
@@ -49,8 +49,8 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector, line (the parallel row pick, §5.23) |
-| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, the radial pick module |
-| `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, field (the polar cell outline, §5), the radial pick module |
+| `radial_sector.wgsl` (§5.12) | radial, bar (the rose wedge), field (the polar cell outline, §5), the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
@@ -124,7 +124,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer/registry.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함), 레이더, 범주 막대(로즈), 필드(히트맵·등고선, #208)에 허용된다. 히스토그램·이미지·오차 막대·스템·벡터 시리즈는 `Config::validate_series_on_polar`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. 필드는 `polar_unproject`(§4)와 `field_lookup`(§5)으로 프래그먼트를 (각도, 반지름)에서 읽는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
 | `breaks`, `break_info` | 끊긴 축([#200](https://github.com/shim9610/figgy/issues/200))의 잘라낸 구간 표. `breaks[0..3]`은 X축, `breaks[3..6]`은 Y축이며 각 원소는 `(from, to, start, end)`다. `from..to`는 잘라낸 값의 원래 `t` 구간, `start..end`는 그 구간을 그리는 빈칸이다(반전된 축은 `data_min`·`data_max`를 맞바꾼 `t`로 뒤집어 담는다). `break_info`는 (X 구간 수, Y 구간 수, X 조각 배율, Y 조각 배율)이며 구간 수가 0이면 항등 변환이다. CPU에서 `data_render::break_constants`가 `layout::BreakMap`으로 채운다. `Panels` 스타일 축은 이 표를 쓰지 않는다(구간 수 0). 그 축은 첫 조각의 선형 사상으로 그리고, 조각마다 `data_to_panel_offset`을 옮긴 변환을 따로 바인딩한다(`renderer::composite::DataPieces`). |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer/style.rs` (`[f32; 12]`). |
 
@@ -443,6 +443,15 @@ varyings (from `polar_clip_offset` / `polar_clip_limits` /
 entry starts with `polar_fragment_visible`, since the transform bind group
 is vertex-visible only.
 
+`polar_unproject(t, px)` (`projection.wgsl`, #208) is the inverse of
+`polar_ndc`: from a pixel offset from the centre (`polar_clip_offset`, the
+draw's pixel frame, y up) it returns the angle value in the turn `atan2`
+returns (before any wrap), the radius axis `t` as `axis_pair_to_t` gives it,
+and their derivatives per pixel (`d_angle`, `d_ty`). The centre has no
+angle: its derivatives are zero. It places given data, so it is projection,
+not data (CLAUDE.md rule 1). CPU twin: none; the polar heatmap tests compute
+expected pixels from `polar_geometry` and `polar_angle_map`.
+
 The code is the fragment [`data_render/common/sample_validity.wgsl`](common/sample_validity.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
 
 ## 5. 격자 샘플링(group 2)과 공통 블록 밖의 정의
@@ -458,6 +467,32 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
+
+**Polar lookup** (`field_lookup`, `field_grid.wgsl`, #208). Every field
+entry that locates a cell first turns the fragment's (or the cursor's)
+chart-area `t` into lookup `t` with `field_lookup(t, lattice)`, which also
+returns the lookup `t`'s derivatives per pixel (`jac_x`, `jac_y`). On a
+rectangular chart it returns `t` and the axis-aligned `pixel_to_ndc / 2`
+(the identity: the rectangular path is unchanged). On a polar chart it
+takes the pixel offset (`polar_clip_offset`), misses outside the outer ring,
+inside the hole and outside the sector (`polar_fragment_visible`), inverts
+the placement (`polar_unproject`, §4), wraps the angle into the turn that
+starts at the grid's low angle boundary (`boundary_t` at 0 and at the
+count), and carries the Jacobian. `fs_main`, `field_pick_cell` and
+`selected_cell_coverage` look up on the quad lattice; `contour_paint`,
+`field_pick_contour`, `selected_contour_coverage` and the anchor pass
+(`anchor_seed`, whose Newton steps then run in (angle, radius)) on the
+sample lattice. The polar contour metric (`contour_metric_at`) carries the
+axis-`t` gradient to pixels, `g = dz.x · jac_x + dz.y · jac_y`, and the
+bilinear Hessian `Jᵀ H J`; the map's own curvature is left out, so the
+stroke is placed by the first-order distance, exact on the level. The
+picked cell's outline is the annular sector between its boundaries as a
+`radial_sector.wgsl` `Sector`, measured by `footprint` as the rose wedge is
+(`polar_cell_coverage`). An anchor's pixel is its polar placement
+(`data_to_ndc`), and its tangent step is a thousandth of the range, so the
+label frame's chord turns with the isoline's screen tangent. The fragment
+splices `projection.wgsl` and `sample_validity.wgsl` beside it: the field
+and anchor modules do.
 
 **Hexagonal lattice** (`FIELD_HEXAGONAL`, `GridLayout::Hexagonal`, #134).
 With the flag set, `field_cell_sample`, `field_pick_cell` and

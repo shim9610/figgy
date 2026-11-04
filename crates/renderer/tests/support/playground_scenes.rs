@@ -73,10 +73,11 @@ pub enum SceneKind {
     EnergyLevels,
     Stem,
     Lollipop,
+    PolarHeatmap,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 36] = [
+    pub const ALL: [SceneKind; 37] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -113,6 +114,7 @@ impl SceneKind {
         SceneKind::EnergyLevels,
         SceneKind::Stem,
         SceneKind::Lollipop,
+        SceneKind::PolarHeatmap,
     ];
 
     pub fn label(self) -> &'static str {
@@ -153,6 +155,7 @@ impl SceneKind {
             SceneKind::EnergyLevels => "Energy levels (He I)",
             SceneKind::Stem => "Stems (impulse response)",
             SceneKind::Lollipop => "Lollipop (ranked)",
+            SceneKind::PolarHeatmap => "Polar heatmap (radar)",
         }
     }
 
@@ -311,6 +314,12 @@ impl SceneKind {
             SceneKind::Lollipop => {
                 "Horizontal stems on a categorical y axis, from a baseline of 0 marked by a \
                  draggable reference line."
+            }
+            SceneKind::PolarHeatmap => {
+                "A weather radar sweep: reflectivity over azimuth and range, clockwise \
+                 from north, the blind range a hole at the centre, 30 and 45 dBZ \
+                 contours labelled along their curves. Pick a gate and step along the \
+                 azimuths and ranges with the arrows."
             }
         }
     }
@@ -511,6 +520,7 @@ pub fn build(
         SceneKind::EnergyLevels => energy_levels(r),
         SceneKind::Stem => stem(r),
         SceneKind::Lollipop => lollipop(r),
+        SceneKind::PolarHeatmap => polar_heatmap(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -4243,5 +4253,124 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene {
         config,
         series: vec![data("he", series), data("he-fine", fine)],
+    })
+}
+
+/// A weather radar sweep (#208): reflectivity in dBZ over 180 azimuths of
+/// 2° and 60 range gates of 2.5 km, the host's synthetic storm (a squall
+/// line and two cells), no echo left as NaN.
+fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::polar::PolarOptions;
+    const AZIMUTHS: usize = 180;
+    const GATES: usize = 60;
+    let ids: Vec<String> = (0..AZIMUTHS).map(|a| format!("radar_z{a}")).collect();
+    if r.handle_for("radar_az").is_err() {
+        let dbz = |az: f64, range: f64| {
+            let (x, y) = (range * az.to_radians().sin(), range * az.to_radians().cos());
+            let blob =
+                |cx: f64, cy: f64, w: f64| (-((x - cx).powi(2) + (y - cy).powi(2)) / w).exp();
+            // A squall line running south-west to north-east, ahead of it
+            // two cells, the stronger with a hook.
+            let line = (-((x - y * 0.8 + 40.0).powi(2)) / 700.0).exp()
+                * (-(y + 10.0).powi(2) / 5000.0).exp();
+            let z = 42.0 * line
+                + 54.0 * blob(55.0, 60.0, 500.0)
+                + 44.0 * blob(70.0, -45.0, 700.0)
+                + 22.0 * blob(-30.0, 80.0, 1600.0)
+                + 1.5 * noise(91, (az * 7.0 + range) as usize);
+            if z < 8.0 { f64::NAN } else { z.min(65.0) }
+        };
+        let azimuths: Vec<f64> = (0..=AZIMUTHS).map(|a| a as f64 * 2.0).collect();
+        let ranges: Vec<f64> = (0..=GATES).map(|g| g as f64 * 2.5).collect();
+        let grid: Vec<Column<f64>> = (0..AZIMUTHS)
+            .map(|a| Column {
+                data: (0..GATES)
+                    .map(|g| dbz(a as f64 * 2.0 + 1.0, g as f64 * 2.5 + 1.25))
+                    .collect(),
+            })
+            .collect();
+        let az = Column { data: azimuths };
+        let range = Column { data: ranges };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> =
+            vec![("radar_az", &az), ("radar_range", &range)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Radar reflectivity (dBZ)", "Azimuth", "Range (km)");
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![
+            Color::from_rgb8(4, 233, 231),
+            Color::from_rgb8(1, 159, 244),
+            Color::from_rgb8(2, 253, 2),
+            Color::from_rgb8(1, 197, 1),
+            Color::from_rgb8(253, 248, 2),
+            Color::from_rgb8(253, 149, 0),
+            Color::from_rgb8(253, 0, 0),
+            Color::from_rgb8(188, 0, 0),
+            Color::from_rgb8(248, 0, 253),
+        ],
+    };
+    bar.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
+    bar.axis.min = 5.0;
+    bar.axis.max = 65.0;
+    bar.axis.major_spacing = 10.0;
+    bar.axis.title_option.text = RichText::plain("dBZ", Color::BLACK, 12.0, "");
+    bar.axis.title_option.visible = true;
+    config.colorbar = Some(bar);
+    config.set_polar(Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.06,
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    }));
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 360.0);
+    chart.set_y_range(0.0, 150.0);
+    // The range functions set the tick plan; the spacing and format follow.
+    chart.config_mut().bottom_x.major_spacing = 45.0;
+    chart.config_mut().bottom_x.label_style.format = LabelFormat::Degrees;
+    chart.config_mut().left_y.major_spacing = 25.0;
+    let ink = Color::from_rgb8(30, 30, 30);
+    let series = vec![series(
+        "radar",
+        "radar_az",
+        "radar_range",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Edges,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![30.0, 45.0],
+                line: line_style(ink, 1.0),
+                per_level_color: None,
+                labels: Some(ContourLabelConfig {
+                    visible: true,
+                    font_size: 10.0,
+                    color: ink,
+                    format: LabelFormat::Decimal,
+                    significant_digits: 2,
+                    spacing_px: 120.0,
+                    anchors: Vec::new(),
+                    bg_color: None,
+                    bg_padding_px: 2.0,
+                }),
+            }),
+            surface: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
     })
 }

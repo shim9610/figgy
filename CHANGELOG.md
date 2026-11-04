@@ -182,6 +182,15 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   stem with the rest of the series. Migration: an `XySeries { .. }`
   literal adds `stem: None`, and a pattern that names every field adds
   `stem` or `..`.
+- **Heatmaps and contours on polar charts** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  `Config::validate_series_on_polar` accepts a field series. It refuses a
+  hexagonal lattice ("a hexagonal grid is drawn on a rectangular chart")
+  and a field on a `GridShape::Polygon` grid ("a polar heatmap's cells
+  follow circular rings: not on a polygon grid"). An image keeps its
+  refusal under its own reason, "images are not drawn on polar axes"
+  (previously "field and contour series are not drawn on polar axes").
+  No type or serialized key is added: a polar heatmap document parses and
+  re-serializes byte-identically.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -1141,6 +1150,30 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   (`STREAMED_STEM_REASON`). Every row draws a stem: 1,000,001 rows draw in
   about 1.2 s and pick their last row in about 4.7 s on lavapipe, measured
   by `tests/stem_render.rs` and never capped.
+
+- **Polar heatmaps and contours** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  A field on a polar chart draws each cell as the annular sector between
+  its angle and radius boundaries. The field draw stays one quad: each
+  fragment's pixel offset from the centre is inverted by `polar_unproject`
+  (`common/projection.wgsl`) and read by `field_lookup`
+  (`common/field_grid.wgsl`), which wraps the angle into the turn from the
+  grid's low boundary and carries the lookup's per-pixel Jacobian. The
+  fill, the cell pick, the picked cell's outline (the rose's
+  `radial_sector.wgsl` footprint, now spliced into the field module), the
+  contour stroke metric (the axis-`t` gradient carried to pixels through
+  the Jacobian), the contour pick and highlight, and the contour label
+  anchor pass (seeded and stepped in (angle, radius); the anchor module
+  now splices `sample_validity.wgsl`) all walk this one lookup. A
+  rectangular chart's lookup is the identity and its path is unchanged.
+  Edges and centres, both orientations, flat and interpolated shading, log
+  and inverted radius axes, a categorical angle axis, the hole and the
+  sector work; an interpolated full circle closes its seam when the host
+  names the first column again one turn on. Streaming stays refused for
+  every polar chart. No count limit: 65,537 angle cells by 64 rings draw
+  in about 0.4 s and a 2,048 by 2,048 grid in about 0.5 s on lavapipe,
+  measured by `tests/polar_heatmap_render.rs`. The `PolarHeatmap` scene is
+  a weather radar sweep and `polar_plot` writes a fifth image, an antenna
+  gain heatmap. The shader prewarm contract is regenerated.
 
 - **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
   A radial chart whose sectors are all Flat, level (no tilt or depth),

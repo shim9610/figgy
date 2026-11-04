@@ -113,7 +113,7 @@
 | 벡터장(화살표) | 기준점과 (u, v) 컬럼, 또는 격자 위 행렬 두 개 | [벡터장](crates/renderer/CONFIG.md#벡터장) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
 | 색·크기 매핑(버블) | 점마다 값 하나가 든 컬럼(색·크기에 각각 하나)과 색상 막대 또는 크기 범위 | [점 색·크기 매핑](crates/renderer/CONFIG.md#점-색과-크기-매핑) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
 | 보조 Y축·서브플롯·주석 | 오른쪽 보조 Y축, 한 문서 안의 차트 격자, 기준선·구간·텍스트·화살표 | [오버레이](crates/renderer/INTERACTION.md#overlay-layers) · [서브플롯](crates/renderer/INTERACTION.md#subplots) · [주석](crates/renderer/INTERACTION.md#annotation-layer) |
-| 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md#한국어-사용법) |
+| 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar`. 히트맵과 등고선은 고리 부채꼴 셀로 그린다 | [극좌표](crates/renderer/POLAR.md#한국어-사용법) · [히트맵](crates/renderer/POLAR.md#히트맵과-등고선) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
 | 범주형 막대 | 범주형 축과 범주 위치·막대 시리즈별 값 컬럼(`CategoryBars`), 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다 | [막대](crates/renderer/CATEGORICAL.md) |
 | 박스플롯 | 범주형 축과 범주 위치 컬럼, 시리즈별 상자 통계 레코드와 이상치 가변 길이 컬럼(`BoxPlot`), 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |

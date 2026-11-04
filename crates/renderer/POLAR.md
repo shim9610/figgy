@@ -92,10 +92,11 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 - Scatter, line and scatter-line series draw in polar mode, including line
   fills (`LineFill`), which draw area charts; radar series draw their
   polygons and category bars their wedges (a rose, below) on a categorical
-  angle axis. Histograms, heatmaps, contours, error bars, vector fields,
-  box plots, overlay layers and streamed sources have no polar form and
-  are rejected with an explicit error (`InvalidSeriesConfig` /
-  `InvalidConfig`), never drawn as a fallback.
+  angle axis. Heatmaps and contours draw their cells as annular sectors
+  (below). Histograms, images, error bars, stems, vector fields, box plots,
+  overlay layers and streamed sources have no polar form and are rejected
+  with an explicit error (`InvalidSeriesConfig` / `InvalidConfig`), never
+  drawn as a fallback.
 
 ## Coordinate options
 
@@ -182,6 +183,55 @@ category row), the picked highlight (the wedge's outline) and
 `step_selection` are the bar's. The `Rose` catalogue scene is a wind
 rose: sixteen directions, three stacked speed bands.
 
+### Heatmaps and contours
+
+A field series (`DataRenderType::Field`: `"Heatmap"`, `"Contour"` and
+`"HeatmapContour"`) on a polar chart draws in (angle, radius) (#208).
+`x_column` holds the angle coordinates and `y_column` the radius
+coordinates; `GridLayout::Edges` and `Centers` and both
+`MatrixOrientation`s work as on a rectangular chart.
+
+- Each cell is the annular sector between its two angle boundaries and its
+  two radius boundaries. `Shading::Flat` gives a cell its own colour;
+  `Shading::Interpolated` blends bilinearly in (angle, radius), so colour
+  follows the rings. Fill modes, `nan_color`, opacity and a log colourbar
+  are the rectangular chart's.
+- A fragment's screen angle is read in the turn that starts at the grid's
+  low angle boundary, so a grid no wider than one turn draws each cell once,
+  where a marker at that angle would sit; a wider grid draws its first turn.
+  A logarithmic or inverted radius axis and a categorical angle axis need
+  nothing special. The hole, the outer ring and the sector clip the cells as
+  they clip markers. Cell edges are pixel-stepped (no edge antialiasing), so
+  a cell picks exactly the pixels it paints.
+- Seam: an interpolated full circle leaves a wedge between its last and
+  first angle samples. Close it by naming the first constituent column again
+  at the end of `MatrixRef.columns` and appending `first + turn` to the angle
+  column; the pool column is read twice, nothing is copied.
+- Contours: the stroke is measured in pixels through the polar placement's
+  Jacobian, so a ring and a spoke keep one width from the centre to the
+  ring. Labels are placed by the same GPU anchor search, whose Newton steps
+  run in (angle, radius); each label turns with its isoline's screen
+  tangent, and the line leaves its gap under it.
+- Pick and selection: a cell answers `PickedData::MatrixCell` (`x_index`
+  the angle cell, `y_index` the radius cell) and a contour
+  `PickedData::ContourLevel`, as on a rectangular chart. The picked cell's
+  outline runs inside its annular sector (the rose wedge's footprint);
+  `step_selection` moves `dx` along the angle and `dy` along the radius and
+  clamps (it does not wrap).
+- Refused: a hexagonal lattice ("a hexagonal grid is drawn on a rectangular
+  chart"), a field on a polygon grid ("a polar heatmap's cells follow
+  circular rings: not on a polygon grid") and images ("images are not drawn
+  on polar axes").
+- Cost: one quad, as on a rectangular chart. Each fragment pays one `atan2`
+  and the two binary searches the rectangular field already runs, so the
+  cost follows the data area's pixel count and `log(cells)`, not the cell
+  count; fragments outside the disc return early. On lavapipe a 2,048 by
+  2,048 grid draws in about 0.5 s and 65,537 angle cells by 64 rings in
+  about 0.4 s. There is no limit on angle cells, rings or cells.
+
+The `PolarHeatmap` catalogue scene is a weather radar sweep: reflectivity
+over 180 azimuths and 60 range gates with labelled 30 and 45 dBZ contours.
+
 ## Picking and selection
 
 The GPU pick path (`pick_chart`, `pick_chart_data`) projects through the same
@@ -234,12 +284,14 @@ with the same scale range (clamped to 0.25 to 8), and rings stay round at
 ```bash
 cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 cargo test --locked -p figgy-renderer --features serde --test polar_render
+cargo test --locked -p figgy-renderer --test polar_heatmap_render
 ```
 
-`polar_plot` writes four PNGs: the antenna pattern above, a compass rose
+`polar_plot` writes five PNGs: the antenna pattern above, a compass rose
 (clockwise from the top, arc segments, markers), a dashed spiral from 24
-sparse samples with arc interpolation, and a half-circle sector in radians
-with a hole in the middle. The "Polar (angle, radius)" scene of the
+sparse samples with arc interpolation, a half-circle sector in radians
+with a hole in the middle, and an antenna's gain as a heatmap over azimuth
+and frequency with labelled contours. The "Polar (angle, radius)" scene of the
 [playground](https://github.com/shim9610/figgy/blob/master/tools/playground/README.md)
 draws an antenna-like pattern and a three-leaf rose interactively
 (`cargo run --manifest-path tools/playground/Cargo.toml`).
@@ -267,8 +319,9 @@ draws an antenna-like pattern and a three-leaf rose interactively
 축은 로그 스케일이 가능하고, 각도 축은 선형이며 뒤집을 수 없다(방향은 `clockwise`로 정한다).
 플롯은 데이터 영역 안에서 각도 라벨 띠 하나를 남기는 가장 큰 원이며 `Config::polar_geometry`가
 중심과 반지름을 돌려준다. 산점도·선·산점선 시리즈와 면 채움(`LineFill`)을 그리고,
-범주형 각도 축에서는 레이더 시리즈가 다각형을, 범주 막대 시리즈가 쐐기(로즈, 아래)를 그린다. 히스토그램·히트맵·등고선·오차 막대·벡터·
-박스플롯·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
+범주형 각도 축에서는 레이더 시리즈가 다각형을, 범주 막대 시리즈가 쐐기(로즈, 아래)를 그린다. 히트맵과
+등고선은 셀을 고리 부채꼴로 그린다(아래). 히스토그램·이미지·오차 막대·스템·벡터·박스플롯·오버레이·
+스트리밍 소스는 명시적 오류로 거부한다.
 
 ### 좌표 옵션
 
@@ -328,6 +381,41 @@ draws an antenna-like pattern and a three-leaf rose interactively
 범주 행), 선택 강조(쐐기 외곽선), `step_selection`은 막대와 같다. 카탈로그의 `Rose` 장면은
 열여섯 방향에 세 속도 띠를 쌓은 바람 장미다.
 
+#### 히트맵과 등고선
+
+극좌표 차트의 필드 시리즈(`DataRenderType::Field`: `"Heatmap"`, `"Contour"`, `"HeatmapContour"`)는
+(각도, 반지름)으로 그린다(#208). `x_column`은 각도 좌표, `y_column`은 반지름 좌표이며
+`GridLayout::Edges`·`Centers`와 두 `MatrixOrientation`은 직교 차트와 같다.
+
+- 셀 하나는 두 각도 경계와 두 반지름 경계 사이의 고리 부채꼴이다. `Shading::Flat`은 셀마다 한 색,
+  `Shading::Interpolated`는 (각도, 반지름)에서 쌍선형으로 섞어 색이 고리를 따른다. 채움 모드,
+  `nan_color`, 불투명도, 로그 컬러바는 직교 차트와 같다.
+- 프래그먼트의 화면 각도는 격자의 가장 낮은 각도 경계에서 시작하는 한 바퀴 안에서 읽는다. 그래서 한
+  바퀴 이하인 격자는 셀마다 한 번, 같은 각도의 마커가 놓일 자리에 그려지고, 더 넓은 격자는 첫 바퀴를
+  그린다. 로그·반전 반지름 축과 범주형 각도 축은 따로 처리할 것이 없다. 구멍, 바깥 고리, 섹터는
+  마커를 자르듯 셀을 자른다. 셀 경계는 픽셀 단위로 끊기며(경계 안티에일리어싱 없음) 셀은 칠한
+  픽셀을 정확히 피킹한다.
+- 이음매: 보간한 전체 원은 마지막 각도 표본과 첫 각도 표본 사이에 쐐기 모양 틈을 남긴다.
+  `MatrixRef.columns` 끝에 첫 구성 컬럼을 한 번 더 적고 각도 컬럼에 `첫 값 + 한 바퀴`를 붙이면
+  닫힌다. 풀의 컬럼을 두 번 읽을 뿐 복사하지 않는다.
+- 등고선: 선 굵기는 극좌표 배치의 야코비안으로 픽셀 단위로 잰다. 그래서 고리와 스포크가 중심에서
+  바깥 고리까지 같은 굵기를 지킨다. 라벨은 같은 GPU 앵커 탐색이 놓으며 뉴턴 단계를 (각도, 반지름)에서
+  밟는다. 라벨은 등치선의 화면 접선을 따라 돌고, 선은 라벨 밑에 틈을 남긴다.
+- 피킹과 선택: 셀은 `PickedData::MatrixCell`(`x_index`는 각도 셀, `y_index`는 반지름 셀),
+  등고선은 `PickedData::ContourLevel`로 답한다. 직교 차트와 같다. 선택한 셀의 외곽선은 고리 부채꼴
+  안쪽을 따라 그린다(로즈 쐐기의 footprint). `step_selection`은 `dx`로 각도, `dy`로 반지름을 따라
+  움직이고 끝에서 멈춘다(돌아가지 않는다).
+- 거부: 육각 격자("a hexagonal grid is drawn on a rectangular chart"), 다각형 격자 위의 필드("a
+  polar heatmap's cells follow circular rings: not on a polygon grid"), 이미지("images are not
+  drawn on polar axes").
+- 비용: 직교 차트처럼 사각형 하나를 그린다. 프래그먼트마다 `atan2` 한 번과 직교 필드가 이미 하는
+  이진 탐색 두 번을 치르므로, 비용은 셀 수가 아니라 데이터 영역의 픽셀 수와 `log(셀 수)`를 따른다.
+  원판 밖 프래그먼트는 바로 끝난다. lavapipe에서 2,048×2,048 격자는 약 0.5초, 각도 셀 65,537개 ×
+  고리 64개는 약 0.4초에 그린다. 각도 셀·고리·셀 수에는 제한이 없다.
+
+카탈로그의 `PolarHeatmap` 장면은 기상 레이더 스캔이다. 방위 180개 × 거리 구간 60개의 반사도에
+30·45 dBZ 등고선과 라벨을 그린다.
+
 ### 피킹과 선택
 
 GPU 피킹(`pick_chart`, `pick_chart_data`)은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
@@ -368,10 +456,12 @@ JSON의 `polar`를 받는다([WASM 스키마](https://github.com/shim9610/figgy/
 ```bash
 cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 cargo test --locked -p figgy-renderer --features serde --test polar_render
+cargo test --locked -p figgy-renderer --test polar_heatmap_render
 ```
 
-`polar_plot`은 PNG 네 장을 만든다. 안테나 패턴, 나침반(위에서 시계 방향, 호 세그먼트, 마커),
-드문 표본 24개로 그린 점선 나선(호 보간), 가운데 구멍이 있는 라디안 반원 섹터다.
+`polar_plot`은 PNG 다섯 장을 만든다. 안테나 패턴, 나침반(위에서 시계 방향, 호 세그먼트, 마커),
+드문 표본 24개로 그린 점선 나선(호 보간), 가운데 구멍이 있는 라디안 반원 섹터, 방위와 주파수에 걸친
+안테나 이득 히트맵과 라벨 붙은 등고선이다.
 [플레이그라운드](https://github.com/shim9610/figgy/blob/master/tools/playground/README.md)의
 "Polar (angle, radius)" 장면은 안테나 모양 패턴과 세 잎 장미 곡선을 상호작용으로 보여준다
 (`cargo run --manifest-path tools/playground/Cargo.toml`).
