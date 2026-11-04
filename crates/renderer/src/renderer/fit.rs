@@ -52,6 +52,36 @@ pub(super) enum FitExtentParams {
     /// A histogram: the counts' extent includes the baseline, and the
     /// orientation decides which column is edges and which is counts.
     Histogram { baseline_bits: u64, orientation: u8 },
+    /// A stem series (#206): the value axis' extent includes the baseline
+    /// (y for a vertical stem, x for a horizontal one), before a line
+    /// offset member's shift.
+    Stem {
+        baseline_bits: u64,
+        horizontal: bool,
+    },
+}
+
+impl FitExtentParams {
+    /// The baseline a stem series adds to its value axis' extent, as
+    /// `(x part, y part)`; empty for every other kind.
+    pub(super) fn stem_extents(&self) -> (crate::chart::FitExtent, crate::chart::FitExtent) {
+        let Self::Stem {
+            baseline_bits,
+            horizontal,
+        } = self
+        else {
+            return (
+                crate::chart::FitExtent::EMPTY,
+                crate::chart::FitExtent::EMPTY,
+            );
+        };
+        let baseline = crate::chart::FitExtent::point(f64::from_bits(*baseline_bits));
+        if *horizontal {
+            (baseline, crate::chart::FitExtent::EMPTY)
+        } else {
+            (crate::chart::FitExtent::EMPTY, baseline)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -262,6 +292,12 @@ pub(super) fn build_fit_token_from_state(
                     crate::data_config::BarOrientation::Vertical => 0,
                     crate::data_config::BarOrientation::Horizontal => 1,
                 },
+            },
+            DataRenderType::Xy(crate::data_config::XySeries {
+                stem: Some(stem), ..
+            }) => FitExtentParams::Stem {
+                baseline_bits: stem.baseline.to_bits(),
+                horizontal: stem.direction == crate::data_config::CategoryBarDirection::Horizontal,
             },
             _ => FitExtentParams::Columns,
         };
@@ -1201,12 +1237,18 @@ impl Renderer {
                     let Some(extent) = extent else {
                         continue;
                     };
+                    // A stem's baseline joins its value axis (#206), before
+                    // a line offset member's shift.
+                    let (stem_x, stem_y) = stamp.params.stem_extents();
+                    let (mut x_own, mut y_own) = (fit_extent_of(extent.x), fit_extent_of(extent.y));
+                    x_own.union(&stem_x);
+                    y_own.union(&stem_y);
                     // A line offset member fits where it is drawn.
                     let (x_part, y_part) = crate::chart::Chart::line_offset_fit_extents(
                         &state.config,
                         &stamp.series_id,
-                        fit_extent_of(extent.x),
-                        fit_extent_of(extent.y),
+                        x_own,
+                        y_own,
                     );
                     if *x {
                         x_extent.union(&x_part);

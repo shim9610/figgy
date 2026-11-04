@@ -126,6 +126,7 @@ fn build_state(
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
 
@@ -227,6 +228,7 @@ impl CallbackTrait for LabCallback {
                 scatter: Some(scatter),
                 line: Some(_),
                 errors: None,
+                ..
             }) = &mut state.series[idx].render_type
                 && (scatter.point_size - self.point_size).abs() > f32::EPSILON
             {

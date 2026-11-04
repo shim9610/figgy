@@ -207,6 +207,29 @@ pub(super) fn query_params(
         errorbar_px: series.errorbar.as_ref().map_or([0.0; 4], |bars| bars.px),
         area: series.area.as_ref().map_or([0; 4], |fill| fill.params),
         area_baseline: series.area.as_ref().map_or([0.0; 4], |fill| fill.baseline),
+        stem: series.stem.as_ref().map_or([0.0; 4], |stem| {
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(stem.baseline);
+            [hi, lo, stem.width_px, 0.0]
+        }),
+        stem_dash: series.stem.as_ref().map_or([[0.0; 4]; 2], |stem| {
+            let mut dash = [[0.0; 4]; 2];
+            for (slot, length) in dash.iter_mut().flatten().zip(stem.dash.pattern()) {
+                *slot = length * display_scale;
+            }
+            dash
+        }),
+        stem_info: series.stem.as_ref().map_or([0; 4], |stem| {
+            [
+                1,
+                if stem.horizontal {
+                    crate::data_render::ERRORBAR_HAS_X
+                } else {
+                    crate::data_render::ERRORBAR_HAS_Y
+                },
+                stem.dash.pattern().len().min(8) as u32,
+                u32::from(stem.paints),
+            ]
+        }),
         category: series.category_jitter.map_or([0.0; 4], |jitter| {
             [
                 jitter.group_width,
@@ -767,6 +790,13 @@ impl GpuPickEngine {
         // extended, rule 8; `encode_chunk_impl` drops them).
         let errorbar_input = descriptor.errorbar.take();
         let area_input = descriptor.area.take();
+        // Stems read only the anchors, but like the error bars they are
+        // resident only (streaming is not extended to them, rule 8) and part
+        // of the scatter primitive (#206).
+        let stem = descriptor
+            .stem
+            .take()
+            .filter(|_| resident.is_some() && descriptor.scatter.is_some());
         let ternary_input = descriptor.ternary_c.take();
         let resolve = |id: &ColumnId| -> Result<(ColumnHandle, u64), GpuPickError> {
             let pool = resident.ok_or_else(|| GpuPickError::ColumnNotResident(id.clone()))?;
@@ -964,6 +994,7 @@ impl GpuPickEngine {
         let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
             || flags & FLAG_VECTOR != 0
             || errorbar.is_some()
+            || stem.is_some()
             || area.is_some()
             || ternary.is_some()
             || descriptor.line_closed;
@@ -1211,7 +1242,7 @@ impl GpuPickEngine {
                     flags,
                     line_dash_len,
                     base_shape_id,
-                    errorbar.is_some(),
+                    errorbar.is_some() || stem.is_some(),
                     area.is_some(),
                     descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
                     descriptor.category_jitter.is_some() && descriptor.scatter.is_some(),
@@ -1219,6 +1250,7 @@ impl GpuPickEngine {
                 ),
                 errorbar,
                 area,
+                stem,
                 category_jitter: descriptor
                     .category_jitter
                     .filter(|_| descriptor.scatter.is_some()),

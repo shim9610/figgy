@@ -57,6 +57,30 @@ fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool 
 
 /// The length of one repetition of the dash pattern, the sum of its
 /// positive spans; zero for a solid line.
+// The arc distances from `dist_px`, which lies in an "off" span of `dash`,
+// back to the end of the previous "on" span (x) and forward to the start of
+// the next one (y). The span walk is `dash_pattern_on`'s. The picker reads
+// it for a dashed line and a dashed stem (#206).
+fn dash_gap(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> vec2<f32> {
+    var spans = dash;
+    let n = min(count, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    let phase = ((dist_px % period) + period) % period;
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let start = acc;
+        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
+        acc = end;
+        if phase <= end || i == n - 1u {
+            return vec2<f32>(phase - start, end - phase);
+        }
+    }
+    return vec2<f32>(0.0, 0.0);
+}
+
 fn dash_period(dash: array<vec4<f32>, 2>, count: u32) -> f32 {
     var spans = dash;
     let n = min(count, 8u);

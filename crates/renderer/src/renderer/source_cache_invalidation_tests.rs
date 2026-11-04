@@ -25,6 +25,7 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                         scatter: None,
                         line: Some(line),
                         errors: None,
+                        ..
                     }) = &mut s.render_type
                     {
                         line.line_style = LineStylePreset::Dash;
@@ -51,6 +52,7 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                         scatter: None,
                         line: Some(line),
                         errors: None,
+                        ..
                     }) = s.render_type
                     else {
                         unreachable!()
@@ -68,6 +70,7 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                         }),
                         line: Some(line),
                         errors: None,
+                        stem: None,
                     });
                 }
                 "milkyway points" => {
@@ -85,6 +88,7 @@ fn bounded_source_cache_updates_styled_and_dashed_first_frame_without_source_rea
                         }),
                         line: None,
                         errors: None,
+                        stem: None,
                     });
                 }
                 _ => unreachable!(),
@@ -186,6 +190,7 @@ fn bounded_source_cache_rejects_new_data_aba_and_series_changes() {
                     scatter: None,
                     line: Some(line),
                     errors: None,
+                    ..
                 }) = &mut s.render_type
                 else {
                     unreachable!()

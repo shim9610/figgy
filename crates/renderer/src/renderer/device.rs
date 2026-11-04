@@ -596,6 +596,8 @@ pub(super) struct TargetPipelines {
         Option<std::sync::Arc<data_render::ternary_region::RingScanPipelines>>,
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
+    /// The precise stem draw (#206): `vs_stem` into `fs_stem`.
+    pub(super) errorbar_stem: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
     pub(super) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
     pub(super) bar_mapped: Option<wgpu::RenderPipeline>,
@@ -929,6 +931,7 @@ impl TargetPipelines {
         let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
+        let mut need_stem = false;
         let mut need_bar = false;
         let mut need_bar_mapped = false;
         let mut need_bar_selection = false;
@@ -1064,6 +1067,7 @@ impl TargetPipelines {
                 need_bar_selection_mapped |=
                     primitives.bar && series.style.bar_map.is_some() && typed_bin;
                 need_errorbar |= has_errorbar(&series.config.render_type);
+                need_stem |= has_stem(&series.config.render_type);
                 // `has_index` only means a style-index column is bound.
                 // Sparse `*_style_overrides` still need the mapped shader.
                 if primitives.scatter && series.style.scatter_map.is_some() {
@@ -1468,6 +1472,17 @@ impl TargetPipelines {
                 ),
             );
         }
+        if need_stem && self.errorbar_stem.is_none() {
+            self.errorbar_stem = Some(data_render::create_stem_pipeline(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_stem",
+            ));
+        }
         if need_scatter_mapped && self.scatter_mapped.is_none() {
             self.scatter_mapped = Some(
                 data_render::create_scatter_columnar_mapped_pipeline_with_entries(
@@ -1736,6 +1751,19 @@ impl TargetPipelines {
                 style_bgl,
                 surface_format,
                 self.sample_count,
+            )
+        );
+        ensure!(
+            errorbar_stem,
+            "precise stem",
+            data_render::create_stem_pipeline(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_stem",
             )
         );
         ensure!(
@@ -2356,6 +2384,7 @@ pub(super) fn create_target_pipelines_observed(
         ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
+        errorbar_stem: None,
         bar: None,
         bar_envelope: None,
         bar_mapped: None,
@@ -2453,6 +2482,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
+        errorbar_stem: None,
         bar: None,
         bar_envelope: None,
         bar_mapped: None,
@@ -3641,6 +3671,7 @@ impl Renderer {
         let had_ternary = self.pipelines.ternary.each_ref().map(Option::is_some);
         let had_view3d = self.pipelines.view3d.each_ref().map(Option::is_some);
         let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
+        let had_errorbar_stem = self.pipelines.errorbar_stem.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
         self.pipelines = create_target_pipelines(
@@ -3754,6 +3785,17 @@ impl Renderer {
                     target_sample_count,
                 ),
             );
+        }
+        if had_errorbar_stem {
+            self.pipelines.errorbar_stem = Some(data_render::create_stem_pipeline(
+                &self.device,
+                &self.pipelines.shaders.errorbar,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+                target_sample_count,
+                "vs_stem",
+            ));
         }
         if had_scatter_mapped {
             self.pipelines.scatter_mapped = Some(

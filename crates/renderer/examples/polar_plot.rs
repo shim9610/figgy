@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         )];
         {
@@ -81,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 scatter: Some(gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0)),
                 line: Some(gallery::line(Color::from_rgb8(200, 60, 40), 1.5)),
                 errors: None,
+                stem: None,
             }),
         )];
         {
@@ -118,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 scatter: Some(gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0)),
                 line: Some(dashed),
                 errors: None,
+                stem: None,
             }),
         )];
         {
@@ -157,6 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         )];
         {

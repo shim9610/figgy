@@ -133,6 +133,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -158,6 +159,7 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -202,6 +204,7 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         }),
     }
 }
@@ -764,6 +767,7 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                             scatter: None,
                             line: Some(line),
                             errors: None,
+                            ..
                         }) = series.render_type
                         else {
                             unreachable!()
@@ -772,6 +776,7 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                             scatter: Some(scatter),
                             line: None,
                             errors: None,
+                            ..
                         }) = scatter_series("signal", x, y, RED).render_type
                         else {
                             unreachable!()
@@ -780,6 +785,7 @@ fn logarithmic_lines_mask_nonpositive_samples_in_every_draw_style() {
                             scatter: Some(scatter),
                             line: Some(line),
                             errors: None,
+                            stem: None,
                         });
                     }
                     series
@@ -861,6 +867,7 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                         scatter: Some(scatter),
                         line: None,
                         errors: None,
+                        ..
                     }) = series.render_type
                     else {
                         unreachable!()
@@ -869,6 +876,7 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                         scatter: None,
                         line: Some(line),
                         errors: None,
+                        ..
                     }) = line_series("signal", x, y, GREEN, LineStylePreset::Solid).render_type
                     else {
                         unreachable!()
@@ -877,6 +885,7 @@ fn logarithmic_scatter_masks_nonpositive_samples_below_old_clamp_floor() {
                         scatter: Some(scatter),
                         line: Some(line),
                         errors: None,
+                        stem: None,
                     });
                 }
                 series

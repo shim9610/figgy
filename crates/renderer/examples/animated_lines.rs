@@ -27,6 +27,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
                 scatter: None,
                 line: Some(line(blue, 3.0)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -37,6 +38,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
                 scatter: None,
                 line: Some(line(coral, 2.5)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -68,6 +70,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
                 scatter: None,
                 line: Some(line(Color::from_rgb8(186, 204, 226), 1.5)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -78,6 +81,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
                 scatter: None,
                 line: Some(line(blue, 3.5)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -88,6 +92,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
                 scatter: Some(scatter(coral, 11.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];

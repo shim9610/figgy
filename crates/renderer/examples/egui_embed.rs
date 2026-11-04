@@ -266,6 +266,7 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();
@@ -335,6 +336,7 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
@@ -395,6 +397,7 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();

@@ -115,6 +115,7 @@ fn series(id: &str, x: &str, y: &str, line: DataLineStyleConfig) -> SeriesConfig
             scatter: None,
             line: Some(line),
             errors: None,
+            stem: None,
         }),
     }
 }

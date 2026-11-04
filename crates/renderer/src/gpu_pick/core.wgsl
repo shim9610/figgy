@@ -166,6 +166,14 @@ struct PickQueryParams {
     // (member, members — zero without raw points —, 1 when the categories
     // run along y, series seed).
     category_slot: vec4<u32>,
+    // Stems (#206, `gpu_pick/errorbar.wgsl`): (baseline hi, baseline lo,
+    // width in logical pixels, 0).
+    stem: vec4<f32>,
+    // The stem's dash pattern, canvas pixels.
+    stem_dash: array<vec4<f32>, 2>,
+    // (1 with stems, the `ERRORBAR_HAS_*` direction, dash count, 1 when the
+    // base colour paints else 0).
+    stem_info: vec4<u32>,
 };
 
 struct PickScatterStyleSlot {

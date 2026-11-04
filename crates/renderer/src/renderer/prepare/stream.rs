@@ -47,6 +47,17 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
             });
         }
+        // Nor to stems (rule 8, #206), although the error-bar path they
+        // reuse streams.
+        if matches!(
+            &series.render_type,
+            DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+        ) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_STEM_REASON.into(),
+            });
+        }
         // Nor to energy-level series (rule 8, #203): they are DataLess.
         if series.energy_levels().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

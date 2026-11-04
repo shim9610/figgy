@@ -459,6 +459,7 @@ mod tests {
             scatter: None,
             line: Some(line()),
             errors: None,
+            stem: None,
         });
         assert_eq!(
             config.validate_parallel_series(&[scatter]),

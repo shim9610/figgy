@@ -159,6 +159,8 @@ pub(super) struct PickSeriesResource {
     pub(super) errorbar: Option<OwnedGpuPickErrorBar>,
     /// The line's area fill.
     pub(super) area: Option<crate::gpu_pick::GpuPickArea>,
+    /// The stems drawn with the markers (#206).
+    pub(super) stem: Option<crate::gpu_pick::GpuPickStem>,
     /// Whether the line is a closed polygon (a radar outline).
     pub(super) line_closed: bool,
     /// A streamline series' arrowheads along its line.
@@ -198,6 +200,7 @@ impl PartialEq for PickSeriesResource {
             vector,
             errorbar,
             area,
+            stem,
             line_closed,
             path_arrows,
             category_jitter,
@@ -214,6 +217,7 @@ impl PartialEq for PickSeriesResource {
             vector: other_vector,
             errorbar: other_errorbar,
             area: other_area,
+            stem: other_stem,
             line_closed: other_line_closed,
             path_arrows: other_path_arrows,
             category_jitter: other_category_jitter,
@@ -242,7 +246,19 @@ impl PartialEq for PickSeriesResource {
                 ]
             })
         };
+        let stem_bits = |stem: &Option<crate::gpu_pick::GpuPickStem>| {
+            stem.as_ref().map(|stem| {
+                (
+                    stem.baseline.to_bits(),
+                    stem.horizontal,
+                    stem.width_px.to_bits(),
+                    stem.dash,
+                    stem.paints,
+                )
+            })
+        };
         line_closed == other_line_closed
+            && stem_bits(stem) == stem_bits(other_stem)
             && arrow_bits(path_arrows) == arrow_bits(other_path_arrows)
             && jitter_bits(category_jitter) == jitter_bits(other_category_jitter)
             && ternary_c == other_ternary_c
@@ -283,6 +299,7 @@ impl PickSeriesResource {
             vector,
             errorbar,
             area,
+            stem: _,
             line_closed: _,
             path_arrows: _,
             category_jitter: _,
@@ -551,6 +568,7 @@ impl OwnedGpuPickSeriesDescriptor {
             vector,
             errorbar,
             area,
+            stem,
             line_closed,
             path_arrows,
             category_jitter,
@@ -603,6 +621,7 @@ impl OwnedGpuPickSeriesDescriptor {
                 }
             }),
             area: area.clone(),
+            stem: stem.clone(),
             line_closed: *line_closed,
             path_arrows: *path_arrows,
             category_jitter: *category_jitter,
@@ -663,6 +682,7 @@ fn box_points_pick_descriptor(
             vector: None,
             errorbar: None,
             area: None,
+            stem: None,
             line_closed: false,
             path_arrows: None,
             category_jitter: Some(crate::gpu_pick::GpuPickCategoryJitter {
@@ -951,6 +971,9 @@ impl PickChartPlan {
                 .as_ref()
                 .filter(|_| !vector_points)
                 .and_then(|_| pick_errorbar(config, &series.render_type));
+            let stem = scatter
+                .as_ref()
+                .and_then(|_| pick_stem(config, &series.render_type));
             // A radar outline is closed, and so is its fill on a full
             // circle, as `build_series_layers` draws them.
             let line_closed = line.is_some() && series.render_type.radar().is_some();
@@ -975,6 +998,7 @@ impl PickChartPlan {
                     vector,
                     errorbar,
                     area,
+                    stem,
                     line_closed,
                     // A streamline's arrowheads pick with its line.
                     path_arrows: line.and_then(|_| {
@@ -1410,6 +1434,30 @@ impl RendererPicker {
 /// Constellation, which drops error-bar series. The sizes are the logical
 /// style's; whether the colour paints is the precise and sketch rule (alpha
 /// above zero), while a Milkyway jet's white core paints at any alpha.
+/// The stems a marker series draws (#206), as `vs_stem` draws them.
+/// Constellation drops a stem series, so it picks none.
+fn pick_stem(
+    config: &Config,
+    render_type: &DataRenderType,
+) -> Option<crate::gpu_pick::GpuPickStem> {
+    if matches!(config.draw_style, DrawStyle::Constellation(_)) {
+        return None;
+    }
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        stem: Some(stem), ..
+    }) = render_type
+    else {
+        return None;
+    };
+    Some(crate::gpu_pick::GpuPickStem {
+        baseline: stem.baseline,
+        horizontal: stem.direction == crate::data_config::CategoryBarDirection::Horizontal,
+        width_px: stem.width,
+        dash: stem.line_style,
+        paints: stem.color.a > 0.0,
+    })
+}
+
 fn pick_errorbar(config: &Config, render_type: &DataRenderType) -> Option<OwnedGpuPickErrorBar> {
     let style = extract_errorbar_style(render_type)?;
     if matches!(config.draw_style, DrawStyle::Constellation(_)) {

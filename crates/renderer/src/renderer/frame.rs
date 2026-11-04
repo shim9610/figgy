@@ -642,6 +642,42 @@ pub(super) struct PreparedErrorBarLayer {
     pub(super) style_index: Option<ColumnHandle>,
 }
 
+impl PreparedErrorBarLayer {
+    fn own(layer: ColumnErrorBarDraw<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            style_map_bg: layer.style_map_bg.cloned(),
+            pool_buffer: layer.pool_buffer.clone(),
+            x: layer.x,
+            y: layer.y,
+            err_y_lo: layer.err_y_lo,
+            err_y_hi: layer.err_y_hi,
+            err_x_lo: layer.err_x_lo,
+            err_x_hi: layer.err_x_hi,
+            style_index: layer.style_index,
+        }
+    }
+
+    fn borrow_with<'a>(&'a self, transform: Option<&'a wgpu::BindGroup>) -> ColumnErrorBarDraw<'a> {
+        ColumnErrorBarDraw {
+            pipeline: &self.pipeline,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
+            style_bg: &self.style_bg,
+            style_map_bg: self.style_map_bg.as_ref(),
+            pool_buffer: &self.pool_buffer,
+            x: self.x,
+            y: self.y,
+            err_y_lo: self.err_y_lo,
+            err_y_hi: self.err_y_hi,
+            err_x_lo: self.err_x_lo,
+            err_x_hi: self.err_x_hi,
+            style_index: self.style_index,
+        }
+    }
+}
+
 /// Complete owned draw packet for one series. Every pipeline, bind group,
 /// buffer, and column handle needed by paint is resolved during prepare.
 pub(super) struct PreparedSeries {
@@ -663,6 +699,8 @@ pub(super) struct PreparedSeries {
     pub(super) contour: Option<PreparedContourLayer>,
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
+    /// A stem series' stems (#206), the error-bar module's second draw.
+    pub(super) stem: Option<PreparedErrorBarLayer>,
     pub(super) line: Option<PreparedLineLayer>,
     pub(super) parallel: Option<PreparedParallelLayer>,
     pub(super) line_extra: Option<PreparedStarLayer>,
@@ -1133,20 +1171,8 @@ impl PreparedSeries {
                     snapshot: label.snapshot,
                 }),
             }),
-            errorbar: layers.errorbar.map(|layer| PreparedErrorBarLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg.clone(),
-                style_map_bg: layer.style_map_bg.cloned(),
-                pool_buffer: layer.pool_buffer.clone(),
-                x: layer.x,
-                y: layer.y,
-                err_y_lo: layer.err_y_lo,
-                err_y_hi: layer.err_y_hi,
-                err_x_lo: layer.err_x_lo,
-                err_x_hi: layer.err_x_hi,
-                style_index: layer.style_index,
-            }),
+            errorbar: layers.errorbar.map(PreparedErrorBarLayer::own),
+            stem: layers.stem.map(PreparedErrorBarLayer::own),
             line: layers.line.map(PreparedLineLayer::own),
             parallel: layers.parallel.map(PreparedParallelLayer::own),
             line_3d: layers.line_3d.map(PreparedLineLayer::own),
@@ -1325,20 +1351,11 @@ impl PreparedSeries {
                             snapshot: label.snapshot.clone(),
                         }),
                 }),
-            errorbar: self.errorbar.as_ref().map(|layer| ColumnErrorBarDraw {
-                pipeline: &layer.pipeline,
-                transform_bg: transform.unwrap_or(&layer.transform_bg),
-                style_bg: &layer.style_bg,
-                style_map_bg: layer.style_map_bg.as_ref(),
-                pool_buffer: &layer.pool_buffer,
-                x: layer.x,
-                y: layer.y,
-                err_y_lo: layer.err_y_lo,
-                err_y_hi: layer.err_y_hi,
-                err_x_lo: layer.err_x_lo,
-                err_x_hi: layer.err_x_hi,
-                style_index: layer.style_index,
-            }),
+            errorbar: self
+                .errorbar
+                .as_ref()
+                .map(|layer| layer.borrow_with(transform)),
+            stem: self.stem.as_ref().map(|layer| layer.borrow_with(transform)),
             line: self.line.as_ref().map(|layer| layer.borrow_with(transform)),
             parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
             line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),

@@ -391,6 +391,7 @@ fn prepare_demo_declarations(
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         };
         // The legend entry is the one that stands for this series, not
@@ -510,6 +511,7 @@ mod tests {
                 scatter: None,
                 line: Some(line_style()),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -610,6 +612,7 @@ mod tests {
                 scatter: Some(scatter_style()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         )];
         series[0].label = Some(config.chart_title.text.clone());
@@ -617,6 +620,47 @@ mod tests {
         assert!(json.contains(r#""greek":false,"math":true}"#), "{json}");
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series);
+    }
+
+    // A stem (#206) reaches JavaScript through `get_series` and comes back
+    // through `set_series` unchanged: the `stem` key on the marker variant,
+    // its defaults omitted, and no key at all without stems.
+    #[test]
+    fn series_json_carries_a_stem_both_ways() {
+        let stem = renderer::data_config::Stem {
+            baseline: -1.5,
+            direction: renderer::data_config::CategoryBarDirection::Horizontal,
+            color: renderer::Color::new(0.4, 0.4, 0.4, 1.0),
+            width: 1.5,
+            line_style: renderer::line::LineStylePreset::Solid,
+        };
+        let series = vec![series_config(
+            "s",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+                stem: Some(stem),
+            }),
+        )];
+        let json = serde_json::to_value(&series).unwrap();
+        let written = &json[0]["render_type"]["Scatter"]["stem"];
+        assert_eq!(written["baseline"], -1.5);
+        assert_eq!(written["direction"], "Horizontal");
+        assert!(written.get("line_style").is_none(), "{written}");
+        let back: Vec<SeriesConfig> = serde_json::from_value(json).unwrap();
+        assert_eq!(back, series);
+        let plain = vec![series_config(
+            "s",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        )];
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json[0]["render_type"]["Scatter"].get("stem").is_none());
     }
 
     // The math fields reach JavaScript and come back unchanged through
@@ -686,6 +730,7 @@ mod tests {
                 scatter: Some(scatter_style()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         )];
         series[0].label = Some(title);
@@ -870,6 +915,7 @@ mod tests {
                     scatter: None,
                     line: Some(line_style()),
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Line,
             ),
@@ -878,6 +924,7 @@ mod tests {
                     scatter: Some(scatter_style()),
                     line: None,
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Points,
             ),
@@ -886,6 +933,7 @@ mod tests {
                     scatter: Some(scatter_style()),
                     line: Some(line_style()),
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Points,
             ),
@@ -898,6 +946,7 @@ mod tests {
                         y: None,
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsX,
             ),
@@ -910,6 +959,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsY,
             ),
@@ -922,6 +972,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsXY,
             ),
@@ -934,6 +985,7 @@ mod tests {
                         y: None,
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsX,
             ),
@@ -946,6 +998,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsY,
             ),
@@ -958,6 +1011,7 @@ mod tests {
                         y: Some(y_error),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsXY,
             ),

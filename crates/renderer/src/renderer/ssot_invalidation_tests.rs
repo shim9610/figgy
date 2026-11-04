@@ -1968,6 +1968,7 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut series.render_type
         else {
             unreachable!()
@@ -2009,6 +2010,7 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut fresh_plain.render_type
     else {
         unreachable!()
@@ -2020,6 +2022,95 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
         frame(&mut r, id, true).0,
         frame(&mut fresh, fresh_id, true).0
     );
+}
+
+/// A stem edit (#206) is a series declaration change: the data revision
+/// moves, nothing is re-uploaded, and the first frame after each edit (add
+/// stems, baseline, width, dash, direction, colour, remove) equals a fresh
+/// renderer's.
+#[test]
+fn stem_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{CategoryBarDirection, DataScatterStyleConfig, ScatterShape, Stem};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    let mut series = declaration("s", "x", "a");
+    series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(DataScatterStyleConfig {
+            point_color: Color::new(0.1, 0.3, 0.8, 1.0),
+            point_shape: ScatterShape::CircleFilled,
+            point_size: 5.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        }),
+        line: None,
+        errors: None,
+        stem: None,
+    });
+    let (mut r, id) = fixture(&config, true, false);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    let (plain, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    let mut previous = plain.clone();
+    let edits: [(&str, fn(&mut Option<Stem>)); 7] = [
+        ("add stems", |stem| {
+            *stem = Some(Stem {
+                baseline: 0.0,
+                direction: CategoryBarDirection::Vertical,
+                color: Color::new(0.8, 0.1, 0.1, 1.0),
+                width: 2.0,
+                line_style: crate::line::LineStylePreset::Solid,
+            });
+        }),
+        ("baseline", |stem| stem.as_mut().unwrap().baseline = 0.4),
+        ("width", |stem| stem.as_mut().unwrap().width = 4.0),
+        ("dash", |stem| {
+            stem.as_mut().unwrap().line_style = crate::line::LineStylePreset::Dash;
+        }),
+        ("horizontal", |stem| {
+            stem.as_mut().unwrap().direction = CategoryBarDirection::Horizontal;
+        }),
+        ("colour", |stem| {
+            stem.as_mut().unwrap().color = Color::new(0.1, 0.7, 0.2, 1.0);
+        }),
+        ("remove", |stem| *stem = None),
+    ];
+    for (name, apply) in edits {
+        let DataRenderType::Xy(xy) = &mut series.render_type else {
+            unreachable!()
+        };
+        apply(&mut xy.stem);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a stem edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+    // Removing the stems restores the plain markers, pixel for pixel.
+    assert_eq!(previous, plain);
 }
 
 /// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
@@ -2179,6 +2270,7 @@ fn ssot_selection_edits_replace_only_the_overlay() {
             }),
             line: Some(line),
             errors: None,
+            stem: None,
         });
         series
     };

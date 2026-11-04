@@ -1509,6 +1509,31 @@ into the axis's `label_offset`.
 
 `step_selection(dx, dy)`는 선 시리즈처럼 꼭짓점을 옮기며 NaN 구분 행도 꼭짓점으로 센다. 선이나 머리를 `pick_point`로 누르면 그 선분의 가까운 끝점이 돌아온다.
 
+## 스템 (`stem`)
+
+마커를 그리는 xy 종류 여덟 가지(`Scatter`, `ScatterLine`, `ScatterErrorbar*`, `LineScatterErrorbar*`)는 선택 키 `stem`을 받는다(#206). 기준선에서 점마다 선을 하나씩 그리며, 스템 플롯이나 롤리팝 차트가 된다. `stem`이 없는 문서는 키를 생략한 채 그대로 읽고 쓴다. `direction`은 기본값 `"Vertical"`, `line_style`은 기본값 `"Solid"`이며 둘 다 기본값이면 생략한다. `"Line"`에는 키가 없다(스템은 마커와 함께 그린다). 극좌표, 3D 차트, 스트리밍 소스는 오류로 거부한다. 필드 의미는 [스템](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#스템)을 참고한다.
+
+```json
+{
+  "Scatter": {
+    "scatter": {
+      "point_color": { "r": 0.1, "g": 0.3, "b": 0.8, "a": 1.0 },
+      "point_shape": "CircleFilled",
+      "point_size": 6.0
+    },
+    "stem": {
+      "baseline": 0.0,
+      "direction": "Horizontal",
+      "color": { "r": 0.4, "g": 0.4, "b": 0.4, "a": 1.0 },
+      "width": 1.5,
+      "line_style": "Dash"
+    }
+  }
+}
+```
+
+스템은 그 점으로 픽된다. `pick_point`와 `pick_data`는 점의 인덱스를 돌려주고, `step_selection(dx, dy)`는 점 시리즈처럼 움직이며, `selection_details()`는 `x`와 `y`만 알려 준다.
+
 ## 모든 오차 방향을 포함한 `get_series()` 전체 형식
 
 `LineScatterErrorbarXY`, 대칭·비대칭 `ErrorRef`, 라벨을 모두 포함한 시리즈 하나의 예다. 기본값이면 생략하는 `point_color_map`, `point_size_map`과 선 스타일의 `fill`, `fill_color`, `interpolation`은 이 예에 없다. 다른 시리즈 종류는 해당 종류에 필요한 필드만 사용한다.

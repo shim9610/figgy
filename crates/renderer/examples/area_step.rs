@@ -109,6 +109,7 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(style),
                 errors: None,
+                stem: None,
             }),
         )
     };
@@ -127,6 +128,7 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(line(ink, 3.)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -137,6 +139,7 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(dashed),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -220,6 +223,7 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(step),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -230,6 +234,7 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(line(coral, 3.5)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -277,6 +282,7 @@ fn step_modes(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(style),
                 errors: None,
+                stem: None,
             }),
         )
     });

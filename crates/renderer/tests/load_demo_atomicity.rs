@@ -48,6 +48,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }

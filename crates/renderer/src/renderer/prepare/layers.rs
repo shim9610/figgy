@@ -330,6 +330,15 @@ impl PrepareContext<'_> {
             pipeline: &'p wgpu::RenderPipeline,
             texture_bg: Option<&'p wgpu::BindGroup>,
         }
+        // The stem pipeline (#206) per draw style: the precise and sketch
+        // stem entries, a Milkyway jet (its `vs_jet` stem branch), none
+        // under Constellation, which drops a stem series.
+        let stem_pipe = match styled {
+            None => pipelines.errorbar_stem.as_ref(),
+            Some(StyleSet::Sketch { stem, .. }) => Some(stem),
+            Some(StyleSet::Milkyway(c)) => Some(&c.jets),
+            Some(StyleSet::Constellation(_)) => None,
+        };
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
                 pipelines.line.as_ref().map(|pipeline| LinePick {
@@ -349,6 +358,7 @@ impl PrepareContext<'_> {
                 scatter,
                 errorbar,
                 line_verts,
+                ..
             }) => (
                 Some(LinePick {
                     pipeline: line,
@@ -1338,6 +1348,31 @@ impl PrepareContext<'_> {
                 }
             };
 
+            // The stems (#206): the error-bar module's second draw, the
+            // error slots bound to the anchor columns as filler (the stem
+            // reads only x and y). Every row is drawn (rule 10). A streamed
+            // phase never draws one (rule 8: refused before a cursor).
+            let stem = match (series.style.stem_bg.as_ref(), phase) {
+                (Some(stem_bg), None) if !constellation_only && primitives.scatter => {
+                    Some(ColumnErrorBarDraw {
+                        pipeline: stem_pipe
+                            .ok_or(FiggyError::internal("prepare ensured stem pipeline"))?,
+                        transform_bg: &view.transform_bg,
+                        style_bg: stem_bg,
+                        style_map_bg: None,
+                        pool_buffer: column_buffer,
+                        x: x_h,
+                        y: y_h,
+                        err_y_lo: y_h,
+                        err_y_hi: y_h,
+                        err_x_lo: x_h,
+                        err_x_hi: x_h,
+                        style_index: None,
+                    })
+                }
+                _ => None,
+            };
+
             let selection_prepare::SelectionLayers {
                 picked,
                 selected_bars,
@@ -1536,6 +1571,7 @@ impl PrepareContext<'_> {
                 contour,
                 vector,
                 errorbar,
+                stem,
                 line,
                 parallel,
                 line_extra,

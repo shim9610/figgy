@@ -1544,6 +1544,7 @@ mod tests {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -1579,6 +1580,7 @@ mod tests {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -1624,6 +1626,7 @@ mod tests {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         }
     }
@@ -1711,6 +1714,7 @@ mod tests {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut series.render_type
         else {
             unreachable!();
@@ -1764,6 +1768,7 @@ mod tests {
                     y: Some(_),
                     style: _,
                 }),
+            ..
         }) = &mut series.render_type
         else {
             unreachable!();
@@ -1791,6 +1796,7 @@ mod tests {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &mut series.render_type
         else {
             unreachable!();

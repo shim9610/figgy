@@ -128,6 +128,7 @@ mod legend_update_tests {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -783,6 +784,7 @@ mod tests {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -820,6 +822,7 @@ mod tests {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut filled.render_type
         else {
             unreachable!()
@@ -865,6 +868,7 @@ mod tests {
                     ..DataLineStyleConfig::default()
                 }),
                 errors: None,
+                stem: None,
             }),
             ..line_cfg(red)
         };

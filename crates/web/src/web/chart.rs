@@ -586,6 +586,7 @@ impl FiggyChart {
                     scatter: None,
                     line: Some(line),
                     errors: None,
+                    ..
                 }) => line.line_color,
                 _ => self.cycle.color(i),
             },
@@ -623,6 +624,7 @@ impl FiggyChart {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         };
         self.ensure_columns_exist(&cfg)?;

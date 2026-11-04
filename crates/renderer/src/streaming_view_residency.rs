@@ -1005,6 +1005,7 @@ mod tests {
                         interpolation: crate::data_config::LineInterpolation::Linear,
                     }),
                     errors: None,
+                    stem: None,
                 }),
             }];
             let candidate = ViewPackedCandidate::for_chart(&config, &series, 4096, 1.0).unwrap();
@@ -1031,6 +1032,7 @@ mod tests {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                ..
             }) = &mut larger[0].render_type
             {
                 line.line_width = 1000.0;

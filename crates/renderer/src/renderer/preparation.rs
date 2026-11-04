@@ -63,6 +63,7 @@ impl PreparationFeature {
                     | "parallel"
                     | "errorbar"
                     | "errorbar_mapped"
+                    | "errorbar_stem"
             ),
             Self::Bars => field.starts_with("bar"),
             Self::Fields => {
@@ -527,6 +528,7 @@ impl TargetPipelines {
             ternary_region_scan: source.ternary_region_scan.clone(),
             errorbar: None,
             errorbar_mapped: None,
+            errorbar_stem: None,
             bar: None,
             bar_envelope: None,
             bar_mapped: None,

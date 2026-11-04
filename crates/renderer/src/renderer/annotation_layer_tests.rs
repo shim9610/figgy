@@ -112,6 +112,7 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut series.render_type
     {
         line.line_width = 6.0;

@@ -1127,6 +1127,7 @@ mod tests {
                                 region: None,
                                 surface: None,
                                 floor: None,
+                                stem: None,
                             };
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: None,

@@ -1799,6 +1799,37 @@ fn error_controls(ui: &mut egui::Ui, e: &mut renderer::DataErrorBarStyleConfig) 
     slider(ui, "cap size", &mut e.error_bar_cap_size, 0.0..=20.0);
 }
 
+/// A stem or lollipop plot's controls (#206): stems on or off, and their
+/// baseline, direction, colour, width and dash.
+fn stem_controls(ui: &mut egui::Ui, stem: &mut Option<renderer::data_config::Stem>) {
+    use renderer::data_config::{CategoryBarDirection, Stem};
+    let mut on = stem.is_some();
+    if ui.checkbox(&mut on, "stems").changed() {
+        *stem = on.then(|| Stem {
+            baseline: 0.0,
+            direction: CategoryBarDirection::Vertical,
+            color: renderer::Color::from_rgb8(90, 90, 90),
+            width: 1.5,
+            line_style: renderer::line::LineStylePreset::Solid,
+        });
+    }
+    let Some(stem) = stem else {
+        return;
+    };
+    ui.add(egui::DragValue::new(&mut stem.baseline).speed(0.05).prefix("stem baseline "));
+    let mut horizontal = stem.direction == CategoryBarDirection::Horizontal;
+    if ui.checkbox(&mut horizontal, "horizontal stems").changed() {
+        stem.direction = if horizontal {
+            CategoryBarDirection::Horizontal
+        } else {
+            CategoryBarDirection::Vertical
+        };
+    }
+    color(ui, "stem colour", &mut stem.color);
+    slider(ui, "stem width", &mut stem.width, 0.0..=8.0);
+    choice(ui, "stem dash", &mut stem.line_style, widgets::LINE_STYLES);
+}
+
 fn series_controls(
     ui: &mut egui::Ui,
     s: &mut SeriesConfig,
@@ -1817,6 +1848,10 @@ fn series_controls(
             if let Some(errors) = &mut xy.errors {
                 error_controls(ui, &mut errors.style);
             }
+            // Stems need markers (#206).
+            if xy.scatter.is_some() {
+                stem_controls(ui, &mut xy.stem);
+            }
         }
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
@@ -1826,7 +1861,12 @@ fn series_controls(
             color(ui, "level colour", &mut levels.style.level.color);
             slider(ui, "level width", &mut levels.style.level.width, 0.5..=24.0);
             color(ui, "arrow colour", &mut levels.style.transition.color);
-            slider(ui, "arrow width", &mut levels.style.transition.width, 0.5..=24.0);
+            slider(
+                ui,
+                "arrow width",
+                &mut levels.style.transition.width,
+                0.5..=24.0,
+            );
         }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
@@ -2705,6 +2745,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             )),
             line: None,
             errors: None,
+            stem: None,
         });
         if r.set_chart_series(id, scatter).is_ok() {
             return Err("a line offset member without a line was accepted".into());

@@ -134,6 +134,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(style),
                 errors: None,
+                stem: None,
             }),
         ));
     }
@@ -279,6 +280,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(line(color, 2.5)),
                 errors: None,
+                stem: None,
             }),
         )
     };

@@ -53,6 +53,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         ));
     }

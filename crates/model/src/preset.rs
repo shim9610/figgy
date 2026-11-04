@@ -254,7 +254,7 @@ impl ColorCycle {
     pub fn apply_to_series(self, series: &mut SeriesConfig, index: usize) {
         let c = self.color(index);
         match &mut series.render_type {
-            // Markers, line and error bars all take the cycle colour.
+            // Markers, line, error bars and stems all take the cycle colour.
             DataRenderType::Xy(xy) => {
                 if let Some(scatter) = &mut xy.scatter {
                     scatter.point_color = c;
@@ -264,6 +264,9 @@ impl ColorCycle {
                 }
                 if let Some(errors) = &mut xy.errors {
                     errors.style.error_bar_color = c;
+                }
+                if let Some(stem) = &mut xy.stem {
+                    stem.color = c;
                 }
             }
             DataRenderType::Histogram { bar } => {
@@ -464,6 +467,7 @@ mod tests {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         }
     }
@@ -482,6 +486,7 @@ mod tests {
                     y: Some(_),
                     style: err_style,
                 }),
+            ..
         }) = &s.render_type
         else {
             unreachable!()
@@ -505,6 +510,7 @@ mod tests {
                         y: Some(_),
                         style: _,
                     }),
+                ..
             }) = &s.render_type
             else {
                 unreachable!()

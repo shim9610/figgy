@@ -995,6 +995,8 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Parallel => "Parallel",
         SceneKind::BrokenAxes => "BrokenAxes",
         SceneKind::EnergyLevels => "EnergyLevels",
+        SceneKind::Stem => "Stem",
+        SceneKind::Lollipop => "Lollipop",
     }
 }
 

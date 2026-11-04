@@ -100,6 +100,7 @@ fn line() -> SeriesConfig {
                 ..Default::default()
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
