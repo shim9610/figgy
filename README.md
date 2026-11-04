@@ -221,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            }), errors: None }),
+            }), errors: None, stem: None }),
     }];
     let image = renderer.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
