@@ -1005,6 +1005,11 @@ const LEADER_RUN: f32 = 10.0;
 /// between are not drawn. A Rydberg series near its limit is such a run.
 const COLLAPSE_COUNT: usize = 4;
 const COLLAPSE_SPACING: f32 = 0.5;
+/// How far a stacked label may stand from its own stroke, in label
+/// heights (#205). A stack that would move one of its labels farther is a
+/// crowd, not a cluster: it collapses to its first and last labels joined
+/// by a bracket, as a dense run does, and the rest is stacked again.
+const MAX_LABEL_SHIFT: f32 = 1.5;
 /// The widest share of a level's slot that the arrows meeting one of its
 /// ends spread over, and the most room between two of them, pixels.
 const ARROW_SPREAD: f32 = 0.6;
@@ -1424,29 +1429,103 @@ impl LevelPlacement<'_> {
                 }
                 k = j + 1;
             }
-            let run = &kept[..];
             // Groups as (first, last, top), in screen order.
-            let mut groups: Vec<(usize, usize, f32)> = Vec::new();
-            for (k, &(_, centre, height)) in run.iter().enumerate() {
-                groups.push((k, k, centre - height / 2.0));
-                while groups.len() > 1 {
-                    let (b0, b1, _) = groups[groups.len() - 1];
-                    let (a0, a1, a_top) = groups[groups.len() - 2];
-                    let a_height: f32 = run[a0..=a1].iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
-                    if a_top + a_height <= groups[groups.len() - 1].2 {
-                        break;
+            let stack = |run: &[(usize, f32, f32)]| {
+                let mut groups: Vec<(usize, usize, f32)> = Vec::new();
+                for (k, &(_, centre, height)) in run.iter().enumerate() {
+                    groups.push((k, k, centre - height / 2.0));
+                    while groups.len() > 1 {
+                        let (b0, b1, _) = groups[groups.len() - 1];
+                        let (a0, a1, a_top) = groups[groups.len() - 2];
+                        let a_height: f32 =
+                            run[a0..=a1].iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                        if a_top + a_height <= groups[groups.len() - 1].2 {
+                            break;
+                        }
+                        let members = &run[a0..=b1];
+                        let total: f32 = members.iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                        let mean = members.iter().map(|p| p.1).sum::<f32>() / members.len() as f32;
+                        let top = (mean - total / 2.0)
+                            .min(plot.y + plot.height - total)
+                            .max(plot.y);
+                        groups.pop();
+                        groups.pop();
+                        groups.push((a0, b1.max(b0), top));
                     }
-                    let members = &run[a0..=b1];
-                    let total: f32 = members.iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
-                    let mean = members.iter().map(|p| p.1).sum::<f32>() / members.len() as f32;
-                    let top = (mean - total / 2.0)
-                        .min(plot.y + plot.height - total)
-                        .max(plot.y);
-                    groups.pop();
-                    groups.pop();
-                    groups.push((a0, b1.max(b0), top));
                 }
+                groups
+            };
+            // The farthest a group moves one of its labels, in its tallest
+            // label's heights.
+            let reach = |members: &[(usize, f32, f32)], top: f32| {
+                let tallest = members.iter().map(|p| p.2).fold(0.0f32, f32::max).max(1.0);
+                let mut y = top;
+                let mut far = 0.0f32;
+                for &(_, centre, height) in members {
+                    far = far.max((y + height / 2.0 - centre).abs());
+                    y += height + LABEL_STACK_GAP;
+                }
+                far / tallest
+            };
+            // A crowd collapses to its ends; the rest is stacked again,
+            // until every stack keeps its labels near their strokes. Each
+            // pass hides at least one label, so the walk ends.
+            let mut groups = stack(&kept);
+            loop {
+                let mut collapsed = false;
+                let mut next: Vec<(usize, f32, f32)> = Vec::with_capacity(kept.len());
+                for &(first, last, top) in &groups {
+                    let members = &kept[first..=last];
+                    if members.len() <= 2 || reach(members, top) <= MAX_LABEL_SHIFT {
+                        next.extend_from_slice(members);
+                        continue;
+                    }
+                    // The crowd's dense runs (strokes closer than a label
+                    // apart, three or more) collapse first, so a label
+                    // with room of its own keeps it; a crowd without one
+                    // collapses whole.
+                    let close = |a: &(usize, f32, f32), b: &(usize, f32, f32)| {
+                        (b.1 - a.1).abs() < a.2.max(b.2)
+                    };
+                    let mut runs = 0;
+                    let mut k = 0;
+                    while k < members.len() {
+                        let mut j = k;
+                        while j + 1 < members.len() && close(&members[j], &members[j + 1]) {
+                            j += 1;
+                        }
+                        if j >= k + 2 {
+                            for m in &members[k + 1..j] {
+                                hidden[m.0] = true;
+                            }
+                            next.push(members[k]);
+                            next.push(members[j]);
+                            brackets.push((members[k].0, members[j].0));
+                            runs += 1;
+                        } else {
+                            next.extend_from_slice(&members[k..=j]);
+                        }
+                        k = j + 1;
+                    }
+                    if runs == 0 {
+                        // Drop what this group pushed and collapse it whole.
+                        next.truncate(next.len() - members.len());
+                        for m in &members[1..members.len() - 1] {
+                            hidden[m.0] = true;
+                        }
+                        next.push(members[0]);
+                        next.push(members[members.len() - 1]);
+                        brackets.push((members[0].0, members[members.len() - 1].0));
+                    }
+                    collapsed = true;
+                }
+                if !collapsed {
+                    break;
+                }
+                kept = next;
+                groups = stack(&kept);
             }
+            let run = &kept[..];
             for (first, last, top) in groups {
                 let members = &run[first..=last];
                 let moved = last > first;
@@ -1569,6 +1648,11 @@ impl LevelPlacement<'_> {
             placed_labels.push(rect);
             transition_spot[index] = Some(spot);
         }
+        // A bracket whose end a later collapse hid is part of the larger
+        // bracket now.
+        brackets.retain(|&(a, b)| !hidden[a] && !hidden[b]);
+        brackets.sort_unstable();
+        brackets.dedup();
         LevelLayout {
             arrows,
             level_shift,

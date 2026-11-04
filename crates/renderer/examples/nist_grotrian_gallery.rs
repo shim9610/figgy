@@ -573,12 +573,42 @@ fn argon_all(r: &mut Renderer, out: &Path) -> Result {
             .limits
             .push(limit(l, &format!("Ar II ²P°₃/₂  {:.3} eV", l.energy)));
     }
+    // As a paper draws them: the Rydberg members from n = 8 up to the
+    // limit, one band per column, and the low members labelled (#205).
+    let ceiling = limits.first().map_or(f64::MAX, |l| l.energy);
+    let principal = |outer: &str| -> Option<u32> {
+        outer
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .ok()
+    };
+    for column in &columns {
+        let (low, high) = levels
+            .iter()
+            .zip(&series.levels)
+            .filter(|(row, l)| {
+                &l.column == column
+                    && row.energy < ceiling
+                    && principal(row.outer()).is_some_and(|n| n >= 8)
+            })
+            .fold((f64::MAX, f64::MIN), |(a, b), (row, _)| {
+                (a.min(row.energy), b.max(row.energy))
+            });
+        if low < high {
+            band(&mut series, column, low, high, "n ≥ 8");
+        }
+    }
     columns.sort();
     let categories = columns
         .iter()
         .map(|id| Category::new(id.as_str(), id.as_str()))
         .collect();
     let mut c = grotrian("Ar I, all levels", "Energy (eV)", categories);
+    // Twenty-five term columns: drawn wide, as a full term diagram is.
+    c.config_mut().chart_area.0.width = 2000;
+    c.config_mut().chart_area.0.height = 900;
     break_below(&mut c, -0.2, 16.3, 0.3, 11.3);
     let mut series = styled(series);
     // Narrow slots leave lanes for the labels of fourteen columns.

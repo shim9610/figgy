@@ -1007,6 +1007,68 @@ fn labelled(id: &str, column: &str, energy: f64) -> EnergyLevel {
     }
 }
 
+// #205: a crowd that a stack would push far from its strokes collapses
+// its dense run to a bracket, so every drawn label stays within one and a
+// half label heights of its own level; an isolated label is not moved.
+#[test]
+fn a_crowd_collapses_instead_of_fanning_out() {
+    let chart = chart();
+    let mut levels = EnergyLevelSeries::default();
+    // Twelve levels about two thirds of a label apart: too far apart for
+    // the dense-run rule, too close to stack near their strokes.
+    for k in 0..12 {
+        levels
+            .levels
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+    }
+    levels.levels.push(labelled("alone", "b", 92.0));
+    let (space, measure) = layout_of(&chart, &levels);
+    let placement = renderer::energy_levels::LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(&levels, &levels.style, &measure);
+    let label = |i: usize| {
+        placement.label(
+            &levels,
+            &levels.style,
+            &layout,
+            renderer::energy_levels::LabelPart::Level,
+            i,
+            &measure,
+        )
+    };
+    let drawn: Vec<usize> = (0..12).filter(|&i| label(i).is_some()).collect();
+    assert!(drawn.len() < 12, "the crowd collapses: {drawn:?}");
+    assert!(
+        drawn.contains(&0) && drawn.contains(&11),
+        "its ends stay: {drawn:?}"
+    );
+    use renderer::AnnotationSpace as _;
+    for i in (0..levels.levels.len()).filter(|&i| label(i).is_some()) {
+        let rect = label(i).unwrap().rect();
+        let stroke = space
+            .value_to_px(renderer::AnnotationAxis::Y, levels.levels[i].energy)
+            .unwrap();
+        let shift = (rect.y + rect.height / 2.0 - stroke).abs();
+        assert!(
+            shift <= 1.5 * rect.height + 0.5,
+            "label {i} moved {shift} px"
+        );
+    }
+    let alone = label(12).expect("the isolated label").rect();
+    let stroke = space
+        .value_to_px(renderer::AnnotationAxis::Y, 92.0)
+        .unwrap();
+    assert!(
+        (alone.y + alone.height / 2.0 - stroke).abs() < 1.0,
+        "not moved"
+    );
+}
+
 // #205: crowded labels in one column stack clear of each other, and a
 // dense run (strokes closer than half a label) keeps only its first and
 // last labels, joined by a bracket.
