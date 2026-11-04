@@ -405,7 +405,8 @@ pub enum DataRenderType {
     /// An energy-level (Grotrian) diagram (#203): levels as strokes across
     /// the slots of a categorical `bottom_x` at their energies on `left_y`,
     /// ionization limits and the transitions the host listed. DataLess:
-    /// every value is SSOT configuration ([`EnergyLevelSeries`]), so
+    /// every value is SSOT configuration
+    /// ([`EnergyLevelSeries`](crate::energy_levels::EnergyLevelSeries)), so
     /// `x_column` and `y_column` stay empty and nothing is registered. Drawn
     /// through the CPU sink and composited after the GPU data. See
     /// [`crate::energy_levels`] and

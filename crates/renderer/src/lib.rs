@@ -216,7 +216,7 @@ pub mod parallel {
 }
 pub use model::parallel::{ParallelAxis, ParallelOptions};
 /// Energy-level (Grotrian) diagrams (#203): the DataLess
-/// [`DataRenderType::EnergyLevels`](crate::data_config::DataRenderType::EnergyLevels)
+/// [`DataRenderType::EnergyLevels`]
 /// series' records, look and placement.
 pub mod energy_levels {
     pub use model::energy_levels::*;

@@ -1910,6 +1910,8 @@ pub(crate) mod tests {
                 "colorbar_axis",
                 "colorbar_tick_labels",
                 "colorbar_title",
+                "category_groups_top",
+                "category_groups_bottom",
                 "overlay_0:axis_right",
                 "overlay_0:tick_labels_right",
                 "overlay_0:axis_title_right",
@@ -1919,7 +1921,7 @@ pub(crate) mod tests {
         assert!(!ids.iter().any(|id| id == "axis_left" || id == "axis_right"));
         cfg.set_active_layer(LayerRef::Annotations);
         let ids = ids_of(&HitMap::for_active_layer(&cfg));
-        assert_eq!(ids.len(), 13);
+        assert_eq!(ids.len(), 15);
         assert!(!ids.iter().any(|id| id.starts_with("overlay_")));
         // An out-of-range index is the base set.
         cfg.active_layer = LayerRef::Overlay(3);
