@@ -72,7 +72,7 @@ pub struct ScatterTransform {
     pub break_info: [f32; 4], // offset 272
     /// Probability axes (#209): `(code x, code y, 0, 0)`, 0 for a linear or
     /// logarithmic axis, 1 normal, 2 Weibull, 3 logistic
-    /// ([`probability_code`]). On a probability axis `scale_log` is 0 and
+    /// (`probability_code`). On a probability axis `scale_log` is 0 and
     /// `data_min` / `data_max` hold `F⁻¹` of the axis bounds.
     pub scale_prob: [f32; 4], // offset 288 → 304 byte
 }

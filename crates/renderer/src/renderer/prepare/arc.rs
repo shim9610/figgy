@@ -41,6 +41,8 @@ pub(in crate::renderer) struct ArcResultKey {
     /// The broken axes' cut table and info (#200): a cut moves every
     /// sample past it, so the arc lengths change with it.
     pub(in crate::renderer) break_transform_bits: [u32; 28],
+    /// The probability codes (#209): an axis' scale moves every sample.
+    pub(in crate::renderer) probability_transform_bits: [u32; 4],
     /// A ternary line's third component or a 3D line's height: its element
     /// base and allocation epoch (the chord lengths are measured through it).
     pub(in crate::renderer) c: Option<(u32, u64)>,
@@ -266,6 +268,8 @@ impl PrepareContext<'_> {
         ternary_transform_bits.copy_from_slice(&transform_bits[36..44]);
         let mut break_transform_bits = [0u32; 28];
         break_transform_bits.copy_from_slice(&transform_bits[44..72]);
+        let mut probability_transform_bits = [0u32; 4];
+        probability_transform_bits.copy_from_slice(&transform_bits[72..76]);
         let key = ArcResultKey {
             n,
             x_base,
@@ -277,6 +281,7 @@ impl PrepareContext<'_> {
             polar_transform_bits,
             ternary_transform_bits,
             break_transform_bits,
+            probability_transform_bits,
             c,
             view3d_bits: third
                 .and_then(|third| third.camera())
