@@ -541,6 +541,46 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
         issue: "#211",
     },
+    // At the x axis's start corner the x axis line (`axis_bottom`) meets the
+    // z axis line (`axis_right`). Their antialiased blend decodes nearest to
+    // `tick_labels_top`'s code, which a 3D chart never draws: the corner's
+    // few pixels go to that code instead of the two lines.
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "tick_labels_top",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the x and z axis lines' blend at the box corner decodes as this code",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "tick_labels_top",
+        inv: Inv::I5,
+        detail: "*of its * ink pixels*differ by more than*box-filtered*",
+        reason: "the x and z axis lines' corner blend, as in I7: no 2x glyphs to compare",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "*",
+        element: "axis_bottom",
+        inv: Inv::I2,
+        detail: "*points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the x axis line's end pixels at the box corner decode as another code (I7)",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I5,
+        detail: "ink extent * at 2x (halved) is * px off *",
+        reason: "the corner pixels decode as the x axis at 2x and as another code at 1x (I7)",
+        issue: "#211",
+    },
     // The radar scene is a polar chart: the outer ring row above (its ray
     // line is hidden, so it has no ray drag row), and its ring labels.
     Exclusion {

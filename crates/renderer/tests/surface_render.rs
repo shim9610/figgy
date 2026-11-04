@@ -2005,7 +2005,9 @@ fn a_million_arrows_draw_pick_and_step() {
     let factor = 0.25;
     let config = chart_3d();
     let series = vec![arrows_3d(VectorScale::Data { factor }, VectorPivot::Tail)];
+    let started = std::time::Instant::now();
     let img = export(&mut r, &config, &series, 1.0);
+    eprintln!("{n} 3D arrows: export {:?}", started.elapsed());
     save("vector_3d_million", &img);
     let at = |s: f64| {
         let p = config
@@ -2033,7 +2035,10 @@ fn a_million_arrows_draw_pick_and_step() {
         (n as u64, false),
         "{info:?}"
     );
-    match pick_at(&mut r, id, at(0.4), 1.0) {
+    let started = std::time::Instant::now();
+    let picked = pick_at(&mut r, id, at(0.4), 1.0);
+    eprintln!("{n} 3D arrows: pick {:?}", started.elapsed());
+    match picked {
         Some(renderer::PickedData::Point { point_index, .. }) => {
             assert_eq!(point_index, n - 1)
         }

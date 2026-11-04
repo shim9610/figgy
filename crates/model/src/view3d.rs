@@ -470,14 +470,20 @@ impl Config {
     /// Where the title of box axis `k` sits: centred past its edge's tick
     /// and label band along the edge's normal, parallel to the edge and
     /// reading left to right, moved by the title offsets in screen space.
+    /// `label_reach` is how far the drawn tick labels reach along the normal
+    /// (the widest label's extent along it, as the chrome measures it); the
+    /// band is at least that, so a wide label on a near-vertical edge does
+    /// not run into the title.
     pub fn box_title_placement(
         &self,
         k: usize,
         offset: (f32, f32),
         extents: crate::text::TextExtents,
+        label_reach: Option<f32>,
     ) -> Option<crate::layout::TitlePlacement> {
         let edge = self.box_axis_edge(k)?;
-        let reach = label_band(box_axis(self, k)) + extents.height() * 0.5;
+        let band = label_band(box_axis(self, k)).max(label_reach.unwrap_or(0.0));
+        let reach = band + extents.height() * 0.5;
         let mid = edge.point(0.5, reach);
         let center = (mid[0] + offset.0, mid[1] + offset.1);
         let mut dir = edge.direction();

@@ -36,10 +36,6 @@ struct ArrowPx {
 const VECTOR_SCALE_DATA: u32 = 0u;
 const VECTOR_SCALE_PIXELS: u32 = 1u;
 
-fn ndc_to_px(ndc: vec2<f32>) -> vec2<f32> {
-    return ndc / transform.pixel_to_ndc;
-}
-
 /// A box point in pixels and its NDC depth at the front of a tube of
 /// `radius_px` there.
 struct BoxPx {
@@ -52,7 +48,7 @@ fn box_px(t: vec3<f32>, radius_px: f32) -> BoxPx {
     var out: BoxPx;
     let clip = project_box(t);
     let front = project_box_front(t, radius_px);
-    out.px = ndc_to_px(clip.xy / clip.w);
+    out.px = clip.xy / clip.w / transform.pixel_to_ndc;
     out.depth = front.z / front.w;
     out.valid = clip.w > 0.0 && front.w > 0.0
         && sample_finite(out.px.x) && sample_finite(out.px.y) && sample_finite(out.depth);

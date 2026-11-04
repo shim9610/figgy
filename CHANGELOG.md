@@ -208,6 +208,16 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   byte-identically. Migration: a `VectorComponents::Points { u, v }` literal
   becomes `Points { u, v, w: None }`, and a pattern that names every field
   adds `w` or `..`.
+- **A box axis title clears its widest tick label** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  The title of a 3D box axis sat a fixed band (about 1.4 label heights)
+  past its edge. On a near-vertical edge a wide label (`3.00` on the z
+  axis) reaches farther along the normal than that, and the title ran into
+  it. The band is now at least the widest drawn label's extent along the
+  edge's normal. `Config::box_title_placement(k, offset, extents,
+  label_reach)` takes that reach (`None` keeps the fixed band); the
+  decoration layout, which the draw and the hit map share, passes the
+  measured one. Migration: a direct caller adds
+  `None`, or the reach of its own labels.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
