@@ -242,8 +242,11 @@ Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
 `start < end` of at most one turn, arc pieces in `1..=64`, a linear and
 non-inverted angle axis (use `clockwise`), a categorical angle axis for a
 `Polygon` grid, and no `overlays`. Series that have
-no polar form are rejected with `InvalidSeriesConfig`: histograms, heatmaps,
-contours, error bars and vectors; `Arc` needs a linearly interpolated line.
+no polar form are rejected with `InvalidSeriesConfig`: histograms, images,
+error bars, stems and vectors, among others; `Arc` needs a linearly
+interpolated line. Heatmaps and contours draw their cells as annular sectors
+in (angle, radius) (#208); a hexagonal lattice and a field on a `Polygon`
+grid are refused ([Polar plots](POLAR.md#heatmaps-and-contours)).
 Streamed sources are rejected. Annotations are placed by ratio only:
 reference lines, spans and data anchors report a skip (`NoValueAxis`).
 Subplots carry their own `polar`, so polar and rectangular panels mix in one
@@ -1085,8 +1088,8 @@ is the smallest of the three channels', reported through
 The rules (`Config::validate_rgb_image_series`, at registration): the three
 channels have the same number of columns, orientation and grid layout,
 `range` is finite with a smaller low end,
-`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular (a
-polar chart rejects every field series), and the columns are resident
+`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular
+("images are not drawn on polar axes"), and the columns are resident
 (streamed sources are rejected).
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
@@ -1399,8 +1402,9 @@ pub struct Config {
 검증(`Config::validate_polar`, `InvalidConfig { field: "polar" }`로 보고): 유한한 각도,
 범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,
 선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), `Polygon` 격자일 때 범주형 각도 축, 그리고 `overlays` 없음. 극좌표 형태가 없는
-시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
-선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
+시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 이미지, 오차 막대, 스템, 벡터 등. `Arc`는
+선형 보간 선이 필요하다. 히트맵과 등고선은 셀을 (각도, 반지름)의 고리 부채꼴로 그리며(#208), 육각
+격자와 `Polygon` 격자 위의 필드는 거부한다([극좌표 플롯](POLAR.md#히트맵과-등고선)). 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
 (`ReferenceLine`)·구간(`Span`)·데이터 앵커는 건너뛴 것으로 보고한다(`NoValueAxis`). 서브플롯은
 각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수 있다.
 

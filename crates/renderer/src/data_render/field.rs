@@ -16,6 +16,8 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/data_pick.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
     "data_render/field_columnar.wgsl",
 );
 

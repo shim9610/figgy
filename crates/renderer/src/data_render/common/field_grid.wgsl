@@ -538,3 +538,69 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
 fn grad_px(dz: vec2<f32>) -> vec2<f32> {
     return dz * transform.pixel_to_ndc * 0.5;
 }
+
+// ── Polar lookup (#208) ────────────────────────────────────────────────────
+//
+// Splices with `projection.wgsl` (`polar_unproject`) and `sample_validity.wgsl`
+// (the polar clip). The field draw, its pick and the contour label anchor
+// pass all locate cells through it.
+
+/// Where a fragment's (or a cursor's) chart-area `t` lands in the field's
+/// lookup space, with the lookup `t`'s derivatives per pixel (`jac_x` is
+/// `d t.x / d px`, `jac_y` is `d t.y / d px`, in the draw's pixel frame).
+struct FieldLookup {
+    hit: bool,
+    t: vec2<f32>,
+    jac_x: vec2<f32>,
+    jac_y: vec2<f32>,
+};
+
+/// The cell lookup's `t` at chart-area `t` (#208). On a rectangular chart it
+/// is `t` itself, one pixel being `pixel_to_ndc / 2` of it. On a polar chart
+/// the point is unprojected (`polar_unproject`): outside the outer ring, in
+/// the hole or outside the sector it is a miss (`polar_fragment_visible`, the
+/// lines' and markers' cut); otherwise its angle value is wrapped into the
+/// turn that starts at the grid's low angle boundary on `lattice` and turned
+/// into axis `t`, and its radius is the radius axis `t`. So a grid no wider
+/// than one turn draws each cell once, where a marker at the same angle
+/// draws. The fill, the cell pick, the highlight and the contours all call
+/// it, so they agree.
+fn field_lookup(t: vec2<f32>, lattice: u32) -> FieldLookup {
+    var out: FieldLookup;
+    out.hit = true;
+    out.t = t;
+    out.jac_x = vec2<f32>(transform.pixel_to_ndc.x * 0.5, 0.0);
+    out.jac_y = vec2<f32>(0.0, transform.pixel_to_ndc.y * 0.5);
+    if (transform.polar_angle.x < 0.5) {
+        return out;
+    }
+    let px = polar_clip_offset(transform, t * 2.0 - vec2<f32>(1.0, 1.0));
+    if (!polar_fragment_visible(px, polar_clip_limits(transform), polar_clip_sector(transform))) {
+        out.hit = false;
+        return out;
+    }
+    let u = polar_unproject(transform, px);
+    // The angle axis is linear on a polar chart: one angle unit is `kx` of
+    // `t`, and a turn `turn_t`.
+    let range_x = (transform.data_max.x - transform.data_min.x)
+        + (transform.data_max_lo.x - transform.data_min_lo.x);
+    let kx = transform.data_to_panel_scale.x / range_x;
+    let turn_t = abs(6.283185307179586 / transform.polar_angle.z * kx);
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let count = quad_count(along_cells, lattice);
+    let b0 = boundary_t(field.x_base, field.x_len, 0u, 0u, lattice);
+    let b1 = boundary_t(field.x_base, field.x_len, count, 0u, lattice);
+    var tx = axis_t(vec2<f32>(u.angle, 0.0), 0u);
+    if (!f32_is_finite(tx) || !f32_is_finite(turn_t) || turn_t <= 0.0
+        || !f32_is_finite(b0) || !f32_is_finite(b1)) {
+        out.hit = false;
+        return out;
+    }
+    let low = min(b0, b1);
+    tx = tx - floor((tx - low) / turn_t) * turn_t;
+    out.t = vec2<f32>(tx, u.ty);
+    out.jac_x = u.d_angle * kx;
+    out.jac_y = u.d_ty;
+    return out;
+}

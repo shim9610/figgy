@@ -535,6 +535,26 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the polar outer ring is the data boundary and belongs to no element",
         issue: "#47",
     },
+    // The radar scene is a polar chart with its ray line drawn: the Rose
+    // scene's two rows (#208).
+    Exclusion {
+        scene: "PolarHeatmap",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "the polar ray turns around the centre: every drag is a valid turn",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "PolarHeatmap",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring is the data boundary and belongs to no element",
+        issue: "#47",
+    },
 ];
 
 /// Rows only the sweep of the scenes as laid out has: the `LongLabels`
@@ -997,6 +1017,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::EnergyLevels => "EnergyLevels",
         SceneKind::Stem => "Stem",
         SceneKind::Lollipop => "Lollipop",
+        SceneKind::PolarHeatmap => "PolarHeatmap",
     }
 }
 

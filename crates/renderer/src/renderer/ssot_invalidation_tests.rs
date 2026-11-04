@@ -2113,6 +2113,118 @@ fn stem_edits_refresh_first_frame_without_reupload() {
     assert_eq!(previous, plain);
 }
 
+/// A polar heatmap (#208) follows its chart's polar options and colourbar:
+/// each edit (zero angle, direction, unit, sector, hole, ray angle, the
+/// colour map and its range) gives a first frame equal to a fresh
+/// renderer's, is visible, and re-uploads nothing.
+#[test]
+fn polar_heatmap_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{
+        ContourConfig, DataLineStyleConfig, FieldFillConfig, FieldSeries, FillMode, GridLayout,
+        MatrixOrientation, MatrixRef, Shading,
+    };
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline_with_colorbar();
+    config.legend.visible = false;
+    config.left_y.min = 0.0;
+    config.left_y.max = 3.0;
+    config.set_polar(Some(crate::polar::PolarOptions::default()));
+    let mut series = declaration("field", "gx", "gy");
+    series.render_type = DataRenderType::Field(FieldSeries {
+        matrix: MatrixRef {
+            columns: vec!["z0".into(), "z1".into(), "z2".into(), "z3".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: GridLayout::Edges,
+        },
+        fill: Some(FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading: Shading::Flat,
+            opacity: 1.0,
+        }),
+        contour: Some(ContourConfig {
+            levels: vec![0.5],
+            line: DataLineStyleConfig::default(),
+            per_level_color: None,
+            labels: None,
+        }),
+        surface: None,
+    });
+    let add_field = |r: &mut Renderer| {
+        let column = |v: Vec<f64>| crate::data::Column { data: v };
+        r.add_column("gx", &column(vec![0.0, 90.0, 180.0, 270.0, 360.0]))
+            .unwrap();
+        r.add_column("gy", &column(vec![0.0, 1.0, 2.0, 3.0]))
+            .unwrap();
+        for i in 0..4 {
+            let base = f64::from(i) * 0.2;
+            r.add_column(
+                &format!("z{i}"),
+                &column(vec![0.1 + base, 0.4 + base, 0.2 + base]),
+            )
+            .unwrap();
+        }
+    };
+    let fixture_with_field = |c: &Config| {
+        let (mut r, id) = fixture(c, true, false);
+        add_field(&mut r);
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        (r, id)
+    };
+    let (mut r, id) = fixture_with_field(&config);
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    let edits: [(&str, fn(&mut Config)); 9] = [
+        ("zero_angle_degrees", |c| {
+            c.polar_mut().unwrap().zero_angle_degrees = 90.0;
+        }),
+        ("clockwise", |c| c.polar_mut().unwrap().clockwise = true),
+        ("angle_unit", |c| {
+            c.polar_mut().unwrap().angle_unit = crate::polar::AngleUnit::Radians;
+        }),
+        ("angle_unit back", |c| {
+            c.polar_mut().unwrap().angle_unit = crate::polar::AngleUnit::Degrees;
+        }),
+        ("sector", |c| {
+            c.polar_mut().unwrap().sector = Some([0.0, 200.0])
+        }),
+        ("inner_radius_fraction", |c| {
+            c.polar_mut().unwrap().inner_radius_fraction = 0.3;
+        }),
+        ("radial_label_angle_degrees", |c| {
+            c.polar_mut().unwrap().radial_label_angle_degrees = 45.0;
+        }),
+        ("colormap", |c| {
+            c.colorbar.as_mut().unwrap().colormap = crate::ColorMap::Custom {
+                stops: vec![
+                    Color::new(0.0, 0.0, 1.0, 1.0),
+                    Color::new(1.0, 1.0, 0.0, 1.0),
+                ],
+            };
+        }),
+        ("colorbar range", |c| {
+            c.colorbar.as_mut().unwrap().axis.max = 2.0
+        }),
+    ];
+    for (name, apply) in edits {
+        apply(&mut config);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with_field(&config);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+}
+
 /// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
 /// edit is a data declaration change whose first frame matches a fresh
 /// renderer's, is visible, re-uploads nothing, and an identical
