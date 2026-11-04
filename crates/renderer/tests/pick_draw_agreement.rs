@@ -3440,6 +3440,188 @@ fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
     }
 }
 
+/// Rule 10 on a probability axis (#209): 1,000,001 points register, draw
+/// and pick (the last one), with the time of each against a linear axis
+/// printed for the docs.
+#[test]
+fn a_million_points_draw_and_the_last_picks_on_a_probability_axis() {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let (device, queue) = shared_device();
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("device"),
+        wgpu::TextureFormat::Bgra8Unorm,
+        256 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    renderer.enable_gpu_picking().expect("GPU picking");
+    let n = 1_000_001usize;
+    let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let ys: Vec<f64> = (0..n)
+        .map(|i| 0.002 + 0.996 * (i % 997) as f64 / 996.0)
+        .collect();
+    upload_xy(&mut renderer, xs, ys.clone());
+    let series = [scatter("points", ScatterShape::SquareFilled, 6.0, RED)];
+    // One draw and pick first, so neither timed run pays the pipelines'
+    // first use.
+    {
+        let mut chart = bare_chart();
+        chart.set_x_range(n as f64 - 11.0, n as f64);
+        chart.set_y_range(0.001, 0.999);
+        renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .expect("export");
+        let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+        let _ = test_gpu::block_on(
+            renderer
+                .pick_chart(probe.id, probe.request(10.0, 10.0, 3.0))
+                .unwrap()
+                .resolve(),
+        );
+        renderer.remove_chart(probe.id).unwrap();
+    }
+    for scale in [
+        AxisScale::Linear,
+        AxisScale::Probability(ProbabilityScale::Normal),
+    ] {
+        let mut chart = bare_chart();
+        chart.config_mut().left_y.scale = scale.clone();
+        chart.set_x_range(n as f64 - 11.0, n as f64);
+        chart.set_y_range(0.001, 0.999);
+        let start = std::time::Instant::now();
+        let image = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .expect("export");
+        eprintln!(
+            "1,000,001 points on a {scale:?} axis drawn in {:?}",
+            start.elapsed()
+        );
+        let cfg = chart.config().clone();
+        let da = cfg.data_area().expect("data area").0;
+        let last = n - 1;
+        let at = (
+            axis_px(&cfg.bottom_x, last as f64, da.x as f64, da.width as f64),
+            axis_px(
+                &cfg.left_y,
+                ys[last],
+                (da.y + da.height) as f64,
+                -(da.height as f64),
+            ),
+        );
+        let [r, g, _, a] = pixel(&image, at.0 as u32 - 1, at.1 as u32);
+        assert!(
+            r > 128 && g < 100 && a > 0,
+            "{scale:?}: the last point draws at {at:?}"
+        );
+        let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+        let start = std::time::Instant::now();
+        let hit = test_gpu::block_on(
+            renderer
+                .pick_chart(probe.id, probe.request(at.0 as f32, at.1 as f32, 3.0))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap()
+        .expect("the last point picks");
+        eprintln!(
+            "1,000,001 points on a {scale:?} axis picked in {:?}",
+            start.elapsed()
+        );
+        assert_eq!(hit.point_index, last, "{scale:?}");
+        renderer.remove_chart(probe.id).unwrap();
+    }
+}
+
+/// Rule 8 (#209): a streamed series on a probability axis is refused with
+/// its own reason, on the base x and y axes (an overlay and a subplot
+/// refuse any streamed series already).
+#[test]
+fn a_streamed_source_on_a_probability_axis_is_refused() {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let mut r = renderer();
+    let streamed = |id: &str| renderer::StreamColumn {
+        id: id.into(),
+        len: 4,
+        revision: 1,
+        encoding: renderer::StreamEncoding::ScalarF32,
+        replay: renderer::StreamReplay::RandomAccess,
+        statistics: renderer::StreamStatistics::Unknown,
+    };
+    r.register_streamed_columns(vec![streamed("st_x"), streamed("st_y")])
+        .unwrap();
+    let mut points = scatter("m", ScatterShape::CircleFilled, 4.0, RED);
+    points.x_column = "st_x".into();
+    points.y_column = "st_y".into();
+    let probability = AxisScale::Probability(ProbabilityScale::Weibull);
+    let on = |axis: &mut renderer::config::AxisOptions| {
+        axis.scale = probability.clone();
+        axis.min = 0.01;
+        axis.max = 0.99;
+    };
+    let base = bare_chart().config().clone();
+    let mut on_x = base.clone();
+    on(&mut on_x.bottom_x);
+    let mut on_y = base.clone();
+    on(&mut on_y.left_y);
+    let mut overlay = base.clone();
+    let mut layer = renderer::OverlayLayer::default();
+    on(&mut layer.y_axis);
+    layer.series = vec!["m".into()];
+    overlay.overlays.push(layer);
+    let mut subplot = base.clone();
+    let mut inner = base.clone();
+    on(&mut inner.left_y);
+    subplot.subplots.push(renderer::Subplot {
+        config: inner,
+        series: vec!["m".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let cases = [
+        ("x", on_x, vec![points.clone()]),
+        ("y", on_y, vec![points.clone()]),
+    ];
+    // A streamed series is drawn by neither an overlay nor a subplot:
+    // registration refuses it there before the probability rule is reached.
+    for (case, config) in [("overlay", overlay), ("subplot", subplot)] {
+        match r.register_chart(config, vec![points.clone()]) {
+            Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) => {
+                assert!(reason.contains(case), "{case}: {reason}");
+            }
+            other => panic!("{case}: expected a refusal, got {:?}", other.map(|_| ())),
+        }
+    }
+    for (case, config, series) in cases {
+        let id = r
+            .register_chart(config, series)
+            .expect("registration admits the columns; the streaming inspector names the rule");
+        let result = r.inspect_streaming_capability(id);
+        r.remove_chart(id).unwrap();
+        match result {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+                assert_eq!(series_id, "m", "{case}");
+                assert_eq!(
+                    reason,
+                    "probability axes require GPU-resident columns; streamed sources are not \
+                     supported",
+                    "{case}"
+                );
+            }
+            other => panic!(
+                "{case}: expected the streamed rejection, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+    }
+}
+
 /// An error-bar style of stem width `width` with caps of half size `cap`
 /// and width `cap_width` in `color`, without per-point styles.
 pub fn errorbar_style(

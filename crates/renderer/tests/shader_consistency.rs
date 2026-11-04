@@ -1484,3 +1484,56 @@ fn blank_test_items(code: &str) -> String {
     }
     out.into_iter().collect()
 }
+
+// #209 (N12): a probability axis is a second scale code beside the log
+// flag. Every function that reads `scale_log` reads `scale_prob` too, so no
+// site silently draws a probability axis linearly, and `scale_prob` is a
+// code compared against thresholds, never a `mix` weight. The exceptions
+// are the charts that refuse a probability scale: polar (the radius),
+// category bars and box plots (the value axis), 3D boxes.
+#[test]
+fn every_scale_log_reader_reads_scale_prob() {
+    const REFUSING: [&str; 4] = [
+        "polar_sample_valid",
+        "category_radius_px",
+        "view3d_axis_t",
+        "box_t_per_unit",
+    ];
+    let mut shaders = Vec::new();
+    wgsl_files(&workspace_root().join("src"), &mut shaders);
+    shaders.sort();
+    let mut readers = 0;
+    let mut offending = Vec::new();
+    for path in shaders {
+        let source = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let code = strip_wgsl_comments(&source);
+        for (lo, hi) in function_bodies(&code) {
+            let body = &code[lo..hi];
+            let name = code[..lo]
+                .rfind("fn ")
+                .map(|at| {
+                    let rest = &code[at + 3..lo];
+                    rest[..rest.find('(').unwrap_or(rest.len())]
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            if body.contains("scale_log") {
+                readers += 1;
+                if !body.contains("scale_prob") && !REFUSING.contains(&name.as_str()) {
+                    offending.push(format!("{}: {name} reads scale_log only", path.display()));
+                }
+            }
+            for open in call_openings(&code, lo, hi, "mix") {
+                let (arguments, _) = call_arguments(&code, open);
+                if let Some(&(s, e)) = arguments.get(2)
+                    && code[s..e].contains("scale_prob")
+                {
+                    offending.push(format!("{}: {name} mixes by scale_prob", path.display()));
+                }
+            }
+        }
+    }
+    assert!(readers > 10, "found {readers} scale_log readers");
+    assert!(offending.is_empty(), "{offending:#?}");
+}

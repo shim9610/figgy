@@ -1186,12 +1186,29 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
-- **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
-  A chart with a probability axis on any axis or subplot is refused at
-  registration and at export with `InvalidConfig` ("probability axes are not
-  drawn yet"), rather than drawn as a linear axis, until the GPU transform
-  places them. The annotation space, the fit stamp (codes 2 to 4) and the
-  render warnings take the new scale.
+- **Probability axes are drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  `ScatterTransform` gains `scale_prob: [f32; 4]` at offset 288 (288 B →
+  304 B): the probability code of x and y (0 none, 1 normal, 2 Weibull,
+  3 logistic). On a probability axis `scale_log` is 0 and `data_min` /
+  `data_max` hold `F⁻¹` of the bounds. The new fragment
+  `common/probability.wgsl` (spliced wherever `projection.wgsl` is) places a
+  sample at `F⁻¹(p)` from its `(hi, lo)` pair, so the upper tail's
+  `1 − p` survives: AS241 `PPND7`, the Weibull series below 0.01, the logit,
+  their slopes for the vector and line-head derivatives and their inverses
+  for the contour label anchors. `axis_pair_to_t` and
+  `axis_px_per_unit_at` take the code after `is_log`; `sample_valid` and the
+  pick omit a value at or past 0 or 1; an area or stem baseline there is
+  clamped to the axis end on its side. The range helpers
+  (`apply_axis_range`) write `LabelFormat::Percent` and `minor_count = 1` on
+  a probability axis; an auto fit keeps its ends in `(0, 1)` (an end at 0 or
+  1 takes the mirror of the other) and pads in `F⁻¹` units; line offsets
+  shift fit extents in `F⁻¹` units; a view state checks the bounds. A
+  streamed series on a probability axis is refused ("probability axes
+  require GPU-resident columns; streamed sources are not supported"). The
+  model PR's "not drawn yet" refusal is gone. The annotation space, the fit
+  stamp (codes 2 to 4) and the render warnings take the new scale.
+  Migration: a `ScatterTransform` literal adds
+  `scale_prob: renderer::data_render::NO_PROBABILITY` (`[0.0; 4]`).
 
 - **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
   series' stems are the error-bar module's second draw: one quad per point
