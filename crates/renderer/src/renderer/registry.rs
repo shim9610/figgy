@@ -1879,6 +1879,7 @@ impl Renderer {
         Ok(series_draw_info_from_pool(
             &(&self.pool, &self.streaming_sources),
             series,
+            state.config.drawn_z_column(series),
         ))
     }
 
