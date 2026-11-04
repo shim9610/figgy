@@ -299,13 +299,20 @@ pub(super) fn has_vector(rt: &DataRenderType) -> bool {
 /// deciding how its extent is reported. An unregistered column counts
 /// as zero: nothing draws, and that is reported rather than raised — checking
 /// registration is `validate_renderer_series`' job.
+///
+/// `drawn_z` is the height column that bounds the draw on a 3D panel
+/// (`Config::drawn_z_column`, #207): a 3D point needs its height too.
 pub(super) fn series_draw_info_from_pool(
     pool: &impl ColumnRegistration,
     series: &SeriesConfig,
+    drawn_z: Option<&str>,
 ) -> SeriesDrawInfo {
     let len = |id: &str| -> u64 { pool.column_len(id).unwrap_or(0) };
     let x = len(&series.x_column);
     let y = len(&series.y_column);
+    // The coordinate columns of an xy series: x, y and, on a 3D panel, z.
+    let xyz = [x, y, drawn_z.map_or(0, len)];
+    let xyz = &xyz[..if drawn_z.is_some() { 3 } else { 2 }];
     // Index-aligned roles: the shortest decides, and anything longer is surplus.
     let paired = |lengths: &[u64]| -> (u64, bool) {
         let low = lengths.iter().copied().min().unwrap_or(0);
@@ -325,7 +332,7 @@ pub(super) fn series_draw_info_from_pool(
         },
         // A polyline draws one segment between adjacent points.
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
-            let (count, truncated) = paired(&[x, y]);
+            let (count, truncated) = paired(xyz);
             SeriesDrawInfo {
                 drawn_count: count.saturating_sub(1),
                 cols: None,
@@ -357,7 +364,7 @@ pub(super) fn series_draw_info_from_pool(
             errors: None,
             ..
         }) => {
-            let (count, truncated) = paired(&[x, y]);
+            let (count, truncated) = paired(xyz);
             SeriesDrawInfo {
                 drawn_count: count,
                 cols: None,

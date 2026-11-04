@@ -5512,6 +5512,10 @@ impl crate::config::Config {
                 {
                     count = count.min(len(u)).min(len(v));
                 }
+                // A 3D point needs its height too (#207).
+                if let Some(z) = self.drawn_z_column(next) {
+                    count = count.min(len(z));
+                }
                 // A ternary sample needs its third component too.
                 if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
                     count = count.min(len(c_column));
@@ -9632,7 +9636,8 @@ mod image_tests {
 
 impl SeriesConfig {
     /// Every plain column this series reads, once per occurrence (#160):
-    /// its x and y columns (not a box plot's record), its markers' style,
+    /// its x and y columns (not a box plot's record), a 3D series' height
+    /// column (`z_column`, #207), its markers' style,
     /// colour and size columns, its error bars' style and error columns, a
     /// ternary series' third component, a parallel series' further axes and
     /// colour, a streamline colour column, a box plot's densities and raw
@@ -9647,6 +9652,12 @@ impl SeriesConfig {
         visit(&self.x_column);
         if self.render_type.box_plot().is_none() {
             visit(&self.y_column);
+        }
+        // A 3D series' height column (#132). A flat chart keeps it unused,
+        // but the series still names it: removing it removes the series,
+        // and a streamed one is refused (#207).
+        if let Some(z) = self.z_column.as_deref().filter(|z| !z.is_empty()) {
+            visit(z);
         }
         let scatter = match &self.render_type {
             DataRenderType::Xy(xy) => xy.scatter.as_ref(),

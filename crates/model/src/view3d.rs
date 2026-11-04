@@ -570,6 +570,27 @@ impl Config {
         Ok(())
     }
 
+    /// The height column that bounds `series`' draw, if any: its
+    /// `z_column` when it is a scatter or line series drawn on a 3D panel
+    /// (#132). The panel is the one that owns the series: this chart, or
+    /// the subplot that draws it. On a flat panel the column is kept and
+    /// unused, so it bounds nothing. The draw, `step_selection` and the
+    /// renderer's draw info read the same answer (#207).
+    pub fn drawn_z_column<'a>(&self, series: &'a SeriesConfig) -> Option<&'a str> {
+        use crate::layer::LayerRef;
+        let panel = match self.layer_of_series(&series.series_id) {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                &self.subplots.get(index)?.config
+            }
+            _ => self,
+        };
+        panel.view_3d()?;
+        match &series.render_type {
+            DataRenderType::Xy(_) => series.z_column.as_deref().filter(|z| !z.is_empty()),
+            _ => None,
+        }
+    }
+
     /// The rules the series of a chart are held to with a 3D view: a 3D
     /// chart draws heatmaps (as surfaces), contours (on the floor), heatmaps
     /// with contours, and scatter, line and scatter-line series that name a
@@ -883,6 +904,55 @@ mod tests {
             Ok(()),
             "a logarithmic axis is drawn"
         );
+    }
+
+    /// A series' height column is visited with its other columns, and it
+    /// bounds the draw only on the 3D panel that owns the series: this
+    /// chart or the subplot that draws it (#207).
+    #[test]
+    fn a_height_column_is_visited_and_bounds_only_a_3d_panel() {
+        let point = |id: &str, z: Option<&str>| SeriesConfig {
+            series_id: id.into(),
+            z_column: z.map(Into::into),
+            render_type: DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: None,
+                line: Some(crate::data_config::DataLineStyleConfig::default()),
+                errors: None,
+            }),
+            ..heatmap(None)
+        };
+        let mut visited = Vec::new();
+        point("p", Some("z")).visit_columns(&mut |id| visited.push(id.to_string()));
+        assert!(visited.iter().any(|id| id == "z"), "{visited:?}");
+        let mut visited = Vec::new();
+        point("p", None).visit_columns(&mut |id| visited.push(id.to_string()));
+        assert!(!visited.iter().any(|id| id == "z"), "{visited:?}");
+
+        let three_d = chart();
+        let mut flat = chart();
+        flat.set_view_3d(None);
+        assert_eq!(three_d.drawn_z_column(&point("p", Some("z"))), Some("z"));
+        assert_eq!(flat.drawn_z_column(&point("p", Some("z"))), None);
+        assert_eq!(three_d.drawn_z_column(&point("p", None)), None);
+        assert_eq!(three_d.drawn_z_column(&point("p", Some(""))), None);
+        // A heatmap's surface reads its matrix, never `z_column`.
+        let mut field = heatmap(None);
+        field.z_column = Some("z".into());
+        assert_eq!(three_d.drawn_z_column(&field), None);
+
+        // A flat parent with a 3D subplot: the subplot's series is bounded,
+        // the parent's is not.
+        let mut document = flat.clone();
+        document.subplots = vec![crate::layer::Subplot {
+            config: three_d.clone(),
+            series: vec!["inner".into()],
+            ..crate::layer::Subplot::default()
+        }];
+        assert_eq!(
+            document.drawn_z_column(&point("inner", Some("z"))),
+            Some("z")
+        );
+        assert_eq!(document.drawn_z_column(&point("outer", Some("z"))), None);
     }
 
     #[test]
