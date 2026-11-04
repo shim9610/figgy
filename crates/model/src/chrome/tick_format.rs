@@ -44,6 +44,9 @@ pub fn format_tick_value(
         return plain.format(value);
     }
     let sig = sig_digits.clamp(1, 15) as usize;
+    if let AxisScale::Probability(_) = scale {
+        return format_probability_tick(value, format, sig);
+    }
     if matches!(scale, AxisScale::Logarithmic) {
         if value == 0.0 {
             return "0".into();
@@ -63,6 +66,15 @@ pub fn format_tick_value(
             LabelFormat::Timestamp(_) => format!("{}", value),
             LabelFormat::Degrees => format!("{}°", value),
             LabelFormat::Radians => format_radians(value, sig),
+            LabelFormat::Percent => {
+                let percent = value * 100.0;
+                let rounded = format!("{:.*e}", sig - 1, percent)
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|rounded| rounded.is_finite())
+                    .unwrap_or(percent);
+                format!("{rounded}%")
+            }
             // Returned above; the arm keeps the match exhaustive.
             LabelFormat::Plain(plain) => plain.format(value),
         };
@@ -98,8 +110,52 @@ pub fn format_tick_value(
             }
         }
         LabelFormat::Radians => format_radians(value, sig),
+        LabelFormat::Percent => {
+            let decimals = decimals_from_spacing(major_spacing * 100.0).max(
+                decimals_from_significant_digits(sig_digits, range_min * 100.0, range_max * 100.0),
+            );
+            format!("{:.*}%", decimals, value * 100.0)
+        }
         // Returned above; the arm keeps the match exhaustive.
         LabelFormat::Plain(plain) => plain.format(value),
+    }
+}
+
+/// The decimals that tell a probability tick's tail apart (#209): enough to
+/// show the first digit of `min(p, 1 − p)` scaled by `10^shift` (0 for a
+/// probability, 2 for a percent), plus `sig − 1` more.
+fn probability_decimals(value: f64, shift: f64, sig: usize) -> usize {
+    let tail = value.min(1.0 - value);
+    if !(tail.is_finite() && tail > 0.0) {
+        return sig - 1;
+    }
+    // The slack keeps an exact decade (0.001) from reading one digit long.
+    let first = (-tail.log10() - shift - 1e-9).ceil().max(0.0);
+    (first as usize + sig - 1).min(15)
+}
+
+/// A probability axis tick (#209): `Decimal` writes `0.001`, `0.5`,
+/// `0.999`; `Percent` writes `0.1%`, `50%`, `99.9%`. The decimals follow each
+/// value's tail, so `99.99%` and `0.01%` keep their digits.
+fn format_probability_tick(value: f64, format: &LabelFormat, sig: usize) -> String {
+    match format {
+        LabelFormat::Percent => format!(
+            "{:.*}%",
+            probability_decimals(value, 2.0, sig),
+            value * 100.0
+        ),
+        LabelFormat::Scientific => format!("{:.*e}", sig - 1, value),
+        LabelFormat::Timestamp(_) => format!("{}", value),
+        LabelFormat::Radians => format_radians(value, sig),
+        LabelFormat::Plain(plain) => plain.format(value),
+        LabelFormat::Decimal | LabelFormat::Power | LabelFormat::Degrees => {
+            let text = format!("{:.*}", probability_decimals(value, 0.0, sig), value);
+            if matches!(format, LabelFormat::Degrees) {
+                format!("{text}°")
+            } else {
+                text
+            }
+        }
     }
 }
 

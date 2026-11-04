@@ -18,6 +18,11 @@ pub enum LabelFormat {
     /// Multiples of π: `π/2`, `π`, `3π/2`, `0.75π`. For an angle axis in
     /// radians.
     Radians,
+    /// The value times 100 with a percent sign: `25%`, `0.1%`, `99.9%`
+    /// (#209). On a probability axis the decimals follow each value's tail
+    /// `min(p, 1 − p)`, so `0.1%`, `50%` and `99.99%` keep the digits that
+    /// tell the tail apart; elsewhere they follow the spacing, as `Decimal`.
+    Percent,
     /// A plain number that depends on the value alone, not on the axis
     /// scale, spacing or significant digits: `2.5`, `1000`, `1.23e6`, or a
     /// fixed number of decimals. See [`PlainNumberFormat`].
@@ -190,6 +195,8 @@ impl LabelStyle {
         match scale {
             AxisScale::Linear => auto_sig_linear(min, max, major_spacing),
             AxisScale::Logarithmic => auto_sig_log(min, max, major_spacing),
+            // The decimals follow each value's tail (#209); one digit of it.
+            AxisScale::Probability(_) => 1,
         }
     }
 }

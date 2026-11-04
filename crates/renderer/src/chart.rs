@@ -169,6 +169,49 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field,
             reason: error.reason,
         },
+    })?;
+    refuse_probability_axes(config)
+}
+
+/// The model holds probability axes (#209); the GPU transform does not place
+/// them yet, so a chart naming one is refused, at registration and at
+/// export, rather than drawn linearly.
+pub(crate) fn refuse_probability_axes(config: &Config) -> Result<()> {
+    match probability_axis(config) {
+        Some(field) => Err(FiggyError::InvalidConfig {
+            field,
+            reason: "probability axes are not drawn yet (#209)".into(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The first axis of `config`, its overlays or its subplots on a
+/// probability scale (#209).
+fn probability_axis(config: &Config) -> Option<&'static str> {
+    let probability = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Probability(_));
+    let own = [
+        ("top_x", &config.top_x),
+        ("bottom_x", &config.bottom_x),
+        ("left_y", &config.left_y),
+        ("right_y", &config.right_y),
+    ]
+    .into_iter()
+    .find(|(_, axis)| probability(axis))
+    .map(|(field, _)| field);
+    own.or_else(|| {
+        config
+            .overlays
+            .iter()
+            .any(|overlay| probability(&overlay.y_axis))
+            .then_some("overlays")
+    })
+    .or_else(|| {
+        config
+            .subplots
+            .iter()
+            .any(|subplot| probability_axis(&subplot.config).is_some())
+            .then_some("subplots")
     })
 }
 
@@ -1244,6 +1287,40 @@ impl Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A probability axis (#209) is refused with the explicit error until the
+    /// GPU transform places it, on a chart axis and on a subplot.
+    #[test]
+    fn probability_axes_are_refused_until_they_are_drawn() {
+        let probability = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        let on = |axis: &mut AxisOptions| {
+            axis.scale = probability.clone();
+            axis.min = 0.01;
+            axis.max = 0.99;
+        };
+        let base = crate::default::default_config();
+        assert!(validate_renderer_config(&base).is_ok());
+        let mut left = base.clone();
+        on(&mut left.left_y);
+        let mut subplot = base.clone();
+        let mut inner = base.clone();
+        on(&mut inner.bottom_x);
+        subplot.subplots.push(crate::Subplot {
+            config: inner,
+            series: vec![],
+            link_x: None,
+            link_y: None,
+        });
+        for (config, field) in [(left, "left_y"), (subplot, "subplots")] {
+            match refuse_probability_axes(&config) {
+                Err(FiggyError::InvalidConfig { field: got, reason }) => {
+                    assert_eq!(got, field);
+                    assert!(reason.contains("not drawn yet"), "{reason}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
     use crate::default::default_config;
 
     fn dummy_config() -> Config {

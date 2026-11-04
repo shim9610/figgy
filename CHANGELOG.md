@@ -191,6 +191,36 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   (previously "field and contour series are not drawn on polar axes").
   No type or serialized key is added: a polar heatmap document parses and
   re-serializes byte-identically.
+- **Probability axis scales** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  `AxisScale::Probability(ProbabilityScale)` places a probability `p` in
+  `(0, 1)` at `F⁻¹(p)`: `Normal` (probit, Wichura's AS241 `PPND16`, its
+  inverse through Cody's `erfc`), `Weibull` and `Logistic`, in the new
+  module `probability`. `AxisScale::forward` / `inverse` are the one CPU
+  scale map, which the geometry (`axis_fraction`, `axis_cross`, the break
+  map), the annotation space (`AxisMap::Probability`), `shift_axis` (line
+  offsets in units of `F⁻¹(p)`) and the ticks read.
+  `guarded_probability_range` and `PROBABILITY_RANGE_FALLBACK` (0.001 to
+  0.999) guard an unvalidated range. Ticks come from the range: the tail
+  `min(p, 1 − p)` walks the log ladders (decades, 1-2-5, 1 to 9) mirrored at
+  0.5, with 0.5 on every ladder, the sparsest with four majors, then a linear
+  grid in `p` for a narrow window (`ProbabilityTicks`, a `Copy` walk bounded
+  by `MAX_LOG_DECADES`); minors are the next denser ladder; label pruning
+  demotes along the tails (`ladder_multiple`). `compute_nice_ticks` widens a
+  probability range to the next tail decade and returns the new
+  `TickError::OutsideProbability` for a range outside `(0, 1)`. The new
+  `LabelFormat::Percent` writes `25%`, and on a probability axis `0.1%`,
+  `50%`, `99.9%` with the decimals each tail needs. Validation: bounds and
+  cut ranges strictly inside `(0, 1)`; a categorical axis, a colourbar axis,
+  a parallel axis, the polar radius and the value axis of category bars and
+  box plots (the position axis of range bars, which tested
+  `== Logarithmic`) refuse the scale; polar angle, ternary, 3D and
+  hexagonal grids already accepted only linear axes. JSON:
+  `"scale": {"Probability": "Normal"}`; the unit variants stay strings, so
+  older documents parse and re-serialize byte-identically. Migration: a
+  `match` on `AxisScale`, `AxisMap`, `LabelFormat` or `TickError` adds the
+  new variant; `layout::span_fraction(value, min, max, logarithmic: bool)`
+  takes `&AxisScale` (`false` → `&AxisScale::Linear`, `true` →
+  `&AxisScale::Logarithmic`).
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -1128,6 +1158,13 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  A chart with a probability axis on any axis or subplot is refused at
+  registration and at export with `InvalidConfig` ("probability axes are not
+  drawn yet"), rather than drawn as a linear axis, until the GPU transform
+  places them. The annotation space, the fit stamp (codes 2 to 4) and the
+  render warnings take the new scale.
 
 - **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
   series' stems are the error-bar module's second draw: one quad per point

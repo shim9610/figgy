@@ -2495,6 +2495,15 @@ impl ContourConfig {
                     }
                 }
             }
+            // The probability axis's own majors (#209); a colourbar refuses
+            // the scale, so this serves another caller's axis.
+            AxisScale::Probability(_) => {
+                for value in crate::tick::major_ticks(axis) {
+                    if inside(value) {
+                        push_contour_level(&mut out, value)?;
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -3530,7 +3539,7 @@ impl crate::config::Config {
                     "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("category bars need a linear numeric value axis");
             }
             for (k, item) in members().enumerate() {
@@ -4411,7 +4420,7 @@ impl crate::config::Config {
                     "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("box plots need a linear numeric value axis");
             }
             for item in members() {
@@ -4804,7 +4813,7 @@ impl crate::config::Config {
                 return Err("range bars need a numeric value axis");
             }
             let categorical = position_axis.categories.is_some();
-            if !categorical && position_axis.scale == AxisScale::Logarithmic {
+            if !categorical && position_axis.scale != AxisScale::Linear {
                 return Err(
                     "range bars need a categorical or linear numeric position axis: bottom_x \
                      for vertical bars, left_y for horizontal ones",
@@ -7505,6 +7514,12 @@ mod box_plot_tests {
         config.bottom_x.categories = None;
         assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
         config.bottom_x.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            config.validate_box_plots(&[boxes("a")]),
+            Err("box plots need a linear numeric value axis")
+        );
+        // A probability value axis too (#209).
+        config.bottom_x.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
         assert_eq!(
             config.validate_box_plots(&[boxes("a")]),
             Err("box plots need a linear numeric value axis")

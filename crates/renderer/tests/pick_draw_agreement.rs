@@ -2859,6 +2859,7 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
         renderer::config::AxisScale::Logarithmic => {
             (value.log10() - axis.min.log10()) / (axis.max.log10() - axis.min.log10())
         }
+        renderer::config::AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
     };
     start + t * length
 }
@@ -2888,12 +2889,14 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
             let range = |scale: &AxisScale| match scale {
                 AxisScale::Linear => (magnitude, 2.0 * magnitude),
                 AxisScale::Logarithmic => (magnitude / 100.0, magnitude * 100.0),
+                AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
             };
             let value = |scale: &AxisScale, f: f64| {
                 let (lo, hi) = range(scale);
                 match scale {
                     AxisScale::Linear => lo + f * (hi - lo),
                     AxisScale::Logarithmic => lo * (hi / lo).powf(f),
+                    AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
                 }
             };
             let xs: Vec<f64> = fractions.iter().map(|f| value(&x_scale, *f)).collect();
