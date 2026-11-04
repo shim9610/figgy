@@ -163,6 +163,7 @@ impl PickedData {
                 source_id: source_id.clone(),
                 series_id: series_id.clone(),
                 category_index: *category_index,
+                part: None,
             },
         }
     }

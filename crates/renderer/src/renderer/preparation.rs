@@ -122,6 +122,8 @@ impl PreparationFeature {
                 // entries.
                 | DataRenderType::Ternary { .. }
                 | DataRenderType::Parallel { .. } => Self::Basic,
+                // Drawn on the CPU and composited (#203): no GPU pipeline.
+                DataRenderType::EnergyLevels(_) => continue,
             };
             if !result.contains(&group) {
                 result.push(group);

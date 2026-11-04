@@ -391,6 +391,10 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         }
         // An image's colours are its data: no mark stands for them.
         DataRenderType::RgbImage { .. } => blank_symbol(),
+        // A level reads as its stroke (#203).
+        DataRenderType::EnergyLevels(levels) => {
+            line_symbol(levels.style.level.color, LineStylePreset::Solid, None)
+        }
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),

@@ -977,7 +977,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => false,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => false,
     }
 }
 

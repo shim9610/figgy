@@ -20,6 +20,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Streamlines { .. }
         // Nor has a parallel series; its colour column colours the rows.
         | DataRenderType::Parallel { .. }
+        // An energy level is a stroke, never a marker (#203).
+        | DataRenderType::EnergyLevels(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
@@ -839,6 +841,7 @@ impl FiggyChart {
             source_id: series.source_id.clone(),
             series_id: series.series_id.clone(),
             category_index: index,
+            part: None,
         };
         if self.chart_selection()?.is_some() {
             self.renderer

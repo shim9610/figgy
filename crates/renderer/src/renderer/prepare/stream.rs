@@ -47,6 +47,13 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
             });
         }
+        // Nor to energy-level series (rule 8, #203): they are DataLess.
+        if series.energy_levels().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
+            });
+        }
         // Streaming is not extended to streamlines (rule 8).
         if series.render_type.streamlines().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

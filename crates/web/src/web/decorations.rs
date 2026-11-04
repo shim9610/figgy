@@ -243,6 +243,21 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
+                // An energy-level series' mapped transition values are SSOT
+                // (#203): each finite one widens the extent.
+                DataRenderType::EnergyLevels(levels) => {
+                    if levels.style.transition.color_by_value {
+                        for value in levels.transitions.iter().filter_map(|t| t.value) {
+                            if value.is_finite() {
+                                z_extent.union(&FitExtent {
+                                    min: value,
+                                    max: value,
+                                    min_positive: (value > 0.0).then_some(value),
+                                });
+                            }
+                        }
+                    }
+                }
                 // A parallel series' colour column maps through the colourbar.
                 DataRenderType::Parallel { color_column, .. } => {
                     if let Some(column) = color_column {

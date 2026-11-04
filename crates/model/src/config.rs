@@ -766,8 +766,16 @@ pub enum PickedDataRef {
         )]
         source_id: Option<String>,
         series_id: String,
-        /// The category, in axis order: the index into `labels.text`.
+        /// The category, in axis order: the index into `labels.text`. On an
+        /// energy-level series, the row in the list `part` names.
         category_index: usize,
+        /// On an energy-level series, the list the label belongs to (#203);
+        /// `None` for every other series.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        part: Option<crate::energy_levels::LabelPart>,
     },
 }
 

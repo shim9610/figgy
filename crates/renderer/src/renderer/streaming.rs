@@ -171,6 +171,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Streamlines { .. }
             | DataRenderType::Ternary { .. }
             | DataRenderType::Parallel { .. }
+            | DataRenderType::EnergyLevels(_)
             // Never streamed either; its colours are its data.
             | DataRenderType::RgbImage { .. }
             | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. }) => false,
