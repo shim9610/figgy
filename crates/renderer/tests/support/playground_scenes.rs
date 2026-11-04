@@ -3856,8 +3856,8 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             g: Some(9.0),
             ..level("2p3P", "3P*", 20.964_098_42, Some("2p"))
         },
-        component("2p3P2", "2", 5.0, 20.964_086_889_08, 14.0),
-        component("2p3P1", "1", 3.0, 20.964_096_364_64, -2.0),
+        component("2p3P2", "2", 5.0, 20.964_086_889_08, 18.0),
+        component("2p3P1", "1", 3.0, 20.964_096_364_64, -3.0),
         component("2p3P0", "0", 1.0, 20.964_218_850_51, 0.0),
         level("3p3P", "3P*", 23.007_075, Some("3p")),
         level("4p3P", "3P*", 23.707_892, Some("4p")),
@@ -4010,9 +4010,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut inset = renderer::default::default_config();
     inset.chart_area = ChartArea(Rect {
         x: plot.x + plot.width - 196,
-        y: plot.y + plot.height / 2 - 40,
+        y: plot.y + plot.height / 2 - 90,
         width: 188,
-        height: 170,
+        height: 230,
     });
     inset.legend.visible = false;
     inset.chart_title.visible = false;
@@ -4029,10 +4029,17 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.right_y.out_margin = 8.0;
     inset.bottom_x.out_margin = 34.0;
     inset.left_y.out_margin = 64.0;
-    inset.left_y.min = 20.964_06;
-    inset.left_y.max = 20.964_24;
+    inset.left_y.min = 20.964_04;
+    inset.left_y.max = 20.964_26;
     inset.left_y.label_style.font_size = 10.0;
     inset.left_y.label_style.significant_digits = 8;
+    for axis in [&mut inset.bottom_x, &mut inset.left_y] {
+        axis.minor_count = 0;
+    }
+    for axis in [&mut inset.top_x, &mut inset.right_y] {
+        axis.line_visible = false;
+        axis.tick = renderer::config::TickVisibility::None;
+    }
     inset.left_y.major_spacing = 0.000_05;
     let window_top = 21.6;
     config.subplots.push(renderer::Subplot {
@@ -4049,10 +4056,19 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             AnnotationLineStyle {
                 color: Color::from_rgb8(120, 128, 140),
                 width: 1.0,
-                style: LineStylePreset::Dash,
+                style: LineStylePreset::Solid,
             },
         )
         .unwrap_or_default();
+    // A faint wash marks the window as the region the inset magnifies.
+    let mut marker = marker;
+    if let Some(Annotation {
+        kind: AnnotationKind::Rect { style, .. },
+        ..
+    }) = marker.first_mut()
+    {
+        style.fill = Some(Color::from_rgba8(120, 128, 140, 40));
+    }
     config.annotations.items.extend(marker);
 
     let mut fine_style = series.style.clone();

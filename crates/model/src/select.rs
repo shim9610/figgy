@@ -658,6 +658,10 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
+        // The x axes are shared, and so are their group headers (#203).
+        for side in [Side::Top, Side::Bottom] {
+            map.register(CategoryGroupLabelElement { side });
+        }
         if let LayerRef::Overlay(index) = layer {
             map.register(OverlayAxisElement { layer: index });
             map.register(OverlayAxisLabelElement { layer: index });

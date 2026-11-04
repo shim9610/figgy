@@ -505,10 +505,13 @@ pub fn each_colorbar_tick_label(
 }
 
 /// The gap between the tick label band and a category group's bracket, and
-/// between the bracket and its header, logical pixels.
-const GROUP_GAP: f32 = 6.0;
-/// How far a group bracket's ends turn toward the axis, logical pixels.
-const GROUP_BRACKET_END: f32 = 4.0;
+/// between the bracket and its header, as a share of the tick label font
+/// size, so a scaled config (an export at 2x) places them scaled.
+const GROUP_GAP: f32 = 0.5;
+/// How far a group bracket's ends turn toward the axis, and how far a
+/// bracket stops short of its run's edges, as shares of the font size.
+const GROUP_BRACKET_END: f32 = 0.33;
+const GROUP_BRACKET_INSET: f32 = 0.15;
 
 /// Place the category group headers of the categorical axis on `side`
 /// (`Top` or `Bottom`) under `plot` (#203): past the tick label band, a
@@ -551,14 +554,13 @@ pub fn emit_category_groups(
     );
     let below = side == Side::Bottom;
     let edge = if below { plot.y + plot.height } else { plot.y };
-    let reach = axis.major_tick_length.max(0.0) + band + GROUP_GAP;
+    let gap = GROUP_GAP * ls.font_size;
+    let inset = GROUP_BRACKET_INSET * ls.font_size;
+    let reach = axis.major_tick_length.max(0.0) + band + gap;
     let [ox, oy] = groups.offset;
     let bracket_y = if below { edge + reach } else { edge - reach } + oy;
-    let toward = if below {
-        -GROUP_BRACKET_END
-    } else {
-        GROUP_BRACKET_END
-    };
+    let end = GROUP_BRACKET_END * ls.font_size;
+    let toward = if below { -end } else { end };
     let index = |id: &str| categories.iter().position(|c| c.id == id);
     for group in &groups.groups {
         let (Some(first), Some(last)) = (index(&group.first), index(&group.last)) else {
@@ -566,14 +568,15 @@ pub fn emit_category_groups(
         };
         let x = |v: f64| value_to_screen(v, axis, side.clone(), plot).0;
         let (a, b) = (x(first as f64 - 0.5), x(last as f64 + 0.5));
-        let (x0, x1) = (a.min(b) + 2.0 + ox, a.max(b) - 2.0 + ox);
+        let (x0, x1) = (a.min(b) + inset + ox, a.max(b) - inset + ox);
         if !(x0.is_finite() && x1.is_finite() && bracket_y.is_finite()) {
             continue;
         }
         if group.bracket {
+            // In the header's colour: the bracket is part of the header.
             let style = StrokeStyle {
                 width: axis.line_width.max(1.0),
-                color: axis.line_color,
+                color: group.label.color,
                 dash: &[],
                 tag: "category_group",
             };
@@ -593,9 +596,9 @@ pub fn emit_category_groups(
         }
         let extents = measure.measure_rich(&group.label);
         let baseline = if below {
-            bracket_y + GROUP_GAP + extents.ascent
+            bracket_y + gap + extents.ascent
         } else {
-            bracket_y - GROUP_GAP - extents.descent
+            bracket_y - gap - extents.descent
         };
         sink.text(
             Slot::Above,

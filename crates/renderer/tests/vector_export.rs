@@ -93,6 +93,63 @@ fn crop(image: &RasterImage, r: Rect) -> RasterImage {
     }
 }
 
+fn overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+/// Data images written over one another (a nested subplot's group over its
+/// parent's) composite to the export: at every pixel the export is the
+/// topmost image with ink there, exactly, where that image is opaque or
+/// nothing under it has ink; only anti-aliased edges over ink are skipped,
+/// and they are few.
+fn assert_composite(export: &RasterImage, images: &[(Rect, Vec<u8>)], context: &str) {
+    let decoded: Vec<(Rect, RasterImage)> = images
+        .iter()
+        .map(|(rect, bytes)| (*rect, decode_png(bytes)))
+        .collect();
+    let (mut checked, mut blended) = (0usize, 0usize);
+    for y in 0..export.height {
+        for x in 0..export.width {
+            let stack: Vec<&[u8]> = decoded
+                .iter()
+                .filter(|(rect, _)| {
+                    x >= rect.x
+                        && y >= rect.y
+                        && x < rect.x + rect.width
+                        && y < rect.y + rect.height
+                })
+                .map(|(rect, image)| {
+                    let i = (((y - rect.y) * image.width + (x - rect.x)) * 4) as usize;
+                    &image.rgba[i..i + 4]
+                })
+                .collect();
+            let Some(top) = stack
+                .iter()
+                .rposition(|px| px[3] != 0)
+                .or(stack.len().checked_sub(1))
+            else {
+                continue;
+            };
+            let under = stack[..top].iter().any(|px| px[3] != 0);
+            if stack[top][3] != 255 && under {
+                blended += 1;
+                continue;
+            }
+            let i = ((y * export.width + x) * 4) as usize;
+            assert_eq!(
+                &export.rgba[i..i + 4],
+                stack[top],
+                "{context}: the export at ({x}, {y}) is not its topmost data image"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        blended * 1000 < checked.max(1),
+        "{context}: {blended} blended pixels of {checked}"
+    );
+}
+
 /// What one document's files measure.
 struct Sizes {
     svg_other: usize,
@@ -316,6 +373,8 @@ fn hide_decorations(config: &mut Config) {
         bar.visible = false;
     }
     config.annotations.visible = false;
+    // The plot fill is chrome (the slot below the grid).
+    config.plot_background = None;
     for overlay in &mut config.overlays {
         hide_axis(&mut overlay.y_axis);
     }
@@ -358,9 +417,19 @@ fn the_data_images_are_the_png_exports_pixels() {
             );
             assert!(!svg.images.is_empty(), "{context}: a data image");
             let mut covered = vec![false; (export.width * export.height) as usize];
+            let nested = svg
+                .images
+                .iter()
+                .enumerate()
+                .any(|(i, (a, _))| svg.images[i + 1..].iter().any(|(b, _)| overlap(*a, *b)));
+            if nested {
+                // An inset (#203): its group's image is written over its
+                // parent's, so the export is their composite.
+                assert_composite(&export, &svg.images, &context);
+            }
             for (rect, bytes) in &svg.images {
                 assert!(
-                    *bytes == encode_png(&crop(&export, *rect)).unwrap(),
+                    nested || *bytes == encode_png(&crop(&export, *rect)).unwrap(),
                     "{context}: the data image at {rect:?} is not the export's crop"
                 );
                 for y in rect.y..rect.y + rect.height {

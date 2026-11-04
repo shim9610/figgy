@@ -426,7 +426,8 @@ pub struct CategoryGroup {
     /// The id of the run's last category (the first again for a run of
     /// one).
     pub last: String,
-    /// Draw a bracket along the run between the tick labels and the header.
+    /// Draw a bracket along the run between the tick labels and the header,
+    /// in the header's colour.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_not"))]
     pub bracket: bool,
 }
