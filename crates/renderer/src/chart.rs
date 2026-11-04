@@ -211,14 +211,24 @@ pub(crate) fn apply_auto_fit_all(
         return;
     }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
-        let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.bottom_x, min, max, log);
-        apply_axis_range(&mut config.top_x, min, max, log);
+        apply_pair_range([&mut config.bottom_x, &mut config.top_x], min, max);
     }
     if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
-        let log = matches!(config.left_y.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.left_y, min, max, log);
-        apply_axis_range(&mut config.right_y, min, max, log);
+        apply_pair_range([&mut config.left_y, &mut config.right_y], min, max);
+    }
+}
+
+/// Write `min..max` to both axes of a pair (`bottom_x` and `top_x`, or
+/// `left_y` and `right_y`), each with the tick and label settings of its own
+/// scale. The two axes are separate SSOT fields: a linear `right_y` beside a
+/// logarithmic `left_y` keeps its linear ticks, and a logarithmic one gets
+/// decades whatever the left axis is. Deriving the partner's ticks from the
+/// main axis's scale gave a linear axis a one-decade spacing with eight
+/// minors, thousands of ticks across a few decades.
+fn apply_pair_range(pair: [&mut AxisOptions; 2], min: f64, max: f64) {
+    for axis in pair {
+        let log = matches!(axis.scale, AxisScale::Logarithmic);
+        apply_axis_range(axis, min, max, log);
     }
 }
 
@@ -600,7 +610,8 @@ impl Chart {
     /// ticks and formatting, write only `min` / `max` through
     /// [`Self::with_axis_range_change`] instead.
     ///
-    /// Branches on the bottom axis's scale:
+    /// Each axis branches on its own scale, so a `top_x` whose scale differs
+    /// from `bottom_x`'s gets the ticks of its own scale for the same range:
     /// - **Linear**: `major_spacing` is
     ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
     ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
@@ -611,22 +622,18 @@ impl Chart {
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.bottom_x, min, max, log);
-            apply_axis_range(&mut c.top_x, min, max, log);
+            apply_pair_range([&mut c.bottom_x, &mut c.top_x], min, max);
         });
     }
 
-    /// Set both Y ranges (left + right) and derive their tick/label settings.
-    /// Log/linear branching uses the left axis's scale and mirrors
-    /// [`Self::set_x_range`]. To preserve ticks and formatting, write only
-    /// `min` / `max` through [`Self::with_axis_range_change`] instead.
+    /// Set both Y ranges (left + right) and derive their tick/label settings,
+    /// the Y counterpart of [`Self::set_x_range`]. To preserve ticks and
+    /// formatting, write only `min` / `max` through
+    /// [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.left_y, min, max, log);
-            apply_axis_range(&mut c.right_y, min, max, log);
+            apply_pair_range([&mut c.left_y, &mut c.right_y], min, max);
         });
     }
 
@@ -703,14 +710,12 @@ impl Chart {
         let root = self.config.subplot_link_root(index, x);
         self.with_axis_range_change(|config| {
             let pair = |chart: &mut Config| {
-                let (main, secondary) = if x {
-                    (&mut chart.bottom_x, &mut chart.top_x)
+                let axes = if x {
+                    [&mut chart.bottom_x, &mut chart.top_x]
                 } else {
-                    (&mut chart.left_y, &mut chart.right_y)
+                    [&mut chart.left_y, &mut chart.right_y]
                 };
-                let log = matches!(main.scale, AxisScale::Logarithmic);
-                apply_axis_range(main, min, max, log);
-                apply_axis_range(secondary, min, max, log);
+                apply_pair_range(axes, min, max);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -1421,6 +1426,87 @@ mod tests {
         };
         c.auto_fit_y_extent(&ext, 0.0);
         assert_eq!((c.config().left_y.min, c.config().left_y.max), before);
+    }
+
+    /// Every pair helper writes each axis's ticks from that axis's own
+    /// scale: `set_x_range` / `set_y_range`, the auto-fit applied to an
+    /// owned config and the subplot setters. A logarithmic main axis leaves
+    /// a linear partner its linear ticks, and a linear main axis gives a
+    /// logarithmic partner decades. Deriving the partner's ticks from the
+    /// main axis gave a linear `right_y` one-unit majors with eight minors
+    /// across 1..1000.
+    #[test]
+    fn pair_range_helpers_tick_each_axis_by_its_own_scale() {
+        use crate::Subplot;
+        let ticks = |axis: &AxisOptions| {
+            (
+                axis.major_spacing,
+                axis.minor_count,
+                axis.label_style.format.clone(),
+            )
+        };
+        let expected = |scale: &AxisScale| match scale {
+            AxisScale::Linear => (
+                crate::tick::axis_major_spacing(&AxisScale::Linear, 1.0, 1000.0),
+                4,
+                LabelFormat::Decimal,
+            ),
+            AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
+        };
+        let check = |cfg: &Config, case: &str| {
+            for (name, axis) in [
+                ("bottom_x", &cfg.bottom_x),
+                ("top_x", &cfg.top_x),
+                ("left_y", &cfg.left_y),
+                ("right_y", &cfg.right_y),
+            ] {
+                assert_eq!((axis.min, axis.max), (1.0, 1000.0), "{case}: {name} range");
+                assert_eq!(
+                    ticks(axis),
+                    expected(&axis.scale),
+                    "{case}: {name} ({:?}) ticks by its own scale",
+                    axis.scale
+                );
+            }
+        };
+        for (main, partner) in [
+            (AxisScale::Logarithmic, AxisScale::Linear),
+            (AxisScale::Linear, AxisScale::Logarithmic),
+        ] {
+            let mut base = dummy_config();
+            base.bottom_x.scale = main.clone();
+            base.left_y.scale = main.clone();
+            base.top_x.scale = partner.clone();
+            base.right_y.scale = partner.clone();
+            let case = |helper: &str| format!("{helper}, {main:?} main, {partner:?} partner");
+
+            let mut c = Chart::new(base.clone());
+            c.set_x_range(1.0, 1000.0);
+            c.set_y_range(1.0, 1000.0);
+            check(c.config(), &case("set_x_range / set_y_range"));
+
+            let mut fitted = base.clone();
+            let ext = FitExtent {
+                min: 1.0,
+                max: 1000.0,
+                min_positive: Some(1.0),
+            };
+            apply_auto_fit_all(&mut fitted, &ext, &ext, 0.0);
+            check(&fitted, &case("apply_auto_fit_all"));
+
+            let mut parent = dummy_config();
+            parent.subplots = vec![Subplot {
+                config: base.clone(),
+                ..Default::default()
+            }];
+            let mut c = Chart::new(parent);
+            c.set_subplot_x_range(0, 1.0, 1000.0);
+            c.set_subplot_y_range(0, 1.0, 1000.0);
+            check(
+                &c.config().subplots[0].config,
+                &case("set_subplot_x_range / set_subplot_y_range"),
+            );
+        }
     }
 
     #[test]

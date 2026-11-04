@@ -1120,6 +1120,21 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Each axis of a pair ticks by its own scale.** `Chart::set_x_range`,
+  `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
+  to a registered chart) and the subplot range setters write the range to
+  both axes of a pair. They chose both axes' major spacing, minor count,
+  label format and precision from the main axis's scale (`bottom_x`,
+  `left_y`). Beside a logarithmic `left_y`, a linear `right_y` over
+  1..1000 therefore got a one-unit spacing with eight minors, about 8000
+  ticks drawn as a solid bar down the right edge. A logarithmic partner
+  beside a linear main axis got a linear spacing read as a decade step and
+  drew no decade inside the range. Each axis now takes the ticks of its own
+  `scale`, as view states already did. Migration: a chart that sets only
+  `left_y.scale` (or `bottom_x.scale`) to `Logarithmic` and wants decades
+  on the right (or top) edge too sets `right_y.scale` (or `top_x.scale`)
+  as well; until then the partner draws linear ticks for the same range.
+
 - **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
   series' stems are the error-bar module's second draw: one quad per point
   (`vs_stem`, `vs_stem_sketch` into `fs_stem`; a Milkyway jet through
