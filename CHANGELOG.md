@@ -377,6 +377,14 @@ chart's `plot_background`) are additive.
   when `None` and kept and unused on a flat chart. Migration: a
   `SeriesConfig { .. }` literal adds `z_column: None`, and a pattern that
   names every field adds `z_column` or `..`.
+- **A 3D series' height column is one of its columns**
+  ([#207](https://github.com/shim9610/figgy/issues/207)).
+  `SeriesConfig::visit_columns` now visits `z_column` when it is set, so the
+  enumeration every column check reads names it. New
+  `Config::drawn_z_column(&series)` answers the height column that bounds a
+  series' draw: its `z_column` when it is a scatter or line series on the 3D
+  panel that owns it (the chart or its subplot), `None` on a flat one.
+  `step_selection` stops at the shortest of x, y and that column.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)).
   `DataRenderType::Ternary` gains `region: Option<TernaryRegionStyle>`
@@ -1781,6 +1789,15 @@ chart's `plot_background`) are additive.
   `right_y` to the height columns' statistics. Annotations place ratio
   anchors only, streamed sources are rejected, and the compile capture
   records `depthStencil`. A grid past `1 << 22` quads draws whole.
+- **A 3D series' height column is enumerated with its columns**
+  ([#207](https://github.com/shim9610/figgy/issues/207)). Removing a
+  series' `z_column` now removes the series, as removing any column it
+  reads does, instead of failing at the next prepare with
+  `UnknownColumn`. A streamed height column is refused with
+  `ColumnNotResident`. Pick invalidation, the derived-data stamps and the
+  browser's referenced columns read the same list. `series_draw_info`
+  counts the height column on a 3D panel, so it reports the rows the draw
+  clamps to.
 - **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
   A scatter, line or scatter-line series with a `z_column` draws on a 3D
   chart through new entries of the scatter, line and arc modules (`vs_3d`,

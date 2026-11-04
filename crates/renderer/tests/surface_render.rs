@@ -1284,6 +1284,102 @@ fn a_million_row_trajectory_draws_and_picks() {
     }
 }
 
+/// A 3D series' height column is one of the columns it reads (#207):
+/// removing it removes the series, a streamed one is refused with the
+/// explicit error, and the draw info and `step_selection` stop at the
+/// shortest of x, y and z on a 3D chart. A flat chart keeps the column
+/// unused, so there it bounds nothing.
+#[test]
+fn a_3d_series_height_column_is_enumerated_with_its_columns() {
+    let mut r = renderer();
+    upload_helix(&mut r, 20);
+    let _ = r.remove_column("tz_short");
+    r.add_column("tz_short", &col(vec![0.5; 12])).unwrap();
+    let dots = |z: &str| {
+        point_series(
+            "dots",
+            "tx",
+            "ty",
+            z,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(red_points(5.0)),
+                line: None,
+                errors: None,
+            }),
+        )
+    };
+    let config = chart_3d();
+    let mut flat = config.clone();
+    flat.set_view_3d(None);
+
+    // The draw info counts the height on a 3D chart only.
+    let id = r
+        .register_chart(config.clone(), vec![dots("tz_short")])
+        .unwrap();
+    let info = r.series_draw_info(id, "dots").unwrap();
+    assert_eq!((info.drawn_count, info.truncated), (12, true), "{info:?}");
+    let flat_id = r
+        .register_chart(flat.clone(), vec![dots("tz_short")])
+        .unwrap();
+    let info = r.series_draw_info(flat_id, "dots").unwrap();
+    assert_eq!((info.drawn_count, info.truncated), (20, false), "{info:?}");
+
+    // `step_selection` stops at the same last row.
+    let series = [dots("tz_short")];
+    let len = |id: &str| match id {
+        "tx" | "ty" => Some(20),
+        "tz_short" => Some(12),
+        _ => None,
+    };
+    for (chart, last) in [(&config, 11), (&flat, 19)] {
+        let mut stepped = chart.clone();
+        stepped.picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: "dots".into(),
+                point_index: 5,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        assert_eq!(stepped.step_selection(&series, 100, 0, len), Ok(true));
+        assert!(
+            matches!(
+                stepped.picked_data.as_ref().unwrap().refs[0],
+                PickedDataRef::Point { point_index, .. } if point_index == last
+            ),
+            "{:?}",
+            stepped.picked_data
+        );
+    }
+
+    // Removing the height column removes the series from both charts.
+    assert!(r.remove_column("tz_short").unwrap());
+    assert!(r.chart_series(id).unwrap().is_empty());
+    assert!(r.chart_series(flat_id).unwrap().is_empty());
+
+    // A streamed height column is refused with the explicit error.
+    r.register_streamed_columns(vec![renderer::StreamColumn {
+        id: "st_z".into(),
+        len: 20,
+        revision: 1,
+        encoding: renderer::StreamEncoding::ScalarF32,
+        replay: renderer::StreamReplay::RandomAccess,
+        statistics: renderer::StreamStatistics::Unknown,
+    }])
+    .unwrap();
+    let refused = r
+        .export_rgba(
+            renderer::ExportSource::chart(&Chart::new(config), &[dots("st_z")]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .err();
+    assert!(
+        matches!(&refused, Some(renderer::FiggyError::ColumnNotResident { id }) if id == "st_z"),
+        "{refused:?}"
+    );
+}
+
 /// The renderer rejects a scatter series without a height column on a 3D
 /// chart, and the z fit spans a trajectory's heights.
 #[test]
