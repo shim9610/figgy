@@ -65,6 +65,42 @@ pub struct SeriesLayers<'a> {
     /// (`issue_series_value_labels`), so a label sits over all the data of
     /// its panel and under the decoration.
     pub value_labels: Option<ColumnValueLabelLayer<'a>>,
+    /// An energy-level series' CPU raster (#203), blitted after every
+    /// series' picked highlights and before the value labels.
+    pub energy_levels: Option<super::AxisLayer<'a>>,
+}
+
+impl SeriesLayers<'_> {
+    /// A series that draws no GPU layer: every field empty. The layers of a
+    /// DataLess energy-level series start from it (#203).
+    pub fn empty() -> Self {
+        Self {
+            area: None,
+            field: None,
+            surface: None,
+            floor: None,
+            selected_surface: None,
+            region: None,
+            bar: None,
+            violin: None,
+            category_bars: None,
+            box_points: None,
+            contour: None,
+            vector: None,
+            errorbar: None,
+            line: None,
+            parallel: None,
+            line_extra: None,
+            scatter: None,
+            line_3d: None,
+            scatter_3d: None,
+            selected_bars: Vec::new(),
+            selected_fields: Vec::new(),
+            picked: Vec::new(),
+            value_labels: None,
+            energy_levels: None,
+        }
+    }
 }
 
 /// Clamp a rect into `(0..target.0, 0..target.1)`. Returns `None` if the

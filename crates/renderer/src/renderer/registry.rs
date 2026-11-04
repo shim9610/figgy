@@ -1342,6 +1342,11 @@ pub(super) fn validate_renderer_series(
                 reason: format!("label: {e}"),
             });
         }
+        // A DataLess energy-level series registers no column (#203): its
+        // values are SSOT, held to the model's rule above.
+        if item.energy_levels().is_some() {
+            continue;
+        }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {
             // A box plot reads a record and ragged columns, not columns,

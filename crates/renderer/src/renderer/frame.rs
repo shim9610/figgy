@@ -192,6 +192,9 @@ pub(super) struct PreparedContourSeries {
     /// The series' value label atlas, baked by the contour label module's
     /// atlas builder; `None` for a series that draws no value labels.
     pub(super) value_labels: Option<Arc<data_render::ValueLabelAtlas>>,
+    /// An energy-level series' CPU raster (#203); `None` for every other
+    /// series.
+    pub(super) energy_levels: Option<Arc<super::prepare::EnergyLevelRaster>>,
 }
 
 pub(super) struct PreparedContourItem {
@@ -668,6 +671,9 @@ pub(super) struct PreparedSeries {
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
     pub(super) value_labels: Option<PreparedValueLabelLayer>,
+    /// An energy-level series' CPU raster (#203): the blit pipeline and the
+    /// raster's bind group, which keeps its texture alive.
+    pub(super) energy_levels: Option<(wgpu::RenderPipeline, wgpu::BindGroup)>,
 }
 
 /// Refcounted GPU view bindings captured by `prepare`. Bind groups keep their
@@ -1202,6 +1208,9 @@ impl PreparedSeries {
                     view3d: layer.view3d,
                 })
                 .collect(),
+            energy_levels: layers
+                .energy_levels
+                .map(|layer| (layer.pipeline.clone(), layer.bind_group.clone())),
             value_labels: layers.value_labels.map(|layer| PreparedValueLabelLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1397,6 +1406,12 @@ impl PreparedSeries {
                     view3d: layer.view3d.clone(),
                 })
                 .collect(),
+            energy_levels: self.energy_levels.as_ref().map(|(pipeline, bind_group)| {
+                data_render::AxisLayer {
+                    pipeline,
+                    bind_group,
+                }
+            }),
             value_labels: self.value_labels.as_ref().map(|layer| {
                 data_render::ColumnValueLabelLayer {
                     pipeline: &layer.pipeline,

@@ -187,6 +187,7 @@ pub enum LevelRole {
 }
 
 impl LevelRole {
+    #[cfg(feature = "serde")]
     fn is_level(&self) -> bool {
         *self == LevelRole::Level
     }
@@ -215,6 +216,7 @@ pub enum LevelView {
 }
 
 impl LevelView {
+    #[cfg(feature = "serde")]
     fn is_main(&self) -> bool {
         *self == LevelView::Main
     }
@@ -396,6 +398,7 @@ impl Default for EnergyLevelStyle {
 }
 
 impl EnergyLevelStyle {
+    #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -673,25 +676,17 @@ impl EnergyLevelSeries {
 
     /// The continuum annotations of the series' ionization limits, for the
     /// document's annotation layer (the maintainer's choice on #203: the
-    /// continuum is drawn by annotations, not by the series): per limit, a
-    /// [`AnnotationKind::Span`] on Y from the limit up to `top` filled with
-    /// `fill`, and a [`AnnotationKind::ReferenceLine`] at the limit in
-    /// `line`, labelled with the limit's label. Their ids are
-    /// `{series_id}/limit/{limit id}/span` and `…/line`, so
-    /// [`Self::write_continuum`] replaces them on a later call. The list is
+    /// continuum is drawn by annotations; the limit lines and their labels
+    /// are the series' own): per limit, a [`AnnotationKind::Span`] on Y from
+    /// the limit up to `top`, filled with `fill`. Its id is
+    /// `{series_id}/limit/{limit id}/continuum`, so
+    /// [`Self::write_continuum`] replaces it on a later call. The list is
     /// the helper's output (rule 3).
-    pub fn continuum_annotations(
-        &self,
-        series_id: &str,
-        top: f64,
-        line: AnnotationLineStyle,
-        fill: Color,
-    ) -> Vec<Annotation> {
-        let mut out = Vec::with_capacity(self.limits.len() * 2);
-        for limit in &self.limits {
-            let id = |end: &str| format!("{series_id}/limit/{}/{end}", limit.id);
-            out.push(Annotation {
-                id: id("span"),
+    pub fn continuum_annotations(&self, series_id: &str, top: f64, fill: Color) -> Vec<Annotation> {
+        self.limits
+            .iter()
+            .map(|limit| Annotation {
+                id: format!("{series_id}/limit/{}/continuum", limit.id),
                 visible: true,
                 kind: AnnotationKind::Span {
                     axis: AnnotationAxis::Y,
@@ -699,19 +694,8 @@ impl EnergyLevelSeries {
                     to: top,
                     fill,
                 },
-            });
-            out.push(Annotation {
-                id: id("line"),
-                visible: true,
-                kind: AnnotationKind::ReferenceLine {
-                    axis: AnnotationAxis::Y,
-                    value: limit.energy,
-                    style: line.clone(),
-                    label: limit.label.clone(),
-                },
-            });
-        }
-        out
+            })
+            .collect()
     }
 
     /// Write [`Self::continuum_annotations`] into `layer`: an item whose id
@@ -723,11 +707,10 @@ impl EnergyLevelSeries {
         layer: &mut crate::layer::AnnotationLayer,
         series_id: &str,
         top: f64,
-        line: AnnotationLineStyle,
         fill: Color,
     ) -> Result<(), &'static str> {
         let mut next = layer.clone();
-        for item in self.continuum_annotations(series_id, top, line, fill) {
+        for item in self.continuum_annotations(series_id, top, fill) {
             match next.items.iter_mut().find(|old| old.id == item.id) {
                 Some(old) => *old = item,
                 None => next.items.push(item),
@@ -906,6 +889,307 @@ impl crate::config::Config {
             }
         }
         Ok(())
+    }
+}
+
+/// The picked row of an energy-level series the emit widens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickedRow {
+    Level(usize),
+    Transition(usize),
+}
+
+/// Where an energy-level series is placed: the panel's anchor space (a
+/// categorical `bottom_x`, the energy on `left_y`), its categories, the view
+/// the series draws, the colour bar its mapped transitions read and the row
+/// drawn picked. Everything here is a display parameter (rule 1).
+pub struct LevelPlacement<'a> {
+    pub space: &'a dyn crate::annotation::AnnotationSpace,
+    pub categories: &'a [crate::config::Category],
+    pub view: LevelView,
+    pub colorbar: Option<&'a crate::config::ColorBarOptions>,
+    pub picked: Option<PickedRow>,
+}
+
+/// The gap between a stroke's end and its label, logical pixels.
+const LABEL_GAP: f32 = 4.0;
+
+impl LevelPlacement<'_> {
+    fn column_x(&self, column: &str) -> Option<f64> {
+        self.categories
+            .iter()
+            .position(|c| c.id == column)
+            .map(|i| i as f64)
+    }
+
+    fn px(&self, axis: AnnotationAxis, value: f64) -> Option<f32> {
+        self.space.value_to_px(axis, value)
+    }
+
+    /// The stroke of level row `index` of `records`, left end then right
+    /// end, or `None` when the view does not draw it, its column is not on
+    /// the axis or it falls outside the axes' ranges.
+    pub fn level_stroke(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let level = records.levels.get(index)?;
+        if !level.role.drawn_in(self.view) {
+            return None;
+        }
+        let x = self.column_x(&level.column)?;
+        let half = f64::from(style.level.slot_fraction) / 2.0;
+        let y = self.px(AnnotationAxis::Y, level.energy)?;
+        let x0 = self.px(AnnotationAxis::X, x - half)?;
+        let x1 = self.px(AnnotationAxis::X, x + half)?;
+        Some(([x0, y], [x1, y]))
+    }
+
+    /// The arrow of transition row `index`: its tail and its tip (the head
+    /// end under `style.transition.direction`; for `None`, lower then
+    /// upper), or `None` when either level is not drawn.
+    pub fn transition_arrow(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let transition = records.transitions.get(index)?;
+        let end = |id: &str| -> Option<[f32; 2]> {
+            let row = records.levels.iter().position(|l| l.id == id)?;
+            let (a, b) = self.level_stroke(records, style, row)?;
+            let level = &records.levels[row];
+            let x = self.column_x(&level.column)? + f64::from(transition.x_offset);
+            let px = self.px(AnnotationAxis::X, x).unwrap_or((a[0] + b[0]) / 2.0);
+            Some([px, a[1]])
+        };
+        let lower = end(&transition.lower)?;
+        let upper = end(&transition.upper)?;
+        Some(match style.transition.direction {
+            TransitionDirection::Emission => (upper, lower),
+            TransitionDirection::Absorption | TransitionDirection::None => (lower, upper),
+        })
+    }
+
+    /// The line of limit row `index` across the plot, or `None` outside
+    /// the energy range.
+    pub fn limit_line(
+        &self,
+        records: &EnergyLevelSeries,
+        index: usize,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let limit = records.limits.get(index)?;
+        let y = self.px(AnnotationAxis::Y, limit.energy)?;
+        let plot = self.space.plot_rect();
+        Some(([plot.x, y], [plot.x + plot.width, y]))
+    }
+
+    fn transition_color(&self, style: &EnergyLevelStyle, transition: &Transition) -> Color {
+        let arrow = &style.transition;
+        if !arrow.color_by_value {
+            return arrow.color;
+        }
+        match (self.colorbar, transition.value) {
+            (Some(bar), Some(value)) => match bar.normalized_z(value) {
+                Some(t) => bar.colormap.sample(t),
+                None => bar.nan_color,
+            },
+            _ => arrow.color,
+        }
+    }
+
+    /// The text block of a label at `anchor` (a stroke end or a midpoint),
+    /// placed on `side` and moved by `offset`.
+    fn label_block<'t>(
+        text: &'t RichText,
+        measure: &dyn crate::text::MeasureText,
+        anchor: [f32; 2],
+        left: f32,
+        side: LevelLabelSide,
+        offset: [f32; 2],
+    ) -> crate::sink::PlacedText<'t> {
+        let extents = measure.measure_rich(text);
+        let centred = anchor[1] + (extents.ascent - extents.descent) / 2.0;
+        let origin = match side {
+            LevelLabelSide::Right => (anchor[0] + LABEL_GAP, centred),
+            LevelLabelSide::Left => (left - LABEL_GAP - extents.width, centred),
+            LevelLabelSide::Above => (
+                (left + anchor[0]) / 2.0 - extents.width / 2.0,
+                anchor[1] - LABEL_GAP - extents.descent,
+            ),
+        };
+        crate::sink::PlacedText {
+            text: crate::sink::TextRef::Rich(text),
+            origin: (origin.0 + offset[0], origin.1 + offset[1]),
+            extents,
+            rotation: None,
+        }
+    }
+
+    /// The placed label of row `index` of `part`, or `None` when the row
+    /// has no label or is not drawn.
+    pub fn label<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        part: LabelPart,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        match part {
+            LabelPart::Level => {
+                let level = records.levels.get(index)?;
+                let (a, b) = self.level_stroke(records, style, index)?;
+                Some(Self::label_block(
+                    level.label.as_ref()?,
+                    measure,
+                    b,
+                    a[0],
+                    style.label_side,
+                    level.label_offset,
+                ))
+            }
+            LabelPart::Transition => {
+                let transition = records.transitions.get(index)?;
+                let (tail, tip) = self.transition_arrow(records, style, index)?;
+                let mid = [(tail[0] + tip[0]) / 2.0, (tail[1] + tip[1]) / 2.0];
+                Some(Self::label_block(
+                    transition.label.as_ref()?,
+                    measure,
+                    mid,
+                    mid[0],
+                    LevelLabelSide::Right,
+                    transition.label_offset,
+                ))
+            }
+            LabelPart::Limit => {
+                let limit = records.limits.get(index)?;
+                let (_, end) = self.limit_line(records, index)?;
+                let text = limit.label.as_ref()?;
+                let extents = measure.measure_rich(text);
+                let origin = (
+                    end[0] - LABEL_GAP - extents.width + limit.label_offset[0],
+                    end[1] - LABEL_GAP - extents.descent + limit.label_offset[1],
+                );
+                Some(crate::sink::PlacedText {
+                    text: crate::sink::TextRef::Rich(text),
+                    origin,
+                    extents,
+                    rotation: None,
+                })
+            }
+        }
+    }
+
+    /// Emit every drawn part of `records` in the look of `style` into
+    /// `sink`, in the [`crate::sink::Slot::Above`] slot: the limit lines,
+    /// the level strokes, the transition arrows over them, then every
+    /// label. The picked row is drawn `style.picked_width_scale` times as
+    /// wide. Nothing is stored; the caller's sink paints, bounds or hit
+    /// tests the parts.
+    pub fn emit(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+        sink: &mut dyn crate::sink::Sink,
+    ) {
+        use crate::sink::{Slot, StrokeStyle};
+        let slot = Slot::Above;
+        for index in 0..records.limits.len() {
+            if let Some((a, b)) = self.limit_line(records, index) {
+                let line = &style.limit;
+                sink.stroke(
+                    slot,
+                    a,
+                    b,
+                    &StrokeStyle {
+                        width: line.width,
+                        color: line.color,
+                        dash: line.style.pattern(),
+                        tag: "energy_limit",
+                    },
+                );
+            }
+        }
+        let widen = |picked: bool, width: f32| {
+            if picked {
+                width * style.picked_width_scale
+            } else {
+                width
+            }
+        };
+        for index in 0..records.levels.len() {
+            if let Some((a, b)) = self.level_stroke(records, style, index) {
+                let picked = self.picked == Some(PickedRow::Level(index));
+                sink.stroke(
+                    slot,
+                    a,
+                    b,
+                    &StrokeStyle {
+                        width: widen(picked, style.level.width),
+                        color: style.level.color,
+                        dash: &[],
+                        tag: "energy_level",
+                    },
+                );
+            }
+        }
+        let arrow = &style.transition;
+        for (index, transition) in records.transitions.iter().enumerate() {
+            let Some((tail, tip)) = self.transition_arrow(records, style, index) else {
+                continue;
+            };
+            let picked = self.picked == Some(PickedRow::Transition(index));
+            let color = self.transition_color(style, transition);
+            let width = widen(picked, arrow.width);
+            let (dx, dy) = (tip[0] - tail[0], tip[1] - tail[1]);
+            let length = dx.hypot(dy);
+            let head = if arrow.direction == TransitionDirection::None {
+                0.0
+            } else {
+                arrow.head_length.min(length)
+            };
+            let (ux, uy) = if length > 0.0 {
+                (dx / length, dy / length)
+            } else {
+                (0.0, 0.0)
+            };
+            let base = [tip[0] - ux * head, tip[1] - uy * head];
+            sink.stroke(
+                slot,
+                tail,
+                if head > 0.0 { base } else { tip },
+                &StrokeStyle {
+                    width,
+                    color,
+                    dash: &[],
+                    tag: "energy_transition",
+                },
+            );
+            if head > 0.0 {
+                let half = widen(picked, arrow.head_width) / 2.0;
+                let (nx, ny) = (-uy * half, ux * half);
+                sink.triangle(
+                    slot,
+                    [
+                        tip,
+                        [base[0] + nx, base[1] + ny],
+                        [base[0] - nx, base[1] - ny],
+                    ],
+                    color,
+                );
+            }
+        }
+        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+            for index in 0..records.part_len(part) {
+                if let Some(text) = self.label(records, style, part, index, measure) {
+                    sink.text(slot, &text);
+                }
+            }
+        }
     }
 }
 
@@ -1406,29 +1690,28 @@ mod tests {
     fn the_continuum_is_written_and_rewritten_in_place() {
         let levels = helium();
         let mut config = chart();
-        let line = AnnotationLineStyle::default();
         let fill = Color::from_rgba8(80, 80, 220, 40);
         levels
-            .write_continuum(&mut config.annotations, "he", 26.0, line.clone(), fill)
+            .write_continuum(&mut config.annotations, "he", 26.0, fill)
             .unwrap();
-        assert_eq!(config.annotations.items.len(), 2);
-        assert_eq!(config.annotations.items[0].id, "he/limit/He II/span");
+        assert_eq!(config.annotations.items.len(), 1);
+        assert_eq!(config.annotations.items[0].id, "he/limit/He II/continuum");
         assert!(matches!(
             config.annotations.items[0].kind,
             AnnotationKind::Span { from, to, .. } if from == 24.587_389_011 && to == 26.0
         ));
-        // A second call replaces the same items.
+        // A second call replaces the same item.
         levels
-            .write_continuum(&mut config.annotations, "he", 30.0, line.clone(), fill)
+            .write_continuum(&mut config.annotations, "he", 30.0, fill)
             .unwrap();
-        assert_eq!(config.annotations.items.len(), 2);
+        assert_eq!(config.annotations.items.len(), 1);
         assert!(matches!(
             config.annotations.items[0].kind,
             AnnotationKind::Span { to, .. } if to == 30.0
         ));
-        // A full layer refuses the new items and stays as it was.
+        // A full layer refuses a new item and stays as it was.
         let mut full = config.annotations.clone();
-        let filler = full.items[1].clone();
+        let filler = full.items[0].clone();
         while full.items.len() < crate::annotation::MAX_ANNOTATIONS {
             let mut item = filler.clone();
             item.id = format!("f{}", full.items.len());
@@ -1437,11 +1720,7 @@ mod tests {
         let before = full.clone();
         let mut other = levels.clone();
         other.limits[0].id = "other".into();
-        assert!(
-            other
-                .write_continuum(&mut full, "he", 30.0, line, fill)
-                .is_err()
-        );
+        assert!(other.write_continuum(&mut full, "he", 30.0, fill).is_err());
         assert_eq!(full, before);
     }
 }

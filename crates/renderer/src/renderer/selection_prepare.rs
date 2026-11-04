@@ -95,6 +95,7 @@ impl<'a> SelectionLayers<'a> {
             selected_fields: self.selected_fields,
             picked: self.picked,
             value_labels: None,
+            energy_levels: None,
             surface: None,
             selected_surface: None,
             floor: None,

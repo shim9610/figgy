@@ -415,6 +415,25 @@ impl PrepareContext<'_> {
             let rt = &cfg.render_type;
             let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
             let primitives = effective_series_primitives(&chart_config.draw_style, rt);
+            // A DataLess energy-level series reads no column: its only layer
+            // is the CPU raster this prepare resolved (#203). A streamed
+            // phase never draws one (rule 8).
+            if cfg.energy_levels().is_some() {
+                let energy_levels = products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.energy_levels.as_ref())
+                    .filter(|_| phase.is_none())
+                    .map(|raster| data_render::AxisLayer {
+                        pipeline: &pipelines.axis,
+                        bind_group: &raster.layer.bind_group,
+                    });
+                out.push(data_render::SeriesLayers {
+                    energy_levels,
+                    ..data_render::SeriesLayers::empty()
+                });
+                continue;
+            }
             let x_h = lookup(&cfg.x_column)?;
             // The height column of a scatter or line series on a 3D chart
             // (#132), and its camera group: the surface layout for the
@@ -1527,6 +1546,7 @@ impl PrepareContext<'_> {
                 selected_fields,
                 picked,
                 value_labels,
+                energy_levels: None,
                 surface,
                 selected_surface,
                 floor,
