@@ -11,27 +11,10 @@ fn pick_line_mode() -> u32 {
     return (pick_query_params.line.x & LINE_STEP_MASK) | (arc << LINE_ARC_SHIFT);
 }
 
-// The arc distances from `dist_px`, which lies in an "off" span of the dash
-// pattern, back to the end of the previous "on" span (x) and forward to the
-// start of the next one (y). The span walk is `dash_pattern_on`'s.
+// The line's dash gap at `dist_px`: the shared `dash_gap`
+// (common/line_stroke.wgsl) over the line's pattern.
 fn pick_dash_gap(dist_px: f32) -> vec2<f32> {
-    var spans = pick_query_params.line_dash;
-    let n = min(pick_query_params.styled.w, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(spans[i / 4u][i % 4u], 0.0);
-    }
-    let phase = ((dist_px % period) + period) % period;
-    var acc = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let start = acc;
-        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
-        acc = end;
-        if phase <= end || i == n - 1u {
-            return vec2<f32>(phase - start, end - phase);
-        }
-    }
-    return vec2<f32>(0.0, 0.0);
+    return dash_gap(dist_px, pick_query_params.line_dash, pick_query_params.styled.w);
 }
 
 // The hit distance of one drawn piece of a stroke: the line shader's own

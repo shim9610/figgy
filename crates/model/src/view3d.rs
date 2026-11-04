@@ -581,6 +581,11 @@ impl Config {
     pub fn validate_view3d_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
             let (surface, matrix, fill, contour) = match &item.render_type {
+                DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+                    if self.view_3d().is_some() =>
+                {
+                    return Err("stems draw flat: not on a 3D chart");
+                }
                 DataRenderType::Xy(crate::data_config::XySeries { errors: None, .. })
                     if self.view_3d().is_some() =>
                 {
@@ -899,6 +904,7 @@ mod tests {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
             ..heatmap(None)
         };
@@ -913,6 +919,7 @@ mod tests {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
             ..scatter_3d.clone()
         };
@@ -938,6 +945,7 @@ mod tests {
                         scatter: Some(scatter),
                         line: None,
                         errors: None,
+                        ..
                     }) => scatter.clone(),
                     _ => unreachable!(),
                 }),
@@ -955,6 +963,7 @@ mod tests {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
             ..scatter_3d.clone()
         };

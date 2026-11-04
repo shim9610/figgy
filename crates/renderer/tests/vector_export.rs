@@ -709,6 +709,7 @@ fn a_streamed_source_is_rejected() {
             scatter: None,
             line: Some(scenes::line_style(Color::BLACK, 1.0)),
             errors: None,
+            stem: None,
         }),
     ));
     let chart = Chart::new(scene.config.clone());

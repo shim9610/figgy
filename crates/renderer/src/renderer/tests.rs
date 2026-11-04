@@ -761,6 +761,7 @@ fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -784,6 +785,7 @@ fn state_test_scatter_line(id: &str, source: Option<&str>, x: &str, y: &str) -> 
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -800,6 +802,7 @@ fn state_test_scatter(id: &str, source: Option<&str>, x: &str, y: &str) -> Serie
             scatter: Some(test_scatter_style()),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -1315,6 +1318,7 @@ fn active_picker_ignores_unrelated_mutations_and_reuses_source_only_changes() {
         scatter: Some(_),
         line: Some(line),
         errors: None,
+        ..
     }) = &mut inactive_series.render_type
     else {
         unreachable!();
@@ -1464,6 +1468,7 @@ fn colour_only_edits_reuse_the_pick_slot() {
                 scatter: Some(scatter),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     };
@@ -1681,6 +1686,7 @@ fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut changed_series[0].render_type
     else {
         unreachable!();
@@ -2820,7 +2826,8 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
                 fill_color: None,
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
-            errors: None
+            errors: None,
+            stem: None
         })),
         Some(GpuSeriesExtentMode::Line)
     );
@@ -2866,16 +2873,19 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
         scatter: None,
         line: Some(line.clone()),
         errors: None,
+        stem: None,
     });
     let scatter_rt = DataRenderType::Xy(crate::data_config::XySeries {
         scatter: Some(scatter.clone()),
         line: None,
         errors: None,
+        stem: None,
     });
     let marker_line_rt = DataRenderType::Xy(crate::data_config::XySeries {
         scatter: Some(scatter.clone()),
         line: Some(line.clone()),
         errors: None,
+        stem: None,
     });
     let precise_only = [
         DataRenderType::Histogram {
@@ -2928,6 +2938,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: None,
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2937,6 +2948,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2946,6 +2958,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2955,6 +2968,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: None,
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2964,6 +2978,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2973,6 +2988,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err,
             }),
+            stem: None,
         }),
     ];
     let sketch = DrawStyle::Sketch(Default::default());
@@ -3256,6 +3272,7 @@ fn style_map_and_uniforms_are_admitted_and_charged_together() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!();
@@ -4191,6 +4208,7 @@ fn removing_errorbar_column_removes_active_scatter_picker_slot() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let chart = renderer
@@ -4612,6 +4630,7 @@ fn fit_token_tracks_normalized_series_extent_mode() {
         scatter: Some(test_scatter_style()),
         line: None,
         errors: None,
+        stem: None,
     });
     renderer.set_chart_series(chart, vec![scatter]).unwrap();
 
@@ -5223,6 +5242,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
             scatter: Some(test_scatter_style()),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -5283,6 +5303,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -5397,6 +5418,7 @@ fn point_constellation_scatterline_exports() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -5483,6 +5505,7 @@ fn all_scatter_shapes_export_visible_markers() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         });
     }
@@ -5554,6 +5577,7 @@ fn xy_errorbar_does_not_require_zero_column() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -5615,6 +5639,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -5691,6 +5716,7 @@ fn errorbar_style_index_colors_points_independently() {
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         }),
     }];
 
@@ -5971,6 +5997,7 @@ fn override_only_scatter_series(id: &str, x: &str, y: &str) -> SeriesConfig {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -6111,6 +6138,7 @@ fn value_mapped_scatter_series(
             scatter: Some(scatter),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -6303,6 +6331,7 @@ fn overrides_take_precedence_over_value_maps() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!()
@@ -6394,6 +6423,7 @@ fn value_maps_are_validated_at_registration() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut bad_domain.render_type
     else {
         unreachable!()
@@ -6481,9 +6511,43 @@ fn streamed_series_reject_value_maps() {
             scatter: Some(plain),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     assert!(PrepareContext::validate_stream_series(&config, &plain).is_ok());
+}
+
+/// Streaming is not extended to stems (rule 8, #206), although the
+/// error-bar path they reuse streams: a stem series is refused with its
+/// explicit reason.
+#[test]
+fn streamed_series_reject_stems() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stems".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(test_scatter_style()),
+            line: None,
+            errors: None,
+            stem: Some(crate::data_config::Stem {
+                baseline: 0.0,
+                direction: crate::data_config::CategoryBarDirection::Vertical,
+                color: Color::BLACK,
+                width: 1.0,
+                line_style: crate::line::LineStylePreset::Solid,
+            }),
+        }),
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason == streaming_runtime::STREAMED_STEM_REASON
+    ));
 }
 
 /// The group-3 state is rebuilt only when its inputs change: two prepares
@@ -6949,6 +7013,7 @@ fn streamed_series_reject_polar_charts() {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     assert!(matches!(
@@ -6984,6 +7049,7 @@ fn streamed_series_reject_categorical_axes() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     assert!(PrepareContext::validate_stream_series(&base, &series).is_ok());
@@ -7134,6 +7200,7 @@ fn override_only_errorbar_paints_on_screen_and_export() {
                     ]),
                 },
             }),
+            stem: None,
         }),
     }];
     let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
@@ -7218,6 +7285,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         },
         SeriesConfig {
@@ -7254,6 +7322,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         },
     ];
@@ -7322,6 +7391,7 @@ fn style_table_without_index_still_ensures_mapped_scatter_pipeline() {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }];
     let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
@@ -7377,6 +7447,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -7471,6 +7542,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let config_b = SeriesConfig {
@@ -7490,6 +7562,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
                 y: None,
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let style_a = renderer.create_style_for_series(&config_a).unwrap();
@@ -7592,6 +7665,7 @@ fn two_line_series_both_render() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let series = [
@@ -7693,6 +7767,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let mut star_ink = |id: &str, x: &str, y: &str| -> usize {
@@ -7796,6 +7871,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     // Ink in the right fifth of the image, where only the tail run reaches.
@@ -8489,6 +8565,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = r.create_style_for_series(&series_cfg).unwrap();
@@ -9518,6 +9595,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let mut stream_series = resident_series.clone();
@@ -9607,6 +9685,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut dashed.render_type
         {
             line.line_style = LineStylePreset::Dash;
@@ -9764,6 +9843,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     // Equal configs, series ids and source columns cannot identify a chart.
@@ -9819,6 +9899,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut changed.render_type
     {
         line.line_color = Color::new(0.0, 1.0, 0.0, 1.0);
@@ -10010,6 +10091,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let (cfg_a, cfg_b) = (mk_cfg("st_a"), mk_cfg("st_b"));
@@ -10123,6 +10205,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style_dash = r.create_style_for_series(&cfg_dash).unwrap();
@@ -10240,6 +10323,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = r.create_style_for_series(&series_cfg).unwrap();
@@ -10441,6 +10525,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10545,6 +10630,7 @@ fn precise_zoom_keeps_connections_to_distant_endpoints() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     for vertical in [false, true] {
@@ -10665,6 +10751,7 @@ fn dense_line_has_no_gaps() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10769,6 +10856,7 @@ fn solid_line_exports_analytic_aa_fringe() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10849,6 +10937,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let red_cols = |img: &crate::RasterImage| -> Vec<usize> {
@@ -11021,6 +11110,7 @@ fn dashed_curve_runs_match_pattern() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -11172,6 +11262,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -11785,6 +11876,7 @@ fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -14244,6 +14336,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                     }),
                     style: err_style,
                 }),
+                stem: None,
             }),
         }
     };
@@ -14265,6 +14358,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let lower = SeriesConfig {
@@ -14285,6 +14379,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let red = Color::new(1.0, 0.0, 0.0, 1.0);
@@ -15303,6 +15398,7 @@ fn styled_errorbar_series(marker_rows: usize, bar_rows: usize) -> SeriesConfig {
                 }),
                 style: err_style,
             }),
+            stem: None,
         }),
     }
 }
@@ -15334,12 +15430,14 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
                         y: Some(_),
                         style: _,
                     }),
+                ..
             }) = &plain.render_type
             {
                 plain.render_type = DataRenderType::Xy(crate::data_config::XySeries {
                     scatter: Some(scatter.clone()),
                     line: None,
                     errors: None,
+                    stem: None,
                 });
             }
             let list = [series.clone(), plain];

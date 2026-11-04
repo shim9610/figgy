@@ -876,6 +876,7 @@ fn scatter_and_line_series_draw_on_a_3d_chart() {
             scatter: Some(red_points(5.0)),
             line: Some(red_line(3.0, LineStylePreset::Solid)),
             errors: None,
+            stem: None,
         }),
     )];
     for scale in [1.0f32, 2.0] {
@@ -944,6 +945,7 @@ fn markers_are_depth_tested_against_the_surface() {
                 scatter: Some(red_points(6.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -987,6 +989,7 @@ fn the_id_pick_answers_markers_and_segment_ends() {
                 scatter: None,
                 line: Some(red_line(3.0, LineStylePreset::Solid)),
                 errors: None,
+                stem: None,
             }),
         ),
         point_series(
@@ -998,6 +1001,7 @@ fn the_id_pick_answers_markers_and_segment_ends() {
                 scatter: Some(red_points(5.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -1104,6 +1108,7 @@ fn the_picked_ring_surrounds_the_3d_marker() {
             scatter: Some(red_points(5.0)),
             line: None,
             errors: None,
+            stem: None,
         }),
     )];
     let plain = export(&mut r, &config, &series, 1.0);
@@ -1165,6 +1170,7 @@ fn a_dashed_3d_line_dashes_along_the_projected_chord() {
                 scatter: None,
                 line: Some(red_line(3.0, style)),
                 errors: None,
+                stem: None,
             }),
         )];
         let img = export(r, &config, &series, scale);
@@ -1215,6 +1221,7 @@ fn the_screen_draws_the_marks() {
             scatter: Some(red_points(5.0)),
             line: Some(red_line(3.0, LineStylePreset::Solid)),
             errors: None,
+            stem: None,
         }),
     )];
     let img = paint_screen(&mut r, &config, &series);
@@ -1245,6 +1252,7 @@ fn a_million_row_trajectory_draws_and_picks() {
             scatter: Some(red_points(3.0)),
             line: Some(red_line(2.0, LineStylePreset::Solid)),
             errors: None,
+            stem: None,
         }),
     )];
     let img = export(&mut r, &config, &series, 1.0);
@@ -1300,6 +1308,7 @@ fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
             scatter: Some(red_points(5.0)),
             line: None,
             errors: None,
+            stem: None,
         }),
     );
     flat.z_column = None;
@@ -1319,6 +1328,7 @@ fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
             scatter: Some(red_points(5.0)),
             line: None,
             errors: None,
+            stem: None,
         }),
     )];
     chart

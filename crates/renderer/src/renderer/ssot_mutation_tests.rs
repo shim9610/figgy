@@ -158,6 +158,7 @@ fn picked_suite() -> (Config, Vec<SeriesConfig>) {
         }),
         line: Some(line),
         errors: None,
+        stem: None,
     });
     (c, vec![series])
 }

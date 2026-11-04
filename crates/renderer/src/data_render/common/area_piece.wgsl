@@ -45,16 +45,11 @@ fn area_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, base_a
     return AreaPiece(top, bottom);
 }
 
-// A baseline at or below zero on a logarithmic y axis has no position. The
-// line's samples would be masked there; masking the baseline would delete the
-// whole area instead, so it is clamped to the axis minimum (data_t = 0). This
-// is the documented exception to the sample_valid rule.
+// The fill's baseline in NDC y: the shared `axis_baseline_ndc`
+// (common/projection.wgsl), which clamps a baseline at or below zero on a
+// logarithmic y axis to the axis minimum instead of deleting the area.
 fn area_baseline_ndc_y(t: Transform, base: vec2<f32>) -> f32 {
-    let value = base.x + base.y;
-    if (t.scale_log.y != 0.0 && !(value > 0.0)) {
-        return t.data_to_panel_offset.y * 2.0 - 1.0;
-    }
-    return data_to_ndc(t, vec2<f32>(1.0, 0.0), base).y;
+    return axis_baseline_ndc(t, base, 1u);
 }
 
 // The NDC of one corner of `piece`: at end A or B, on the line or on its

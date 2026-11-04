@@ -91,6 +91,7 @@ fn setup(
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             })
         },
     }];
@@ -545,6 +546,7 @@ fn styled_scatter(id: &str, x: &str, y: &str) -> SeriesConfig {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -569,6 +571,7 @@ fn wide_line(id: &str, y: &str) -> SeriesConfig {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -580,6 +583,7 @@ fn seven_column_series(id: &str) -> SeriesConfig {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = styled_scatter(id, "x", "y").render_type
     else {
         unreachable!()
@@ -588,6 +592,7 @@ fn seven_column_series(id: &str) -> SeriesConfig {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = wide_line(id, "y").render_type
     else {
         unreachable!()
@@ -621,6 +626,7 @@ fn seven_column_series(id: &str) -> SeriesConfig {
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         }),
         ..wide_line(id, "y")
     }
@@ -797,6 +803,7 @@ fn unstyled(mut series: SeriesConfig) -> SeriesConfig {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) => {
             scatter.point_style_index_column = None;
             scatter.point_style_table = None;
@@ -810,6 +817,7 @@ fn unstyled(mut series: SeriesConfig) -> SeriesConfig {
                     y: Some(_),
                     style: err_style,
                 }),
+            ..
         }) => {
             scatter.point_style_index_column = None;
             scatter.point_style_table = None;
@@ -888,6 +896,7 @@ fn completed_auto_streams_keep_their_pages_sources_and_styles_per_series() {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &mut one.render_type
         {
             scatter.point_style_index_column = Some("x".into());
@@ -1137,6 +1146,7 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
                     scatter: None,
                     line: Some(line),
                     errors: None,
+                    ..
                 }) = &mut s.render_type
                 {
                     line.line_color = Color::new(0.8, 0.1, 0.1, 0.9);

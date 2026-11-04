@@ -111,6 +111,7 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -138,6 +139,7 @@ fn line(id: &str, line: DataLineStyleConfig) -> SeriesConfig {
             scatter: None,
             line: Some(line),
             errors: None,
+            stem: None,
         }),
     }
 }

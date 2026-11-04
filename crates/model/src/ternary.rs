@@ -568,6 +568,7 @@ mod tests {
                 scatter: Some(scatter()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         );
         assert!(err(plain).contains("only ternary series"));

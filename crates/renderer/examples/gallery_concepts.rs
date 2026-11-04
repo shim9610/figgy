@@ -71,6 +71,7 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(line(color, 3.5)),
                 errors: None,
+                stem: None,
             }),
         ));
         chart = chart.with_legend_entry(label, color, 3.5, LegendEntryKind::Line);
@@ -125,6 +126,7 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
                 scatter: Some(scatter(color, 7.)),
                 line: Some(line(color, 3.)),
                 errors: None,
+                stem: None,
             }),
         ));
         chart = chart.with_legend_entry(label, color, 3., LegendEntryKind::Line);

@@ -231,6 +231,7 @@ fn trace(id: &str) -> SeriesConfig {
                 ..Default::default()
             }),
             errors: None,
+            stem: None,
         }),
     }
 }

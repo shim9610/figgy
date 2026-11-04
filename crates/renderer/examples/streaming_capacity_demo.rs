@@ -673,6 +673,7 @@ impl DemoApp {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         };
         let chart_id = renderer.register_chart(chart.config().clone(), vec![series])?;

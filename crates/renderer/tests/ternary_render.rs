@@ -650,6 +650,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
             scatter: Some(marker_style(4.0)),
             line: None,
             errors: None,
+            stem: None,
         }),
         ..ok.clone()
     };

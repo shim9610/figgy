@@ -71,10 +71,12 @@ pub enum SceneKind {
     Parallel,
     BrokenAxes,
     EnergyLevels,
+    Stem,
+    Lollipop,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 34] = [
+    pub const ALL: [SceneKind; 36] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -109,6 +111,8 @@ impl SceneKind {
         SceneKind::Parallel,
         SceneKind::BrokenAxes,
         SceneKind::EnergyLevels,
+        SceneKind::Stem,
+        SceneKind::Lollipop,
     ];
 
     pub fn label(self) -> &'static str {
@@ -147,6 +151,8 @@ impl SceneKind {
             SceneKind::Parallel => "Parallel coordinates",
             SceneKind::BrokenAxes => "Broken axes (two peaks)",
             SceneKind::EnergyLevels => "Energy levels (He I)",
+            SceneKind::Stem => "Stems (impulse response)",
+            SceneKind::Lollipop => "Lollipop (ranked)",
         }
     }
 
@@ -297,6 +303,14 @@ impl SceneKind {
                  broken energy axis, the continuum above the ionization limit and \
                  an inset of the 2p ³P° fine structure. Pick a level, an arrow or \
                  a label; drag a label or the group headers."
+            }
+            SceneKind::Stem => {
+                "A filter's impulse response h[n]: dashed stems from 0 to each tap, up and \
+                 down. Pick a stem or its marker; arrows step along the taps."
+            }
+            SceneKind::Lollipop => {
+                "Horizontal stems on a categorical y axis, from a baseline of 0 marked by a \
+                 draggable reference line."
             }
         }
     }
@@ -495,6 +509,8 @@ pub fn build(
         SceneKind::Parallel => parallel(r),
         SceneKind::BrokenAxes => broken_axes(r),
         SceneKind::EnergyLevels => energy_levels(r),
+        SceneKind::Stem => stem(r),
+        SceneKind::Lollipop => lollipop(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -557,6 +573,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(area),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -567,6 +584,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(dashed),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -577,6 +595,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(band),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -587,6 +606,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(green, 1.5)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -597,6 +617,7 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(step),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -681,6 +702,7 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 )),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -691,6 +713,7 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(fit),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -709,6 +732,7 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     }),
                     style: err,
                 }),
+                stem: None,
             }),
         ),
     ];
@@ -720,6 +744,109 @@ fn scatter(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         config: with_legend(chart.config().clone(), &series),
         series,
     })
+}
+
+/// A filter's impulse response `h[n] = 0.88^n cos(0.7 n)` as a stem plot
+/// (#206): dashed stems from 0 to each tap, with negative taps. The taps are
+/// host data.
+fn stem(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let n = 32;
+    let taps: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let h: Vec<f64> = taps
+        .iter()
+        .map(|k| 0.88_f64.powf(*k) * (0.7 * k).cos())
+        .collect();
+    upload(r, "stem_n", taps)?;
+    upload(r, "stem_h", h)?;
+    let blue = Color::from_rgb8(31, 119, 180);
+    let series = vec![series(
+        "h",
+        "stem_n",
+        "stem_h",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter_style(blue, ScatterShape::CircleFilled, 7.0)),
+            line: None,
+            errors: None,
+            stem: Some(renderer::data_config::Stem {
+                baseline: 0.0,
+                direction: renderer::data_config::CategoryBarDirection::Vertical,
+                color: Color::from_rgb8(90, 90, 90),
+                width: 1.5,
+                line_style: LineStylePreset::Dash,
+            }),
+        }),
+    )];
+    let mut chart = Chart::new(base_config("Impulse response", "n", "h[n]"));
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// A ranked lollipop chart (#206): horizontal stems from 0 on a categorical
+/// `left_y`, the baseline drawn by a reference line (an annotation the user
+/// can drag), as CONFIG.md's stem recipe says.
+fn lollipop(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    let names = [
+        ("rust", "Rust"),
+        ("go", "Go"),
+        ("python", "Python"),
+        ("kotlin", "Kotlin"),
+        ("swift", "Swift"),
+        ("java", "Java"),
+        ("cpp", "C++"),
+        ("php", "PHP"),
+    ];
+    let score = [8.6, 6.9, 6.1, 4.8, 3.2, 1.4, -0.8, -2.5];
+    upload(r, "lol_score", score.to_vec())?;
+    upload(r, "lol_row", (0..names.len()).map(|i| i as f64).collect())?;
+    let mut config = base_config("Change in share", "points", "language");
+    let categories: Vec<Category> = names
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect();
+    config.left_y.categories = Some(categories);
+    config.grid.show_major_y = true;
+    let orange = Color::from_rgb8(255, 127, 14);
+    let series = vec![series(
+        "share",
+        "lol_score",
+        "lol_row",
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter_style(orange, ScatterShape::CircleFilled, 11.0)),
+            line: None,
+            errors: None,
+            stem: Some(renderer::data_config::Stem {
+                baseline: 0.0,
+                direction: renderer::data_config::CategoryBarDirection::Horizontal,
+                color: orange,
+                width: 3.0,
+                line_style: LineStylePreset::Solid,
+            }),
+        }),
+    )];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
+    let mut config = chart.config().clone();
+    config.annotations.items = vec![Annotation::new(AnnotationKind::ReferenceLine {
+        axis: AnnotationAxis::X,
+        value: 0.0,
+        style: AnnotationLineStyle {
+            color: Color::from_rgb8(60, 60, 60),
+            width: 1.2,
+            style: LineStylePreset::Solid,
+        },
+        label: None,
+    })];
+    // The category names are long beside the axis title: lay the chrome
+    // out so neither covers the other.
+    let config = renderer::layout::auto_layout(
+        &with_legend(config, &series),
+        &renderer::CpuTextMeasure::for_style(&renderer::config::DrawStyle::Precise),
+    );
+    Ok(CartesianScene { config, series })
 }
 
 /// Two clouds on one colourbar. The left cloud is coloured by `depth` at a
@@ -798,6 +925,7 @@ fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(coloured),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -808,6 +936,7 @@ fn value_maps(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(bubbles),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -981,6 +1110,7 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(filled),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -991,6 +1121,7 @@ fn polar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(scatter_style(red, ScatterShape::CircleFilled, 6.0)),
                 line: Some(line_style(red, 1.5)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -1281,6 +1412,7 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             scatter: None,
             line: Some(line_style(Color::from_rgb8(60, 160, 90), 2.5)),
             errors: None,
+            stem: None,
         }),
     )];
     Ok(CartesianScene {
@@ -1340,6 +1472,7 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(scatter_style(blue, ScatterShape::CircleFilled, 9.0)),
                 line: Some(line_style(blue, 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1350,6 +1483,7 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(scatter_style(orange, ScatterShape::Diamond, 11.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -1400,6 +1534,7 @@ fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             scatter: Some(points),
             line: Some(line_style(blue, 1.5)),
             errors: None,
+            stem: None,
         }),
     )];
 
@@ -1522,6 +1657,7 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1532,6 +1668,7 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(scatter_style(rust, ScatterShape::Circle, 5.0)),
                 line: Some(line_style(rust, 1.5)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -1613,6 +1750,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.5)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1623,6 +1761,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(rust, 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1633,6 +1772,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: Some(scatter_style(green, ScatterShape::TriangleFilled, 6.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1643,6 +1783,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(rust, 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -1653,6 +1794,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(green, 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -1779,6 +1921,7 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             scatter: None,
             line: Some(line_style(Color::from_rgb8(220, 90, 60), 2.0)),
             errors: None,
+            stem: None,
         }),
     )];
     Ok(CartesianScene {
@@ -1838,6 +1981,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         ));
     }
@@ -1993,16 +2137,19 @@ pub mod big_data {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
             Mode::Scatter => DataRenderType::Xy(renderer::data_config::XySeries {
                 scatter: Some(scatter),
                 line: None,
                 errors: None,
+                stem: None,
             }),
             Mode::Both => DataRenderType::Xy(renderer::data_config::XySeries {
                 scatter: Some(scatter),
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         };
         vec![super::series("samples", X_ID, Y_ID, render_type)]
@@ -2908,6 +3055,7 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             }),
             line: Some(line_style(Color::from_rgb8(220, 60, 40), 1.5)),
             errors: None,
+            stem: None,
         }),
     );
     trajectory.z_column = Some("sf_tz".into());
@@ -3556,6 +3704,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(34, 104, 198), 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -3566,6 +3715,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 scatter: None,
                 line: Some(line_style(Color::from_rgb8(176, 64, 32), 2.0)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];
@@ -3789,6 +3939,7 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 )),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ),
     ];

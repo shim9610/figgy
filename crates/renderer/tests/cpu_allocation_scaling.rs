@@ -391,6 +391,7 @@ fn prepare_cost_is_independent_of_series_length() {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         };
         let style = renderer.create_style_for_series(&series_config).unwrap();

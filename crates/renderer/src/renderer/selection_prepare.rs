@@ -85,6 +85,7 @@ impl<'a> SelectionLayers<'a> {
             contour: None,
             vector: None,
             errorbar: None,
+            stem: None,
             line: None,
             parallel: None,
             line_extra: None,
@@ -833,6 +834,7 @@ mod tests {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     }

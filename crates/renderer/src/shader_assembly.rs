@@ -740,6 +740,9 @@ mod tests {
                     area_baseline,
                     category,
                     category_slot,
+                    stem,
+                    stem_dash,
+                    stem_info,
                 }
             ),
             mirror!(

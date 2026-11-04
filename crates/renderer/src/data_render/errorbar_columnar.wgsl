@@ -193,6 +193,74 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
+// ──────────────── stems (#206) ────────────────
+// A stem series' second error-bar draw: one quad per point (`0..6`
+// vertices) from the baseline to the point, built by `stem_segment`. Its
+// style is the stem's (`ERRORBAR_STEM`; the baseline pair in
+// `cap_half_px` / `cap_width_px`). The error slots are bound to the anchor
+// columns as filler and never read. A stem is drawn exactly where its
+// marker's sample is valid. `along_px` is the distance from the baseline
+// end, so every stem's dash starts at its baseline and no arc scan is
+// needed.
+
+struct StemOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) along_px: f32,
+};
+
+fn stem_baseline() -> vec2<f32> {
+    return vec2<f32>(style.cap_half_px, style.cap_width_px);
+}
+
+// One corner of the stem quad, its ends displaced along the expansion axis
+// by `disp_a` / `disp_b` pixels (the sketch wobble; 0 for Precise).
+fn stem_vertex(in: VsIn, half_stroke: f32, disp_a: f32, disp_b: f32) -> StemOut {
+    var out: StemOut;
+    out.along_px = 0.0;
+    if (!sample_valid(transform, in.x, in.y)) {
+        // Every corner at one point: no area, nothing drawn.
+        out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return out;
+    }
+    let flags = style.primitive_flags;
+    let g = stem_segment(in.x, in.y, stem_baseline(), flags, half_stroke);
+    let a = stem_end_ndc(transform, g, true, flags);
+    let b = stem_end_ndc(transform, g, false, flags);
+    let corner = errorbar_corner(in.vi);
+    out.along_px = select(length((b - a) / transform.pixel_to_ndc), 0.0, corner.at_a);
+    let end = select(b, a, corner.at_a);
+    let across = corner.side * g.half_stroke + select(disp_b, disp_a, corner.at_a);
+    out.pos = vec4<f32>(end + g.perp * across * transform.pixel_to_ndc, 0.0, 1.0);
+    return out;
+}
+
+@vertex
+fn vs_stem(in: VsIn) -> StemOut {
+    return stem_vertex(in, style.line_width_px * 0.5, 0.0, 0.0);
+}
+
+// The sketch stem: the error bar's corner wobble at its two ends.
+@vertex
+fn vs_stem_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> StemOut {
+    let amp = max(transform.style_params[0].x, 0.0);
+    let seed = (u32(transform.style_params[0].z) ^ style.series_salt) + styled_point_index(inst);
+    let seg = stem_quad(style.primitive_flags);
+    return stem_vertex(
+        in,
+        style.line_width_px * 0.5,
+        errorbar_sketch_offset(amp, seed, seg, true),
+        errorbar_sketch_offset(amp, seed, seg, false),
+    );
+}
+
+@fragment
+fn fs_stem(in: StemOut) -> @location(0) vec4<f32> {
+    if (!dash_pattern_on(in.along_px, style.dash, style.dash_len)) {
+        discard;
+    }
+    return style.color_premul;
+}
+
 // ────────────── Milkyway jets ───────────
 // Bipolar-jet errorbars render the error range as a glowing astrophysical jet:
 // stem quads become tapered beams brightest at the data point, and the cap
@@ -215,6 +283,20 @@ struct JetOut {
     @location(3) @interpolate(flat) seed_inst: u32,
 };
 
+// A stem's jet (#206): one beam from the baseline to the point, the jet
+// source at the point (t = 1). Its dash is replaced by the jet's look, as
+// an error bar's stroke is.
+fn stem_jet(in: VsIn, out_in: JetOut) -> JetOut {
+    var out = out_in;
+    out.kind = 0u;
+    out.t_src = 1.0;
+    let v = stem_vertex(in, errorbar_jet_stroke(style.line_width_px, 0.0).stem_half, 0.0, 0.0);
+    out.pos = v.pos;
+    let corner = errorbar_corner(in.vi);
+    out.local = vec2<f32>(corner.side, select(1.0, 0.0, corner.at_a));
+    return out;
+}
+
 @vertex
 fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let seg = in.vi / 6u;
@@ -224,6 +306,9 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     out.kind = select(1u, 0u, seg == 0u || seg == 3u);
     out.t_src = 0.5;
     out.local = vec2<f32>(0.0, 0.0);
+    if ((style.primitive_flags & ERRORBAR_STEM) != 0u) {
+        return stem_jet(in, out);
+    }
 
     if (!errorbar_segment_enabled(style.primitive_flags, seg)) {
         let anchor = data_to_ndc(transform, in.x, in.y);

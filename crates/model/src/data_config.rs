@@ -424,6 +424,65 @@ pub struct XySeries {
     pub line: Option<DataLineStyleConfig>,
     /// The error bars, or none. They need markers.
     pub errors: Option<ErrorBars>,
+    /// Stems from a baseline to each point (a stem or lollipop plot,
+    /// #206), or none. They need markers.
+    pub stem: Option<Stem>,
+}
+
+/// Stems from a baseline to each point: a stem or lollipop plot (#206).
+///
+/// A stem is drawn exactly where its marker's sample is valid, from the
+/// baseline to the point along the value axis. It reads no column of its
+/// own: the baseline is configuration.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Stem {
+    /// Where the stems start, in data units of the value axis (y for
+    /// `Vertical`, x for `Horizontal`). Finite. On a logarithmic value
+    /// axis a baseline at or below zero is drawn at the axis minimum.
+    pub baseline: f64,
+    /// `Vertical` (the default, omitted when written): stems along y.
+    /// `Horizontal`: stems along x. The column roles never swap.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_vertical_stem")
+    )]
+    pub direction: CategoryBarDirection,
+    /// The stroke colour.
+    pub color: Color,
+    /// The stroke width in logical pixels, finite and at least 0.
+    pub width: f32,
+    /// The dash (`Solid`, the default, omitted when written). Every stem's
+    /// dash starts at its baseline.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_solid_stem")
+    )]
+    pub line_style: crate::line::LineStylePreset,
+}
+
+#[cfg(feature = "serde")]
+fn is_vertical_stem(direction: &CategoryBarDirection) -> bool {
+    *direction == CategoryBarDirection::Vertical
+}
+
+#[cfg(feature = "serde")]
+fn is_solid_stem(style: &crate::line::LineStylePreset) -> bool {
+    *style == crate::line::LineStylePreset::default()
+}
+
+impl Stem {
+    /// A stem's own rules: a finite baseline and a finite width of at
+    /// least 0.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.baseline.is_finite() {
+            return Err("a stem baseline must be finite");
+        }
+        if !(self.width.is_finite() && self.width >= 0.0) {
+            return Err("a stem width must be finite and at least 0");
+        }
+        Ok(())
+    }
 }
 
 /// Error bars along x, y or both, with one style.
@@ -455,8 +514,9 @@ pub struct FieldSeries {
 }
 
 impl XySeries {
-    /// The combinations a series can draw: markers or a line (or both), and
-    /// error bars only with markers, along x, y or both.
+    /// The combinations a series can draw: markers or a line (or both),
+    /// error bars only with markers, along x, y or both, and stems only
+    /// with markers.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.scatter.is_none() && self.line.is_none() {
             return Err("an xy series draws markers, a line or both");
@@ -468,6 +528,12 @@ impl XySeries {
             if errors.x.is_none() && errors.y.is_none() {
                 return Err("error bars run along x, y or both");
             }
+        }
+        if let Some(stem) = &self.stem {
+            if self.scatter.is_none() {
+                return Err("stems are drawn with markers");
+            }
+            stem.validate()?;
         }
         Ok(())
     }
@@ -489,57 +555,80 @@ impl FieldSeries {
 
 impl From<WireRenderType> for DataRenderType {
     fn from(wire: WireRenderType) -> Self {
-        let xy = |scatter, line, errors| {
+        let xy = |scatter, line, errors, stem| {
             DataRenderType::Xy(XySeries {
                 scatter,
                 line,
                 errors,
+                stem,
             })
         };
         let errors = |x, y, style| Some(ErrorBars { x, y, style });
         match wire {
-            WireRenderType::Scatter { scatter } => xy(Some(scatter), None, None),
-            WireRenderType::Line { line } => xy(None, Some(line), None),
-            WireRenderType::ScatterLine { scatter, line } => xy(Some(scatter), Some(line), None),
+            WireRenderType::Scatter { scatter, stem } => xy(Some(scatter), None, None, stem),
+            WireRenderType::Line { line } => xy(None, Some(line), None, None),
+            WireRenderType::ScatterLine {
+                scatter,
+                line,
+                stem,
+            } => xy(Some(scatter), Some(line), None, stem),
             WireRenderType::ScatterErrorbarX {
                 scatter,
                 err_x,
                 err_style,
-            } => xy(Some(scatter), None, errors(Some(err_x), None, err_style)),
+                stem,
+            } => xy(
+                Some(scatter),
+                None,
+                errors(Some(err_x), None, err_style),
+                stem,
+            ),
             WireRenderType::ScatterErrorbarY {
                 scatter,
                 err_y,
                 err_style,
-            } => xy(Some(scatter), None, errors(None, Some(err_y), err_style)),
+                stem,
+            } => xy(
+                Some(scatter),
+                None,
+                errors(None, Some(err_y), err_style),
+                stem,
+            ),
             WireRenderType::ScatterErrorbarXY {
                 scatter,
                 err_x,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 None,
                 errors(Some(err_x), Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarX {
                 scatter,
                 line,
                 err_x,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(Some(err_x), None, err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarY {
                 scatter,
                 line,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(None, Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarXY {
                 scatter,
@@ -547,10 +636,12 @@ impl From<WireRenderType> for DataRenderType {
                 err_x,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(Some(err_x), Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::Heatmap {
                 matrix,
@@ -701,12 +792,15 @@ impl TryFrom<DataRenderType> for WireRenderType {
         Ok(match render {
             DataRenderType::Xy(xy) => {
                 xy.validate()?;
+                let stem = xy.stem;
                 match (xy.scatter, xy.line, xy.errors) {
-                    (Some(scatter), None, None) => WireRenderType::Scatter { scatter },
+                    (Some(scatter), None, None) => WireRenderType::Scatter { scatter, stem },
                     (None, Some(line), None) => WireRenderType::Line { line },
-                    (Some(scatter), Some(line), None) => {
-                        WireRenderType::ScatterLine { scatter, line }
-                    }
+                    (Some(scatter), Some(line), None) => WireRenderType::ScatterLine {
+                        scatter,
+                        line,
+                        stem,
+                    },
                     (
                         Some(scatter),
                         line,
@@ -720,29 +814,34 @@ impl TryFrom<DataRenderType> for WireRenderType {
                             scatter,
                             err_x,
                             err_style,
+                            stem,
                         },
                         (None, None, Some(err_y)) => WireRenderType::ScatterErrorbarY {
                             scatter,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (None, Some(err_x), Some(err_y)) => WireRenderType::ScatterErrorbarXY {
                             scatter,
                             err_x,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (Some(line), Some(err_x), None) => WireRenderType::LineScatterErrorbarX {
                             scatter,
                             line,
                             err_x,
                             err_style,
+                            stem,
                         },
                         (Some(line), None, Some(err_y)) => WireRenderType::LineScatterErrorbarY {
                             scatter,
                             line,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (Some(line), Some(err_x), Some(err_y)) => {
                             WireRenderType::LineScatterErrorbarXY {
@@ -751,6 +850,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                                 err_x,
                                 err_y,
                                 err_style,
+                                stem,
                             }
                         }
                         (_, None, None) => return Err("error bars run along x, y or both"),
@@ -914,6 +1014,11 @@ impl serde::Serialize for DataRenderType {
 pub(crate) enum WireRenderType {
     Scatter {
         scatter: DataScatterStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     Line {
         line: DataLineStyleConfig,
@@ -921,34 +1026,64 @@ pub(crate) enum WireRenderType {
     ScatterLine {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarX {
         scatter: DataScatterStyleConfig,
         err_x: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarY {
         scatter: DataScatterStyleConfig,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarXY {
         scatter: DataScatterStyleConfig,
         err_x: ErrorRef,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarX {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
         err_x: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarY {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarXY {
         scatter: DataScatterStyleConfig,
@@ -956,6 +1091,11 @@ pub(crate) enum WireRenderType {
         err_x: ErrorRef,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     /// Bars from pre-binned data. Binning is the host's job: the renderer is
     /// handed `(edges, counts)` and draws them.
@@ -5768,6 +5908,7 @@ mod serde_tests {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &cfg.render_type
         else {
             panic!("expected scatter");
@@ -5815,6 +5956,7 @@ mod serde_tests {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &cfg.render_type
         else {
             panic!("expected scatter");
@@ -6334,6 +6476,82 @@ mod serde_tests {
         bytes["render_type"]["RgbImage"]["opacity"] = serde_json::json!(0.5);
         let parsed: SeriesConfig = serde_json::from_value(bytes.clone()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), bytes);
+    }
+
+    /// A stem is an additive key on the marker variants (#206): absent, it
+    /// reads back as `None` and is not written; present, its defaults
+    /// (`Vertical`, `Solid`) are omitted and the value round-trips.
+    #[test]
+    fn a_stem_round_trips_and_omits_its_defaults() {
+        let mut json = base_series_json();
+        json["render_type"]["Scatter"]["stem"] = serde_json::json!({
+            "baseline": 0.5,
+            "color": { "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+            "width": 1.5
+        });
+        let cfg: SeriesConfig = serde_json::from_value(json.clone()).expect("a stem parses");
+        let DataRenderType::Xy(super::XySeries {
+            stem: Some(stem), ..
+        }) = &cfg.render_type
+        else {
+            panic!("expected a stem: {:?}", cfg.render_type);
+        };
+        assert_eq!(stem.baseline, 0.5);
+        assert_eq!(stem.direction, super::CategoryBarDirection::Vertical);
+        assert_eq!(stem.line_style, crate::line::LineStylePreset::Solid);
+        let back = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(back["render_type"], json["render_type"]);
+
+        // The other direction and a dash are written.
+        let mut horizontal = cfg.clone();
+        if let DataRenderType::Xy(xy) = &mut horizontal.render_type {
+            let stem = xy.stem.as_mut().unwrap();
+            stem.direction = super::CategoryBarDirection::Horizontal;
+            stem.line_style = crate::line::LineStylePreset::Dash;
+        }
+        let written = serde_json::to_value(&horizontal).unwrap();
+        let stem_json = &written["render_type"]["Scatter"]["stem"];
+        assert_eq!(stem_json["direction"], "Horizontal");
+        assert_eq!(stem_json["line_style"], "Dash");
+        let reread: SeriesConfig = serde_json::from_value(written).unwrap();
+        assert_eq!(reread, horizontal);
+
+        // Without a stem nothing is written.
+        let plain: SeriesConfig = serde_json::from_value(base_series_json()).unwrap();
+        let written = serde_json::to_value(&plain).unwrap();
+        assert!(written["render_type"]["Scatter"].get("stem").is_none());
+
+        // Every marker variant carries the key.
+        let mut errored = base_series_json();
+        errored["render_type"] = serde_json::json!({
+            "LineScatterErrorbarXY": {
+                "scatter": base_series_json()["render_type"]["Scatter"]["scatter"],
+                "line": serde_json::to_value(super::DataLineStyleConfig::default()).unwrap(),
+                "err_x": { "Symmetric": { "column": "ex" } },
+                "err_y": { "Symmetric": { "column": "ey" } },
+                "err_style": {
+                    "error_bar_color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+                    "error_bar_width": 1.0,
+                    "error_bar_cap_size": 4.0,
+                    "cap_width": 1.0
+                },
+                "stem": json["render_type"]["Scatter"]["stem"]
+            }
+        });
+        let cfg: SeriesConfig = serde_json::from_value(errored.clone()).unwrap();
+        assert!(matches!(
+            &cfg.render_type,
+            DataRenderType::Xy(super::XySeries {
+                stem: Some(_),
+                errors: Some(_),
+                line: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap()["render_type"],
+            errored["render_type"]
+        );
     }
 }
 
@@ -6931,6 +7149,7 @@ mod category_bar_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         assert_eq!(line.drag_value_label(0, 3, 1.0, 1.0), reject);
         assert_eq!(line.value_label_offsets(), None);
@@ -7038,6 +7257,7 @@ mod category_bar_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         let before = line.clone();
         format_labels(std::slice::from_mut(&mut line), &cats, read);
@@ -7239,6 +7459,7 @@ mod box_plot_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         // No box plot series: nothing to hold, not even a categorical axis.
         assert_eq!(
@@ -8119,6 +8340,7 @@ mod step_selection_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         })
     }
 
@@ -8596,6 +8818,7 @@ mod step_selection_tests {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut filled[1].render_type
         {
             line.fill = Some(LineFill::ToSeries("a".into()));
@@ -8690,6 +8913,7 @@ mod streamline_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         assert_eq!(validate_streamline_series(&line), Ok(()));
     }

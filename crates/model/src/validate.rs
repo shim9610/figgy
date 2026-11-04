@@ -327,6 +327,9 @@ impl Config {
             DataRenderType::Xy(xy) if xy.errors.is_some() => {
                 return Err("error bars are not drawn on polar axes");
             }
+            DataRenderType::Xy(xy) if xy.stem.is_some() => {
+                return Err("stems are not drawn on polar axes");
+            }
             DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
             DataRenderType::CategoryBars { .. } => None,
             DataRenderType::Radar { .. } => item
@@ -405,6 +408,7 @@ mod tests {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -423,6 +427,80 @@ mod tests {
         assert_eq!(error.field, "series_id");
         let error = config.validate_series(&[scatter("")]).unwrap_err();
         assert_eq!(error.series_id.as_deref(), Some(""));
+    }
+
+    /// A stem needs markers, a finite baseline and a finite width of at
+    /// least 0, and it is refused on polar and 3D charts (#206). The colour
+    /// cycle recolours it with the rest of the series.
+    #[test]
+    fn stem_rules_are_checked() {
+        use crate::data_config::{CategoryBarDirection, Stem, XySeries};
+        let stem = Stem {
+            baseline: 0.0,
+            direction: CategoryBarDirection::Vertical,
+            color: Color::BLACK,
+            width: 1.0,
+            line_style: crate::line::LineStylePreset::Solid,
+        };
+        let with = |stem: Stem| {
+            let mut series = scatter("s");
+            if let DataRenderType::Xy(xy) = &mut series.render_type {
+                xy.stem = Some(stem);
+            }
+            series
+        };
+        let config = default_config();
+        assert_eq!(config.validate_series(&[with(stem.clone())]), Ok(()));
+        let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().reason;
+        assert_eq!(
+            reason(with(Stem {
+                baseline: f64::NAN,
+                ..stem.clone()
+            })),
+            "a stem baseline must be finite"
+        );
+        for width in [-1.0, f32::INFINITY, f32::NAN] {
+            assert_eq!(
+                reason(with(Stem {
+                    width,
+                    ..stem.clone()
+                })),
+                "a stem width must be finite and at least 0"
+            );
+        }
+        let mut bare = with(stem.clone());
+        if let DataRenderType::Xy(XySeries { scatter, line, .. }) = &mut bare.render_type {
+            *scatter = None;
+            *line = Some(crate::data_config::DataLineStyleConfig::default());
+        }
+        assert_eq!(reason(bare), "stems are drawn with markers");
+
+        let mut polar = default_config();
+        polar.bottom_x.min = 0.0;
+        polar.bottom_x.max = 360.0;
+        polar.set_polar(Some(PolarOptions::default()));
+        assert_eq!(
+            polar.validate_series_on_polar(&with(stem.clone())),
+            Err("stems are not drawn on polar axes")
+        );
+        let mut three_d = default_config();
+        three_d.set_view_3d(Some(crate::view3d::View3d::default()));
+        let mut tall = with(stem.clone());
+        tall.z_column = Some("z".into());
+        assert_eq!(
+            three_d.validate_view3d_series(&[tall]),
+            Err("stems draw flat: not on a 3D chart")
+        );
+
+        let mut cycled = with(stem);
+        crate::preset::ColorCycle::Balanced.apply_to_series(&mut cycled, 3);
+        let DataRenderType::Xy(XySeries {
+            stem: Some(stem), ..
+        }) = &cycled.render_type
+        else {
+            panic!("the stem stays");
+        };
+        assert_eq!(stem.color, crate::preset::ColorCycle::Balanced.color(3));
     }
 
     #[test]

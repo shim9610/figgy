@@ -44,6 +44,11 @@ pub(crate) const ERRORBAR_HAS_Y: u32 = 1 << 0;
 
 pub(crate) const ERRORBAR_HAS_X: u32 = 1 << 1;
 
+/// A stem series' style (#206): one quad per point from the baseline, which
+/// `cap_half_px` / `cap_width_px` hold as its `(hi, lo)` pair. Bits 2-4 are
+/// the line step and fill flags (`line_step.rs`).
+pub(crate) const ERRORBAR_STEM: u32 = 1 << 5;
+
 /// Renderer policy for histogram width ratios. Invalid host values inherit the
 /// full-bin default instead of poisoning bar geometry with NaN.
 pub(crate) fn sanitize_bar_width_ratio(value: f32) -> f32 {

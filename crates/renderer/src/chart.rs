@@ -89,6 +89,16 @@ impl FitExtent {
         min_positive: None,
     };
 
+    /// The extent of one value: a baseline a histogram or a stem series
+    /// adds to its value axis (`min_positive` only when it is above zero).
+    pub fn point(value: f64) -> Self {
+        Self {
+            min: value,
+            max: value,
+            min_positive: (value > 0.0).then_some(value),
+        }
+    }
+
     /// Widen to also cover `other`.
     pub fn union(&mut self, other: &FitExtent) {
         if other.min < self.min {
@@ -1048,12 +1058,27 @@ impl Chart {
                         Ok(FitExtent::EMPTY)
                     }
                 };
-                let (member_x, member_y) = Self::line_offset_fit_extents(
-                    &self.config,
-                    &cfg.series_id,
-                    extent(fit_x, &cfg.x_column)?,
-                    extent(fit_y, &cfg.y_column)?,
-                );
+                let (mut own_x, mut own_y) =
+                    (extent(fit_x, &cfg.x_column)?, extent(fit_y, &cfg.y_column)?);
+                // A stem's baseline joins its value axis (#206), before a
+                // line offset member's shift.
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    stem: Some(stem), ..
+                }) = &cfg.render_type
+                {
+                    let baseline = FitExtent::point(stem.baseline);
+                    match stem.direction {
+                        crate::data_config::CategoryBarDirection::Vertical if fit_y => {
+                            own_y.union(&baseline)
+                        }
+                        crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                            own_x.union(&baseline)
+                        }
+                        _ => {}
+                    }
+                }
+                let (member_x, member_y) =
+                    Self::line_offset_fit_extents(&self.config, &cfg.series_id, own_x, own_y);
                 if fit_x {
                     x.union(&member_x);
                 }

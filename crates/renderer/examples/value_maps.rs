@@ -70,6 +70,7 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
             scatter: Some(points),
             line: None,
             errors: None,
+            stem: None,
         }),
     )];
     colorbar(
@@ -170,6 +171,7 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
                 scatter: Some(marker),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         ));
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);

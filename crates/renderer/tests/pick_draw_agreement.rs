@@ -188,6 +188,7 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -200,6 +201,7 @@ fn scatter_with_size_override(base: f32, size: f32) -> SeriesConfig {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!()
@@ -576,6 +578,7 @@ fn zero_size_markers_pick_their_drawn_dot() {
             scatter: Some(slot),
             line: None,
             errors: None,
+            ..
         }) = &mut slot_zero.render_type
         else {
             unreachable!()
@@ -590,6 +593,7 @@ fn zero_size_markers_pick_their_drawn_dot() {
             scatter: Some(map),
             line: None,
             errors: None,
+            ..
         }) = &mut map_zero.render_type
         else {
             unreachable!()
@@ -638,6 +642,7 @@ fn overlap_tie_follows_the_painted_colour() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!()
@@ -757,6 +762,7 @@ pub fn line(
                 interpolation,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -1155,6 +1161,7 @@ fn random_composite_markers_and_star_lines_pick_where_they_draw() {
                     interpolation: LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
             ..scatter("random", shape.clone(), size, BLUE)
         };
@@ -1370,6 +1377,7 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
         ..scatter("sky", ScatterShape::CircleFilled, 3.0, BLUE)
     }];
@@ -1448,6 +1456,7 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
         ..scatter("path", ScatterShape::Circle, 5.0, BLUE)
     };
@@ -2026,6 +2035,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                     scatter: Some(marker_style),
                     line: None,
                     errors: None,
+                    ..
                 }) = marker.render_type.clone()
                 else {
                     unreachable!()
@@ -2042,6 +2052,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                             interpolation: renderer::data_config::LineInterpolation::Linear,
                         }),
                         errors: None,
+                        stem: None,
                     }),
                     ..marker
                 }];
@@ -2825,6 +2836,7 @@ pub fn errorbar_series(
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
     else {
         unreachable!()
@@ -2841,6 +2853,7 @@ pub fn errorbar_series(
                 y: None,
                 style: err_style,
             }),
+            stem: None,
         }),
         "y" => DataRenderType::Xy(renderer::data_config::XySeries {
             scatter: Some(scatter),
@@ -2850,6 +2863,7 @@ pub fn errorbar_series(
                 y: Some(symmetric("ey")),
                 style: err_style,
             }),
+            stem: None,
         }),
         "xy" => DataRenderType::Xy(renderer::data_config::XySeries {
             scatter: Some(scatter),
@@ -2859,6 +2873,7 @@ pub fn errorbar_series(
                 y: Some(symmetric("ey")),
                 style: err_style,
             }),
+            stem: None,
         }),
         "asym" => DataRenderType::Xy(renderer::data_config::XySeries {
             scatter: Some(scatter),
@@ -2871,6 +2886,7 @@ pub fn errorbar_series(
                 }),
                 style: err_style,
             }),
+            stem: None,
         }),
         other => panic!("no error-bar kind {other}"),
     };
@@ -3039,6 +3055,94 @@ fn error_bars_pick_where_their_stems_and_caps_are_drawn() {
     }
 }
 
+/// A stem (#206) picks exactly where the stem shader draws it, with the
+/// shared quad (`stem_segment`): vertical and horizontal, solid and dashed
+/// (a dash gap neither paints nor picks), a baseline below the data, a log
+/// value axis whose baseline 0 clamps to the axis minimum, Precise and
+/// Sketch, at 1x and 2x. A Milkyway jet's painted pixels all pick.
+#[test]
+fn stems_pick_where_they_paint() {
+    use renderer::config::{AxisScale, DrawStyle, MilkywayOptions, SketchOptions};
+    use renderer::data_config::{CategoryBarDirection, Stem};
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![2.0, 5.0, 8.0], vec![7.0, 3.0, 5.5]);
+    let stem_series = |direction, baseline: f64, dash| {
+        let mut series = scatter("stems", ScatterShape::CircleFilled, 2.0, BLUE);
+        let DataRenderType::Xy(xy) = &mut series.render_type else {
+            unreachable!()
+        };
+        xy.stem = Some(Stem {
+            baseline,
+            direction,
+            color: RED,
+            width: 3.0,
+            line_style: dash,
+        });
+        series
+    };
+    let precise = bare_chart();
+    let mut log = bare_chart();
+    log.config_mut().left_y.scale = AxisScale::Logarithmic;
+    log.set_y_range(1.0, 10.0);
+    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+        amplitude_px: 3.0,
+        wavelength_px: 12.0,
+        seed: 11,
+    }));
+    for scale in [1.0, 2.0] {
+        for (chart, what) in [(&precise, "precise"), (&log, "log y"), (&sketch, "sketch")] {
+            for (direction, baseline, dash, kind) in [
+                (
+                    CategoryBarDirection::Vertical,
+                    0.0,
+                    LineStylePreset::Solid,
+                    "vertical",
+                ),
+                (
+                    CategoryBarDirection::Vertical,
+                    1.5,
+                    LineStylePreset::Dash,
+                    "dashed",
+                ),
+                (
+                    CategoryBarDirection::Horizontal,
+                    1.0,
+                    LineStylePreset::Solid,
+                    "horizontal",
+                ),
+            ] {
+                let series = [stem_series(direction, baseline, dash)];
+                // The frame lines are drawn over the data: a stem whose
+                // baseline is the axis minimum ends under the bottom one,
+                // where it picks but shows no ink. Those rows stay out.
+                let s = scale as u32;
+                let window = Some((3 * s, 0, WIDTH * s, HEIGHT * s - 3 * s));
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "stems",
+                    scale,
+                    window,
+                    &format!("{what} {kind} stems"),
+                    MSAA_EDGE,
+                );
+                assert!(painted > 40, "{what} {kind} at {scale}x: {painted}");
+            }
+        }
+        let milkyway = styled_chart(DrawStyle::Milkyway(MilkywayOptions::default()));
+        let series = [stem_series(
+            CategoryBarDirection::Vertical,
+            0.0,
+            LineStylePreset::Solid,
+        )];
+        let painted =
+            assert_painted_pixels_pick(&mut renderer, &milkyway, &series, "stems", scale, "jets");
+        assert!(painted > 100, "jets at {scale}x: {painted}");
+    }
+}
+
 /// A line series `id` on the x / y columns filled by `fill` in opaque
 /// green, with a 1.5 px stroke.
 pub fn filled_line(
@@ -3057,6 +3161,7 @@ pub fn filled_line(
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!()
@@ -3155,6 +3260,7 @@ fn area_fills_pick_where_they_paint() {
                     scatter: None,
                     line: Some(line),
                     errors: None,
+                    ..
                 }) = &mut lower.render_type
                 else {
                     unreachable!()
@@ -4670,6 +4776,7 @@ fn offset_lines_pick_where_their_shifted_parts_paint() {
         scatter: Some(markers),
         line: None,
         errors: None,
+        ..
     }) = scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE).render_type
     else {
         unreachable!()
@@ -4692,6 +4799,7 @@ fn offset_lines_pick_where_their_shifted_parts_paint() {
                 }),
                 style: errorbar_style(GREEN, 1.5, 6.0, 1.5),
             }),
+            stem: None,
         }),
         ..scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE)
     };

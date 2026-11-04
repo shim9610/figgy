@@ -954,6 +954,49 @@ Constraints:
 filled between series, a step line filled to a baseline and the three step
 modes.
 
+#### Stems
+
+A series with markers draws stems when its `XySeries` names a `stem`
+(#206): one stroke per point from a baseline to the point, under its error
+bars, its line and its markers. This is a stem plot (an impulse response
+`h[n]`) or, along x, a lollipop chart. `stem` is omitted from JSON when
+`None`.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `baseline` | `f64` | Where every stem starts, in data units of the value axis (y for `Vertical`, x for `Horizontal`). Finite. |
+| `direction` | `CategoryBarDirection` | `Vertical` (default, omitted): stems along y. `Horizontal`: stems along x. `x_column` stays x and `y_column` stays y either way. |
+| `color` | `Color` | The stroke colour. A zero alpha draws and picks nothing. |
+| `width` | `f32` | The stroke width in logical pixels, finite and at least 0. It scales with the export. |
+| `line_style` | `LineStylePreset` | The dash (`Solid`, the default, omitted). Every stem's dash starts at its baseline. |
+
+- A stem is drawn exactly where its marker's sample is valid: a NaN
+  coordinate draws none, and so does a value at or below zero on a
+  logarithmic value axis. A stem whose value equals the baseline has no
+  length; its marker still draws.
+- On a logarithmic value axis a baseline at or below zero has no position,
+  so it is drawn at the axis minimum, as an area fill's baseline is.
+- A stem picks as its point (`PickedData::Point`): its body, its baseline
+  end and its marker. A dash gap does not pick. The marker wins a tie, and
+  so does an error bar. Selection, `step_selection` and the picked ring are
+  the point's.
+- The baseline joins the value axis' auto-fit, like a histogram's baseline.
+  A line offset member's stems and baseline shift with the member.
+- The renderer draws no line along the baseline. Draw one with an existing
+  part: an `AnnotationKind::ReferenceLine` at the baseline (selectable and
+  draggable), or the axis' `cross_at`.
+- The legend symbol is the marker glyph, as for a series with error bars.
+- Sketch wobbles a stem like an error bar's stem, Milkyway draws it as a
+  jet, and Constellation drops a stem series, as it drops an error-bar
+  series.
+- Refused: stems without markers, polar charts ("stems are not drawn on
+  polar axes"), 3D charts ("stems draw flat: not on a 3D chart") and
+  streamed sources (`STREAMED_STEM_REASON`).
+- Cost: every row draws a stem, and the pick scans every row, as for error
+  bars. `tests/stem_render.rs` measures 1,000,001 rows: about 1.2 s to draw
+  and 4.7 s to pick the last row on lavapipe (a CPU rasterizer). There is no
+  cap: the budget is the host's.
+
 #### Histogram bars
 
 Histogram width is resolved in two stages: `width_ratio` keeps a centred
@@ -1741,6 +1784,46 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 [examples/area_step.rs](examples/area_step.rs)는 시리즈 사이를 채운 예측 구간, 기준선까지 채운 계단선, 세 가지 계단 방식을 그린다.
 
 <a id="히스토그램-막대"></a>
+
+#### 스템
+
+마커를 그리는 시리즈는 `XySeries`의 `stem`을 지정하면 스템을 그립니다
+(#206). 기준선에서 각 점까지 점마다 선 하나를 그리며, 오차막대와 선과
+마커 아래에 놓입니다. 스템 플롯(임펄스 응답 `h[n]`)이나, x 방향이면
+롤리팝 차트가 됩니다. `stem`이 `None`이면 JSON에서 생략됩니다.
+
+| 필드 | 타입 | 의미 |
+| --- | --- | --- |
+| `baseline` | `f64` | 모든 스템이 시작하는 곳. 값 축의 데이터 단위입니다(`Vertical`이면 y, `Horizontal`이면 x). 유한한 값이어야 합니다. |
+| `direction` | `CategoryBarDirection` | `Vertical`(기본값, 생략): y 방향 스템. `Horizontal`: x 방향 스템. 어느 쪽이든 `x_column`은 x, `y_column`은 y입니다. |
+| `color` | `Color` | 선 색. 알파가 0이면 그리지도 픽하지도 않습니다. |
+| `width` | `f32` | 선 두께(논리 픽셀). 유한하고 0 이상이어야 하며 내보내기 배율을 따릅니다. |
+| `line_style` | `LineStylePreset` | 점선 모양(`Solid`가 기본값이며 생략). 모든 스템의 점선은 기준선에서 시작합니다. |
+
+- 스템은 그 점의 마커 표본이 유효한 곳에서만 그립니다. 좌표가 NaN이면
+  그리지 않고, 로그 값 축에서 0 이하인 값도 그리지 않습니다. 값이
+  기준선과 같으면 길이가 없지만 마커는 그립니다.
+- 로그 값 축에서 0 이하인 기준선은 위치가 없으므로, 면 채움의 기준선처럼
+  축 최솟값에 그립니다.
+- 스템은 그 점으로 픽됩니다(`PickedData::Point`). 몸통, 기준선 끝, 마커
+  모두 해당합니다. 점선의 빈칸은 픽되지 않습니다. 겹치면 마커가 이기고
+  오차막대도 이깁니다. 선택, `step_selection`, 픽 고리는 점의 것을
+  씁니다.
+- 기준선은 히스토그램의 기준선처럼 값 축 자동 맞춤에 들어갑니다. 선
+  오프셋 멤버의 스템과 기준선은 멤버와 함께 이동합니다.
+- 렌더러는 기준선을 따라 선을 그리지 않습니다. 필요하면 기존 요소로
+  그립니다. 기준선 위치의 `AnnotationKind::ReferenceLine`(선택과 드래그
+  가능)이나 축의 `cross_at`을 쓰세요.
+- 범례 기호는 오차막대가 있는 시리즈처럼 마커 기호입니다.
+- Sketch는 오차막대 줄기처럼 스템을 흔들고, Milkyway는 제트로 그리며,
+  Constellation은 오차막대 시리즈처럼 스템 시리즈를 그리지 않습니다.
+- 거부: 마커 없는 스템, 극좌표 차트("stems are not drawn on polar axes"),
+  3D 차트("stems draw flat: not on a 3D chart"), 스트리밍 소스
+  (`STREAMED_STEM_REASON`).
+- 비용: 모든 행이 스템을 그리고, 오차막대처럼 픽은 모든 행을 훑습니다.
+  `tests/stem_render.rs`가 1,000,001행을 측정합니다. lavapipe(CPU
+  래스터라이저)에서 그리기 약 1.2초, 마지막 행 픽 약 4.7초입니다. 상한은
+  없으며 예산은 호스트가 정합니다.
 
 #### 히스토그램 막대
 

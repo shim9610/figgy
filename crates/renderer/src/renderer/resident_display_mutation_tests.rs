@@ -521,6 +521,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         ),
         declared(
@@ -546,6 +547,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         ),
         declared(

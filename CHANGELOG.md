@@ -29,8 +29,8 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 `Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
 the ternary series' `region`, `view_3d`, the heatmaps' `surface`, the
 axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
-`part`, a category's `rich_label`, the axes' `category_groups` and the
-chart's `plot_background`) are additive.
+`part`, a category's `rich_label`, the axes' `category_groups`, the
+chart's `plot_background` and the xy series' `stem`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -142,7 +142,8 @@ chart's `plot_background`) are additive.
   (`Scatter`, `Line`, `ScatterLine`, `ScatterErrorbarX`, `ScatterErrorbarY`,
   `ScatterErrorbarXY`, `LineScatterErrorbarX`, `LineScatterErrorbarY`,
   `LineScatterErrorbarXY`) are one variant, `DataRenderType::Xy(XySeries {
-  scatter, line, errors })`, with `ErrorBars { x, y, style }`; the three
+  scatter, line, errors, stem })` (`stem`: #206, `None` for these), with
+  `ErrorBars { x, y, style }`; the three
   field combinations (`Heatmap`, `Contour`, `HeatmapContour`) are
   `DataRenderType::Field(FieldSeries { matrix, fill, contour, surface })`.
   `XySeries::validate` and `FieldSeries::validate` hold the combinations a
@@ -152,11 +153,11 @@ chart's `plot_background`) are additive.
   one-variant-per-combination form and parse and re-serialize byte for
   byte; serializing a combination with no written form fails. Migration:
   - `DataRenderType::Scatter { scatter }` →
-    `DataRenderType::Xy(XySeries { scatter: Some(scatter), line: None, errors: None })`;
+    `DataRenderType::Xy(XySeries { scatter: Some(scatter), line: None, errors: None, stem: None })`;
     `Line { line }` → `line: Some(line)`; `ScatterLine` → both;
   - `ScatterErrorbarX { scatter, err_x, err_style }` →
     `Xy(XySeries { scatter: Some(scatter), line: None, errors:
-    Some(ErrorBars { x: Some(err_x), y: None, style: err_style }) })`, and
+    Some(ErrorBars { x: Some(err_x), y: None, style: err_style }), stem: None })`, and
     likewise the `Y`, `XY` and `LineScatterErrorbar*` forms;
   - `Heatmap { matrix, fill, surface }` →
     `Field(FieldSeries { matrix, fill: Some(fill), contour: None, surface })`;
@@ -164,6 +165,23 @@ chart's `plot_background`) are additive.
     surface: None`; `HeatmapContour` → both;
   - a `match` reads the parts instead of listing combinations, for example
     `DataRenderType::Xy(xy) => xy.line.as_ref()`.
+- **Stem and lollipop plots** ([#206](https://github.com/shim9610/figgy/issues/206)).
+  `XySeries` gains `stem: Option<Stem>`: stems from a baseline to each
+  point, drawn with the series' markers. `Stem { baseline, direction,
+  color, width, line_style }`: the baseline in data units of the value
+  axis, `direction` (`CategoryBarDirection`, `Vertical` along y by
+  default, `Horizontal` along x for a lollipop), the stroke colour, width
+  in logical pixels and dash (`Solid` by default). The column roles never
+  swap. On the wire the eight marker variants (`Scatter`, `ScatterLine`,
+  `ScatterErrorbar*`, `LineScatterErrorbar*`) carry an optional `stem`
+  key, omitted when `None`, with `direction` and `line_style` omitted at
+  their defaults. `XySeries::validate` refuses stems without markers, a
+  non-finite baseline and a width that is negative or not finite; polar
+  charts refuse stems ("stems are not drawn on polar axes"), and so do 3D
+  charts ("stems draw flat: not on a 3D chart"). `ColorCycle` recolours a
+  stem with the rest of the series. Migration: an `XySeries { .. }`
+  literal adds `stem: None`, and a pattern that names every field adds
+  `stem` or `..`.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -1093,6 +1111,28 @@ chart's `plot_background`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
+  series' stems are the error-bar module's second draw: one quad per point
+  (`vs_stem`, `vs_stem_sketch` into `fs_stem`; a Milkyway jet through
+  `vs_jet`'s stem branch), built by `stem_segment` in
+  `common/errorbar_segment.wgsl` from the baseline to the point. Its
+  `Style` carries `ERRORBAR_STEM` (bit 5 of `primitive_flags`) with the
+  direction bit, and the baseline as the pool's `(hi, lo)` pair in
+  `cap_half_px` / `cap_width_px`. Stems draw first of the series' parts,
+  under the error bars, the line and the markers, exactly where the
+  marker's sample is valid. Every stem's dash starts at its baseline, with
+  no arc scan. On a logarithmic value axis a baseline at or below zero is
+  drawn at the axis minimum: `axis_baseline_ndc` in `common/projection.wgsl`
+  now serves the area fill and the stems. A stem picks as its point
+  (`pick_stem_candidate` under the error-bar pick variant; a dash gap does
+  not pick), and the marker wins a tie. The baseline joins the value
+  axis' auto-fit, as a histogram's does (`FitExtentParams::Stem`), before
+  a line offset member's shift. Constellation drops a stem series, as it
+  drops an error-bar series. Streaming is not extended to stems
+  (`STREAMED_STEM_REASON`). Every row draws a stem: 1,000,001 rows draw in
+  about 1.2 s and pick their last row in about 4.7 s on lavapipe, measured
+  by `tests/stem_render.rs` and never capped.
 
 - **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
   A radial chart whose sectors are all Flat, level (no tilt or depth),

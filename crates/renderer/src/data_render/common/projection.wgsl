@@ -146,6 +146,26 @@ fn ternary_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>, cv: vec2<f32>) -> vec
     return (t.ternary_lt.xy * x + t.ternary_lt.zw * y + t.ternary_r.xy * c) / (x + y + c);
 }
 
+// A baseline on axis `axis` (0 = x, 1 = y) in NDC: an area fill's base or a
+// stem's start (#206). At or below zero on a logarithmic axis it has no
+// position; masking it would delete the whole fill or stem, so it is
+// clamped to the axis minimum (data_t = 0). This is the documented
+// exception to the `sample_valid` rule. The other coordinate is a dummy 1.
+fn axis_baseline_ndc(t: Transform, base: vec2<f32>, axis: u32) -> f32 {
+    let value = base.x + base.y;
+    let one = vec2<f32>(1.0, 0.0);
+    if (axis == 0u) {
+        if (t.scale_log.x != 0.0 && !(value > 0.0)) {
+            return t.data_to_panel_offset.x * 2.0 - 1.0;
+        }
+        return data_to_ndc(t, base, one).x;
+    }
+    if (t.scale_log.y != 0.0 && !(value > 0.0)) {
+        return t.data_to_panel_offset.y * 2.0 - 1.0;
+    }
+    return data_to_ndc(t, one, base).y;
+}
+
 /// A data point in the draw's pixel frame: render pixels from the target's
 /// centre, y up, as every vertex stage computes it. The exact picker
 /// measures every primitive in this frame (SHADER_COMMON.md, the draw's

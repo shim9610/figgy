@@ -388,6 +388,7 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
                     2.0,
                 )),
                 errors: None,
+                stem: None,
             }),
         ),
         1 => (
@@ -401,6 +402,7 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
                     2.0,
                 )),
                 errors: None,
+                stem: None,
             }),
         ),
         2 => (
@@ -414,6 +416,7 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
                     2.0,
                 )),
                 errors: None,
+                stem: None,
             }),
         ),
         _ => (
@@ -427,6 +430,7 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
                     1.5,
                 )),
                 errors: None,
+                stem: None,
             }),
         ),
     }

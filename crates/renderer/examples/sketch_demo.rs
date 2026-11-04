@@ -97,6 +97,7 @@ fn main() {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -188,6 +189,7 @@ fn main() {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         },
         SeriesConfig {
@@ -208,6 +210,7 @@ fn main() {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         },
         SeriesConfig {
@@ -244,6 +247,7 @@ fn main() {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         },
     ];

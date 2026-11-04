@@ -751,6 +751,7 @@ fn colored(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut series.render_type
     {
         line.line_color = color;
@@ -1302,6 +1303,7 @@ fn polar_rejects_line_offsets() {
             }),
             line: None,
             errors: None,
+            stem: None,
         })
     }));
     assert!(rejected(&mut r, |_, s| {
@@ -1309,6 +1311,7 @@ fn polar_rejects_line_offsets() {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut s[0].render_type
         {
             line.fill = Some(crate::data_config::LineFill::ToSeries("m1".into()));

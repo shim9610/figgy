@@ -61,6 +61,7 @@ fn declaration(id: &str, x: &str, y: &str) -> SeriesConfig {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -105,6 +106,7 @@ fn streaming_accepts_mapped_errorbars_but_rejects_contour() {
                 error_bar_style_overrides: None,
             },
         }),
+        stem: None,
     });
     assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
     series.render_type = DataRenderType::Field(crate::data_config::FieldSeries {
@@ -269,6 +271,7 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
                 }),
                 style: err_style,
             }),
+            stem: None,
         });
         let mut resident_series = stream_series.clone();
         resident_series.x_column = "rx".into();
@@ -282,6 +285,7 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
                     y: Some(err_y),
                     style: err_style,
                 }),
+            ..
         }) = &mut resident_series.render_type
         {
             scatter.point_style_index_column = Some("rscatter_index".into());
@@ -423,6 +427,7 @@ fn mapped_style_upload_reserves_meta_budget_and_preserves_retry_ticket() {
         }),
         line: None,
         errors: None,
+        stem: None,
     });
     let config = crate::default::default_config();
     let chart = r.register_chart(config.clone(), vec![series]).unwrap();
@@ -505,6 +510,7 @@ fn short_mapped_style_index_fails_before_stream_draw_job() {
         }),
         line: None,
         errors: None,
+        stem: None,
     });
     let config = crate::default::default_config();
     let chart = r.register_chart(config.clone(), vec![series]).unwrap();
@@ -546,6 +552,7 @@ fn mapped_base_style_storage_is_preflighted_and_charged_once() {
         }),
         line: None,
         errors: None,
+        stem: None,
     });
     let config = crate::default::default_config();
     let chart = r.register_chart(config.clone(), vec![series]).unwrap();
@@ -671,6 +678,7 @@ fn six_distinct_errorbar_columns_obey_request_column_limit_before_job_start() {
                 error_bar_style_overrides: None,
             },
         }),
+        stem: None,
     });
     let config = crate::default::default_config();
     let chart = renderer
@@ -1696,6 +1704,7 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         });
         r.set_chart_series(chart_id, vec![series]).unwrap();
         r.set_chart_config(chart_id, config.clone()).unwrap();
@@ -2086,6 +2095,7 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             });
             let mut resident_a = stream_series.clone();
             resident_a.x_column = "rx".into();
@@ -2107,6 +2117,7 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             });
             let a_stream = r
                 .register_chart(chart_a.config().clone(), vec![stream_series])
@@ -2438,16 +2449,19 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                         scatter: None,
                         line: Some(line),
                         errors: None,
+                        stem: None,
                     }),
                     1 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
                         line: None,
                         errors: None,
+                        stem: None,
                     }),
                     2 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
                         line: Some(line),
                         errors: None,
+                        stem: None,
                     }),
                     3 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2457,6 +2471,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: None,
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     4 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2466,6 +2481,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: Some(err_y_asym),
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     5 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2475,6 +2491,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: Some(err_y_asym),
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     6 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2484,6 +2501,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: None,
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     7 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2493,6 +2511,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: Some(err_y_sym),
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     8 => DataRenderType::Xy(crate::data_config::XySeries {
                         scatter: Some(scatter),
@@ -2502,6 +2521,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                             y: Some(err_y_asym),
                             style: err_style,
                         }),
+                        stem: None,
                     }),
                     _ => unreachable!(),
                 };
@@ -4344,6 +4364,7 @@ fn automatic_stream_style_change_restarts_the_data_prefix() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut styled.render_type
     else {
         unreachable!()
@@ -6160,6 +6181,7 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
             }),
             line: None,
             errors: None,
+            stem: None,
         });
         r.set_chart_series(chart, vec![series]).unwrap();
         r.set_chart_config(chart, config.clone()).unwrap();
@@ -6318,6 +6340,7 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
                 }),
                 line: Some(line),
                 errors: None,
+                stem: None,
             });
             r.set_chart_series(id, series).unwrap();
         }
@@ -6572,12 +6595,14 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                     scatter: Some(scatter),
                     line: Some(line),
                     errors: None,
+                    stem: None,
                 });
             } else {
                 series.render_type = DataRenderType::Xy(crate::data_config::XySeries {
                     scatter: Some(scatter),
                     line: None,
                     errors: None,
+                    stem: None,
                 });
             }
             r.set_chart_state(id, config.clone(), vec![series.clone()])
@@ -6694,6 +6719,7 @@ fn seven_column_declaration(id: &str) -> SeriesConfig {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = series.render_type.clone()
     else {
         unreachable!()
@@ -6729,6 +6755,7 @@ fn seven_column_declaration(id: &str) -> SeriesConfig {
                 error_bar_style_overrides: None,
             },
         }),
+        stem: None,
     });
     series
 }
@@ -6935,6 +6962,7 @@ fn stream_staging_slots_only_grow_within_the_slot_limit() {
             }),
             line: None,
             errors: None,
+            stem: None,
         });
         let config = crate::default::default_config();
         let chart_id = r.register_chart(config.clone(), vec![scatter]).unwrap();
@@ -7082,6 +7110,7 @@ fn last_stream_series(kind: &str) -> SeriesConfig {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             })
         }
         "arc" => {
@@ -7089,6 +7118,7 @@ fn last_stream_series(kind: &str) -> SeriesConfig {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                ..
             }) = &mut series.render_type
             {
                 line.line_style = LineStylePreset::Dash;
@@ -7221,6 +7251,7 @@ fn a_pending_stream_ticket_never_indexes_a_shorter_series_list() {
                         scatter: None,
                         line: Some(line),
                         errors: None,
+                        ..
                     }) = &mut recolored[0].render_type
                     {
                         line.line_color = Color::new(0.0, 0.0, 1.0, 1.0);

@@ -65,6 +65,14 @@ pub(super) fn has_errorbar(rt: &DataRenderType) -> bool {
     extract_err_x(rt).is_some() || extract_err_y(rt).is_some()
 }
 
+/// Whether an xy series draws stems (#206).
+pub(super) fn has_stem(rt: &DataRenderType) -> bool {
+    matches!(
+        rt,
+        DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+    )
+}
+
 /// The line a render type draws through `(x_column, y_column)`, borrowed
 /// from its config or, for a radar series, the polar line its outline and
 /// fill are drawn as ([`crate::data_config::RadarRef::line_style`]): a

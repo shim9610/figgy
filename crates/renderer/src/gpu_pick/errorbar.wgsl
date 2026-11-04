@@ -140,3 +140,71 @@ fn pick_errorbar_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> Pick
         0u,
     );
 }
+
+// The stem of point `point_index` (#206), as `vs_stem` draws it: the quad
+// `stem_segment` builds from the baseline (`stem_end_ndc`, a nonpositive
+// baseline on a log axis clamped to its minimum) to the point, under the
+// sketch wobble, a Milkyway jet's beam width, and the dash, which starts at
+// the baseline: a cursor in a dash gap measures to the nearest dash. A stem
+// is drawn exactly where its marker's sample is valid. Constellation draws
+// no stems. It answers as its point: `PICK_KIND_ERRORBAR` with the row.
+fn pick_stem_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCandidate {
+    let series_order = pick_query_params.series.y;
+    let info = pick_query_params.stem_info;
+    let mode = pick_query_params.styled.x;
+    let styled = pick_variant(PICK_VARIANT_STYLED_MARKER);
+    let t = pick_query_params.transform;
+    let jet = styled && mode == PICK_MARKER_PLANET;
+    if (styled && mode == PICK_MARKER_STAR) || !sample_valid(t, x, y) || !(info.w != 0u || jet) {
+        return pick_invalid_candidate(series_order);
+    }
+    let scale = pick_query_params.scatter_line.z;
+    let width_px = pick_query_params.stem.z * scale;
+    var half = width_px * 0.5;
+    if jet {
+        half = errorbar_jet_stroke(width_px, 0.0).stem_half;
+    }
+    let g = stem_segment(x, y, pick_query_params.stem.xy, info.y, half);
+    let a_up = stem_end_ndc(t, g, true, info.y) / t.pixel_to_ndc;
+    let b_up = stem_end_ndc(t, g, false, info.y) / t.pixel_to_ndc;
+    if !pick_is_finite(a_up.x) || !pick_is_finite(a_up.y) || !pick_is_finite(b_up.x) || !pick_is_finite(b_up.y) {
+        return pick_invalid_candidate(series_order);
+    }
+    var disp_a = 0.0;
+    var disp_b = 0.0;
+    if styled && mode == PICK_MARKER_SKETCH {
+        let style_params = t.style_params[0];
+        let amp = max(style_params.x, 0.0);
+        let seed = (u32(style_params.z) ^ pick_query_params.styled.z) + pick_styled_index(point_index);
+        let seg = stem_quad(info.y);
+        disp_a = errorbar_sketch_offset(amp, seed, seg, true);
+        disp_b = errorbar_sketch_offset(amp, seed, seg, false);
+    }
+    var d = pick_errorbar_quad_distance(a_up, b_up, g.perp, g.half_stroke, disp_a, disp_b);
+    // The dash (not under a jet, whose look replaces it): a cursor beside a
+    // dash gap measures along the stem to the nearer dash end.
+    let len = length(b_up - a_up);
+    if !jet && info.z > 0u && len > 1e-6 {
+        let along = dot(pick_cursor_px() - a_up, (b_up - a_up) / len);
+        if along >= 0.0 && along <= len && !dash_pattern_on(along, pick_query_params.stem_dash, info.z) {
+            let gap = dash_gap(along, pick_query_params.stem_dash, info.z);
+            d = length(vec2<f32>(min(gap.x, gap.y), d));
+        }
+    }
+    let hit_distance = max(d, pick_polar_clip_distance());
+    let distance_sq = hit_distance * hit_distance;
+    let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
+    if !pick_is_finite(hit_distance) || !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
+        return pick_invalid_candidate(series_order);
+    }
+    return PickCandidate(
+        1u,
+        series_order,
+        pick_source_row(point_index),
+        PICK_KIND_ERRORBAR,
+        pick_source_row(point_index),
+        distance_sq,
+        hit_distance,
+        0u,
+    );
+}

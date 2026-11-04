@@ -132,6 +132,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);

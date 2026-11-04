@@ -1062,6 +1062,48 @@ The struct, the constants and the functions are the fragment
 spliced after `sketch_noise.wgsl` into the errorbar module and the pick
 marker modules by `wgsl_module!` (`shader_assembly.rs`).
 
+#### Stems (#206)
+
+A stem series' stems are the error-bar module's second draw: one quad per
+instance (`0..6` vertices), from the baseline to the point.
+
+```wgsl
+const ERRORBAR_STEM: u32 = 32u;
+fn stem_segment(x: vec2<f32>, y: vec2<f32>, baseline: vec2<f32>, flags: u32, half_stroke: f32) -> ErrorBarSegment
+fn stem_quad(flags: u32) -> u32
+fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec2<f32>
+```
+
+- The stem's `Style` is its own (`ChartStyle.stem_bg`): `color_premul`,
+  `line_width_px` and `dash` / `dash_len` are the stem's colour, width and
+  dash. `primitive_flags` is `ERRORBAR_STEM` (bit 5) with `ERRORBAR_HAS_Y`
+  (a vertical stem) or `ERRORBAR_HAS_X` (a horizontal one). A stem has no
+  caps, so `cap_half_px` / `cap_width_px` hold the baseline as the pool's
+  `(hi, lo)` pair.
+- `stem_segment` is quad 0 (vertical) or quad 3 (horizontal) of the error
+  bar: end A at the baseline, end B at the point. `stem_quad` names the quad
+  for the sketch hash.
+- `stem_end_ndc` places end B with `data_to_ndc` and end A's value-axis
+  coordinate with `axis_baseline_ndc` (`common/projection.wgsl`), which
+  draws a baseline at or below zero on a logarithmic axis at the axis
+  minimum. The area fill's `area_baseline_ndc_y` calls the same function.
+- `vs_stem` / `vs_stem_sketch` (`errorbar_columnar.wgsl`) draw a stem where
+  `sample_valid` holds for its point and collapse it otherwise. They pass
+  `along_px`, the pixel distance from the baseline end, so `fs_stem`'s
+  `dash_pattern_on` starts every stem's dash at its baseline with no arc
+  scan. `vs_jet` draws a stem as one beam whose source is the point
+  (`t_src = 1`) when `ERRORBAR_STEM` is set.
+- The error slots of a stem draw are bound to the anchor columns as filler
+  and never read.
+- The pick's `pick_stem_candidate` (`gpu_pick/errorbar.wgsl`, under
+  `PICK_VARIANT_ERRORBAR`) measures the same quad with
+  `pick_errorbar_quad_distance`, the same sketch offsets and a jet's beam
+  width. A cursor beside a dash gap measures along the stem to the nearer
+  dash end (`dash_gap`, `common/line_stroke.wgsl`, which the line's
+  `pick_dash_gap` also reads). `PickQueryParams.stem` holds
+  `(baseline hi, baseline lo, width, 0)`, `stem_dash` the pattern in canvas
+  pixels and `stem_info` `(1, direction, dash count, base paints)`.
+
 ### 5.12 Radial sector
 
 The radial chart draws each slice as a solid: an extruded sector, its
