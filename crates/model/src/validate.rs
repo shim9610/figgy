@@ -114,6 +114,15 @@ impl Config {
             .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
         {
             validate_axis_range(field, axis)?;
+            // Group headers (#203) run along a categorical x axis.
+            if axis.category_groups.is_some()
+                && (axis.categories.is_none() || !matches!(field, "top_x" | "bottom_x"))
+            {
+                return Err(ConfigError::chart(
+                    field,
+                    "category groups are drawn on a categorical top_x or bottom_x",
+                ));
+            }
         }
         // Breaks (#200) cut the data axes of a rectangular chart: the x and
         // y the data is placed on, and an overlay's own y. The secondary
@@ -143,6 +152,12 @@ impl Config {
         // membership must be unambiguous before a series is drawn on a panel.
         for overlay in &self.overlays {
             validate_axis_range("overlays.y_axis", &overlay.y_axis)?;
+            if overlay.y_axis.category_groups.is_some() {
+                return Err(ConfigError::chart(
+                    "overlays.y_axis",
+                    "category groups are drawn on a categorical top_x or bottom_x",
+                ));
+            }
         }
         self.validate_overlays().map_err(|_| {
             ConfigError::chart(

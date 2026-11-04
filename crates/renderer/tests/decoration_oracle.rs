@@ -964,6 +964,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Sunburst => "Sunburst",
         SceneKind::Parallel => "Parallel",
         SceneKind::BrokenAxes => "BrokenAxes",
+        SceneKind::EnergyLevels => "EnergyLevels",
     }
 }
 

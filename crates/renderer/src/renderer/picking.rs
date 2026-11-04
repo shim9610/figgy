@@ -2015,6 +2015,7 @@ impl Renderer {
         {
             self.ensure_registered_styles(id)?;
         }
+        let inset_routed;
         let (config, series, display_config, members, styles) = {
             let state = self
                 .chart_states
@@ -2028,12 +2029,28 @@ impl Renderer {
             // paint orders agree with the point query's registry. The query
             // geometry is the panel as displayed: the document is scaled and
             // placed first and expanded after, exactly as it is drawn.
-            let inputs = active_layer_pick_inputs(&state.config, &state.series)?;
-            let displayed = place_document(
+            let mut displayed = place_document(
                 &state.config,
                 request.display_scale,
                 request.display_panel_px,
             );
+            // A pointer inside an inset (a subplot nested in the parent's
+            // data area, #203) belongs to the inset, which is drawn over
+            // the parent: on the base layer it is routed there.
+            let [cx, cy] = request.canvas_position_px;
+            let inset = match state.config.active_layer() {
+                crate::LayerRef::Base => displayed.nested_subplot_at(cx, cy),
+                _ => None,
+            };
+            let routed = inset.map(|index| {
+                let mut config = state.config.clone();
+                config.active_layer = crate::LayerRef::Subplot(index);
+                displayed.active_layer = crate::LayerRef::Subplot(index);
+                config
+            });
+            inset_routed = routed.is_some();
+            let inputs =
+                active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
             let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
             let members = inputs.member_count();
             // The prepared styles of the layer's series, for a 3D chart's
@@ -2086,6 +2103,18 @@ impl Renderer {
         }
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
+        // Its registry is the active layer's: under an inset the parent's
+        // points are covered, so it is asked nowhere (an inset's own points
+        // answer once the host makes the inset the active layer).
+        let given = if inset_routed {
+            GpuPickRequest {
+                canvas_position_px: [-1.0e6, -1.0e6],
+                max_distance_px: 0.0,
+                ..given
+            }
+        } else {
+            given
+        };
         let point_ticket = self.pick_chart(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
 

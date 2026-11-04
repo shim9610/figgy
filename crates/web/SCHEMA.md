@@ -240,6 +240,9 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - 로그축의 `min` / `max`에는 양수를 지정한다.
 - 로그축의 주 눈금은 축의 `log_ticks`가 정한다(#42). 기본값 `"Decades"`는 JSON에 쓰지 않으며, 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `"Adaptive"`는 `major_spacing`을 무시하고 범위만 보고 주 눈금을 고른다. 범위가 6 decade보다 넓으면 n decade마다 놓고, 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 4개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9 × 10^k 가운데 주 눈금이 아닌 값이다. 라벨이 서로 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되, 라벨이 2개 미만이 되는 단계로는 내려가지 않는다. 그래도 겹치면 남은 라벨을 2개, 5개, 10개마다 하나씩 남긴다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 다시 맞추는 편의 함수(`auto_fit_*`)는 이 값을 바꾸지 않으므로, 확대·축소한 뒤에도 새 범위에 맞게 눈금을 다시 고른다. 연결된 서브플롯 축은 대상 축의 값을 따르고, 색상 막대 축은 `set_colorbar_axis`로도 바꿀 수 있다. figgy-model 0.12.1 이하는 이 키를 무시한다.
 - 축의 `breaks`는 축에서 잘라낼 구간이다(#200). 키가 없으면(기본값) 축을 자르지 않으며, `get_config`도 이 키를 쓰지 않는다. 예: `"breaks": { "ranges": [{ "from": 15, "to": 85 }], "style": "Panels", "gap": 0.05 }`. 빠진 키는 기본값(`"style": "Continuous"`, `"gap": 0.03`, 축선 색의 6 px 빗금, 조각 테두리 `"frame_each_panel": true`)을 쓴다. 빗금의 `color`를 생략하면 축선 색으로 그린다. `ranges`는 데이터 단위로 정렬되어 겹치지 않아야 하고 최대 3개이며, `gap`은 축 길이에 대한 비율(0~0.2)이다. `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있고, `top_x`·`right_y`는 짝이 되는 축의 구간을 같은 비율 위치로 따라 그린다. 극좌표·삼각좌표·3D·평행 좌표 차트와 색상 막대 축, 스트리밍 소스는 이 키를 거부한다. 빈칸 안에는 데이터·강조·주석을 그리지 않고, 빈칸을 가리킨 피킹은 아무것도 반환하지 않는다. figgy-model 0.12.1 이하는 이 키를 무시한다.
+- 범주의 `rich_label`(#203)은 일반 `label` 대신 그리는 서식 있는 텍스트다. 키가 없으면 `label`을 그린다. 예: `{ "id": "3P*", "label": "3P*", "rich_label": { "segments": [...], ... } }`(TeX 수식으로 만든 항 기호 등).
+- 축의 `category_groups`(#203)는 범주형 `bottom_x`·`top_x`의 이웃한 범주 묶음에 다는 그룹 머리글이다. 예: `"category_groups": { "groups": [{ "label": { ... }, "first": "1S", "last": "1F*", "bracket": true }] }`. `first`·`last`는 그 축의 범주 id여야 하고, 묶음은 축 순서대로 겹치지 않아야 하며 개수 상한은 없다. `offset`(생략하면 `[0, 0]`)은 머리글을 드래그한 거리다. 수치 축과 y축은 이 키를 거부한다.
+- 차트의 `plot_background`(#203)는 데이터 영역과 격자 아래를 채우는 색이다. 키가 없으면 투명하다. 부모 데이터 영역 안에 놓는 인셋 서브플롯에 지정해 부모의 격자와 데이터가 비치지 않게 한다.
 - `out_margin`은 배치에 필요한 여백이다. 너무 줄이면 라벨이나 제목이 잘릴 수 있다. 독립 함수 `autoLayout(configJson)`은 라벨과 제목이 겹치지 않도록 `out_margin`, 축 제목의 `offset_y`, `label_style.format`을 고친 설정 JSON을 반환한다(#44). 범위와 시리즈는 바꾸지 않으며, 결과는 `set_config()`로 적용한다.
 - `line_offset`은 데이터 영역을 유지한 채 축만 이동시킨다. 전체 배치에는 영향을 주지 않는다.
 - `inverted`는 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹은 같은 변환을 적용하며 `min` / `max`는 데이터 좌표 기준을 유지한다.
@@ -1339,6 +1342,36 @@ when mapped. A region fill picks as a point of the series: the lowest index
 of a polygon edge the cursor's rightward ray crosses.
 
 <a id="parallel-render_type"></a>
+
+## `EnergyLevels` render_type
+
+에너지 준위(그로트리안) 도표(#203)는 DataLess 시리즈다. 모든 값을 시리즈 JSON에 담고, `x_column`·`y_column`은 빈 문자열로 두며 등록하는 컬럼이 없다. 레코드 필드는 NIST ASD 내보내기 형식을 따른다.
+
+```json
+{
+  "series_id": "he",
+  "label": null,
+  "x_column": "",
+  "y_column": "",
+  "render_type": { "EnergyLevels": {
+    "levels": [
+      { "id": "2s3S", "column": "3S", "configuration": "1s.2s", "term": "3S", "j": "1", "g": 3, "energy": 19.819614525 },
+      { "id": "2p3P", "column": "3P*", "energy": 20.9640984, "role": "Centroid" },
+      { "id": "2p3P2", "column": "3P*", "j": "2", "g": 5, "energy": 20.96408688908, "role": { "Component": { "multiplet": "2p3P" } } }
+    ],
+    "limits": [{ "id": "He II", "energy": 24.587389011 }],
+    "transitions": [{ "id": "1083", "lower": "2s3S", "upper": "2p3P", "observed_wavelength": 1083.0, "intensity": "1*" }]
+  } }
+}
+```
+
+- `levels[].column`은 범주형 `bottom_x`의 범주 id다. 축에 없는 열의 준위는 그 패널에 그리지 않는다.
+- `role`을 생략하면 `"Level"`이다. `"Centroid"`는 호스트가 계산한 다중선 중심값이고, `{ "Component": { "multiplet": ... } }`는 그 중심값에 속한 J 성분이다. `show`가 `"Main"`(기본값)이면 준위와 중심값을, `"Components"`이면 준위와 성분을 그린다.
+- `transitions`는 호스트가 고른 선만 그린다. `lower`·`upper`는 같은 시리즈의 준위 id여야 한다.
+- `source`는 다른 에너지 준위 시리즈의 `series_id`다. 지정하면 그 시리즈의 레코드를 그리고, 자기 `levels`·`limits`·`transitions`는 비워 둔다(인셋).
+- 생략한 `style`은 기본값을 쓴다. 기본값과 같은 `style`, `show: "Main"`, 빈 목록, 0인 오프셋은 `get_series`가 쓰지 않는다.
+- 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+- 피킹은 준위를 `"histogram_bin"`, 전이를 `"point"`, 라벨을 `"part"`(`"level"`·`"transition"`·`"limit"`)가 붙은 `"value_label"`로 돌려준다. `press_energy_label(series_id, part, index)`로 라벨을 선택하고 드래그하면 그 행의 `label_offset`이 바뀐다.
 
 ## `Parallel` render_type
 

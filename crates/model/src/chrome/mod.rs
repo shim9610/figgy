@@ -76,6 +76,10 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
         }
         parallel::emit_parallel_axes(config, &da, measure, sink);
     } else {
+        // The plot's own fill, under the grid (#203).
+        if let Some(fill) = config.plot_background {
+            sink.rect(crate::sink::Slot::Below, plot, Some(fill), None);
+        }
         emit_grid(config, &plot, measure, sink);
         let (top, right) = (
             drawn_axis(config, &Side::Top),
@@ -89,6 +93,10 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
         ] {
             let cross = crate::layout::axis_cross(config, &side);
             emit_axis(axis, side, &plot, cross, measure, sink);
+        }
+        // The category group headers past the x axes' labels (#203).
+        for side in [Side::Top, Side::Bottom] {
+            emit_part_of(config, &Element::CategoryGroupLabel(side), measure, sink);
         }
     }
 
@@ -207,6 +215,23 @@ pub fn emit_part_of(
         Element::ParallelAxisLabel(i) => {
             parallel::emit_parallel_labels(config, &da, *i, measure, sink);
         }
+        // Group headers run along a rectangular chart's categorical x axes
+        // (#203).
+        Element::CategoryGroupLabel(side)
+            if config.polar().is_none()
+                && config.ternary().is_none()
+                && config.view_3d().is_none()
+                && config.parallel().is_none() =>
+        {
+            tick_labels::emit_category_groups(
+                axis_of(side),
+                side.clone(),
+                &data_area_rect(&da),
+                measure,
+                sink,
+            );
+        }
+        Element::CategoryGroupLabel(_) => {}
         Element::Axis(side) if config.view_3d().is_some() => {
             if let Some(k) = box3d::side_component(side) {
                 box3d::emit_box_axis_strokes(config, &da, k, measure, sink);

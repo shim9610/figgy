@@ -1267,6 +1267,111 @@ impl LevelPlacement<'_> {
     }
 }
 
+impl crate::config::Config {
+    /// The subplot nested in this chart's data area whose chart area holds
+    /// the point `(x, y)` (in this config's pixels), the last such one when
+    /// several do: an inset (#203). A pointer there belongs to that
+    /// subplot, whatever the active layer. `None` when no inset holds it.
+    pub fn nested_subplot_at(&self, x: f32, y: f32) -> Option<usize> {
+        let plot = self.data_area().ok()?.0;
+        let inside = |r: &crate::layout::Rect, x: f32, y: f32| {
+            x >= r.x as f32
+                && y >= r.y as f32
+                && x < (r.x + r.width) as f32
+                && y < (r.y + r.height) as f32
+        };
+        self.subplots
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, subplot)| {
+                let area = subplot.config.chart_area.0;
+                let nested = area.x >= plot.x
+                    && area.y >= plot.y
+                    && area.x + area.width <= plot.x + plot.width
+                    && area.y + area.height <= plot.y + plot.height;
+                (nested && inside(&area, x, y)).then_some(index)
+            })
+    }
+}
+
+impl crate::config::Config {
+    /// The annotations that mark what inset `subplot` magnifies (#203): a
+    /// [`AnnotationKind::Rect`] around the window `x` × `y` in this chart's
+    /// data coordinates, and two headless [`AnnotationKind::Arrow`]s from
+    /// the window's corners to the inset's plot (its data area), as ratio
+    /// anchors of
+    /// this chart's plot (so they stay on the inset as it is drawn now; call
+    /// again after the inset moves). Ids are `inset/{subplot}/window`,
+    /// `…/link0` and `…/link1`. `None` for a subplot that is not an inset
+    /// of this chart. The list is the helper's output (rule 3).
+    pub fn inset_marker(
+        &self,
+        subplot: usize,
+        x: (f64, f64),
+        y: (f64, f64),
+        line: AnnotationLineStyle,
+    ) -> Option<Vec<Annotation>> {
+        use crate::annotation::{Anchor, ArrowStyle, ShapeStyle};
+        let plot = self.data_area().ok()?.0;
+        let child = &self.subplots.get(subplot)?.config;
+        let area = child.chart_area.0;
+        let nested = area.x >= plot.x
+            && area.y >= plot.y
+            && area.x + area.width <= plot.x + plot.width
+            && area.y + area.height <= plot.y + plot.height;
+        let inset = child.data_area().ok()?.0;
+        let nested = nested
+            && inset.x >= plot.x
+            && inset.y >= plot.y
+            && inset.x + inset.width <= plot.x + plot.width
+            && inset.y + inset.height <= plot.y + plot.height;
+        if !nested || plot.width == 0 || plot.height == 0 {
+            return None;
+        }
+        let ratio = |px: u32, py: u32| Anchor::Ratio {
+            x: (px - plot.x) as f32 / plot.width as f32,
+            y: (py - plot.y) as f32 / plot.height as f32,
+        };
+        let id = |part: &str| format!("inset/{subplot}/{part}");
+        let link = |n: usize, from: Anchor, to: Anchor| Annotation {
+            id: id(&format!("link{n}")),
+            visible: true,
+            kind: AnnotationKind::Arrow {
+                from,
+                to,
+                style: ArrowStyle {
+                    line: line.clone(),
+                    head_length: 0.0,
+                    head_width: 0.0,
+                },
+                text: None,
+            },
+        };
+        Some(vec![
+            Annotation {
+                id: id("window"),
+                visible: true,
+                kind: AnnotationKind::Rect {
+                    from: Anchor::Data { x: x.0, y: y.0 },
+                    to: Anchor::Data { x: x.1, y: y.1 },
+                    style: ShapeStyle {
+                        fill: None,
+                        border: line.clone(),
+                        below: false,
+                    },
+                },
+            },
+            link(0, Anchor::Data { x: x.1, y: y.1 }, ratio(inset.x, inset.y)),
+            link(
+                1,
+                Anchor::Data { x: x.1, y: y.0 },
+                ratio(inset.x, inset.y + inset.height),
+            ),
+        ])
+    }
+}
+
 /// The records an energy-level series draws: its own, or those of its
 /// `source` in `series` (the document's series list). `None` when the
 /// source does not name an energy-level series of the list.
@@ -1796,5 +1901,192 @@ mod tests {
         other.limits[0].id = "other".into();
         assert!(other.write_continuum(&mut full, "he", 30.0, fill).is_err());
         assert_eq!(full, before);
+    }
+}
+
+#[cfg(test)]
+mod category_group_tests {
+    use crate::config::{Category, CategoryGroup, CategoryGroups, Config};
+    use crate::layout::{Element, NudgeResult};
+    use crate::select::HitMap;
+    use crate::sink::{DrawnPart, Parts};
+    use crate::text::{MeasureText, RichText, TextExtents};
+
+    /// The text blocks `emit` places.
+    fn texts(emit: impl FnOnce(&mut Parts<'_>) -> bool) -> Vec<crate::layout::RectF> {
+        let mut out = Vec::new();
+        let mut each = |part: DrawnPart| {
+            if let DrawnPart::Text(rect) = part {
+                out.push(rect);
+            }
+        };
+        emit(&mut Parts(&mut each));
+        out
+    }
+
+    struct Fixed;
+    impl MeasureText for Fixed {
+        fn measure_rich(&self, rt: &RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * 8.0,
+                ascent: 10.0,
+                descent: 3.0,
+            }
+        }
+    }
+
+    fn group(label: &str, first: &str, last: &str) -> CategoryGroup {
+        CategoryGroup {
+            label: RichText::plain(label, crate::color::Color::BLACK, 12.0, ""),
+            first: first.into(),
+            last: last.into(),
+            bracket: true,
+        }
+    }
+
+    fn chart() -> Config {
+        let mut config = crate::default::default_config();
+        config.bottom_x.categories = Some(
+            ["a", "b", "c", "d"]
+                .into_iter()
+                .map(|c| Category::new(c, c))
+                .collect(),
+        );
+        config.bottom_x.out_margin = 90.0;
+        config.bottom_x.category_groups = Some(CategoryGroups {
+            groups: vec![group("Left", "a", "b"), group("Right", "c", "d")],
+            offset: [0.0; 2],
+        });
+        config
+    }
+
+    #[test]
+    fn groups_validate_against_their_axis() {
+        assert_eq!(chart().validate_chart(), Ok(()));
+        let check = |edit: &dyn Fn(&mut Config)| {
+            let mut config = chart();
+            edit(&mut config);
+            config.validate_chart().is_err()
+        };
+        assert!(check(&|c| c
+            .bottom_x
+            .category_groups
+            .as_mut()
+            .unwrap()
+            .groups[0]
+            .last = "z".into()));
+        assert!(check(&|c| {
+            let g = &mut c.bottom_x.category_groups.as_mut().unwrap().groups[0];
+            (g.first, g.last) = ("b".into(), "a".into());
+        }));
+        assert!(
+            check(&|c| {
+                c.bottom_x.category_groups.as_mut().unwrap().groups[1].first = "b".into()
+            }),
+            "overlap"
+        );
+        assert!(check(&|c| c
+            .bottom_x
+            .category_groups
+            .as_mut()
+            .unwrap()
+            .offset[0] = f32::NAN));
+        // Only on a categorical x axis.
+        assert!(check(&|c| c.bottom_x.categories = None));
+        assert!(check(&|c| {
+            c.left_y.categories = c.bottom_x.categories.clone();
+            c.left_y.category_groups = c.bottom_x.category_groups.clone();
+        }));
+        // No count limit on the groups (rule 10).
+        let mut many = chart();
+        let ids: Vec<String> = (0..300).map(|i| format!("k{i}")).collect();
+        many.bottom_x.categories = Some(ids.iter().map(|i| Category::new(i, i)).collect());
+        many.bottom_x.category_groups.as_mut().unwrap().groups =
+            ids.iter().map(|i| group("g", i, i)).collect();
+        assert_eq!(many.validate_chart(), Ok(()));
+    }
+
+    #[test]
+    fn a_rich_category_label_is_validated_and_drawn_in_place_of_the_plain_one() {
+        let mut config = chart();
+        config.bottom_x.categories.as_mut().unwrap()[0].rich_label =
+            Some(RichText::from_tex("$^3P^o$", crate::color::Color::BLACK, 12.0, "").unwrap());
+        assert_eq!(config.validate_chart(), Ok(()));
+        let mut texts = Vec::new();
+        let plot = crate::layout::RectF {
+            x: 50.0,
+            y: 20.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        crate::chrome::each_axis_tick_label(
+            &config.bottom_x,
+            crate::layout::Side::Bottom,
+            &plot,
+            &Fixed,
+            &[],
+            |text, _| {
+                texts.push(matches!(text, crate::chrome::TickText::Power(_)));
+            },
+        );
+        assert_eq!(texts, [true, false, false, false]);
+    }
+
+    #[test]
+    fn headers_are_hit_and_dragged_into_the_axis_offset() {
+        let mut config = chart();
+        let map = HitMap::for_active_layer(&config);
+        let id = map.find("category_groups_bottom").expect("registered");
+        let element = map.get(id).unwrap();
+        let headers = texts(|sink| element.emit(&config, &Fixed, sink));
+        assert_eq!(headers.len(), 2, "one block per header");
+        let left = headers[0];
+        let (cx, cy) = (left.x + left.width / 2.0, left.y + left.height / 2.0);
+        // Under the tick labels of the bottom axis.
+        let plot_bottom = config.data_area().unwrap().0;
+        assert!(cy > (plot_bottom.y + plot_bottom.height) as f32 + 10.0);
+        assert_eq!(
+            map.hit_test(&config, &Fixed, cx, cy),
+            Some(id),
+            "hit at {cx},{cy}"
+        );
+        let moved =
+            element
+                .as_draggable()
+                .unwrap()
+                .drag_from(&mut config, &Fixed, [cx, cy], 5.0, 7.0);
+        assert_eq!(moved, NudgeResult::Moved);
+        assert_eq!(
+            config.bottom_x.category_groups.as_ref().unwrap().offset,
+            [5.0, 7.0]
+        );
+        let after = texts(|sink| element.emit(&config, &Fixed, sink));
+        assert_eq!((after[0].x - left.x, after[0].y - left.y), (5.0, 7.0));
+        // An axis without groups places nothing and is never hit.
+        let top = map.find("category_groups_top").unwrap();
+        assert!(texts(|sink| map.get(top).unwrap().emit(&config, &Fixed, sink)).is_empty());
+        let _ = Element::CategoryGroupLabel(crate::layout::Side::Top);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn groups_and_rich_labels_round_trip_and_stay_absent_by_default() {
+        let plain = crate::default::default_config();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json["bottom_x"].get("category_groups").is_none());
+        let config = chart();
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(
+            json["bottom_x"]["categories"][0]
+                .get("rich_label")
+                .is_none()
+        );
+        assert_eq!(
+            json["bottom_x"]["category_groups"]["groups"][1]["first"],
+            "c"
+        );
+        assert!(json["bottom_x"]["category_groups"].get("offset").is_none());
+        let back: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(back, config);
     }
 }

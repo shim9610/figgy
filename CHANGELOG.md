@@ -27,8 +27,10 @@ every other document still re-serializes byte for byte. The new keys (`"math"`, 
 `offsets`, the `value_label` selection,
 the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 `Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
-the ternary series' `region`, `view_3d`, the heatmaps' `surface` and the
-axes' `breaks`) are additive.
+the ternary series' `region`, `view_3d`, the heatmaps' `surface`, the
+axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
+`part`, a category's `rich_label`, the axes' `category_groups` and the
+chart's `plot_background`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -1054,6 +1056,39 @@ axes' `breaks`) are additive.
   (`None` keeps the former drawing); an `AxisSpace` literal names
   `breaks: BreakMap::IDENTITY`; an exhaustive `match` on `AxisStroke`
   adds `Break(..)` and `Frame(..)` arms.
+
+- **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
+  `DataRenderType::EnergyLevels(EnergyLevelSeries)` is a DataLess series:
+  its `levels` (`EnergyLevel`: id, term column, NIST configuration, term,
+  J, g, prefix, energy, suffix, uncertainty, reference, a `LevelRole` of
+  `Level`, `Centroid` or `Component { multiplet }`, a rich label and its
+  drag offset), `limits` (`IonizationLimit`) and the `transitions` the host
+  lists (`Transition`: lower and upper level ids, a label, a colour value,
+  a slot offset and the NIST line fields) are SSOT configuration, with
+  `style`, `show` (`LevelView::Main` or `Components`) and an optional
+  `source` naming the series whose records a view draws. No list has a
+  count limit. `Config::validate_energy_levels` (in `validate_series`)
+  needs a categorical `bottom_x` on a rectangular chart and refuses
+  columns and a self source. `LevelPlacement` places and emits every part
+  through the `Sink` (strokes, limit lines, arrows, labels) and picks over
+  the same placement (`LevelHit`); `step_selection` walks the rows a view
+  draws; `continuum_annotations` / `write_continuum` write a span per
+  limit; `Config::inset_marker` writes an inset's window and connectors;
+  `Config::nested_subplot_at` finds the inset under a point.
+  `PickedDataRef::ValueLabel` gains `part: Option<LabelPart>`.
+  `Category` gains `rich_label: Option<RichText>` (drawn and measured in
+  place of `label`) and `AxisOptions` gains `category_groups:
+  Option<CategoryGroups>` (headers over runs of categories with an
+  optional bracket and a drag offset, on a categorical `top_x` or
+  `bottom_x`), drawn past the tick labels and selected and dragged as
+  `Element::CategoryGroupLabel` / `CategoryGroupLabelElement` (registered
+  by `HitMap::standard_chart`). `Config` gains `plot_background:
+  Option<Color>`, a fill under the grid. Migration: an exhaustive `match`
+  on `DataRenderType` adds `EnergyLevels(_)`, one on `Element` adds
+  `CategoryGroupLabel(_)`; a `PickedDataRef::ValueLabel { .. }` literal
+  adds `part: None`; a `Category { .. }` literal adds `rich_label: None`;
+  an `AxisOptions { .. }` literal adds `category_groups: None`; a
+  `Config { .. }` literal adds `plot_background: None`.
 
 <a id="unreleased-renderer"></a>
 
@@ -2492,6 +2527,27 @@ axes' `breaks`) are additive.
   `break_info: NO_BREAK_INFO` (`data_render::NO_BREAKS`,
   `NO_BREAK_INFO`).
 
+- **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
+  An `EnergyLevels` series is drawn on the CPU: at prepare its parts are
+  rastered through the canvas sink into one panel-sized texture, in logical
+  pixels at the series' display scale, cached in the scratch map by the
+  panel config, the series, the records it draws and the font generation,
+  and composited in the data slot after every picked highlight, per data
+  piece (approved on #203 as an exception to computing appearance in the
+  shader). The column-only paths skip the DataLess series. A typed data
+  pick answers for it on the CPU over the drawn placement (a level as a
+  `HistogramBin`, a transition as a `Point`, a label as a `ValueLabel`
+  naming its `part`); `GpuDataPickTicket` merges that hit with the GPU
+  hits, and `PickedData::ValueLabel` gains `part`. A subplot nested in its
+  parent's data area (an inset) is drawn after every other panel, all its
+  slots, and a base-layer pick inside it answers for the inset. A
+  streamed display refuses the series (`STREAMED_ENERGY_LEVELS_REASON`).
+  The vector export carries it in the data image like any series. New
+  `nist_grotrian` example: a std-only NIST ASD CSV parser over bundled He
+  I exports. Migration: a `PickedData::ValueLabel { .. }` literal adds
+  `part: None`; a `SeriesLayers` literal adds `energy_levels: None` (or
+  starts from `SeriesLayers::empty()`).
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -2726,6 +2782,14 @@ axes' `breaks`) are additive.
   `set_config` takes an axis' `breaks` and `get_config` writes it back,
   leaving it out where absent; nothing else is new in the wrapper. A
   streamed chart with breaks is refused as the renderer refuses it.
+
+- **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
+  `set_config` and `set_series` take the new series kind, category rich
+  labels and groups and the plot fill as JSON. `pick_point` answers an
+  energy-level hit whole (its kind, row and, for a label, `part`); new
+  `press_energy_label(series_id, part, index)` selects a label and starts
+  its drag, which writes the row's `label_offset`. Group headers drag
+  through the decoration routes like the other chrome.
 
 <a id="unreleased-bounded-migration"></a>
 
@@ -3127,6 +3191,21 @@ entries above describe the changes.
   browser tests a broken axis' JSON round trip and its upper labels'
   hit and drag. Each new check was mutation tested.
 
+- **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
+  `tests/energy_levels_render.rs` checks at 1x and 2x: placement of
+  levels, limits and arrows; the picked level drawn wider; a Continuous
+  break; a components view drawing its source's records; 5,004 levels and
+  1,500 transitions drawn with no count limit (with their export time);
+  picks of levels, arrows and labels and none in a gap; a series edit
+  redrawing a registered chart; a document round trip drawing the same
+  pixels; SVG and PDF exports; and an inset covering its parent's data
+  and annotations and taking the pointer (mutation tested by drawing it in
+  the old order). The model tests cover validation, serde, stepping,
+  label drags, the continuum, category groups (validation, hit, drag,
+  serde) and rich labels; the SSOT suite classifies the new fields. The
+  playground gains an **Energy levels** scene, swept by the decoration
+  oracle, the auto layout and vector export tests.
+
 ### Documentation
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
@@ -3237,6 +3316,11 @@ entries above describe the changes.
   `AxisBreaks` section, `SCHEMA.md` (in Korean) the JSON form and its
   rules, and `SHADER_COMMON.md` the `Transform` break table and the cut
   remap.
+
+- **Energy-level (Grotrian) diagrams** ([#203](https://github.com/shim9610/figgy/issues/203)).
+  `CONFIG.md` (both languages) gains the `EnergyLevels` row and section,
+  `rich_label`, `category_groups` and `plot_background`, and `SCHEMA.md`
+  (in Korean) their JSON form.
 
 <a id="release-0181"></a>
 

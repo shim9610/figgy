@@ -1536,6 +1536,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Vector { .. } => "vector",
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
+        DataRenderType::EnergyLevels(_) => "energy levels",
     }
 }
 
@@ -1820,6 +1821,13 @@ fn series_controls(
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
         DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        // An energy-level series (#203): its strokes and arrows.
+        DataRenderType::EnergyLevels(levels) => {
+            color(ui, "level colour", &mut levels.style.level.color);
+            slider(ui, "level width", &mut levels.style.level.width, 0.5..=24.0);
+            color(ui, "arrow colour", &mut levels.style.transition.color);
+            slider(ui, "arrow width", &mut levels.style.transition.width, 0.5..=24.0);
+        }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
             if let Some(scatter) = scatter {

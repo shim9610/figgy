@@ -70,10 +70,11 @@ pub enum SceneKind {
     Sunburst,
     Parallel,
     BrokenAxes,
+    EnergyLevels,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 33] = [
+    pub const ALL: [SceneKind; 34] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -107,6 +108,7 @@ impl SceneKind {
         SceneKind::Sunburst,
         SceneKind::Parallel,
         SceneKind::BrokenAxes,
+        SceneKind::EnergyLevels,
     ];
 
     pub fn label(self) -> &'static str {
@@ -144,6 +146,7 @@ impl SceneKind {
             SceneKind::Sunburst => "Sunburst (nested rings)",
             SceneKind::Parallel => "Parallel coordinates",
             SceneKind::BrokenAxes => "Broken axes (two peaks)",
+            SceneKind::EnergyLevels => "Energy levels (He I)",
         }
     }
 
@@ -287,6 +290,13 @@ impl SceneKind {
                  joins the pieces into one axis; below, Panels draws each piece at \
                  its own scale over a logarithmic Y cut between the two peaks. Pick \
                  either peak; drag the tick labels."
+            }
+            SceneKind::EnergyLevels => {
+                "A Grotrian diagram of He I from NIST ASD values: term columns \
+                 grouped into singlets and triplets, the ground state below a \
+                 broken energy axis, the continuum above the ionization limit and \
+                 an inset of the 2p ³P° fine structure. Pick a level, an arrow or \
+                 a label; drag a label or the group headers."
             }
         }
     }
@@ -484,6 +494,7 @@ pub fn build(
         SceneKind::Image => image(r),
         SceneKind::Parallel => parallel(r),
         SceneKind::BrokenAxes => broken_axes(r),
+        SceneKind::EnergyLevels => energy_levels(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -3784,5 +3795,286 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene {
         config: chart.config().clone(),
         series,
+    })
+}
+
+/// The energy-level scene (#203): He I from NIST ASD values (eV), n ≤ 4,
+/// singlets beside triplets under group headers, the ground state below a
+/// Continuous break, the continuum above the limit and an inset of the
+/// resolved 2p ³P° multiplet. DataLess: nothing is registered.
+fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category, CategoryGroup};
+    use renderer::energy_levels::{
+        EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, LevelView, Transition,
+    };
+    let ink = Color::from_rgb8(70, 76, 90);
+    let label = |text: &str| Some(RichText::plain(text, ink, 11.0, ""));
+    let level = |id: &str, column: &str, energy: f64, text: Option<&str>| EnergyLevel {
+        id: id.into(),
+        column: column.into(),
+        configuration: String::new(),
+        term: column.into(),
+        j: String::new(),
+        g: None,
+        prefix: String::new(),
+        energy,
+        suffix: String::new(),
+        uncertainty: None,
+        reference: String::new(),
+        role: LevelRole::Level,
+        label: text.and_then(label),
+        label_offset: [0.0; 2],
+    };
+    // J = 2 and J = 1 lie 9.5 µeV apart: their labels sit above and below
+    // the pair.
+    let component = |id: &str, j: &str, g: f64, energy: f64, dy: f32| EnergyLevel {
+        j: j.into(),
+        g: Some(g),
+        role: LevelRole::Component {
+            multiplet: "2p3P".into(),
+        },
+        label: label(&format!("J = {j}")),
+        label_offset: [0.0, dy],
+        ..level(id, "3P*", energy, None)
+    };
+    let levels = vec![
+        level("1s2", "1S", 0.0, Some("1s²")),
+        level("2s1S", "1S", 20.615_774_823, Some("2s")),
+        level("3s1S", "1S", 22.920_317_359, Some("3s")),
+        level("4s1S", "1S", 23.673_570_590, Some("4s")),
+        level("2p1P", "1P*", 21.218_022_711_2, Some("2p")),
+        level("3p1P", "1P*", 23.087_018_529_60, Some("3p")),
+        level("4p1P", "1P*", 23.742_070_068_80, Some("4p")),
+        level("3d1D", "1D", 23.074_074_797_77, Some("3d")),
+        level("4d1D", "1D", 23.736_335_035_36, Some("4d")),
+        level("4f1F", "1F*", 23.737_009_722_091, Some("4f")),
+        level("2s3S", "3S", 19.819_614_525, Some("2s")),
+        level("3s3S", "3S", 22.718_466_419, Some("3s")),
+        level("4s3S", "3S", 23.593_958_713, Some("4s")),
+        EnergyLevel {
+            role: LevelRole::Centroid,
+            g: Some(9.0),
+            ..level("2p3P", "3P*", 20.964_098_42, Some("2p"))
+        },
+        component("2p3P2", "2", 5.0, 20.964_086_889_08, 14.0),
+        component("2p3P1", "1", 3.0, 20.964_096_364_64, -2.0),
+        component("2p3P0", "0", 1.0, 20.964_218_850_51, 0.0),
+        level("3p3P", "3P*", 23.007_075, Some("3p")),
+        level("4p3P", "3P*", 23.707_892, Some("4p")),
+        level("3d3D", "3D", 23.073_652, Some("3d")),
+        level("4d3D", "3D", 23.736_091, Some("4d")),
+        level("4f3F", "3F*", 23.737_008, Some("4f")),
+    ];
+    let line = |nm: f64, lower: &str, upper: &str, x_offset: f32| Transition {
+        id: format!("{nm}"),
+        lower: lower.into(),
+        upper: upper.into(),
+        label: Some(RichText::plain(
+            &format!("{nm:.1}"),
+            Color::from_rgb8(150, 90, 0),
+            10.0,
+            "",
+        )),
+        label_offset: [0.0; 2],
+        value: None,
+        x_offset,
+        observed_wavelength: Some(nm),
+        observed_uncertainty: None,
+        ritz_wavelength: None,
+        ritz_uncertainty: None,
+        intensity: String::new(),
+        aki: None,
+        accuracy: String::new(),
+        line_type: String::new(),
+        tp_reference: String::new(),
+        line_reference: String::new(),
+    };
+    let mut series = EnergyLevelSeries {
+        levels,
+        limits: vec![IonizationLimit {
+            id: "He II".into(),
+            energy: 24.587_389_011,
+            label: Some(RichText::plain(
+                "He II 1s ²S  24.587 eV",
+                Color::from_rgb8(40, 50, 120),
+                11.0,
+                "",
+            )),
+            label_offset: [0.0; 2],
+            uncertainty: Some(0.000_000_025),
+            reference: "L17714".into(),
+        }],
+        transitions: vec![
+            line(501.6, "2s1S", "3p1P", 0.0),
+            line(667.8, "2p1P", "3d1D", 0.0),
+            line(728.1, "2p1P", "3s1S", -0.15),
+            line(492.2, "2p1P", "4d1D", 0.15),
+            line(388.9, "2s3S", "3p3P", 0.0),
+            line(587.6, "2p3P", "3d3D", 0.0),
+            line(706.5, "2p3P", "3s3S", -0.15),
+            line(447.1, "2p3P", "4d3D", 0.15),
+        ],
+        ..EnergyLevelSeries::default()
+    };
+    series.style.level.color = Color::from_rgb8(34, 52, 88);
+    series.style.level.width = 2.5;
+    series.style.transition.color = Color::from_rgb8(214, 120, 20);
+
+    let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
+    config.legend.visible = false;
+    config.grid.show_major_x = false;
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 1100,
+        height: 760,
+    });
+    let tex = |m: &str, l: &str, odd: bool| {
+        RichText::from_tex(
+            &format!("$^{m}\\mathrm{{{l}}}{}$", if odd { "^o" } else { "" }),
+            Color::from_rgb8(30, 30, 30),
+            15.0,
+            "",
+        )
+        .ok()
+    };
+    let mut categories = Vec::new();
+    for (id, m, l, odd) in [
+        ("1S", "1", "S", false),
+        ("1P*", "1", "P", true),
+        ("1D", "1", "D", false),
+        ("1F*", "1", "F", true),
+        ("gap", "", "", false),
+        ("3S", "3", "S", false),
+        ("3P*", "3", "P", true),
+        ("3D", "3", "D", false),
+        ("3F*", "3", "F", true),
+        ("inset1", "", "", false),
+        ("inset2", "", "", false),
+    ] {
+        let mut category = Category::new(id, "");
+        if !m.is_empty() {
+            category.label = id.into();
+            category.rich_label = tex(m, l, odd);
+        }
+        categories.push(category);
+    }
+    config.bottom_x.categories = Some(categories);
+    let header = |text: &str| RichText::plain(text, Color::from_rgb8(24, 39, 63), 14.0, "");
+    config.bottom_x.category_groups = Some(renderer::config::CategoryGroups {
+        groups: vec![
+            CategoryGroup {
+                label: header("Singlets (S = 0)"),
+                first: "1S".into(),
+                last: "1F*".into(),
+                bracket: true,
+            },
+            CategoryGroup {
+                label: header("Triplets (S = 1)"),
+                first: "3S".into(),
+                last: "3F*".into(),
+                bracket: true,
+            },
+        ],
+        offset: [0.0; 2],
+    });
+    config.bottom_x.out_margin = 90.0;
+    config.left_y.min = -0.6;
+    config.left_y.max = 25.6;
+    config.left_y.breaks = Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(0.6, 19.4)],
+        style: AxisBreakStyle::Continuous,
+        gap: 0.04,
+        mark: renderer::config::BreakMark::default(),
+        frame_each_panel: true,
+    });
+    series
+        .write_continuum(
+            &mut config.annotations,
+            "he",
+            25.6,
+            Color::from_rgba8(80, 100, 220, 36),
+        )
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "annotations",
+            reason,
+        })?;
+
+    // The inset over the two spare columns on the right: the 2p ³P°
+    // components, 0.13 meV apart, on their own energy axis.
+    let plot = config.data_area().map_err(|_| FiggyError::InvalidConfig {
+        field: "chart_area",
+        reason: "the scene's data area is empty",
+    })?;
+    let plot = plot.0;
+    let mut inset = renderer::default::default_config();
+    inset.chart_area = ChartArea(Rect {
+        x: plot.x + plot.width - 196,
+        y: plot.y + plot.height / 2 - 40,
+        width: 188,
+        height: 170,
+    });
+    inset.legend.visible = false;
+    inset.chart_title.visible = false;
+    inset.grid.show_major_x = false;
+    inset.grid.show_minor_x = false;
+    inset.grid.show_minor_y = false;
+    inset.plot_background = Some(Color::from_rgb8(252, 252, 255));
+    inset.bottom_x.categories = Some(vec![{
+        let mut c = Category::new("3P*", "3P*");
+        c.rich_label = tex("3", "P", true);
+        c
+    }]);
+    inset.top_x.out_margin = 8.0;
+    inset.right_y.out_margin = 8.0;
+    inset.bottom_x.out_margin = 34.0;
+    inset.left_y.out_margin = 64.0;
+    inset.left_y.min = 20.964_06;
+    inset.left_y.max = 20.964_24;
+    inset.left_y.label_style.font_size = 10.0;
+    inset.left_y.label_style.significant_digits = 8;
+    inset.left_y.major_spacing = 0.000_05;
+    let window_top = 21.6;
+    config.subplots.push(renderer::Subplot {
+        config: inset,
+        series: vec!["he-fine".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let marker = config
+        .inset_marker(
+            0,
+            (5.6, 6.4),
+            (20.4, window_top),
+            AnnotationLineStyle {
+                color: Color::from_rgb8(120, 128, 140),
+                width: 1.0,
+                style: LineStylePreset::Dash,
+            },
+        )
+        .unwrap_or_default();
+    config.annotations.items.extend(marker);
+
+    let mut fine_style = series.style.clone();
+    fine_style.label_side = renderer::energy_levels::LevelLabelSide::Above;
+    fine_style.level.slot_fraction = 0.5;
+    let fine = EnergyLevelSeries {
+        source: Some("he".into()),
+        show: LevelView::Components,
+        style: fine_style,
+        ..EnergyLevelSeries::default()
+    };
+    let data = |id: &str, levels: EnergyLevelSeries| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: DataRenderType::EnergyLevels(levels),
+    };
+    Ok(CartesianScene {
+        config,
+        series: vec![data("he", series), data("he-fine", fine)],
     })
 }

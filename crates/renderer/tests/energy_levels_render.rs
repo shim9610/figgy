@@ -603,3 +603,183 @@ fn a_document_with_the_series_round_trips_and_draws_the_same() {
         assert_eq!(a.rgba, b.rgba, "{scale}x");
     }
 }
+
+#[test]
+fn svg_and_pdf_exports_carry_the_series_in_the_data_image() {
+    // The series is data: like every series, the vector export embeds it
+    // in the panel's data image (#48), here at 1x and 2x.
+    let mut r = renderer();
+    let chart = chart();
+    let list = [series("he", records())];
+    for scale in [1.0f32, 2.0] {
+        let svg = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let text = svg;
+        assert!(text.contains("<image"), "{scale}x svg data image");
+        let pdf = r
+            .export_pdf(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(pdf.starts_with(b"%PDF"), "{scale}x pdf");
+    }
+}
+
+/// The chart with an inset: a subplot in the parent's data area showing the
+/// component of column b between 43 and 47, with its own plot fill.
+fn chart_with_inset() -> Chart {
+    let mut chart = chart();
+    let parent = chart.config().data_area().unwrap().0;
+    let mut inset = renderer::default::default_config();
+    inset.chart_area = ChartArea(Rect {
+        x: parent.x + parent.width - 170,
+        y: parent.y + 10,
+        width: 160,
+        height: 120,
+    });
+    inset.legend.visible = false;
+    inset.chart_title.visible = false;
+    inset.grid.show_major_x = false;
+    inset.grid.show_minor_x = false;
+    inset.grid.show_minor_y = false;
+    inset.grid.show_major_y = false;
+    for axis in [&mut inset.top_x, &mut inset.right_y] {
+        axis.out_margin = 4.0;
+    }
+    inset.bottom_x.out_margin = 22.0;
+    inset.left_y.out_margin = 34.0;
+    inset.bottom_x.categories = Some(vec![Category::new("b", "B")]);
+    inset.left_y.min = 43.0;
+    inset.left_y.max = 47.0;
+    inset.plot_background = Some(Color::from_rgb8(250, 250, 250));
+    chart.config_mut().subplots.push(renderer::Subplot {
+        config: inset,
+        series: vec!["inset".into()],
+        link_x: None,
+        link_y: None,
+    });
+    chart
+}
+
+fn inset_series() -> SeriesConfig {
+    series(
+        "inset",
+        EnergyLevelSeries {
+            source: Some("he".into()),
+            show: LevelView::Components,
+            style: records().style,
+            ..EnergyLevelSeries::default()
+        },
+    )
+}
+
+#[test]
+fn an_inset_covers_its_parent_and_takes_the_pointer() {
+    let mut r = renderer();
+    let chart = chart_with_inset();
+    // The parent draws a level under the inset that must not show through.
+    let mut levels = records();
+    levels.levels.push(level("under", "c", 92.0));
+    let list = [series("he", levels), inset_series()];
+    assert_eq!(chart.config().validate_series(&list[..1]), Ok(()));
+    let mut chart = chart;
+    let inset = chart.config().subplots[0].config.clone();
+    let inset_area = inset.data_area().unwrap().0;
+    // A parent reference line through the inset's probe row: drawn on the
+    // parent's overlay, it must be covered by the inset drawn after it.
+    {
+        use renderer::AnnotationSpace as _;
+        let parent = renderer::annotation::pixel_space_for_config(chart.config());
+        let probe_y = inset_area.y as f32 + inset_area.height as f32 * 0.75;
+        let value = parent
+            .px_to_value(renderer::AnnotationAxis::Y, probe_y)
+            .unwrap();
+        chart
+            .config_mut()
+            .annotations
+            .items
+            .push(renderer::annotation::Annotation {
+                id: "through".into(),
+                visible: true,
+                kind: renderer::annotation::AnnotationKind::ReferenceLine {
+                    axis: renderer::AnnotationAxis::Y,
+                    value,
+                    style: renderer::annotation::AnnotationLineStyle {
+                        color: BLUE,
+                        width: 6.0,
+                        style: renderer::line::LineStylePreset::Solid,
+                    },
+                    label: None,
+                },
+            });
+    }
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        if let Ok(dir) = std::env::var("FIGGY_ENERGY_DUMP") {
+            std::fs::write(
+                format!("{dir}/inset-{scale}x.rgba"),
+                [
+                    &img.width.to_le_bytes()[..],
+                    &img.height.to_le_bytes()[..],
+                    &img.rgba[..],
+                ]
+                .concat(),
+            )
+            .unwrap();
+        }
+        let s = |v: f32| (v * scale).round() as u32;
+        // The inset's fill covers the parent inside it.
+        // A quarter up the inset's plot, between its axes and off the
+        // component's stroke.
+        let centre = (
+            s(inset_area.x as f32 + inset_area.width as f32 * 0.5),
+            s(inset_area.y as f32 + inset_area.height as f32 * 0.75),
+        );
+        let fill = pixel(&img, centre.0, centre.1);
+        assert!(
+            fill[0] >= 245 && fill[1] >= 245 && fill[2] >= 245,
+            "{scale}x inset fill {fill:?}"
+        );
+        // The component at 45 is drawn in the inset's own axes.
+        let space = renderer::annotation::pixel_space_for_config(&inset.scaled(scale));
+        use renderer::AnnotationSpace as _;
+        let px = space
+            .value_to_px(renderer::AnnotationAxis::X, -0.25)
+            .unwrap();
+        let py = space
+            .value_to_px(renderer::AnnotationAxis::Y, 45.0)
+            .unwrap();
+        assert!(
+            near(&img, (px.round() as u32, py.round() as u32), 3, is_red),
+            "{scale}x the inset's component"
+        );
+        // A pointer on it picks the inset's series, the parent's covered.
+        match pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            (px.round() as u32, py.round() as u32),
+        ) {
+            Some(renderer::PickedData::HistogramBin {
+                series_id,
+                bin_index,
+                ..
+            }) => assert_eq!((series_id.as_str(), bin_index), ("inset", 2), "{scale}x"),
+            other => panic!("{scale}x inset pick: {other:?}"),
+        }
+    }
+}

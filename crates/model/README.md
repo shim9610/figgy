@@ -79,13 +79,18 @@ class.
   `ColumnSource`, no column in the renderer's pool and no streaming, by
   definition: every element is a configured entity, and its value is one of
   its attributes beside its name, colour and the rest. The radial chart
-  (`RadialChart`: pie, donut and the detail ring of a split) is the only
-  DataLess chart. A slice is named, coloured, exploded and labelled by the
+  (`RadialChart`: pie, donut and the detail ring of a split) is the
+  DataLess chart with a renderer of its own. A slice is named, coloured, exploded and labelled by the
   host, its `value` is stored on it, and the chart is bounded by its nature
   (`MAX_RADIAL_SLICES`, 64 slices, which `validate` enforces with the other
   size limits). Its drawn label strings are SSOT strings too
   (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
   the renderer draws them and formats nothing.
+  The energy-level series (`DataRenderType::EnergyLevels`, #203) is a
+  DataLess series inside a `Config`: its levels, ionization limits and
+  transitions are SSOT records following the NIST ASD exports, drawn on
+  the chart's categorical axis and value axis through the CPU sink, with
+  no column, no streaming and no count limit.
 - **Column-backed charts** are the series kinds of `Config`, every other
   chart: per-point data enters only through the renderer's `ColumnSource`
   and lives in its column pool. Category bars (`CategoryBars`, one series

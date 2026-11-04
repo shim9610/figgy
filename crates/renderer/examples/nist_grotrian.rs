@@ -94,11 +94,6 @@ fn term_column(term: &str) -> Option<&str> {
         .then_some(term)
 }
 
-/// A term symbol as Unicode text: `3P*` → `³P°`.
-fn term_label(term: &str) -> String {
-    term.replace('1', "¹").replace('3', "³").replace('*', "°")
-}
-
 /// The energy-level series of a levels export and a lines export.
 fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
     let rows = records(levels_csv);
@@ -334,19 +329,47 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
     series.style.transition.width = 1.6;
 
-    let mut c = chart("He I energy levels", "Term", "Energy (eV)", (1100, 760));
-    // Singlets, a spacer, then triplets (category groups come with #203's
-    // chrome step).
-    let mut categories: Vec<Category> = ["1S", "1P*", "1D", "1F*"]
-        .iter()
-        .map(|t| Category::new(*t, term_label(t)))
-        .collect();
-    categories.push(Category::new("gap", ""));
-    categories.extend(
-        ["3S", "3P*", "3D", "3F*"]
-            .iter()
-            .map(|t| Category::new(*t, term_label(t))),
-    );
+    let mut c = chart("He I energy levels", "", "Energy (eV)", (1100, 780));
+    // Singlets, a spacer, then triplets, each term label drawn as a term
+    // symbol, under two group headers.
+    let tex = |term: &str| {
+        let (multiplicity, rest) = term.split_at(1);
+        let (l, odd) = rest.split_at(1);
+        let parity = if odd == "*" { "^o" } else { "" };
+        RichText::from_tex(
+            &format!("$^{multiplicity}\\mathrm{{{l}}}{parity}$"),
+            Color::from_rgb8(30, 30, 30),
+            16.0,
+            "",
+        )
+    };
+    let mut categories = Vec::new();
+    for term in ["1S", "1P*", "1D", "1F*", "gap", "3S", "3P*", "3D", "3F*"] {
+        let mut category = Category::new(term, if term == "gap" { "" } else { term });
+        if term != "gap" {
+            category.rich_label = Some(tex(term)?);
+        }
+        categories.push(category);
+    }
+    let header = |text: &str| RichText::plain(text, Color::from_rgb8(24, 39, 63), 16.0, "");
+    c.config_mut().bottom_x.category_groups = Some(renderer::config::CategoryGroups {
+        groups: vec![
+            renderer::config::CategoryGroup {
+                label: header("Singlets (S = 0)"),
+                first: "1S".into(),
+                last: "1F*".into(),
+                bracket: true,
+            },
+            renderer::config::CategoryGroup {
+                label: header("Triplets (S = 1)"),
+                first: "3S".into(),
+                last: "3F*".into(),
+                bracket: true,
+            },
+        ],
+        offset: [0.0; 2],
+    });
+    c.config_mut().bottom_x.out_margin = 100.0;
     c.config_mut().bottom_x.categories = Some(categories);
     c.config_mut().grid.show_major_x = false;
     c.set_y_range(-0.6, 25.6);
