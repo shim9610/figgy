@@ -217,6 +217,9 @@ struct ContourMetric {
     g_len: f32,
     kappa: f32,
     gradient_square: f32,
+    /// The gradient's unit direction in the draw's pixel frame. Read by the
+    /// polar distance (`contour_level_distance_at`) only.
+    n: vec2<f32>,
 };
 
 fn contour_metric(s: ContourSample) -> ContourMetric {
@@ -225,6 +228,7 @@ fn contour_metric(s: ContourSample) -> ContourMetric {
     out.g_len = 0.0;
     out.kappa = 0.0;
     out.gradient_square = 0.0;
+    out.n = vec2<f32>(0.0, 0.0);
     if (!s.hit) {
         return out;
     }
@@ -263,10 +267,9 @@ fn contour_metric(s: ContourSample) -> ContourMetric {
 /// is. On a polar chart the axis-`t` gradient and the mixed second
 /// derivative are carried to pixels through the lookup's Jacobian
 /// (`FieldLookup`): `g = dz.x · jac_x + dz.y · jac_y` and the bilinear
-/// Hessian `J^T H J`. The polar map's own curvature is not added, so the
-/// stroke is placed by the first-order distance about its centre, exact on
-/// the level itself; `contour_level_distance_px` and `contour_paint` read
-/// the result unchanged.
+/// Hessian `J^T H J`. Along a pixel line the polar field is not a
+/// quadratic, so this metric only starts the distance:
+/// `contour_level_distance_at` solves it exactly.
 fn contour_metric_at(s: ContourSample, lookup: FieldLookup) -> ContourMetric {
     if (transform.polar_angle.x < 0.5) {
         return contour_metric(s);
@@ -300,6 +303,7 @@ fn contour_metric_at(s: ContourSample, lookup: FieldLookup) -> ContourMetric {
     out.g_len = g_len;
     out.kappa = kappa;
     out.gradient_square = gradient_square;
+    out.n = select(vec2<f32>(0.0, 0.0), g / g_len, g_len > 0.0);
     return out;
 }
 
@@ -328,6 +332,68 @@ fn contour_level_distance_px(s: ContourSample, metric: ContourMetric, level: f32
         return -1.0;
     }
     return distance_to_level;
+}
+
+/// Foot-point steps of the polar distance (`contour_level_distance_at`).
+/// Each step re-linearizes the level set at the current point; the
+/// iteration converges quadratically to the closest point, so four reach
+/// f32 precision within a stroke's reach. A fixed iteration count, not a
+/// data count.
+const CONTOUR_POLAR_FOOT_STEPS: u32 = 4u;
+
+/// The distance in pixels from the fragment at chart-area `chart_t` to
+/// `level` (#208). A rectangular chart returns `contour_level_distance_px`
+/// unchanged. On a polar chart the field along a pixel line is the bilinear
+/// field composed with the polar inverse, so a closed form along one line
+/// is not the distance to the curve. Instead the closest point `q` on the
+/// level set is found by foot-point iteration: at `q` the level set is
+/// linearized (`z(q) + g(q) · (x - q) = level`, `g` the pixel gradient
+/// through `field_lookup` and `contour_sample`, crossing cells as `q`
+/// moves), and `q` moves to the foot of the perpendicular from the fragment
+/// onto that line. The fixed point is the foot of the perpendicular onto the
+/// curve itself, so the result is the Euclidean distance to the level set.
+/// Only a fragment whose first estimate is within `reach` pixels is
+/// refined; beyond it the stroke paints and picks nothing.
+fn contour_level_distance_at(
+    chart_t: vec2<f32>,
+    s: ContourSample,
+    metric: ContourMetric,
+    level: f32,
+    reach: f32,
+) -> f32 {
+    let start = contour_level_distance_px(s, metric, level);
+    if (transform.polar_angle.x < 0.5 || start < 0.0 || !f32_is_finite(reach)
+        || start > reach || metric.g_len <= 0.0 || !vec2_f32_is_finite(metric.n)) {
+        return start;
+    }
+    let t_per_px = transform.pixel_to_ndc * 0.5;
+    // `q` relative to the fragment, in the draw's pixel frame. The first
+    // step uses the fragment's own sample.
+    var q = -(s.z - level) / metric.g_len * metric.n;
+    if (!vec2_f32_is_finite(q)) {
+        return start;
+    }
+    for (var step = 0u; step < CONTOUR_POLAR_FOOT_STEPS; step = step + 1u) {
+        let lookup = field_lookup(chart_t + q * t_per_px, LATTICE_SAMPLES);
+        if (!lookup.hit) {
+            break;
+        }
+        let at = contour_sample(lookup.t);
+        if (!at.hit) {
+            break;
+        }
+        let g = at.dz.x * lookup.jac_x + at.dz.y * lookup.jac_y;
+        let g2 = dot(g, g);
+        // The foot of the perpendicular from the fragment (the origin) onto
+        // the level set linearized at `q`.
+        let next = -((at.z - level) - dot(g, q)) / g2 * g;
+        if (!f32_is_finite(g2) || g2 <= 0.0 || !vec2_f32_is_finite(next)
+            || length(next) > reach + 1.0) {
+            break;
+        }
+        q = next;
+    }
+    return length(q);
 }
 
 /// Contour lines, drawn as the level set of the bilinear field.
@@ -418,7 +484,7 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
             if (!f32_is_finite(lv)) {
                 continue;
             }
-            let distance_to_level = contour_level_distance_px(s, metric, lv);
+            let distance_to_level = contour_level_distance_at(in.axis_t, s, metric, lv, half_w + 1.0);
             let coverage_unclamped = half_w - distance_to_level + 0.5;
             if (distance_to_level < 0.0 || !f32_is_finite(coverage_unclamped)) {
                 continue;
@@ -677,7 +743,9 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
     let max_distance = max(data_pick_query.limits.x, 0.0);
     var level_index = 0u;
     while (level_index < field.level_count) {
-        let center_distance = contour_level_distance_px(s, metric, levels[level_index]);
+        let center_distance = contour_level_distance_at(
+            cursor_t, s, metric, levels[level_index], half_width + max_distance + 1.0,
+        );
         if (center_distance >= 0.0) {
             let hit_distance = max(center_distance - half_width, 0.0);
             if (f32_is_finite(hit_distance) && hit_distance <= max_distance
@@ -851,7 +919,7 @@ fn selected_contour_coverage(t: vec2<f32>) -> f32 {
     }
     let s = contour_sample(lookup.t);
     let metric = contour_metric_at(s, lookup);
-    let distance_px = contour_level_distance_px(s, metric, levels[level_index]);
+    let distance_px = contour_level_distance_at(t, s, metric, levels[level_index], width_px + 1.0);
     if (distance_px < 0.0) {
         return 0.0;
     }

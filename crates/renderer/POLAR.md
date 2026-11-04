@@ -207,9 +207,11 @@ coordinates; `GridLayout::Edges` and `Centers` and both
   first angle samples. Close it by naming the first constituent column again
   at the end of `MatrixRef.columns` and appending `first + turn` to the angle
   column; the pool column is read twice, nothing is copied.
-- Contours: the stroke is measured in pixels through the polar placement's
-  Jacobian, so a ring and a spoke keep one width from the centre to the
-  ring. Labels are placed by the same GPU anchor search, whose Newton steps
+- Contours: each fragment's distance to a level is the Euclidean pixel
+  distance to the drawn isoline, found by foot-point iteration on the field
+  through the polar placement, so a ring and a spoke keep one width and one
+  antialiased edge from a few pixels off the centre to the ring (tested
+  against `|ρ − r|` and `ρ · |sin Δθ|`). Labels are placed by the same GPU anchor search, whose Newton steps
   run in (angle, radius); each label turns with its isoline's screen
   tangent, and the line leaves its gap under it.
 - Pick and selection: a cell answers `PickedData::MatrixCell` (`x_index`
@@ -398,8 +400,9 @@ draws an antenna-like pattern and a three-leaf rose interactively
 - 이음매: 보간한 전체 원은 마지막 각도 표본과 첫 각도 표본 사이에 쐐기 모양 틈을 남긴다.
   `MatrixRef.columns` 끝에 첫 구성 컬럼을 한 번 더 적고 각도 컬럼에 `첫 값 + 한 바퀴`를 붙이면
   닫힌다. 풀의 컬럼을 두 번 읽을 뿐 복사하지 않는다.
-- 등고선: 선 굵기는 극좌표 배치의 야코비안으로 픽셀 단위로 잰다. 그래서 고리와 스포크가 중심에서
-  바깥 고리까지 같은 굵기를 지킨다. 라벨은 같은 GPU 앵커 탐색이 놓으며 뉴턴 단계를 (각도, 반지름)에서
+- 등고선: 프래그먼트에서 레벨까지의 거리는 그려진 등치선까지의 유클리드 픽셀 거리다. 극좌표 배치를
+  거친 필드에서 발 점 반복으로 구한다. 그래서 고리와 스포크가 중심 근처 몇 픽셀부터 바깥 고리까지
+  같은 굵기와 같은 안티에일리어싱 가장자리를 지킨다(`|ρ − r|`, `ρ · |sin Δθ|`와 비교해 시험한다). 라벨은 같은 GPU 앵커 탐색이 놓으며 뉴턴 단계를 (각도, 반지름)에서
   밟는다. 라벨은 등치선의 화면 접선을 따라 돌고, 선은 라벨 밑에 틈을 남긴다.
 - 피킹과 선택: 셀은 `PickedData::MatrixCell`(`x_index`는 각도 셀, `y_index`는 반지름 셀),
   등고선은 `PickedData::ContourLevel`로 답한다. 직교 차트와 같다. 선택한 셀의 외곽선은 고리 부채꼴

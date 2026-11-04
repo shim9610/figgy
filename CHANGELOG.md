@@ -1160,8 +1160,9 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   grid's low boundary and carries the lookup's per-pixel Jacobian. The
   fill, the cell pick, the picked cell's outline (the rose's
   `radial_sector.wgsl` footprint, now spliced into the field module), the
-  contour stroke metric (the axis-`t` gradient carried to pixels through
-  the Jacobian), the contour pick and highlight, and the contour label
+  contour stroke (the Euclidean pixel distance to the isoline, by
+  foot-point iteration on the field through the polar placement), the
+  contour pick and highlight, and the contour label
   anchor pass (seeded and stepped in (angle, radius); the anchor module
   now splices `sample_validity.wgsl`) all walk this one lookup. A
   rectangular chart's lookup is the identity and its path is unchanged.

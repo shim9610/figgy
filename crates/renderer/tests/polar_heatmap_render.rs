@@ -447,6 +447,63 @@ fn cells_fill_their_annular_sectors_at_1x_and_2x() {
     }
 }
 
+/// A plot-area resize (a narrower, offset chart area) moves and shrinks the
+/// circle, and the cells follow it: each keeps its value's colour at its
+/// place in the resized geometry, and nothing is left at the old ring.
+#[test]
+fn the_cells_follow_a_resized_plot_area() {
+    let mut r = renderer();
+    let ids = edges_grid(&mut r);
+    let bar = colorbar(0.0, (ANGLES * RINGS - 1) as f64);
+    let before = chart((0.0, RINGS as f64), bar.clone());
+    let mut after = Chart::new(before.config().clone());
+    after.config_mut().chart_area = ChartArea(Rect {
+        x: 120,
+        y: 60,
+        width: 300,
+        height: 360,
+    });
+    let series = [field(&ids, GridLayout::Edges, Shading::Flat, None, true)];
+    let (_, outer_before, _) = geometry(&before, 1.0);
+    let (centre, outer, _) = geometry(&after, 1.0);
+    assert!(outer < outer_before - 20.0, "the resize shrinks the circle");
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&after, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save("polar-heatmap-resized", &img);
+    // The export's origin is the chart area's corner.
+    let local = |p: (f64, f64)| (p.0 - 120.0, p.1 - 60.0);
+    for i in 0..ANGLES {
+        for j in 0..RINGS {
+            let p = local(at_value(
+                &after,
+                1.0,
+                (i as f64 + 0.5) * 45.0,
+                j as f64 + 0.5,
+            ));
+            assert_colour(
+                &img,
+                p,
+                bar.color_for_z(z_cell(i, j)),
+                &format!("resized cell ({i}, {j})"),
+            );
+        }
+        let past = local(at(
+            centre,
+            angle(&after, (i as f64 + 0.5) * 45.0),
+            outer + 3.0,
+        ));
+        assert!(
+            is_empty(pixel(&img, past)),
+            "past the resized ring at angle cell {i}"
+        );
+    }
+}
+
 /// The hole inside `inner_radius_fraction` and the angles outside a sector
 /// draw nothing; the cells keep their place between them.
 #[test]
@@ -933,6 +990,109 @@ fn spoke_contours_keep_their_pixel_width() {
         (near - far).abs() <= 1.0,
         "the stroke keeps its pixel width: {near} near the centre, {far} near the ring"
     );
+}
+
+/// The stroke's antialiased edge is the exact pixel distance to the level,
+/// down to a few pixels from the centre: each edge pixel's coverage is
+/// `half_width - d + 0.5` with `d` the true distance, `|ρ - r|` to a ring
+/// and `ρ · |sin(φ - θ)|` to a spoke. A first-order or quadratic distance
+/// drifts near the centre, where the polar map bends fastest. At 1x and 2x.
+#[test]
+fn contour_edges_follow_the_exact_pixel_distance() {
+    let mut r = renderer();
+    let ring_ids = ring_field(&mut r);
+    let ga = col((0..12).map(|i| i as f64 * 30.0).collect());
+    let gr = col(vec![0.0, 4.0]);
+    let zs: Vec<Column<f64>> = (0..12).map(|i| col(vec![i as f64 * 30.0; 2])).collect();
+    let spoke_ids: Vec<String> = (0..12).map(|i| format!("w{i}")).collect();
+    let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("sa", &ga), ("sr", &gr)];
+    batch.extend(
+        spoke_ids
+            .iter()
+            .zip(&zs)
+            .map(|(id, c)| (id.as_str(), c as &dyn ColumnSource)),
+    );
+    r.add_columns(&batch).unwrap();
+    let width = 3.0f32;
+    let chart = chart((0.0, 4.0), colorbar(0.0, 330.0));
+    let rings = [field(
+        &ring_ids,
+        GridLayout::Centers,
+        Shading::Interpolated,
+        Some(contour(vec![0.15, 0.6, 2.5], width, None)),
+        false,
+    )];
+    let mut spoke = field(
+        &spoke_ids,
+        GridLayout::Centers,
+        Shading::Interpolated,
+        Some(contour(vec![100.0], width, None)),
+        false,
+    );
+    spoke.x_column = "sa".into();
+    spoke.y_column = "sr".into();
+    for scale in [1.0f32, 2.0] {
+        let (centre, outer, _) = geometry(&chart, scale);
+        let half = f64::from(width * scale) * 0.5;
+        let check = |img: &RasterImage, what: &str, truth: &dyn Fn(f64, f64) -> f64| {
+            let mut checked = 0usize;
+            let mut worst = (0.0f64, (0.0, 0.0), 0.0, 0.0);
+            for y in 0..img.height {
+                for x in 0..img.width {
+                    let p = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let (rho, phi) = polar_of(centre, p);
+                    // The outer ring cuts the stroke at pixel centres.
+                    if rho < 4.0 * f64::from(scale) || rho > outer - 2.0 {
+                        continue;
+                    }
+                    let d = truth(rho, phi);
+                    let expected = (half - d + 0.5).clamp(0.0, 1.0);
+                    if expected <= 0.05 || expected >= 0.95 {
+                        continue;
+                    }
+                    let alpha = f64::from(pixel(img, p)[3]) / 255.0;
+                    if (alpha - expected).abs() > worst.0 {
+                        worst = ((alpha - expected).abs(), p, alpha, expected);
+                    }
+                    checked += 1;
+                }
+            }
+            assert!(checked > 100, "{scale}x {what}: {checked} edge pixels");
+            assert!(
+                worst.0 <= 0.06,
+                "{scale}x {what}: the edge pixel at {:?} has coverage {:.3} where the exact \
+                 distance gives {:.3} ({checked} checked)",
+                worst.1,
+                worst.2,
+                worst.3
+            );
+        };
+        let img = export(&mut r, &chart, &rings, scale);
+        save(&format!("polar-heatmap-exact-rings-{scale}x"), &img);
+        let radii = [0.15, 0.6, 2.5].map(|v| radius_px(&chart, scale, v));
+        assert!(
+            radii[0] < 12.0 * f64::from(scale),
+            "the innermost ring is near the centre: {}",
+            radii[0]
+        );
+        check(&img, "rings", &|rho, _| {
+            radii
+                .iter()
+                .map(|ring| (rho - ring).abs())
+                .fold(f64::MAX, f64::min)
+        });
+        let img = export(&mut r, &chart, std::slice::from_ref(&spoke), scale);
+        save(&format!("polar-heatmap-exact-spoke-{scale}x"), &img);
+        let theta = angle(&chart, 100.0);
+        check(&img, "spoke", &|rho, phi| {
+            let delta = angle_diff(phi, theta);
+            if delta.abs() >= std::f64::consts::FRAC_PI_2 {
+                rho
+            } else {
+                rho * delta.sin().abs()
+            }
+        });
+    }
 }
 
 /// Contour labels sit on their rings: each label box's pixels lie within

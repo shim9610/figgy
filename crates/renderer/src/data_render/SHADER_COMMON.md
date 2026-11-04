@@ -484,8 +484,15 @@ count), and carries the Jacobian. `fs_main`, `field_pick_cell` and
 (`anchor_seed`, whose Newton steps then run in (angle, radius)) on the
 sample lattice. The polar contour metric (`contour_metric_at`) carries the
 axis-`t` gradient to pixels, `g = dz.x · jac_x + dz.y · jac_y`, and the
-bilinear Hessian `Jᵀ H J`; the map's own curvature is left out, so the
-stroke is placed by the first-order distance, exact on the level. The
+bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
+the polar field is not a quadratic, so `contour_level_distance_at` finds the
+closest point on the level set by foot-point iteration
+(`CONTOUR_POLAR_FOOT_STEPS`, 4): at the current point the level set is
+linearized from the field read through `field_lookup` and `contour_sample`,
+and the point moves to the foot of the perpendicular from the fragment.
+The distance is the Euclidean pixel distance to the isoline; the paint, the
+pick and the selected-level highlight read it. A rectangular chart keeps
+`contour_level_distance_px`. The
 picked cell's outline is the annular sector between its boundaries as a
 `radial_sector.wgsl` `Sector`, measured by `footprint` as the rose wedge is
 (`polar_cell_coverage`). An anchor's pixel is its polar placement

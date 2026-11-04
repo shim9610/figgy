@@ -4324,7 +4324,8 @@ fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         zero_angle_degrees: 90.0,
         clockwise: true,
         inner_radius_fraction: 0.06,
-        radial_label_angle_degrees: 90.0,
+        // Between the 0° and 45° spokes, clear of the top angle label.
+        radial_label_angle_degrees: 67.5,
         ..PolarOptions::default()
     }));
     let mut chart = Chart::new(config);
