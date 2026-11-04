@@ -69,7 +69,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
                 fill: Some(LineFill::ToBaseline(0.0)), 
                 fill_color: Some(Color::new(0.12, 0.43, 0.82, 0.25)),
                 interpolation: LineInterpolation::Linear,
-            }), errors: None }),
+            }), errors: None, stem: None }),
     }];
     // The background stays transparent; `export_rgba` fills it.
     let image = renderer.export_rgba_blocking(renderer::ExportSource::chart(&chart, &series), renderer::ExportOptions::panel(1.0))?;

@@ -175,7 +175,7 @@ let cfg = SeriesConfig {
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        }), errors: None }),
+        }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
@@ -781,7 +781,7 @@ let cfg = SeriesConfig {
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        }), errors: None }),
+        }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
