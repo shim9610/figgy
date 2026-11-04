@@ -51,7 +51,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **데이터 출처 키**인 `SeriesConfig.source_id`와 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **연속 값 매핑 키 2개**인 `DataScatterStyleConfig.point_color_map` / `point_size_map`도 `None`이면 생략한다. `point_color_map`은 `{ "column": "<id>" }`이며 색은 `Config.colorbar`가 정하므로 `colorbar`가 있어야 한다. `point_size_map`은 `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`이다. `scale`은 `"Area"`(기본값) 또는 `"Radius"`이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. 두 컬럼 모두 등록돼 있어야 하고 시리즈의 x/y 컬럼과 인덱스가 맞아야 한다. 자세한 내용은 [점 색·크기 매핑](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#점-색과-크기-매핑)을 참고한다.
-- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>" } }` 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>", "w": "<id>" } }`(`w`는 3D 차트의 z 성분이며 없으면 생략) 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
 - **유선 시리즈**의 `render_type`은 `{ "Streamlines": { "line": DataLineStyleConfig } }`이다. `arrows`(`{ "spacing_px": 70.0, "head_length_px": 9.0, "head_width_px": 8.0 }`)와 `color_map`(`{ "column": "<id>" }`)은 `None`이면 생략한다. `line.interpolation`은 `"Linear"`, `line.fill`은 없어야 하고, `color_map`이 있으면 `Config.colorbar`가 있어야 한다. 전체 예는 [`Streamlines` render_type](#streamlines-render_type), 필드 의미는 [유선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#유선)을 참고한다.
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
@@ -309,7 +309,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 }
 ```
 
-`identity`에 `source_id`가 없으면 그 키를 생략한다. `value`는 저장된 막대 높이이며 개수·가중치·밀도·계단 그래프 값 중 무엇이든 될 수 있다. 가로 히스토그램은 `"Horizontal"`을 반환하고 Y 컬럼을 구간 경계로 사용한다. 점 결과에는 `index`, `x`, `y`가 있고, 시리즈에 `point_color_map`이 있으면 `color_value`, `point_size_map`이 있으면 `size_value`가 더해진다. 두 값은 점의 색과 반지름을 정한 원래 값이다. 행렬 결과에는 `x_index`, `y_index`, `x`, `y`, `value`가 있으며 `Edges` 격자에서는 셀 중심 좌표를 보고한다. 벡터 시리즈는 `u`와 `v`를 보고한다. 점 벡터는 점 결과에 `u` / `v`를 더하고, 격자 벡터는 `u` 격자 기준의 행렬 결과에서 `value` 대신 `u` / `v`를 쓴다. 벡터에 `color_map`이 있으면 `color_value`도 들어 있다. 모든 결과에는 `kind` 태그와 필드를 한 객체에 둔 `identity`와 `series_id`가 있다.
+`identity`에 `source_id`가 없으면 그 키를 생략한다. `value`는 저장된 막대 높이이며 개수·가중치·밀도·계단 그래프 값 중 무엇이든 될 수 있다. 가로 히스토그램은 `"Horizontal"`을 반환하고 Y 컬럼을 구간 경계로 사용한다. 점 결과에는 `index`, `x`, `y`가 있고, 시리즈에 `point_color_map`이 있으면 `color_value`, `point_size_map`이 있으면 `size_value`가 더해진다. 두 값은 점의 색과 반지름을 정한 원래 값이다. 행렬 결과에는 `x_index`, `y_index`, `x`, `y`, `value`가 있으며 `Edges` 격자에서는 셀 중심 좌표를 보고한다. 벡터 시리즈는 `u`와 `v`를 보고한다. 점 벡터는 점 결과에 `u` / `v`를 더하고, 3D 차트에서는 `z`와 `w`도 더하며, 격자 벡터는 `u` 격자 기준의 행렬 결과에서 `value` 대신 `u` / `v`를 쓴다. 벡터에 `color_map`이 있으면 `color_value`도 들어 있다. 모든 결과에는 `kind` 태그와 필드를 한 객체에 둔 `identity`와 `series_id`가 있다.
 
 `FiggyChart.step_selection(dx, dy)`는 동기 메서드이며 선택이 바뀌었는지를 반환한다. 세로 히스토그램에서는 `dx`가 구간을, `dy`가 방향이 같은 히스토그램 시리즈를 옮기고, 가로 히스토그램에서는 두 역할이 바뀐다. 구간 인덱스는 선택한 시리즈의 경계·값 개수가 허용하는 범위를 넘지 않는다. 점에서는 `dx`가 원본 인덱스를, `dy`가 점이나 선을 그리는 시리즈를 바꾼다. 점 벡터(`Points` 형식의 `Vector`)의 화살표도 산점도의 점처럼 시리즈의 점을 따라 옮긴다. 행렬 셀(격자 벡터의 셀 포함)에서는 `dx`가 X 인덱스를, `dy`가 Y 인덱스를 바꾼다. 등고선 참조는 옮기지 않는다. `selection_details()`와 `step_selection()`은 `<figgy-chart>` 래퍼에는 없는 저수준 WASM 메서드이므로, 호스트는 `selection_details()`가 끝날 때까지 [비동기 호출 중 객체 접근 제한](../renderer/WASM.md#39-async-메서드와-객체-잠금-필독)의 `busy` 토큰을 유지해야 한다.
 
@@ -1305,6 +1305,29 @@ the same shape) are omitted when absent. A picked sample's
 `selection_details()` carries `x_index`, `y_index`, `x`, `y` and `value`,
 plus `color_value` with a colour grid.
 
+A `"Vector"` series in the `"Points"` form draws one arrow per row in the
+box when it names its anchor height in `"z_column"` and its z component in
+`"w"` (#211); each missing key is rejected on a 3D chart, and a `"Grid"`
+vector is rejected there. On a flat chart both keys are kept and unused. A
+picked arrow's `selection_details()` carries `index`, `x`, `y`, `z`, `u`,
+`v` and `w`, plus `color_value` when colour mapped:
+
+```json
+{
+  "series_id": "flow",
+  "label": null,
+  "x_column": "qx",
+  "y_column": "qy",
+  "z_column": "qz",
+  "render_type": { "Vector": {
+    "components": { "Points": { "u": "qu", "v": "qv", "w": "qw" } },
+    "style": { "color": { "r": 0.1, "g": 0.1, "b": 0.1, "a": 1.0 }, "width_px": 1.6,
+               "scale": { "Data": { "factor": 0.3 } }, "pivot": "Middle",
+               "head_length_px": 7.0, "head_width_px": 6.0,
+               "color_map": { "Column": "speed" } } } }
+}
+```
+
 <a id="ternary-render_type"></a>
 
 ## `Ternary` render_type
@@ -1446,7 +1469,7 @@ into the axis's `label_offset`.
 
 ## `Vector` render_type의 전체 형식
 
-점 벡터(`Points`)와 격자 벡터(`Grid`)의 `render_type` 값 예다. 최상위 키 `flow`와 `gradient`는 예시를 구분하는 이름이다. 두 형식 모두 시리즈의 `x_column` / `y_column`이 화살표의 기준점이다. `Points`의 `u` / `v`는 기준점 컬럼과 인덱스가 맞는 컬럼이고, `Grid`의 `u` / `v`는 히트맵 행렬과 같은 방식으로 좌표 컬럼 위에 선언한 격자다. `flow`에는 선택 키를 모두 적었다. `gradient`는 `get_series()`가 반환하는 형태로, `pivot`은 기본값 `"Tail"`이어도 기록하고 `0.0`인 `min_length_px`는 생략한다. 벡터는 정밀 모드에서만 그리며 스트리밍 소스는 오류로 거부한다. 키별 생략 규칙과 `color_map` 조건은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+점 벡터(`Points`)와 격자 벡터(`Grid`)의 `render_type` 값 예다. 최상위 키 `flow`와 `gradient`는 예시를 구분하는 이름이다. 두 형식 모두 시리즈의 `x_column` / `y_column`이 화살표의 기준점이다. `Points`의 `u` / `v`는 기준점 컬럼과 인덱스가 맞는 컬럼이고, `Grid`의 `u` / `v`는 히트맵 행렬과 같은 방식으로 좌표 컬럼 위에 선언한 격자다. `flow`에는 선택 키를 모두 적었다(`w`는 3D 차트에서만 읽으므로 뺐다). `gradient`는 `get_series()`가 반환하는 형태로, `pivot`은 기본값 `"Tail"`이어도 기록하고 `0.0`인 `min_length_px`는 생략한다. 벡터는 정밀 모드에서만 그리며 스트리밍 소스는 오류로 거부한다. 키별 생략 규칙과 `color_map` 조건은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
 
 ```json
 {

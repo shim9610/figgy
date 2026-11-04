@@ -191,6 +191,23 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   (previously "field and contour series are not drawn on polar axes").
   No type or serialized key is added: a polar heatmap document parses and
   re-serializes byte-identically.
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  `VectorComponents::Points` gains `w: Option<ColumnId>`, the z component.
+  On a 3D chart a point vector draws when it names its anchor height in
+  `SeriesConfig.z_column` and its z component in `w`;
+  `Config::validate_view3d_series` refuses each missing one with its own
+  reason ("a vector series on a 3D chart names its anchor height column
+  (z_column)", "... names its z component (w)") and a grid vector ("a grid
+  vector draws flat: not on a 3D chart"). On a flat chart both are kept and
+  unused. `Config::drawn_z_column` names a 3D point vector's height, the
+  step count includes the height and `w` on a 3D chart, and
+  `SeriesConfig::visit_columns` visits `w`.
+  `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` sizes the
+  longest vector the bounds allow, `hypot(max |u|, max |v|, max |w|)`. On the
+  wire `w` is omitted when `None`, so older documents parse and re-serialize
+  byte-identically. Migration: a `VectorComponents::Points { u, v }` literal
+  becomes `Points { u, v, w: None }`, and a pattern that names every field
+  adds `w` or `..`.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -1175,6 +1192,36 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   measured by `tests/polar_heatmap_render.rs`. The `PolarHeatmap` scene is
   a weather radar sweep and `polar_plot` writes a fifth image, an antenna
   gain heatmap. The shader prewarm contract is regenerated.
+
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A point vector on a 3D chart draws one arrow per row from `(x, y, z)`
+  along `(u, v, w)`, depth tested against the surfaces, the 3D marks and
+  the other arrows. The new assembled module `VECTOR_POINTS_3D_SHADER`
+  (`VectorInput::Points3d`) is the point form with the flat projection
+  fragment replaced by `common/project_3d.wgsl` and the new
+  `vector/project_box3d.wgsl`, plus the ID pick entries of the new
+  `vector/vector_entry_3d.wgsl`; the glyph and the input are unchanged
+  (rule 9). Both projection fragments now define `arrow_clip(corner,
+  arrow)`, and `ArrowPx` carries the NDC depth at the tail and tip; the
+  entry's body is `vector_vertex`, and the 2D vector modules draw
+  byte-identical pixels. The glyph stays camera-facing in logical pixels.
+  `Data` tips are placed through the axes and the camera, and an arrow
+  whose anchor or tip leaves the box is not drawn; `Pixels` length is the
+  screen-plane length at the anchor. `VectorParamsGpu` grows from 128 to
+  144 bytes (`height_base`, `height_len`, `w_base`, `w_len`) and
+  `VECTOR_FLAG_THREE_D` (64) selects the height and `w` reads.
+  `View3dPipeline` gains `Vector` and `VectorPick` (`VIEW3D_PIPELINES` 10).
+  The 3D ID pick answers an arrow's row where its shaft or head covers at
+  least half the pixel, the picked ring sits at the anchor at half the head
+  width, and the z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a
+  `Data` arrow from column statistics. `SeriesDrawInfo` counts the height
+  and `w`, and registration checks `w` on a 3D chart. A change of a
+  series' `z_column` is now a data declaration change (it moved no
+  revision before). Streamed sources are refused. No count limit:
+  `(1 << 20) + 1` arrows draw, pick their last row and step to it in
+  `tests/surface_render.rs`. The `Quiver3d` scene draws an
+  Arnold-Beltrami-Childress flow coloured by a host-computed speed. The
+  shader prewarm contract is regenerated.
 
 - **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
   A radial chart whose sectors are all Flat, level (no tilt or depth),
@@ -2643,6 +2690,10 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A picked arrow of a 3D point vector reports `z` and `w` in
+  `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON
+  carries `w` in `components.Points`, omitted when absent.
 - **Legend rows follow their series** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `set_series_label`, `remove_series`, `remove_column`, `add_line_series`,
   `set_series` and `load_demo` find a series' legend row by the series its

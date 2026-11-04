@@ -131,6 +131,7 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style,
         },
@@ -1457,6 +1458,7 @@ fn vector_series_are_validated_at_registration() {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "nope".into(),
+            w: None,
         },
         style: pixels(1.0),
     };

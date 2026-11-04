@@ -449,9 +449,12 @@ impl PrepareContext<'_> {
             // (#132), and its camera group: the surface layout for the
             // precise entries, the combined value map and camera layout for
             // the mapped markers and their ring.
+            // A point vector names its height too (#211): its arrows and its
+            // picked anchor's ring draw through the camera.
             let z_3d = match (camera_3d.as_ref(), cfg.z_column.as_deref()) {
                 (Some(_), Some(z))
-                    if (primitives.line || primitives.scatter) && phase.is_none() =>
+                    if (primitives.line || primitives.scatter || primitives.vector)
+                        && phase.is_none() =>
                 {
                     Some(lookup(z)?)
                 }
@@ -618,8 +621,15 @@ impl PrepareContext<'_> {
                         }
                         data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
                         data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
+                        data_render::vector::VectorInput::Points3d => {
+                            pipelines.view3d[View3dPipeline::Vector as usize].as_ref()
+                        }
                     }
                     .ok_or(FiggyError::internal("prepare ensured vector pipeline"))?;
+                    // A 3D chart's arrows (#211) bind the panel's camera.
+                    let view3d = (scratch.input == data_render::vector::VectorInput::Points3d)
+                        .then(|| camera_binding(false))
+                        .transpose()?;
                     Some(data_render::vector::ColumnVectorLayer {
                         pipeline,
                         transform_bg: &view.transform_bg,
@@ -628,6 +638,7 @@ impl PrepareContext<'_> {
                         charge: Arc::clone(&scratch.charge),
                         count: scratch.count,
                         indirect: None,
+                        view3d,
                     })
                 } else if primitives.line
                     && phase.is_none()
@@ -658,6 +669,7 @@ impl PrepareContext<'_> {
                             charge: Arc::clone(&scratch.charge),
                             count: scratch.count,
                             indirect: Some((&slots.indirect, &slots.vs_bg)),
+                            view3d: None,
                         })
                 } else {
                     None
@@ -1402,7 +1414,7 @@ impl PrepareContext<'_> {
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
                         view3d: z_3d
-                            .filter(|_| primitives.scatter)
+                            .filter(|_| primitives.scatter || primitives.vector)
                             .map(|z| {
                                 camera_binding(
                                     styled.is_none() && series.style.scatter_map.is_some(),
@@ -1561,6 +1573,10 @@ impl PrepareContext<'_> {
                 Some(_) => (None, scatter),
                 None => (scatter, None),
             };
+            let (vector, vector_3d) = match &vector {
+                Some(layer) if layer.view3d.is_some() => (None, vector),
+                _ => (vector, None),
+            };
             out.push(data_render::SeriesLayers {
                 area,
                 field,
@@ -1578,6 +1594,7 @@ impl PrepareContext<'_> {
                 scatter,
                 line_3d,
                 scatter_3d,
+                vector_3d,
                 selected_bars,
                 selected_fields,
                 picked,

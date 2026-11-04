@@ -586,7 +586,11 @@ impl Config {
         };
         panel.view_3d()?;
         match &series.render_type {
-            DataRenderType::Xy(_) => series.z_column.as_deref().filter(|z| !z.is_empty()),
+            DataRenderType::Xy(_)
+            | DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                ..
+            } => series.z_column.as_deref().filter(|z| !z.is_empty()),
             _ => None,
         }
     }
@@ -634,6 +638,29 @@ impl Config {
                     }
                     continue;
                 }
+                // A 3D vector field (#211): one arrow per row from
+                // `(x, y, z_column)` along `(u, v, w)`.
+                DataRenderType::Vector { components, .. } if self.view_3d().is_some() => {
+                    match components {
+                        crate::data_config::VectorComponents::Grid { .. } => {
+                            return Err("a grid vector draws flat: not on a 3D chart");
+                        }
+                        crate::data_config::VectorComponents::Points { w, .. } => {
+                            if item.z_column.as_deref().is_none_or(str::is_empty) {
+                                return Err(
+                                    "a vector series on a 3D chart names its anchor height \
+                                     column (z_column)",
+                                );
+                            }
+                            if w.as_deref().is_none_or(str::is_empty) {
+                                return Err(
+                                    "a vector series on a 3D chart names its z component (w)",
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
                 DataRenderType::RgbImage { .. } if self.view_3d().is_some() => {
                     return Err("an image draws flat: not on a 3D chart");
                 }
@@ -660,8 +687,8 @@ impl Config {
                 }) => (&None, matrix, None, Some(contour)),
                 _ if self.view_3d().is_some() => {
                     return Err(
-                        "a 3D chart draws only heatmaps, contours, heatmap contours and the \
-                         scatter and line series that name a z_column",
+                        "a 3D chart draws only heatmaps, contours, heatmap contours, and the \
+                         scatter, line and point vector series that name a z_column",
                     );
                 }
                 _ => continue,
@@ -954,6 +981,118 @@ mod tests {
             Some("z")
         );
         assert_eq!(document.drawn_z_column(&point("outer", Some("z"))), None);
+    }
+
+    fn vector_style() -> crate::data_config::VectorStyle {
+        crate::data_config::VectorStyle {
+            color: Color::BLACK,
+            width_px: 1.5,
+            scale: crate::data_config::VectorScale::default(),
+            pivot: crate::data_config::VectorPivot::Tail,
+            head_length_px: 8.0,
+            head_width_px: 6.0,
+            min_length_px: 0.0,
+            color_map: None,
+        }
+    }
+
+    fn vector_3d(z: Option<&str>, w: Option<&str>) -> SeriesConfig {
+        SeriesConfig {
+            z_column: z.map(Into::into),
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points {
+                    u: "u".into(),
+                    v: "v".into(),
+                    w: w.map(Into::into),
+                },
+                style: vector_style(),
+            },
+            ..heatmap(None)
+        }
+    }
+
+    /// A 3D vector field (#211): a point vector names its anchor height and
+    /// its z component; a grid vector stays flat; on a flat chart both
+    /// columns are kept and unused.
+    #[test]
+    fn a_3d_vector_names_its_height_and_its_z_component() {
+        let config = chart();
+        assert_eq!(
+            config.validate_view3d_series(&[vector_3d(Some("z"), Some("w"))]),
+            Ok(())
+        );
+        assert_eq!(
+            config.validate_view3d_series(&[vector_3d(None, Some("w"))]),
+            Err("a vector series on a 3D chart names its anchor height column (z_column)")
+        );
+        assert_eq!(
+            config.validate_view3d_series(&[vector_3d(Some("z"), None)]),
+            Err("a vector series on a 3D chart names its z component (w)")
+        );
+        assert_eq!(
+            config.validate_view3d_series(&[vector_3d(Some("z"), Some(""))]),
+            Err("a vector series on a 3D chart names its z component (w)")
+        );
+        let grid = SeriesConfig {
+            render_type: DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Grid {
+                    u: matrix(2),
+                    v: matrix(2),
+                },
+                style: vector_style(),
+            },
+            ..heatmap(None)
+        };
+        assert_eq!(
+            config.validate_view3d_series(&[grid]),
+            Err("a grid vector draws flat: not on a 3D chart")
+        );
+        let flat = crate::default::default_config();
+        assert_eq!(
+            flat.validate_view3d_series(&[vector_3d(None, None)]),
+            Ok(())
+        );
+        assert_eq!(
+            flat.validate_view3d_series(&[vector_3d(Some("z"), Some("w"))]),
+            Ok(())
+        );
+        // The drawn height is the 3D chart's only.
+        let arrows = vector_3d(Some("z"), Some("w"));
+        assert_eq!(config.drawn_z_column(&arrows), Some("z"));
+        assert_eq!(flat.drawn_z_column(&arrows), None);
+    }
+
+    /// The step count of a 3D vector is the shortest of its columns, `w`
+    /// and the height included; a flat chart ignores both.
+    #[test]
+    fn a_3d_vector_steps_over_its_shortest_column() {
+        let arrows = vector_3d(Some("z"), Some("w"));
+        let len = |id: &str| {
+            Some(match id {
+                "w" => 4usize,
+                "z" => 6,
+                _ => 10,
+            })
+        };
+        for (config, last) in [(chart(), 3usize), (crate::default::default_config(), 9)] {
+            let mut config = config;
+            config.picked_data = Some(crate::config::DataSelectionsConfig {
+                refs: vec![crate::config::PickedDataRef::Point {
+                    source_id: None,
+                    series_id: "s".into(),
+                    point_index: 0,
+                }],
+                ..Default::default()
+            });
+            assert_eq!(
+                config.step_selection(std::slice::from_ref(&arrows), 100, 0, len),
+                Ok(true)
+            );
+            assert!(matches!(
+                config.picked_data.as_ref().unwrap().refs[0],
+                crate::config::PickedDataRef::Point { point_index, .. } if point_index == last
+            ));
+        }
     }
 
     #[test]

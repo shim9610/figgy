@@ -92,6 +92,7 @@ impl<'a> SelectionLayers<'a> {
             scatter: None,
             line_3d: None,
             scatter_3d: None,
+            vector_3d: None,
             selected_bars: self.selected_bars,
             selected_fields: self.selected_fields,
             picked: self.picked,

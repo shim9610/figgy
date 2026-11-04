@@ -130,7 +130,7 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
         if let Some(style) = extract_vector_points(&cfg.render_type)
             && use_scatter_style_mapping
             && let DataRenderType::Vector {
-                components: crate::data_config::VectorComponents::Points { u, v },
+                components: crate::data_config::VectorComponents::Points { u, v, .. },
                 ..
             } = &cfg.render_type
         {
@@ -1837,6 +1837,7 @@ mod tests {
                 components: crate::data_config::VectorComponents::Points {
                     u: u.into(),
                     v: v.into(),
+                    w: None,
                 },
                 style: crate::data_config::VectorStyle {
                     color: Color::BLACK,

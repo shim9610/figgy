@@ -307,7 +307,8 @@ linear or logarithmic and not categorical; neither polar nor ternary; no
 `Config::validate_view3d_series` (reported as `InvalidSeriesConfig` at
 registration): a 3D chart draws heatmaps, contours, heatmap contours and
 the scatter, line and scatter-line series that name a `z_column` (linear,
-without an area fill); a surface's fill is continuous, a floor contour has
+without an area fill), and point vectors that name a `z_column` and a `w`
+([Vector fields in 3D](#vector-fields-in-3d)); a surface's fill is continuous, a floor contour has
 no labels and a colour grid matches its height grid. Streamed sources are
 rejected. Fits also fit `right_y` to the heights and the z columns.
 Annotations are placed by ratio only. Subplots carry their own `view_3d`.
@@ -781,7 +782,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `RgbImage { red, green, blue, range, shading, opacity }` | fill | A colour image: three matrices on one lattice, each channel mapped linearly from `range` to 0..1; no colourbar. See [Colour images](#colour-images-imshow) |
 | `Contour { matrix, contour }` | contour | Contour lines only; on a 3D chart's floor |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | Filled field with lines over it; on a 3D chart, the surface with the lines on the floor |
-| `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
+| `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. On a 3D chart a `Points` vector also reads `w` and the series' `z_column` ([Vector fields in 3D](#vector-fields-in-3d)). See [Vector fields](#vector-fields) |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. On a polar chart with a categorical angle axis the bars are wedges, a rose ([POLAR.md](POLAR.md#roses-polar-bars)). See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
@@ -847,8 +848,12 @@ points on the next draw.
 `components` names where the (u, v) components come from; the series'
 `x_column` / `y_column` stay the anchors, as for every other render type:
 
-- `VectorComponents::Points { u, v }`: two value columns index-aligned with the
-  anchors, one arrow per index. The count is the shortest of the four columns.
+- `VectorComponents::Points { u, v, w }`: value columns index-aligned with the
+  anchors, one arrow per index. The count is the shortest of the four columns
+  (five with a colour column). `w: Option<ColumnId>` is the z component, read
+  on a 3D chart only together with the anchor height `SeriesConfig.z_column`
+  (see [Vector fields in 3D](#vector-fields-in-3d)); on a flat chart both are
+  kept and unused, and `w` is omitted from JSON when `None`.
 - `VectorComponents::Grid { u, v }`: two `MatrixRef`s declared exactly like a
   heatmap's matrix over the series' coordinate columns, with the same
   `orientation` and `grid_layout` (a mismatch is rejected). Under `Centers` the
@@ -896,6 +901,38 @@ The shader is assembled from fragments (Cartesian projection, input form, arrow
 glyph, entry; [src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md)
 §5.3) and reads the component columns from the column pool on every draw.
 `crates/renderer/examples/vector_field.rs` shows both forms.
+
+<a id="vector-fields-in-3d"></a>
+
+##### Vector fields in 3D
+
+On a 3D chart (`Config.view_3d`, [SURFACE.md](SURFACE.md)) a point vector
+draws one arrow per row from `(x, y, z)` along `(u, v, w)` (#211). It names
+its anchor height in `SeriesConfig.z_column` (read on `right_y`) and its z
+component in `w`; a missing one is rejected with its own error. The grid form
+is rejected on a 3D chart ("a grid vector draws flat"), and a host uploads a
+3D lattice as point columns. The count is the shortest of x, y, z, u, v, w
+and the colour column.
+
+- The glyph is the flat one: camera-facing, with its widths and head in
+  logical pixels, at the depth of the front of a tube of half its head width,
+  depth tested against surfaces, 3D marks and other arrows.
+- `Data { factor }` puts the tip at `anchor + factor · (u, v, w)` in each
+  axis's data units, through the camera, so the arrow is foreshortened. An
+  arrow whose anchor or tip leaves the box is not drawn.
+- `Pixels { px_per_unit }` is the length in the screen plane at the anchor:
+  an arrow lying in that plane is `px_per_unit · |(u, v, w)|` logical pixels
+  long, and others are foreshortened.
+- The pivot shifts along the projected axis, exact under the orthographic
+  camera and a sub-pixel approximation under perspective.
+- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` writes the
+  scale so the longest vector the bounds allow, `hypot(max |u|, max |v|,
+  max |w|)`, is `target` long. Colouring by speed takes a magnitude column the
+  host uploads (rule 1).
+- The z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a `Data` arrow,
+  from column statistics.
+- Pick, the anchor ring, `step_selection` and `selection_details` (adding
+  `z` and `w`) work as for a 3D marker. Streamed sources are rejected.
 
 #### Area fill and step lines
 
@@ -1694,7 +1731,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `RgbImage { red, green, blue, range, shading, opacity }` | fill | 컬러 이미지. 같은 격자 위의 행렬 세 개를 R·G·B 채널로 읽어 `range`를 0..1로 선형 매핑한다. 색상 막대를 쓰지 않는다 |
 | `Contour { matrix, contour }` | contour | 선만. 3D 차트에서는 바닥에 |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | 면 + 그 위의 선. 3D 차트에서는 곡면과 바닥의 선 |
-| `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
+| `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. 3D 차트에서 `Points` 벡터는 `w`와 시리즈의 `z_column`도 읽는다([3D 벡터장](#3d-벡터장)). [벡터장](#벡터장) 참고 |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 범주형 각도 축을 가진 극좌표 차트에서는 막대가 쐐기, 즉 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 된다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
 | `EnergyLevels(EnergyLevelSeries)` | energy levels | 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203)). DataLess 시리즈라 모든 값이 SSOT에 있고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 자세한 내용은 [에너지 준위](#energylevels-ko)를 참고한다 |
@@ -1722,7 +1759,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 `DataRenderType::Vector { components, style }`는 표본마다 화살표 하나를 그린다. `components`는 (u, v) 성분을 읽을 곳이며, 다른 종류와 마찬가지로 시리즈의 `x_column` / `y_column`이 기준점이다.
 
-- `VectorComponents::Points { u, v }`: 기준점과 인덱스가 맞는 값 컬럼 두 개. 인덱스마다 화살표를 하나 그리며, 개수는 네 컬럼(`VectorColorMap::Column`이 있으면 다섯 컬럼) 중 가장 짧은 길이다.
+- `VectorComponents::Points { u, v, w }`: 기준점과 인덱스가 맞는 값 컬럼. 인덱스마다 화살표를 하나 그리며, 개수는 네 컬럼(`VectorColorMap::Column`이 있으면 다섯 컬럼) 중 가장 짧은 길이다. `w: Option<ColumnId>`는 z 성분으로, 3D 차트에서만 기준점 높이 `SeriesConfig.z_column`과 함께 읽는다([3D 벡터장](#3d-벡터장) 참고). 평면 차트에서는 둘 다 보관만 하고 쓰지 않으며, `w`가 `None`이면 JSON에서 생략한다.
 - `VectorComponents::Grid { u, v }`: 히트맵 행렬과 똑같이 시리즈의 좌표 컬럼 위에 선언한 `MatrixRef` 두 개. 두 격자의 `orientation`과 `grid_layout`이 같아야 하며 다르면 거부한다. `Centers`에서는 좌표 위에, `Edges`에서는 셀 중심(두 경계의 데이터 좌표 중점이라 로그축에서는 화면 중점과 다르다)에 화살표를 놓는다. 두 격자가 공통으로 덮는 범위까지만 그리고, 짧은 히트맵 행렬처럼 잘림으로 보고한다. 같은 격자의 히트맵·등고선과 좌표 컬럼을 함께 쓸 수 있으며, 촘촘한 필드 위에 성긴 화살표를 그리려면 더 성긴 좌표 컬럼을 따로 등록한다.
 
 `VectorStyle`은 화살표 모양이다.
@@ -1736,6 +1773,20 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 상호작용은 성분 형식을 따른다. 점 벡터는 마커처럼 기준점에서 피킹하며, 반지름은 머리와 몸통 중 넓은 쪽의 절반이다. 선택 테두리, 웹 `step_selection`과 `selection_details`(`u`, `v`, `color_value`), PNG 출력도 같은 기준을 쓴다. 격자 벡터는 히트맵 셀처럼 `u` 격자의 셀 단위로 피킹하고 강조한다. 자동 범위 맞춤(`begin_series_fit_extent`, 웹 범위 요청)은 기준점과 데이터 배율 점 벡터의 끝점을 포함하며, 격자 벡터의 데이터 배율 끝점은 포함하지 않는다. 성분에는 GPU 상주 컬럼이 필요하므로 스트리밍 소스는 거부한다. Sketch·Milkyway·Constellation 스타일은 벡터를 그리지 않는다(`draw_style_supports`가 `false`를 돌려준다). 범례 기호는 시리즈 색의 화살표 머리가 달린 선이다.
 
 셰이더는 직교 투영, 입력 형식, 화살표 글리프, 진입점 조각을 조립해 만들며([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.3), 그릴 때마다 컬럼 풀에서 성분 컬럼을 읽는다. [examples/vector_field.rs](examples/vector_field.rs)에 두 형식의 예제가 있다.
+
+<a id="3d-벡터장"></a>
+
+##### 3D 벡터장
+
+3D 차트(`Config.view_3d`, [SURFACE.md](SURFACE.md))에서 점 벡터는 행마다 `(x, y, z)`에서 `(u, v, w)` 방향으로 화살표 하나를 그린다(#211). 기준점 높이는 `SeriesConfig.z_column`(`right_y`로 읽음), z 성분은 `w`에 적으며, 빠진 쪽마다 따로 오류를 낸다. 격자 형식은 3D 차트에서 거부하므로("a grid vector draws flat"), 3D 격자는 호스트가 점 컬럼으로 올린다. 개수는 x, y, z, u, v, w와 색 컬럼 중 가장 짧은 길이다.
+
+- 글리프는 평면과 같다. 카메라를 향하고 두께와 머리는 논리 픽셀이며, 머리 폭 절반 굵기의 관 앞면 깊이에 놓여 곡면, 3D 표식, 다른 화살표와 깊이 테스트를 한다.
+- `Data { factor }`는 축마다 데이터 단위로 끝점을 `anchor + factor · (u, v, w)`에 두고 카메라로 투영하므로 화살표가 원근에 따라 짧아진다. 기준점이나 끝점이 상자를 벗어나면 그리지 않는다.
+- `Pixels { px_per_unit }`은 기준점에서 화면 평면 안의 길이다. 화면 평면에 놓인 화살표는 `px_per_unit · |(u, v, w)|` 논리 픽셀이고, 나머지는 카메라에 따라 짧아진다.
+- 피벗은 투영한 축을 따라 옮긴다. 정사영에서는 정확하고 원근 투영에서는 1픽셀 미만의 근사다.
+- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)`은 범위로 가능한 가장 긴 벡터 `hypot(max |u|, max |v|, max |w|)`가 `target` 길이가 되도록 배율을 쓴다. 속력으로 칠하려면 호스트가 크기 컬럼을 올린다(규칙 1).
+- z 축 맞춤은 `Data` 화살표에 대해 컬럼 통계로 `[z_min + f·w_min, z_max + f·w_max]`를 더한다.
+- 피킹, 기준점 테두리, `step_selection`, `selection_details`(`z`, `w` 추가)는 3D 마커와 같다. 스트리밍 소스는 거부한다.
 
 <a id="유선"></a>
 

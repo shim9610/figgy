@@ -371,7 +371,7 @@ fn create_ternary_pipeline(
 }
 
 /// The 3D point pipelines (`TargetPipelines::view3d`, #132).
-pub(super) const VIEW3D_PIPELINES: usize = 8;
+pub(super) const VIEW3D_PIPELINES: usize = 10;
 
 /// One of a 3D chart's scatter and line pipelines (`TargetPipelines::view3d`,
 /// #132): the markers (`vs_3d`, `vs_3d_mapped`) and the stroke (`vs_3d`)
@@ -389,11 +389,15 @@ pub(super) enum View3dPipeline {
     RingMapped = 5,
     Line = 6,
     LinePick = 7,
+    /// The arrows of a 3D vector series (#211).
+    Vector = 8,
+    /// Their ID pick.
+    VectorPick = 9,
 }
 
 // `TargetPipelines::view3d` is indexed by `kind as usize`: the last
 // discriminant is the last slot (#152).
-const _: () = assert!(View3dPipeline::LinePick as usize + 1 == VIEW3D_PIPELINES);
+const _: () = assert!(View3dPipeline::VectorPick as usize + 1 == VIEW3D_PIPELINES);
 
 impl View3dPipeline {
     pub(super) const ALL: [Self; VIEW3D_PIPELINES] = [
@@ -405,6 +409,8 @@ impl View3dPipeline {
         Self::RingMapped,
         Self::Line,
         Self::LinePick,
+        Self::Vector,
+        Self::VectorPick,
     ];
 
     fn stage(self) -> &'static str {
@@ -417,13 +423,17 @@ impl View3dPipeline {
             Self::RingMapped => "mapped 3D picked point ring",
             Self::Line => "3D line",
             Self::LinePick => "3D line pick",
+            Self::Vector => "3D vector",
+            Self::VectorPick => "3D vector pick",
         }
     }
 
     fn pass(self) -> data_render::View3dPass {
         match self {
-            Self::Scatter | Self::ScatterMapped | Self::Line => data_render::View3dPass::Draw,
-            Self::ScatterPick | Self::ScatterMappedPick | Self::LinePick => {
+            Self::Scatter | Self::ScatterMapped | Self::Line | Self::Vector => {
+                data_render::View3dPass::Draw
+            }
+            Self::ScatterPick | Self::ScatterMappedPick | Self::LinePick | Self::VectorPick => {
                 data_render::View3dPass::Pick
             }
             Self::Ring | Self::RingMapped => data_render::View3dPass::Live,
@@ -439,9 +449,10 @@ impl View3dPipeline {
 }
 
 /// The 3D point pipeline `kind` over the layouts `[transform, style, style
-/// map, camera, value map and camera]`: the precise entries bind the
-/// camera group (the surface layout) as group 3, the mapped ones the
-/// combined value map and camera group. The pick kinds render one sample
+/// map, camera, value map and camera, vector data]`: the precise entries
+/// bind the camera group (the surface layout) as group 3, the mapped ones
+/// the combined value map and camera group, the arrows (#211) their vector
+/// data as group 2 and the camera as group 3. The pick kinds render one sample
 /// into the ID target; the others `sample_count` into `surface_format`.
 fn create_view3d_pipeline(
     kind: View3dPipeline,
@@ -453,7 +464,8 @@ fn create_view3d_pipeline(
         style_map_bgl,
         surface_bgl,
         view3d_value_map_bgl,
-    ]: [&wgpu::BindGroupLayout; 5],
+        vector_bgl,
+    ]: [&wgpu::BindGroupLayout; 6],
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
@@ -464,6 +476,19 @@ fn create_view3d_pipeline(
         sample_count
     };
     match kind {
+        View3dPipeline::Vector | View3dPipeline::VectorPick => {
+            data_render::vector::create_vector_view3d_pipeline(
+                device,
+                &shaders.vector_points_3d,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                surface_bgl,
+                surface_format,
+                sample_count,
+                pass,
+            )
+        }
         View3dPipeline::Line | View3dPipeline::LinePick => {
             data_render::create_line_view3d_pipeline_with_sample_count(
                 device,
@@ -823,12 +848,12 @@ impl TargetPipelines {
     }
 
     /// Compile the one 3D point pipeline `kind` when it is missing (#132);
-    /// `bgls` are the transform, style, style map, surface and combined
-    /// value map layouts.
+    /// `bgls` are the transform, style, style map, surface, combined value
+    /// map and vector data layouts.
     pub(super) fn ensure_view3d_pass(
         &mut self,
         device: &wgpu::Device,
-        bgls: [&wgpu::BindGroupLayout; 5],
+        bgls: [&wgpu::BindGroupLayout; 6],
         surface_format: wgpu::TextureFormat,
         kind: View3dPipeline,
     ) {
@@ -1045,7 +1070,10 @@ impl TargetPipelines {
                                 if *series_id == series.config.series_id)
                         })
                     });
+                let vector_3d = item.chart_config.drawn_z_column(series.config).is_some()
+                    && extract_vector(&series.config.render_type).is_some();
                 if primitives.vector
+                    && !vector_3d
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
                     match components.grid() {
@@ -1106,6 +1134,12 @@ impl TargetPipelines {
                         primitives.scatter && !mapped && ring;
                     need_view3d[View3dPipeline::RingMapped as usize] |=
                         primitives.scatter && mapped && ring;
+                }
+                // A point vector on a 3D chart draws its arrows through the
+                // camera (#211); its picked anchor through the 3D ring.
+                if vector_3d {
+                    need_view3d[View3dPipeline::Vector as usize] |= primitives.vector;
+                    need_view3d[View3dPipeline::Ring as usize] |= primitives.vector && typed_point;
                 }
             }
         }
@@ -1413,6 +1447,8 @@ impl TargetPipelines {
                 data_render::vector::VectorInput::Points => &mut self.vector_points,
                 data_render::vector::VectorInput::Grid => &mut self.vector_grid,
                 data_render::vector::VectorInput::Path => &mut self.vector_path,
+                // A 3D chart's arrows compile with the 3D kinds (#211).
+                data_render::vector::VectorInput::Points3d => continue,
             };
             if need && slot.is_none() {
                 *slot = Some(
@@ -1557,6 +1593,7 @@ impl TargetPipelines {
                         per_point_style_map_bgl,
                         surface_bgl,
                         view3d_value_map_bgl,
+                        vector_bgl,
                     ],
                     surface_format,
                     kind,
@@ -3857,6 +3894,7 @@ impl Renderer {
                         &self.per_point_style_map_bgl,
                         &self.surface_bgl,
                         &self.view3d_value_map_bgl,
+                        &self.vector_bgl,
                     ],
                     surface_format,
                     target_sample_count,
@@ -4143,6 +4181,7 @@ impl Renderer {
                                 &self.per_point_style_map_bgl,
                                 &self.surface_bgl,
                                 &self.view3d_value_map_bgl,
+                                &self.vector_bgl,
                             ],
                             self.surface_format,
                             kind,

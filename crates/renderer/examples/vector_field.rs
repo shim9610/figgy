@@ -232,6 +232,7 @@ fn currents(r: &mut Renderer, out: &Path) -> Result {
             components: VectorComponents::Points {
                 u: "cu".into(),
                 v: "cv".into(),
+                w: None,
             },
             style,
         },

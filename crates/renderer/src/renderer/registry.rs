@@ -1156,6 +1156,8 @@ pub(super) fn data_series_declarations_equal(
                 && left.source_id == right.source_id
                 && left.x_column == right.x_column
                 && left.y_column == right.y_column
+                // A 3D series' height column is data too (#132, #211).
+                && left.z_column == right.z_column
                 && left.render_type == right.render_type
         })
 }
@@ -1567,9 +1569,17 @@ pub(super) fn validate_vector_series(
     };
     style.validate().map_err(|reason| invalid(reason.into()))?;
     let grid = match components {
-        VectorComponents::Points { u, v } => {
+        VectorComponents::Points { u, v, w } => {
             validate_registered_column(pool, u)?;
             validate_registered_column(pool, v)?;
+            // The z component is read only where the arrow is drawn in 3D;
+            // on a flat chart it is kept and unused (#211).
+            if let Some(w) = w
+                .as_deref()
+                .filter(|_| config.drawn_z_column(item).is_some())
+            {
+                validate_registered_column(pool, w)?;
+            }
             None
         }
         VectorComponents::Grid { u, v } => {

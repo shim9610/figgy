@@ -6603,6 +6603,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style: crate::data_config::VectorStyle {
                 color: Color::new(1.0, 0.0, 0.0, 1.0),
