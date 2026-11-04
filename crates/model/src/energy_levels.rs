@@ -64,6 +64,13 @@ pub struct EnergyLevelSeries {
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
     pub transitions: Vec<Transition>,
+    /// The runs of levels the host shows as bands (#205): a Rydberg series
+    /// near its limit, a dense manifold. No count limit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub bands: Vec<LevelBand>,
     /// The look of the strokes, arrows and labels.
     #[cfg_attr(
         feature = "serde",
@@ -379,6 +386,9 @@ pub struct EnergyLevelStyle {
     /// `1..=4`.
     #[cfg_attr(feature = "serde", serde(default = "default_picked_scale"))]
     pub picked_width_scale: f32,
+    /// The level bands (#205).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub band: LevelBandStyle,
 }
 
 impl Default for EnergyLevelStyle {
@@ -393,6 +403,7 @@ impl Default for EnergyLevelStyle {
             transition: TransitionArrowStyle::default(),
             label_side: LevelLabelSide::default(),
             picked_width_scale: default_picked_scale(),
+            band: LevelBandStyle::default(),
         }
     }
 }
@@ -500,6 +511,54 @@ pub enum LabelPart {
     Level,
     Transition,
     Limit,
+    /// A level band's label (#205).
+    Band,
+}
+
+/// A run of levels of one column the host shows as one band (#205): a
+/// light fill from its first level to its last, one label beside it, and
+/// the levels inside drawn thin without their own labels. The host chooses
+/// the run, as it chooses the transitions it draws.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LevelBand {
+    pub id: String,
+    /// The column the band lies in; its levels' column.
+    pub column: String,
+    /// The ids of the band's lowest and highest levels, in either order.
+    pub first: String,
+    pub last: String,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label: Option<RichText>,
+    /// The label's drag offset, logical pixels.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_zero_offset")
+    )]
+    pub label_offset: [f32; 2],
+}
+
+/// The look of the level bands (#205).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct LevelBandStyle {
+    /// The band's fill.
+    pub fill: Color,
+    /// The width of the levels inside a band, logical pixels, in `0..=16`.
+    pub inner_width: f32,
+}
+
+impl Default for LevelBandStyle {
+    fn default() -> Self {
+        Self {
+            fill: Color::from_rgba8(34, 52, 88, 40),
+            inner_width: 0.8,
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -569,7 +628,11 @@ impl EnergyLevelSeries {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.style.validate()?;
         if self.source.is_some() {
-            if !self.levels.is_empty() || !self.limits.is_empty() || !self.transitions.is_empty() {
+            if !self.levels.is_empty()
+                || !self.limits.is_empty()
+                || !self.transitions.is_empty()
+                || !self.bands.is_empty()
+            {
                 return Err("an energy-level series with a source holds no records of its own");
             }
             return Ok(());
@@ -582,6 +645,18 @@ impl EnergyLevelSeries {
         }
         if !ids_unique(self.transitions.iter().map(|t| t.id.as_str())) {
             return Err("transition ids must be non-empty and unique");
+        }
+        if !ids_unique(self.bands.iter().map(|b| b.id.as_str())) {
+            return Err("level band ids must be non-empty and unique");
+        }
+        for band in &self.bands {
+            let in_column = |id: &str| self.level(id).is_some_and(|l| l.column == band.column);
+            if !in_column(&band.first) || !in_column(&band.last) {
+                return Err("a level band's first and last name levels of its column");
+            }
+            if !offset_ok(band.label_offset) {
+                return Err("a level band's label offset is out of range");
+            }
         }
         for level in &self.levels {
             level.validate()?;
@@ -620,6 +695,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.len(),
             LabelPart::Transition => self.transitions.len(),
             LabelPart::Limit => self.limits.len(),
+            LabelPart::Band => self.bands.len(),
         }
     }
 
@@ -630,6 +706,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.get(index).map(|l| l.label_offset),
             LabelPart::Transition => self.transitions.get(index).map(|t| t.label_offset),
             LabelPart::Limit => self.limits.get(index).map(|l| l.label_offset),
+            LabelPart::Band => self.bands.get(index).map(|b| b.label_offset),
         }
     }
 
@@ -643,6 +720,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.get_mut(index).map(|l| &mut l.label_offset),
             LabelPart::Transition => self.transitions.get_mut(index).map(|t| &mut t.label_offset),
             LabelPart::Limit => self.limits.get_mut(index).map(|l| &mut l.label_offset),
+            LabelPart::Band => self.bands.get_mut(index).map(|b| &mut b.label_offset),
         };
         let Some(offset) = offset else {
             return reject;
@@ -830,6 +908,9 @@ impl EnergyLevelStyle {
         if !finite_in(self.picked_width_scale, 1.0, 4.0) {
             return Err("picked_width_scale must be in 1..=4");
         }
+        if !color_ok(self.band.fill) || !finite_in(self.band.inner_width, 0.0, 16.0) {
+            return Err("invalid level band style");
+        }
         Ok(())
     }
 }
@@ -918,6 +999,12 @@ const LABEL_STACK_GAP: f32 = 1.0;
 /// How far a moved label stands off its stroke's end so its leader line
 /// shows, logical pixels.
 const LEADER_RUN: f32 = 10.0;
+/// A run of at least this many labels in one lane whose strokes lie closer
+/// than [`COLLAPSE_SPACING`] of a label's height apart collapses (#205):
+/// its first and last labels stay, joined by a bracket, and the labels
+/// between are not drawn. A Rydberg series near its limit is such a run.
+const COLLAPSE_COUNT: usize = 4;
+const COLLAPSE_SPACING: f32 = 0.5;
 /// The widest share of a level's slot that the arrows meeting one of its
 /// ends spread over, and the most room between two of them, pixels.
 const ARROW_SPREAD: f32 = 0.6;
@@ -937,12 +1024,21 @@ const LABEL_STOPS: [f32; 17] = [
 /// #205 names (rule 3).
 pub struct LevelLayout {
     arrows: Vec<Option<([f32; 2], [f32; 2])>>,
-    /// A level label's shift from its stroke, `[run, dy]`: `run` is the
-    /// leader's horizontal run (zero when the label did not move).
+    /// Per label item (the levels, then the bands): its shift from its own
+    /// place, `[run, dy]`; `run` is the leader's horizontal run (zero when
+    /// the label did not move).
     level_shift: Vec<[f32; 2]>,
-    /// The side a level label is drawn on: the style's, or the other one
-    /// for a column whose labels would leave the plot on that side.
+    /// Per label item: the side it is drawn on, the style's or the other
+    /// one for a column whose labels would leave the plot on that side.
     level_side: Vec<LevelLabelSide>,
+    /// Per level: whether it lies in a band (#205), drawn thin and without
+    /// its label.
+    inner: Vec<bool>,
+    /// Per label item: whether a collapsed run hides it (#205).
+    hidden: Vec<bool>,
+    /// The collapsed runs (#205): the items of each run's first and last
+    /// labels, which a bracket joins.
+    brackets: Vec<(usize, usize)>,
     transition_spot: Vec<Option<([f32; 2], LevelLabelSide)>>,
 }
 
@@ -1123,6 +1219,86 @@ impl LevelPlacement<'_> {
             .collect()
     }
 
+    /// The fill of band `index` (#205): its column's slot, from its lowest
+    /// to its highest level, half a stroke past each; `None` when either
+    /// level is not drawn.
+    fn band_rect(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+    ) -> Option<crate::layout::RectF> {
+        let band = records.bands.get(index)?;
+        let stroke = |id: &str| {
+            let row = records.levels.iter().position(|l| l.id == id)?;
+            self.level_stroke(records, style, row)
+        };
+        let (a0, b0) = stroke(&band.first)?;
+        let (a1, _) = stroke(&band.last)?;
+        let half = style.level.width / 2.0;
+        let (top, bottom) = (a0[1].min(a1[1]) - half, a0[1].max(a1[1]) + half);
+        Some(crate::layout::RectF {
+            x: a0[0].min(b0[0]),
+            y: top,
+            width: (b0[0] - a0[0]).abs(),
+            height: bottom - top,
+        })
+    }
+
+    /// Which levels lie in a band of their column (#205).
+    fn inner_levels(&self, records: &EnergyLevelSeries, style: &EnergyLevelStyle) -> Vec<bool> {
+        let mut inner = vec![false; records.levels.len()];
+        for (index, band) in records.bands.iter().enumerate() {
+            let Some(rect) = self.band_rect(records, style, index) else {
+                continue;
+            };
+            for (row, level) in records.levels.iter().enumerate() {
+                if level.column != band.column {
+                    continue;
+                }
+                if let Some((a, _)) = self.level_stroke(records, style, row)
+                    && a[1] >= rect.y - 0.01
+                    && a[1] <= rect.y + rect.height + 0.01
+                {
+                    inner[row] = true;
+                }
+            }
+        }
+        inner
+    }
+
+    /// The column label item `item` (a level, then the bands) lies in.
+    fn item_column<'r>(records: &'r EnergyLevelSeries, item: usize) -> Option<&'r str> {
+        let levels = records.levels.len();
+        if item < levels {
+            Some(records.levels[item].column.as_str())
+        } else {
+            records.bands.get(item - levels).map(|b| b.column.as_str())
+        }
+    }
+
+    /// The ends a label item stands beside: a level's stroke, or the
+    /// middle of a band's fill across its slot (its top edge for a label
+    /// above it).
+    fn item_ends(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        item: usize,
+        side: LevelLabelSide,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let levels = records.levels.len();
+        if item < levels {
+            return self.level_stroke(records, style, item);
+        }
+        let rect = self.band_rect(records, style, item - levels)?;
+        let y = match side {
+            LevelLabelSide::Above => rect.y,
+            _ => rect.y + rect.height / 2.0,
+        };
+        Some(([rect.x, y], [rect.x + rect.width, y]))
+    }
+
     /// The layout of `records` in this placement: see [`LevelLayout`].
     pub fn layout(
         &self,
@@ -1132,9 +1308,12 @@ impl LevelPlacement<'_> {
     ) -> LevelLayout {
         let arrows = self.arrows(records, style);
         let plot = self.space.plot_rect();
+        let inner = self.inner_levels(records, style);
+        // Label items: the levels, then the bands.
+        let items = records.levels.len() + records.bands.len();
         // A column whose labels would leave the plot on the style's side
         // draws them on the other side.
-        let mut level_side = vec![style.label_side; records.levels.len()];
+        let mut level_side = vec![style.label_side; items];
         let flip = match style.label_side {
             LevelLabelSide::Right => Some(LevelLabelSide::Left),
             LevelLabelSide::Left => Some(LevelLabelSide::Right),
@@ -1145,21 +1324,31 @@ impl LevelPlacement<'_> {
                 rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5
             };
             let mut flipped: Vec<&str> = Vec::new();
-            for index in 0..records.levels.len() {
-                let column = records.levels[index].column.as_str();
+            for index in 0..items {
+                let Some(column) = Self::item_column(records, index) else {
+                    continue;
+                };
                 if flipped.contains(&column) {
                     continue;
                 }
                 let leaves = self
-                    .label_on(records, style, index, measure, [0.0; 2], style.label_side)
+                    .label_on(
+                        records,
+                        style,
+                        &inner,
+                        index,
+                        measure,
+                        [0.0; 2],
+                        style.label_side,
+                    )
                     .is_some_and(|t| outside(t.rect()));
                 if leaves {
                     flipped.push(column);
                 }
             }
-            for (index, level) in records.levels.iter().enumerate() {
-                if flipped.contains(&level.column.as_str()) {
-                    level_side[index] = other;
+            for (index, side) in level_side.iter_mut().enumerate() {
+                if Self::item_column(records, index).is_some_and(|c| flipped.contains(&c)) {
+                    *side = other;
                 }
             }
         }
@@ -1170,8 +1359,8 @@ impl LevelPlacement<'_> {
         // mean of their own places, and a group that then meets the one
         // above it merges with it.
         let lane = |index: usize| -> (u8, i64) {
-            let column = self
-                .column_x(&records.levels[index].column)
+            let column = Self::item_column(records, index)
+                .and_then(|c| self.column_x(c))
                 .map_or(i64::MIN, |x| x as i64);
             match level_side[index] {
                 LevelLabelSide::Right => (0, column),
@@ -1179,12 +1368,20 @@ impl LevelPlacement<'_> {
                 LevelLabelSide::Above => (1, column),
             }
         };
-        let mut level_shift = vec![[0.0f32; 2]; records.levels.len()];
+        let mut level_shift = vec![[0.0f32; 2]; items];
+        let mut hidden = vec![false; items];
+        let mut brackets: Vec<(usize, usize)> = Vec::new();
         let mut placed: Vec<(usize, f32, f32)> = Vec::new();
-        for index in 0..records.levels.len() {
-            let Some(text) =
-                self.label_at(records, style, index, measure, [0.0; 2], level_side[index])
-            else {
+        for index in 0..items {
+            let Some(text) = self.label_at(
+                records,
+                style,
+                &inner,
+                index,
+                measure,
+                [0.0; 2],
+                level_side[index],
+            ) else {
                 continue;
             };
             let rect = text.rect();
@@ -1202,7 +1399,32 @@ impl LevelPlacement<'_> {
                 .iter()
                 .position(|p| lane(p.0) != key)
                 .map_or(placed.len(), |n| start + n);
-            let run = &placed[start..end];
+            // Collapse the dense runs first: consecutive labels whose strokes
+            // lie closer than half a label apart, at least four of them.
+            let mut kept: Vec<(usize, f32, f32)> = Vec::new();
+            let lane_run = &placed[start..end];
+            let mut k = 0;
+            while k < lane_run.len() {
+                let mut j = k;
+                while j + 1 < lane_run.len()
+                    && (lane_run[j + 1].1 - lane_run[j].1).abs()
+                        < COLLAPSE_SPACING * lane_run[j].2.max(lane_run[j + 1].2)
+                {
+                    j += 1;
+                }
+                if j + 1 - k >= COLLAPSE_COUNT {
+                    for m in &lane_run[k + 1..j] {
+                        hidden[m.0] = true;
+                    }
+                    kept.push(lane_run[k]);
+                    kept.push(lane_run[j]);
+                    brackets.push((lane_run[k].0, lane_run[j].0));
+                } else {
+                    kept.extend_from_slice(&lane_run[k..=j]);
+                }
+                k = j + 1;
+            }
+            let run = &kept[..];
             // Groups as (first, last, top), in screen order.
             let mut groups: Vec<(usize, usize, f32)> = Vec::new();
             for (k, &(_, centre, height)) in run.iter().enumerate() {
@@ -1226,9 +1448,10 @@ impl LevelPlacement<'_> {
                 }
             }
             for (first, last, top) in groups {
+                let members = &run[first..=last];
                 let moved = last > first;
                 let mut y = top;
-                for &(index, centre, height) in &run[first..=last] {
+                for &(index, centre, height) in members {
                     let new_centre = y + height / 2.0;
                     level_shift[index] =
                         [if moved { LEADER_RUN } else { 0.0 }, new_centre - centre];
@@ -1252,9 +1475,17 @@ impl LevelPlacement<'_> {
                     height: half * 2.0,
                 });
             }
+        }
+        for index in 0..records.bands.len() {
+            if let Some(rect) = self.band_rect(records, style, index) {
+                obstacles.push(rect);
+            }
+        }
+        for index in (0..items).filter(|i| !hidden[*i]) {
             if let Some(text) = self.label_at(
                 records,
                 style,
+                &inner,
                 index,
                 measure,
                 level_shift[index],
@@ -1342,6 +1573,9 @@ impl LevelPlacement<'_> {
             arrows,
             level_shift,
             level_side,
+            inner,
+            hidden,
+            brackets,
             transition_spot,
         }
     }
@@ -1415,46 +1649,64 @@ impl LevelPlacement<'_> {
     /// The label of level row `index` moved by `shift` (`[run, dy]`, see
     /// [`LevelLayout`]) away from its own place: further out by the run, on
     /// its side, and down by `dy`.
+    #[allow(clippy::too_many_arguments)]
     fn label_on<'t>(
         &self,
         records: &'t EnergyLevelSeries,
         style: &EnergyLevelStyle,
+        inner: &[bool],
         index: usize,
         measure: &dyn crate::text::MeasureText,
         shift: [f32; 2],
         side: LevelLabelSide,
     ) -> Option<crate::sink::PlacedText<'t>> {
-        let level = records.levels.get(index)?;
-        let (a, b) = self.level_stroke(records, style, index)?;
+        let levels = records.levels.len();
+        let (text, offset) = if index < levels {
+            if inner.get(index).copied().unwrap_or(false) {
+                return None;
+            }
+            let level = &records.levels[index];
+            (level.label.as_ref()?, level.label_offset)
+        } else {
+            let band = records.bands.get(index - levels)?;
+            (band.label.as_ref()?, band.label_offset)
+        };
+        let (a, b) = self.item_ends(records, style, index, side)?;
+        // A level outside the plot (beyond the energy range) is clipped
+        // away, and so is its label: it is not pulled into the plot.
+        let plot = self.space.plot_rect();
+        if a[1] < plot.y - 0.5 || a[1] > plot.y + plot.height + 0.5 {
+            return None;
+        }
         let run = match side {
             LevelLabelSide::Right => shift[0],
             LevelLabelSide::Left => -shift[0],
             LevelLabelSide::Above => 0.0,
         };
         Some(Self::label_block(
-            level.label.as_ref()?,
+            text,
             measure,
             b,
             a[0],
             side,
-            [
-                level.label_offset[0] + run,
-                level.label_offset[1] + shift[1],
-            ],
+            [offset[0] + run, offset[1] + shift[1]],
         ))
     }
 
-    /// The label of level row `index` on the side `layout` gives it.
+    /// The label of item `index` (a level, then the bands) on the side
+    /// `layout` gives it.
+    #[allow(clippy::too_many_arguments)]
     fn label_at<'t>(
         &self,
         records: &'t EnergyLevelSeries,
         style: &EnergyLevelStyle,
+        inner: &[bool],
         index: usize,
         measure: &dyn crate::text::MeasureText,
         shift: [f32; 2],
         side: LevelLabelSide,
     ) -> Option<crate::sink::PlacedText<'t>> {
-        self.label_on(records, style, index, measure, shift, side)
+        self.label_on(records, style, inner, index, measure, shift, side)
     }
 
     /// The leader line from level row `index`'s stroke to its label when
@@ -1471,10 +1723,10 @@ impl LevelPlacement<'_> {
         if shift[0] == 0.0 && shift[1].abs() < 0.5 {
             return None;
         }
-        let (a, b) = self.level_stroke(records, style, index)?;
         let side = *layout.level_side.get(index)?;
+        let (a, b) = self.item_ends(records, style, index, side)?;
         let rect = self
-            .label_at(records, style, index, measure, shift, side)?
+            .label_at(records, style, &layout.inner, index, measure, shift, side)?
             .rect();
         let mid = rect.y + rect.height / 2.0;
         Some(match side {
@@ -1499,14 +1751,26 @@ impl LevelPlacement<'_> {
         measure: &dyn crate::text::MeasureText,
     ) -> Option<crate::sink::PlacedText<'t>> {
         match part {
-            LabelPart::Level => {
-                let shift = layout.level_shift.get(index).copied().unwrap_or([0.0; 2]);
+            LabelPart::Level | LabelPart::Band => {
+                let item = match part {
+                    LabelPart::Band => records.levels.len() + index,
+                    _ => {
+                        if index >= records.levels.len() {
+                            return None;
+                        }
+                        index
+                    }
+                };
+                if layout.hidden.get(item).copied().unwrap_or(false) {
+                    return None;
+                }
+                let shift = layout.level_shift.get(item).copied().unwrap_or([0.0; 2]);
                 let side = layout
                     .level_side
-                    .get(index)
+                    .get(item)
                     .copied()
                     .unwrap_or(style.label_side);
-                self.label_at(records, style, index, measure, shift, side)
+                self.label_at(records, style, &layout.inner, item, measure, shift, side)
             }
             LabelPart::Transition => {
                 let transition = records.transitions.get(index)?;
@@ -1578,15 +1842,26 @@ impl LevelPlacement<'_> {
                 width
             }
         };
+        // The bands under their levels (#205).
+        for index in 0..records.bands.len() {
+            if let Some(rect) = self.band_rect(records, style, index) {
+                sink.rect(slot, rect, Some(style.band.fill), None);
+            }
+        }
         for index in 0..records.levels.len() {
             if let Some((a, b)) = self.level_stroke(records, style, index) {
                 let picked = self.picked == Some(PickedRow::Level(index));
+                let width = if layout.inner[index] {
+                    style.band.inner_width
+                } else {
+                    style.level.width
+                };
                 sink.stroke(
                     slot,
                     a,
                     b,
                     &StrokeStyle {
-                        width: widen(picked, style.level.width),
+                        width: widen(picked, width),
                         color: style.level.color,
                         dash: &[],
                         tag: "energy_level",
@@ -1640,7 +1915,7 @@ impl LevelPlacement<'_> {
                 );
             }
         }
-        for index in 0..records.levels.len() {
+        for index in 0..records.levels.len() + records.bands.len() {
             if let Some((a, b)) = self.leader(records, style, &layout, index, measure) {
                 sink.stroke(
                     slot,
@@ -1655,7 +1930,35 @@ impl LevelPlacement<'_> {
                 );
             }
         }
-        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+        // A collapsed run's bracket: from its first stroke to its last,
+        // just past the strokes' ends on the labels' side, with a tick to
+        // each end.
+        for &(lo, hi) in &layout.brackets {
+            let side = layout.level_side[lo];
+            let ends = |item: usize| self.item_ends(records, style, item, side);
+            let (Some((a0, b0)), Some((a1, _))) = (ends(lo), ends(hi)) else {
+                continue;
+            };
+            let (x, tick) = match side {
+                LevelLabelSide::Left => (a0[0] - LABEL_GAP / 2.0, LABEL_GAP / 2.0),
+                _ => (b0[0] + LABEL_GAP / 2.0, -LABEL_GAP / 2.0),
+            };
+            let line = StrokeStyle {
+                width: 0.8,
+                color: style.level.color,
+                dash: &[],
+                tag: "energy_bracket",
+            };
+            sink.stroke(slot, [x, a0[1]], [x, a1[1]], &line);
+            sink.stroke(slot, [x, a0[1]], [x + tick, a0[1]], &line);
+            sink.stroke(slot, [x, a1[1]], [x + tick, a1[1]], &line);
+        }
+        for part in [
+            LabelPart::Level,
+            LabelPart::Band,
+            LabelPart::Transition,
+            LabelPart::Limit,
+        ] {
             for index in 0..records.part_len(part) {
                 if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     sink.text(slot, &text);
@@ -1713,9 +2016,24 @@ impl LevelPlacement<'_> {
                 best = Some((hit, distance));
             }
         };
+        // A band answers for its first level anywhere on its fill; the
+        // levels inside it, offered after, win on their strokes.
+        for (index, band) in records.bands.iter().enumerate() {
+            if let (Some(rect), Some(row)) = (
+                self.band_rect(records, style, index),
+                records.levels.iter().position(|l| l.id == band.first),
+            ) {
+                offer(LevelHit::Level(row), rect_distance(cursor, rect));
+            }
+        }
         for index in 0..records.levels.len() {
             if let Some((a, b)) = self.level_stroke(records, style, index) {
-                let edge = segment_distance(cursor, a, b) - style.level.width / 2.0;
+                let width = if layout.inner[index] {
+                    style.band.inner_width
+                } else {
+                    style.level.width
+                };
+                let edge = segment_distance(cursor, a, b) - width / 2.0;
                 offer(LevelHit::Level(index), edge.max(0.0));
             }
         }
@@ -1726,7 +2044,12 @@ impl LevelPlacement<'_> {
                 offer(LevelHit::Transition(index), edge.max(0.0));
             }
         }
-        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+        for part in [
+            LabelPart::Level,
+            LabelPart::Band,
+            LabelPart::Transition,
+            LabelPart::Limit,
+        ] {
             for index in 0..records.part_len(part) {
                 if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     offer(
@@ -2374,6 +2697,106 @@ mod tests {
         other.limits[0].id = "other".into();
         assert!(other.write_continuum(&mut full, "he", 30.0, fill).is_err());
         assert_eq!(full, before);
+    }
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    fn level(id: &str, column: &str, energy: f64) -> EnergyLevel {
+        EnergyLevel {
+            id: id.into(),
+            column: column.into(),
+            configuration: String::new(),
+            term: String::new(),
+            j: String::new(),
+            g: None,
+            prefix: String::new(),
+            energy,
+            suffix: String::new(),
+            uncertainty: None,
+            reference: String::new(),
+            role: LevelRole::Level,
+            label: None,
+            label_offset: [0.0; 2],
+        }
+    }
+
+    fn band(first: &str, last: &str) -> LevelBand {
+        LevelBand {
+            id: "run".into(),
+            column: "p".into(),
+            first: first.into(),
+            last: last.into(),
+            label: None,
+            label_offset: [0.0; 2],
+        }
+    }
+
+    fn series() -> EnergyLevelSeries {
+        EnergyLevelSeries {
+            levels: vec![
+                level("5p", "p", 1.0),
+                level("6p", "p", 1.5),
+                level("7p", "p", 1.7),
+                level("5s", "s", 1.2),
+            ],
+            bands: vec![band("6p", "7p")],
+            ..EnergyLevelSeries::default()
+        }
+    }
+
+    #[test]
+    fn a_band_names_two_levels_of_its_column() {
+        assert!(series().validate().is_ok());
+        let mut other = series();
+        other.bands[0].last = "5s".into();
+        assert!(other.validate().is_err(), "a level of another column");
+        let mut missing = series();
+        missing.bands[0].first = "9p".into();
+        assert!(missing.validate().is_err(), "no such level");
+        let mut twice = series();
+        twice.bands.push(band("5p", "6p"));
+        assert!(twice.validate().is_err(), "ids must be unique");
+        let mut viewer = EnergyLevelSeries {
+            source: Some("he".into()),
+            ..EnergyLevelSeries::default()
+        };
+        viewer.bands.push(band("6p", "7p"));
+        assert!(viewer.validate().is_err(), "a view holds no records");
+    }
+
+    #[test]
+    fn a_band_label_drags_into_its_offset() {
+        let mut s = series();
+        assert_eq!(s.part_len(LabelPart::Band), 1);
+        assert_eq!(
+            s.drag_label(LabelPart::Band, 0, 3.0, -2.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(s.label_offset(LabelPart::Band, 0), Some([3.0, -2.0]));
+        assert!(matches!(
+            s.drag_label(LabelPart::Band, 1, 1.0, 0.0),
+            NudgeResult::Rejected(_)
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn bands_round_trip_and_are_omitted_when_empty() {
+        let s = series();
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["bands"][0]["first"], "6p");
+        assert!(json["bands"][0].get("label").is_none());
+        let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+        let none = serde_json::to_value(EnergyLevelSeries::default()).unwrap();
+        assert!(none.get("bands").is_none());
+        assert_eq!(
+            serde_json::to_value(LabelPart::Band).unwrap(),
+            serde_json::json!("band")
+        );
     }
 }
 

@@ -30,7 +30,7 @@ use renderer::config::{
     TickVisibility,
 };
 use renderer::energy_levels::{
-    EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, Transition,
+    EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelBand, LevelRole, Transition,
 };
 use renderer::text::RichText;
 use renderer::{Chart, Color, DataRenderType, Renderer, SeriesConfig, encode_png};
@@ -152,6 +152,33 @@ fn strongest(
     picked
 }
 
+/// A band over the levels of `column` between `low` and `high` (all of
+/// them when the range is open): the host groups a dense run (#205).
+fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label: &str) {
+    let mut run: Vec<&EnergyLevel> = series
+        .levels
+        .iter()
+        .filter(|l| l.column == column && l.energy >= low && l.energy <= high)
+        .collect();
+    run.sort_by(|a, b| a.energy.total_cmp(&b.energy));
+    let (Some(first), Some(last)) = (run.first(), run.last()) else {
+        return;
+    };
+    if run.len() < 2 {
+        return;
+    }
+    let (first, last) = (first.id.clone(), last.id.clone());
+    let id = format!("band {column} {}", series.bands.len());
+    series.bands.push(LevelBand {
+        id,
+        column: column.into(),
+        first,
+        last,
+        label: Some(RichText::plain(label, LABEL, 10.0, "")),
+        label_offset: [0.0; 2],
+    });
+}
+
 /// A Grotrian chart: no grid, no mirrored ticks, the term columns named.
 fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
     let mut c = chart(title, "", y_title, (1100, 780));
@@ -213,6 +240,9 @@ fn break_sized(
 }
 
 fn spec(id: &str, series: EnergyLevelSeries) -> SeriesConfig {
+    if let Err(reason) = series.validate() {
+        panic!("{id}: {reason}");
+    }
     SeriesConfig {
         series_id: id.into(),
         source_id: None,
@@ -427,6 +457,27 @@ fn argon(r: &mut Renderer, out: &Path) -> Result {
         };
         series.levels.push(level(row, &col, label));
     }
+    // The 3d and 5p manifolds as bands: a plasma paper labels 4s and 4p.
+    for column in ["3d", "3d'", "5p", "5p'"] {
+        let count = series.levels.iter().filter(|l| l.column == column).count();
+        let name = column.replace('\'', "′");
+        // Below the first limit: the core-excited 3s3p⁶ levels of the same
+        // outer electron lie far above it.
+        let limit = limits.first().map_or(f64::MAX, |l| l.energy);
+        let count = series
+            .levels
+            .iter()
+            .filter(|l| l.column == column && l.energy < limit)
+            .count()
+            .min(count);
+        band(
+            &mut series,
+            column,
+            f64::MIN,
+            limit,
+            &format!("{name} ({count} levels)"),
+        );
+    }
     for l in &limits {
         series
             .limits
@@ -479,6 +530,52 @@ fn argon(r: &mut Renderer, out: &Path) -> Result {
     save(r, &c, &[spec("ar", series)], out, "ar-i")
 }
 
+// Ar I, every level --------------------------------------------------
+
+/// All 503 Ar I levels of the NIST export by jK term and core, every one
+/// labelled: a host that declares no bands. The renderer stacks the labels
+/// it can and collapses the Rydberg runs it cannot into brackets (#205).
+fn argon_all(r: &mut Renderer, out: &Path) -> Result {
+    let Levels { levels, limits, .. } = nist_csv::levels(&data("ar_i_levels_all.csv")?)?;
+    let mut series = EnergyLevelSeries::default();
+    let mut columns: Vec<String> = Vec::new();
+    for row in &levels {
+        let core = if row.configuration.contains("<1/2>") {
+            "'"
+        } else {
+            ""
+        };
+        let column = if row.configuration == "3s2.3p6" {
+            "ground".to_string()
+        } else {
+            format!("{}{core}", row.term)
+        };
+        if !columns.contains(&column) {
+            columns.push(column.clone());
+        }
+        let label = RichText::plain(row.outer(), LABEL, 9.0, "");
+        let mut l = level(row, &column, Some(label));
+        l.id = format!("{} {}", row.id(), row.energy);
+        series.levels.push(l);
+    }
+    for l in &limits {
+        series
+            .limits
+            .push(limit(l, &format!("Ar II ²P°₃/₂  {:.3} eV", l.energy)));
+    }
+    columns.sort();
+    let categories = columns
+        .iter()
+        .map(|id| Category::new(id.as_str(), id.as_str()))
+        .collect();
+    let mut c = grotrian("Ar I, all levels", "Energy (eV)", categories);
+    break_below(&mut c, -0.2, 16.3, 0.3, 11.3);
+    let mut series = styled(series);
+    // Narrow slots leave lanes for the labels of fourteen columns.
+    series.style.level.slot_fraction = 0.45;
+    save(r, &c, &[spec("ar-all", series)], out, "ar-i-all")
+}
+
 // Cu I -----------------------------------------------------------------
 
 fn copper(r: &mut Renderer, out: &Path) -> Result {
@@ -500,6 +597,16 @@ fn copper(r: &mut Renderer, out: &Path) -> Result {
             .replace('.', "");
         let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j), 10.0, LABEL)?;
         series.levels.push(level(row, &row.term, Some(label)));
+    }
+    // The 3d⁹4s4p quartets as bands, one per term.
+    for (column, name) in [("4P*", "⁴P°"), ("4D*", "⁴D°"), ("4F*", "⁴F°")] {
+        band(
+            &mut series,
+            column,
+            f64::MIN,
+            f64::MAX,
+            &format!("3d⁹4s4p {name}"),
+        );
     }
     for l in &limits {
         series
@@ -571,6 +678,9 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
     // Handbook table; below, a blank term is odd (`*`).
     let odd = |row: &LevelRow| row.odd() || (row.term.is_empty() && row.energy < 15_000.0);
     let column = |row: &LevelRow| format!("{}{}", if odd(row) { "o" } else { "e" }, row.j);
+    // Unassigned levels share configuration, term and J: the host's ids
+    // carry the energy too.
+    let uid = |row: &LevelRow| format!("{} {}", row.id(), row.energy);
     let mut series = EnergyLevelSeries::default();
     for row in &levels {
         let label = (!row.term.is_empty() && row.term != "*").then(|| {
@@ -587,8 +697,12 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
             )
         });
         let label = label.transpose()?;
-        series.levels.push(level(row, &column(row), label));
+        let mut l = level(row, &column(row), label);
+        l.id = uid(row);
+        series.levels.push(l);
     }
+    // The unassigned even J = 6 levels above 23 000 cm⁻¹ as one band.
+    band(&mut series, "e6", 23_000.0, 27_000.0, "6 even levels");
     for l in &limits {
         series
             .limits
@@ -607,8 +721,8 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
             let nm = 1.0e7 / (upper.energy - lower.energy) / 1.000_277;
             transitions.push(transition(
                 &format!("{nm:.2}"),
-                &lower.id(),
-                &upper.id(),
+                &uid(lower),
+                &uid(upper),
                 nm,
                 None,
             ));
@@ -694,6 +808,7 @@ fn main() -> Result {
     with_renderer(|r| {
         helium(r, &out)?;
         argon(r, &out)?;
+        argon_all(r, &out)?;
         copper(r, &out)?;
         uranium(r, &out)
     })

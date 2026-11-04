@@ -882,7 +882,7 @@ impl FiggyChart {
     }
 
     /// Press on an energy-level label (#203): row `index` of the list `part`
-    /// (`"level"`, `"transition"` or `"limit"`) of series `series_id`, as a
+    /// (`"level"`, `"transition"`, `"limit"` or `"band"`) of series `series_id`, as a
     /// `pick_point` hit names it. The label becomes the typed selection and
     /// the drag starts, as `press_value_label` does; `on_move` writes the
     /// row's `label_offset`. Returns `false` and changes nothing for a row
@@ -899,6 +899,7 @@ impl FiggyChart {
             "level" => LabelPart::Level,
             "transition" => LabelPart::Transition,
             "limit" => LabelPart::Limit,
+            "band" => LabelPart::Band,
             _ => return Ok(false),
         };
         let Some(series) = self

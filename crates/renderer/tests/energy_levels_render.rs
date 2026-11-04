@@ -787,3 +787,147 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
         }
     }
 }
+
+/// The anchor space and text measure of `chart`'s panel at 1x.
+fn layout_of(
+    chart: &Chart,
+    _levels: &EnergyLevelSeries,
+) -> (renderer::annotation::PixelSpace, renderer::CpuTextMeasure) {
+    let config = chart.config();
+    (
+        renderer::annotation::pixel_space_for_config(config),
+        renderer::CpuTextMeasure::for_style(&config.draw_style),
+    )
+}
+
+fn labelled(id: &str, column: &str, energy: f64) -> EnergyLevel {
+    EnergyLevel {
+        label: Some(renderer::text::RichText::plain(id, Color::BLACK, 12.0, "")),
+        ..level(id, column, energy)
+    }
+}
+
+// #205: crowded labels in one column stack clear of each other, and a
+// dense run (strokes closer than half a label) keeps only its first and
+// last labels, joined by a bracket.
+#[test]
+fn crowded_labels_stack_apart_and_dense_runs_collapse() {
+    let chart = chart();
+    let mut levels = EnergyLevelSeries::default();
+    // Five levels a little closer than a label is tall, then a run of
+    // twenty a fraction of a label apart.
+    for k in 0..5 {
+        levels
+            .levels
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+    }
+    for k in 0..20 {
+        levels
+            .levels
+            .push(labelled(&format!("r{k}"), "b", 60.0 + 0.2 * k as f64));
+    }
+    let (space, measure) = layout_of(&chart, &levels);
+    let placement = renderer::energy_levels::LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(&levels, &levels.style, &measure);
+    let label = |i: usize| {
+        placement.label(
+            &levels,
+            &levels.style,
+            &layout,
+            renderer::energy_levels::LabelPart::Level,
+            i,
+            &measure,
+        )
+    };
+    let rects: Vec<_> = (0..levels.levels.len())
+        .filter_map(|i| label(i).map(|t| (i, t.rect())))
+        .collect();
+    // Every drawn label is clear of every other.
+    for (n, (i, a)) in rects.iter().enumerate() {
+        for (j, b) in &rects[n + 1..] {
+            let apart = a.x + a.width <= b.x
+                || b.x + b.width <= a.x
+                || a.y + a.height <= b.y
+                || b.y + b.height <= a.y;
+            assert!(apart, "labels {i} and {j} overlap: {a:?} {b:?}");
+        }
+    }
+    // The spaced five are all drawn; the dense run keeps its ends only.
+    for i in 0..5 {
+        assert!(label(i).is_some(), "label a{i}");
+    }
+    assert!(label(5).is_some() && label(24).is_some(), "the run's ends");
+    assert!((6..24).all(|i| label(i).is_none()), "the run's middle");
+}
+
+// #205: a band fills its run, answers a pick on its fill for its first
+// level, and its label picks as the band part.
+#[test]
+fn a_band_fills_its_run_and_answers_picks() {
+    let mut r = renderer();
+    let chart = chart();
+    let mut levels = records();
+    for (k, e) in [50.0, 52.0, 54.0, 56.0, 58.0].into_iter().enumerate() {
+        levels.levels.push(level(&format!("n{k}"), "b", e));
+    }
+    levels.bands.push(renderer::energy_levels::LevelBand {
+        id: "run".into(),
+        column: "b".into(),
+        first: "n0".into(),
+        last: "n4".into(),
+        label: Some(renderer::text::RichText::plain(
+            "n ≥ 5",
+            Color::BLACK,
+            14.0,
+            "",
+        )),
+        label_offset: [0.0; 2],
+    });
+    levels.style.band.fill = Color::from_rgb8(0, 200, 200);
+    levels.validate().unwrap();
+    let list = [series("he", levels.clone())];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &list, scale);
+        // The fill between two strokes of the run.
+        let (x, y) = at(&chart, 1.0, 51.0, scale);
+        let p = pixel(&img, x, y);
+        assert!(
+            p[0] < 40 && p[1] > 150 && p[2] > 150,
+            "{scale}x band fill {p:?}"
+        );
+        // A pick on the fill answers for the run's first level.
+        let first = levels.levels.iter().position(|l| l.id == "n0").unwrap();
+        match pick(&mut r, &chart, &list, scale, (x, y)) {
+            Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                assert_eq!(bin_index, first, "{scale}x band body")
+            }
+            other => panic!("{scale}x band body: {other:?}"),
+        }
+        // The band's label, right of the band's middle.
+        let (bx, by) = at(&chart, 1.0 + 0.35, 54.0, scale);
+        match pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            (bx + (12.0 * scale) as u32, by),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                category_index,
+                part,
+                ..
+            }) => assert_eq!(
+                (category_index, part),
+                (0, Some(renderer::energy_levels::LabelPart::Band)),
+                "{scale}x band label"
+            ),
+            other => panic!("{scale}x band label: {other:?}"),
+        }
+    }
+}
