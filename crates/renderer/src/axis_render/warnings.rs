@@ -102,5 +102,8 @@ pub(super) fn push_walker_warnings(
                 });
             }
         }
+        // The probability walk plans its majors from the range (#209): no
+        // spacing, count or step is read, so none is substituted.
+        AxisScale::Probability(_) => {}
     }
 }

@@ -153,6 +153,7 @@ fn data_x_to_px(chart: &Chart, value: f64) -> f32 {
             (value.log10() - cfg.bottom_x.min.log10())
                 / (cfg.bottom_x.max.log10() - cfg.bottom_x.min.log10())
         }
+        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     da.x as f32 + t as f32 * da.width as f32
 }
@@ -167,6 +168,7 @@ fn data_y_to_px(chart: &Chart, value: f64) -> f32 {
             (value.log10() - cfg.left_y.min.log10())
                 / (cfg.left_y.max.log10() - cfg.left_y.min.log10())
         }
+        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     (da.y + da.height) as f32 - t as f32 * da.height as f32
 }

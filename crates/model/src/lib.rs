@@ -39,6 +39,7 @@ pub mod layout;
 pub mod legend;
 pub mod line;
 pub mod preset;
+pub mod probability;
 pub mod radial;
 pub mod resize;
 pub mod select;
