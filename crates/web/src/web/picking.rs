@@ -20,6 +20,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Streamlines { .. }
         // Nor has a parallel series; its colour column colours the rows.
         | DataRenderType::Parallel { .. }
+        // An energy level is a stroke, never a marker (#203).
+        | DataRenderType::EnergyLevels(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
@@ -770,31 +772,43 @@ impl FiggyChart {
         self.prepare_gpu_picking().await?;
         // A drawn value label is a typed pick target; the point pick does
         // not see it.
+        // An energy-level series (#203) is picked on the CPU through the
+        // same typed query: its levels, arrows and labels.
         let labelled = self.chart_series()?.iter().any(|series| {
-            series
-                .value_label_text()
-                .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
+            series.energy_levels().is_some()
+                || series
+                    .value_label_text()
+                    .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
         });
         if labelled {
             let ticket = self
                 .renderer
                 .pick_chart_data_at(self.chart_id, [x, y], max_distance_px)
                 .map_err(js_err)?;
-            if let Some(renderer::PickedData::ValueLabel {
-                source_id,
-                series_id,
-                category_index,
-                distance_px,
-            }) = ticket.resolve().await.map_err(js_err)?
-            {
-                let json = crate::picked_label_json_string(
-                    source_id.as_deref(),
-                    &series_id,
+            match ticket.resolve().await.map_err(js_err)? {
+                Some(renderer::PickedData::ValueLabel {
+                    source_id,
+                    series_id,
                     category_index,
+                    part: None,
                     distance_px,
-                )
-                .map_err(js_err)?;
-                return Ok(JsValue::from_str(&json));
+                }) => {
+                    let json = crate::picked_label_json_string(
+                        source_id.as_deref(),
+                        &series_id,
+                        category_index,
+                        distance_px,
+                    )
+                    .map_err(js_err)?;
+                    return Ok(JsValue::from_str(&json));
+                }
+                // An energy-level hit is answered whole: its kind, row and
+                // (for a label) part, for `press_energy_label`.
+                Some(picked) if self.is_energy_series(picked.series_id())? => {
+                    let json = crate::picked_data_json_string(&picked).map_err(js_err)?;
+                    return Ok(JsValue::from_str(&json));
+                }
+                _ => {}
             }
         }
         let ticket = self
@@ -839,6 +853,7 @@ impl FiggyChart {
             source_id: series.source_id.clone(),
             series_id: series.series_id.clone(),
             category_index: index,
+            part: None,
         };
         if self.chart_selection()?.is_some() {
             self.renderer
@@ -858,12 +873,78 @@ impl FiggyChart {
         Ok(true)
     }
 
-    /// `on_move` of a drag `press_value_label` started: the selected label
-    /// moves by the delta in document pixels.
+    /// Whether `series_id` names an energy-level series of the chart.
+    fn is_energy_series(&self, series_id: &str) -> Result<bool, JsValue> {
+        Ok(self
+            .chart_series()?
+            .iter()
+            .any(|s| s.series_id == series_id && s.energy_levels().is_some()))
+    }
+
+    /// Press on an energy-level label (#203): row `index` of the list `part`
+    /// (`"level"`, `"transition"` or `"limit"`) of series `series_id`, as a
+    /// `pick_point` hit names it. The label becomes the typed selection and
+    /// the drag starts, as `press_value_label` does; `on_move` writes the
+    /// row's `label_offset`. Returns `false` and changes nothing for a row
+    /// without a label.
+    /// JS: `if (hit?.kind === "value_label" && hit.part) chart.press_energy_label(hit.series_id, hit.part, hit.category_index);`
+    pub fn press_energy_label(
+        &mut self,
+        series_id: &str,
+        part: &str,
+        index: usize,
+    ) -> Result<bool, JsValue> {
+        use renderer::energy_levels::LabelPart;
+        let part = match part {
+            "level" => LabelPart::Level,
+            "transition" => LabelPart::Transition,
+            "limit" => LabelPart::Limit,
+            _ => return Ok(false),
+        };
+        let Some(series) = self
+            .chart_series()?
+            .iter()
+            .find(|series| series.series_id == series_id)
+        else {
+            return Ok(false);
+        };
+        let Some(levels) = series.energy_levels() else {
+            return Ok(false);
+        };
+        if levels.label_offset(part, index).is_none() {
+            return Ok(false);
+        }
+        let reference = renderer::config::PickedDataRef::ValueLabel {
+            source_id: series.source_id.clone(),
+            series_id: series.series_id.clone(),
+            category_index: index,
+            part: Some(part),
+        };
+        if self.chart_selection()?.is_some() {
+            self.renderer
+                .set_chart_selection(self.chart_id, None)
+                .map_err(js_err)?;
+        }
+        self.set_selected_annotation(None);
+        let mut config = self.chart_config()?.clone();
+        let mut picked = config.picked_data.take().unwrap_or_default();
+        picked.refs = vec![reference];
+        config.picked_data = Some(picked);
+        self.replace_chart_config(config)?;
+        self.annotation_pointer = false;
+        self.resizing = None;
+        self.dragging = true;
+        self.value_label_pointer = true;
+        Ok(true)
+    }
+
+    /// `on_move` of a drag `press_value_label` or `press_energy_label`
+    /// started: the selected label moves by the delta in document pixels.
     fn move_value_label(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
         let Some(renderer::config::PickedDataRef::ValueLabel {
             series_id,
             category_index,
+            part,
             ..
         }) = self
             .chart_config()?
@@ -879,6 +960,14 @@ impl FiggyChart {
         let Some(item) = series.iter_mut().find(|s| s.series_id == series_id) else {
             return Ok(());
         };
+        // An energy-level label moves its row's own offset (#203).
+        if let (Some(part), Some(levels)) = (part, item.energy_levels_mut()) {
+            if levels.drag_label(part, category_index, dx, dy) == NudgeResult::Moved {
+                let config = self.chart_config()?.clone();
+                self.replace_chart_state(config, series)?;
+            }
+            return Ok(());
+        }
         let count = item.value_label_text().map_or(0, <[String]>::len);
         if item.drag_value_label(category_index, count, dx, dy) == NudgeResult::Moved {
             let config = self.chart_config()?.clone();

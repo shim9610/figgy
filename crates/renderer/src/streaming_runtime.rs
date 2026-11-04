@@ -66,6 +66,11 @@ pub(crate) const STREAMED_IMAGE_REASON: &str =
 pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series require GPU-resident columns; streamed sources are not \
      supported";
 
+/// Why an energy-level series in a streamed display is rejected (CLAUDE.md
+/// rule 8, #203): it is DataLess, so no stream can feed it.
+pub(crate) const STREAMED_ENERGY_LEVELS_REASON: &str =
+    "energy-level series are DataLess (SSOT only); streamed displays do not draw them";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
@@ -82,7 +87,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => false,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => false,
     }
 }
 
@@ -829,6 +835,13 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Parallel { .. } => Ok(&[]),
+        // A DataLess energy-level series has no column a stream could feed
+        // (#203); a streamed display that meets one is refused.
+        DataRenderType::EnergyLevels(_) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: STREAMED_ENERGY_LEVELS_REASON.into(),
+        }
+        .into()),
         DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. })
             if primitives.field || primitives.contour =>
         {

@@ -1074,6 +1074,7 @@ mod tests {
                             };
                             let layers = SeriesLayers {
                                 value_labels: None,
+                                energy_levels: None,
                                 area: None,
                                 field: None,
                                 bar: None,

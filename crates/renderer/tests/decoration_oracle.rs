@@ -241,6 +241,36 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
+        scene: "EnergyLevels",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*axis_right*",
+        reason: "the broken energy axis's piece frame (#200) runs under the opposite \
+                 axis's inward tick at the gap edge, as in BrokenAxes",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "EnergyLevels",
+        layer: "annotations",
+        element: "annotation_1",
+        inv: Inv::I2,
+        detail: "*points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the inset window's translucent wash over transition arrows crossing the 2p \
+                 level: three inks at one pixel, and the decoder resolves two at most",
+        issue: "#203",
+    },
+    Exclusion {
+        scene: "EnergyLevels",
+        layer: "annotations",
+        element: "annotation_*",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_*: *stroke outlines are farther than the grab reach from ink*",
+        reason: "a dragged inset connector or window ends under the inset, which is drawn \
+                 over its parent's annotations by design (#203)",
+        issue: "#203",
+    },
+    Exclusion {
         scene: "BrokenAxes",
         layer: "*",
         element: "*axis_left",
@@ -964,6 +994,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Sunburst => "Sunburst",
         SceneKind::Parallel => "Parallel",
         SceneKind::BrokenAxes => "BrokenAxes",
+        SceneKind::EnergyLevels => "EnergyLevels",
     }
 }
 
@@ -1081,6 +1112,9 @@ fn standard_names(prefix: &str) -> Vec<String> {
         "colorbar_axis",
         "colorbar_tick_labels",
         "colorbar_title",
+        // The x axes' category group headers (#203).
+        "category_groups_top",
+        "category_groups_bottom",
     ] {
         names.push(format!("{prefix}{name}"));
     }
@@ -1107,6 +1141,8 @@ fn shared_names(prefix: &str) -> Vec<String> {
         "colorbar_axis",
         "colorbar_tick_labels",
         "colorbar_title",
+        "category_groups_top",
+        "category_groups_bottom",
     ] {
         names.push(format!("{prefix}{name}"));
     }
@@ -1204,6 +1240,9 @@ fn panel_area(cfg: &Config, name: &str) -> RectF {
 }
 
 /// Every chart area of the document but `own`.
+/// The chart areas of the document other than `own`. A nested area (an
+/// inset subplot inside its parent's, #203) and the area holding it are not
+/// "other" to each other: the inset is drawn over its parent by design.
 fn other_areas(cfg: &Config, own: RectF) -> Vec<RectF> {
     std::iter::once(RectF::from_rect(&cfg.chart_area.0))
         .chain(
@@ -1211,7 +1250,7 @@ fn other_areas(cfg: &Config, own: RectF) -> Vec<RectF> {
                 .iter()
                 .map(|s| RectF::from_rect(&s.config.chart_area.0)),
         )
-        .filter(|a| *a != own)
+        .filter(|a| *a != own && !inside(*a, own) && !inside(own, *a))
         .collect()
 }
 
@@ -1578,6 +1617,27 @@ impl Painter {
             };
             axis.line_color = self.code(line, panel);
             axis.label_style.color = self.code(labels, panel);
+            // A rich category label (#203) is tick label ink too.
+            let label_code = axis.label_style.color;
+            for category in axis.categories.iter_mut().flatten() {
+                if let Some(rich) = category.rich_label.as_mut() {
+                    rich.color = label_code;
+                    for segment in &mut rich.segments {
+                        segment.color = None;
+                    }
+                }
+            }
+            // The group headers and their brackets (#203) are their own
+            // element, in the headers' colour.
+            if let Some(groups) = axis.category_groups.as_mut() {
+                let c = self.code(format!("{prefix}category_groups_{side}"), panel);
+                for group in &mut groups.groups {
+                    group.label.color = c;
+                    for segment in &mut group.label.segments {
+                        segment.color = None;
+                    }
+                }
+            }
             self.text(
                 &mut axis.title_option.text,
                 format!("{prefix}axis_title_{side}"),
@@ -2924,8 +2984,9 @@ const TEXT_SCALE_SHARE: f64 = 0.65;
 const STROKE_SCALE_SHARE: f64 = 0.05;
 
 /// The I5 ink-share limit of the element `name`: text elements carry glyphs
-/// (tick labels, a parallel chart's axis labels, titles, the legend and
-/// annotations), everything else is a stroke.
+/// (tick labels, a parallel chart's axis labels, titles, the legend,
+/// annotations and category group headers with their brackets), everything
+/// else is a stroke.
 fn scale_share_limit(name: &str) -> f64 {
     if [
         "tick_labels",
@@ -2933,6 +2994,7 @@ fn scale_share_limit(name: &str) -> f64 {
         "title",
         "legend",
         "annotation",
+        "category_groups",
     ]
     .iter()
     .any(|kind| name.contains(kind))

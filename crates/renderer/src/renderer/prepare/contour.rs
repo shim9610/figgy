@@ -167,6 +167,8 @@ pub(in crate::renderer) struct ContourLabelSignature {
 pub(in crate::renderer) enum ScratchEntry {
     Contour(ContourScratchEntry),
     ValueLabels(super::value_label::ValueLabelScratch),
+    /// An energy-level series' CPU raster (#203).
+    EnergyLevels(super::energy_levels::EnergyLevelScratch),
 }
 
 impl ScratchEntry {
@@ -174,14 +176,14 @@ impl ScratchEntry {
     pub(in crate::renderer) fn contour(&self) -> Option<&ContourScratchEntry> {
         match self {
             Self::Contour(entry) => Some(entry),
-            Self::ValueLabels(_) => None,
+            Self::ValueLabels(_) | Self::EnergyLevels(_) => None,
         }
     }
 
     pub(in crate::renderer) fn contour_mut(&mut self) -> Option<&mut ContourScratchEntry> {
         match self {
             Self::Contour(entry) => Some(entry),
-            Self::ValueLabels(_) => None,
+            Self::ValueLabels(_) | Self::EnergyLevels(_) => None,
         }
     }
 }
@@ -244,12 +246,21 @@ impl PrepareContext<'_> {
                 // the panel config's tick label size (an export's config is
                 // scaled already).
                 let value_labels = self.ensure_value_label_scratch(item.chart_config, cfg)?;
+                // An energy-level series rasters on the CPU here, beside the
+                // other CPU bakes (#203).
+                let energy_levels = self.ensure_energy_level_scratch(
+                    item.chart_config,
+                    cfg,
+                    items,
+                    series.style.display_scale,
+                )?;
                 if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
                     .contour
                 {
                     per_series.push(PreparedContourSeries {
                         scratch: None,
                         value_labels,
+                        energy_levels,
                     });
                     continue;
                 }
@@ -297,6 +308,7 @@ impl PrepareContext<'_> {
                         label,
                     }),
                     value_labels,
+                    energy_levels,
                 });
             }
             if let Some(encoder) = encoder {

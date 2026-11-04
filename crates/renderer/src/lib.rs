@@ -215,6 +215,16 @@ pub mod parallel {
     pub use model::parallel::*;
 }
 pub use model::parallel::{ParallelAxis, ParallelOptions};
+/// Energy-level (Grotrian) diagrams (#203): the DataLess
+/// [`DataRenderType::EnergyLevels`]
+/// series' records, look and placement.
+pub mod energy_levels {
+    pub use model::energy_levels::*;
+}
+pub use model::energy_levels::{
+    EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
+    LevelView, Transition, TransitionDirection,
+};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {

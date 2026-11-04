@@ -34,6 +34,7 @@ pub struct Config {
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
     pub bar_groups: Option<BarGroups>,       // how the CategoryBars or BoxPlot series of a layer share a slot; None = the default
     pub line_offsets: Option<LineOffsets>,   // offset spectra: line series drawn stacked by a step; None = every series where its values are
+    pub plot_background: Option<Color>,      // a fill under the data area and grid (#203); None = transparent
 }
 ```
 
@@ -58,7 +59,8 @@ pub struct Config {
 | `line_visible / line_color / line_width / line_style` | mixed | Axis line appearance; `line_visible` controls the axis line independently of `tick` and tick-label visibility. CPU raster strokes floor to 1 px, so sub-pixel widths do not disappear |
 | `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
-| `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)) |
+| `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)). A category's `rich_label: Option<RichText>` (#203) is drawn and measured in place of its plain `label`, for scripts and TeX math such as a term symbol `$^3\mathrm{P}^o$` |
+| `category_groups` | `Option<CategoryGroups>` | Group headers over runs of a categorical `top_x` or `bottom_x` ([#203](https://github.com/shim9610/figgy/issues/203)): `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }`. Each header is centred past the tick labels under (over, on a top axis) the run from category `first` to `last`, with a bracket along the run when `bracket`; runs are in axis order and do not overlap, with no count limit. The headers are one element (`Element::CategoryGroupLabel`), dragged into `offset`. Refused on a numeric axis and on the y axes |
 | `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
 | `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade, as every log axis did before the field existed. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
 | `breaks` | `Option<AxisBreaks>` | Ranges cut out of the axis ([#200](https://github.com/shim9610/figgy/issues/200)): see [`AxisBreaks`](#axisbreaks). `None` (default, omitted from JSON) draws the axis whole. Allowed on `bottom_x`, `left_y` and an overlay's `y_axis` of a rectangular chart; `top_x` and `right_y` take their partner's cuts at the same fractions of their own range when drawn (`layout::mirrored_breaks`), and a colourbar axis, a polar, ternary, 3D or parallel chart refuse them. The range helpers and a view state keep it, and a subplot link copies it with the range |
@@ -724,6 +726,23 @@ textures of an overlay, so a document with more traces uses two charts.
 extents plus its shift. See the [interaction guide](INTERACTION.md#offset-spectra)
 for picks, selection and export.
 
+<a id="energylevels"></a>
+
+### Energy levels (`DataRenderType::EnergyLevels`)
+
+An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/issues/203)) is a DataLess series: its records follow the NIST Atomic Spectra Database exports and live in the SSOT, serialized with the document. The host parses the exports (the `nist_grotrian` example shows a std-only parser) and computes every value read as data, such as a multiplet's g-weighted centroid; the renderer computes only placement and colour, at raster time.
+
+| Field | Type | Description |
+|---|---|---|
+| `levels` | `Vec<EnergyLevel>` | One row per level: `id`, the term `column` (a category id of the categorical `bottom_x`), NIST `configuration`, `term`, `j` (as written: `2`, `0,1,2`, `---`), `g`, `prefix`, `energy`, `suffix`, `uncertainty`, `reference`, a `role` (`Level`, `Centroid`, or `Component { multiplet }` naming its centroid), a rich `label` and its drag `label_offset`. A level whose column the axis does not list is not drawn in that panel |
+| `limits` | `Vec<IonizationLimit>` | The `Limit` rows: `id`, `energy`, a rich `label`, `label_offset`, `uncertainty`, `reference`. Drawn as a line across the plot |
+| `transitions` | `Vec<Transition>` | Only the lines the host lists: `id`, `lower` and `upper` level ids, a rich `label`, `label_offset`, a `value` mapped through `Config.colorbar` when `style.transition.color_by_value`, an `x_offset` in the slot (`-0.5..=0.5`), and the NIST line fields (`observed_wavelength`, `ritz_wavelength`, their uncertainties, `intensity` as written, `aki`, `accuracy`, `line_type`, `tp_reference`, `line_reference`). Energies, terms, J and g are read through the two levels |
+| `style` | `EnergyLevelStyle` | `level { color, width, slot_fraction }`, `limit` (an annotation line style), `transition { color, width, head_length, head_width, direction: Emission/Absorption/None, color_by_value }`, `label_side` (`Right`, `Left`, `Above`) and `picked_width_scale` (`1..=4`) |
+| `show` | `LevelView` | `Main` draws levels and centroids; `Components` draws levels and fine-structure components, the resolved view an inset magnifies |
+| `source` | `Option<String>` | Draw another energy-level series' records (an inset's view of the main series); such a series holds none of its own |
+
+There is no count limit on any list. The chart needs a categorical `bottom_x` on a rectangular chart. The series is drawn through the CPU sink and composited after the GPU data; a pick answers a level as a `HistogramBin`, a transition as a `Point` and a label as a `ValueLabel` with its `part`; `step_selection` walks the rows the view draws. `write_continuum` writes the continuum spans above the limits into the annotation layer, `Config::inset_marker` an inset's window and connectors. An inset is a subplot inside the parent's data area, usually with `plot_background`: it is drawn over the parent and takes the pointer there. A streamed display refuses the series.
+
 ### `data_config` — declarative series schema (the active API)
 
 Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which `Renderer::paint` calls) matches on `render_type` and builds the layers that variant draws (line, scatter, errorbar, bar, field, contour or vector); colors, widths, and shapes come from the matching sub-style.
@@ -764,6 +783,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
 | `Ternary { c_column, scatter?, line?, region? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern), `region` (`TernaryRegionStyle { color, opacity }`) fills the closed polygons the samples outline (a NaN row separates polygons; even-odd within a series, so a polygon inside another is a hole) under every series' markers and lines; at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
+| `EnergyLevels(EnergyLevelSeries)` | energy levels | An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/issues/203)), DataLess: every value is SSOT, `x_column` and `y_column` stay empty and nothing is registered. See [Energy levels](#energylevels) |
 | `Parallel { columns, line, color_column }` | parallel | One polyline per row across the axes of a parallel chart (`Config.parallel`): `columns` names one column per axis in order (`x_column` and `y_column` are its first two), `line` the rows' colour and width (solid, linear, unfilled), `color_column` an optional column colouring each row through `Config.colorbar`. A row with a non-finite value breaks at that axis. See [Parallel coordinates](#parallel-coordinates) |
 | `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, drawn outside each vertex along its spoke; `labels.offsets` holds each label's drag offset. Needs `Config.polar` with `Chord` interpolation, any number of radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
@@ -1204,6 +1224,7 @@ pub struct Config {
     pub annotations: AnnotationLayer,        // 전용 주석 레이어: 표시 여부와 항목
     pub bar_groups: Option<BarGroups>,       // 한 레이어의 CategoryBars·BoxPlot 시리즈가 범주 칸을 나누는 방식, None이면 기본값
     pub line_offsets: Option<LineOffsets>,   // 오프셋 스펙트럼: 선 시리즈를 일정 간격씩 밀어 쌓아 그린다. None이면 모든 시리즈를 값 그대로 그린다
+    pub plot_background: Option<Color>,      // 데이터 영역과 격자 아래를 채우는 색(#203). None이면 투명하다
 }
 ```
 
@@ -1231,6 +1252,7 @@ pub struct Config {
 | `cross_at` | `Option<f64>` | 축선이 수직인 축과 만나는 위치를 그 축의 값으로 정한다(위·아래 축은 `left_y`, 왼쪽·오른쪽 축은 `bottom_x`의 값). 그리기 영역 안으로 제한하며 축선과 그 히트 영역만 옮기고 눈금·라벨·제목은 그대로 둔다. 유한해야 하며 극좌표 차트에서는 무시한다. `None`(기본값, JSON에서 생략)이면 축선은 가장자리에 있다 |
 | `log_ticks` | `LogTickPolicy` | 로그축의 주 눈금을 정하는 방식([#42](https://github.com/shim9610/figgy/issues/42)). `Decades`(기본값, JSON에서 생략)는 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `Adaptive`는 `major_spacing`을 쓰지 않고 범위만 보고 주 눈금을 고른다(`tick::log_ladder`). 범위가 6 decade보다 넓으면 n decade마다 놓고(`n`은 `tick::axis_major_spacing`), 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 `tick::LOG_LADDER_MIN_MAJORS`(4)개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9배 위치 가운데 주 눈금이 아닌 곳이다. 라벨이 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되 라벨이 2개 미만이 되는 단계로는 내려가지 않고, 그래도 겹치면 2개, 5개, 10개마다 하나씩 남긴다. 눈금과 격자선은 그대로 두며, 이 방식에는 `LogDecadeStepAdjusted` 경고를 내지 않는다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하므로 확대·축소하면 눈금을 새 범위에 맞게 다시 고른다. 연결된 서브플롯 축은 눈금 간격과 함께 이 값을 복사한다 |
 | `breaks` | `Option<AxisBreaks>` | 축에서 잘라낼 구간([#200](https://github.com/shim9610/figgy/issues/200)). 자세한 내용은 아래 [`AxisBreaks`](#axisbreaks-ko)를 참고한다. `None`(기본값, JSON에서 생략)이면 축을 자르지 않는다. 직교 차트의 `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있다. `top_x`와 `right_y`는 그릴 때 짝이 되는 축의 구간을 자기 범위의 같은 비율 위치로 옮겨 쓴다(`layout::mirrored_breaks`). 색상 막대 축과 극좌표·삼각좌표·3D·평행 좌표 차트는 이 값을 거부한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하고, 연결된 서브플롯 축은 범위와 함께 복사한다 |
+| `category_groups` | `Option<CategoryGroups>` | 범주형 `top_x`·`bottom_x`의 이웃한 범주 묶음 위에 다는 그룹 머리글([#203](https://github.com/shim9610/figgy/issues/203)). `CategoryGroups { groups: Vec<CategoryGroup { label: RichText, first, last, bracket }>, offset: [f32; 2] }` 형태다. 머리글은 눈금 라벨 바깥, `first`부터 `last`까지 범주의 가운데에 놓이고, `bracket`이면 묶음을 따라 괄호선을 긋는다. 묶음은 축 순서대로 겹치지 않아야 하며 개수 상한은 없다. 머리글 전체가 요소 하나(`Element::CategoryGroupLabel`)이고 드래그하면 `offset`에 기록된다. 수치 축과 y축에는 지정할 수 없다. 범주의 `rich_label: Option<RichText>`는 일반 `label` 대신 그려지고 측정되며, 항 기호 `$^3\mathrm{P}^o$` 같은 첨자와 TeX 수식을 쓸 수 있다 |
 
 <a id="axisbreaks-ko"></a>
 ### `AxisBreaks`
@@ -1573,6 +1595,23 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 범위에 밀린 양을 더해 기본 범위를 맞춘다. 선택, 히트 테스트와 출력은
 [상호작용 가이드(영문)](INTERACTION.md#offset-spectra)에 있다.
 
+<a id="energylevels-ko"></a>
+
+### 에너지 준위(`DataRenderType::EnergyLevels`)
+
+에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203))는 DataLess 시리즈다. 레코드는 NIST 원자 스펙트럼 데이터베이스 내보내기 형식을 따르고 SSOT에 들어 있어 문서와 함께 직렬화된다. 내보내기 파일을 읽는 일은 호스트가 하고(`nist_grotrian` 예제가 표준 라이브러리만 쓰는 파서를 보여 준다), 다중선의 g 가중 평균처럼 데이터로 읽히는 값도 호스트가 계산한다. 렌더러는 래스터할 때 위치와 색만 계산한다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `levels` | `Vec<EnergyLevel>` | 준위마다 한 행. `id`, 항 열 `column`(범주형 `bottom_x`의 범주 id), NIST `configuration`·`term`·`j`(`2`, `0,1,2`, `---`처럼 적힌 그대로)·`g`·`prefix`·`energy`·`suffix`·`uncertainty`·`reference`, `role`(`Level`, `Centroid`, 중심값을 가리키는 `Component { multiplet }`), 서식 있는 `label`과 드래그 오프셋 `label_offset`을 가진다. 축에 없는 열의 준위는 그 패널에 그리지 않는다 |
+| `limits` | `Vec<IonizationLimit>` | `Limit` 행. `id`, `energy`, 서식 있는 `label`, `label_offset`, `uncertainty`, `reference`를 가지며 플롯을 가로지르는 선으로 그린다 |
+| `transitions` | `Vec<Transition>` | 호스트가 고른 선만 그린다. `id`, 아래·위 준위 id(`lower`, `upper`), 서식 있는 `label`, `label_offset`, `style.transition.color_by_value`일 때 `Config.colorbar`로 색을 정하는 `value`, 칸 안 위치 `x_offset`(`-0.5..=0.5`), NIST 선 필드(`observed_wavelength`, `ritz_wavelength`와 각 불확도, 적힌 그대로의 `intensity`, `aki`, `accuracy`, `line_type`, `tp_reference`, `line_reference`)를 가진다. 에너지·항·J·g는 두 준위에서 읽는다 |
+| `style` | `EnergyLevelStyle` | `level { color, width, slot_fraction }`, `limit`(주석 선 스타일), `transition { color, width, head_length, head_width, direction: Emission/Absorption/None, color_by_value }`, `label_side`(`Right`, `Left`, `Above`), `picked_width_scale`(`1..=4`) |
+| `show` | `LevelView` | `Main`은 준위와 중심값을, `Components`는 준위와 미세 구조 성분을 그린다. 인셋은 `Components`로 확대해 보여 준다 |
+| `source` | `Option<String>` | 다른 에너지 준위 시리즈의 레코드를 그린다(인셋이 본 시리즈를 보여 줄 때). 이때 자기 레코드는 비워 둔다 |
+
+어떤 목록에도 개수 상한이 없다. 직교 차트이고 `bottom_x`가 범주형이어야 한다. 이 시리즈는 CPU 싱크로 그려 GPU 데이터 위에 합성한다. 픽은 준위를 `HistogramBin`, 전이를 `Point`, 라벨을 `part`가 붙은 `ValueLabel`로 돌려주고, `step_selection`은 뷰가 그리는 행을 따라 움직인다. `write_continuum`은 이온화 한계 위의 연속 영역을 주석 레이어에 쓰고, `Config::inset_marker`는 인셋의 확대 창과 연결선을 쓴다. 인셋은 부모 데이터 영역 안에 놓인 서브플롯이고 보통 `plot_background`를 지정한다. 인셋은 부모 위에 그려지고 그 안의 포인터를 받는다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+
 ### `data_config` 시리즈 선언 형식
 
 차트의 시리즈는 `data_config::SeriesConfig`로 선언한다. `Renderer::prepare`(`Renderer::paint`가 호출한다)는 `render_type`에 따라 그 종류가 그리는 레이어(선, 점, 오차 막대, 막대, 필드, 등고선, 벡터)를 만들고 각 스타일 설정에서 색·두께·모양을 읽는다.
@@ -1611,6 +1650,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 범주형 각도 축을 가진 극좌표 차트에서는 막대가 쐐기, 즉 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 된다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
+| `EnergyLevels(EnergyLevelSeries)` | energy levels | 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203)). DataLess 시리즈라 모든 값이 SSOT에 있고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 자세한 내용은 [에너지 준위](#energylevels-ko)를 참고한다 |
 | `Parallel { columns, line, color_column }` | parallel | 평행 좌표 차트(`Config.parallel`)의 축을 가로지르는 행마다 꺾은선 하나. `columns`는 축 순서대로 축마다 컬럼 하나(`x_column`·`y_column`은 그 첫 둘), `line`은 행의 색과 굵기(실선·직선·채움 없음), `color_column`은 `Config.colorbar`로 행마다 색을 입히는 선택 컬럼이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. [평행 좌표](#평행-좌표) 참고 |
 | `Radar { color, style, labels }` | radar | 극좌표 차트의 범주형 각도 축에서 범주마다 값 하나를 지나는 닫힌 외곽선. `x_column`은 위치 컬럼 `0..n`, `y_column`은 값이다(NaN이면 그 자리에서 외곽선과 채움이 끊긴다). 마지막 범주와 첫 범주를 닫는 세그먼트로 잇는다. `style`은 `RadarSeriesStyle`(선 굵기, 채움 색이나 `fill_opacity`, 꼭짓점 표식과 크기)이며, 전체 원에서는 안쪽 고리까지 채우고 표식은 산점도 경로로 그린다. `labels.text`는 `format_radar_labels`가 기록한 값 라벨 문자열이며 꼭짓점 바깥쪽 바큇살 방향에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. `Chord` 보간의 `Config.polar`가 필요하고 레이어마다 레이더 시리즈 수에는 상한이 없으며 스트리밍 소스는 거부한다. [레이더 차트](RADAR.md) 참고 |
 

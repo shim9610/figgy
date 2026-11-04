@@ -82,7 +82,9 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // the parallel entries through every axis column, never as the
         // polyline through `(x_column, y_column)`. Its style is read
         // through `ParallelRef::line` where the parallel layer is built.
-        DataRenderType::Parallel { .. } => None,
+        DataRenderType::Parallel { .. }
+
+        | DataRenderType::EnergyLevels(_) => None,
         DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
         // A contour's `contour.line` is not this line. This one is the polyline
         // through `(x_column, y_column)`; a contour is an implicit level set
@@ -111,7 +113,9 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         // Ternary markers, placed by their three components.
         DataRenderType::Ternary { scatter, .. } => scatter.as_ref().map(Cow::Borrowed),
         // A parallel series draws no markers.
-        DataRenderType::Parallel { .. } => None,
+        DataRenderType::Parallel { .. }
+
+        | DataRenderType::EnergyLevels(_) => None,
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
@@ -174,7 +178,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -210,7 +215,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -243,7 +249,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -269,7 +276,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -297,6 +305,16 @@ pub(super) fn series_draw_info_from_pool(
     };
 
     match &series.render_type {
+        // A DataLess energy-level series draws its own records, one stroke,
+        // line or arrow each (#203); a view of another series draws its
+        // source's, counted where the source is drawn.
+        DataRenderType::EnergyLevels(levels) => SeriesDrawInfo {
+            drawn_count: (levels.levels.len() + levels.limits.len() + levels.transitions.len())
+                as u64,
+            cols: None,
+            rows: None,
+            truncated: false,
+        },
         // A polyline draws one segment between adjacent points.
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
             let (count, truncated) = paired(&[x, y]);
@@ -559,7 +577,9 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -586,7 +606,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -603,7 +624,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -620,7 +642,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 

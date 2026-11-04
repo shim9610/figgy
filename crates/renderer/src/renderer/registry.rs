@@ -59,6 +59,7 @@ impl AxisViewState {
             minor_tick_length: _,
             // The range of a categorical axis (`data_range`).
             categories: _,
+            category_groups: _,
             // Where the line is drawn, not how data maps.
             cross_at: _,
             // Which ticks a log axis draws, not how data maps.
@@ -121,6 +122,7 @@ impl ChartViewState {
             // The member shifts are display parameters of the group, kept
             // as they are when a view state moves the ranges.
             line_offsets: _,
+            plot_background: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -178,6 +180,7 @@ impl ChartViewState {
             annotations: _,
             bar_groups: _,
             line_offsets: _,
+            plot_background: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);
@@ -247,6 +250,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         // The bars' layout is drawn by the GPU pass, not rasterized.
         bar_groups: _,
         line_offsets,
+        plot_background,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -272,6 +276,8 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         // an overlay: the group decides how many panels the view holds and
         // which panel draws a series.
         && line_offsets == &right.line_offsets
+        // The plot fill is the grid raster's first part (#203).
+        && plot_background == &right.plot_background
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
@@ -1341,6 +1347,11 @@ pub(super) fn validate_renderer_series(
                 series_id: item.series_id.clone(),
                 reason: format!("label: {e}"),
             });
+        }
+        // A DataLess energy-level series registers no column (#203): its
+        // values are SSOT, held to the model's rule above.
+        if item.energy_levels().is_some() {
+            continue;
         }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {

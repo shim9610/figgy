@@ -589,6 +589,12 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
+        // The x axes' category group headers (#203): registered on every
+        // chart, so the set stays the active layer's; an axis without
+        // groups places nothing and is never hit.
+        for side in [Side::Top, Side::Bottom] {
+            map.register(CategoryGroupLabelElement { side });
+        }
         map
     }
 
@@ -652,6 +658,10 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
+        // The x axes are shared, and so are their group headers (#203).
+        for side in [Side::Top, Side::Bottom] {
+            map.register(CategoryGroupLabelElement { side });
+        }
         if let LayerRef::Overlay(index) = layer {
             map.register(OverlayAxisElement { layer: index });
             map.register(OverlayAxisLabelElement { layer: index });
@@ -744,6 +754,7 @@ impl SubplotElement {
                 annotations: _,
                 bar_groups,
                 line_offsets,
+                plot_background,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -764,6 +775,7 @@ impl SubplotElement {
                 annotations: std::mem::take(&mut stored.annotations),
                 bar_groups,
                 line_offsets,
+                plot_background,
             };
         }
         result
@@ -903,6 +915,14 @@ pub struct ParallelAxisLabelElement {
     pub axis: usize,
 }
 
+/// The category group headers of the categorical `top_x` or `bottom_x`
+/// (#203), outlined and hit header by header, dragged into the axis'
+/// `category_groups.offset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoryGroupLabelElement {
+    pub side: Side,
+}
+
 /// The chart title in the top band.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartTitleElement;
@@ -1035,7 +1055,8 @@ pub fn emit_element(
         | Element::Axis(_)
         | Element::ColorBarAxis
         | Element::ColorBarLabel
-        | Element::ParallelAxisLabel(_) => {
+        | Element::ParallelAxisLabel(_)
+        | Element::CategoryGroupLabel(_) => {
             return crate::chrome::emit_part_of(cfg, element, measure, sink);
         }
         // Resize targets: nothing of their own is drawn.
@@ -1285,6 +1306,34 @@ impl Selectable for AxisLabelElement {
     /// each label is outlined and hit where it is drawn.
     fn outlines_parts(&self, cfg: &Config) -> bool {
         cfg.polar().is_some() || cfg.ternary().is_some() || cfg.view_3d().is_some()
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for CategoryGroupLabelElement {
+    fn element_id(&self) -> String {
+        format!("category_groups_{}", side_str(&self.side))
+    }
+
+    /// The headers the renderer draws past the axis' tick labels
+    /// ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(
+                panel,
+                &Element::CategoryGroupLabel(self.side.clone()),
+                measure,
+                sink,
+            )
+        })
+    }
+
+    /// Each header (and its bracket) is outlined and hit where it is drawn.
+    fn outlines_parts(&self, _: &Config) -> bool {
+        true
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1861,6 +1910,8 @@ pub(crate) mod tests {
                 "colorbar_axis",
                 "colorbar_tick_labels",
                 "colorbar_title",
+                "category_groups_top",
+                "category_groups_bottom",
                 "overlay_0:axis_right",
                 "overlay_0:tick_labels_right",
                 "overlay_0:axis_title_right",
@@ -1870,7 +1921,7 @@ pub(crate) mod tests {
         assert!(!ids.iter().any(|id| id == "axis_left" || id == "axis_right"));
         cfg.set_active_layer(LayerRef::Annotations);
         let ids = ids_of(&HitMap::for_active_layer(&cfg));
-        assert_eq!(ids.len(), 13);
+        assert_eq!(ids.len(), 15);
         assert!(!ids.iter().any(|id| id.starts_with("overlay_")));
         // An out-of-range index is the base set.
         cfg.active_layer = LayerRef::Overlay(3);

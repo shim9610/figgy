@@ -164,6 +164,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::Radar { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
+        | DataRenderType::EnergyLevels(_)
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
@@ -1445,6 +1446,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::Radar { .. }
                     | DataRenderType::Ternary { .. }
                     | DataRenderType::Parallel { .. }
+                    | DataRenderType::EnergyLevels(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

@@ -643,6 +643,7 @@ impl Config {
             // The members an overlay scales are drawn by member panels of
             // their own; the overlay panel draws none of them.
             line_offsets: _,
+            plot_background: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -674,6 +675,7 @@ impl Config {
                 minor_tick_length: _,
                 // The hidden left axis maps the overlay's range.
                 categories: _,
+                category_groups: _,
                 // The hidden left axis draws no line.
                 cross_at: _,
                 // The hidden left axis draws no ticks.
@@ -722,6 +724,7 @@ impl Config {
             annotations: AnnotationLayer::default(),
             bar_groups: bar_groups.clone(),
             line_offsets: None,
+            plot_background: None,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -763,6 +766,7 @@ impl Config {
             annotations: _,
             bar_groups,
             line_offsets: _,
+            plot_background: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -796,6 +800,7 @@ impl Config {
             annotations: AnnotationLayer::default(),
             bar_groups: bar_groups.clone(),
             line_offsets: None,
+            plot_background: None,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, group, data_area)?;
@@ -904,6 +909,7 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         minor_tick_length: _,
         // A colourbar axis is never categorical.
         categories: _,
+        category_groups: _,
         // The hidden colourbar draws no axis line.
         cross_at: _,
         // The hidden colourbar draws no ticks.
@@ -944,8 +950,10 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         line_style: _,
         major_tick_length: _,
         minor_tick_length: _,
-        // The categories are the range of a categorical axis.
+        // The categories are the range of a categorical axis, and their
+        // group headers name runs of them (#203).
         categories,
+        category_groups,
         // Where the line crosses: each chart's own, like the line style.
         cross_at: _,
         // The log tick ladder is tick spacing too.
@@ -962,6 +970,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.minor_count = *minor_count;
     to.log_ticks = *log_ticks;
     to.categories.clone_from(categories);
+    to.category_groups.clone_from(category_groups);
     to.breaks.clone_from(breaks);
 }
 
@@ -1000,6 +1009,7 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             major_tick_length: _,
             minor_tick_length: _,
             categories,
+            category_groups: _,
             // Not linked.
             cross_at: _,
             // Tick spacing travels with the edited range (see above).
@@ -1046,8 +1056,9 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         minor_tick_length: _,
         // A hidden axis draws no labels, but a categorical axis keeps its
         // categories: the panel's category bars resolve their per-bar
-        // overrides by category id against them.
+        // overrides by category id against them. It draws no group headers.
         categories,
+        category_groups: _,
         // A hidden axis draws no line.
         cross_at: _,
         // A hidden axis draws no ticks, so its tick policy is the template's.
@@ -1074,6 +1085,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         major_tick_length: _,
         minor_tick_length,
         categories: _,
+        category_groups: _,
         cross_at: _,
         log_ticks,
         breaks: _,
@@ -1098,6 +1110,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         major_tick_length: *major_tick_length,
         minor_tick_length,
         categories: categories.clone(),
+        category_groups: None,
         cross_at: None,
         log_ticks,
         breaks: breaks.clone(),
@@ -1145,6 +1158,7 @@ impl Config {
             annotations: _,
             bar_groups: _,
             line_offsets: _,
+            plot_background: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1198,6 +1212,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         annotations: _,
         bar_groups: _,
         line_offsets: _,
+        plot_background: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));

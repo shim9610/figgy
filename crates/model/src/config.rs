@@ -316,6 +316,15 @@ pub struct AxisOptions {
     )]
     pub categories: Option<Vec<Category>>,
 
+    /// Group headers over runs of this axis' categories (#203). Drawn on a
+    /// categorical `bottom_x` or `top_x`; refused on a numeric axis and on
+    /// the y axes. `None` (omitted from JSON) draws none.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub category_groups: Option<CategoryGroups>,
+
     /// Where this axis' line crosses the perpendicular axis, as a value of
     /// that axis: `Some(0.0)` on `bottom_x` draws the bottom axis line at
     /// `left_y = 0`, the zero line of a bar chart with negative values, and
@@ -367,6 +376,14 @@ pub struct AxisOptions {
 pub struct Category {
     pub id: String,
     pub label: String,
+    /// The tick label drawn as rich text (scripts, TeX math) in place of
+    /// `label`, such as a term symbol `$^3P^o$` (#203); `label` stays the
+    /// plain name. `None` (omitted from JSON) draws `label`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rich_label: Option<crate::text::RichText>,
 }
 
 impl Category {
@@ -374,7 +391,89 @@ impl Category {
         Self {
             id: id.into(),
             label: label.into(),
+            rich_label: None,
         }
+    }
+}
+
+/// Group headers of a categorical axis (#203): a label centred under (or,
+/// on a top axis, over) a run of neighbouring categories, past the tick
+/// labels, with an optional bracket spanning the run: "Singlets" over the
+/// singlet term columns of an energy-level diagram.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryGroups {
+    /// The groups, in axis order; runs do not overlap. No count limit.
+    pub groups: Vec<CategoryGroup>,
+    /// The headers' drag offset from their drawn place, logical pixels,
+    /// written by a drag of
+    /// [`Element::CategoryGroupLabel`](crate::layout::Element::CategoryGroupLabel).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_zero_offset")
+    )]
+    pub offset: [f32; 2],
+}
+
+/// One group header of [`CategoryGroups`].
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryGroup {
+    /// The drawn header.
+    pub label: crate::text::RichText,
+    /// The id of the run's first category.
+    pub first: String,
+    /// The id of the run's last category (the first again for a run of
+    /// one).
+    pub last: String,
+    /// Draw a bracket along the run between the tick labels and the header,
+    /// in the header's colour.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_not"))]
+    pub bracket: bool,
+}
+
+#[cfg(feature = "serde")]
+fn is_not(v: &bool) -> bool {
+    !*v
+}
+
+#[cfg(feature = "serde")]
+fn is_zero_offset(offset: &[f32; 2]) -> bool {
+    *offset == [0.0; 2]
+}
+
+impl CategoryGroups {
+    /// The rules group headers are held to on an axis with `categories`:
+    /// every run names categories of the axis, first not after last, the
+    /// runs in axis order without overlap, valid rich text headers and a
+    /// finite offset within [`crate::data_config::MAX_VALUE_LABEL_OFFSET`].
+    pub fn validate(&self, categories: &[Category]) -> Result<(), &'static str> {
+        let position = |id: &str| categories.iter().position(|c| c.id == id);
+        let mut end: Option<usize> = None;
+        for group in &self.groups {
+            let (Some(first), Some(last)) = (position(&group.first), position(&group.last)) else {
+                return Err("a category group names categories of its axis");
+            };
+            if first > last {
+                return Err("a category group's first category comes before its last");
+            }
+            if end.is_some_and(|end| first <= end) {
+                return Err("category groups run in axis order without overlapping");
+            }
+            end = Some(last);
+            group.label.validate_math().map_err(|e| e.as_str())?;
+            if !group.label.within_limits() {
+                return Err("invalid category group label");
+            }
+        }
+        if !self
+            .offset
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= crate::data_config::MAX_VALUE_LABEL_OFFSET)
+        {
+            return Err("invalid category group offset");
+        }
+        Ok(())
     }
 }
 
@@ -474,6 +573,15 @@ impl AxisOptions {
             if !category_text_ok(&category.label) {
                 return Err("category labels must be single-line and at most 80 characters");
             }
+            if let Some(rich) = &category.rich_label {
+                rich.validate_math().map_err(|e| e.as_str())?;
+                if !rich.within_limits() {
+                    return Err("invalid category rich label");
+                }
+            }
+        }
+        if let Some(groups) = &self.category_groups {
+            groups.validate(categories)?;
         }
         if self.scale == AxisScale::Logarithmic {
             return Err("a categorical axis cannot be logarithmic");
@@ -766,8 +874,16 @@ pub enum PickedDataRef {
         )]
         source_id: Option<String>,
         series_id: String,
-        /// The category, in axis order: the index into `labels.text`.
+        /// The category, in axis order: the index into `labels.text`. On an
+        /// energy-level series, the row in the list `part` names.
         category_index: usize,
+        /// On an energy-level series, the list the label belongs to (#203);
+        /// `None` for every other series.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        part: Option<crate::energy_levels::LabelPart>,
     },
 }
 
@@ -1120,6 +1236,15 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub line_offsets: Option<crate::data_config::LineOffsets>,
+    /// A fill under the data area, below the grid (#203). `None` (key absent
+    /// in JSON) leaves the plot transparent, as every chart before the
+    /// field. An inset subplot sets it so the parent's grid and data do not
+    /// show through.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub plot_background: Option<crate::color::Color>,
 }
 
 impl Config {
@@ -1161,6 +1286,7 @@ impl Config {
             // Steps in data units (or decades) and series ids: not a
             // dimension.
             line_offsets: _,
+            plot_background: _,
         } = self;
         // A parallel axis's labels sit to its left with the fixed label gap,
         // as `left_y`'s: its scaled offset makes up the gap as
@@ -1390,6 +1516,22 @@ impl Config {
     }
 }
 
+/// Scale the pixel sizes of an axis' category text (#203): each rich tick
+/// label's font size, and the group headers' font sizes and drag offset.
+fn scale_category_text(axis: &mut AxisOptions, s: f32) {
+    for category in axis.categories.iter_mut().flatten() {
+        if let Some(rich) = &mut category.rich_label {
+            rich.font_size *= s;
+        }
+    }
+    if let Some(groups) = &mut axis.category_groups {
+        for group in &mut groups.groups {
+            group.label.font_size *= s;
+        }
+        groups.offset = [groups.offset[0] * s, groups.offset[1] * s];
+    }
+}
+
 /// Scale one axis' pixel-based dims. Shared by the four chart axes and the
 /// colourbar's z axis so the set of "which fields are pixels" is written once.
 fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
@@ -1412,7 +1554,10 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         major_tick_length,
         minor_tick_length,
         // Configuration, not pixels.
+        // Category text sizes and the group headers' offset are pixels
+        // (#203); scaled below.
         categories: _,
+        category_groups: _,
         // A value of the perpendicular axis.
         cross_at: _,
         // A tick policy, not pixels.
@@ -1464,6 +1609,7 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
     *line_width *= s;
     *major_tick_length *= s;
     *minor_tick_length *= s;
+    scale_category_text(axis, s);
 }
 
 /// Scale one legend's pixel-based dims: the parent's and every overlay's.

@@ -55,6 +55,10 @@ pub enum Element {
     /// The tick-label band of parallel axis `i` (`Config.parallel`, #141).
     /// A drag updates that axis's `label_offset`.
     ParallelAxisLabel(usize),
+    /// The category group headers of the categorical `top_x` or
+    /// `bottom_x` (#203). A drag updates the axis'
+    /// `category_groups.offset`.
+    CategoryGroupLabel(Side),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +132,10 @@ impl Config {
                 let axis = self.parallel()?.axes.get(*i)?;
                 (axis.label_offset[0], axis.label_offset[1])
             }
+            Element::CategoryGroupLabel(side) => {
+                let groups = axis_ref(self, side).category_groups.as_ref()?;
+                (groups.offset[0], groups.offset[1])
+            }
             Element::Axis(_)
             | Element::ColorBarAxis
             | Element::DataAreaEdge(_)
@@ -179,6 +187,11 @@ impl Config {
             Element::ParallelAxisLabel(i) => {
                 if let Some(axis) = self.parallel_mut().and_then(|p| p.axes.get_mut(*i)) {
                     axis.label_offset = [offset.0, offset.1];
+                }
+            }
+            Element::CategoryGroupLabel(side) => {
+                if let Some(groups) = axis_mut(self, side).category_groups.as_mut() {
+                    groups.offset = [offset.0, offset.1];
                 }
             }
             Element::Axis(_)

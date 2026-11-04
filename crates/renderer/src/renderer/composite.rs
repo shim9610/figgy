@@ -320,6 +320,13 @@ pub(crate) fn draw_chart_panel(
                 for s in series_list {
                     crate::data_render::issue_series_picked(pass, s);
                 }
+                // The CPU rasters of energy-level series (#203), over the
+                // panel's GPU data and under its value labels.
+                for s in series_list {
+                    if let Some(layer) = &s.energy_levels {
+                        blit(pass, layer);
+                    }
+                }
                 // The value labels over all of the panel's data and its
                 // picked highlights, never in the cached bodies: a label
                 // drag or a selected label redraws only them.

@@ -269,6 +269,11 @@ impl ColorCycle {
             DataRenderType::Histogram { bar } => {
                 bar.fill_color = c;
             }
+            // The level strokes take the cycle colour; the arrows keep theirs
+            // (#203).
+            DataRenderType::EnergyLevels(levels) => {
+                levels.style.level.color = c;
+            }
             // The contour line joins the cycle like any other line. The fill
             // does not: its colours come from the colormap, and overwriting one
             // of them with a cycle entry would make the colourbar lie.

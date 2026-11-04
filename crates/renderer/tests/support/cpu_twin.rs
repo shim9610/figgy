@@ -568,7 +568,9 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         // pick is held to the paint by `pick_draw_agreement`. A parallel
         // row is a typed data pick (`pick_parallel`), never a point.
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 
@@ -587,7 +589,9 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. } => None,
+        | DataRenderType::Parallel { .. }
+
+        | DataRenderType::EnergyLevels(_) => None,
     }
 }
 

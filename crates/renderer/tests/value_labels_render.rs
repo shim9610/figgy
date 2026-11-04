@@ -941,6 +941,7 @@ fn the_selected_label_is_outlined_by_its_frame() {
                 source_id: None,
                 series_id: "two".into(),
                 category_index: 0,
+                part: None,
             }],
             ..DataSelectionsConfig::default()
         });

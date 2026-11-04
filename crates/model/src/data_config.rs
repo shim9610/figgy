@@ -402,6 +402,16 @@ pub enum DataRenderType {
         /// Colour each row by a host column through `Config.colorbar`.
         color_column: Option<ColumnId>,
     },
+    /// An energy-level (Grotrian) diagram (#203): levels as strokes across
+    /// the slots of a categorical `bottom_x` at their energies on `left_y`,
+    /// ionization limits and the transitions the host listed. DataLess:
+    /// every value is SSOT configuration
+    /// ([`EnergyLevelSeries`](crate::energy_levels::EnergyLevelSeries)), so
+    /// `x_column` and `y_column` stay empty and nothing is registered. Drawn
+    /// through the CPU sink and composited after the GPU data. See
+    /// [`crate::energy_levels`] and
+    /// [`Config::validate_energy_levels`](crate::config::Config::validate_energy_levels).
+    EnergyLevels(crate::energy_levels::EnergyLevelSeries),
 }
 
 /// Markers, a line and error bars over a series' x and y columns: the
@@ -677,6 +687,7 @@ impl From<WireRenderType> for DataRenderType {
                 line,
                 color_column,
             },
+            WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
         }
     }
 }
@@ -879,6 +890,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                 line,
                 color_column,
             },
+            DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
         })
     }
 }
@@ -1397,6 +1409,7 @@ pub(crate) enum WireRenderType {
         )]
         color_column: Option<ColumnId>,
     },
+    EnergyLevels(crate::energy_levels::EnergyLevelSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -3059,6 +3072,7 @@ impl DataRenderType {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
+            | DataRenderType::EnergyLevels(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
@@ -5242,7 +5256,9 @@ impl DataRenderType {
             | DataRenderType::Field(_)
             | DataRenderType::RgbImage { .. }
             | DataRenderType::CategoryBars { .. }
-            | DataRenderType::RangeBars { .. } => false,
+            | DataRenderType::RangeBars { .. }
+            // Its transitions step as points by their own rule (#203).
+            | DataRenderType::EnergyLevels(_) => false,
         }
     }
 }
@@ -5272,6 +5288,11 @@ impl crate::config::Config {
     ///   orientation by the other.
     /// - A matrix cell (a field's or a grid vector's, over its `u` grid)
     ///   moves by `dx` along x and `dy` along y.
+    ///
+    /// - On an energy-level series (#203), a level (a histogram bin) steps
+    ///   by `dx` over the level rows its view draws and a transition (a
+    ///   point) over the transitions it draws, and `dy` moves across the
+    ///   energy-level series, in series order.
     ///
     /// A contour level and a value label do not step. An error names a
     /// matrix cell selection whose series draws no matrix any more.
@@ -5314,6 +5335,12 @@ impl crate::config::Config {
         else {
             return Ok(None);
         };
+        // An energy-level series steps over the rows of its SSOT (#203).
+        if series[position].energy_levels().is_some() {
+            return Ok(crate::energy_levels::stepped_selection(
+                series, position, reference, dx, dy,
+            ));
+        }
         let len = |column: &str| column_len(column).unwrap_or(0);
         let shift = |index: usize, delta: i32, count: usize| {
             index
@@ -8423,6 +8450,7 @@ mod step_selection_tests {
             source_id: None,
             series_id: "a".into(),
             category_index: 0,
+            part: None,
         };
         let mut config = selected(label.clone());
         assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
@@ -9388,6 +9416,10 @@ impl SeriesConfig {
     /// columns, and a vector field's components and colour. Records and
     /// ragged columns are visited by [`Self::visit_composite_columns`].
     pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
+        // A DataLess energy-level series reads no column (#203).
+        if self.energy_levels().is_some() {
+            return;
+        }
         visit(&self.x_column);
         if self.render_type.box_plot().is_none() {
             visit(&self.y_column);
@@ -9430,6 +9462,7 @@ impl SeriesConfig {
         match &self.render_type {
             // Nothing beyond what is visited above.
             DataRenderType::Xy(_)
+            | DataRenderType::EnergyLevels(_)
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}

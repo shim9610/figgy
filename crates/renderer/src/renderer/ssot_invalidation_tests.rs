@@ -54,6 +54,12 @@ fn edits() -> Vec<Edit> {
                 pixels: Pixels::Changed, streams: true });
         };
     }
+    // The plot fill (#203) is the grid raster's first part.
+    edit!(
+        plot_background,
+        Some(crate::Color::from_rgb8(240, 244, 250)),
+        Prefix
+    );
     cases.push(Edit {
         name: "identical config",
         apply: |_| {},
@@ -570,6 +576,29 @@ fn category_edits() -> Vec<Edit> {
         "bottom_x.categories (Some -> None)",
         |c| c.bottom_x.categories = None,
         Replay,
+        Changed
+    );
+    // A rich tick label and the group headers (#203) are tick chrome.
+    category!(
+        "bottom_x.categories[1].rich_label (None -> Some)",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].rich_label = Some(
+            crate::text::RichText::plain("B₂", crate::Color::BLACK, 12.0, "")
+        ),
+        Prefix,
+        Changed
+    );
+    category!(
+        "bottom_x.category_groups (None -> Some)",
+        |c| c.bottom_x.category_groups = Some(crate::config::CategoryGroups {
+            groups: vec![crate::config::CategoryGroup {
+                label: crate::text::RichText::plain("Group", crate::Color::BLACK, 12.0, ""),
+                first: "a".into(),
+                last: "b".into(),
+                bracket: true,
+            }],
+            offset: [0.0; 2],
+        }),
+        Prefix,
         Changed
     );
     // `min` / `max` are ignored on a categorical axis: a written range is
@@ -1648,12 +1677,13 @@ fn config_fields_are_classified() {
         // camera and parallel axes are covered by tests/surface_render.rs and
         // tests/parallel_render.rs, since the baseline series are neither kind
         coordinates: _,
-        overlays,        // overlay_edits(): range/series/band Packed, the rest Prefix
-        subplots,        // subplot_edits(): geometry/series/links Packed, chrome Prefix
-        active_layer: _, // layer only: no raster, no pixels
-        annotations: _,  // annotation_edits(): annotation revision only
-        bar_groups: _,   // "bar_groups (None -> Some)" + resident display mutations
-        line_offsets: _, // "line_offsets (None -> Some)" + resident display mutations
+        overlays,           // overlay_edits(): range/series/band Packed, the rest Prefix
+        subplots,           // subplot_edits(): geometry/series/links Packed, chrome Prefix
+        active_layer: _,    // layer only: no raster, no pixels
+        annotations: _,     // annotation_edits(): annotation revision only
+        bar_groups: _,      // "bar_groups (None -> Some)" + resident display mutations
+        line_offsets: _,    // "line_offsets (None -> Some)" + resident display mutations
+        plot_background: _, // edit!(plot_background): Prefix, raster
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,
@@ -1674,6 +1704,7 @@ fn config_fields_are_classified() {
         major_tick_length: _,
         minor_tick_length: _,
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
+        category_groups: _, // category_edits(): Prefix
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
         breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix

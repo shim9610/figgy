@@ -1695,6 +1695,7 @@ fn decode_candidate(
             source_id,
             series_id,
             category_index: candidate.index0 as usize,
+            part: None,
             distance_px,
         },
         _ => return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult),
@@ -1736,6 +1737,9 @@ enum GpuDataPickTicketState {
         /// The paint order of the first line offset member; `point_orders`'
         /// length when the layer has none.
         first_member: usize,
+        /// The best hit of the layer's DataLess energy-level series, picked
+        /// on the CPU over their SSOT when the ticket was made (#203).
+        cpu: Option<RankedPickedData>,
     },
     Stream(DataPickTicket),
     /// A 3D chart's 1×1 ID render (`Renderer::pick_surface`).
@@ -1827,6 +1831,7 @@ impl GpuDataPickTicket {
         data: DataPickTicket,
         point_orders: Vec<PointPaintOrder>,
         members: usize,
+        cpu: Option<RankedPickedData>,
     ) -> Self {
         let first_member = point_orders.len().saturating_sub(members);
         Self {
@@ -1835,6 +1840,7 @@ impl GpuDataPickTicket {
                 data,
                 point_orders: point_orders.into(),
                 first_member,
+                cpu,
             },
         }
     }
@@ -1904,7 +1910,7 @@ impl GpuDataPickTicket {
     /// After a wait: decode the pick and, for a resident layer, choose
     /// between its point and data hits.
     fn finish(&mut self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
-        let (point, data, point_orders, first_member) = match &mut self.state {
+        let (point, data, point_orders, first_member, cpu) = match &mut self.state {
             GpuDataPickTicketState::Surface(ticket) => return ticket.finish(),
             GpuDataPickTicketState::Stream(ticket) => {
                 return ticket.finish().map(|result| result.map(|hit| hit.picked));
@@ -1914,7 +1920,8 @@ impl GpuDataPickTicket {
                 data,
                 point_orders,
                 first_member,
-            } => (point, data, &*point_orders, *first_member),
+                cpu,
+            } => (point, data, &*point_orders, *first_member, cpu.take()),
         };
         let point = point.finish()?.map(crate::pick::PickedPoint::from);
         let data = data.finish()?;
@@ -1931,27 +1938,39 @@ impl GpuDataPickTicket {
                 paint_order,
             }
         });
-        Ok(match (point, data) {
+        // The nearer of two hits; on a tie, the one painted later.
+        let nearer = |a: RankedPickedData, b: RankedPickedData| {
+            let (da, db) = (a.picked.distance_px(), b.picked.distance_px());
+            if db < da || (db == da && b.paint_order > a.paint_order) {
+                b
+            } else {
+                a
+            }
+        };
+        let gpu = match (point, data) {
             (None, None) => None,
-            (Some(point), None) => Some(point.picked),
-            (None, Some(data)) => Some(data.picked),
+            (Some(point), None) => Some(point),
+            (None, Some(data)) => Some(data),
             // A line offset member painted under the cursor covers every
             // data hit, whose panels draw below the members'.
             (Some(point), Some(_))
                 if point.paint_order as usize >= first_member
                     && point.picked.distance_px() == 0.0 =>
             {
-                Some(point.picked)
+                Some(point)
             }
-            (Some(point), Some(data)) => {
-                let point_distance = point.picked.distance_px();
-                let data_distance = data.picked.distance_px();
-                if data_distance < point_distance
-                    || (data_distance == point_distance && data.paint_order > point.paint_order)
-                {
-                    Some(data.picked)
+            (Some(point), Some(data)) => Some(nearer(point, data)),
+        };
+        // An energy-level hit (#203) is composited over the panel's GPU
+        // data, so it wins a tie with any of it.
+        Ok(match (gpu, cpu) {
+            (None, None) => None,
+            (Some(hit), None) | (None, Some(hit)) => Some(hit.picked),
+            (Some(gpu), Some(cpu)) => {
+                if cpu.picked.distance_px() <= gpu.picked.distance_px() {
+                    Some(cpu.picked)
                 } else {
-                    Some(point.picked)
+                    Some(gpu.picked)
                 }
             }
         })

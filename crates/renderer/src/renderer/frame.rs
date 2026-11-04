@@ -58,6 +58,8 @@ pub(super) fn annotation_raster_for_chart(
         // The members draw no annotations; the layer is anchored in the
         // base panel's axes.
         line_offsets: _,
+        // The plot fill is under the grid, not the annotations (#203).
+        plot_background: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {
@@ -192,6 +194,9 @@ pub(super) struct PreparedContourSeries {
     /// The series' value label atlas, baked by the contour label module's
     /// atlas builder; `None` for a series that draws no value labels.
     pub(super) value_labels: Option<Arc<data_render::ValueLabelAtlas>>,
+    /// An energy-level series' CPU raster (#203); `None` for every other
+    /// series.
+    pub(super) energy_levels: Option<Arc<super::prepare::EnergyLevelRaster>>,
 }
 
 pub(super) struct PreparedContourItem {
@@ -668,6 +673,9 @@ pub(super) struct PreparedSeries {
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
     pub(super) value_labels: Option<PreparedValueLabelLayer>,
+    /// An energy-level series' CPU raster (#203): the blit pipeline and the
+    /// raster's bind group, which keeps its texture alive.
+    pub(super) energy_levels: Option<(wgpu::RenderPipeline, wgpu::BindGroup)>,
 }
 
 /// Refcounted GPU view bindings captured by `prepare`. Bind groups keep their
@@ -1202,6 +1210,9 @@ impl PreparedSeries {
                     view3d: layer.view3d,
                 })
                 .collect(),
+            energy_levels: layers
+                .energy_levels
+                .map(|layer| (layer.pipeline.clone(), layer.bind_group.clone())),
             value_labels: layers.value_labels.map(|layer| PreparedValueLabelLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1397,6 +1408,12 @@ impl PreparedSeries {
                     view3d: layer.view3d.clone(),
                 })
                 .collect(),
+            energy_levels: self.energy_levels.as_ref().map(|(pipeline, bind_group)| {
+                data_render::AxisLayer {
+                    pipeline,
+                    bind_group,
+                }
+            }),
             value_labels: self.value_labels.as_ref().map(|layer| {
                 data_render::ColumnValueLabelLayer {
                     pipeline: &layer.pipeline,
@@ -1928,6 +1945,26 @@ pub(super) fn route_selection_boxes(
         routed[index].push(selection_box.clone());
     }
     routed
+}
+
+/// Whether panel `index` of a prepared frame is nested in an earlier
+/// panel's data area: its rect lies inside that data area and differs from
+/// that panel's own rect (an inset subplot, #203). Overlay and member panels
+/// share their owner's rect and are never nested.
+pub(super) fn nested_panel(prepared: &[PreparedItem], index: usize) -> bool {
+    let Some(item) = prepared.get(index) else {
+        return false;
+    };
+    let rect = item.view.panel_rect;
+    let inside = |outer: &Rect| {
+        rect.x >= outer.x
+            && rect.y >= outer.y
+            && rect.x.saturating_add(rect.width) <= outer.x.saturating_add(outer.width)
+            && rect.y.saturating_add(rect.height) <= outer.y.saturating_add(outer.height)
+    };
+    prepared[..index]
+        .iter()
+        .any(|outer| outer.view.panel_rect != rect && inside(&outer.data_area))
 }
 
 /// The document's annotation layer is rasterized once, on the base view; its
@@ -3197,91 +3234,101 @@ impl Renderer {
         }
         // Every panel's grid and data, then every panel's decoration
         // (`composite::FRAME_SLOTS`): on every layer the decoration is above
-        // the data.
-        for slot in super::composite::FRAME_SLOTS {
-            for item in prepared {
-                if let Some(display) = &item.stream_display {
-                    // The stream display is the whole panel in one texture;
-                    // it is drawn once, in the first slot.
-                    if slot == crate::sink::Slot::Below
-                        && let Some(panel) =
-                            data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
-                    {
-                        // D covers the whole target, unlike a panel-sized axis texture.
-                        pass.set_viewport(
-                            0.0,
-                            0.0,
-                            target_size.0 as f32,
-                            target_size.1 as f32,
-                            0.0,
-                            1.0,
-                        );
-                        pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
-                        pass.set_pipeline(&item.axis_pipeline);
-                        pass.set_bind_group(0, &display.bind_group, &[]);
-                        pass.draw(0..3, 0..1);
+        // the data. A panel nested in another's data area (an inset
+        // subplot, #203) is drawn after every other panel, all its slots
+        // over them, so it covers its parent's data, decoration and
+        // annotations.
+        let nested = |index: usize| nested_panel(prepared, index);
+        for tier in [false, true] {
+            for slot in super::composite::FRAME_SLOTS {
+                for (index, item) in prepared.iter().enumerate() {
+                    if nested(index) != tier {
+                        continue;
                     }
-                    continue;
+                    if let Some(display) = &item.stream_display {
+                        // The stream display is the whole panel in one texture;
+                        // it is drawn once, in the first slot.
+                        if slot == crate::sink::Slot::Below
+                            && let Some(panel) =
+                                data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
+                        {
+                            // D covers the whole target, unlike a panel-sized axis texture.
+                            pass.set_viewport(
+                                0.0,
+                                0.0,
+                                target_size.0 as f32,
+                                target_size.1 as f32,
+                                0.0,
+                                1.0,
+                            );
+                            pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
+                            pass.set_pipeline(&item.axis_pipeline);
+                            pass.set_bind_group(0, &display.bind_group, &[]);
+                            pass.draw(0..3, 0..1);
+                        }
+                        continue;
+                    }
+                    let panel_rect = item.view.panel_rect;
+                    // The series layers are read by the data slot only.
+                    let series_list: Vec<_>;
+                    let own: OwnPieceLayers<'_>;
+                    let series_layers = match slot {
+                        crate::sink::Slot::Below => {
+                            series_list = item.series.iter().map(PreparedSeries::layers).collect();
+                            own = item.own_piece_layers();
+                            super::composite::PieceSeries::of(&series_list, &own)
+                        }
+                        crate::sink::Slot::Above => super::composite::PieceSeries::shared(&[]),
+                    };
+                    // Without the chrome only the data slot is drawn.
+                    let (annotation_underlay, annotation_overlay) = if chrome {
+                        item.view.annotation_layers(&item.axis_pipeline)
+                    } else {
+                        (None, None)
+                    };
+
+                    // The single style decision per panel: the chart's `DrawStyle`
+                    // resolves to a cached styled pipeline set (compiled by the
+                    // prepare phase) or `None` for precise — the precise path stays
+                    // untouched.
+                    // Bundle every series's primitives for the panel into one call.
+
+                    // Cached bodies cover the whole panel; a panel the target clips
+                    // draws them directly, as before.
+                    let cached = item
+                        .resident_display
+                        .as_ref()
+                        .filter(|_| {
+                            panel_rect.x.checked_add(panel_rect.width) <= Some(target_size.0)
+                                && panel_rect.y.checked_add(panel_rect.height)
+                                    <= Some(target_size.1)
+                        })
+                        .map(|display| AxisLayer {
+                            pipeline: &item.axis_pipeline,
+                            bind_group: &display.bind_group,
+                        });
+                    super::composite::draw_chart_panel(
+                        pass,
+                        target_size,
+                        panel_rect,
+                        &item.data_pieces,
+                        &super::composite::PanelChrome {
+                            below: chrome.then_some(AxisLayer {
+                                pipeline: &item.axis_pipeline,
+                                bind_group: &item.view.grid_bind_group,
+                            }),
+                            annotation_underlay,
+                            above: chrome.then_some(AxisLayer {
+                                pipeline: &item.axis_pipeline,
+                                bind_group: &item.view.decoration_bind_group,
+                            }),
+                            annotation_overlay,
+                        },
+                        series_layers,
+                        cached,
+                        slot,
+                    );
                 }
-                let panel_rect = item.view.panel_rect;
-                // The series layers are read by the data slot only.
-                let series_list: Vec<_>;
-                let own: OwnPieceLayers<'_>;
-                let series_layers = match slot {
-                    crate::sink::Slot::Below => {
-                        series_list = item.series.iter().map(PreparedSeries::layers).collect();
-                        own = item.own_piece_layers();
-                        super::composite::PieceSeries::of(&series_list, &own)
-                    }
-                    crate::sink::Slot::Above => super::composite::PieceSeries::shared(&[]),
-                };
-                // Without the chrome only the data slot is drawn.
-                let (annotation_underlay, annotation_overlay) = if chrome {
-                    item.view.annotation_layers(&item.axis_pipeline)
-                } else {
-                    (None, None)
-                };
-
-                // The single style decision per panel: the chart's `DrawStyle`
-                // resolves to a cached styled pipeline set (compiled by the
-                // prepare phase) or `None` for precise — the precise path stays
-                // untouched.
-                // Bundle every series's primitives for the panel into one call.
-
-                // Cached bodies cover the whole panel; a panel the target clips
-                // draws them directly, as before.
-                let cached = item
-                    .resident_display
-                    .as_ref()
-                    .filter(|_| {
-                        panel_rect.x.checked_add(panel_rect.width) <= Some(target_size.0)
-                            && panel_rect.y.checked_add(panel_rect.height) <= Some(target_size.1)
-                    })
-                    .map(|display| AxisLayer {
-                        pipeline: &item.axis_pipeline,
-                        bind_group: &display.bind_group,
-                    });
-                super::composite::draw_chart_panel(
-                    pass,
-                    target_size,
-                    panel_rect,
-                    &item.data_pieces,
-                    &super::composite::PanelChrome {
-                        below: chrome.then_some(AxisLayer {
-                            pipeline: &item.axis_pipeline,
-                            bind_group: &item.view.grid_bind_group,
-                        }),
-                        annotation_underlay,
-                        above: chrome.then_some(AxisLayer {
-                            pipeline: &item.axis_pipeline,
-                            bind_group: &item.view.decoration_bind_group,
-                        }),
-                        annotation_overlay,
-                    },
-                    series_layers,
-                    cached,
-                    slot,
-                );
             }
         }
         Ok(())

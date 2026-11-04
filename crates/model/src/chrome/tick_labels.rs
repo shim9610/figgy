@@ -224,10 +224,19 @@ pub fn each_category_tick_label(
     if !(ls.visible && ls.label_visible) {
         return;
     }
+    // A category's rich label (#203) is drawn, and measured, in place of
+    // its plain one.
+    let text_of = |index: usize| match &categories[index].rich_label {
+        Some(rich) => TickText::Power(rich),
+        None => TickText::Plain(categories[index].label.as_str()),
+    };
     let placed = |index: usize| {
-        let text = categories[index].label.as_str();
+        let text = text_of(index);
         let position = position(index as f64);
-        let metrics = measure.measure_plain(text, &ls.label_font, ls.font_size);
+        let metrics = match &text {
+            TickText::Plain(plain) => measure.measure_plain(plain, &ls.label_font, ls.font_size),
+            TickText::Power(rich) => measure.measure_rich(rich),
+        };
         let origin = label_origin(
             side.clone(),
             position,
@@ -235,16 +244,20 @@ pub fn each_category_tick_label(
             (ls.label_offset_x, ls.label_offset_y),
             metrics,
         );
-        (text, position, label_rect(origin, metrics))
+        let empty = match &text {
+            TickText::Plain(plain) => plain.is_empty(),
+            TickText::Power(rich) => rich.segments.is_empty(),
+        };
+        (empty, position, label_rect(origin, metrics))
     };
     let stride = label_stride(categories.len(), ls.font_size, |index| placed(index).2);
     for index in (0..categories.len()).step_by(stride) {
-        let (text, position, bounds) = placed(index);
+        let (empty, position, bounds) = placed(index);
         let finite = [bounds.x, bounds.y, bounds.width, bounds.height]
             .into_iter()
             .all(f32::is_finite);
-        if !text.is_empty() && finite {
-            each(TickText::Plain(text), position);
+        if !empty && finite {
+            each(text_of(index), position);
         }
     }
 }
@@ -488,5 +501,113 @@ pub fn each_colorbar_tick_label(
         point_on_rect_side(axis_fraction(value, axis), &side, rect)
     }) {
         each(label.text.as_tick_text(), label.position);
+    }
+}
+
+/// The gap between the tick label band and a category group's bracket, and
+/// between the bracket and its header, as a share of the tick label font
+/// size, so a scaled config (an export at 2x) places them scaled.
+const GROUP_GAP: f32 = 0.5;
+/// How far a group bracket's ends turn toward the axis, and how far a
+/// bracket stops short of its run's edges, as shares of the font size.
+const GROUP_BRACKET_END: f32 = 0.33;
+const GROUP_BRACKET_INSET: f32 = 0.15;
+
+/// Place the category group headers of the categorical axis on `side`
+/// (`Top` or `Bottom`) under `plot` (#203): past the tick label band, a
+/// bracket along each run when it asks for one and the header centred on
+/// the run, moved by the groups' offset. Nothing for an axis without groups
+/// or without labels drawn.
+pub fn emit_category_groups(
+    axis: &AxisOptions,
+    side: Side,
+    plot: &RectF,
+    measure: &dyn MeasureText,
+    sink: &mut dyn crate::sink::Sink,
+) {
+    use crate::sink::{PlacedText, Slot, StrokeStyle, TextRef};
+    let (Some(categories), Some(groups)) = (&axis.categories, &axis.category_groups) else {
+        return;
+    };
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) || !matches!(side, Side::Top | Side::Bottom) {
+        return;
+    }
+    // The tick label band's far edge: the tallest drawn label past the
+    // ticks.
+    let mut band = 0.0f32;
+    each_category_tick_label(
+        axis,
+        categories,
+        side.clone(),
+        measure,
+        |value| value_to_screen(value, axis, side.clone(), plot),
+        |text, _| {
+            let metrics = match &text {
+                TickText::Plain(plain) => {
+                    measure.measure_plain(plain, &ls.label_font, ls.font_size)
+                }
+                TickText::Power(rich) => measure.measure_rich(rich),
+            };
+            band = band.max(metrics.height());
+        },
+    );
+    let below = side == Side::Bottom;
+    let edge = if below { plot.y + plot.height } else { plot.y };
+    let gap = GROUP_GAP * ls.font_size;
+    let inset = GROUP_BRACKET_INSET * ls.font_size;
+    let reach = axis.major_tick_length.max(0.0) + band + gap;
+    let [ox, oy] = groups.offset;
+    let bracket_y = if below { edge + reach } else { edge - reach } + oy;
+    let end = GROUP_BRACKET_END * ls.font_size;
+    let toward = if below { -end } else { end };
+    let index = |id: &str| categories.iter().position(|c| c.id == id);
+    for group in &groups.groups {
+        let (Some(first), Some(last)) = (index(&group.first), index(&group.last)) else {
+            continue;
+        };
+        let x = |v: f64| value_to_screen(v, axis, side.clone(), plot).0;
+        let (a, b) = (x(first as f64 - 0.5), x(last as f64 + 0.5));
+        let (x0, x1) = (a.min(b) + inset + ox, a.max(b) - inset + ox);
+        if !(x0.is_finite() && x1.is_finite() && bracket_y.is_finite()) {
+            continue;
+        }
+        if group.bracket {
+            // In the header's colour: the bracket is part of the header.
+            let style = StrokeStyle {
+                width: axis.line_width.max(1.0),
+                color: group.label.color,
+                dash: &[],
+                tag: "category_group",
+            };
+            sink.stroke(Slot::Above, [x0, bracket_y], [x1, bracket_y], &style);
+            sink.stroke(
+                Slot::Above,
+                [x0, bracket_y],
+                [x0, bracket_y + toward],
+                &style,
+            );
+            sink.stroke(
+                Slot::Above,
+                [x1, bracket_y],
+                [x1, bracket_y + toward],
+                &style,
+            );
+        }
+        let extents = measure.measure_rich(&group.label);
+        let baseline = if below {
+            bracket_y + gap + extents.ascent
+        } else {
+            bracket_y - gap - extents.descent
+        };
+        sink.text(
+            Slot::Above,
+            &PlacedText {
+                text: TextRef::Rich(&group.label),
+                origin: ((x0 + x1) / 2.0 - extents.width / 2.0, baseline),
+                extents,
+                rotation: None,
+            },
+        );
     }
 }
