@@ -553,10 +553,56 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
                  for LongLabels' right axis. They stay grabbable elsewhere",
         issue: "#205",
     },
+    Exclusion {
+        scene: "EnergyLevelsCu",
+        layer: "document",
+        element: "category_groups_bottom",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the headers are centred on their runs at fractional pixels; measured on \
+                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
+                 and the difference is glyph snapping at the two scales, as for the Power \
+                 labels with a mantissa",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "EnergyLevelsU",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "bounds * after the drag, * expected",
+        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+                 plot's edge, so a drag down moves only its lower edge: its bounds grow \
+                 instead of moving",
+        issue: "#205",
+    },
 ];
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
 const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "EnergyLevelsCu",
+        layer: "document",
+        element: "category_groups_bottom",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the headers are centred on their runs at fractional pixels; measured on \
+                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
+                 and the difference is glyph snapping at the two scales, as for the Power \
+                 labels with a mantissa",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "EnergyLevelsU",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "bounds * after the drag, * expected",
+        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+                 plot's edge, so a drag down moves only its lower edge: its bounds grow \
+                 instead of moving",
+        issue: "#205",
+    },
     Exclusion {
         scene: "CategoryAxis",
         layer: "base",
@@ -987,6 +1033,10 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Parallel => "Parallel",
         SceneKind::BrokenAxes => "BrokenAxes",
         SceneKind::EnergyLevels => "EnergyLevels",
+        SceneKind::EnergyLevelsAr => "EnergyLevelsAr",
+        SceneKind::EnergyLevelsCu => "EnergyLevelsCu",
+        SceneKind::EnergyLevelsU => "EnergyLevelsU",
+        SceneKind::EnergyLevelsArAll => "EnergyLevelsArAll",
     }
 }
 

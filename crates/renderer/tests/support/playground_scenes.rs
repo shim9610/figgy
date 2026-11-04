@@ -11,6 +11,17 @@
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
 
+// The NIST diagrams the gallery draws, shared with the playground (#205).
+#[allow(dead_code)]
+#[path = "../../examples/support/gallery.rs"]
+mod gallery;
+#[allow(dead_code)]
+#[path = "../../examples/support/grotrian_sets.rs"]
+mod grotrian_sets;
+#[allow(dead_code)]
+#[path = "../../examples/support/nist_csv.rs"]
+mod nist_csv;
+
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;
 use renderer::data_config::{
@@ -71,10 +82,15 @@ pub enum SceneKind {
     Parallel,
     BrokenAxes,
     EnergyLevels,
+    /// Ar I, Cu I and U I from the bundled NIST exports (#205).
+    EnergyLevelsAr,
+    EnergyLevelsCu,
+    EnergyLevelsU,
+    EnergyLevelsArAll,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 34] = [
+    pub const ALL: [SceneKind; 38] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -109,6 +125,10 @@ impl SceneKind {
         SceneKind::Parallel,
         SceneKind::BrokenAxes,
         SceneKind::EnergyLevels,
+        SceneKind::EnergyLevelsAr,
+        SceneKind::EnergyLevelsCu,
+        SceneKind::EnergyLevelsU,
+        SceneKind::EnergyLevelsArAll,
     ];
 
     pub fn label(self) -> &'static str {
@@ -147,6 +167,10 @@ impl SceneKind {
             SceneKind::Parallel => "Parallel coordinates",
             SceneKind::BrokenAxes => "Broken axes (two peaks)",
             SceneKind::EnergyLevels => "Energy levels (He I)",
+            SceneKind::EnergyLevelsAr => "Energy levels (Ar I)",
+            SceneKind::EnergyLevelsCu => "Energy levels (Cu I)",
+            SceneKind::EnergyLevelsU => "Energy levels (U I)",
+            SceneKind::EnergyLevelsArAll => "Energy levels (Ar I, every level)",
         }
     }
 
@@ -297,6 +321,29 @@ impl SceneKind {
                  broken energy axis, the continuum above the ionization limit and \
                  an inset of the 2p ³P° fine structure. Pick a level, an arrow or \
                  a label; drag a label or the group headers."
+            }
+            SceneKind::EnergyLevelsAr => {
+                "Ar I from the NIST exports: the 3p⁵ 4s and 4p manifolds with 5s, \
+                 3d and 5p under the two ion cores, Paschen labels, the 4p → 4s \
+                 lines of plasma diagnostics, and 3d and 5p as host-declared bands. \
+                 Pick a level, a band or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsCu => {
+                "Cu I below 7 eV: the doublets beside the 3d⁹4s4p quartets drawn as \
+                 bands, the 324.8 / 327.4 nm resonance lines and the 510.6 / 578.2 nm \
+                 copper vapour laser lines. Pick a level or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsU => {
+                "U I in cm⁻¹ by J and parity, from the NIST Handbook levels, with \
+                 lines the host computes from E1-allowed pairs (among them 591.5 nm \
+                 of laser isotope separation) and a thin piece for the limit. Pick a \
+                 level or a line; zoom the J axis."
+            }
+            SceneKind::EnergyLevelsArAll => {
+                "All 503 Ar I levels of the NIST export in twenty-five term \
+                 columns: the Rydberg members from n = 8 to the limit as one band \
+                 per column, the low members labelled, crowds collapsed to brackets. \
+                 Pick a level or a band; zoom into a column."
             }
         }
     }
@@ -495,6 +542,10 @@ pub fn build(
         SceneKind::Parallel => parallel(r),
         SceneKind::BrokenAxes => broken_axes(r),
         SceneKind::EnergyLevels => energy_levels(r),
+        SceneKind::EnergyLevelsAr => grotrian_scene(grotrian_sets::argon()),
+        SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
+        SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
+        SceneKind::EnergyLevelsArAll => grotrian_scene(grotrian_sets::argon_all()),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -3808,6 +3859,27 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// singlets beside triplets under group headers, the ground state below a
 /// Continuous break, the continuum above the limit and an inset of the
 /// resolved 2p ³P° multiplet. DataLess: nothing is registered.
+/// One of the shared NIST diagrams (`examples/support/grotrian_sets.rs`)
+/// as a scene, its bands fitted with `auto_layout` as the gallery does.
+fn grotrian_scene(
+    built: grotrian_sets::Result<(renderer::Chart, Vec<SeriesConfig>)>,
+) -> Result<CartesianScene, FiggyError> {
+    // The exports are bundled, so a parse failure is a defect of the
+    // repository's data: it is reported and the scene is refused.
+    let (chart, series) = built.map_err(|e| {
+        eprintln!("bundled NIST exports: {e}");
+        FiggyError::InvalidConfig {
+            field: "grotrian_sets",
+            reason: "a bundled NIST export did not parse",
+        }
+    })?;
+    let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+    Ok(CartesianScene {
+        config: renderer::layout::auto_layout(chart.config(), &measure),
+        series,
+    })
+}
+
 fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category, CategoryGroup};
     use renderer::energy_levels::{
