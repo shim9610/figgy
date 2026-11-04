@@ -74,6 +74,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
         return fail("logarithmic axis bounds must be positive");
     }
+    if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
+        return fail("probability axis bounds must lie strictly between 0 and 1");
+    }
     Ok(())
 }
 
@@ -101,6 +104,12 @@ impl Config {
             return Err(ConfigError::chart(
                 "colorbar.axis",
                 "a colourbar axis cannot be categorical",
+            ));
+        }
+        if colorbar_axis.is_some_and(|axis| matches!(axis.scale, AxisScale::Probability(_))) {
+            return Err(ConfigError::chart(
+                "colorbar.axis",
+                "a colourbar axis is linear or logarithmic: not a probability axis",
             ));
         }
         let axes = [

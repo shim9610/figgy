@@ -373,7 +373,13 @@ fn contour_level_distance_at(
     if (!vec2_f32_is_finite(q)) {
         return start;
     }
-    for (var step = 0u; step < CONTOUR_POLAR_FOOT_STEPS; step = step + 1u) {
+    // The bound is read from the transform rather than written as the
+    // constant, so a shader compiler keeps the loop rolled instead of
+    // copying its body into each caller (the paint, the pick and the
+    // highlight). Only a polar chart gets here, so the count is the
+    // constant's.
+    let steps = select(0u, CONTOUR_POLAR_FOOT_STEPS, transform.polar_angle.x >= 0.5);
+    for (var step = 0u; step < steps; step = step + 1u) {
         let lookup = field_lookup(chart_t + q * t_per_px, LATTICE_SAMPLES);
         if (!lookup.hit) {
             break;

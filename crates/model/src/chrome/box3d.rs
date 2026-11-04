@@ -19,11 +19,13 @@ fn fraction(axis: &AxisOptions, value: f64) -> Option<f64> {
     let f = match axis.scale {
         AxisScale::Logarithmic => {
             let (lo, hi) = crate::layout::guarded_log_range(axis.min, axis.max);
-            crate::layout::span_fraction(value, lo, hi, true)
+            crate::layout::span_fraction(value, lo, hi, &AxisScale::Logarithmic)
         }
-        _ => {
+        // A 3D chart refuses a probability axis (#209).
+        AxisScale::Probability(_) => None,
+        AxisScale::Linear => {
             let (lo, hi) = axis.data_range();
-            crate::layout::span_fraction(value, lo, hi, false)
+            crate::layout::span_fraction(value, lo, hi, &AxisScale::Linear)
         }
     }?;
     let f = if axis.inverted { 1.0 - f } else { f };

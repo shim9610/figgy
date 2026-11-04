@@ -144,6 +144,9 @@ pub(super) fn axis_fit_stamp(axis: &AxisOptions) -> (u8, u64, u64) {
     let scale = match axis.scale {
         AxisScale::Linear => 0,
         AxisScale::Logarithmic => 1,
+        AxisScale::Probability(crate::config::ProbabilityScale::Normal) => 2,
+        AxisScale::Probability(crate::config::ProbabilityScale::Weibull) => 3,
+        AxisScale::Probability(crate::config::ProbabilityScale::Logistic) => 4,
     };
     (scale, axis.min.to_bits(), axis.max.to_bits())
 }

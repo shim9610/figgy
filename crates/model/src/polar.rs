@@ -359,6 +359,9 @@ impl PolarOptions {
         if config.left_y.categories.is_some() {
             return Err("the polar radius axis (left_y) cannot be categorical");
         }
+        if matches!(config.left_y.scale, AxisScale::Probability(_)) {
+            return Err("the polar radius axis (left_y) is linear or logarithmic");
+        }
         if !config.overlays.is_empty() {
             return Err("polar charts have no overlay layers");
         }
@@ -512,6 +515,12 @@ mod tests {
         assert_eq!(
             c.validate_polar(),
             Err("the polar radius axis (left_y) cannot be categorical")
+        );
+        let mut c = config.clone();
+        c.left_y.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        assert_eq!(
+            c.validate_polar(),
+            Err("the polar radius axis (left_y) is linear or logarithmic")
         );
         let mut c = config.clone();
         c.overlays.push(crate::layer::OverlayLayer::default());
