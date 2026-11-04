@@ -187,8 +187,8 @@ impl SceneKind {
                  filled pattern and a marker rose with arc segments; pick the markers."
             }
             SceneKind::CategoryAxis => {
-                "AxisOptions.categories on X: a label per category, thinned when they \
-                 crowd (one is long). Drag the tick labels; pick the markers."
+                "AxisOptions.categories on X: a label per category, staggered over two \
+                 rows when they crowd (one is long). Drag the tick labels; pick the markers."
             }
             SceneKind::BigData => {
                 "Up to 100 million resident points as a line, markers or both, every one \
@@ -1353,8 +1353,12 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             }),
         ),
     ];
+    // The crowded labels take two rows (#205): fit the bands to them, as a
+    // host does with `auto_layout`.
+    let config = with_legend(chart.config().clone(), &series);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
     Ok(CartesianScene {
-        config: with_legend(chart.config().clone(), &series),
+        config: renderer::layout::auto_layout(&config, &measure),
         series,
     })
 }
@@ -3996,7 +4000,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.04,
+        gap: 0.015,
         mark: renderer::config::BreakMark::default(),
         // No piece frames: a frame on a half pixel blurs at 1x (#205).
         frame_each_panel: false,

@@ -1947,24 +1947,34 @@ pub(super) fn route_selection_boxes(
     routed
 }
 
-/// Whether panel `index` of a prepared frame is nested in an earlier
-/// panel's data area: its rect lies inside that data area and differs from
-/// that panel's own rect (an inset subplot, #203). Overlay and member panels
+/// Panel `index`'s panel rect and data area, for
+/// [`crate::layout::inset_paint_order`].
+fn panel_rects(prepared: &[PreparedItem], index: usize) -> (Rect, Rect) {
+    prepared.get(index).map_or(
+        (
+            Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+        ),
+        |item| (item.view.panel_rect, item.data_area),
+    )
+}
+
+/// Whether panel `index` of a prepared frame is nested in another panel's
+/// data area: its rect lies inside that data area and differs from that
+/// panel's own rect (an inset subplot, #203). Overlay and member panels
 /// share their owner's rect and are never nested.
 pub(super) fn nested_panel(prepared: &[PreparedItem], index: usize) -> bool {
-    let Some(item) = prepared.get(index) else {
-        return false;
-    };
-    let rect = item.view.panel_rect;
-    let inside = |outer: &Rect| {
-        rect.x >= outer.x
-            && rect.y >= outer.y
-            && rect.x.saturating_add(rect.width) <= outer.x.saturating_add(outer.width)
-            && rect.y.saturating_add(rect.height) <= outer.y.saturating_add(outer.height)
-    };
-    prepared[..index]
-        .iter()
-        .any(|outer| outer.view.panel_rect != rect && inside(&outer.data_area))
+    crate::layout::inset_parent(prepared.len(), |i| panel_rects(prepared, i), index).is_some()
 }
 
 /// The document's annotation layer is rasterized once, on the base view; its
@@ -3239,9 +3249,35 @@ impl Renderer {
         // over them, so it covers its parent's data, decoration and
         // annotations.
         let nested = |index: usize| nested_panel(prepared, index);
+        let count = prepared.len();
         for tier in [false, true] {
-            for slot in super::composite::FRAME_SLOTS {
-                for (index, item) in prepared.iter().enumerate() {
+            // The panels of a group draw slot by slot, so a parent's
+            // decoration lies over its overlays' data. An inset draws as one
+            // unit, all its slots before the next one (#205): an inset over
+            // another covers its chrome as well as its data, as a pick finds.
+            let slot_major = (!tier).then(|| {
+                super::composite::FRAME_SLOTS
+                    .into_iter()
+                    .flat_map(move |slot| (0..count).map(move |index| (slot, index)))
+            });
+            // Insets in their tree order (#205): an inset inside another is
+            // drawn over it, and a later sibling over both, as a pick finds.
+            let panel_major = tier.then(|| {
+                crate::layout::inset_paint_order(count, |i| panel_rects(prepared, i)).flat_map(
+                    |index| {
+                        super::composite::FRAME_SLOTS
+                            .into_iter()
+                            .map(move |slot| (slot, index))
+                    },
+                )
+            });
+            for (slot, index) in slot_major
+                .into_iter()
+                .flatten()
+                .chain(panel_major.into_iter().flatten())
+            {
+                {
+                    let item = &prepared[index];
                     if nested(index) != tier {
                         continue;
                     }

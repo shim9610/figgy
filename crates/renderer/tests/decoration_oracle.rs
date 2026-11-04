@@ -562,10 +562,32 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         reason: "the labels under their titles, as in I2",
         issue: "#44",
     },
+    Exclusion {
+        scene: "CategoryAxis",
+        layer: "base",
+        element: "tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
+        reason: "the scene's `auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
+                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
+                 for LongLabels' right axis. They stay grabbable elsewhere",
+        issue: "#205",
+    },
 ];
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
 const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "CategoryAxis",
+        layer: "base",
+        element: "tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
+        reason: "`auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
+                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
+                 for LongLabels' right axis. They stay grabbable elsewhere",
+        issue: "#205",
+    },
     Exclusion {
         scene: "LongLabels",
         layer: "base",

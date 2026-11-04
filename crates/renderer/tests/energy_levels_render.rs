@@ -788,6 +788,94 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
     }
 }
 
+// #205: insets draw as units in their tree order. An inset listed before
+// the inset it is nested in is still drawn over it, a later sibling covers
+// both, and the pointer goes to the inset drawn on top.
+#[test]
+fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    // A, made large enough to hold an inset of its own.
+    chart.config_mut().chart_area.0.width = 640;
+    chart.config_mut().chart_area.0.height = 480;
+    let parent = chart.config().data_area().unwrap().0;
+    chart.config_mut().subplots[0].config.chart_area = ChartArea(Rect {
+        x: parent.x + parent.width - 270,
+        y: parent.y + 10,
+        width: 260,
+        height: 200,
+    });
+    let a = chart.config().subplots[0].config.clone();
+    let a_data = a.data_area().unwrap().0;
+    let filled = |area: Rect, fill: Color| {
+        let mut inset = a.clone();
+        inset.chart_area = ChartArea(area);
+        inset.plot_background = Some(fill);
+        renderer::Subplot {
+            config: inset,
+            series: Vec::new(),
+            link_x: None,
+            link_y: None,
+        }
+    };
+    const GREEN: Color = Color::from_rgb8(190, 235, 190);
+    const CREAM: Color = Color::from_rgb8(255, 236, 190);
+    // N, nested in A's data area, listed first.
+    let nested = filled(
+        Rect {
+            x: a_data.x + 1,
+            y: a_data.y + 1,
+            width: a_data.width - 2,
+            height: a_data.height - 2,
+        },
+        GREEN,
+    );
+    let n_data = nested.config.data_area().unwrap().0;
+    // B, a sibling of A, over N's lower-left corner.
+    let b_area = Rect {
+        x: n_data.x + n_data.width / 2 - 160,
+        y: n_data.y - 20,
+        width: 160,
+        height: 120,
+    };
+    let sibling = filled(b_area, CREAM);
+    let b_data = sibling.config.data_area().unwrap().0;
+    chart.config_mut().subplots.insert(0, nested);
+    chart.config_mut().subplots.push(sibling);
+    let list = [series("he", records()), inset_series()];
+    // Points in N alone, in N under B, and in B's plot.
+    let n_only = (n_data.x + n_data.width - 6, n_data.y + 6);
+    let under_b = (b_data.x + b_data.width - 6, n_data.y + n_data.height - 6);
+    assert!(
+        under_b.0 > n_data.x && under_b.1 > b_data.y,
+        "{n_data:?} {b_data:?}"
+    );
+    let config = chart.config();
+    let at = |p: (u32, u32)| config.nested_subplot_at(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
+    let a_area = chart.config().subplots[1].config.chart_area.0;
+    assert!(a_area.within(&parent), "{a_area:?} in {parent:?}");
+    assert_eq!(at(n_only), Some(0), "N over A");
+    assert_eq!(at(under_b), Some(2), "B over N");
+    let a_only = (a_data.x + a_data.width - 1, a.chart_area.0.y + 2);
+    assert_eq!(at(a_only), Some(1), "A outside N");
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let s = |p: (u32, u32)| ((p.0 as f32 * scale) as u32, (p.1 as f32 * scale) as u32);
+        let colour = |p: (u32, u32)| {
+            let (x, y) = s(p);
+            pixel(&img, x, y).to_vec()
+        };
+        assert_eq!(colour(n_only)[..3], [190, 235, 190], "{scale}x N over A");
+        assert_eq!(colour(under_b)[..3], [255, 236, 190], "{scale}x B over N");
+    }
+}
+
 /// The anchor space and text measure of `chart`'s panel at 1x.
 fn layout_of(
     chart: &Chart,

@@ -2064,30 +2064,49 @@ impl LevelPlacement<'_> {
 }
 
 impl crate::config::Config {
-    /// The subplot nested in this chart's data area whose chart area holds
-    /// the point `(x, y)` (in this config's pixels), the last such one when
-    /// several do: an inset (#203). A pointer there belongs to that
-    /// subplot, whatever the active layer. `None` when no inset holds it.
+    /// The subplot nested in this chart's data area, or in an inset
+    /// nested there, whose chart area holds the point `(x, y)` (in this
+    /// config's pixels): an inset (#203). When several hold it, the one
+    /// drawn on top answers, the last of [`crate::layout::inset_paint_order`]
+    /// (#205). A pointer there belongs to that subplot, whatever the active
+    /// layer. `None` when no inset holds it.
     pub fn nested_subplot_at(&self, x: f32, y: f32) -> Option<usize> {
-        let plot = self.data_area().ok()?.0;
-        let inside = |r: &crate::layout::Rect, x: f32, y: f32| {
-            x >= r.x as f32
-                && y >= r.y as f32
-                && x < (r.x + r.width) as f32
-                && y < (r.y + r.height) as f32
+        use crate::layout::{Rect, inset_paint_order, inset_parent};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
         };
-        self.subplots
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, subplot)| {
-                let area = subplot.config.chart_area.0;
-                let nested = area.x >= plot.x
-                    && area.y >= plot.y
-                    && area.x + area.width <= plot.x + plot.width
-                    && area.y + area.height <= plot.y + plot.height;
-                (nested && inside(&area, x, y)).then_some(index)
+        // Panel 0 is this chart, panel `i + 1` subplot `i`.
+        let rects = |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        let count = self.subplots.len() + 1;
+        let root = |mut index: usize| {
+            while let Some(parent) = inset_parent(count, rects, index) {
+                index = parent;
+            }
+            index
+        };
+        inset_paint_order(count, rects)
+            .filter(|&index| {
+                let area = rects(index).0;
+                root(index) == 0
+                    && x >= area.x as f32
+                    && y >= area.y as f32
+                    && x < (area.x + area.width) as f32
+                    && y < (area.y + area.height) as f32
             })
+            .last()
+            .map(|index| index - 1)
     }
 }
 
