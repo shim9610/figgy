@@ -3916,13 +3916,23 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ],
         ..EnergyLevelSeries::default()
     };
+    // 388.9 nm leaves 3p ³P° across the inset window's edge: its label
+    // sits on the other side of the arrow.
+    if let Some(t) = series.transitions.iter_mut().find(|t| t.id == "388.9") {
+        t.label_offset = [-34.0, 0.0];
+    }
     series.style.level.color = Color::from_rgb8(34, 52, 88);
     series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
 
     let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
     config.legend.visible = false;
+    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
     config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_y = false;
+    config.top_x.tick = renderer::config::TickVisibility::None;
+    config.right_y.tick = renderer::config::TickVisibility::None;
     config.chart_area = ChartArea(Rect {
         x: 0,
         y: 0,
@@ -3978,21 +3988,24 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ],
         offset: [0.0; 2],
     });
-    config.bottom_x.out_margin = 90.0;
-    config.left_y.min = -0.6;
-    config.left_y.max = 25.6;
+    config.bottom_x.out_margin = 72.0;
+    // The ground state keeps a thin strip below the break: the Continuous
+    // break shares the height by value span.
+    config.left_y.min = -0.15;
+    config.left_y.max = 25.2;
+    config.left_y.minor_count = 1;
     config.left_y.breaks = Some(AxisBreaks {
-        ranges: vec![AxisBreak::new(0.6, 19.4)],
+        ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
         gap: 0.04,
         mark: renderer::config::BreakMark::default(),
-        frame_each_panel: true,
+        frame_each_panel: false,
     });
     series
         .write_continuum(
             &mut config.annotations,
             "he",
-            25.6,
+            25.2,
             Color::from_rgba8(80, 100, 220, 36),
         )
         .map_err(|reason| FiggyError::InvalidConfig {
@@ -4019,7 +4032,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.grid.show_major_x = false;
     inset.grid.show_minor_x = false;
     inset.grid.show_minor_y = false;
-    inset.plot_background = Some(Color::from_rgb8(252, 252, 255));
+    inset.grid.show_major_y = false;
+    // Opaque, so the parent's annotations stop at the inset (#203).
+    inset.plot_background = Some(Color::WHITE);
     inset.bottom_x.categories = Some(vec![{
         let mut c = Category::new("3P*", "3P*");
         c.rich_label = tex("3", "P", true);
@@ -4032,15 +4047,14 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.left_y.min = 20.964_04;
     inset.left_y.max = 20.964_26;
     inset.left_y.label_style.font_size = 10.0;
-    inset.left_y.label_style.significant_digits = 8;
+    inset.left_y.label_style.significant_digits = 6;
     for axis in [&mut inset.bottom_x, &mut inset.left_y] {
         axis.minor_count = 0;
     }
     for axis in [&mut inset.top_x, &mut inset.right_y] {
-        axis.line_visible = false;
         axis.tick = renderer::config::TickVisibility::None;
     }
-    inset.left_y.major_spacing = 0.000_05;
+    inset.left_y.major_spacing = 0.000_1;
     let window_top = 21.6;
     config.subplots.push(renderer::Subplot {
         config: inset,
@@ -4060,15 +4074,6 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             },
         )
         .unwrap_or_default();
-    // A faint wash marks the window as the region the inset magnifies.
-    let mut marker = marker;
-    if let Some(Annotation {
-        kind: AnnotationKind::Rect { style, .. },
-        ..
-    }) = marker.first_mut()
-    {
-        style.fill = Some(Color::from_rgba8(120, 128, 140, 40));
-    }
     config.annotations.items.extend(marker);
 
     let mut fine_style = series.style.clone();

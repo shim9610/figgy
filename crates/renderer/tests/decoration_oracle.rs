@@ -242,22 +242,12 @@ const EXCLUSIONS: &[Exclusion] = &[
     },
     Exclusion {
         scene: "EnergyLevels",
-        layer: "base",
-        element: "axis_left",
-        inv: Inv::I2,
-        detail: "*hit another element that has no ink there*axis_right*",
-        reason: "the broken energy axis's piece frame (#200) runs under the opposite \
-                 axis's inward tick at the gap edge, as in BrokenAxes",
-        issue: "#38",
-    },
-    Exclusion {
-        scene: "EnergyLevels",
         layer: "annotations",
         element: "annotation_1",
         inv: Inv::I2,
         detail: "*points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the inset window's translucent wash over transition arrows crossing the 2p \
-                 level: three inks at one pixel, and the decoder resolves two at most",
+        reason: "the inset window is an outline-only rectangle, grabbed anywhere inside as \
+                 every shape annotation is, while the oracle's shapes are filled",
         issue: "#203",
     },
     Exclusion {
