@@ -529,23 +529,30 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
-        // Point vectors: one arrow per index-aligned row of x, y, u, v and the
-        // colour column. Grid vectors: one arrow per cell of the smallest
-        // common extent of the u, v and colour grids.
+        // Point vectors: one arrow per index-aligned row of x, y, u, v, on a
+        // 3D panel z and w, and the colour column. Grid vectors: one arrow
+        // per cell of the smallest common extent of the u, v and colour
+        // grids.
         DataRenderType::Vector { components, style } => {
             let color_column = match style.color_map.as_ref() {
                 Some(crate::data_config::VectorColorMap::Column(column)) => Some(len(column)),
                 _ => None,
             };
             match components {
-                crate::data_config::VectorComponents::Points { u, v } => {
-                    let mut lengths = [x, y, len(u), len(v), 0];
-                    let used = if let Some(color) = color_column {
-                        lengths[4] = color;
-                        5
-                    } else {
-                        4
-                    };
+                crate::data_config::VectorComponents::Points { u, v, w } => {
+                    // On a 3D panel the anchor height and the z component
+                    // bound the draw too (#211).
+                    let three_d = drawn_z.map(|z| (len(z), w.as_deref().map_or(0, len)));
+                    let mut lengths = [x, y, len(u), len(v), 0, 0, 0];
+                    let mut used = 4;
+                    for value in three_d
+                        .into_iter()
+                        .flat_map(|(z, w)| [z, w])
+                        .chain(color_column)
+                    {
+                        lengths[used] = value;
+                        used += 1;
+                    }
                     let (count, truncated) = paired(&lengths[..used]);
                     SeriesDrawInfo {
                         drawn_count: count,

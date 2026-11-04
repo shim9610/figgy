@@ -272,7 +272,7 @@ pub(super) fn build_fit_token_from_state(
         }
         // A `Data`-scaled point vector's tips depend on its components, so
         // they stamp the token too.
-        if let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+        if let Some((crate::data_config::VectorComponents::Points { u, v, .. }, style)) =
             extract_vector(&item.render_type)
             && matches!(style.scale, crate::data_config::VectorScale::Data { .. })
         {
@@ -473,7 +473,7 @@ pub(super) fn begin_series_fit_extent_from_pool(
                 crate::gpu_extent::GpuExtentError::Internal {
                     invariant: "the tips mode comes from a Data-scaled point vector",
                 };
-            let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+            let Some((crate::data_config::VectorComponents::Points { u, v, .. }, style)) =
                 extract_vector(&series.render_type)
             else {
                 return Err(TIPS);

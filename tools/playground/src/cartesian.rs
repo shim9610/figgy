@@ -1669,7 +1669,7 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
     let DataRenderType::Vector {
-        components: VectorComponents::Points { u, v },
+        components: VectorComponents::Points { u, v, .. },
         style,
     } = t
     else {

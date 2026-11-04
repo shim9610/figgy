@@ -60,6 +60,9 @@ pub struct SeriesLayers<'a> {
     /// A scatter series on a 3D chart (#132), drawn as `line_3d` is, after
     /// every series' 3D line.
     pub scatter_3d: Option<ColumnScatterLayer<'a>>,
+    /// A point vector series on a 3D chart (#211), drawn as `line_3d` is,
+    /// before every series' 3D line.
+    pub vector_3d: Option<vector::ColumnVectorLayer<'a>>,
     pub selected_bars: Vec<ColumnBarSelectionLayer<'a>>,
     pub selected_fields: Vec<ColumnFieldSelectionLayer<'a>>,
     pub picked: Vec<ColumnPickRingLayer<'a>>,
@@ -98,6 +101,7 @@ impl SeriesLayers<'_> {
             scatter: None,
             line_3d: None,
             scatter_3d: None,
+            vector_3d: None,
             selected_bars: Vec::new(),
             selected_fields: Vec::new(),
             picked: Vec::new(),
@@ -251,24 +255,7 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     // Streamline arrowheads draw indirect: one instance per arc slot, the
     // count the arc scan wrote on the GPU, group 3 the slots' arc data.
     if let Some(v) = series.vector.as_ref() {
-        match v.indirect {
-            Some((args, slots)) => {
-                pass.set_pipeline(v.pipeline);
-                pass.set_bind_group(0, v.transform_bg, &[]);
-                pass.set_bind_group(1, &v.style_bg, &[]);
-                pass.set_bind_group(2, &v.vector_bg, &[]);
-                pass.set_bind_group(3, slots, &[]);
-                pass.draw_indirect(args, 0);
-            }
-            None if v.count > 0 => {
-                pass.set_pipeline(v.pipeline);
-                pass.set_bind_group(0, v.transform_bg, &[]);
-                pass.set_bind_group(1, &v.style_bg, &[]);
-                pass.set_bind_group(2, &v.vector_bg, &[]);
-                pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
-            }
-            None => {}
-        }
+        draw_vector_layer(pass, v);
     }
 
     // Stems first (#206): under the error bars, the line and the markers.
@@ -488,6 +475,33 @@ pub(crate) fn issue_series_regions(
     }
 }
 
+/// One vector series' arrows: direct, one instance per arrow, or indirect
+/// for the streamline arrowheads (group 3 their arc slot data); a 3D
+/// series' arrows (#211) bind the camera as group 3.
+fn draw_vector_layer(pass: &mut wgpu::RenderPass<'_>, v: &vector::ColumnVectorLayer<'_>) {
+    match v.indirect {
+        Some((args, slots)) => {
+            pass.set_pipeline(v.pipeline);
+            pass.set_bind_group(0, v.transform_bg, &[]);
+            pass.set_bind_group(1, &v.style_bg, &[]);
+            pass.set_bind_group(2, &v.vector_bg, &[]);
+            pass.set_bind_group(3, slots, &[]);
+            pass.draw_indirect(args, 0);
+        }
+        None if v.count > 0 => {
+            pass.set_pipeline(v.pipeline);
+            pass.set_bind_group(0, v.transform_bg, &[]);
+            pass.set_bind_group(1, &v.style_bg, &[]);
+            pass.set_bind_group(2, &v.vector_bg, &[]);
+            if let Some(camera) = &v.view3d {
+                pass.set_bind_group(3, &camera.bind_group, &[]);
+            }
+            pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
+        }
+        None => {}
+    }
+}
+
 pub(crate) fn issue_series_surfaces(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
@@ -505,9 +519,14 @@ pub(crate) fn issue_series_surfaces(
             super::surface_mesh::issue_surface_layer(pass, surface);
         }
     }
-    // The 3D lines and markers (#132), depth tested against the surfaces
-    // and each other: every series' line, then every series' markers, as
-    // the flat bodies order them.
+    // The 3D arrows (#211), lines and markers (#132), depth tested against
+    // the surfaces and each other: every series' arrows, then lines, then
+    // markers, as the flat bodies order them (arrows under lines).
+    for s in series_list {
+        if let Some(vector) = &s.vector_3d {
+            draw_vector_layer(pass, vector);
+        }
+    }
     for s in series_list {
         if let Some(line) = &s.line_3d {
             draw_line_layer(pass, line);

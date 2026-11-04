@@ -2313,6 +2313,187 @@ fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() 
     }
 }
 
+/// SSOT invalidation of a 3D point vector (#211). Each series edit (`w`,
+/// `z_column`, the scale, the pivot, the widths, the head, `min_length_px`
+/// and the colour map) is a data declaration change with no view replay
+/// whose first frame matches a fresh renderer's, is visible, re-uploads
+/// nothing and is stable when declared again. Each camera, `right_y` and
+/// `picked_data` edit is a config change whose first frame matches a fresh
+/// renderer's, is visible and keeps the series' scratch: its sources are
+/// the same allocation, so group 2 was not rebuilt.
+#[test]
+fn vector_3d_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    };
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline_with_colorbar();
+    config.legend.visible = false;
+    config.set_view_3d(Some(crate::view3d::View3d::default()));
+    let mut series = declaration("s", "x", "a");
+    series.z_column = Some("zc".into());
+    series.render_type = DataRenderType::Vector {
+        components: VectorComponents::Points {
+            u: "u".into(),
+            v: "v".into(),
+            w: Some("w".into()),
+        },
+        style: VectorStyle {
+            color: Color::new(0.8, 0.1, 0.1, 1.0),
+            width_px: 2.0,
+            scale: VectorScale::Data { factor: 0.15 },
+            pivot: VectorPivot::Tail,
+            head_length_px: 8.0,
+            head_width_px: 7.0,
+            min_length_px: 0.0,
+            color_map: None,
+        },
+    };
+    let add_columns = |r: &mut Renderer| {
+        let column = |v: [f32; 8]| crate::Column { data: v.to_vec() };
+        for (id, data) in [
+            ("zc", [0.3, 0.5, 0.7, 0.4, 0.6, 0.3, 0.5, 0.4]),
+            ("zc2", [0.6, 0.3, 0.4, 0.7, 0.3, 0.5, 0.6, 0.7]),
+            ("u", [1.0, -0.5, 0.2, 0.8, -1.0, 0.3, 0.5, 0.1]),
+            ("v", [0.2, 1.0, -0.8, 0.1, 0.4, -0.2, 0.6, 0.3]),
+            ("w", [0.5, -0.3, 0.9, -1.0, 0.2, 0.7, -0.4, 0.1]),
+            ("w2", [-0.6, 0.8, -0.2, 0.4, -0.9, 0.1, 0.5, -0.3]),
+        ] {
+            r.add_column(id, &column(data)).unwrap();
+        }
+    };
+    // The fixture registers a flat line series, which a 3D chart refuses:
+    // register flat, declare the arrows, then turn the chart 3D.
+    let fixture_with_arrows = |c: &Config, s: &SeriesConfig| {
+        let mut flat = c.clone();
+        flat.set_view_3d(None);
+        let (mut r, id) = fixture(&flat, true, false);
+        add_columns(&mut r);
+        r.set_chart_series(id, vec![s.clone()]).unwrap();
+        r.set_chart_config(id, c.clone()).unwrap();
+        (r, id)
+    };
+    let (mut r, id) = fixture_with_arrows(&config, &series);
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+
+    type SeriesEdit = fn(&mut SeriesConfig);
+    fn style(series: &mut SeriesConfig) -> &mut VectorStyle {
+        match &mut series.render_type {
+            DataRenderType::Vector { style, .. } => style,
+            _ => unreachable!(),
+        }
+    }
+    let series_edits: [(&str, SeriesEdit); 10] = [
+        ("w", |s| {
+            if let DataRenderType::Vector {
+                components: VectorComponents::Points { w, .. },
+                ..
+            } = &mut s.render_type
+            {
+                *w = Some("w2".into());
+            }
+        }),
+        ("z_column", |s| s.z_column = Some("zc2".into())),
+        ("data factor", |s| {
+            style(s).scale = VectorScale::Data { factor: 0.25 }
+        }),
+        ("pixels", |s| {
+            style(s).scale = VectorScale::Pixels { px_per_unit: 40.0 }
+        }),
+        ("pivot", |s| style(s).pivot = VectorPivot::Middle),
+        ("width", |s| style(s).width_px = 4.0),
+        ("head length", |s| style(s).head_length_px = 14.0),
+        ("head width", |s| style(s).head_width_px = 12.0),
+        ("min length", |s| style(s).min_length_px = 30.0),
+        ("colour map", |s| {
+            style(s).color_map = Some(VectorColorMap::Column("zc".into()))
+        }),
+    ];
+    for (name, apply) in series_edits {
+        apply(&mut series);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a render_type edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with_arrows(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
+        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+    }
+
+    let config_edits: [(&str, fn(&mut Config)); 7] = [
+        ("orbit_view", |c| {
+            c.orbit_view(40.0, 15.0);
+        }),
+        ("zoom_view", |c| {
+            c.zoom_view(1.4);
+        }),
+        ("projection", |c| {
+            c.view_3d_mut().unwrap().projection = crate::view3d::Projection3d::Perspective;
+        }),
+        ("box_aspect", |c| {
+            c.view_3d_mut().unwrap().box_aspect = Some([1.0, 0.7, 0.5]);
+        }),
+        ("right_y range", |c| {
+            c.right_y.min = 0.0;
+            c.right_y.max = 1.5;
+        }),
+        ("right_y scale", |c| {
+            c.right_y.min = 0.1;
+            c.right_y.scale = AxisScale::Logarithmic;
+        }),
+        ("picked_data", |c| {
+            c.picked_data = Some(crate::DataSelectionsConfig {
+                refs: vec![crate::PickedDataRef::Point {
+                    source_id: None,
+                    series_id: "s".into(),
+                    point_index: 2,
+                }],
+                ..crate::DataSelectionsConfig::default()
+            });
+        }),
+    ];
+    for (name, apply) in config_edits {
+        let sources = Arc::clone(&r.vector_cache["s"].sources);
+        apply(&mut config);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with_arrows(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert!(
+            Arc::ptr_eq(&sources, &r.vector_cache["s"].sources),
+            "{name}: the vector scratch is reused"
+        );
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+}
+
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);

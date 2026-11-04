@@ -1540,6 +1540,7 @@ fn arrows(
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style: renderer::data_config::VectorStyle {
                 color: RED,
@@ -1817,6 +1818,7 @@ fn arrows_ringed() -> SeriesConfig {
             components: VectorComponents::Points {
                 u: "ring_u".into(),
                 v: "ring_v".into(),
+                w: None,
             },
             style: VectorStyle {
                 color: RED,

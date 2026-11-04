@@ -544,6 +544,48 @@ pub(super) struct PreparedVectorLayer {
     pub(super) count: u32,
     /// Streamline arrowheads: the indirect arguments and the arc slot group.
     pub(super) indirect: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// A 3D chart's arrows (#211): the camera group.
+    pub(super) view3d: Option<data_render::surface_mesh::View3dBinding>,
+}
+
+impl PreparedVectorLayer {
+    fn own(layer: data_render::vector::ColumnVectorLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg,
+            vector_bg: layer.vector_bg,
+            charge: layer.charge,
+            count: layer.count,
+            indirect: layer
+                .indirect
+                .map(|(buffer, slots)| (buffer.clone(), slots.clone())),
+            view3d: layer.view3d,
+        }
+    }
+
+    /// The borrowed layer, with `transform` in place of its own when given
+    /// (a `Panels` piece, #200); a 3D layer keeps its own.
+    fn borrow_with<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::vector::ColumnVectorLayer<'a> {
+        data_render::vector::ColumnVectorLayer {
+            pipeline: &self.pipeline,
+            transform_bg: transform
+                .filter(|_| self.view3d.is_none())
+                .unwrap_or(&self.transform_bg),
+            style_bg: self.style_bg.clone(),
+            vector_bg: self.vector_bg.clone(),
+            charge: Arc::clone(&self.charge),
+            count: self.count,
+            indirect: self
+                .indirect
+                .as_ref()
+                .map(|(buffer, slots)| (buffer, slots)),
+            view3d: self.view3d.clone(),
+        }
+    }
 }
 
 /// Owned contour layer. The group-2 tables, the lump charge and the label state
@@ -707,6 +749,7 @@ pub(super) struct PreparedSeries {
     pub(super) scatter: Option<PreparedScatterLayer>,
     pub(super) line_3d: Option<PreparedLineLayer>,
     pub(super) scatter_3d: Option<PreparedScatterLayer>,
+    pub(super) vector_3d: Option<PreparedVectorLayer>,
     pub(super) selected_bars: Vec<PreparedBarSelectionLayer>,
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
@@ -1148,17 +1191,7 @@ impl PreparedSeries {
             violin: layers.violin.map(PreparedCategoryBarLayer::new),
             category_bars: layers.category_bars.map(PreparedCategoryBarLayer::new),
             box_points: layers.box_points.map(PreparedCategoryBarLayer::new),
-            vector: layers.vector.map(|layer| PreparedVectorLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg,
-                vector_bg: layer.vector_bg,
-                charge: layer.charge,
-                count: layer.count,
-                indirect: layer
-                    .indirect
-                    .map(|(buffer, slots)| (buffer.clone(), slots.clone())),
-            }),
+            vector: layers.vector.map(PreparedVectorLayer::own),
             contour: layers.contour.map(|layer| PreparedContourLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1177,6 +1210,7 @@ impl PreparedSeries {
             parallel: layers.parallel.map(PreparedParallelLayer::own),
             line_3d: layers.line_3d.map(PreparedLineLayer::own),
             scatter_3d: layers.scatter_3d.map(PreparedScatterLayer::own),
+            vector_3d: layers.vector_3d.map(PreparedVectorLayer::own),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1321,18 +1355,7 @@ impl PreparedSeries {
             vector: self
                 .vector
                 .as_ref()
-                .map(|layer| data_render::vector::ColumnVectorLayer {
-                    pipeline: &layer.pipeline,
-                    transform_bg: transform.unwrap_or(&layer.transform_bg),
-                    style_bg: layer.style_bg.clone(),
-                    vector_bg: layer.vector_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
-                    count: layer.count,
-                    indirect: layer
-                        .indirect
-                        .as_ref()
-                        .map(|(buffer, slots)| (buffer, slots)),
-                }),
+                .map(|layer| layer.borrow_with(transform)),
             contour: self
                 .contour
                 .as_ref()
@@ -1360,6 +1383,7 @@ impl PreparedSeries {
             parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
             line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),
             scatter_3d: self.scatter_3d.as_ref().map(PreparedScatterLayer::borrow),
+            vector_3d: self.vector_3d.as_ref().map(|layer| layer.borrow_with(None)),
             line_extra: self
                 .line_extra
                 .as_ref()

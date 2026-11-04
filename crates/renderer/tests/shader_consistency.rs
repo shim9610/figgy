@@ -887,6 +887,15 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         ],
         &["vector_sample"],
     ),
+    // The vector projection layer's interface (#211): the flat and the box
+    // projection each define the placement and the corner's clip position.
+    (
+        &[
+            "data_render/vector/project_box3d.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &["arrow_clip", "project_arrow"],
+    ),
     (
         &["gpu_pick/line.wgsl", "gpu_pick/no_line.wgsl"],
         &["pick_line_candidate"],

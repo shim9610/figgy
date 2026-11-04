@@ -149,6 +149,35 @@ pub fn emit_box_axis_strokes(
     );
 }
 
+/// How far axis `k`'s tick labels reach past its edge along the edge's
+/// normal, as [`emit_box_labels`] places them: the tick gap plus the
+/// largest extent along the normal of a label of any major (the drawn
+/// labels are those or a pruned subset), and the label offset along it. `None` when the labels are hidden or the chart is not 3D. The title
+/// sits past this, so a wide label on a near-vertical edge (the z axis's
+/// `3.00`) does not run into it.
+pub(crate) fn box_label_reach(config: &Config, k: usize, measure: &dyn MeasureText) -> Option<f32> {
+    let edge = config.box_axis_edge(k)?;
+    let axis = box_axis(config, k);
+    let ls = &axis.label_style;
+    if !ls.visible || !ls.label_visible {
+        return None;
+    }
+    let n = edge.normal;
+    let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;
+    // Every major the axis walks: the labels drawn are these or a pruned
+    // subset, so the widest of them bounds the band without a list.
+    crate::tick::major_ticks(axis)
+        .filter(|value| fraction(axis, *value).is_some())
+        .map(|value| {
+            let (_, m) = super::polar::tick_text(axis, value, measure);
+            n[0].abs() * m.width + n[1].abs() * (m.ascent + m.descent)
+        })
+        .fold(None, |widest: Option<f32>, extent| {
+            Some(widest.map_or(extent, |w| w.max(extent)))
+        })
+        .map(|widest| gap + widest + ls.label_offset_y.max(0.0))
+}
+
 /// Axis `k`'s tick labels (`Element::AxisLabel` of its side): centred past
 /// the tick ends along the edge's normal, upright, moved by the label
 /// offsets read along the edge (`label_offset_x`) and along the normal

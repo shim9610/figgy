@@ -1225,7 +1225,14 @@ impl Chart {
                 DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                 _ => {
                     if let Some(id) = cfg.z_column.as_deref() {
-                        z.union(&Self::slot_extent(pool, id)?);
+                        let anchors = Self::slot_extent(pool, id)?;
+                        z.union(&anchors);
+                        // A `Data`-scaled 3D arrow's tips are its anchor
+                        // heights plus `factor · w` (#211, D7): the bound
+                        // from the two columns' statistics holds every tip.
+                        if let Some(tips) = Self::vector_tip_heights(pool, cfg, &anchors)? {
+                            z.union(&tips);
+                        }
                     }
                     continue;
                 }
@@ -1248,6 +1255,43 @@ impl Chart {
             apply_axis_range(&mut chart.right_y, min, max, log);
         });
         Ok(())
+    }
+
+    /// The heights a `Data`-scaled 3D point vector's tips can reach, from
+    /// its anchor heights' extent and its `w` column's statistics:
+    /// `[z_min + f·w_min, z_max + f·w_max]`, ordered for a negative factor.
+    /// A display parameter (rule 1): a superset of the tips, never the tips.
+    /// `None` for any other series.
+    fn vector_tip_heights(
+        pool: &ColumnPool,
+        cfg: &SeriesConfig,
+        anchors: &FitExtent,
+    ) -> Result<Option<FitExtent>> {
+        use crate::data_config::{VectorComponents, VectorScale};
+        let DataRenderType::Vector {
+            components: VectorComponents::Points { w: Some(w), .. },
+            style,
+        } = &cfg.render_type
+        else {
+            return Ok(None);
+        };
+        let VectorScale::Data { factor } = style.scale else {
+            return Ok(None);
+        };
+        let w = Self::slot_extent(pool, w)?;
+        let (low, high) = if factor >= 0.0 {
+            (w.min, w.max)
+        } else {
+            (w.max, w.min)
+        };
+        let min = anchors.min + factor * low;
+        let max = anchors.max + factor * high;
+        if !(min.is_finite() && max.is_finite()) {
+            return Ok(None);
+        }
+        let mut tips = FitExtent::point(min);
+        tips.union(&FitExtent::point(max));
+        Ok(Some(tips))
     }
 
     /// The `x` and `y` extents of series `series_id` of `config` as they are

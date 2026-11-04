@@ -28,8 +28,11 @@ fn vector_arrow_style() -> ArrowStyle {
     );
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VectorVsOut {
+/// One corner of arrow `instance_index`'s quad: the body of `vs_main`, a
+/// function so the 3D pick entry (`vector_entry_3d.wgsl`) runs the same
+/// placement. A projection layer places the corner (`arrow_clip`): flat at
+/// depth 0, or at the arrow's depth on a 3D chart.
+fn vector_vertex(vertex_index: u32, instance_index: u32) -> VectorVsOut {
     var out: VectorVsOut;
     out.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
     out.px = vec2<f32>(0.0, 0.0);
@@ -48,13 +51,18 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) in
     }
     let margin = vector_params.aa_px + 1.0;
     let corner = arrow_quad_corner(vertex_index, placed, vector_params.width_px, margin);
-    out.pos = px_to_clip(corner);
+    out.pos = arrow_clip(corner, arrow);
     out.px = corner;
     out.tail = placed.tail;
     out.tip = placed.tip;
     out.head = vec2<f32>(placed.head_length_px, placed.head_width_px);
     out.color = vector_color(sample);
     return out;
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VectorVsOut {
+    return vector_vertex(vertex_index, instance_index);
 }
 
 @fragment
@@ -66,6 +74,12 @@ fn fs_main(in: VectorVsOut) -> @location(0) vec4<f32> {
     placed.head_width_px = in.head.y;
     placed.valid = true;
     let coverage = arrow_coverage(in.px, placed, vector_params.width_px, vector_params.aa_px);
+    // An uncovered fragment of the quad's margin writes nothing: on a 3D
+    // chart's depth-tested draw it must not write depth either. A flat draw
+    // blended nothing there, so its pixels are unchanged.
+    if (coverage <= 0.0) {
+        discard;
+    }
     return in.color * coverage;
 }
 

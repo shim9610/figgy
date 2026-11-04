@@ -74,10 +74,11 @@ pub enum SceneKind {
     Stem,
     Lollipop,
     PolarHeatmap,
+    Quiver3d,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 37] = [
+    pub const ALL: [SceneKind; 38] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -115,6 +116,7 @@ impl SceneKind {
         SceneKind::Stem,
         SceneKind::Lollipop,
         SceneKind::PolarHeatmap,
+        SceneKind::Quiver3d,
     ];
 
     pub fn label(self) -> &'static str {
@@ -156,6 +158,7 @@ impl SceneKind {
             SceneKind::Stem => "Stems (impulse response)",
             SceneKind::Lollipop => "Lollipop (ranked)",
             SceneKind::PolarHeatmap => "Polar heatmap (radar)",
+            SceneKind::Quiver3d => "3D vector field (ABC flow)",
         }
     }
 
@@ -320,6 +323,12 @@ impl SceneKind {
                  from north, the blind range a hole at the centre, 30 and 45 dBZ \
                  contours labelled along their curves. Pick a gate and step along the \
                  azimuths and ranges with the arrows."
+            }
+            SceneKind::Quiver3d => {
+                "An Arnold-Beltrami-Childress flow sampled on a 6 x 6 x 6 lattice \
+                 in a 3D box: one arrow per sample along (u, v, w), coloured by \
+                 its speed, which the host computes. Drag the plot to orbit; pick \
+                 an arrow and step with the arrows."
             }
         }
     }
@@ -521,6 +530,7 @@ pub fn build(
         SceneKind::Stem => stem(r),
         SceneKind::Lollipop => lollipop(r),
         SceneKind::PolarHeatmap => polar_heatmap(r),
+        SceneKind::Quiver3d => quiver_3d(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -1277,6 +1287,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             components: VectorComponents::Points {
                 u: "vf_pu".into(),
                 v: "vf_pv".into(),
+                w: None,
             },
             style: probe_style,
         },
@@ -3129,6 +3140,114 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let column_ids: Vec<&str> = columns.iter().map(String::as_str).collect();
     chart.auto_fit_colorbar_union(r.pool(), &column_ids, 0.0)?;
     chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// An Arnold-Beltrami-Childress flow on a lattice in a 3D box (#211): the
+/// host computes the components and the speed the arrows are coloured by
+/// (rule 1); the arrows are `Data`-scaled so the longest is 0.8 of the
+/// lattice spacing (`fit_scale_3d`), and the z fit covers their tips.
+fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    };
+    use renderer::view3d::View3d;
+    const N: usize = 6;
+    let tau = std::f64::consts::TAU;
+    let spacing = tau / N as f64;
+    let at = |k: usize| (k as f64 + 0.5) * spacing;
+    let (a, b, c) = (1.0, 0.8, 0.6);
+    let flow = |x: f64, y: f64, z: f64| {
+        [
+            a * z.sin() + c * y.cos(),
+            b * x.sin() + a * z.cos(),
+            c * y.sin() + b * x.cos(),
+        ]
+    };
+    let mut anchors = Vec::with_capacity(N * N * N);
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                anchors.push([at(i), at(j), at(k)]);
+            }
+        }
+    }
+    let vectors: Vec<[f64; 3]> = anchors.iter().map(|p| flow(p[0], p[1], p[2])).collect();
+    let component = |set: &[[f64; 3]], k: usize| set.iter().map(|p| p[k]).collect::<Vec<_>>();
+    let bounds = |k: usize| {
+        vectors
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v[k]), h.max(v[k]))
+            })
+    };
+    let speed: Vec<f64> = vectors
+        .iter()
+        .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        .collect();
+    for (id, data) in [
+        ("q3_x", component(&anchors, 0)),
+        ("q3_y", component(&anchors, 1)),
+        ("q3_z", component(&anchors, 2)),
+        ("q3_u", component(&vectors, 0)),
+        ("q3_v", component(&vectors, 1)),
+        ("q3_w", component(&vectors, 2)),
+        ("q3_s", speed),
+    ] {
+        upload(r, id, data)?;
+    }
+    let mut style = VectorStyle {
+        color: Color::from_rgb8(40, 40, 40),
+        width_px: 1.6,
+        scale: VectorScale::Data { factor: 1.0 },
+        pivot: VectorPivot::Middle,
+        head_length_px: 7.0,
+        head_width_px: 6.0,
+        min_length_px: 0.0,
+        color_map: Some(VectorColorMap::Column("q3_s".into())),
+    };
+    style.fit_scale_3d(bounds(0), bounds(1), bounds(2), 0.8 * spacing);
+    let mut arrows = series(
+        "flow",
+        "q3_x",
+        "q3_y",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "q3_u".into(),
+                v: "q3_v".into(),
+                w: Some("q3_w".into()),
+            },
+            style,
+        },
+    );
+    arrows.z_column = Some("q3_z".into());
+    let series = vec![arrows];
+    let mut config = base_config("ABC flow", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "z",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.min = 0.0;
+        axis.max = tau;
+        axis.major_spacing = 2.0;
+    }
+    config.right_y.major_spacing = 2.0;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["q3_s"], 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,

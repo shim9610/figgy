@@ -88,7 +88,7 @@ pub(super) fn gpu_pick_vector(
         VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
     };
     use data_render::vector as vector_render;
-    let VectorComponents::Points { u, v } = components else {
+    let VectorComponents::Points { u, v, .. } = components else {
         return None;
     };
     let VectorStyle {

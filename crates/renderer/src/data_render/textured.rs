@@ -176,6 +176,8 @@ pub(crate) struct ShaderModules {
     pub vector_grid: wgpu::ShaderModule,
     /// The streamline arrowheads' vector module (`VectorInput::Path`).
     pub vector_path: wgpu::ShaderModule,
+    /// A 3D chart's arrows (`VectorInput::Points3d`, #211).
+    pub vector_points_3d: wgpu::ShaderModule,
 }
 
 impl ShaderModules {
@@ -190,6 +192,7 @@ impl ShaderModules {
             vector_points: vector::shader_module(device, vector::VectorInput::Points),
             vector_grid: vector::shader_module(device, vector::VectorInput::Grid),
             vector_path: vector::shader_module(device, vector::VectorInput::Path),
+            vector_points_3d: vector::shader_module(device, vector::VectorInput::Points3d),
         }
     }
 
@@ -199,6 +202,7 @@ impl ShaderModules {
             vector::VectorInput::Points => &self.vector_points,
             vector::VectorInput::Grid => &self.vector_grid,
             vector::VectorInput::Path => &self.vector_path,
+            vector::VectorInput::Points3d => &self.vector_points_3d,
         }
     }
     pub(super) fn fullscreen(device: &wgpu::Device) -> wgpu::ShaderModule {

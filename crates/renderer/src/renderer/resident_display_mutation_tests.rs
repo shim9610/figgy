@@ -610,6 +610,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
+                    w: None,
                 },
                 style: VectorStyle {
                     color: Color::new(0.6, 0.1, 0.6, 1.0),

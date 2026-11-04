@@ -36,6 +36,7 @@ To change shared shader code:
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
+| `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, scatter, line, line_arc, the 3D point vector module (§5.3) |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
 | `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
@@ -584,6 +585,43 @@ the `grid_pair` and `data_pick` fragments), `common/arrow.wgsl` and
 `vector/vector_entry.wgsl`, in that order. The grid input places an `Edges`
 arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
 
+**3D form (#211).** `VECTOR_POINTS_3D_SHADER` draws a point vector on a 3D
+chart: the point form with the flat projection `vector/project_cartesian2d.wgsl`
+replaced by `common/project_3d.wgsl` (§5.21) and `vector/project_box3d.wgsl`,
+and `vector/vector_entry_3d.wgsl` appended; nothing else differs (rule 9,
+tested by `the_3d_form_replaces_only_the_projection`). Both projection
+fragments define the same interface: `VectorSample`, `ArrowPx` (which carries
+`depth`, the NDC depth at the tail and tip; the flat fragment sets 0),
+`project_arrow` and `arrow_clip(corner, arrow)`, the clip position of a quad
+corner in pixels. The flat `arrow_clip` is `px_to_clip(corner)`; the box one
+extrapolates the depth linearly along the tail → tip screen axis, which is
+exact because NDC depth is affine along a projected line. The entry's body is
+`vector_vertex(vertex_index, instance_index)`, which `vs_main` returns and the
+3D pick entry reuses, since WGSL cannot call an entry point; the 2D modules
+emit byte-identical pixels after the change. Under `VECTOR_FLAG_THREE_D` the
+point input reads the anchor height (`height_base` / `height_len`) into
+`origin_*.z` and `w` (`w_base` / `w_len`) into `vector.z`; the 2D modules
+never set it.
+
+`project_box3d.wgsl::project_arrow` hides an arrow unless its anchor is a
+valid box point (`view3d_point_valid`). `Data` puts the tip at
+`origin + scale · (u, v, w)` through `pair_add` and hides the arrow when the
+tip is not a valid box point, as a 3D line drops a segment whose end leaves
+the box. `Pixels` carries the vector into box space by each axis's local
+derivative (`box_t_per_unit`, exact on a linear axis, local on a log one) and
+scales it to `scale · |(u, v, w)|` pixels in the screen plane at the anchor,
+measured by projecting a small step perpendicular to `view3d.eye`. The tail
+and tip are placed at the front of a tube of half the head width
+(`project_box_front`). `vector_entry_3d.wgsl` holds `vs_3d_pick` /
+`fs_3d_pick`: the same placement, and `(view3d_pick_id(), 1, instance, 0)`
+where `arrow_coverage` is at least 0.5, so the shaft and the head pick where
+they paint. The draw pipeline (`View3dPipeline::Vector`) and the pick
+(`View3dPipeline::VectorPick`) bind the surface group (bindings 4 and 5) as
+group 3 and take `surface_mesh::point_depth_stencil`; the draw converts
+coverage to sample coverage on a multisampled composite, as the 3D markers
+do. The picked ring is the 3D marker ring (`vs_pick_ring_3d`) at the anchor
+with half the head width as its radius.
+
 **Path form.** `VECTOR_PATH_SHADER` draws a streamline series' arrowheads
 (`DataRenderType::Streamlines` with `arrows`): the point form's fragments
 with `vector/vector_input_path.wgsl` as the input, which splices
@@ -616,8 +654,9 @@ grid table (`GridColumn { base, len }`, laid out like the field shader's
 binding 1; CPU twin `field.rs::GridColumnGpu`): one padding entry for the
 points form, and for the grid form the `u`, `v` and colour grids' columns
 appended in that order, each addressed from its own base in `VectorParams`. Binding 2 is the colourbar's ramp control points (straight
-RGBA, at least one entry). Binding 3 is `VectorParams` (128 B; CPU twin
+RGBA, at least one entry). Binding 3 is `VectorParams` (144 B; CPU twin
 `vector.rs::VectorParamsGpu`): the x / y / u / v / colour lanes and lengths,
+the 3D form's height and `w` lanes and lengths,
 the grid's `cols` / `rows`, the flags, the arrow count, the stop count, the
 pivot, the scale (`Data`: the factor; `Pixels`: `px_per_unit` times the
 export scale), the pixel sizes (shaft width, head length, head width, minimum
@@ -627,7 +666,8 @@ export scale) and the colourbar's bounds as hi/lo pairs, already log10 under
 
 Flags: `GRID` selects the grid input, `COLUMNS_ARE_Y` and `CENTERS` are the
 `u` grid's orientation and layout, `SCALE_PIXELS` the scale mode, `LOG_Z` the
-colourbar's scale and `COLOR_MAP` whether a colour column or grid is bound.
+colourbar's scale, `COLOR_MAP` whether a colour column or grid is bound and
+`THREE_D` (64) the 3D form's height and `w` reads.
 `vector_sample(i)` returns the anchor as hi/lo pairs, the (u, v) components
 and the colour value: under `Centers` the anchor is the coordinate, under
 `Edges` the data-space midpoint of two consecutive coordinates (the field's
@@ -1723,7 +1763,8 @@ target's (the live highlight), and `box_space_point` to box space for shading.
 `box_visible` clips a fragment to the box. Both matrices are
 `Config::view_matrix` composed on the host with the target's pixel map, so
 the draw, the ID pick and the CPU decorations project through one camera.
-This is the projection layer a later 3D vector glyph reuses (rule 9).
+This is the projection layer the 3D vector glyph reuses (rule 9, §5.3 3D
+form).
 
 [`common/field_paint.wgsl`](common/field_paint.wgsl) holds the colour a
 field paints: `z_ramp_t`, `field_fill_color` (continuous or banded),

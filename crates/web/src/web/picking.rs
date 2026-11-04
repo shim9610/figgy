@@ -239,6 +239,7 @@ impl FiggyChart {
                 let size_column = scatter
                     .and_then(|scatter| scatter.point_size_map.as_ref())
                     .map(|map| map.column.clone());
+                let three_d = self.chart_config()?.drawn_z_column(&series).is_some();
                 let mut samples = vec![
                     (series.x_column, *point_index),
                     (series.y_column, *point_index),
@@ -249,16 +250,21 @@ impl FiggyChart {
                 if let Some(column) = size_column.clone() {
                     samples.push((column, *point_index));
                 }
-                // A point vector reports its components and, when colour
-                // mapped, the value its colour came from.
+                // A point vector reports its components (its z component
+                // where it is drawn in 3D, #211) and, when colour mapped,
+                // the value its colour came from.
                 let vector = match vector_columns(&series.render_type) {
-                    Some(VectorColumns::Points { u, v, color }) => {
+                    Some(VectorColumns::Points { u, v, w, color }) => {
                         samples.push((u.to_owned(), *point_index));
                         samples.push((v.to_owned(), *point_index));
+                        let w = w.filter(|_| three_d);
+                        if let Some(w) = w {
+                            samples.push((w.to_owned(), *point_index));
+                        }
                         if let Some(color) = color {
                             samples.push((color.to_owned(), *point_index));
                         }
-                        Some(color.is_some())
+                        Some((w.is_some(), color.is_some()))
                     }
                     _ => None,
                 };
@@ -316,11 +322,16 @@ impl FiggyChart {
                     result["size_value"] = serde_json::json!(values[next]);
                     next += 1;
                 }
-                if let Some(colour_mapped) = vector {
+                if let Some((has_w, colour_mapped)) = vector {
                     result["u"] = serde_json::json!(values[next]);
                     result["v"] = serde_json::json!(values[next + 1]);
+                    next += 2;
+                    if has_w {
+                        result["w"] = serde_json::json!(values[next]);
+                        next += 1;
+                    }
                     if colour_mapped {
-                        result["color_value"] = serde_json::json!(values[next + 2]);
+                        result["color_value"] = serde_json::json!(values[next]);
                     }
                 }
                 // A parallel row reports every axis's value (`values`, in
