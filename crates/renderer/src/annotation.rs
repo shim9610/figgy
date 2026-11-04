@@ -64,6 +64,11 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
     let map = match axis.scale {
         // Category `i` is centred at coordinate `i`, where category bars
         // and boxes are centred.
+        // A category window (#205) maps its slots linearly.
+        _ if axis.categories.is_some() && axis.category_window.is_some() => {
+            let (min, max) = axis.data_range();
+            AxisMap::Linear { min, max }
+        }
         _ if axis.categories.is_some() => AxisMap::Index {
             count: axis.category_count().unwrap_or(0),
         },
@@ -333,6 +338,9 @@ pub(crate) struct RasterRequest<'a> {
     /// The item whose selection box is drawn on the overlay.
     pub selected: Option<usize>,
     pub policy: FontPolicy,
+    /// The document whose subplots' markers the layer draws (#205), after
+    /// its items; `None` for a chart without subplots (the radial chart).
+    pub markers: Option<&'a crate::config::Config>,
 }
 
 /// Measure a text block in logical pixels: the renderer's glyph stack at
@@ -648,6 +656,11 @@ pub(crate) fn emit_annotation_layer(
         element.emit(request.layer, sink);
         placed(Ok(element));
     }
+    // The insets' markers (#205): placed from the SSOT on every draw, so
+    // they follow the insets and the view. They are not selectable.
+    if let Some(document) = request.markers {
+        document.emit_inset_markers(sink);
+    }
 }
 
 /// The selected annotation index named by the radial chart's decoration
@@ -881,6 +894,8 @@ impl RasterKey {
             scale: *scale,
             selected: *selected,
             policy: *policy,
+            // The radial chart has no subplots to mark.
+            markers: None,
         }
     }
 }
@@ -1076,6 +1091,7 @@ mod tests {
             scale: 1.,
             selected: None,
             policy: FontPolicy::Standard,
+            markers: None,
         })
         .unwrap()
         .map;
@@ -1193,6 +1209,7 @@ mod tests {
                 scale,
                 selected: Some(1),
                 policy: FontPolicy::Standard,
+                markers: None,
             })
             .unwrap();
             let underlay = raster.underlay.expect("span draws an underlay");
@@ -1289,6 +1306,7 @@ mod tests {
             scale: 1.,
             selected: None,
             policy: FontPolicy::Standard,
+            markers: None,
         })
         .unwrap();
         assert!(raster.underlay.is_none());

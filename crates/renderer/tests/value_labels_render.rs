@@ -1041,6 +1041,7 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
         series: vec!["sub".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let mut sub_bars = bars(
         "sub",

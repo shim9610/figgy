@@ -29,8 +29,8 @@ pub(crate) fn apply_axis_range(
     max: f64,
     log: bool,
 ) {
-    // A categorical axis keeps its category range: every range helper (the
-    // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
+    // A categorical axis keeps its category range here: the `auto_fit_*`
+    // family leaves it as is. A view moves it through `apply_view_range`.
     if axis.categories.is_some() {
         return;
     }
@@ -49,6 +49,22 @@ pub(crate) fn apply_axis_range(
         }
         axis.label_style.significant_digits = 3;
     }
+}
+
+/// How a range reaches one axis: [`apply_view_range`] or
+/// [`apply_axis_range`].
+type ApplyRange = fn(&mut AxisOptions, f64, f64, bool);
+
+/// Apply a view's range to one axis (#205): a categorical axis takes it as
+/// its [`AxisOptions::category_window`] (`None` again for the full range),
+/// a numeric one as [`apply_axis_range`] does.
+pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, log: bool) {
+    if let Some(n) = axis.category_count() {
+        let full = (-0.5, n as f64 - 0.5);
+        axis.category_window = ((min, max) != full).then_some([min, max]);
+        return;
+    }
+    apply_axis_range(axis, min, max, log);
 }
 
 /// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
@@ -601,10 +617,17 @@ impl Chart {
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
+        self.x_range(min, max, apply_view_range);
+    }
+
+    /// The X pair's range through `apply`: [`apply_view_range`] for a view,
+    /// which moves a categorical axis' window (#205), [`apply_axis_range`]
+    /// for a fit, which leaves a categorical axis as it is.
+    fn x_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
         let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.bottom_x, min, max, log);
-            apply_axis_range(&mut c.top_x, min, max, log);
+            apply(&mut c.bottom_x, min, max, log);
+            apply(&mut c.top_x, min, max, log);
         });
     }
 
@@ -613,10 +636,15 @@ impl Chart {
     /// [`Self::set_x_range`]. To preserve ticks and formatting, write only
     /// `min` / `max` through [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
+        self.y_range(min, max, apply_view_range);
+    }
+
+    /// The Y pair's range through `apply` (see [`Self::x_range`]).
+    fn y_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
         let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.left_y, min, max, log);
-            apply_axis_range(&mut c.right_y, min, max, log);
+            apply(&mut c.left_y, min, max, log);
+            apply(&mut c.right_y, min, max, log);
         });
     }
 
@@ -624,6 +652,12 @@ impl Chart {
     /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
     /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
     pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
+        self.overlay_y_range(layer, min, max, apply_view_range);
+    }
+
+    /// Overlay layer `layer`'s Y range through `apply` (see
+    /// [`Self::x_range`]).
+    fn overlay_y_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
         let Some(log) = self
             .config
             .overlays
@@ -634,7 +668,7 @@ impl Chart {
         };
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
-                apply_axis_range(&mut overlay.y_axis, min, max, log);
+                apply(&mut overlay.y_axis, min, max, log);
             }
         });
     }
@@ -651,7 +685,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_overlay_y_range(layer, min, max);
+        self.overlay_y_range(layer, min, max, apply_axis_range);
     }
 
     /// Auto-fit overlay layer `layer`'s Y axis to the union range of the
@@ -677,16 +711,16 @@ impl Chart {
     /// linked `bottom_x` writes the root of its link group, so every linked
     /// chart moves with it. An `index` past the subplot list is a no-op.
     pub fn set_subplot_x_range(&mut self, index: usize, min: f64, max: f64) {
-        self.set_subplot_range(index, true, min, max);
+        self.set_subplot_range(index, true, min, max, apply_view_range);
     }
 
     /// Set subplot `index`'s Y range (left + right); see
     /// [`Self::set_subplot_x_range`].
     pub fn set_subplot_y_range(&mut self, index: usize, min: f64, max: f64) {
-        self.set_subplot_range(index, false, min, max);
+        self.set_subplot_range(index, false, min, max, apply_view_range);
     }
 
-    fn set_subplot_range(&mut self, index: usize, x: bool, min: f64, max: f64) {
+    fn set_subplot_range(&mut self, index: usize, x: bool, min: f64, max: f64, apply: ApplyRange) {
         if index >= self.config.subplots.len() {
             return;
         }
@@ -699,8 +733,8 @@ impl Chart {
                     (&mut chart.left_y, &mut chart.right_y)
                 };
                 let log = matches!(main.scale, AxisScale::Logarithmic);
-                apply_axis_range(main, min, max, log);
-                apply_axis_range(secondary, min, max, log);
+                apply(main, min, max, log);
+                apply(secondary, min, max, log);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -724,7 +758,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_subplot_x_range(index, min, max);
+        self.set_subplot_range(index, true, min, max, apply_axis_range);
     }
 
     /// Fit subplot `index`'s Y axis to a prepared [`FitExtent`] — see
@@ -738,7 +772,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_subplot_y_range(index, min, max);
+        self.set_subplot_range(index, false, min, max, apply_axis_range);
     }
 
     /// Auto-fit subplot `index`'s X axis to the union range of the given
@@ -821,7 +855,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
         };
-        self.set_x_range(min, max);
+        self.x_range(min, max, apply_axis_range);
     }
 
     /// Fit the Y axis to a prepared [`FitExtent`] — see
@@ -833,7 +867,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
             return;
         };
-        self.set_y_range(min, max);
+        self.y_range(min, max, apply_axis_range);
     }
 
     /// Fit the chart's z axis to a prepared extent. The colourbar owns the
@@ -1649,14 +1683,14 @@ mod tests {
         assert!(overlay.is_ok(), "{overlay:?}");
     }
 
-    /// The range helpers leave a categorical axis as it is.
+    /// The fit helpers leave a categorical axis as it is; a view's range
+    /// moves its category window (#205), and the full range clears it.
     #[test]
-    fn range_helpers_leave_a_categorical_axis_unchanged() {
+    fn a_categorical_axis_keeps_its_range_on_fits_and_takes_a_view_as_its_window() {
         let mut cfg = dummy_config();
         cfg.bottom_x.categories = categories(3);
         let before = cfg.bottom_x.clone();
         let mut chart = Chart::new(cfg);
-        chart.set_x_range(-10.0, 10.0);
         chart.auto_fit_x_extent(
             &FitExtent {
                 min: 1.0,
@@ -1668,6 +1702,16 @@ mod tests {
         assert_eq!(chart.config().bottom_x, before);
         // The numeric top axis of the pair still follows.
         assert_eq!(chart.config().top_x.min, 1.0 - 0.1);
+        chart.set_x_range(0.5, 2.5);
+        let axis = &chart.config().bottom_x;
+        assert_eq!(axis.category_window, Some([0.5, 2.5]));
+        assert_eq!(
+            (axis.min, axis.max),
+            (before.min, before.max),
+            "min / max kept"
+        );
+        chart.set_x_range(-0.5, 2.5);
+        assert_eq!(chart.config().bottom_x, before);
     }
 
     // The colourbar's z axis goes through the same renderer-side gate as the

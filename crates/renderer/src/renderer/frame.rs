@@ -51,6 +51,7 @@ pub(super) fn annotation_raster_for_chart(
         draw_style,
         coordinates: _,
         overlays: _,
+        // Their markers are drawn on the layer (#205), through `config`.
         subplots: _,
         active_layer: _,
         annotations,
@@ -70,6 +71,7 @@ pub(super) fn annotation_raster_for_chart(
         scale: 1.0,
         selected,
         policy: crate::text_render::FontPolicy::for_style(draw_style),
+        markers: Some(config),
     })
 }
 

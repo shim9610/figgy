@@ -60,6 +60,8 @@ impl AxisViewState {
             // The range of a categorical axis (`data_range`).
             categories: _,
             category_groups: _,
+            // The window is the range of a categorical axis (`data_range`).
+            category_window: _,
             // Where the line is drawn, not how data maps.
             cross_at: _,
             // Which ticks a log axis draws, not how data maps.
@@ -88,7 +90,7 @@ impl AxisViewState {
             inverted,
         } = self;
         axis.scale = scale.clone();
-        crate::chart::apply_axis_range(axis, *min, *max, matches!(scale, AxisScale::Logarithmic));
+        crate::chart::apply_view_range(axis, *min, *max, matches!(scale, AxisScale::Logarithmic));
         axis.inverted = *inverted;
     }
 }
@@ -201,6 +203,7 @@ impl ChartViewState {
                 series: _,
                 link_x: _,
                 link_y: _,
+                marker: _,
             } = subplot;
             state.apply_to(config);
         }

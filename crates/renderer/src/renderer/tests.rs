@@ -15013,6 +15013,7 @@ fn layered_test_config(overlays: usize, members: usize, subplots: usize) -> Conf
                 series: vec![format!("p{i}")],
                 link_x: None,
                 link_y: None,
+                marker: None,
             }
         })
         .collect();

@@ -63,7 +63,12 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     // A categorical axis maps its category range; `min` / `max` are ignored
     // there.
     if axis.categories.is_some() {
-        return Ok(());
+        return match axis.category_window {
+            Some([from, to]) if !(from.is_finite() && to.is_finite() && from < to) => {
+                fail("a category window needs finite bounds with from < to")
+            }
+            _ => Ok(()),
+        };
     }
     if !axis.min.is_finite() || !axis.max.is_finite() {
         return fail("axis bounds must be finite");

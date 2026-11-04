@@ -241,26 +241,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
-        scene: "EnergyLevels",
-        layer: "annotations",
-        element: "annotation_1",
-        inv: Inv::I2,
-        detail: "*points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the inset window is an outline-only rectangle, grabbed anywhere inside as \
-                 every shape annotation is, while the oracle's shapes are filled",
-        issue: "#203",
-    },
-    Exclusion {
-        scene: "EnergyLevels",
-        layer: "annotations",
-        element: "annotation_*",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_*: *stroke outlines are farther than the grab reach from ink*",
-        reason: "a dragged inset connector or window ends under the inset, which is drawn \
-                 over its parent's annotations by design (#203)",
-        issue: "#203",
-    },
-    Exclusion {
         scene: "BrokenAxes",
         layer: "*",
         element: "*axis_left",
@@ -4059,6 +4039,12 @@ fn export_annotations(
     hidden: Option<usize>,
 ) -> Result<RasterImage, String> {
     let mut doc = config.clone();
+    // The insets' markers (#205) are drawn on the layer but are no item:
+    // the inset is selectable, not its marker. The items' ink is compared
+    // without them; `energy_levels_render` checks the marker itself.
+    for subplot in &mut doc.subplots {
+        subplot.marker = None;
+    }
     match hidden {
         Some(usize::MAX) => doc.annotations.visible = false,
         Some(i) => doc.annotations.items[i].visible = false,

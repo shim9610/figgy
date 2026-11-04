@@ -2110,6 +2110,161 @@ impl crate::config::Config {
     }
 }
 
+/// Where an inset's marker is drawn on its parent (#205), in the parent's
+/// pixels: the window clipped to the parent's plot and, when the marker
+/// draws them and the inset's plot lies clear of the window, the two
+/// connectors from the window's facing corners to the inset's plot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsetMarkerParts {
+    pub window: crate::layout::RectF,
+    pub links: Option<[[[f32; 2]; 2]; 2]>,
+}
+
+impl crate::config::Config {
+    /// The window subplot `subplot` magnifies, derived from it (#205):
+    /// `[[x0, x1], [y0, y1]]` in this chart's data coordinates. `y` is the
+    /// inset's `left_y` range. On a categorical `bottom_x`, `x` covers the
+    /// slots of this chart's categories that the inset's categories name
+    /// by id (the column whose records an energy-level `Components` view
+    /// shows), cut to the inset's own window; on a numeric one it is the
+    /// inset's `bottom_x` range. `None` when the inset names none of this
+    /// chart's categories or its x axis is of the other kind.
+    pub fn inset_window(&self, subplot: usize) -> Option<[[f64; 2]; 2]> {
+        let inset = self.subplot_config(subplot)?;
+        let (y0, y1) = inset.left_y.data_range();
+        let x = match (&self.bottom_x.categories, &inset.bottom_x.categories) {
+            (Some(parent), Some(own)) => {
+                let (lo, hi) = inset.bottom_x.data_range();
+                let slot = |k: usize| parent.iter().position(|c| c.id == own[k].id);
+                // The parent slot of the inset's first category, and whether
+                // the inset's categories follow it slot by slot.
+                let first = slot(0)?;
+                let consecutive = (0..own.len()).all(|k| slot(k) == Some(first + k));
+                if consecutive {
+                    [first as f64 + lo, first as f64 + hi]
+                } else {
+                    let (a, b) = (0..own.len())
+                        .filter_map(slot)
+                        .fold((usize::MAX, 0), |(a, b), p| (a.min(p), b.max(p)));
+                    [a as f64 - 0.5, b as f64 + 0.5]
+                }
+            }
+            (None, None) => {
+                let (a, b) = inset.bottom_x.data_range();
+                [a, b]
+            }
+            _ => return None,
+        };
+        Some([x, [y0, y1]])
+    }
+
+    /// Where subplot `subplot`'s marker is drawn on this chart (#205), from
+    /// its [`crate::layer::InsetMarker`]: its explicit window or the derived
+    /// one ([`Self::inset_window`]) in this chart's pixels, at least ten
+    /// line widths across and clipped to the plot. `None` for a subplot without a marker, a window that has no
+    /// position or lies outside the plot.
+    pub fn inset_marker_parts(&self, subplot: usize) -> Option<InsetMarkerParts> {
+        use crate::layout::{RectF, axis_fraction};
+        let marker = self.subplots.get(subplot)?.marker.as_ref()?;
+        let [[x0, x1], [y0, y1]] = marker.window.or_else(|| self.inset_window(subplot))?;
+        let plot = RectF::from_rect(&self.data_area().ok()?.0);
+        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x) * plot.width;
+        let py = |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y)) * plot.height;
+        let (a, b) = (px(x0), px(x1));
+        let (c, d) = (py(y0), py(y1));
+        if ![a, b, c, d].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        // A window finer than the parent can show (a fine-structure inset
+        // spans a ten-thousandth of the axis) is drawn at least ten line
+        // widths across, about its centre: how it looks, not where. The
+        // width scales with the export, so 2x is 1x doubled.
+        let least = 10.0 * marker.line.width.max(0.0);
+        let grow = |p: f32, q: f32| {
+            let half = ((q - p).abs().max(least)) / 2.0;
+            let centre = (p + q) / 2.0;
+            (centre - half, centre + half)
+        };
+        let ((a, b), (c, d)) = (grow(a, b), grow(c, d));
+        // Clipped to the plot: a window the view has moved off draws
+        // nothing, one across the plot's edge is cut there.
+        let left = a.min(b).max(plot.x);
+        let right = a.max(b).min(plot.x + plot.width);
+        let top = c.min(d).max(plot.y);
+        let bottom = c.max(d).min(plot.y + plot.height);
+        if left >= right || top >= bottom {
+            return None;
+        }
+        let window = RectF {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        };
+        let inset = RectF::from_rect(&self.subplot_config(subplot)?.data_area().ok()?.0);
+        let links = marker.connectors.then(|| {
+            let (w0, w1) = ((left, top), (right, bottom));
+            let (i0, i1) = (
+                (inset.x, inset.y),
+                (inset.x + inset.width, inset.y + inset.height),
+            );
+            // The window's edge that faces the inset, joined to the
+            // inset's facing edge, corner to corner.
+            if i0.0 >= w1.0 {
+                Some([[[w1.0, w0.1], [i0.0, i0.1]], [[w1.0, w1.1], [i0.0, i1.1]]])
+            } else if i1.0 <= w0.0 {
+                Some([[[w0.0, w0.1], [i1.0, i0.1]], [[w0.0, w1.1], [i1.0, i1.1]]])
+            } else if i1.1 <= w0.1 {
+                Some([[[w0.0, w0.1], [i0.0, i1.1]], [[w1.0, w0.1], [i1.0, i1.1]]])
+            } else if i0.1 >= w1.1 {
+                Some([[[w0.0, w1.1], [i0.0, i0.1]], [[w1.0, w1.1], [i1.0, i0.1]]])
+            } else {
+                None
+            }
+        });
+        Some(InsetMarkerParts {
+            window,
+            links: links.flatten(),
+        })
+    }
+
+    /// Stroke every subplot's marker into `sink` above the data (#205):
+    /// the parts [`Self::inset_marker_parts`] places, tagged
+    /// `"inset_marker"`. The annotation layer draws them, under the insets.
+    pub fn emit_inset_markers(&self, sink: &mut dyn crate::sink::Sink) {
+        use crate::sink::{Slot, StrokeStyle};
+        for (index, subplot) in self.subplots.iter().enumerate() {
+            let (Some(marker), Some(parts)) =
+                (subplot.marker.as_ref(), self.inset_marker_parts(index))
+            else {
+                continue;
+            };
+            if marker.line.width <= 0.0 || marker.line.color.a <= 0.0 {
+                continue;
+            }
+            let style = StrokeStyle {
+                width: marker.line.width,
+                color: marker.line.color,
+                dash: marker.line.style.pattern(),
+                tag: "inset_marker",
+            };
+            let w = parts.window;
+            let corners = [
+                [w.x, w.y],
+                [w.x + w.width, w.y],
+                [w.x + w.width, w.y + w.height],
+                [w.x, w.y + w.height],
+            ];
+            for k in 0..4 {
+                sink.stroke(Slot::Above, corners[k], corners[(k + 1) % 4], &style);
+            }
+            for [from, to] in parts.links.into_iter().flatten() {
+                sink.stroke(Slot::Above, from, to, &style);
+            }
+        }
+    }
+}
+
 impl crate::config::Config {
     /// The annotations that mark what inset `subplot` magnifies (#203): a
     /// [`AnnotationKind::Rect`] around the window `x` × `y` in this chart's
@@ -2117,7 +2272,9 @@ impl crate::config::Config {
     /// the window's corners to the inset's plot (its data area), as ratio
     /// anchors of
     /// this chart's plot (so they stay on the inset as it is drawn now; call
-    /// again after the inset moves). Ids are `inset/{subplot}/window`,
+    /// again after the inset moves). Superseded by
+    /// [`crate::layer::Subplot::marker`] (#205), which is placed on every
+    /// draw and follows the inset. Ids are `inset/{subplot}/window`,
     /// `…/link0` and `…/link1`. `None` for a subplot that is not an inset
     /// of this chart. The list is the helper's output (rule 3).
     pub fn inset_marker(
@@ -3003,5 +3160,123 @@ mod category_group_tests {
         assert!(json["bottom_x"]["category_groups"].get("offset").is_none());
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, config);
+    }
+}
+
+#[cfg(test)]
+mod inset_marker_tests {
+    use crate::config::{Category, Config};
+    use crate::layer::{InsetMarker, Subplot};
+    use crate::layout::{ChartArea, Rect};
+
+    /// A 600 × 400 parent with categories a, b, c over 0..100, and an inset
+    /// at its top right naming `b` over 40..50.
+    fn document() -> Config {
+        let mut config = crate::default::default_config();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 400,
+        });
+        config.bottom_x.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        config.left_y.min = 0.0;
+        config.left_y.max = 100.0;
+        let plot = config.data_area().unwrap().0;
+        let mut inset = crate::default::default_config();
+        inset.chart_area = ChartArea(Rect {
+            x: plot.x + plot.width - 200,
+            y: plot.y + 10,
+            width: 190,
+            height: 150,
+        });
+        inset.bottom_x.categories = Some(vec![Category::new("b", "B")]);
+        inset.left_y.min = 40.0;
+        inset.left_y.max = 50.0;
+        config.subplots.push(Subplot {
+            config: inset,
+            marker: Some(InsetMarker::default()),
+            ..Subplot::default()
+        });
+        config
+    }
+
+    // #205: the window is derived from the inset (its categories' slots and
+    // its y range), placed in the parent's pixels, and joined to the inset
+    // from the facing edge.
+    #[test]
+    fn the_window_is_derived_from_the_inset_and_follows_it() {
+        let mut config = document();
+        assert_eq!(config.inset_window(0), Some([[0.5, 1.5], [40.0, 50.0]]));
+        let plot = crate::layout::RectF::from_rect(&config.data_area().unwrap().0);
+        let parts = config.inset_marker_parts(0).expect("a marker");
+        let w = parts.window;
+        assert!((w.x - (plot.x + plot.width / 3.0)).abs() < 0.5, "{w:?}");
+        assert!((w.width - plot.width / 3.0).abs() < 0.5, "{w:?}");
+        assert!((w.y - (plot.y + plot.height * 0.5)).abs() < 0.5, "{w:?}");
+        // The inset is right of the window: right corners to left corners.
+        let inset = config.subplot_config(0).unwrap().data_area().unwrap().0;
+        let [top, bottom] = parts.links.expect("connectors");
+        assert_eq!(
+            top,
+            [[w.x + w.width, w.y], [inset.x as f32, inset.y as f32]]
+        );
+        assert_eq!(bottom[1], [inset.x as f32, (inset.y + inset.height) as f32]);
+        // Moved left of the window, the inset is joined from the left edge.
+        config.subplots[0].config.chart_area.0.x = plot.x as u32 + 4;
+        config.subplots[0].config.chart_area.0.width = 160;
+        let inset = config.subplot_config(0).unwrap().data_area().unwrap().0;
+        let [top, _] = config.inset_marker_parts(0).unwrap().links.unwrap();
+        assert_eq!(
+            top,
+            [[w.x, w.y], [(inset.x + inset.width) as f32, inset.y as f32]]
+        );
+        // No connectors when asked for none.
+        config.subplots[0].marker.as_mut().unwrap().connectors = false;
+        assert_eq!(config.inset_marker_parts(0).unwrap().links, None);
+    }
+
+    // #205: a view that moves the window off the plot draws nothing; one
+    // across the edge is cut there. An explicit window wins, and a window
+    // finer than ten line widths is drawn that wide.
+    #[test]
+    fn the_window_is_clipped_to_the_plot_and_kept_visible() {
+        let mut config = document();
+        let plot = crate::layout::RectF::from_rect(&config.data_area().unwrap().0);
+        config.bottom_x.category_window = Some([1.6, 2.5]);
+        assert_eq!(config.inset_marker_parts(0), None);
+        config.bottom_x.category_window = Some([1.0, 2.5]);
+        let w = config.inset_marker_parts(0).unwrap().window;
+        assert_eq!(w.x, plot.x);
+        config.bottom_x.category_window = None;
+        config.subplots[0].marker.as_mut().unwrap().window = Some([[1.8, 2.2], [10.0, 10.001]]);
+        let w = config.inset_marker_parts(0).unwrap().window;
+        assert!((w.height - 10.0).abs() < 1e-3, "{w:?}");
+        // No marker, no parts; an inset naming no parent category derives
+        // no window.
+        config.subplots[0].marker.as_mut().unwrap().window = None;
+        config.subplots[0].config.bottom_x.categories = Some(vec![Category::new("z", "Z")]);
+        assert_eq!(config.inset_window(0), None);
+        config.subplots[0].marker = None;
+        assert_eq!(config.inset_marker_parts(0), None);
+    }
+
+    #[test]
+    fn the_marker_scales_and_serializes_only_when_set() {
+        let mut config = document();
+        config.scale_in_place(2.0);
+        assert_eq!(config.subplots[0].marker.as_ref().unwrap().line.width, 2.0);
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&Subplot::default()).unwrap();
+            assert!(!json.contains("marker"), "{json}");
+            let json = serde_json::to_string(&config.subplots[0]).unwrap();
+            let back: Subplot = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.marker, config.subplots[0].marker);
+        }
     }
 }

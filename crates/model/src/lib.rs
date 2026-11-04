@@ -33,7 +33,7 @@ pub use annotation::{
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
     MeasuredText, PixelSpace, ShapeStyle,
 };
-pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
+pub use layer::{AnnotationLayer, CellRef, InsetMarker, LayerRef, OverlayLayer, Subplot};
 pub mod format;
 pub mod layout;
 pub mod legend;

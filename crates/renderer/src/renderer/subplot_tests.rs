@@ -100,12 +100,14 @@ fn document() -> Config {
             series: vec!["s1".into()],
             link_x: None,
             link_y: None,
+            marker: None,
         },
         Subplot {
             config: second,
             series: Vec::new(),
             link_x: Some(CellRef::Parent),
             link_y: Some(CellRef::Subplot(0)),
+            marker: None,
         },
     ];
     c.sync_subplot_links(None);

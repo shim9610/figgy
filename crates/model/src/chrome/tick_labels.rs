@@ -209,13 +209,32 @@ pub fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) -> Rect
     }
 }
 
+/// How many rows `count` labels are staggered over (#205): the fewest at
+/// which each label's box (`bounds(index)`) stays half an em of
+/// `font_size` clear of the next one on its row, `rows` labels on, either
+/// across or along the screen. Every row is checked, not only the first,
+/// so a long label never overlaps a neighbour on its own row. At most
+/// `count` rows (one label each).
+pub fn stagger_rows(count: usize, font_size: f32, bounds: impl Fn(usize) -> RectF) -> usize {
+    let gap = font_size * 0.5;
+    let apart = |a: (f32, f32), b: (f32, f32)| b.0 >= a.1 + gap || a.0 >= b.1 + gap;
+    let clear = |a: RectF, b: RectF| {
+        apart((a.x, a.x + a.width), (b.x, b.x + b.width))
+            || apart((a.y, a.y + a.height), (b.y, b.y + b.height))
+    };
+    (1..count.max(1))
+        .find(|&rows| (0..count - rows).all(|index| clear(bounds(index), bounds(index + rows))))
+        .unwrap_or(count.max(1))
+}
+
 /// Every tick label of a categorical axis with its tick position, in draw
 /// order: `categories[i].label` at category `i`, measured and placed like a
 /// plain numeric label in the axis' label style. Every category is named
-/// (#205): when neighbours crowd, the labels are staggered over as many
-/// rows as the [`label_stride`] rule would have thinned them by, each row
+/// (#205): when neighbours crowd, the labels are staggered over the fewest
+/// rows that keep each row clear ([`stagger_rows`]), each row
 /// one label's extent (plus a quarter em) further from the axis, so the
-/// labels of one row stay clear of each other. An empty label keeps its
+/// labels of one row stay clear of each other. Only the categories centred
+/// in the axis' [`AxisOptions::category_window`] are named. An empty label keeps its
 /// slot and draws nothing. Nothing is collected: the rows are measured on
 /// the categories themselves.
 pub fn each_category_tick_label(
@@ -256,11 +275,18 @@ pub fn each_category_tick_label(
         };
         (empty, position, label_rect(origin, metrics))
     };
-    let rows = label_stride(categories.len(), ls.font_size, |index| placed(index).2);
+    // Only the categories centred in the axis' window are named (#205).
+    let (from, to) = axis.data_range();
+    let first = (from.ceil().max(0.0) as usize).min(categories.len());
+    let end = ((to.floor() + 1.0).max(0.0) as usize).min(categories.len());
+    if first >= end {
+        return;
+    }
+    let rows = stagger_rows(end - first, ls.font_size, |k| placed(first + k).2);
     // One row's step away from the axis: the largest extent across it.
     let horizontal = matches!(side, Side::Top | Side::Bottom);
     let step = if rows > 1 {
-        (0..categories.len())
+        (first..end)
             .map(|index| {
                 let bounds = placed(index).2;
                 if horizontal {
@@ -275,13 +301,13 @@ pub fn each_category_tick_label(
     } else {
         0.0
     };
-    for index in 0..categories.len() {
+    for index in first..end {
         let (empty, position, bounds) = placed(index);
         let finite = [bounds.x, bounds.y, bounds.width, bounds.height]
             .into_iter()
             .all(f32::is_finite);
         if !empty && finite {
-            let away = (index % rows) as f32 * step;
+            let away = ((index - first) % rows) as f32 * step;
             let position = match side {
                 Side::Bottom => (position.0, position.1 + away),
                 Side::Top => (position.0, position.1 - away),
@@ -604,7 +630,14 @@ pub fn emit_category_groups(
             continue;
         };
         let x = |v: f64| value_to_screen(v, axis, side.clone(), plot).0;
-        let (a, b) = (x(first as f64 - 0.5), x(last as f64 + 0.5));
+        // The run's slots inside the axis' window (#205): a run outside it
+        // draws nothing, one across its edge is cut there.
+        let (from, to) = axis.data_range();
+        let (lo, hi) = ((first as f64 - 0.5).max(from), (last as f64 + 0.5).min(to));
+        if lo >= hi {
+            continue;
+        }
+        let (a, b) = (x(lo), x(hi));
         let (x0, x1) = (a.min(b) + inset + ox, a.max(b) - inset + ox);
         if !(x0.is_finite() && x1.is_finite() && bracket_y.is_finite()) {
             continue;
@@ -670,6 +703,71 @@ mod category_stagger_tests {
                 descent: 2.0,
             }
         }
+    }
+
+    // #205: a category window names only the categories centred in it,
+    // places them by the window, and clips a group header to it.
+    #[test]
+    fn a_category_window_names_only_its_slots() {
+        let mut axis = crate::default::default_config().bottom_x;
+        axis.categories = Some(
+            (0..8)
+                .map(|i| crate::config::Category::new(format!("c{i}"), format!("{i}")))
+                .collect(),
+        );
+        axis.category_window = Some([1.5, 4.5]);
+        assert_eq!(axis.data_range(), (1.5, 4.5));
+        let plot = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            height: 200.0,
+        };
+        let categories = axis.categories.clone().unwrap();
+        let mut xs = Vec::new();
+        each_category_tick_label(
+            &axis,
+            &categories,
+            Side::Bottom,
+            &Wide,
+            |v| value_to_screen(v, &axis, Side::Bottom, &plot),
+            |_, position| xs.push(position.0.round()),
+        );
+        assert_eq!(xs, [50.0, 150.0, 250.0], "categories 2, 3 and 4");
+        // A window past every category names none.
+        axis.category_window = Some([8.5, 9.5]);
+        let mut n = 0;
+        each_category_tick_label(
+            &axis,
+            &categories,
+            Side::Bottom,
+            &Wide,
+            |v| value_to_screen(v, &axis, Side::Bottom, &plot),
+            |_, _| n += 1,
+        );
+        assert_eq!(n, 0);
+        // Validation: finite bounds, from < to.
+        let mut config = crate::default::default_config();
+        config.bottom_x = axis.clone();
+        config.bottom_x.category_window = Some([2.0, 2.0]);
+        assert!(config.validate_chart().is_err());
+        config.bottom_x.category_window = Some([0.5, f64::NAN]);
+        assert!(config.validate_chart().is_err());
+        config.bottom_x.category_window = Some([0.5, 2.5]);
+        assert_eq!(config.validate_chart(), Ok(()));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_category_window_serializes_only_when_set() {
+        let mut axis = crate::default::default_config().bottom_x;
+        let json = serde_json::to_string(&axis).unwrap();
+        assert!(!json.contains("category_window"));
+        axis.category_window = Some([0.5, 2.5]);
+        let json = serde_json::to_string(&axis).unwrap();
+        assert!(json.contains("\"category_window\":[0.5,2.5]"), "{json}");
+        let back: crate::config::AxisOptions = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.category_window, Some([0.5, 2.5]));
     }
 
     // #205: forty long names on a 400 px axis are all drawn, staggered

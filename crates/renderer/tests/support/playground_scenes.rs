@@ -1563,6 +1563,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         series: ids.iter().map(|s| s.to_string()).collect(),
         link_x: None,
         link_y: None,
+        marker: None,
     };
     let rust = Color::from_rgb8(176, 64, 32);
     let green = Color::from_rgb8(40, 140, 90);
@@ -3529,6 +3530,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         series: vec!["peaks_log".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     }];
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 100.0);
@@ -4061,26 +4063,16 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         axis.tick = renderer::config::TickVisibility::None;
     }
     inset.left_y.major_spacing = 0.000_1;
-    let window_top = 21.6;
     config.subplots.push(renderer::Subplot {
         config: inset,
         series: vec!["he-fine".into()],
         link_x: None,
         link_y: None,
+        // The window is derived from the inset (#205): the 3P* slot at the
+        // inset's energy range, drawn on every frame so it follows the
+        // inset and the view.
+        marker: Some(renderer::InsetMarker::default()),
     });
-    let marker = config
-        .inset_marker(
-            0,
-            (5.6, 6.4),
-            (20.4, window_top),
-            AnnotationLineStyle {
-                color: Color::from_rgb8(120, 128, 140),
-                width: 1.0,
-                style: LineStylePreset::Solid,
-            },
-        )
-        .unwrap_or_default();
-    config.annotations.items.extend(marker);
 
     let mut fine_style = series.style.clone();
     fine_style.label_side = renderer::energy_levels::LevelLabelSide::Above;

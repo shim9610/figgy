@@ -77,7 +77,7 @@ fn transition(id: &str, lower: &str, upper: &str, nm: f64, aki: Option<f64>) -> 
         id: id.into(),
         lower: lower.into(),
         upper: upper.into(),
-        label: Some(RichText::plain(&format!("{nm:.1}"), WAVELENGTH, 11.0, "")),
+        label: Some(RichText::plain(&format!("{nm:.1}"), WAVELENGTH, 15.0, "")),
         label_offset: [0.0; 2],
         value: aki,
         x_offset: 0.0,
@@ -101,7 +101,7 @@ fn limit(row: &LevelRow, text: &str) -> IonizationLimit {
         label: Some(RichText::plain(
             text,
             Color::from_rgb8(40, 50, 120),
-            12.0,
+            16.0,
             "",
         )),
         label_offset: [0.0; 2],
@@ -174,7 +174,7 @@ fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label
         column: column.into(),
         first,
         last,
-        label: Some(RichText::plain(label, LABEL, 10.0, "")),
+        label: Some(RichText::plain(label, LABEL, 16.0, "")),
         label_offset: [0.0; 2],
     });
 }
@@ -183,6 +183,16 @@ fn band(series: &mut EnergyLevelSeries, column: &str, low: f64, high: f64, label
 fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
     let mut c = chart(title, "", y_title, (1100, 780));
     let config = c.config_mut();
+    // Read at a column's width, as in a paper: ticks at 18, titles at 20.
+    for axis in [
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.top_x,
+        &mut config.right_y,
+    ] {
+        axis.label_style.font_size = 18.0;
+        axis.title_option.text.font_size = 20.0;
+    }
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     config.grid.show_minor_y = false;
@@ -198,7 +208,7 @@ fn groups(c: &mut Chart, groups: &[(&str, &str, &str)]) {
         groups: groups
             .iter()
             .map(|(label, first, last)| CategoryGroup {
-                label: RichText::plain(label, HEADER, 15.0, ""),
+                label: RichText::plain(label, HEADER, 19.0, ""),
                 first: (*first).into(),
                 last: (*last).into(),
                 bracket: true,
@@ -298,7 +308,7 @@ fn helium(r: &mut Renderer, out: &Path) -> Result {
             .unwrap_or(1);
         // A triplet keeps one labelled row per term: J = 1 (³S has one).
         let shown = !row.term.starts_with('3') || row.term == "3S" || row.j == "1";
-        let label = (n <= 4 && shown).then(|| RichText::plain(outer, LABEL, 11.0, ""));
+        let label = (n <= 4 && shown).then(|| RichText::plain(outer, LABEL, 16.0, ""));
         series.levels.push(level(row, &row.term, label));
     }
     for l in &limits {
@@ -389,7 +399,7 @@ fn helium(r: &mut Renderer, out: &Path) -> Result {
                     "$^{m}\\mathrm{{{l}}}{}$",
                     if odd == "*" { "^o" } else { "" }
                 ),
-                15.0,
+                20.0,
                 Color::from_rgb8(30, 30, 30),
             )?);
         }
@@ -448,11 +458,11 @@ fn argon(r: &mut Renderer, out: &Path) -> Result {
             continue;
         };
         let label = match paschen(row) {
-            Some(p) => Some(RichText::plain(&p, LABEL, 10.0, "")),
-            None if col == "ground" => Some(tex("$3p^6$", 11.0, LABEL)?),
+            Some(p) => Some(RichText::plain(&p, LABEL, 16.0, "")),
+            None if col == "ground" => Some(tex("$3p^6$", 16.0, LABEL)?),
             None => {
                 let k = row.term.trim_start_matches('2').trim_end_matches('*');
-                Some(tex(&format!("${k}_{{{}}}$", row.j), 10.0, LABEL)?)
+                Some(tex(&format!("${k}_{{{}}}$", row.j), 16.0, LABEL)?)
             }
         };
         series.levels.push(level(row, &col, label));
@@ -503,7 +513,7 @@ fn argon(r: &mut Renderer, out: &Path) -> Result {
                         "ground" => "$3p^6$".to_string(),
                         id => format!("$\\mathrm{{{}}}$", id.replace('\'', "'")),
                     },
-                    14.0,
+                    20.0,
                     Color::from_rgb8(30, 30, 30),
                 )
                 .ok();
@@ -553,7 +563,7 @@ fn argon_all(r: &mut Renderer, out: &Path) -> Result {
         if !columns.contains(&column) {
             columns.push(column.clone());
         }
-        let label = RichText::plain(row.outer(), LABEL, 9.0, "");
+        let label = RichText::plain(row.outer(), LABEL, 15.0, "");
         let mut l = level(row, &column, Some(label));
         l.id = format!("{} {}", row.id(), row.energy);
         series.levels.push(l);
@@ -595,7 +605,7 @@ fn copper(r: &mut Renderer, out: &Path) -> Result {
             .replace(".(3P*)", "")
             .replace(".(1P*)", "")
             .replace('.', "");
-        let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j), 10.0, LABEL)?;
+        let label = tex(&format!("$\\mathrm{{{shell}}}_{{{}}}$", row.j), 16.0, LABEL)?;
         series.levels.push(level(row, &row.term, Some(label)));
     }
     // The 3d⁹4s4p quartets as bands, one per term.
@@ -642,7 +652,7 @@ fn copper(r: &mut Renderer, out: &Path) -> Result {
                         "$^{m}\\mathrm{{{l}}}{}$",
                         if odd == "*" { "^o" } else { "" }
                     ),
-                    15.0,
+                    20.0,
                     Color::from_rgb8(30, 30, 30),
                 )
                 .ok();
@@ -692,7 +702,7 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
                     if row.odd() { "^o" } else { "" },
                     row.j
                 ),
-                10.0,
+                16.0,
                 LABEL,
             )
         });
@@ -776,7 +786,7 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
     let last_even = order.last().cloned().unwrap_or_default();
     let mut c = grotrian("U I", "Energy (cm⁻¹)", categories);
     c.config_mut().bottom_x.title_option.visible = true;
-    c.config_mut().bottom_x.title_option.text = RichText::plain("J", HEADER, 15.0, "");
+    c.config_mut().bottom_x.title_option.text = RichText::plain("J", HEADER, 20.0, "");
     groups(
         &mut c,
         &[

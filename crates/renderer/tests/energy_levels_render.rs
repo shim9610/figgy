@@ -668,6 +668,7 @@ fn chart_with_inset() -> Chart {
         series: vec!["inset".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     chart
 }
@@ -816,6 +817,7 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
             series: Vec::new(),
             link_x: None,
             link_y: None,
+            marker: None,
         }
     };
     const GREEN: Color = Color::from_rgb8(190, 235, 190);
@@ -873,6 +875,116 @@ fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
         };
         assert_eq!(colour(n_only)[..3], [190, 235, 190], "{scale}x N over A");
         assert_eq!(colour(under_b)[..3], [255, 236, 190], "{scale}x B over N");
+    }
+}
+
+// #205: a categorical axis takes a view's range as its category window.
+// Only the slots inside it are drawn and picked, the annotation space
+// follows it, and the full range clears it again.
+#[test]
+fn a_category_window_draws_and_picks_only_its_slots() {
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.set_x_range(0.5, 2.5);
+    assert_eq!(chart.config().bottom_x.category_window, Some([0.5, 2.5]));
+    assert_eq!(chart.config().validate_chart(), Ok(()));
+    let list = [series("he", records())];
+    let da = chart.config().data_area().unwrap().0;
+    // Category `i` of the window sits at `(i - 0.5) / 2` of the plot.
+    let at = |x: f64, y: f64, scale: f32| {
+        let px = da.x as f64 + (x - 0.5) / 2.0 * da.width as f64;
+        let py = da.y as f64 + (1.0 - y / 100.0) * da.height as f64;
+        (
+            (px * scale as f64).round() as u32,
+            (py * scale as f64).round() as u32,
+        )
+    };
+    {
+        use renderer::AnnotationSpace as _;
+        let space = renderer::annotation::pixel_space_for_config(chart.config());
+        let px = space.value_to_px(renderer::AnnotationAxis::X, 2.0).unwrap();
+        assert!(
+            (px - at(2.0, 0.0, 1.0).0 as f32).abs() <= 1.0,
+            "annotation x {px}"
+        );
+    }
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &list, scale);
+        // Column c at 60 is drawn where the window puts it, and column a's
+        // level (centre -0.25 of the plot) leaves no stroke in the plot.
+        assert!(near(&img, at(2.0, 60.0, scale), 2, is_red), "{scale}x c");
+        let left = (((da.x as f32 + 2.0) * scale) as u32, at(0.0, 20.0, scale).1);
+        assert!(!near(&img, left, 1, is_red), "{scale}x a is outside");
+        // Off the transition's end at the level's centre.
+        match pick(&mut r, &chart, &list, scale, at(2.3, 60.0, scale)) {
+            Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                assert_eq!(bin_index, 3, "{scale}x")
+            }
+            other => panic!("{scale}x window pick: {other:?}"),
+        }
+    }
+    chart.set_x_range(-0.5, 2.5);
+    assert_eq!(chart.config().bottom_x.category_window, None);
+}
+
+fn is_magenta(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 80
+}
+
+// #205: the SSOT marker is drawn on every frame from the inset: the window
+// around the parent slot the inset shows, and connectors that follow the
+// inset when it moves. At 1x and 2x.
+#[test]
+fn the_inset_marker_is_drawn_and_follows_the_inset() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().chart_area.0.width = 640;
+    chart.config_mut().chart_area.0.height = 480;
+    let plot = chart.config().data_area().unwrap().0;
+    // Right of the window around column b, then moved left of it.
+    let place = |x: u32| Rect {
+        x,
+        y: plot.y + 8,
+        width: 160,
+        height: 120,
+    };
+    chart.config_mut().subplots[0].config.chart_area =
+        ChartArea(place(plot.x + plot.width * 2 / 3 + 8));
+    chart.config_mut().subplots[0].marker = Some(renderer::InsetMarker {
+        line: renderer::annotation::AnnotationLineStyle {
+            color: Color::from_rgb8(255, 0, 255),
+            width: 2.0,
+            style: renderer::line::LineStylePreset::Solid,
+        },
+        ..renderer::InsetMarker::default()
+    });
+    let list = [series("he", records()), inset_series()];
+    for moved in [false, true] {
+        if moved {
+            chart.config_mut().subplots[0].config.chart_area = ChartArea(place(plot.x + 4));
+        }
+        let parts = chart.config().inset_marker_parts(0).expect("a marker");
+        let [link, _] = parts.links.expect("connectors");
+        for scale in [1.0f32, 2.0] {
+            let img = export(&mut r, &chart, &list, scale);
+            let s = |p: [f32; 2]| ((p[0] * scale).round() as u32, (p[1] * scale).round() as u32);
+            let w = parts.window;
+            // The window's bottom edge, off the level drawn at its centre.
+            let edge = s([w.x + w.width * 0.25, w.y + w.height]);
+            assert!(
+                near(&img, edge, 2, is_magenta),
+                "{scale}x window, moved {moved}"
+            );
+            // A point a third of the way along the first connector.
+            let along = s([
+                link[0][0] + (link[1][0] - link[0][0]) / 3.0,
+                link[0][1] + (link[1][1] - link[0][1]) / 3.0,
+            ]);
+            assert!(
+                near(&img, along, 2, is_magenta),
+                "{scale}x connector, moved {moved}"
+            );
+        }
     }
 }
 

@@ -931,6 +931,7 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             series: vec!["sub".into()],
             link_x: None,
             link_y: None,
+            marker: None,
         });
         document.line_offsets = Some(renderer::data_config::LineOffsets {
             series: vec!["lo0".into(), "lo1".into()],

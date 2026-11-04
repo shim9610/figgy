@@ -549,6 +549,20 @@ fn category_edits() -> Vec<Edit> {
         Prefix,
         Changed
     );
+    // The window (#205) is the range of a categorical axis: the bottom one
+    // maps data like `bottom_x.min`, the top one draws chrome only.
+    category!(
+        "bottom_x.category_window",
+        |c| c.bottom_x.category_window = Some([0.5, 2.5]),
+        Packed,
+        Changed
+    );
+    category!(
+        "top_x.category_window",
+        |c| c.top_x.category_window = Some([0.5, 2.5]),
+        Prefix,
+        Changed
+    );
     category!(
         "bottom_x.categories[1].label",
         |c| c.bottom_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
@@ -1179,6 +1193,7 @@ fn baseline_with_subplot() -> Config {
         series: vec!["s".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     c
 }
@@ -1705,6 +1720,7 @@ fn config_fields_are_classified() {
         minor_tick_length: _,
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
         category_groups: _, // category_edits(): Prefix
+        category_window: _, // category_edits(): bottom Packed, top Prefix
         cross_at: _,   // axis!(...).cross_at: Prefix
         log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
         breaks: _, // breaks (None -> Some) + break_edits(): ranges/style/gap Packed, mark/frames Prefix
@@ -1797,6 +1813,7 @@ fn config_fields_are_classified() {
         series: _, // subplots[0].series
         link_x: _, // same rule as link_y
         link_y: _, // subplots[0].link_y (None -> Parent)
+        marker: _,
     } = subplots.into_iter().next().unwrap_or_default();
     let _ = baseline_with_subplot();
 }

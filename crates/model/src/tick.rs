@@ -487,10 +487,12 @@ fn spacing_for_pieces(axis: &AxisOptions, spacing: f64) -> f64 {
         let tolerance = 1e-9;
         ((hi / step + tolerance).floor() - (lo / step - tolerance).ceil() + 1.0).max(0.0)
     };
+    // A piece with no span (a cut that reaches past an end of the range,
+    // after a zoom) holds no ticks and draws no length: it is not short.
     let short = |step: f64| {
         map.raw_pieces().any(|(a, b)| {
             let (p, q) = (axis.min + a * span, axis.min + b * span);
-            majors(p.min(q), p.max(q), step) < 2.0
+            (b - a).abs() > 1e-12 && majors(p.min(q), p.max(q), step) < 2.0
         })
     };
     let mut step = spacing;
@@ -2168,5 +2170,33 @@ mod piece_spacing_tests {
         assert!(step <= 0.2 + 1e-12, "{step}");
         let k = (step / 10f64.powf(step.log10().floor())).round();
         assert!([1.0, 2.0, 5.0].contains(&k), "{step} is off the ladder");
+    }
+}
+
+#[cfg(test)]
+mod zoomed_break_tests {
+    // #205: a view that cuts into a break leaves a piece with no span; the
+    // walk keeps the axis' spacing instead of stepping down for it.
+    #[test]
+    fn a_range_that_cuts_into_a_break_keeps_its_spacing() {
+        let mut axis = crate::default::default_config().left_y;
+        axis.min = 19.5;
+        axis.max = 24.0;
+        axis.major_spacing =
+            crate::tick::axis_major_spacing(&crate::config::AxisScale::Linear, 19.5, 24.0);
+        axis.minor_count = 4;
+        for sizing in [
+            crate::config::PieceSizing::ByValue,
+            crate::config::PieceSizing::Weights(vec![1.0, 9.0]),
+        ] {
+            axis.breaks = Some(crate::config::AxisBreaks {
+                ranges: vec![crate::config::AxisBreak::new(0.25, 19.6)],
+                sizing: sizing.clone(),
+                ..Default::default()
+            });
+            assert_eq!(super::effective_major_spacing(&axis), 0.5, "{sizing:?}");
+            let majors = super::major_ticks(&axis).count();
+            assert!(majors <= 10, "{sizing:?}: {majors} majors");
+        }
     }
 }

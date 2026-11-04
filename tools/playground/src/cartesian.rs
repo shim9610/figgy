@@ -687,7 +687,8 @@ impl CartesianHost {
         }
         let at = |axis: &AxisOptions, f: f32| {
             let f = if axis.inverted { 1.0 - f } else { f } as f64;
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             from_space(axis, a + (b - a) * f)
         };
         Some((at(&d.config.bottom_x, fx), at(&d.config.left_y, fy)))
@@ -733,7 +734,8 @@ impl CartesianHost {
         };
         let shift = |axis: &AxisOptions, frac: f64| {
             let frac = if axis.inverted { -frac } else { frac };
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             let s = (b - a) * frac;
             (from_space(axis, a + s), from_space(axis, b + s))
         };
@@ -758,7 +760,8 @@ impl CartesianHost {
         let fy = (1.0 - (p[1] - area.y as f32) / area.height as f32).clamp(0.0, 1.0) as f64;
         let scale = |axis: &AxisOptions, f: f64| {
             let f = if axis.inverted { 1.0 - f } else { f };
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             let c = a + (b - a) * f;
             (
                 from_space(axis, c - (c - a) * factor),
@@ -2269,6 +2272,7 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
         series: Vec::new(),
         link_x: None,
         link_y: None,
+        marker: None,
     }
 }
 

@@ -859,6 +859,7 @@ fn annotation_request(document: &Config) -> RasterRequest<'_> {
         scale: 1.0,
         selected: None,
         policy: FontPolicy::for_style(&document.draw_style),
+        markers: Some(document),
     }
 }
 
