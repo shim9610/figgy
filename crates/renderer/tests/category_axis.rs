@@ -111,12 +111,13 @@ fn categorical_and_numeric(nx: usize, ny: usize) -> (Config, Config) {
 }
 
 /// The axis raster (grid, axes, ticks, labels, titles) of a categorical
-/// axis is the numeric twin's, pixel for pixel, at 1x and 2x, also when the
-/// labels crowd and are thinned.
+/// axis is the numeric twin's, pixel for pixel, at 1x and 2x, while its
+/// labels fit. Crowded, a categorical axis staggers its labels instead of
+/// thinning them (#205): every category keeps its name.
 #[test]
 fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
     let mut compared = 0;
-    for (nx, ny) in [(7, 4), (1, 2), (64, 40)] {
+    for (nx, ny) in [(7, 4), (1, 2)] {
         let (categorical, numeric) = categorical_and_numeric(nx, ny);
         for scale in [1.0f32, 2.0] {
             let (a, b) = if scale == 1.0 {
@@ -141,7 +142,13 @@ fn a_categorical_axis_rasterizes_like_its_numeric_twin() {
             }
         }
     }
-    assert_eq!(compared, 18);
+    assert_eq!(compared, 12);
+    // Crowded: the categorical axis draws labels its twin thins away.
+    let (categorical, numeric) = categorical_and_numeric(64, 40);
+    let left = try_raster_chart_layer_to_rgba(&categorical, AxisLayerKind::Decoration).unwrap();
+    let right = try_raster_chart_layer_to_rgba(&numeric, AxisLayerKind::Decoration).unwrap();
+    let ink = |px: &[u8]| px.chunks_exact(4).filter(|p| p[3] > 0).count();
+    assert!(ink(&left) > ink(&right), "staggered labels add ink");
 }
 
 fn gpu() -> RendererDevice {

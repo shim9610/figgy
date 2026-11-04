@@ -211,10 +211,13 @@ pub fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) -> Rect
 
 /// Every tick label of a categorical axis with its tick position, in draw
 /// order: `categories[i].label` at category `i`, measured and placed like a
-/// plain numeric label in the axis' label style, and thinned by the same
-/// [`label_stride`] rule when neighbours crowd. An empty label keeps its
-/// slot in the stride and draws nothing. Nothing is collected: the stride is
-/// measured on the categories themselves.
+/// plain numeric label in the axis' label style. Every category is named
+/// (#205): when neighbours crowd, the labels are staggered over as many
+/// rows as the [`label_stride`] rule would have thinned them by, each row
+/// one label's extent (plus a quarter em) further from the axis, so the
+/// labels of one row stay clear of each other. An empty label keeps its
+/// slot and draws nothing. Nothing is collected: the rows are measured on
+/// the categories themselves.
 pub fn each_category_tick_label(
     axis: &AxisOptions,
     categories: &[crate::config::Category],
@@ -253,13 +256,38 @@ pub fn each_category_tick_label(
         };
         (empty, position, label_rect(origin, metrics))
     };
-    let stride = label_stride(categories.len(), ls.font_size, |index| placed(index).2);
-    for index in (0..categories.len()).step_by(stride) {
+    let rows = label_stride(categories.len(), ls.font_size, |index| placed(index).2);
+    // One row's step away from the axis: the largest extent across it.
+    let horizontal = matches!(side, Side::Top | Side::Bottom);
+    let step = if rows > 1 {
+        (0..categories.len())
+            .map(|index| {
+                let bounds = placed(index).2;
+                if horizontal {
+                    bounds.height
+                } else {
+                    bounds.width
+                }
+            })
+            .filter(|v| v.is_finite())
+            .fold(0.0f32, f32::max)
+            + ls.font_size * 0.25
+    } else {
+        0.0
+    };
+    for index in 0..categories.len() {
         let (empty, position, bounds) = placed(index);
         let finite = [bounds.x, bounds.y, bounds.width, bounds.height]
             .into_iter()
             .all(f32::is_finite);
         if !empty && finite {
+            let away = (index % rows) as f32 * step;
+            let position = match side {
+                Side::Bottom => (position.0, position.1 + away),
+                Side::Top => (position.0, position.1 - away),
+                Side::Left => (position.0 - away, position.1),
+                Side::Right => (position.0 + away, position.1),
+            };
             each(text_of(index), position);
         }
     }
@@ -545,14 +573,20 @@ pub fn emit_category_groups(
         side.clone(),
         measure,
         |value| value_to_screen(value, axis, side.clone(), plot),
-        |text, _| {
+        |text, position| {
             let metrics = match &text {
                 TickText::Plain(plain) => {
                     measure.measure_plain(plain, &ls.label_font, ls.font_size)
                 }
                 TickText::Power(rich) => measure.measure_rich(rich),
             };
-            band = band.max(metrics.height());
+            // A staggered label (#205) lies its row's step further out.
+            let edge = if side == Side::Bottom {
+                plot.y + plot.height
+            } else {
+                plot.y
+            };
+            band = band.max(metrics.height() + (position.1 - edge).abs());
         },
     );
     let below = side == Side::Bottom;
@@ -612,5 +646,82 @@ pub fn emit_category_groups(
                 rotation: None,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod category_stagger_tests {
+    use super::*;
+    use crate::text::{MeasureText, TextExtents};
+
+    struct Wide;
+    impl MeasureText for Wide {
+        fn measure_plain(&self, text: &str, _font: &str, size: f32) -> TextExtents {
+            TextExtents {
+                width: text.chars().count() as f32 * size * 0.6,
+                ascent: size * 0.8,
+                descent: size * 0.2,
+            }
+        }
+        fn measure_rich(&self, _text: &crate::text::RichText) -> TextExtents {
+            TextExtents {
+                width: 10.0,
+                ascent: 8.0,
+                descent: 2.0,
+            }
+        }
+    }
+
+    // #205: forty long names on a 400 px axis are all drawn, staggered
+    // over rows, and no two of one row overlap.
+    #[test]
+    fn crowded_categories_stagger_and_keep_every_name() {
+        let mut axis = crate::default::default_config().bottom_x;
+        axis.categories = Some(
+            (0..40)
+                .map(|i| crate::config::Category::new(format!("c{i}"), format!("name {i:02}")))
+                .collect(),
+        );
+        let plot = RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        let categories = axis.categories.clone().unwrap();
+        let mut drawn: Vec<(usize, (f32, f32))> = Vec::new();
+        let mut n = 0;
+        each_category_tick_label(
+            &axis,
+            &categories,
+            Side::Bottom,
+            &Wide,
+            |v| value_to_screen(v, &axis, Side::Bottom, &plot),
+            |_, position| {
+                drawn.push((n, position));
+                n += 1;
+            },
+        );
+        assert_eq!(drawn.len(), 40, "every category is named");
+        let rows: Vec<f32> = {
+            let mut ys: Vec<f32> = drawn.iter().map(|(_, p)| p.1).collect();
+            ys.sort_by(f32::total_cmp);
+            ys.dedup();
+            ys
+        };
+        assert!(rows.len() > 1, "crowded labels take more than one row");
+        let width = Wide
+            .measure_plain("name 00", "", axis.label_style.font_size)
+            .width;
+        for row in rows {
+            let xs: Vec<f32> = drawn
+                .iter()
+                .filter(|(_, p)| p.1 == row)
+                .map(|(_, p)| p.0)
+                .collect();
+            for pair in xs.windows(2) {
+                assert!(pair[1] - pair[0] >= width, "{pair:?} overlap on row {row}");
+            }
+        }
     }
 }
