@@ -913,6 +913,83 @@ pub struct LevelPlacement<'a> {
 
 /// The gap between a stroke's end and its label, logical pixels.
 const LABEL_GAP: f32 = 4.0;
+/// The space kept between two stacked level labels, logical pixels.
+const LABEL_STACK_GAP: f32 = 1.0;
+/// How far a moved label stands off its stroke's end so its leader line
+/// shows, logical pixels.
+const LEADER_RUN: f32 = 10.0;
+/// The widest share of a level's slot that the arrows meeting one of its
+/// ends spread over, and the most room between two of them, pixels.
+const ARROW_SPREAD: f32 = 0.6;
+const ARROW_STEP: f32 = 12.0;
+/// Where along its arrow a transition label is tried, from the middle out
+/// in steps of a twentieth.
+const LABEL_STOPS: [f32; 17] = [
+    0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65, 0.3, 0.7, 0.25, 0.75, 0.2, 0.8, 0.15, 0.85, 0.1, 0.9,
+];
+
+/// Where the emit and the pick place a series' parts this draw (#205):
+/// each arrow's ends spread across the levels they meet, each level label
+/// stacked clear of the others in its column, and each transition label at
+/// the first free spot along its arrow. Display parameters only (rule 1),
+/// computed from the SSOT and the panel on every raster and pick and
+/// dropped after it: the three lists are the per-raster placement scratch
+/// #205 names (rule 3).
+pub struct LevelLayout {
+    arrows: Vec<Option<([f32; 2], [f32; 2])>>,
+    /// A level label's shift from its stroke, `[run, dy]`: `run` is the
+    /// leader's horizontal run (zero when the label did not move).
+    level_shift: Vec<[f32; 2]>,
+    /// The side a level label is drawn on: the style's, or the other one
+    /// for a column whose labels would leave the plot on that side.
+    level_side: Vec<LevelLabelSide>,
+    transition_spot: Vec<Option<([f32; 2], LevelLabelSide)>>,
+}
+
+/// The room a transition label keeps from the parts around it, pixels.
+const LABEL_CLEARANCE: f32 = 2.0;
+
+/// Whether the segment `a`–`b` passes within [`LABEL_CLEARANCE`] of `rect`
+/// (Liang–Barsky clipping against the grown rectangle).
+fn crosses(a: [f32; 2], b: [f32; 2], rect: crate::layout::RectF) -> bool {
+    let c = LABEL_CLEARANCE;
+    let (x0, y0) = (rect.x - c, rect.y - c);
+    let (x1, y1) = (rect.x + rect.width + c, rect.y + rect.height + c);
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [
+        (-dx, a[0] - x0),
+        (dx, x1 - a[0]),
+        (-dy, a[1] - y0),
+        (dy, y1 - a[1]),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Whether two rectangles come closer than [`LABEL_CLEARANCE`].
+fn overlaps(a: crate::layout::RectF, b: crate::layout::RectF) -> bool {
+    let c = LABEL_CLEARANCE;
+    a.x < b.x + b.width + c
+        && b.x < a.x + a.width + c
+        && a.y < b.y + b.height + c
+        && b.y < a.y + a.height + c
+}
 
 impl LevelPlacement<'_> {
     fn column_x(&self, column: &str) -> Option<f64> {
@@ -947,30 +1024,337 @@ impl LevelPlacement<'_> {
         Some(([x0, y], [x1, y]))
     }
 
-    /// The arrow of transition row `index`: its tail and its tip (the head
-    /// end under `style.transition.direction`; for `None`, lower then
-    /// upper), or `None` when either level is not drawn.
-    pub fn transition_arrow(
+    /// The level rows transition row `index` joins, lower then upper, with
+    /// both drawn.
+    fn transition_rows(
         &self,
         records: &EnergyLevelSeries,
         style: &EnergyLevelStyle,
         index: usize,
-    ) -> Option<([f32; 2], [f32; 2])> {
+    ) -> Option<(usize, usize)> {
         let transition = records.transitions.get(index)?;
-        let end = |id: &str| -> Option<[f32; 2]> {
+        let row = |id: &str| {
             let row = records.levels.iter().position(|l| l.id == id)?;
-            let (a, b) = self.level_stroke(records, style, row)?;
-            let level = &records.levels[row];
-            let x = self.column_x(&level.column)? + f64::from(transition.x_offset);
-            let px = self.px(AnnotationAxis::X, x).unwrap_or((a[0] + b[0]) / 2.0);
-            Some([px, a[1]])
+            self.level_stroke(records, style, row).map(|_| row)
         };
-        let lower = end(&transition.lower)?;
-        let upper = end(&transition.upper)?;
-        Some(match style.transition.direction {
-            TransitionDirection::Emission => (upper, lower),
-            TransitionDirection::Absorption | TransitionDirection::None => (lower, upper),
-        })
+        Some((row(&transition.lower)?, row(&transition.upper)?))
+    }
+
+    /// The arrows of every transition row, their ends spread across the
+    /// levels they meet: the arrows that meet one end of a level are
+    /// ordered by where their other ends lie, so they do not cross there,
+    /// and spaced over [`ARROW_SPREAD`] of the slot, at most [`ARROW_STEP`]
+    /// apart. A host's `x_offset` adds to the spread.
+    fn arrows(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+    ) -> Vec<Option<([f32; 2], [f32; 2])>> {
+        let rows: Vec<Option<(usize, usize)>> = (0..records.transitions.len())
+            .map(|index| self.transition_rows(records, style, index))
+            .collect();
+        let centre = |row: usize| -> Option<([f32; 2], f32)> {
+            let (a, b) = self.level_stroke(records, style, row)?;
+            Some(([(a[0] + b[0]) / 2.0, a[1]], (b[0] - a[0]).abs()))
+        };
+        // Each end's place among the arrows meeting that level: a sort key
+        // per (transition, end), then the rank within the level.
+        let mut ends: Vec<(usize, usize, bool, f32, f32)> = Vec::new();
+        for (index, pair) in rows.iter().enumerate() {
+            let Some((lower, upper)) = *pair else {
+                continue;
+            };
+            for (row, other, is_lower) in [(lower, upper, true), (upper, lower, false)] {
+                if let Some((c, _)) = centre(other) {
+                    ends.push((row, index, is_lower, c[0], c[1]));
+                }
+            }
+        }
+        ends.sort_by(|a, b| {
+            (a.0, a.3, a.4, a.1)
+                .partial_cmp(&(b.0, b.3, b.4, b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
+        let mut start = 0;
+        while start < ends.len() {
+            let row = ends[start].0;
+            let end = ends[start..]
+                .iter()
+                .position(|e| e.0 != row)
+                .map_or(ends.len(), |n| start + n);
+            let count = end - start;
+            if let Some((c, width)) = centre(row) {
+                let step = if count > 1 {
+                    (width * ARROW_SPREAD / (count - 1) as f32).min(ARROW_STEP)
+                } else {
+                    0.0
+                };
+                for (k, e) in ends[start..end].iter().enumerate() {
+                    let x = c[0] + (k as f32 - (count - 1) as f32 / 2.0) * step;
+                    x_of[e.1][usize::from(!e.2)] = x;
+                }
+            }
+            start = end;
+        }
+        rows.iter()
+            .enumerate()
+            .map(|(index, pair)| {
+                let (lower, upper) = (*pair)?;
+                let transition = &records.transitions[index];
+                let shift = {
+                    let x = self.column_x(&records.levels[lower].column)?;
+                    let a = self.px(AnnotationAxis::X, x)?;
+                    let b = self.px(AnnotationAxis::X, x + f64::from(transition.x_offset))?;
+                    b - a
+                };
+                let point = |row: usize, slot: usize| -> Option<[f32; 2]> {
+                    let (c, _) = centre(row)?;
+                    let x = x_of[index][slot];
+                    Some([if x.is_finite() { x } else { c[0] } + shift, c[1]])
+                };
+                let lower = point(lower, 0)?;
+                let upper = point(upper, 1)?;
+                Some(match style.transition.direction {
+                    TransitionDirection::Emission => (upper, lower),
+                    TransitionDirection::Absorption | TransitionDirection::None => (lower, upper),
+                })
+            })
+            .collect()
+    }
+
+    /// The layout of `records` in this placement: see [`LevelLayout`].
+    pub fn layout(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+    ) -> LevelLayout {
+        let arrows = self.arrows(records, style);
+        let plot = self.space.plot_rect();
+        // A column whose labels would leave the plot on the style's side
+        // draws them on the other side.
+        let mut level_side = vec![style.label_side; records.levels.len()];
+        let flip = match style.label_side {
+            LevelLabelSide::Right => Some(LevelLabelSide::Left),
+            LevelLabelSide::Left => Some(LevelLabelSide::Right),
+            LevelLabelSide::Above => None,
+        };
+        if let Some(other) = flip {
+            let outside = |rect: crate::layout::RectF| {
+                rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5
+            };
+            let mut flipped: Vec<&str> = Vec::new();
+            for index in 0..records.levels.len() {
+                let column = records.levels[index].column.as_str();
+                if flipped.contains(&column) {
+                    continue;
+                }
+                let leaves = self
+                    .label_on(records, style, index, measure, [0.0; 2], style.label_side)
+                    .is_some_and(|t| outside(t.rect()));
+                if leaves {
+                    flipped.push(column);
+                }
+            }
+            for (index, level) in records.levels.iter().enumerate() {
+                if flipped.contains(&level.column.as_str()) {
+                    level_side[index] = other;
+                }
+            }
+        }
+        // Level labels: per lane, in order of their strokes, stacked so no
+        // two overlap. A lane is the gap a label is drawn in: right of its
+        // column, left of it (the lane right of the column before), or above
+        // it. A run of overlapping labels becomes one group centred on the
+        // mean of their own places, and a group that then meets the one
+        // above it merges with it.
+        let lane = |index: usize| -> (u8, i64) {
+            let column = self
+                .column_x(&records.levels[index].column)
+                .map_or(i64::MIN, |x| x as i64);
+            match level_side[index] {
+                LevelLabelSide::Right => (0, column),
+                LevelLabelSide::Left => (0, column - 1),
+                LevelLabelSide::Above => (1, column),
+            }
+        };
+        let mut level_shift = vec![[0.0f32; 2]; records.levels.len()];
+        let mut placed: Vec<(usize, f32, f32)> = Vec::new();
+        for index in 0..records.levels.len() {
+            let Some(text) =
+                self.label_at(records, style, index, measure, [0.0; 2], level_side[index])
+            else {
+                continue;
+            };
+            let rect = text.rect();
+            placed.push((index, rect.y + rect.height / 2.0, rect.height));
+        }
+        placed.sort_by(|a, b| {
+            lane(a.0)
+                .cmp(&lane(b.0))
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let mut start = 0;
+        while start < placed.len() {
+            let key = lane(placed[start].0);
+            let end = placed[start..]
+                .iter()
+                .position(|p| lane(p.0) != key)
+                .map_or(placed.len(), |n| start + n);
+            let run = &placed[start..end];
+            // Groups as (first, last, top), in screen order.
+            let mut groups: Vec<(usize, usize, f32)> = Vec::new();
+            for (k, &(_, centre, height)) in run.iter().enumerate() {
+                groups.push((k, k, centre - height / 2.0));
+                while groups.len() > 1 {
+                    let (b0, b1, _) = groups[groups.len() - 1];
+                    let (a0, a1, a_top) = groups[groups.len() - 2];
+                    let a_height: f32 = run[a0..=a1].iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                    if a_top + a_height <= groups[groups.len() - 1].2 {
+                        break;
+                    }
+                    let members = &run[a0..=b1];
+                    let total: f32 = members.iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                    let mean = members.iter().map(|p| p.1).sum::<f32>() / members.len() as f32;
+                    let top = (mean - total / 2.0)
+                        .min(plot.y + plot.height - total)
+                        .max(plot.y);
+                    groups.pop();
+                    groups.pop();
+                    groups.push((a0, b1.max(b0), top));
+                }
+            }
+            for (first, last, top) in groups {
+                let moved = last > first;
+                let mut y = top;
+                for &(index, centre, height) in &run[first..=last] {
+                    let new_centre = y + height / 2.0;
+                    level_shift[index] =
+                        [if moved { LEADER_RUN } else { 0.0 }, new_centre - centre];
+                    y += height + LABEL_STACK_GAP;
+                }
+            }
+            start = end;
+        }
+        // Transition labels: the first spot along each arrow, right of it
+        // then left, clear of the level labels, the strokes, the other
+        // arrows and the labels placed before it; when none is clear, the
+        // middle.
+        let mut obstacles: Vec<crate::layout::RectF> = Vec::new();
+        for index in 0..records.levels.len() {
+            if let Some((a, b)) = self.level_stroke(records, style, index) {
+                let half = style.level.width / 2.0 + 1.0;
+                obstacles.push(crate::layout::RectF {
+                    x: a[0].min(b[0]),
+                    y: a[1] - half,
+                    width: (b[0] - a[0]).abs(),
+                    height: half * 2.0,
+                });
+            }
+            if let Some(text) = self.label_at(
+                records,
+                style,
+                index,
+                measure,
+                level_shift[index],
+                level_side[index],
+            ) {
+                obstacles.push(text.rect());
+            }
+        }
+        // The strokes and level labels sorted by their tops, so a spot
+        // tests only the ones whose rows can reach it; the transition labels
+        // placed so far are a list of their own.
+        obstacles.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+        let tallest = obstacles.iter().map(|o| o.height).fold(0.0f32, f32::max);
+        let mut placed_labels: Vec<crate::layout::RectF> = Vec::new();
+        let near = |rect: crate::layout::RectF| {
+            let from = obstacles.partition_point(|o| o.y < rect.y - tallest - LABEL_CLEARANCE);
+            let to = obstacles.partition_point(|o| o.y <= rect.y + rect.height + LABEL_CLEARANCE);
+            &obstacles[from..to.max(from)]
+        };
+        let mut transition_spot = vec![None; records.transitions.len()];
+        for (index, transition) in records.transitions.iter().enumerate() {
+            let (Some(text), Some((tail, tip))) = (transition.label.as_ref(), arrows[index]) else {
+                continue;
+            };
+            let at = |t: f32| {
+                [
+                    tail[0] + (tip[0] - tail[0]) * t,
+                    tail[1] + (tip[1] - tail[1]) * t,
+                ]
+            };
+            let block = |t: f32, side: LevelLabelSide| {
+                let p = at(t);
+                Self::label_block(text, measure, p, p[0], side, transition.label_offset).rect()
+            };
+            // The cost of a spot: a label or stroke it overlaps weighs more
+            // than every arrow it crosses together, so a crowded bundle
+            // still keeps its labels apart. The first spot of least cost
+            // wins; a label the host moved stays at the middle.
+            let host_placed = transition.label_offset != [0.0; 2];
+            let cost = |t: f32, side: LevelLabelSide| -> usize {
+                let rect = block(t, side);
+                let hits = near(rect).iter().filter(|o| overlaps(**o, rect)).count()
+                    + placed_labels.iter().filter(|o| overlaps(**o, rect)).count();
+                let reach = |a: [f32; 2], b: [f32; 2]| {
+                    a[0].max(b[0]) >= rect.x - LABEL_CLEARANCE
+                        && a[0].min(b[0]) <= rect.x + rect.width + LABEL_CLEARANCE
+                        && a[1].max(b[1]) >= rect.y - LABEL_CLEARANCE
+                        && a[1].min(b[1]) <= rect.y + rect.height + LABEL_CLEARANCE
+                };
+                let crossings = arrows
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, arrow)| {
+                        *other != index
+                            && arrow.is_some_and(|(a, b)| reach(a, b) && crosses(a, b, rect))
+                    })
+                    .count();
+                hits * (arrows.len() + 1) + crossings
+            };
+            let spot = if host_placed {
+                (at(0.5), LevelLabelSide::Right)
+            } else {
+                let mut best = (usize::MAX, 0.5, LevelLabelSide::Right);
+                'search: for &t in &LABEL_STOPS {
+                    for side in [LevelLabelSide::Right, LevelLabelSide::Left] {
+                        let c = cost(t, side);
+                        if c < best.0 {
+                            best = (c, t, side);
+                            if c == 0 {
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+                (at(best.1), best.2)
+            };
+            let rect = {
+                let p = spot.0;
+                Self::label_block(text, measure, p, p[0], spot.1, transition.label_offset).rect()
+            };
+            placed_labels.push(rect);
+            transition_spot[index] = Some(spot);
+        }
+        LevelLayout {
+            arrows,
+            level_shift,
+            level_side,
+            transition_spot,
+        }
+    }
+
+    /// The arrow of transition row `index` in `layout`: its tail and its
+    /// tip (the head end under `style.transition.direction`; for `None`,
+    /// lower then upper), or `None` when either level is not drawn.
+    pub fn transition_arrow(
+        &self,
+        layout: &LevelLayout,
+        index: usize,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        layout.arrows.get(index).copied().flatten()
     }
 
     /// The line of limit row `index` across the plot, or `None` outside
@@ -1028,39 +1412,111 @@ impl LevelPlacement<'_> {
         }
     }
 
-    /// The placed label of row `index` of `part`, or `None` when the row
-    /// has no label or is not drawn.
+    /// The label of level row `index` moved by `shift` (`[run, dy]`, see
+    /// [`LevelLayout`]) away from its own place: further out by the run, on
+    /// its side, and down by `dy`.
+    fn label_on<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+        shift: [f32; 2],
+        side: LevelLabelSide,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        let level = records.levels.get(index)?;
+        let (a, b) = self.level_stroke(records, style, index)?;
+        let run = match side {
+            LevelLabelSide::Right => shift[0],
+            LevelLabelSide::Left => -shift[0],
+            LevelLabelSide::Above => 0.0,
+        };
+        Some(Self::label_block(
+            level.label.as_ref()?,
+            measure,
+            b,
+            a[0],
+            side,
+            [
+                level.label_offset[0] + run,
+                level.label_offset[1] + shift[1],
+            ],
+        ))
+    }
+
+    /// The label of level row `index` on the side `layout` gives it.
+    fn label_at<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+        shift: [f32; 2],
+        side: LevelLabelSide,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        self.label_on(records, style, index, measure, shift, side)
+    }
+
+    /// The leader line from level row `index`'s stroke to its label when
+    /// the layout moved the label, or `None`.
+    fn leader(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        layout: &LevelLayout,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let shift = *layout.level_shift.get(index)?;
+        if shift[0] == 0.0 && shift[1].abs() < 0.5 {
+            return None;
+        }
+        let (a, b) = self.level_stroke(records, style, index)?;
+        let side = *layout.level_side.get(index)?;
+        let rect = self
+            .label_at(records, style, index, measure, shift, side)?
+            .rect();
+        let mid = rect.y + rect.height / 2.0;
+        Some(match side {
+            LevelLabelSide::Right => ([b[0] + 1.0, b[1]], [rect.x - 1.0, mid]),
+            LevelLabelSide::Left => ([a[0] - 1.0, a[1]], [rect.x + rect.width + 1.0, mid]),
+            LevelLabelSide::Above => (
+                [(a[0] + b[0]) / 2.0, a[1] - 1.0],
+                [rect.x + rect.width / 2.0, rect.y + rect.height + 1.0],
+            ),
+        })
+    }
+
+    /// The placed label of row `index` of `part` in `layout`, or `None`
+    /// when the row has no label or is not drawn.
     pub fn label<'t>(
         &self,
         records: &'t EnergyLevelSeries,
         style: &EnergyLevelStyle,
+        layout: &LevelLayout,
         part: LabelPart,
         index: usize,
         measure: &dyn crate::text::MeasureText,
     ) -> Option<crate::sink::PlacedText<'t>> {
         match part {
             LabelPart::Level => {
-                let level = records.levels.get(index)?;
-                let (a, b) = self.level_stroke(records, style, index)?;
-                Some(Self::label_block(
-                    level.label.as_ref()?,
-                    measure,
-                    b,
-                    a[0],
-                    style.label_side,
-                    level.label_offset,
-                ))
+                let shift = layout.level_shift.get(index).copied().unwrap_or([0.0; 2]);
+                let side = layout
+                    .level_side
+                    .get(index)
+                    .copied()
+                    .unwrap_or(style.label_side);
+                self.label_at(records, style, index, measure, shift, side)
             }
             LabelPart::Transition => {
                 let transition = records.transitions.get(index)?;
-                let (tail, tip) = self.transition_arrow(records, style, index)?;
-                let mid = [(tail[0] + tip[0]) / 2.0, (tail[1] + tip[1]) / 2.0];
+                let (spot, side) = layout.transition_spot.get(index).copied().flatten()?;
                 Some(Self::label_block(
                     transition.label.as_ref()?,
                     measure,
-                    mid,
-                    mid[0],
-                    LevelLabelSide::Right,
+                    spot,
+                    spot[0],
+                    side,
                     transition.label_offset,
                 ))
             }
@@ -1098,6 +1554,7 @@ impl LevelPlacement<'_> {
     ) {
         use crate::sink::{Slot, StrokeStyle};
         let slot = Slot::Above;
+        let layout = self.layout(records, style, measure);
         for index in 0..records.limits.len() {
             if let Some((a, b)) = self.limit_line(records, index) {
                 let line = &style.limit;
@@ -1139,7 +1596,7 @@ impl LevelPlacement<'_> {
         }
         let arrow = &style.transition;
         for (index, transition) in records.transitions.iter().enumerate() {
-            let Some((tail, tip)) = self.transition_arrow(records, style, index) else {
+            let Some((tail, tip)) = self.transition_arrow(&layout, index) else {
                 continue;
             };
             let picked = self.picked == Some(PickedRow::Transition(index));
@@ -1183,9 +1640,24 @@ impl LevelPlacement<'_> {
                 );
             }
         }
+        for index in 0..records.levels.len() {
+            if let Some((a, b)) = self.leader(records, style, &layout, index, measure) {
+                sink.stroke(
+                    slot,
+                    a,
+                    b,
+                    &StrokeStyle {
+                        width: 0.6,
+                        color: style.level.color,
+                        dash: &[],
+                        tag: "energy_leader",
+                    },
+                );
+            }
+        }
         for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
             for index in 0..records.part_len(part) {
-                if let Some(text) = self.label(records, style, part, index, measure) {
+                if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     sink.text(slot, &text);
                 }
             }
@@ -1234,6 +1706,7 @@ impl LevelPlacement<'_> {
         cursor: [f32; 2],
         max_distance: f32,
     ) -> Option<(LevelHit, f32)> {
+        let layout = self.layout(records, style, measure);
         let mut best: Option<(LevelHit, f32)> = None;
         let mut offer = |hit: LevelHit, distance: f32| {
             if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
@@ -1247,7 +1720,7 @@ impl LevelPlacement<'_> {
             }
         }
         for index in 0..records.transitions.len() {
-            if let Some((tail, tip)) = self.transition_arrow(records, style, index) {
+            if let Some((tail, tip)) = self.transition_arrow(&layout, index) {
                 let half = style.transition.width.max(style.transition.head_width) / 2.0;
                 let edge = segment_distance(cursor, tail, tip) - half;
                 offer(LevelHit::Transition(index), edge.max(0.0));
@@ -1255,7 +1728,7 @@ impl LevelPlacement<'_> {
         }
         for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
             for index in 0..records.part_len(part) {
-                if let Some(text) = self.label(records, style, part, index, measure) {
+                if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     offer(
                         LevelHit::Label(part, index),
                         rect_distance(cursor, text.rect()),

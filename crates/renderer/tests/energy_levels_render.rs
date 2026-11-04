@@ -451,14 +451,16 @@ fn levels_transitions_and_labels_pick_with_their_rows() {
             }
             other => panic!("{scale}x the arrow between levels: {other:?}"),
         }
-        // The label right of the 60 eV stroke.
-        let (lx, ly) = at(&chart, 2.0 + 0.35, 60.0, scale);
+        // The label of the 60 eV stroke: its column is the last, and the
+        // label would leave the plot on the right, so it is drawn on the
+        // left of the stroke (#205).
+        let (lx, ly) = at(&chart, 2.0 - 0.35, 60.0, scale);
         match pick(
             &mut r,
             &chart,
             &list,
             scale,
-            (lx + (14.0 * scale) as u32, ly),
+            (lx - (14.0 * scale) as u32, ly),
         ) {
             Some(renderer::PickedData::ValueLabel {
                 category_index,
