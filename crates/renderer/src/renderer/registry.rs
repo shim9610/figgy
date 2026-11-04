@@ -293,7 +293,8 @@ pub(super) fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
 }
 
 /// Whether two axes' breaks map data to the same pixels (#200): the same
-/// cut ranges, style and gap. The mark and the piece frames are chrome.
+/// cut ranges, style, gap and piece sizing (#205). The mark and the piece
+/// frames are chrome.
 pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> bool {
     fn geometry(
         axis: &AxisOptions,
@@ -301,6 +302,7 @@ pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> b
         &[crate::config::AxisBreak],
         crate::config::AxisBreakStyle,
         f32,
+        &crate::config::PieceSizing,
     )> {
         axis.breaks.as_ref().map(|breaks| {
             let crate::config::AxisBreaks {
@@ -310,8 +312,9 @@ pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> b
                 // Drawn on the axis line, not part of the mapping.
                 mark: _,
                 frame_each_panel: _,
+                sizing,
             } = breaks;
-            (ranges.as_slice(), *style, *gap)
+            (ranges.as_slice(), *style, *gap, sizing)
         })
     }
     geometry(left) == geometry(right)

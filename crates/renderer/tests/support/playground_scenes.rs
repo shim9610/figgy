@@ -3989,8 +3989,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         offset: [0.0; 2],
     });
     config.bottom_x.out_margin = 72.0;
-    // The ground state keeps a thin strip below the break: the Continuous
-    // break shares the height by value span.
+    // The ground state keeps a thin strip below the break.
     config.left_y.min = -0.15;
     config.left_y.max = 25.2;
     config.left_y.minor_count = 1;
@@ -3999,7 +3998,10 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         style: AxisBreakStyle::Continuous,
         gap: 0.04,
         mark: renderer::config::BreakMark::default(),
+        // No piece frames: a frame on a half pixel blurs at 1x (#205).
         frame_each_panel: false,
+        // A thin ground-state strip at a scale of its own (#205).
+        sizing: renderer::config::PieceSizing::Weights(vec![1.0, 9.0]),
     });
     series
         .write_continuum(

@@ -387,6 +387,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         gap: 0.04,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     // The continuum: annotations written from the limits.
     let top = 25.2;

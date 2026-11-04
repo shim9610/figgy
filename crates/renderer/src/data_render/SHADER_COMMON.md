@@ -408,13 +408,18 @@ The code is the fragment [`data_render/common/projection.wgsl`](common/projectio
 **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
 `axis_pair_to_t` takes the axis' `AxisCuts` (`cuts_of(transform.breaks,
 transform.break_info, axis)`) and remaps the data `t` through `cut_remap`
-before the panel affine: linear at the piece scale inside each piece and
+before the panel affine: linear inside each piece at that piece's scale and
 linear across each cut onto its gap, so the map is continuous, increasing
-and one-to-one. The knots are unrolled, since a dynamic index into a value
-array is not portable. `cut_unmap` is its inverse (the contour label anchor
-walks back from panel `t`), and `cut_scale` is the slope inside a piece:
-the vector and line pick modules multiply their panel scale by it so pixel
-lengths agree with the draw. Entries that never draw on a broken axis
+and one-to-one. Each piece's scale is read off the knots that bound it
+(`cut_piece_slope`), so pieces sized by weight
+([#205](https://github.com/shim9610/figgy/issues/205), `PieceSizing`) need
+no extra uniform; sized by value they all equal `break_info`'s common
+scale. The knots are unrolled, since a dynamic index into a value array is
+not portable. `cut_unmap` is its inverse (the contour label anchor walks
+back from panel `t`), and `cut_scale_at(cuts, t)` is the slope of the piece
+raw `t` lies in (`axis_data_t` gives a value's raw `t`): the vector and
+line pick modules multiply their panel scale by it at the point they
+measure, so pixel lengths agree with the draw. Entries that never draw on a broken axis
 (category bars, polar samples, the 3D projection) pass `no_cuts()`. Nothing
 is masked in a shader: the gaps are left out by drawing the data slot once
 per piece, scissored to it, and a pick whose cursor is in a gap is refused

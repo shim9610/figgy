@@ -145,10 +145,13 @@ pub fn prune_numeric_labels(
     // On a broken linear axis (#200) the stride counts on the unbroken
     // walk, so each piece keeps the round multiples it would keep without
     // the cut, not a cadence carried over from the piece before.
+    // Pieces with scales of their own (#205) walk grids of their own: the
+    // stride counts the labels as drawn.
     let grid = (ladder.is_none()
         && axis.scale == crate::config::AxisScale::Linear
         && axis.categories.is_none()
-        && crate::layout::BreakMap::of(axis).is_broken())
+        && crate::layout::BreakMap::of(axis).is_broken()
+        && crate::tick::piece_ticks(axis).is_none())
     .then(|| {
         crate::tick::major_ticks(axis)
             .next()

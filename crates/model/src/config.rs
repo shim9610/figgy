@@ -120,8 +120,9 @@ pub const MAX_AXIS_BREAK_GAP: f32 = 0.2;
 
 /// Ranges cut out of a value axis (#200): the axis draws the rest, each cut
 /// shown as a gap of [`Self::gap`] of the axis length, marked by
-/// [`Self::mark`]. The pieces between the cuts share the axis length in
-/// proportion to their spans (in decades on a logarithmic axis).
+/// [`Self::mark`]. The pieces between the cuts share the axis length as
+/// [`Self::sizing`] says: by default in proportion to their spans (in
+/// decades on a logarithmic axis).
 ///
 /// A cut outside the axis' current range (after a zoom or an auto-fit) has
 /// no effect; one that overlaps an end is cut at the end. See
@@ -147,10 +148,18 @@ pub struct AxisBreaks {
     /// the plot at each edge of each gap, in the axis line's style, so the
     /// pieces read as separate panels. Default `true`, in both styles.
     pub frame_each_panel: bool,
+    /// How the pieces share the axis length (#205). Omitted from JSON when
+    /// it is [`PieceSizing::ByValue`], the default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "PieceSizing::is_by_value")
+    )]
+    pub sizing: PieceSizing,
 }
 
 impl Default for AxisBreaks {
-    /// No range, `Continuous`, a 3 % gap, slash marks and framed pieces.
+    /// No range, `Continuous`, a 3 % gap, slash marks, framed pieces and
+    /// pieces sized by their spans.
     fn default() -> Self {
         Self {
             ranges: Vec::new(),
@@ -158,7 +167,33 @@ impl Default for AxisBreaks {
             gap: 0.03,
             mark: BreakMark::default(),
             frame_each_panel: true,
+            sizing: PieceSizing::ByValue,
         }
+    }
+}
+
+/// How the pieces of a broken axis share its length (#205), the gaps
+/// aside. With `Equal` or `Weights` each piece has a scale of its own (a
+/// short span can get room to read) and walks its own tick spacing; a mark
+/// that crosses a gap is still the straight line between its drawn points.
+/// Only a `Continuous` axis takes them: a `Panels` axis is refused.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum PieceSizing {
+    /// In proportion to the pieces' spans: one scale for the whole axis.
+    #[default]
+    ByValue,
+    /// Every piece the same length.
+    Equal,
+    /// In proportion to one positive weight per piece, in axis order: one
+    /// more weight than cut ranges.
+    Weights(Vec<f32>),
+}
+
+impl PieceSizing {
+    pub fn is_by_value(&self) -> bool {
+        matches!(self, Self::ByValue)
     }
 }
 
@@ -534,6 +569,17 @@ impl AxisOptions {
         }
         if !(0.0..=MAX_AXIS_BREAK_GAP).contains(&breaks.gap) {
             return Err("a break gap must be between 0 and 0.2 of the axis");
+        }
+        if !breaks.sizing.is_by_value() && breaks.style == AxisBreakStyle::Panels {
+            return Err("only a Continuous broken axis sizes its pieces other than by value");
+        }
+        if let PieceSizing::Weights(weights) = &breaks.sizing {
+            if weights.len() != breaks.ranges.len() + 1 {
+                return Err("piece weights need one weight per piece: one more than cut ranges");
+            }
+            if !weights.iter().all(|w| w.is_finite() && *w > 0.0) {
+                return Err("piece weights must be finite and positive");
+            }
         }
         if let BreakMark::Slash { size, color, width } = &breaks.mark {
             let channels = color.map_or([0.0; 4], |c| [c.r, c.g, c.b, c.a]);
@@ -1571,6 +1617,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         gap: _,
         mark,
         frame_each_panel: _,
+        // Shares of the axis length, not pixels.
+        sizing: _,
     }) = breaks
         && let BreakMark::Slash {
             size,

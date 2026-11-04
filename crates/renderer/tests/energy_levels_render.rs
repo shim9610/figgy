@@ -287,6 +287,7 @@ fn a_continuous_break_moves_the_levels_with_the_axis_and_draws_none_in_the_gap()
         gap: 12.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let mut levels = records();
     // A level inside the cut is not placed.
@@ -502,6 +503,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
         gap: 0.2,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let list = [series("he", records())];
     for scale in [1.0f32, 2.0] {

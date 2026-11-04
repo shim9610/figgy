@@ -329,8 +329,8 @@ fn pick_path_arrow_candidate(
         // shader's y-up frame.
         let tail = pick_data_px(head.x, head.y);
         let direction = vec2<f32>(
-            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x * cut_scale(cuts_of(tr.breaks, tr.break_info, 0u)), tr.scale_log.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
-            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y * cut_scale(cuts_of(tr.breaks, tr.break_info, 1u)), tr.scale_log.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
+            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 0u), axis_data_t(head.x, tr.data_min.x, tr.data_max.x, tr.data_min_lo.x, tr.data_max_lo.x, tr.scale_log.x)), tr.scale_log.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
+            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 1u), axis_data_t(head.y, tr.data_min.y, tr.data_max.y, tr.data_min_lo.y, tr.data_max_lo.y, tr.scale_log.y)), tr.scale_log.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
         );
         let direction_len = length(direction);
         let len_px = px.x * length(head.tangent);

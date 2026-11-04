@@ -182,6 +182,24 @@ fn groups(c: &mut Chart, groups: &[(&str, &str, &str)]) {
 }
 
 fn break_below(c: &mut Chart, min: f64, max: f64, from: f64, to: f64) {
+    break_sized(
+        c,
+        min,
+        max,
+        from,
+        to,
+        renderer::config::PieceSizing::Weights(vec![1.0, 9.0]),
+    );
+}
+
+fn break_sized(
+    c: &mut Chart,
+    min: f64,
+    max: f64,
+    from: f64,
+    to: f64,
+    sizing: renderer::config::PieceSizing,
+) {
     c.set_y_range(min, max);
     c.config_mut().left_y.minor_count = 1;
     c.config_mut().left_y.breaks = Some(AxisBreaks {
@@ -190,6 +208,7 @@ fn break_below(c: &mut Chart, min: f64, max: f64, from: f64, to: f64) {
         gap: 0.04,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing,
     });
 }
 
@@ -651,7 +670,15 @@ fn uranium(r: &mut Renderer, out: &Path) -> Result {
             ("Even parity", &first_even, &last_even),
         ],
     );
-    break_below(&mut c, -500.0, 52_000.0, 33_000.0, 48_500.0);
+    // The limit sits far above the levels: a thin piece above the break.
+    break_sized(
+        &mut c,
+        -500.0,
+        51_500.0,
+        33_000.0,
+        49_000.0,
+        renderer::config::PieceSizing::Weights(vec![9.0, 1.0]),
+    );
     let series = styled(series);
     series.write_continuum(
         &mut c.config_mut().annotations,

@@ -452,6 +452,14 @@ pub fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
 /// falls back to [`automatic_linear_spacing`] instead of blanking the axis.
 /// Callers must have validated the range as finite and non-empty.
 pub fn effective_major_spacing(axis: &AxisOptions) -> f64 {
+    // Pieces with scales of their own (#205) format their labels at the
+    // finest spacing any piece walks.
+    if let Some((pieces, count)) = piece_ticks(axis) {
+        return pieces[..count]
+            .iter()
+            .map(|p| p.spacing)
+            .fold(f64::INFINITY, f64::min);
+    }
     let spacing = match major_spacing_rejection(axis) {
         None => axis.major_spacing,
         Some(_) => automatic_linear_spacing(axis),
@@ -906,8 +914,78 @@ pub fn log_multiple(value: f64) -> Option<u8> {
 enum MajorWalk {
     Empty,
     Linear(LinearGridIter),
-    Log { decades: LogDecades, left: usize },
+    /// One grid per piece of a broken axis whose pieces have scales of
+    /// their own (#205), walked in axis order.
+    Pieces {
+        grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1],
+        at: usize,
+    },
+    Log {
+        decades: LogDecades,
+        left: usize,
+    },
     LogMultiples(LogMultiples),
+}
+
+/// One piece of a broken linear axis whose pieces have scales of their own
+/// (#205): its value range, low then high, and the major spacing its ticks
+/// walk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PieceTicks {
+    pub low: f64,
+    pub high: f64,
+    pub spacing: f64,
+}
+
+/// The pieces of a broken linear axis whose pieces have scales of their
+/// own (#205), each with the spacing its ticks walk, in axis order; `None`
+/// when the pieces share one scale (they walk the axis' one grid) or the
+/// axis is not a walkable linear one. A piece's target is its share of
+/// [`AXIS_LINEAR_TARGET`] majors, at least two. It walks the axis'
+/// `major_spacing` when that places between half and twice its target in
+/// it, otherwise the nice step for its own span and target: a short span
+/// drawn tall reads at its own scale.
+pub fn piece_ticks(
+    axis: &AxisOptions,
+) -> Option<([PieceTicks; crate::config::MAX_AXIS_BREAKS + 1], usize)> {
+    if axis.scale != AxisScale::Linear || axis.categories.is_some() || !walkable_range(axis) {
+        return None;
+    }
+    let map = crate::layout::BreakMap::of(axis);
+    if !map.is_broken() || !map.per_piece() {
+        return None;
+    }
+    let span = axis.max - axis.min;
+    let mut out = [PieceTicks {
+        low: 0.0,
+        high: 0.0,
+        spacing: 1.0,
+    }; crate::config::MAX_AXIS_BREAKS + 1];
+    let mut count = 0;
+    for (drawn, raw) in map.pieces().zip(map.raw_pieces()) {
+        let (a, b) = (axis.min + raw.0 * span, axis.min + raw.1 * span);
+        let (low, high) = (a.min(b), a.max(b));
+        if !(high > low) {
+            continue;
+        }
+        let share = (drawn.1 - drawn.0).max(0.0);
+        let target = ((AXIS_LINEAR_TARGET as f64 * share).round() as usize).max(2);
+        let own = nice_linear_step(high - low, target, LooseRange::Above).unwrap_or(high - low);
+        let host = axis.major_spacing;
+        let fits = host.is_finite()
+            && host > 0.0
+            && LinearGrid::new(low, high, host, MAX_MAJOR_INTERVALS).is_some_and(|grid| {
+                let n = grid.last_index() - grid.first_index() + 1.0;
+                n >= (target as f64 / 2.0).max(1.0) && n <= 2.0 * target as f64
+            });
+        out[count] = PieceTicks {
+            low,
+            high,
+            spacing: if fits { host } else { own },
+        };
+        count += 1;
+    }
+    (count > 0).then_some((out, count))
 }
 
 /// The majors of `ladder` over the guarded log range `min..max`: whole
@@ -940,6 +1018,13 @@ impl Iterator for MajorTicks {
         match &mut self.0 {
             MajorWalk::Empty => None,
             MajorWalk::Linear(grid) => grid.next().map(|(_, value)| value),
+            MajorWalk::Pieces { grids, at } => loop {
+                let grid = grids.get_mut(*at)?;
+                match grid.as_mut().and_then(|g| g.next()) {
+                    Some((_, value)) => return Some(value),
+                    None => *at += 1,
+                }
+            },
             MajorWalk::Log { decades, left } => loop {
                 if *left == 0 {
                     return None;
@@ -975,6 +1060,15 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
                 .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
         );
     }
+    if let Some((pieces, count)) = piece_ticks(axis) {
+        let mut grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1] =
+            [None, None, None, None];
+        for (slot, piece) in grids.iter_mut().zip(&pieces[..count]) {
+            *slot = LinearGrid::new(piece.low, piece.high, piece.spacing, MAX_MAJOR_INTERVALS)
+                .map(|grid| grid.iter());
+        }
+        return MajorTicks(MajorWalk::Pieces { grids, at: 0 });
+    }
     MajorTicks(match axis.scale {
         AxisScale::Linear => {
             if !walkable_range(axis) {
@@ -1003,6 +1097,12 @@ enum MinorWalk {
         grid: LinearGridIter,
         subdivisions: f64,
     },
+    /// One minor grid per piece (#205), as [`MajorWalk::Pieces`].
+    Pieces {
+        grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1],
+        at: usize,
+        subdivisions: f64,
+    },
     Log(LogMinors),
     LogMultiples(LogMultiples),
 }
@@ -1022,6 +1122,21 @@ impl Iterator for MinorTicks {
                 // Multiples of the major spacing are the majors themselves.
                 if index.rem_euclid(*subdivisions) != 0.0 {
                     return Some(value);
+                }
+            },
+            MinorWalk::Pieces {
+                grids,
+                at,
+                subdivisions,
+            } => loop {
+                let grid = grids.get_mut(*at)?;
+                match grid.as_mut().and_then(|g| g.next()) {
+                    Some((index, value)) => {
+                        if index.rem_euclid(*subdivisions) != 0.0 {
+                            return Some(value);
+                        }
+                    }
+                    None => *at += 1,
                 }
             },
             MinorWalk::Log(minors) => minors.next(),
@@ -1044,6 +1159,28 @@ impl Iterator for MinorTicks {
 pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
     if axis.minor_count == 0 || axis.categories.is_some() {
         return MinorTicks(MinorWalk::Empty);
+    }
+    if let Some((pieces, count)) = piece_ticks(axis) {
+        let subdivisions = drawn_minor_count(axis) + 1;
+        let max_intervals = MAX_MAJOR_INTERVALS
+            .saturating_mul(subdivisions)
+            .saturating_add(1);
+        let mut grids: [Option<LinearGridIter>; crate::config::MAX_AXIS_BREAKS + 1] =
+            [None, None, None, None];
+        for (slot, piece) in grids.iter_mut().zip(&pieces[..count]) {
+            *slot = LinearGrid::new(
+                piece.low,
+                piece.high,
+                piece.spacing / subdivisions as f64,
+                max_intervals,
+            )
+            .map(|grid| grid.iter());
+        }
+        return MinorTicks(MinorWalk::Pieces {
+            grids,
+            at: 0,
+            subdivisions: subdivisions as f64,
+        });
     }
     MinorTicks(match axis.scale {
         AxisScale::Linear => {
