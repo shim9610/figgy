@@ -210,26 +210,45 @@ pub(crate) fn apply_auto_fit_all(
     if config.ternary().is_some() || config.parallel().is_some() {
         return;
     }
+    let mirror = partner_mirrors(config);
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
-        apply_pair_range([&mut config.bottom_x, &mut config.top_x], min, max);
+        apply_pair_range([&mut config.bottom_x, &mut config.top_x], mirror, min, max);
     }
     if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
-        apply_pair_range([&mut config.left_y, &mut config.right_y], min, max);
+        apply_pair_range([&mut config.left_y, &mut config.right_y], mirror, min, max);
     }
 }
 
-/// Write `min..max` to both axes of a pair (`bottom_x` and `top_x`, or
-/// `left_y` and `right_y`), each with the tick and label settings of its own
-/// scale. The two axes are separate SSOT fields: a linear `right_y` beside a
-/// logarithmic `left_y` keeps its linear ticks, and a logarithmic one gets
-/// decades whatever the left axis is. Deriving the partner's ticks from the
-/// main axis's scale gave a linear axis a one-decade spacing with eight
-/// minors, thousands of ticks across a few decades.
-fn apply_pair_range(pair: [&mut AxisOptions; 2], min: f64, max: f64) {
-    for axis in pair {
+/// Write `min..max` to both axes of a pair, the main axis (`bottom_x` or
+/// `left_y`) and its partner (`top_x` or `right_y`), and derive their tick
+/// and label settings.
+///
+/// On a chart whose partner axis frames the main one ([`partner_mirrors`]),
+/// the partner first takes the main axis's `scale`, so both edges show the
+/// same ticks: a logarithmic `left_y` gives `right_y` decades too. A second
+/// independent value axis on the right is an overlay layer
+/// ([`Config::overlays`]), whose `y_axis` keeps its own scale. Each axis
+/// then takes the tick settings of its own scale, so where the partner is a
+/// separate axis (the z axis of a 3D chart, the c axis of a ternary one) it
+/// keeps its scale and gets the ticks of it. A categorical axis keeps its
+/// scale and range ([`apply_axis_range`]).
+fn apply_pair_range(pair: [&mut AxisOptions; 2], mirror: bool, min: f64, max: f64) {
+    let [main, partner] = pair;
+    if mirror && main.categories.is_none() && partner.categories.is_none() {
+        partner.scale = main.scale.clone();
+    }
+    for axis in [main, partner] {
         let log = matches!(axis.scale, AxisScale::Logarithmic);
         apply_axis_range(axis, min, max, log);
     }
+}
+
+/// Whether `config`'s `top_x` and `right_y` frame `bottom_x` and `left_y`
+/// (every chart but a 3D and a ternary one, where `right_y` is the z or the
+/// c axis), so the range helpers give them the main axis's scale
+/// ([`apply_pair_range`]).
+fn partner_mirrors(config: &Config) -> bool {
+    config.view_3d().is_none() && config.ternary().is_none()
 }
 
 /// The value-axis extent of the category bars `layer` of `config` draws,
@@ -610,8 +629,8 @@ impl Chart {
     /// ticks and formatting, write only `min` / `max` through
     /// [`Self::with_axis_range_change`] instead.
     ///
-    /// Each axis branches on its own scale, so a `top_x` whose scale differs
-    /// from `bottom_x`'s gets the ticks of its own scale for the same range:
+    /// `top_x` first takes `bottom_x`'s `scale` (on a 3D or ternary chart it
+    /// keeps its own), then each axis branches on its scale:
     /// - **Linear**: `major_spacing` is
     ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
     ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
@@ -623,7 +642,8 @@ impl Chart {
     ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         self.with_axis_range_change(|c| {
-            apply_pair_range([&mut c.bottom_x, &mut c.top_x], min, max);
+            let mirror = partner_mirrors(c);
+            apply_pair_range([&mut c.bottom_x, &mut c.top_x], mirror, min, max);
         });
     }
 
@@ -633,7 +653,8 @@ impl Chart {
     /// [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
         self.with_axis_range_change(|c| {
-            apply_pair_range([&mut c.left_y, &mut c.right_y], min, max);
+            let mirror = partner_mirrors(c);
+            apply_pair_range([&mut c.left_y, &mut c.right_y], mirror, min, max);
         });
     }
 
@@ -710,12 +731,13 @@ impl Chart {
         let root = self.config.subplot_link_root(index, x);
         self.with_axis_range_change(|config| {
             let pair = |chart: &mut Config| {
+                let mirror = partner_mirrors(chart);
                 let axes = if x {
                     [&mut chart.bottom_x, &mut chart.top_x]
                 } else {
                     [&mut chart.left_y, &mut chart.right_y]
                 };
-                apply_pair_range(axes, min, max);
+                apply_pair_range(axes, mirror, min, max);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -1428,15 +1450,17 @@ mod tests {
         assert_eq!((c.config().left_y.min, c.config().left_y.max), before);
     }
 
-    /// Every pair helper writes each axis's ticks from that axis's own
-    /// scale: `set_x_range` / `set_y_range`, the auto-fit applied to an
-    /// owned config and the subplot setters. A logarithmic main axis leaves
-    /// a linear partner its linear ticks, and a linear main axis gives a
-    /// logarithmic partner decades. Deriving the partner's ticks from the
-    /// main axis gave a linear `right_y` one-unit majors with eight minors
-    /// across 1..1000.
+    /// Every pair helper gives the partner axis (`top_x`, `right_y`) the
+    /// main axis's scale on a framed chart, and writes each axis's ticks
+    /// from its scale: `set_x_range` / `set_y_range`, the auto-fit applied
+    /// to an owned config and the subplot setters. A logarithmic `left_y`
+    /// gives a linear `right_y` decades, and a linear one turns a
+    /// logarithmic partner linear. On a 3D chart `right_y` is the z axis: it
+    /// keeps its own scale and gets the ticks of it. Deriving a linear
+    /// partner's ticks from a logarithmic main axis gave it one-unit majors
+    /// with eight minors across 1..1000.
     #[test]
-    fn pair_range_helpers_tick_each_axis_by_its_own_scale() {
+    fn pair_range_helpers_give_the_partner_the_main_axis_scale() {
         use crate::Subplot;
         let ticks = |axis: &AxisOptions| {
             (
@@ -1453,60 +1477,82 @@ mod tests {
             ),
             AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
         };
-        let check = |cfg: &Config, case: &str| {
-            for (name, axis) in [
-                ("bottom_x", &cfg.bottom_x),
-                ("top_x", &cfg.top_x),
-                ("left_y", &cfg.left_y),
-                ("right_y", &cfg.right_y),
+        for view_3d in [false, true] {
+            for (main, partner) in [
+                (AxisScale::Logarithmic, AxisScale::Linear),
+                (AxisScale::Linear, AxisScale::Logarithmic),
             ] {
-                assert_eq!((axis.min, axis.max), (1.0, 1000.0), "{case}: {name} range");
-                assert_eq!(
-                    ticks(axis),
-                    expected(&axis.scale),
-                    "{case}: {name} ({:?}) ticks by its own scale",
-                    axis.scale
+                let mut base = dummy_config();
+                if view_3d {
+                    base.set_view_3d(Some(crate::View3d::default()));
+                }
+                base.bottom_x.scale = main.clone();
+                base.left_y.scale = main.clone();
+                base.top_x.scale = partner.clone();
+                base.right_y.scale = partner.clone();
+                // A framed chart's partners mirror the main axes; a 3D
+                // chart's top_x and right_y (its z axis) keep their scales.
+                let drawn = if view_3d { &partner } else { &main };
+                let check = |cfg: &Config, helper: &str| {
+                    let case =
+                        format!("{helper}, {main:?} main, {partner:?} partner, view_3d {view_3d}");
+                    for (name, axis, scale) in [
+                        ("bottom_x", &cfg.bottom_x, &main),
+                        ("top_x", &cfg.top_x, drawn),
+                        ("left_y", &cfg.left_y, &main),
+                        ("right_y", &cfg.right_y, drawn),
+                    ] {
+                        assert_eq!(axis.scale, *scale, "{case}: {name} scale");
+                        assert_eq!((axis.min, axis.max), (1.0, 1000.0), "{case}: {name} range");
+                        assert_eq!(
+                            ticks(axis),
+                            expected(scale),
+                            "{case}: {name} ticks by its scale"
+                        );
+                    }
+                };
+
+                let mut c = Chart::new(base.clone());
+                c.set_x_range(1.0, 1000.0);
+                c.set_y_range(1.0, 1000.0);
+                check(c.config(), "set_x_range / set_y_range");
+
+                let mut fitted = base.clone();
+                let ext = FitExtent {
+                    min: 1.0,
+                    max: 1000.0,
+                    min_positive: Some(1.0),
+                };
+                apply_auto_fit_all(&mut fitted, &ext, &ext, 0.0);
+                check(&fitted, "apply_auto_fit_all");
+
+                let mut parent = dummy_config();
+                parent.subplots = vec![Subplot {
+                    config: base.clone(),
+                    ..Default::default()
+                }];
+                let mut c = Chart::new(parent);
+                c.set_subplot_x_range(0, 1.0, 1000.0);
+                c.set_subplot_y_range(0, 1.0, 1000.0);
+                check(
+                    &c.config().subplots[0].config,
+                    "set_subplot_x_range / set_subplot_y_range",
                 );
             }
-        };
-        for (main, partner) in [
-            (AxisScale::Logarithmic, AxisScale::Linear),
-            (AxisScale::Linear, AxisScale::Logarithmic),
-        ] {
-            let mut base = dummy_config();
-            base.bottom_x.scale = main.clone();
-            base.left_y.scale = main.clone();
-            base.top_x.scale = partner.clone();
-            base.right_y.scale = partner.clone();
-            let case = |helper: &str| format!("{helper}, {main:?} main, {partner:?} partner");
-
-            let mut c = Chart::new(base.clone());
-            c.set_x_range(1.0, 1000.0);
-            c.set_y_range(1.0, 1000.0);
-            check(c.config(), &case("set_x_range / set_y_range"));
-
-            let mut fitted = base.clone();
-            let ext = FitExtent {
-                min: 1.0,
-                max: 1000.0,
-                min_positive: Some(1.0),
-            };
-            apply_auto_fit_all(&mut fitted, &ext, &ext, 0.0);
-            check(&fitted, &case("apply_auto_fit_all"));
-
-            let mut parent = dummy_config();
-            parent.subplots = vec![Subplot {
-                config: base.clone(),
-                ..Default::default()
-            }];
-            let mut c = Chart::new(parent);
-            c.set_subplot_x_range(0, 1.0, 1000.0);
-            c.set_subplot_y_range(0, 1.0, 1000.0);
-            check(
-                &c.config().subplots[0].config,
-                &case("set_subplot_x_range / set_subplot_y_range"),
-            );
         }
+    }
+
+    /// A categorical partner keeps its linear scale and its category range
+    /// when the main axis is logarithmic: only a numeric partner mirrors.
+    #[test]
+    fn a_categorical_partner_keeps_its_scale() {
+        let mut cfg = dummy_config();
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.right_y.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        let before = cfg.right_y.clone();
+        let mut c = Chart::new(cfg);
+        c.set_y_range(1.0, 1000.0);
+        assert_eq!(c.config().right_y, before);
     }
 
     #[test]

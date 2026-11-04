@@ -1120,20 +1120,24 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
-- **Each axis of a pair ticks by its own scale.** `Chart::set_x_range`,
+- **The partner axis takes the main axis's scale.** `Chart::set_x_range`,
   `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
   to a registered chart) and the subplot range setters write the range to
-  both axes of a pair. They chose both axes' major spacing, minor count,
-  label format and precision from the main axis's scale (`bottom_x`,
-  `left_y`). Beside a logarithmic `left_y`, a linear `right_y` over
-  1..1000 therefore got a one-unit spacing with eight minors, about 8000
-  ticks drawn as a solid bar down the right edge. A logarithmic partner
-  beside a linear main axis got a linear spacing read as a decade step and
-  drew no decade inside the range. Each axis now takes the ticks of its own
-  `scale`, as view states already did. Migration: a chart that sets only
-  `left_y.scale` (or `bottom_x.scale`) to `Logarithmic` and wants decades
-  on the right (or top) edge too sets `right_y.scale` (or `top_x.scale`)
-  as well; until then the partner draws linear ticks for the same range.
+  both axes of a pair. They kept each axis's `scale` and chose both axes'
+  major spacing, minor count, label format and precision from the main
+  axis's (`bottom_x`, `left_y`). Beside a logarithmic `left_y`, a linear
+  `right_y` over 1..1000 therefore got a one-unit spacing with eight
+  minors, about 8000 ticks drawn as a solid bar down the right edge, and a
+  logarithmic partner beside a linear main axis drew no decade inside the
+  range. The helpers now give `top_x` and `right_y` the main axis's scale
+  first, then each axis the ticks of its scale, so a logarithmic `left_y`
+  puts decades on both edges. A categorical partner keeps its scale, and a
+  3D or ternary chart's `top_x` and `right_y` (the z and c axes) keep their
+  own scales and get the ticks of them. View states apply each axis's scale
+  as they carry it. Migration: a chart that wants a second value axis with
+  a different scale on the right uses an overlay layer (`Config::overlays`);
+  a `right_y` or `top_x` scale that differs from its main axis's is
+  replaced by the next range helper call.
 
 - **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
   series' stems are the error-bar module's second draw: one quad per point

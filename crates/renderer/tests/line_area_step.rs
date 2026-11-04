@@ -655,19 +655,20 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
     );
 }
 
-/// Each Y axis takes the ticks of its own scale from `set_y_range`.
-/// The helper used to derive both axes' tick settings from the left axis's
-/// scale, so beside a logarithmic `left_y` a linear `right_y` over 1..1000
-/// got a one-unit spacing with eight minors: about 8000 inside ticks,
-/// painted as a solid bar down the right edge. A logarithmic `right_y`
-/// beside a linear `left_y` got a linear spacing read as decades and drew
-/// no decade inside the range. Now a linear right axis draws its linear
-/// spacing and a logarithmic one the decades, whatever the left axis is.
-/// The probes read the right axis's inside ticks in two columns: two pixels
-/// in from the axis line every tick crosses, four pixels in only the majors
-/// (`major_tick_length` 5, `minor_tick_length` 3).
+/// `set_y_range` gives `right_y` the scale of `left_y` and the ticks of it,
+/// so the right edge frames the left axis: a logarithmic `left_y` puts
+/// decades on both edges. The helper used to keep each axis's scale and
+/// derive both axes' tick settings from the left one, so beside a
+/// logarithmic `left_y` a linear `right_y` over 1..1000 got a one-unit
+/// spacing with eight minors: about 8000 inside ticks, painted as a solid
+/// bar down the right edge. Beside a linear `left_y` a logarithmic
+/// `right_y` got a linear spacing read as decades and drew no decade inside
+/// the range. A second independent value axis on the right is an overlay
+/// layer. The probes read the right axis's inside ticks in two columns: two
+/// pixels in from the axis line every tick crosses, four pixels in only the
+/// majors (`major_tick_length` 5, `minor_tick_length` 3).
 #[test]
-fn each_y_axis_takes_the_ticks_of_its_own_scale() {
+fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
     use AxisScale::{Linear, Logarithmic};
     let mut r = renderer();
     let settings = |scale: &AxisScale| match scale {
@@ -686,18 +687,20 @@ fn each_y_axis_takes_the_ticks_of_its_own_scale() {
         chart.set_y_range(1.0, 1000.0);
 
         let cfg = chart.config();
-        let case = format!("{left:?} left_y, {right:?} right_y");
+        let case = format!("{left:?} left_y, {right:?} right_y before");
         assert_eq!(
-            (cfg.left_y.major_spacing, cfg.left_y.minor_count),
-            settings(&left),
-            "{case}: left_y takes the tick settings of its own scale"
+            (&cfg.left_y.scale, &cfg.right_y.scale),
+            (&left, &left),
+            "{case}: right_y takes the left axis's scale"
         );
-        let (spacing, minors) = settings(&right);
-        assert_eq!(
-            (cfg.right_y.major_spacing, cfg.right_y.minor_count),
-            (spacing, minors),
-            "{case}: right_y takes the tick settings of its own scale"
-        );
+        let (spacing, minors) = settings(&left);
+        for (name, axis) in [("left_y", &cfg.left_y), ("right_y", &cfg.right_y)] {
+            assert_eq!(
+                (axis.major_spacing, axis.minor_count),
+                (spacing, minors),
+                "{case}: {name} takes the tick settings of the left axis's scale"
+            );
+        }
 
         let img = r
             .export_rgba(
@@ -744,14 +747,14 @@ fn each_y_axis_takes_the_ticks_of_its_own_scale() {
         );
 
         let to_px = |v: f64| {
-            let t = match right {
+            let t = match left {
                 AxisScale::Linear => (v - 1.0) / 999.0,
                 AxisScale::Logarithmic => v.log10() / 3.0,
             };
             bottom as f64 - t * da.height as f64
         };
         // Top to bottom, the order `runs` reads them in.
-        let mut expected: Vec<f64> = match right {
+        let mut expected: Vec<f64> = match left {
             AxisScale::Linear => (1..)
                 .map(|k| k as f64 * spacing)
                 .take_while(|&v| v < 1000.0)
