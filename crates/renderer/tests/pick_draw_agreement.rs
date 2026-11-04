@@ -2748,6 +2748,12 @@ fn contour_strokes_pick_where_they_paint() {
                 "sgy",
                 &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
             ),
+            // The same grid on a probability y axis (#209): its corners at
+            // the axis ends, its middle at the median.
+            (
+                "sgp",
+                &col(vec![0.001, 0.5, 0.999]) as &dyn renderer::ColumnSource,
+            ),
             (
                 "s0",
                 &col(vec![0.0, 4.0, 9.0]) as &dyn renderer::ColumnSource,
@@ -2762,93 +2768,107 @@ fn contour_strokes_pick_where_they_paint() {
             ),
         ])
         .expect("upload");
-    let series = [SeriesConfig {
-        series_id: "iso".into(),
-        source_id: None,
-        label: None,
-        x_column: "sgx".into(),
-        y_column: "sgy".into(),
-        z_column: None,
-        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
-            matrix: MatrixRef {
-                columns: vec!["s0".into(), "s1".into(), "s2".into()],
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
+    for probability in [false, true] {
+        let series = [SeriesConfig {
+            series_id: "iso".into(),
+            source_id: None,
+            label: None,
+            x_column: "sgx".into(),
+            y_column: if probability {
+                "sgp".into()
+            } else {
+                "sgy".into()
             },
-            fill: None,
-            contour: Some(ContourConfig {
-                levels: vec![7.0, 12.5],
-                line: DataLineStyleConfig {
-                    line_style: renderer::line::LineStylePreset::Solid,
-                    line_color: RED,
-                    line_width: 2.5,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: renderer::data_config::LineInterpolation::Linear,
+            z_column: None,
+            render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
+                matrix: MatrixRef {
+                    columns: vec!["s0".into(), "s1".into(), "s2".into()],
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: GridLayout::Centers,
                 },
-                per_level_color: None,
-                labels: None,
+                fill: None,
+                contour: Some(ContourConfig {
+                    levels: vec![7.0, 12.5],
+                    line: DataLineStyleConfig {
+                        line_style: renderer::line::LineStylePreset::Solid,
+                        line_color: RED,
+                        line_width: 2.5,
+                        fill: None,
+                        fill_color: None,
+                        interpolation: renderer::data_config::LineInterpolation::Linear,
+                    },
+                    per_level_color: None,
+                    labels: None,
+                }),
+                surface: None,
             }),
-            surface: None,
-        }),
-    }];
-    let mut chart = bare_chart();
-    let mut bar = renderer::default::default_colorbar_options();
-    bar.visible = false;
-    bar.axis.min = 0.0;
-    bar.axis.max = 20.0;
-    bar.axis.major_spacing = 5.0;
-    chart.config_mut().colorbar = Some(bar);
-    for scale in [1.0, 2.0] {
-        let with = renderer
-            .export_rgba(
-                renderer::ExportSource::chart(&chart, &series),
-                renderer::ExportOptions::panel(scale),
-            )
-            .block_on()
-            .unwrap();
-        let without = renderer
-            .export_rgba(
-                renderer::ExportSource::chart(&chart, &[]),
-                renderer::ExportOptions::panel(scale),
-            )
-            .block_on()
-            .unwrap();
-        // The frame draws over the data area's outer pixels.
-        let border = (2.0 * scale) as u32;
-        let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
-        let (x0, y0) = (x0.max(border), y0.max(border));
-        let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
-        let window = (x0, y0, x1, y1);
-        let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-        let painted = count_painted(window, is_painted);
-        let probe = Probe::register(&mut renderer, &chart, &series, scale);
-        let mut failures = Vec::new();
-        for (x, y) in edge_band(window, is_painted) {
-            let ink = difference(&with, &without, x, y);
-            let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-            let distance = match &hit {
-                Some(renderer::PickedData::ContourLevel { distance_px, .. }) => Some(*distance_px),
-                None => None,
-                Some(other) => panic!("({x}, {y}) picked {other:?}"),
-            };
-            if ink >= PAINTED && distance.is_none() {
-                failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-            }
-            if distance == Some(0.0) && ink < STRICT.zero_ink {
-                failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
-            }
+        }];
+        let mut chart = bare_chart();
+        let mut bar = renderer::default::default_colorbar_options();
+        bar.visible = false;
+        bar.axis.min = 0.0;
+        bar.axis.max = 20.0;
+        bar.axis.major_spacing = 5.0;
+        chart.config_mut().colorbar = Some(bar);
+        if probability {
+            chart.config_mut().left_y.scale = renderer::config::AxisScale::Probability(
+                renderer::config::ProbabilityScale::Normal,
+            );
+            chart.set_y_range(0.001, 0.999);
         }
-        renderer.remove_chart(probe.id).unwrap();
-        assert!(
-            failures.is_empty(),
-            "at {scale}x: {} disagreements, first {:?}",
-            failures.len(),
-            &failures[..failures.len().min(12)]
-        );
-        // Counted over every pixel of the window (the scan once probed
-        // every second pixel of every second row: a quarter of these).
-        assert!(painted > 200, "at {scale}x: {painted}");
+        for scale in [1.0, 2.0] {
+            let with = renderer
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            let without = renderer
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &[]),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            // The frame draws over the data area's outer pixels.
+            let border = (2.0 * scale) as u32;
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let (x0, y0) = (x0.max(border), y0.max(border));
+            let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
+            let window = (x0, y0, x1, y1);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut failures = Vec::new();
+            for (x, y) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, x, y);
+                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                let distance = match &hit {
+                    Some(renderer::PickedData::ContourLevel { distance_px, .. }) => {
+                        Some(*distance_px)
+                    }
+                    None => None,
+                    Some(other) => panic!("({x}, {y}) picked {other:?}"),
+                };
+                if ink >= PAINTED && distance.is_none() {
+                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                }
+                if distance == Some(0.0) && ink < STRICT.zero_ink {
+                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                }
+            }
+            renderer.remove_chart(probe.id).unwrap();
+            assert!(
+                failures.is_empty(),
+                "at {scale}x (probability y: {probability}): {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            // Counted over every pixel of the window (the scan once probed
+            // every second pixel of every second row: a quarter of these).
+            assert!(painted > 200, "at {scale}x: {painted}");
+        }
     }
 }
 
@@ -2861,7 +2881,10 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
         renderer::config::AxisScale::Logarithmic => {
             (value.log10() - axis.min.log10()) / (axis.max.log10() - axis.min.log10())
         }
-        renderer::config::AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
+        renderer::config::AxisScale::Probability(_) => {
+            let f = |p: f64| axis.scale.forward(p).expect("in domain");
+            (f(value) - f(axis.min)) / (f(axis.max) - f(axis.min))
+        }
     };
     start + t * length
 }
@@ -3008,6 +3031,413 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
         }
     }
     assert_eq!(checked, 3 * magnitudes.len() * fractions.len());
+}
+
+/// On a probability axis (#209) the GPU draw, the GPU pick and the CPU twin
+/// place every point at `F⁻¹(p)` of the f64 chrome, for each scale, at both
+/// tails and the median, on x and on y. The draw's ink centroid is within
+/// half a pixel at 2x (the centroid of an antialiased marker, not the f32
+/// error of `F⁻¹`, sets that bound).
+#[test]
+fn probability_axis_places_points_at_every_tail() {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let ps = [0.0012, 0.004, 0.03, 0.2, 0.5, 0.8, 0.97, 0.996, 0.9988];
+    let mut checked = 0;
+    let mut worst: f64 = 0.0;
+    for scale in [
+        ProbabilityScale::Normal,
+        ProbabilityScale::Weibull,
+        ProbabilityScale::Logistic,
+    ] {
+        let probability = AxisScale::Probability(scale);
+        for on_x in [false, true] {
+            // The other axis is linear and spreads the points.
+            let spread: Vec<f64> = (0..ps.len()).map(|i| 1.0 + i as f64).collect();
+            let (xs, ys) = if on_x {
+                (ps.to_vec(), spread)
+            } else {
+                (spread, ps.to_vec())
+            };
+            let mut renderer = renderer();
+            upload_xy(&mut renderer, xs.clone(), ys.clone());
+            let mut chart = bare_chart();
+            {
+                let c = chart.config_mut();
+                let (prob_axis, linear) = if on_x {
+                    (&mut c.bottom_x, &mut c.left_y)
+                } else {
+                    (&mut c.left_y, &mut c.bottom_x)
+                };
+                prob_axis.scale = probability.clone();
+                linear.scale = AxisScale::Linear;
+            }
+            if on_x {
+                chart.set_x_range(0.0001, 0.999_999);
+                chart.set_y_range(0.0, ps.len() as f64 + 1.0);
+            } else {
+                chart.set_x_range(0.0, ps.len() as f64 + 1.0);
+                chart.set_y_range(0.0001, 0.999_999);
+            }
+            // Small markers, so none reaches the data area's edge and is cut.
+            let series = [scatter("points", ScatterShape::SquareFilled, 4.0, RED)];
+            let image = renderer
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(2.0),
+                )
+                .block_on()
+                .expect("export");
+            let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+            let columns = F32Columns(vec![
+                ("x".into(), xs.iter().map(|v| *v as f32).collect()),
+                ("y".into(), ys.iter().map(|v| *v as f32).collect()),
+            ]);
+            let cfg = chart.config().clone();
+            let da = cfg.data_area().expect("data area").0;
+            let case = format!("{scale:?} on {}", if on_x { "x" } else { "y" });
+            for (index, (&x, &y)) in xs.iter().zip(&ys).enumerate() {
+                let expected = (
+                    axis_px(&cfg.bottom_x, x, da.x as f64, da.width as f64),
+                    axis_px(
+                        &cfg.left_y,
+                        y,
+                        (da.y + da.height) as f64,
+                        -(da.height as f64),
+                    ),
+                );
+                // The draw at 2x: the marker's red ink is centred on the value.
+                let at2 = (expected.0 * 2.0, expected.1 * 2.0);
+                let (mut sum_x, mut sum_y, mut ink) = (0.0, 0.0, 0.0);
+                for py in (at2.1 as i64 - 20).max(0)..(at2.1 as i64 + 20).min(2 * HEIGHT as i64) {
+                    for px in (at2.0 as i64 - 20).max(0)..(at2.0 as i64 + 20).min(2 * WIDTH as i64)
+                    {
+                        let i = ((py as u32 * image.width + px as u32) * 4) as usize;
+                        let [r, g, b, a] = image.rgba[i..i + 4].try_into().unwrap();
+                        if r > 0 && g < 100 && b < 100 && a > 0 {
+                            let w = f64::from(r);
+                            sum_x += (px as f64 + 0.5) * w;
+                            sum_y += (py as f64 + 0.5) * w;
+                            ink += w;
+                        }
+                    }
+                }
+                assert!(ink > 0.0, "{case}: point {index} is not drawn near {at2:?}");
+                let error = ((sum_x / ink - at2.0).abs()).max((sum_y / ink - at2.1).abs());
+                worst = worst.max(error);
+                assert!(
+                    error <= 0.5,
+                    "{case}: point {index} (p {}) drawn {error} px off at 2x",
+                    ps[index]
+                );
+                let at = (expected.0 as f32, expected.1 as f32);
+                let gpu = test_gpu::block_on(
+                    renderer
+                        .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
+                        .unwrap()
+                        .resolve(),
+                )
+                .unwrap()
+                .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
+                    &cfg,
+                    &series,
+                    &columns,
+                    at.0,
+                    at.1,
+                    renderer::pick::cpu_twin::PointPickOptions {
+                        max_distance_px: 3.0,
+                    },
+                )
+                .unwrap_or_else(|| panic!("{case}: CPU misses point {index} at {at:?}"));
+                assert_eq!((gpu.point_index, cpu.point_index), (index, index), "{case}");
+                assert!(
+                    gpu.distance_px <= 0.5 && cpu.distance_px <= 0.5,
+                    "{case}: point {index}: GPU {} px, CPU {} px from the value",
+                    gpu.distance_px,
+                    cpu.distance_px
+                );
+                checked += 1;
+            }
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+    eprintln!("probability placement: worst ink centroid error {worst:.4} px at 2x");
+    assert_eq!(checked, 3 * 2 * ps.len());
+}
+
+/// Values at 0, 1 and past them have no position on a probability axis:
+/// the draw omits them and neither picker finds them, while the in-domain
+/// points beside them draw and pick (#209).
+#[test]
+fn probability_axis_omits_values_outside_the_unit_interval() {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let ys = vec![0.0, 0.3, 1.0, 0.7, -0.5, 1.5, f64::NAN];
+    let xs: Vec<f64> = (0..ys.len()).map(|i| 1.0 + i as f64).collect();
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, xs.clone(), ys.clone());
+    let mut chart = bare_chart();
+    chart.config_mut().left_y.scale = AxisScale::Probability(ProbabilityScale::Normal);
+    chart.set_x_range(0.0, ys.len() as f64 + 1.0);
+    chart.set_y_range(0.01, 0.99);
+    let series = [scatter("points", ScatterShape::SquareFilled, 7.0, RED)];
+    let image = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .expect("export");
+    let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+    let cfg = chart.config().clone();
+    let da = cfg.data_area().expect("data area").0;
+    // The ink's column runs: one per drawn marker, at the in-domain values.
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for px in 0..image.width as usize {
+        let inked = (0..image.height as usize).any(|py| {
+            let i = (py * image.width as usize + px) * 4;
+            image.rgba[i] > 128 && image.rgba[i + 1] < 100 && image.rgba[i + 3] > 0
+        });
+        match runs.last_mut() {
+            Some(run) if inked && run.1 + 1 == px => run.1 = px,
+            _ if inked => runs.push((px, px)),
+            _ => {}
+        }
+    }
+    let centres: Vec<f64> = runs
+        .iter()
+        .map(|&(a, b)| (a + b + 1) as f64 / 2.0)
+        .collect();
+    let at = |index: usize| axis_px(&cfg.bottom_x, xs[index], da.x as f64, da.width as f64);
+    assert_eq!(centres.len(), 2, "ink runs {runs:?}");
+    assert!(
+        (centres[0] - at(1)).abs() <= 1.0 && (centres[1] - at(3)).abs() <= 1.0,
+        "{runs:?}"
+    );
+    for (index, &y) in ys.iter().enumerate() {
+        let x_px = axis_px(&cfg.bottom_x, xs[index], da.x as f64, da.width as f64) as f32;
+        let inside = y > 0.0 && y < 1.0;
+        let y_px = if inside {
+            axis_px(
+                &cfg.left_y,
+                y,
+                (da.y + da.height) as f64,
+                -(da.height as f64),
+            ) as f32
+        } else {
+            (da.y + da.height / 2) as f32
+        };
+        let gpu = test_gpu::block_on(
+            renderer
+                .pick_chart(probe.id, probe.request(x_px, y_px, 3.0))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
+        assert_eq!(
+            gpu.map(|hit| hit.point_index),
+            inside.then_some(index),
+            "p {y}"
+        );
+    }
+    renderer.remove_chart(probe.id).unwrap();
+}
+
+/// On a probability axis (#209) lines (linear and stepped), an area fill to
+/// a baseline outside (0, 1) (clamped to the shader's floor), error bars,
+/// stems and point vectors pick exactly where they paint, at 1x and 2x, for
+/// each scale.
+#[test]
+fn drawn_kinds_pick_where_they_paint_on_a_probability_axis() {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    use renderer::data_config::{ErrorRef, LineFill, LineInterpolation, VectorPivot, VectorScale};
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    upload_xy(
+        &mut renderer,
+        vec![1.5, 3.5, 5.5, 7.5, 9.0],
+        vec![0.02, 0.35, 0.6, 0.93, 0.995],
+    );
+    renderer
+        .add_columns(&[
+            (
+                "ey",
+                &col(vec![0.01, 0.1, 0.15, 0.04, 0.003]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "u",
+                &col(vec![1.0, -1.0, 0.5, 1.0, -0.5]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "v",
+                &col(vec![1.0, 1.0, -1.0, 0.5, -1.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let mut errors = scatter("errors", ScatterShape::CircleFilled, 2.0, RED);
+    if let DataRenderType::Xy(xy) = &mut errors.render_type {
+        xy.errors = Some(renderer::data_config::ErrorBars {
+            x: None,
+            y: Some(ErrorRef::Symmetric {
+                column: "ey".into(),
+            }),
+            style: errorbar_style(RED, 2.0, 4.0, 2.0),
+        });
+    }
+    let mut stems = scatter("stems", ScatterShape::CircleFilled, 3.0, RED);
+    if let DataRenderType::Xy(xy) = &mut stems.render_type {
+        xy.stem = Some(renderer::data_config::Stem {
+            baseline: 0.5,
+            direction: renderer::data_config::CategoryBarDirection::Vertical,
+            color: RED,
+            width: 3.0,
+            line_style: LineStylePreset::Solid,
+        });
+    }
+    let kinds = [
+        line(
+            "line",
+            2.0,
+            LineStylePreset::Solid,
+            LineInterpolation::Linear,
+        ),
+        line(
+            "step",
+            2.0,
+            LineStylePreset::Solid,
+            LineInterpolation::StepMid,
+        ),
+        filled_line(
+            "area",
+            Some(LineFill::ToBaseline(0.0)),
+            LineInterpolation::Linear,
+            GREEN,
+        ),
+        errors,
+        stems,
+        arrows(
+            "arrows",
+            VectorScale::Pixels { px_per_unit: 12.0 },
+            VectorPivot::Tail,
+        ),
+    ];
+    for scale in [
+        ProbabilityScale::Normal,
+        ProbabilityScale::Weibull,
+        ProbabilityScale::Logistic,
+    ] {
+        let mut chart = bare_chart();
+        chart.config_mut().left_y.scale = AxisScale::Probability(scale);
+        chart.set_x_range(0.0, 10.0);
+        chart.set_y_range(0.005, 0.999);
+        for series in &kinds {
+            let id = series.series_id.clone();
+            for px_scale in [1.0, 2.0] {
+                // A fill has no antialiasing: its edges follow the fill
+                // tests' tolerance (`FILL_EDGE`).
+                let tolerance = if id == "area" { FILL_EDGE } else { STRICT };
+                // Inside the data area: at its edge the draw is cut by the
+                // scissor and the pick is not, on any axis (the fill reaches
+                // the clamped baseline there).
+                let da = chart.config().data_area().expect("data area").0;
+                let inner = (
+                    ((da.x + 2) as f32 * px_scale) as u32,
+                    ((da.y + 2) as f32 * px_scale) as u32,
+                    ((da.x + da.width - 2) as f32 * px_scale) as u32,
+                    ((da.y + da.height - 2) as f32 * px_scale) as u32,
+                );
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    std::slice::from_ref(series),
+                    &id,
+                    px_scale,
+                    Some(inner),
+                    &format!("{id} on {scale:?}"),
+                    tolerance,
+                );
+                assert!(painted > 30, "{id} on {scale:?} at {px_scale}x: {painted}");
+            }
+        }
+    }
+}
+
+/// An inverted and a broken probability axis (#209) place every point
+/// where the axis chrome (`layout::axis_fraction`) puts its value, and the
+/// GPU pick finds it there: the transform holds `F⁻¹` of the bounds and the
+/// break table works on that `t` unchanged.
+#[test]
+fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
+    use renderer::config::{AxisBreak, AxisBreaks, AxisScale, ProbabilityScale};
+    let ps = vec![0.01, 0.1, 0.2, 0.7, 0.9, 0.99];
+    let xs: Vec<f64> = (0..ps.len()).map(|i| 1.0 + 1.5 * i as f64).collect();
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, xs.clone(), ps.clone());
+    for case in ["inverted", "broken"] {
+        let mut chart = bare_chart();
+        chart.config_mut().left_y.scale = AxisScale::Probability(ProbabilityScale::Normal);
+        chart.set_x_range(0.0, 10.0);
+        chart.set_y_range(0.001, 0.999);
+        if case == "inverted" {
+            chart.config_mut().left_y.inverted = true;
+        } else {
+            chart.config_mut().left_y.breaks = Some(AxisBreaks {
+                ranges: vec![AxisBreak::new(0.3, 0.6)],
+                ..Default::default()
+            });
+        }
+        let series = [scatter("points", ScatterShape::SquareFilled, 4.0, RED)];
+        let image = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .expect("export");
+        let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+        let cfg = chart.config().clone();
+        let da = cfg.data_area().expect("data area").0;
+        for (index, (&x, &p)) in xs.iter().zip(&ps).enumerate() {
+            let fraction = f64::from(renderer::layout::axis_fraction(p, &cfg.left_y));
+            let expected = (
+                axis_px(&cfg.bottom_x, x, da.x as f64, da.width as f64),
+                (da.y + da.height) as f64 - fraction * da.height as f64,
+            );
+            let (mut sum_x, mut sum_y, mut ink) = (0.0, 0.0, 0.0);
+            for py in (expected.1 as i64 - 8).max(0)..(expected.1 as i64 + 8).min(HEIGHT as i64) {
+                for px in (expected.0 as i64 - 8).max(0)..(expected.0 as i64 + 8).min(WIDTH as i64)
+                {
+                    let i = ((py as u32 * image.width + px as u32) * 4) as usize;
+                    let [r, g, b, a] = image.rgba[i..i + 4].try_into().unwrap();
+                    if r > 0 && g < 100 && b < 100 && a > 0 {
+                        let w = f64::from(r);
+                        sum_x += (px as f64 + 0.5) * w;
+                        sum_y += (py as f64 + 0.5) * w;
+                        ink += w;
+                    }
+                }
+            }
+            assert!(
+                ink > 0.0,
+                "{case}: point {index} is not drawn near {expected:?}"
+            );
+            let drawn = (sum_x / ink, sum_y / ink);
+            assert!(
+                (drawn.0 - expected.0).abs() <= 0.75 && (drawn.1 - expected.1).abs() <= 0.75,
+                "{case}: point {index} (p {p}) drawn at {drawn:?}, the chrome puts it at {expected:?}"
+            );
+            let at = (expected.0 as f32, expected.1 as f32);
+            let gpu = test_gpu::block_on(
+                renderer
+                    .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
+                    .unwrap()
+                    .resolve(),
+            )
+            .unwrap()
+            .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+            assert_eq!(gpu.point_index, index, "{case}");
+        }
+        renderer.remove_chart(probe.id).unwrap();
+    }
 }
 
 /// An error-bar style of stem width `width` with caps of half size `cap`

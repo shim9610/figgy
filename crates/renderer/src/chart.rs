@@ -22,12 +22,14 @@ use crate::format::LabelFormat;
 use crate::text::{RichText, rich_segments_from_text};
 use crate::text_render::CpuTextMeasure;
 
-/// Apply min/max and scale-appropriate tick settings to one axis.
+/// Apply min/max and scale-appropriate tick settings to one axis, for the
+/// tick plan of `scale` (the axis' own scale or, for a mirrored axis, its
+/// partner's).
 pub(crate) fn apply_axis_range(
     axis: &mut crate::config::AxisOptions,
     min: f64,
     max: f64,
-    log: bool,
+    scale: &AxisScale,
 ) {
     // A categorical axis keeps its category range: every range helper (the
     // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
@@ -36,18 +38,27 @@ pub(crate) fn apply_axis_range(
     }
     axis.min = min;
     axis.max = max;
-    if log {
-        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Logarithmic, min, max);
-        axis.minor_count = 8;
-        axis.label_style.format = LabelFormat::Power;
-        axis.label_style.significant_digits = 1;
-    } else {
-        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Linear, min, max);
-        axis.minor_count = 4;
-        if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
-            axis.label_style.format = LabelFormat::Decimal;
+    axis.major_spacing = crate::tick::axis_major_spacing(scale, min, max);
+    match scale {
+        AxisScale::Logarithmic => {
+            axis.minor_count = 8;
+            axis.label_style.format = LabelFormat::Power;
+            axis.label_style.significant_digits = 1;
         }
-        axis.label_style.significant_digits = 3;
+        // #209: the tick walk reads the range alone; `minor_count` is a
+        // switch, and the labels are percentages with each tail's digits.
+        AxisScale::Probability(_) => {
+            axis.minor_count = 1;
+            axis.label_style.format = LabelFormat::Percent;
+            axis.label_style.significant_digits = 1;
+        }
+        AxisScale::Linear => {
+            axis.minor_count = 4;
+            if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
+                axis.label_style.format = LabelFormat::Decimal;
+            }
+            axis.label_style.significant_digits = 3;
+        }
     }
 }
 
@@ -69,6 +80,43 @@ pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
     let span = lmax - lmin;
     let pad = span * padding_ratio.max(0.0);
     (10f64.powf(lmin - pad), 10f64.powf(lmax + pad))
+}
+
+/// The in-domain ends of a probability axis' fit (#209): the extent's ends
+/// that lie in `(0, 1)`. An end outside takes the mirror of the other
+/// (`1 − p`), which is where plotting positions put it (`0.5/n` and
+/// `1 − 0.5/n`); the lower end may come from `min_positive` when the
+/// minimum is at or below zero. Both ends outside fit nothing. No new pool
+/// statistic (#209 open decision 6).
+fn probability_fit_ends(ext: &FitExtent) -> Option<(f64, f64)> {
+    let inside = |p: f64| p > 0.0 && p < 1.0;
+    let lower = if inside(ext.min) {
+        Some(ext.min)
+    } else {
+        ext.min_positive.filter(|&p| inside(p))
+    };
+    let upper = inside(ext.max).then_some(ext.max);
+    let (min, max) = match (lower, upper) {
+        (Some(min), Some(max)) => (min, max),
+        (Some(min), None) => (min, 1.0 - min),
+        (None, Some(max)) => (1.0 - max, max),
+        (None, None) => return None,
+    };
+    (min < max).then_some((min, max))
+}
+
+/// Padding for a probability axis (#209): `padding_ratio · span` in `F⁻¹`
+/// units on each side, then back to probabilities, so the padded range
+/// stays inside `(0, 1)`.
+fn probability_padded(scale: &AxisScale, min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
+    let (Some(lo), Some(hi)) = (scale.forward(min), scale.forward(max)) else {
+        return (min, max);
+    };
+    let pad = (hi - lo) * padding_ratio.max(0.0);
+    match (scale.inverse(lo - pad), scale.inverse(hi + pad)) {
+        (Some(a), Some(b)) if a > 0.0 && b < 1.0 && a < b => (a, b),
+        _ => (min, max),
+    }
 }
 
 /// One axis' fit input: the union of everything that must stay visible.
@@ -123,11 +171,26 @@ impl FitExtent {
     /// data units on a linear axis, `by` decades (a factor of `10^by`) on a
     /// logarithmic one. A display shift of a line offset member
     /// (`Config::line_offset_of`); the values themselves are not moved.
-    fn shifted(&self, by: f64, logarithmic: bool) -> Self {
+    fn shifted(&self, by: f64, scale: &AxisScale) -> Self {
         if by == 0.0 {
             return *self;
         }
-        if logarithmic {
+        if let AxisScale::Probability(_) = scale {
+            // Shifted in `F⁻¹` units, as `shift_axis` shifts the axis
+            // (#209); a value outside (0, 1) has no position and stays.
+            let shift = |p: f64| {
+                scale
+                    .forward(p)
+                    .and_then(|t| scale.inverse(t + by))
+                    .unwrap_or(p)
+            };
+            return Self {
+                min: shift(self.min),
+                max: shift(self.max),
+                min_positive: self.min_positive.map(shift),
+            };
+        }
+        if matches!(scale, AxisScale::Logarithmic) {
             let factor = 10f64.powf(by);
             return Self {
                 min: self.min * factor,
@@ -169,49 +232,6 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field,
             reason: error.reason,
         },
-    })?;
-    refuse_probability_axes(config)
-}
-
-/// The model holds probability axes (#209); the GPU transform does not place
-/// them yet, so a chart naming one is refused, at registration and at
-/// export, rather than drawn linearly.
-pub(crate) fn refuse_probability_axes(config: &Config) -> Result<()> {
-    match probability_axis(config) {
-        Some(field) => Err(FiggyError::InvalidConfig {
-            field,
-            reason: "probability axes are not drawn yet (#209)".into(),
-        }),
-        None => Ok(()),
-    }
-}
-
-/// The first axis of `config`, its overlays or its subplots on a
-/// probability scale (#209).
-fn probability_axis(config: &Config) -> Option<&'static str> {
-    let probability = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Probability(_));
-    let own = [
-        ("top_x", &config.top_x),
-        ("bottom_x", &config.bottom_x),
-        ("left_y", &config.left_y),
-        ("right_y", &config.right_y),
-    ]
-    .into_iter()
-    .find(|(_, axis)| probability(axis))
-    .map(|(field, _)| field);
-    own.or_else(|| {
-        config
-            .overlays
-            .iter()
-            .any(|overlay| probability(&overlay.y_axis))
-            .then_some("overlays")
-    })
-    .or_else(|| {
-        config
-            .subplots
-            .iter()
-            .any(|subplot| probability_axis(&subplot.config).is_some())
-            .then_some("subplots")
     })
 }
 
@@ -223,15 +243,20 @@ fn fitted_axis_range(
     if !ext.is_fittable() {
         return None;
     }
-    let range = if matches!(axis.scale, AxisScale::Logarithmic) {
-        let safe = if ext.min > 0.0 {
-            ext.min
-        } else {
-            ext.min_positive?
-        };
-        log_padded(safe, ext.max, padding_ratio)
-    } else {
-        Chart::padded(ext.min, ext.max, padding_ratio)
+    let range = match &axis.scale {
+        AxisScale::Logarithmic => {
+            let safe = if ext.min > 0.0 {
+                ext.min
+            } else {
+                ext.min_positive?
+            };
+            log_padded(safe, ext.max, padding_ratio)
+        }
+        AxisScale::Probability(_) => {
+            let (min, max) = probability_fit_ends(ext)?;
+            probability_padded(&axis.scale, min, max, padding_ratio)
+        }
+        AxisScale::Linear => Chart::padded(ext.min, ext.max, padding_ratio),
     };
     (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
 }
@@ -254,14 +279,14 @@ pub(crate) fn apply_auto_fit_all(
         return;
     }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
-        let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.bottom_x, min, max, log);
-        apply_axis_range(&mut config.top_x, min, max, log);
+        let scale = config.bottom_x.scale.clone();
+        apply_axis_range(&mut config.bottom_x, min, max, &scale);
+        apply_axis_range(&mut config.top_x, min, max, &scale);
     }
     if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
-        let log = matches!(config.left_y.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.left_y, min, max, log);
-        apply_axis_range(&mut config.right_y, min, max, log);
+        let scale = config.left_y.scale.clone();
+        apply_axis_range(&mut config.left_y, min, max, &scale);
+        apply_axis_range(&mut config.right_y, min, max, &scale);
     }
 }
 
@@ -654,10 +679,10 @@ impl Chart {
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
+        let scale = self.config.bottom_x.scale.clone();
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.bottom_x, min, max, log);
-            apply_axis_range(&mut c.top_x, min, max, log);
+            apply_axis_range(&mut c.bottom_x, min, max, &scale);
+            apply_axis_range(&mut c.top_x, min, max, &scale);
         });
     }
 
@@ -666,10 +691,10 @@ impl Chart {
     /// [`Self::set_x_range`]. To preserve ticks and formatting, write only
     /// `min` / `max` through [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
+        let scale = self.config.left_y.scale.clone();
         self.with_axis_range_change(|c| {
-            apply_axis_range(&mut c.left_y, min, max, log);
-            apply_axis_range(&mut c.right_y, min, max, log);
+            apply_axis_range(&mut c.left_y, min, max, &scale);
+            apply_axis_range(&mut c.right_y, min, max, &scale);
         });
     }
 
@@ -677,17 +702,17 @@ impl Chart {
     /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
     /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
     pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
-        let Some(log) = self
+        let Some(scale) = self
             .config
             .overlays
             .get(layer)
-            .map(|overlay| matches!(overlay.y_axis.scale, AxisScale::Logarithmic))
+            .map(|overlay| overlay.y_axis.scale.clone())
         else {
             return;
         };
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
-                apply_axis_range(&mut overlay.y_axis, min, max, log);
+                apply_axis_range(&mut overlay.y_axis, min, max, &scale);
             }
         });
     }
@@ -751,9 +776,9 @@ impl Chart {
                 } else {
                     (&mut chart.left_y, &mut chart.right_y)
                 };
-                let log = matches!(main.scale, AxisScale::Logarithmic);
-                apply_axis_range(main, min, max, log);
-                apply_axis_range(secondary, min, max, log);
+                let scale = main.scale.clone();
+                apply_axis_range(main, min, max, &scale);
+                apply_axis_range(secondary, min, max, &scale);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -900,10 +925,10 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(axis, ext, padding_ratio) else {
             return;
         };
-        let log = matches!(axis.scale, AxisScale::Logarithmic);
+        let scale = axis.scale.clone();
         self.with_axis_range_change(|config| {
             if let Some(bar) = config.colorbar.as_mut() {
-                apply_axis_range(&mut bar.axis, min, max, log);
+                apply_axis_range(&mut bar.axis, min, max, &scale);
             }
         });
     }
@@ -1244,7 +1269,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&chart.right_y, &z, padding_ratio) else {
             return Ok(());
         };
-        let log = matches!(chart.right_y.scale, AxisScale::Logarithmic);
+        let scale = chart.right_y.scale.clone();
         self.with_axis_range_change(|c| {
             let chart = match layer {
                 LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -1252,7 +1277,7 @@ impl Chart {
                 }
                 _ => c,
             };
-            apply_axis_range(&mut chart.right_y, min, max, log);
+            apply_axis_range(&mut chart.right_y, min, max, &scale);
         });
         Ok(())
     }
@@ -1308,7 +1333,6 @@ impl Chart {
         let Some([dx, dy]) = config.line_offset_of(series_id) else {
             return (x, y);
         };
-        let log = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Logarithmic);
         let (chart, y_axis) = match config.layer_of_series(series_id) {
             LayerRef::Subplot(index) => {
                 let chart = &config.subplots[index].config;
@@ -1322,8 +1346,8 @@ impl Chart {
             LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
         };
         (
-            x.shifted(dx, log(&chart.bottom_x)),
-            y.shifted(dy, log(y_axis)),
+            x.shifted(dx, &chart.bottom_x.scale),
+            y.shifted(dy, &y_axis.scale),
         )
     }
 }
@@ -1332,10 +1356,10 @@ impl Chart {
 mod tests {
     use super::*;
 
-    /// A probability axis (#209) is refused with the explicit error until the
-    /// GPU transform places it, on a chart axis and on a subplot.
+    /// A probability axis (#209) validates on a chart axis and a subplot:
+    /// the renderer draws it (the refusal of the model PR is gone).
     #[test]
-    fn probability_axes_are_refused_until_they_are_drawn() {
+    fn probability_axes_validate_for_drawing() {
         let probability = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
         let on = |axis: &mut AxisOptions| {
             axis.scale = probability.clone();
@@ -1343,7 +1367,6 @@ mod tests {
             axis.max = 0.99;
         };
         let base = crate::default::default_config();
-        assert!(validate_renderer_config(&base).is_ok());
         let mut left = base.clone();
         on(&mut left.left_y);
         let mut subplot = base.clone();
@@ -1355,16 +1378,43 @@ mod tests {
             link_x: None,
             link_y: None,
         });
-        for (config, field) in [(left, "left_y"), (subplot, "subplots")] {
-            match refuse_probability_axes(&config) {
-                Err(FiggyError::InvalidConfig { field: got, reason }) => {
-                    assert_eq!(got, field);
-                    assert!(reason.contains("not drawn yet"), "{reason}");
-                }
-                other => panic!("{other:?}"),
-            }
+        for config in [left, subplot] {
+            validate_renderer_config(&config).expect("a probability axis draws");
         }
     }
+
+    /// The fit of a probability axis keeps its ends inside (0, 1): an end
+    /// at 0 or 1 takes the mirror of the other, the padding is in `F⁻¹`
+    /// units, and an extent with no in-domain end fits nothing.
+    #[test]
+    fn a_probability_fit_stays_inside_the_unit_interval() {
+        let mut axis = crate::default::default_config().left_y;
+        axis.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        let fit = |min: f64, max: f64, min_positive: Option<f64>| {
+            fitted_axis_range(
+                &axis,
+                &FitExtent {
+                    min,
+                    max,
+                    min_positive,
+                },
+                0.05,
+            )
+        };
+        let (lo, hi) = fit(0.01, 0.99, Some(0.01)).expect("in domain");
+        assert!(lo > 0.0 && lo < 0.01 && hi > 0.99 && hi < 1.0, "{lo} {hi}");
+        assert!((lo - (1.0 - hi)).abs() < 1e-12, "symmetric: {lo} {hi}");
+        let (lo, hi) = fit(0.0, 0.98, None).expect("mirrored lower end");
+        assert!(lo > 0.0 && lo < 0.02 && hi < 1.0, "{lo} {hi}");
+        let (lo, hi) = fit(0.0, 1.0, Some(0.005)).expect("min_positive lower end");
+        assert!(
+            lo > 0.0 && lo < 0.005 && hi > 0.995 && hi < 1.0,
+            "{lo} {hi}"
+        );
+        assert_eq!(fit(-1.0, 2.0, None), None);
+        assert_eq!(fit(0.0, 1.0, Some(1.5)), None);
+    }
+
     use crate::default::default_config;
 
     fn dummy_config() -> Config {

@@ -21,6 +21,7 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/data_pick.wgsl",
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",

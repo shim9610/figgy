@@ -6,7 +6,7 @@
 fn pick_axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
     let t = pick_query_params.transform;
     let range = fma(1.0, t.data_max[axis] - t.data_min[axis], t.data_max_lo[axis] - t.data_min_lo[axis]);
-    return axis_px_per_unit_at(range, t.data_to_panel_scale[axis] * cut_scale(cuts_of(t.breaks, t.break_info, axis)), t.scale_log[axis], t.pixel_to_ndc[axis], pair);
+    return axis_px_per_unit_at(range, t.data_to_panel_scale[axis] * cut_scale(cuts_of(t.breaks, t.break_info, axis)), t.scale_log[axis], t.scale_prob[axis], t.pixel_to_ndc[axis], pair);
 }
 
 // A point vector's candidate: the arrow the vector shader draws from anchor

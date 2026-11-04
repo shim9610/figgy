@@ -45,6 +45,7 @@ pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = crate::shad
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
     "data_render/common/ramp.wgsl",

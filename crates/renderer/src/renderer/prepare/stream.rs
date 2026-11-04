@@ -83,6 +83,17 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_BREAK_REASON.into(),
             });
         }
+        // Nor to probability axes (rule 8, #209).
+        if [&config.bottom_x, &config.left_y]
+            .into_iter()
+            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .any(|axis| matches!(axis.scale, crate::config::AxisScale::Probability(_)))
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_PROBABILITY_REASON.into(),
+            });
+        }
         // Streaming is not extended to polar charts.
         if config.polar().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

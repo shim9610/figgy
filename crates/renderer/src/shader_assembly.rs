@@ -440,6 +440,7 @@ mod tests {
                     ternary_r,
                     breaks,
                     break_info,
+                    scale_prob,
                 }
             )
             .with(module, wgsl)

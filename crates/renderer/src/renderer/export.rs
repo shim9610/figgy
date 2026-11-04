@@ -712,7 +712,6 @@ impl Renderer {
         // the model (#160). The full series rules run per panel where the
         // chart is registered; a document's subplots and line offsets are
         // the expansion's.
-        crate::chart::refuse_probability_axes(chart.config())?;
         for config in series {
             validate_contour_level_count(config.series_id.as_str(), &config.render_type)?;
             validate_line_fill(&self.pool, series.iter(), config)?;
