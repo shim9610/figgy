@@ -166,6 +166,38 @@ fn axis_baseline_ndc(t: Transform, base: vec2<f32>, axis: u32) -> f32 {
     return data_to_ndc(t, one, base).y;
 }
 
+// The inverse of `polar_ndc` (#208): at pixel offset `px` from the centre
+// (`polar_clip_offset`, the draw's pixel frame), the angle value (in the turn
+// `atan2` returns, before any wrap), the radius axis `t`, and their
+// derivatives per pixel, which a polar contour needs to measure its stroke
+// in pixels. It places given data, so it is projection, not data (rule 1).
+// The centre itself has no angle: its derivatives are zero.
+struct PolarUnproject {
+    angle: f32,
+    ty: f32,
+    d_angle: vec2<f32>,
+    d_ty: vec2<f32>,
+};
+
+fn polar_unproject(t: Transform, px: vec2<f32>) -> PolarUnproject {
+    let p = t.polar_angle;
+    let e = t.polar_extent;
+    var out: PolarUnproject;
+    let r2 = dot(px, px);
+    let rho = sqrt(r2);
+    // `polar_ndc` places radius fraction `rt` at `mix(inner, 1, rt) · outer`.
+    let span = (1.0 - p.w) * e.w;
+    out.angle = (atan2(px.y, px.x) - p.y) / p.z;
+    out.ty = (rho - p.w * e.w) / span * t.data_to_panel_scale.y + t.data_to_panel_offset.y;
+    out.d_angle = vec2<f32>(0.0, 0.0);
+    out.d_ty = vec2<f32>(0.0, 0.0);
+    if (rho > 0.0) {
+        out.d_angle = vec2<f32>(-px.y, px.x) / (r2 * p.z);
+        out.d_ty = px / rho * (t.data_to_panel_scale.y / span);
+    }
+    return out;
+}
+
 /// A data point in the draw's pixel frame: render pixels from the target's
 /// centre, y up, as every vertex stage computes it. The exact picker
 /// measures every primitive in this frame (SHADER_COMMON.md, the draw's

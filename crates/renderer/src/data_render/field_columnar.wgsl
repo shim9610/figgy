@@ -126,7 +126,11 @@ fn field_pixel_center_t(t: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
-    let s = field_cell_sample(field_fragment_center_t(in.axis_t));
+    let lookup = field_lookup(field_fragment_center_t(in.axis_t), LATTICE_QUADS);
+    if (!lookup.hit) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    let s = field_cell_sample(lookup.t);
     if (!s.hit) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
@@ -255,6 +259,50 @@ fn contour_metric(s: ContourSample) -> ContourMetric {
     return out;
 }
 
+/// `contour_metric` at a lookup (#208). A rectangular chart takes it as it
+/// is. On a polar chart the axis-`t` gradient and the mixed second
+/// derivative are carried to pixels through the lookup's Jacobian
+/// (`FieldLookup`): `g = dz.x · jac_x + dz.y · jac_y` and the bilinear
+/// Hessian `J^T H J`. The polar map's own curvature is not added, so the
+/// stroke is placed by the first-order distance about its centre, exact on
+/// the level itself; `contour_level_distance_px` and `contour_paint` read
+/// the result unchanged.
+fn contour_metric_at(s: ContourSample, lookup: FieldLookup) -> ContourMetric {
+    if (transform.polar_angle.x < 0.5) {
+        return contour_metric(s);
+    }
+    var out: ContourMetric;
+    out.valid = false;
+    out.g_len = 0.0;
+    out.kappa = 0.0;
+    out.gradient_square = 0.0;
+    if (!s.hit || !lookup.hit) {
+        return out;
+    }
+    let g = s.dz.x * lookup.jac_x + s.dz.y * lookup.jac_y;
+    let g_len = length(g);
+    if (!vec2_f32_is_finite(g) || !f32_is_finite(g_len) || !f32_is_finite(s.d2)) {
+        return out;
+    }
+    var kappa = 0.0;
+    if (g_len > 0.0) {
+        let n = g / g_len;
+        kappa = 2.0 * s.d2 * dot(n, lookup.jac_x) * dot(n, lookup.jac_y);
+    }
+    let gradient_square = g_len * g_len;
+    if (!f32_is_finite(kappa) || !f32_is_finite(gradient_square)) {
+        return out;
+    }
+    if (g_len <= 0.0 && kappa == 0.0) {
+        return out;
+    }
+    out.valid = true;
+    out.g_len = g_len;
+    out.kappa = kappa;
+    out.gradient_square = gradient_square;
+    return out;
+}
+
 /// Distance in pixels to one level along the bilinear field's gradient normal.
 /// Returns -1 for an unplaceable level/root.
 fn contour_level_distance_px(s: ContourSample, metric: ContourMetric, level: f32) -> f32 {
@@ -322,11 +370,15 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
     out.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     out.level = 0xffffffffu;
     var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    let s = contour_sample(in.axis_t);
+    let lookup = field_lookup(in.axis_t, LATTICE_SAMPLES);
+    if (!lookup.hit) {
+        return out;
+    }
+    let s = contour_sample(lookup.t);
     if (!s.hit) {
         return out;
     }
-    let metric = contour_metric(s);
+    let metric = contour_metric_at(s, lookup);
     if (!metric.valid) {
         return out;
     }
@@ -509,8 +561,17 @@ fn field_pick_invalid() -> DataPickCandidate {
 /// `DATA_PICK_FLAG_PAINTED`: their cursor stays raw and ungated.
 fn field_pick_cell(cursor_t: vec2<f32>) -> DataPickCandidate {
     var t = cursor_t;
-    if ((data_pick_query.data.x & DATA_PICK_FLAG_PAINTED) != 0u) {
+    let painted = (data_pick_query.data.x & DATA_PICK_FLAG_PAINTED) != 0u;
+    if (painted) {
         t = field_fragment_center_t(cursor_t);
+    }
+    // The polar lookup (#208): the cell under the cursor in (angle, radius).
+    let lookup = field_lookup(t, LATTICE_QUADS);
+    if (!lookup.hit) {
+        return field_pick_invalid();
+    }
+    t = lookup.t;
+    if (painted) {
         let s = field_cell_sample(t);
         if (!s.hit) {
             return field_pick_invalid();
@@ -577,10 +638,15 @@ fn field_pick_cell(cursor_t: vec2<f32>) -> DataPickCandidate {
     );
 }
 
-fn field_pick_contour(t: vec2<f32>) -> DataPickCandidate {
+fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
     var best = field_pick_invalid();
+    let lookup = field_lookup(cursor_t, LATTICE_SAMPLES);
+    if (!lookup.hit) {
+        return best;
+    }
+    let t = lookup.t;
     let s = contour_sample(t);
-    let metric = contour_metric(s);
+    let metric = contour_metric_at(s, lookup);
     if (!metric.valid || !f32_is_finite(data_pick_query.limits.x)
         || !f32_is_finite(data_pick_query.limits.z)) {
         return best;
@@ -668,7 +734,14 @@ fn selection_color(coverage: f32) -> vec4<f32> {
     return data_selection.color_premul * clamp(coverage, 0.0, 1.0);
 }
 
-fn selected_cell_coverage(t: vec2<f32>) -> f32 {
+fn selected_cell_coverage(chart_t: vec2<f32>) -> f32 {
+    // The polar lookup (#208): the fragment lies in the picked annular cell
+    // in (angle, radius) `t`.
+    let lookup = field_lookup(chart_t, LATTICE_QUADS);
+    if (!lookup.hit) {
+        return 0.0;
+    }
+    let t = lookup.t;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     let along_cells = select(field.cols, field.rows, columns_are_y);
     let across_cells = select(field.rows, field.cols, columns_are_y);
@@ -700,6 +773,9 @@ fn selected_cell_coverage(t: vec2<f32>) -> f32 {
         || t.y < min(y0, y1) || t.y > max(y0, y1)) {
         return 0.0;
     }
+    if (transform.polar_angle.x > 0.5) {
+        return polar_cell_coverage(chart_t, vec4<f32>(x0, x1, y0, y1), width_px);
+    }
     let pixel_t = transform.pixel_to_ndc * 0.5;
     if (!vec2_f32_is_finite(pixel_t) || pixel_t.x <= 0.0 || pixel_t.y <= 0.0) {
         return 0.0;
@@ -711,6 +787,57 @@ fn selected_cell_coverage(t: vec2<f32>) -> f32 {
     return width_px - edge_distance_px + 0.5;
 }
 
+/// The picked polar cell's outline (#208): the annular sector between the
+/// cell's angle and radius boundaries (`bounds`, lookup `t`: x0, x1, y0, y1)
+/// as a `radial_sector.wgsl` `Sector`, built as the rose builds a wedge
+/// (`category_wedge`), and its `footprint` distance in pixels. The outline
+/// lies inside the cell, `width_px` wide, as the rectangular one does.
+fn polar_cell_coverage(chart_t: vec2<f32>, bounds: vec4<f32>, width_px: f32) -> f32 {
+    let p = transform.polar_angle;
+    let ring = transform.polar_extent.w;
+    // The angle axis is linear on a polar chart: `t` back to an angle value.
+    let range_x = (transform.data_max.x - transform.data_min.x)
+        + (transform.data_max_lo.x - transform.data_min_lo.x);
+    let min_x = transform.data_min.x + transform.data_min_lo.x;
+    let v = (bounds.xy - vec2<f32>(transform.data_to_panel_offset.x))
+        / transform.data_to_panel_scale.x * range_x + vec2<f32>(min_x);
+    let a = vec2<f32>(p.y) + p.z * v;
+    // Radius `t` to pixels, as `category_radius_px` reads a radius.
+    let rt = (bounds.zw - vec2<f32>(transform.data_to_panel_offset.y))
+        / transform.data_to_panel_scale.y;
+    let r = mix(vec2<f32>(p.w), vec2<f32>(1.0), max(rt, vec2<f32>(0.0))) * ring;
+    let r_outer = max(r.x, r.y);
+    let r_inner = min(r.x, r.y);
+    let span = min(abs(a.y - a.x), TAU);
+    if (!vec2_f32_is_finite(a) || !vec2_f32_is_finite(r) || !(ring > 0.0)
+        || !(r_outer > r_inner) || !(r_outer > 0.0) || !(span > 0.0)) {
+        return 0.0;
+    }
+    // The pixel frame has y down: the polar arc [θ0, θ1] is the sector arc
+    // from −θ1, brought into [0, 2π).
+    let raw_start = -max(a.x, a.y);
+    let arc_start = raw_start - floor(raw_start / TAU) * TAU;
+    let sector = Sector(
+        vec4<f32>(0.0, 0.0, r_outer, r_inner / r_outer),
+        vec4<f32>(arc_start, span, 0.0, 0.0),
+        vec4<f32>(0.0),
+        Material(vec4<f32>(0.0), vec4<f32>(0.0)),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+    );
+    let offset = polar_clip_offset(transform, chart_t * 2.0 - vec2<f32>(1.0, 1.0));
+    let q = vec2<f32>(offset.x, -offset.y) / r_outer;
+    let distance_px = footprint(q, sector) * r_outer;
+    if (!f32_is_finite(distance_px)) {
+        return 0.0;
+    }
+    return width_px + distance_px + 0.5;
+}
+
 fn selected_contour_coverage(t: vec2<f32>) -> f32 {
     let level_index = data_selection.indices.y;
     let width_px = max(field.line_width_px, 0.0) + max(data_selection.metrics.y, 0.0);
@@ -718,8 +845,12 @@ fn selected_contour_coverage(t: vec2<f32>) -> f32 {
         || !f32_is_finite(width_px) || width_px <= 0.0) {
         return 0.0;
     }
-    let s = contour_sample(t);
-    let metric = contour_metric(s);
+    let lookup = field_lookup(t, LATTICE_SAMPLES);
+    if (!lookup.hit) {
+        return 0.0;
+    }
+    let s = contour_sample(lookup.t);
+    let metric = contour_metric_at(s, lookup);
     let distance_px = contour_level_distance_px(s, metric, levels[level_index]);
     if (distance_px < 0.0) {
         return 0.0;
