@@ -1193,6 +1193,80 @@ impl LevelPlacement<'_> {
     }
 }
 
+/// What a pick of an energy-level series hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelHit {
+    Level(usize),
+    Transition(usize),
+    Label(LabelPart, usize),
+}
+
+/// The distance from `p` to the segment `a`–`b`.
+fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length2 = dx * dx + dy * dy;
+    let t = if length2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - (a[0] + t * dx)).hypot(p[1] - (a[1] + t * dy))
+}
+
+/// The distance from `p` to `rect`, zero inside it.
+fn rect_distance(p: [f32; 2], rect: crate::layout::RectF) -> f32 {
+    let dx = (rect.x - p[0]).max(p[0] - (rect.x + rect.width)).max(0.0);
+    let dy = (rect.y - p[1]).max(p[1] - (rect.y + rect.height)).max(0.0);
+    dx.hypot(dy)
+}
+
+impl LevelPlacement<'_> {
+    /// The drawn part of `records` nearest `cursor`, within `max_distance`
+    /// of its edge, and that distance (zero on the part). Walks the SSOT
+    /// through the same placement the emit draws with, so the pick is the
+    /// drawn geometry; nothing is registered per row (rule 3). On a tie a
+    /// part drawn later wins: labels over arrows over strokes.
+    pub fn pick(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+        cursor: [f32; 2],
+        max_distance: f32,
+    ) -> Option<(LevelHit, f32)> {
+        let mut best: Option<(LevelHit, f32)> = None;
+        let mut offer = |hit: LevelHit, distance: f32| {
+            if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
+                best = Some((hit, distance));
+            }
+        };
+        for index in 0..records.levels.len() {
+            if let Some((a, b)) = self.level_stroke(records, style, index) {
+                let edge = segment_distance(cursor, a, b) - style.level.width / 2.0;
+                offer(LevelHit::Level(index), edge.max(0.0));
+            }
+        }
+        for index in 0..records.transitions.len() {
+            if let Some((tail, tip)) = self.transition_arrow(records, style, index) {
+                let half = style.transition.width.max(style.transition.head_width) / 2.0;
+                let edge = segment_distance(cursor, tail, tip) - half;
+                offer(LevelHit::Transition(index), edge.max(0.0));
+            }
+        }
+        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+            for index in 0..records.part_len(part) {
+                if let Some(text) = self.label(records, style, part, index, measure) {
+                    offer(
+                        LevelHit::Label(part, index),
+                        rect_distance(cursor, text.rect()),
+                    );
+                }
+            }
+        }
+        best
+    }
+}
+
 /// The records an energy-level series draws: its own, or those of its
 /// `source` in `series` (the document's series list). `None` when the
 /// source does not name an energy-level series of the list.

@@ -69,6 +69,9 @@ pub enum PickedData {
         source_id: Option<String>,
         series_id: String,
         category_index: usize,
+        /// On an energy-level series, the list the label belongs to (#203);
+        /// `category_index` is then its row there. `None` otherwise.
+        part: Option<crate::energy_levels::LabelPart>,
         distance_px: f32,
     },
 }
@@ -158,12 +161,13 @@ impl PickedData {
                 source_id,
                 series_id,
                 category_index,
+                part,
                 ..
             } => crate::config::PickedDataRef::ValueLabel {
                 source_id: source_id.clone(),
                 series_id: series_id.clone(),
                 category_index: *category_index,
-                part: None,
+                part: *part,
             },
         }
     }

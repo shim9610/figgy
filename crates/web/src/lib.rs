@@ -186,15 +186,23 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             source_id,
             series_id,
             category_index,
+            part,
             distance_px,
-        } => serde_json::json!({
-            "kind": "value_label",
-            "source_id": source_id.as_ref(),
-            "series_id": series_id,
-            "category_index": category_index,
-            "label_id": renderer::data_config::value_label_id(series_id, *category_index),
-            "distance_px": distance_px,
-        }),
+        } => {
+            let mut value = serde_json::json!({
+                "kind": "value_label",
+                "source_id": source_id.as_ref(),
+                "series_id": series_id,
+                "category_index": category_index,
+                "label_id": renderer::data_config::value_label_id(series_id, *category_index),
+                "distance_px": distance_px,
+            });
+            // An energy-level label names its list (#203).
+            if let Some(part) = part {
+                value["part"] = serde_json::to_value(part)?;
+            }
+            value
+        }
     };
     serde_json::to_string(&value)
 }
@@ -793,6 +801,7 @@ mod tests {
             source_id: None,
             series_id: "bars:a".into(),
             category_index: 2,
+            part: None,
             distance_px: 0.0,
         };
         let json: serde_json::Value =

@@ -376,3 +376,230 @@ fn thousands_of_records_draw_with_no_count_limit() {
         ));
     }
 }
+
+/// The typed pick at export pixel `at` of a registered chart displayed at
+/// `scale`.
+fn pick(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    scale: f32,
+    at: (u32, u32),
+) -> Option<renderer::PickedData> {
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0 as f32, at.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: (WIDTH as f32 * scale) as u32,
+            height: (HEIGHT as f32 * scale) as u32,
+        },
+        display_scale: scale,
+        max_distance_px: 4.0 * scale,
+    };
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    r.remove_chart(id).unwrap();
+    hit
+}
+
+#[test]
+fn levels_transitions_and_labels_pick_with_their_rows() {
+    let mut r = renderer();
+    let chart = chart();
+    let mut levels = records();
+    levels.levels[3].label = Some(renderer::text::RichText::plain(
+        "3s",
+        Color::BLACK,
+        14.0,
+        "",
+    ));
+    let list = [series("he", levels)];
+    for scale in [1.0f32, 2.0] {
+        // A level stroke, off its centre (the arrow leaves from its centre).
+        match pick(&mut r, &chart, &list, scale, at(&chart, 1.2, 40.0, scale)) {
+            Some(renderer::PickedData::HistogramBin {
+                series_id,
+                bin_index,
+                ..
+            }) => assert_eq!((series_id.as_str(), bin_index), ("he", 1), "{scale}x"),
+            other => panic!("{scale}x a level: {other:?}"),
+        }
+        // The transition's middle.
+        match pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            at(&chart, 1.0, 40.0 - 0.0, scale),
+        ) {
+            Some(renderer::PickedData::Point { point_index, .. }) => {
+                assert_eq!(point_index, 0, "{scale}x")
+            }
+            // The level at 40 lies under the arrow too; either is drawn
+            // there, the arrow over the stroke.
+            Some(renderer::PickedData::HistogramBin { bin_index: 1, .. }) => {}
+            other => panic!("{scale}x the arrow: {other:?}"),
+        }
+        let (tx, ty) = at(&chart, 0.5, 30.0, scale);
+        match pick(&mut r, &chart, &list, scale, (tx, ty)) {
+            Some(renderer::PickedData::Point { point_index, .. }) => {
+                assert_eq!(point_index, 0, "{scale}x")
+            }
+            other => panic!("{scale}x the arrow between levels: {other:?}"),
+        }
+        // The label right of the 60 eV stroke.
+        let (lx, ly) = at(&chart, 2.0 + 0.35, 60.0, scale);
+        match pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            (lx + (14.0 * scale) as u32, ly),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                category_index,
+                part,
+                ..
+            }) => assert_eq!(
+                (category_index, part),
+                (3, Some(renderer::energy_levels::LabelPart::Level)),
+                "{scale}x"
+            ),
+            other => panic!("{scale}x a label: {other:?}"),
+        }
+        // Empty space answers nothing.
+        assert_eq!(
+            pick(&mut r, &chart, &list, scale, at(&chart, 0.0, 70.0, scale)),
+            None
+        );
+        // A hit's reference round-trips into the selection it names.
+        let hit = pick(&mut r, &chart, &list, scale, at(&chart, 1.2, 40.0, scale)).unwrap();
+        assert_eq!(
+            hit.to_ref(),
+            PickedDataRef::HistogramBin {
+                source_id: None,
+                series_id: "he".into(),
+                bin_index: 1,
+                half: None,
+            }
+        );
+    }
+}
+
+#[test]
+fn a_pick_inside_a_break_gap_answers_nothing() {
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().left_y.breaks = Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(25.0, 35.0)],
+        style: AxisBreakStyle::Continuous,
+        gap: 0.2,
+        mark: BreakMark::default(),
+        frame_each_panel: false,
+    });
+    let list = [series("he", records())];
+    for scale in [1.0f32, 2.0] {
+        let space = renderer::annotation::pixel_space_for_config(&chart.config().scaled(scale));
+        use renderer::AnnotationSpace as _;
+        let y25 = space
+            .value_to_px(renderer::AnnotationAxis::Y, 24.99)
+            .unwrap();
+        let y35 = space
+            .value_to_px(renderer::AnnotationAxis::Y, 35.01)
+            .unwrap();
+        let x = space.value_to_px(renderer::AnnotationAxis::X, 0.5).unwrap();
+        // The arrow from 20 to 60 crosses the gap: picked above and below
+        // it, never in it.
+        let mid = ((y25 + y35) / 2.0).round() as u32;
+        let hit = pick(&mut r, &chart, &list, scale, (x.round() as u32, mid));
+        assert!(
+            !matches!(hit, Some(renderer::PickedData::Point { .. })),
+            "{scale}x gap: {hit:?}"
+        );
+    }
+}
+
+#[test]
+fn an_ssot_edit_of_the_series_redraws_it() {
+    let mut r = renderer();
+    let chart = chart();
+    let id = r
+        .register_chart(chart.config().clone(), vec![series("he", records())])
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let before = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(near(
+            &before,
+            at(&chart, 0.0 - 0.25, 20.0, scale),
+            3,
+            is_red
+        ));
+        // Move the lowest level from 20 to 70: the raster follows the SSOT.
+        let mut moved = records();
+        moved.levels[0].energy = 70.0;
+        r.set_chart_series(id, vec![series("he", moved)]).unwrap();
+        let after = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            !near(&after, at(&chart, 0.0 - 0.25, 20.0, scale), 2, is_red),
+            "{scale}x old"
+        );
+        assert!(
+            near(&after, at(&chart, 0.0 - 0.25, 70.0, scale), 3, is_red),
+            "{scale}x new"
+        );
+        // A style edit too.
+        let mut blue = records();
+        blue.style.level.color = BLUE;
+        r.set_chart_series(id, vec![series("he", blue)]).unwrap();
+        let recolored = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(near(
+            &recolored,
+            at(&chart, 0.0 - 0.25, 20.0, scale),
+            3,
+            is_blue
+        ));
+        r.set_chart_series(id, vec![series("he", records())])
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_document_with_the_series_round_trips_and_draws_the_same() {
+    let mut r = renderer();
+    let chart = chart();
+    let list = vec![series("he", records())];
+    let json = serde_json::to_string(&(chart.config(), &list)).unwrap();
+    let (config, back): (renderer::config::Config, Vec<SeriesConfig>) =
+        serde_json::from_str(&json).unwrap();
+    assert_eq!(back, list);
+    assert_eq!(&config, chart.config());
+    let again = serde_json::to_string(&(&config, &back)).unwrap();
+    assert_eq!(again, json, "re-serializes unchanged");
+    for scale in [1.0f32, 2.0] {
+        let a = export(&mut r, &chart, &list, scale);
+        let b = export(&mut r, &Chart::new(config.clone()), &back, scale);
+        assert_eq!(a.rgba, b.rgba, "{scale}x");
+    }
+}
