@@ -918,6 +918,7 @@ mod tests {
                 scatter: None,
                 line: Some(crate::data_config::DataLineStyleConfig::default()),
                 errors: None,
+                stem: None,
             }),
             ..heatmap(None)
         };

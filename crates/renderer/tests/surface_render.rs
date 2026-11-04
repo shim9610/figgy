@@ -1313,6 +1313,7 @@ fn a_3d_series_height_column_is_enumerated_with_its_columns() {
                 scatter: Some(red_points(5.0)),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         )
     };
