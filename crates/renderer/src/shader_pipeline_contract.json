@@ -3861,7 +3861,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -3873,7 +3873,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -3885,7 +3885,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -3897,7 +3897,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -3909,7 +3909,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -3987,13 +3987,25 @@
       "descriptor": {
         "compute": {
           "constants": {},
-          "entryPoint": "pick_field_data"
+          "entryPoint": "pick_field_cell"
         },
-        "label": "figgy field data pick pipeline",
+        "label": "figgy field cell data pick pipeline",
         "layout": 34
       },
       "kind": "compute",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "pick_field_contour"
+        },
+        "label": "figgy field contour data pick pipeline",
+        "layout": 34
+      },
+      "kind": "compute",
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -4532,7 +4544,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -4583,7 +4595,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -4622,7 +4634,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7403,7 +7415,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7449,7 +7461,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7495,7 +7507,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7541,7 +7553,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7587,7 +7599,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7633,7 +7645,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7679,7 +7691,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -7725,7 +7737,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -8845,7 +8857,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -8891,7 +8903,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -14877,7 +14889,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {
@@ -14923,7 +14935,7 @@
         }
       },
       "kind": "render",
-      "source": "a0715dee9b59e2df"
+      "source": "22dd92fe81476547"
     },
     {
       "descriptor": {

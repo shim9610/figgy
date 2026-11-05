@@ -774,26 +774,38 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
     return best;
 }
 
+// A field series picks in two dispatches of one pass, this entry and then
+// `pick_field_cell`, with the same bind groups (`gpu_data_pick.rs`). On
+// Windows WARP, one entry holding both overflowed the 1 MiB default stack of
+// a thread WARP creates; each half fits (#222).
+//
+// Contours paint over their fill. A contour within the configured pick
+// tolerance therefore wins before the containing heatmap cell. A label gap
+// (`fs_contour_labelled`'s test; group 3 holds the series' label placement,
+// or none) paints no contour, so it picks none.
 @compute @workgroup_size(1)
-fn pick_field_data() {
-    let flags = data_pick_query.data.x;
+fn pick_field_contour() {
     let t = data_pick_query.cursor_ndc_t.zw;
-    // Contours paint over their fill. A contour within the configured pick
-    // tolerance therefore wins before the containing heatmap cell. A label
-    // gap (`fs_contour_labelled`'s test; group 3 holds the series' label
-    // placement, or none) paints no contour, so it picks none.
-    if ((flags & DATA_PICK_FLAG_CONTOUR) != 0u) {
+    if ((data_pick_query.data.x & DATA_PICK_FLAG_CONTOUR) != 0u) {
         let contour = field_pick_contour(t);
         if (contour.valid != 0u && !contour_label_gap_contains(t)) {
             data_pick_output = contour;
             return;
         }
     }
-    if ((flags & DATA_PICK_FLAG_FILL) != 0u) {
-        data_pick_output = field_pick_cell(t);
+    data_pick_output = field_pick_invalid();
+}
+
+// The second dispatch: the cell under the cursor, unless the contour entry
+// already wrote a candidate.
+@compute @workgroup_size(1)
+fn pick_field_cell() {
+    if (data_pick_output.valid != 0u) {
         return;
     }
-    data_pick_output = field_pick_invalid();
+    if ((data_pick_query.data.x & DATA_PICK_FLAG_FILL) != 0u) {
+        data_pick_output = field_pick_cell(data_pick_query.cursor_ndc_t.zw);
+    }
 }
 
 // ───── Typed selection overlay (render entry) ───────────────────────────────
