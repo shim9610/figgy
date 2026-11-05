@@ -152,7 +152,10 @@ async fn a_probability_axis_draws_picks_anchors_steps_and_exports() {
         // Text is written as glyph outlines (`<path id="g…">`), not as
         // characters, and the data as an embedded image.
         let svg = chart.export_svg(1.0).await.unwrap();
-        assert!(svg.contains("<path id=\"g"), "{scale:?}: the tick label glyphs");
+        assert!(
+            svg.contains("<path id=\"g"),
+            "{scale:?}: the tick label glyphs"
+        );
         assert!(svg.contains("<image"), "{scale:?}: the data image");
     }
 }
