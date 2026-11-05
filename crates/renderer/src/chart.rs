@@ -1597,6 +1597,7 @@ mod tests {
                 LabelFormat::Decimal,
             ),
             AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
+            AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
         };
         for view_3d in [false, true] {
             for (main, partner) in [

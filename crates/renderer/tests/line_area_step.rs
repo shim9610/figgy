@@ -675,6 +675,7 @@ fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
     let settings = |scale: &AxisScale| match scale {
         Linear => (renderer::tick::axis_major_spacing(&Linear, 1.0, 1000.0), 4),
         Logarithmic => (1.0, 8),
+        AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
     };
     for (left, right) in [
         (Logarithmic, Linear),
@@ -751,6 +752,7 @@ fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
             let t = match left {
                 AxisScale::Linear => (v - 1.0) / 999.0,
                 AxisScale::Logarithmic => v.log10() / 3.0,
+                AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
             };
             bottom as f64 - t * da.height as f64
         };
@@ -762,6 +764,7 @@ fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
                 .map(to_px)
                 .collect(),
             AxisScale::Logarithmic => [10.0, 100.0].map(to_px).to_vec(),
+            AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
         };
         expected.sort_by(f64::total_cmp);
         let majors: Vec<f64> = runs(line_x - 4)
