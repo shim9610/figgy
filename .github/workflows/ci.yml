@@ -1,11 +1,9 @@
 name: Rust packages
+# CI probe only (not for merge): the DX12 stack overflow since #217.
 "on":
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # Only pull requests into master run the matrix. Work collected on an
-    # integration branch runs it once, on the final pull request, or on demand.
     branches: [master]
-  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -16,121 +14,15 @@ env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_PROFILE_TEST_DEBUG: '0'
-  CARGO_BUILD_JOBS: '3'
+  CARGO_BUILD_JOBS: '4'
   RUSTUP_TOOLCHAIN: '1.99.0'
-  RUSTFLAGS: '-D warnings'
-  RUSTDOCFLAGS: '-D warnings'
   PYTHONUTF8: '1'
+  WGPU_BACKEND: dx12
 jobs:
-  packages:
-    # Standard public runners only; draft PRs wait until ready for review.
-    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
-    name: ${{ matrix.os }} / ${{ matrix.backend }}${{ matrix.shard != 'main' && format(' / {0}', matrix.shard) || '' }}
-    runs-on: ${{ matrix.os }}
-    # The packaged suite on the software adapters (WARP, lavapipe) outgrew
-    # 90 minutes; the limit matches the repository job.
-    timeout-minutes: 300
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-        # The package tests in three jobs per backend that run at once
-        # (`ci/verify.py` SHARDS): `main` the library, the other
-        # integration tests, the doctests and the static checks; `picks`
-        # and `decorations` the two slowest groups of binaries.
-        shard: [main, picks, decorations]
-        include:
-          - os: ubuntu-24.04
-            backend: vulkan
-          - os: windows-2025
-            backend: dx12
-          - os: macos-15
-            backend: metal
-    env:
-      WGPU_BACKEND: ${{ matrix.backend }}
-      # A fixed extraction path, so the package build can be cached.
-      FIGGY_PACKAGE_DIR: ${{ github.workspace }}/../figgy-packages
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-          # The merge commit and its base parent, for the change scope.
-          fetch-depth: 2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-      # The job always runs so its required check reports; a change to
-      # standalone Markdown alone skips the remaining steps.
-      - name: Decide whether the change needs the package checks
-        id: scope
-        run: python ci/change_scope.py
-      - name: Install Rust
-        if: steps.scope.outputs.checks == 'true'
-        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown
-      - name: Install Linux build and Vulkan prerequisites
-        if: steps.scope.outputs.checks == 'true' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers libvulkan1
-      - name: Configure headless Linux rendering
-        if: steps.scope.outputs.checks == 'true' && runner.os == 'Linux'
-        shell: bash
-        run: |
-          runtime_dir="$RUNNER_TEMP/figgy-runtime"
-          mkdir -p "$runtime_dir"
-          chmod 700 "$runtime_dir"
-          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
-          if ! compgen -G '/dev/dri/renderD*' > /dev/null; then
-            icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
-            test -n "$icd"
-            echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-            echo "LP_NUM_THREADS=3" >> "$GITHUB_ENV"
-            echo "GPU-less runner: using Mesa lavapipe for Vulkan tests"
-          fi
-      - name: Install pinned Windows DXC and WARP
-        if: steps.scope.outputs.checks == 'true' && runner.os == 'Windows'
-        run: python ci/setup_windows.py
-      # Dependencies' build outputs, keyed by the lockfile and toolchain.
-      # Workspace crates are pruned before saving; the main shard saves.
-      - name: Restore the cargo build cache
-        if: steps.scope.outputs.checks == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: packages-${{ matrix.backend }}
-          save-if: ${{ matrix.shard == 'main' }}
-          workspaces: |
-            . -> target
-            ../figgy-packages -> target
-      - name: Formatting, native and WASM checks, strict API documentation
-        if: steps.scope.outputs.checks == 'true' && matrix.shard == 'main'
-        run: python ci/verify.py static
-      - name: Package, extract, run rendering and pixel regressions
-        if: steps.scope.outputs.checks == 'true'
-        env:
-          SHARD: ${{ matrix.shard }}
-        # bash on every OS, so `$SHARD` is the environment variable on the
-        # Windows runner too (its default shell is PowerShell).
-        shell: bash
-        run: python ci/verify.py packages --shard "$SHARD"
-      - name: Upload verification logs and rendered images
-        if: always() && steps.scope.outputs.checks == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: verification-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.shard }}
-          path: target/ci-results/
-          retention-days: 7
-          if-no-files-found: warn
-  repository:
-    # The repository half of the release gate (#58): the whole workspace,
-    # figgy-web included, which `verify.py packages` does not package, and the
-    # playground selftest, whose rendered scenes are uploaded for review.
-    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
-    name: repository / ubuntu-24.04 / vulkan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 300
-    env:
-      WGPU_BACKEND: vulkan
+  probe:
+    name: windows-2025 / dx12 / stack probe
+    runs-on: windows-2025
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -139,66 +31,31 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
-      - name: Decide whether the change needs the repository checks
-        id: scope
-        run: python ci/change_scope.py
-      - name: Dependency advisories, licenses, bans and sources (deny.toml)
-        # Runs on every change: a new RustSec advisory fails it without any
-        # change to the code.
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check
       - name: Install Rust
-        if: steps.scope.outputs.checks == 'true'
         run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Install pinned Windows DXC and WARP
+        run: python ci/setup_windows.py
       - name: Restore the cargo build cache
-        if: steps.scope.outputs.checks == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: repository
-          workspaces: |
-            . -> target
-            tools/playground -> target
-            tools/loom-poller -> target
-      - name: Install Linux build and Vulkan prerequisites
-        if: steps.scope.outputs.checks == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers libvulkan1
-      - name: Configure headless Linux rendering
-        if: steps.scope.outputs.checks == 'true'
+          shared-key: packages-dx12
+          save-if: false
+      - name: Probe the contour label test's overflow
         shell: bash
         run: |
-          runtime_dir="$RUNNER_TEMP/figgy-runtime"
-          mkdir -p "$runtime_dir"
-          chmod 700 "$runtime_dir"
-          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
-          if ! compgen -G '/dev/dri/renderD*' > /dev/null; then
-            icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
-            test -n "$icd"
-            echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-            echo "LP_NUM_THREADS=3" >> "$GITHUB_ENV"
-            echo "GPU-less runner: using Mesa lavapipe for Vulkan tests"
-          fi
-      - name: Whole workspace tests and doctests
-        if: steps.scope.outputs.checks == 'true'
-        run: cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast -- --test-threads=1
-      - name: Playground selftest
-        if: steps.scope.outputs.checks == 'true'
-        working-directory: tools/playground
-        run: cargo run --locked -- --selftest
-      - name: Poll thread protocol under loom
-        # Every interleaving of the native poll thread's model tests, up to
-        # the preemption bound in `crates/renderer/src/gpu_poller.rs` (#160).
-        if: steps.scope.outputs.checks == 'true'
-        working-directory: tools/loom-poller
-        run: cargo test --locked --release
-      - name: Upload the selftest scenes
-        if: always() && steps.scope.outputs.checks == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: playground-selftest
-          path: tools/playground/target/playground/selftest/
-          retention-days: 7
-          if-no-files-found: warn
+          set +e
+          export CARGO_TARGET_DIR="$(pwd -W)/target"
+          T=contour_label_gaps_pick_and_highlight_nothing
+          run() {
+            label=$1; shift
+            cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement --no-run || exit 1
+            python -c "import glob, os, shutil; [shutil.copy(f, os.path.join(os.environ['CARGO_TARGET_DIR'], 'debug', 'deps')) for f in glob.glob(os.path.join(os.environ['RUNNER_TEMP'], 'figgy-dx12', '*.dll'))]"
+            for n in 1 2 3; do
+              cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement $T -- --exact --nocapture --test-threads=1 > t.log 2>&1
+              echo "RESULT $label run $n exit=$?"
+              grep -E "overflowed|test result|panicked" t.log | head -3
+            done
+          }
+          run default
+          export RUSTFLAGS="-C link-arg=/STACK:16777216"
+          run stack16m
