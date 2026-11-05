@@ -1196,6 +1196,17 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   the creation is repeated on the calling thread. No API change; the browser
   build is unchanged.
 
+- **A field picks in two compute dispatches** ([#222](https://github.com/shim9610/figgy/issues/222)).
+  On Windows WARP, picking a field overflowed the stack of a thread that WARP
+  creates with the 1 MiB default, past the compile thread above. The single
+  entry point held both the contour and the cell pick; each half alone fits.
+  The entry is split into
+  `pick_field_contour` and `pick_field_cell`. One pass dispatches both, in
+  that order, and the cell keeps the contour's candidate when there is one,
+  so the result is unchanged. A host that observes initialization
+  (`InitEvent::stage`) now sees these two stages in place of
+  `pick_field_data`.
+
 - **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
   A chart with a probability axis on any axis or subplot is refused at
   registration and at export with `InvalidConfig` ("probability axes are not

@@ -628,7 +628,10 @@ pub(crate) struct DataPickPipelineBundle {
     health: crate::renderer::DeviceHealth,
     query_bgl: wgpu::BindGroupLayout,
     histogram: wgpu::ComputePipeline,
-    field: wgpu::ComputePipeline,
+    /// A field series picks with these two in turn: the contour, then the
+    /// cell unless the contour wrote a candidate (`field_columnar.wgsl`, #222).
+    field_contour: wgpu::ComputePipeline,
+    field_cell: wgpu::ComputePipeline,
     vector_cell: wgpu::ComputePipeline,
     category_bar: wgpu::ComputePipeline,
     box_plot: wgpu::ComputePipeline,
@@ -784,14 +787,27 @@ impl DataPickPipelineBundle {
                 },
             )
         });
-        let field = observe_value(observer, INIT_SCOPE, "pick_field_data", || {
+        let field_contour = observe_value(observer, INIT_SCOPE, "pick_field_contour", || {
             crate::gpu_compile::compute_pipeline(
                 &device,
                 &wgpu::ComputePipelineDescriptor {
-                    label: Some("figgy field data pick pipeline"),
+                    label: Some("figgy field contour data pick pipeline"),
                     layout: Some(&field_layout),
                     module: field_shader,
-                    entry_point: Some("pick_field_data"),
+                    entry_point: Some("pick_field_contour"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let field_cell = observe_value(observer, INIT_SCOPE, "pick_field_cell", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy field cell data pick pipeline"),
+                    layout: Some(&field_layout),
+                    module: field_shader,
+                    entry_point: Some("pick_field_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 },
@@ -944,7 +960,8 @@ impl DataPickPipelineBundle {
             health,
             query_bgl,
             histogram,
-            field,
+            field_contour,
+            field_cell,
             vector_cell,
             category_bar,
             box_plot,
@@ -1020,7 +1037,10 @@ impl DataPickPipelineBundle {
                 &device,
                 "gpu.data_pick.field.async",
                 crate::data_render::FIELD_SHADER.source,
-                &[("pick_field_data", "pick_field_data")],
+                &[
+                    ("pick_field_contour", "pick_field_contour"),
+                    ("pick_field_cell", "pick_field_cell"),
+                ],
                 observer,
             )
             .await
@@ -1434,9 +1454,14 @@ impl DataPickPipelineBundle {
                         pass.set_bind_group(2, style_map, &[]);
                     }
                     PreparedKind::Field(field_bg, label_gap) => {
-                        pass.set_pipeline(&self.field);
+                        // The contour first; the cell dispatch below reads
+                        // its candidate and keeps it when it is valid.
+                        pass.set_pipeline(&self.field_contour);
                         pass.set_bind_group(2, field_bg, &[]);
                         pass.set_bind_group(3, label_gap, &[]);
+                        pass.set_bind_group(1, &item.query_bg, &[]);
+                        pass.dispatch_workgroups(1, 1, 1);
+                        pass.set_pipeline(&self.field_cell);
                     }
                     PreparedKind::VectorGrid(vector_bg) => {
                         pass.set_pipeline(&self.vector_cell);
