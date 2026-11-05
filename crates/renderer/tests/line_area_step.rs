@@ -656,6 +656,135 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
     );
 }
 
+/// `set_y_range` gives `right_y` the scale of `left_y` and the ticks of it,
+/// so the right edge frames the left axis: a logarithmic `left_y` puts
+/// decades on both edges. The helper used to keep each axis's scale and
+/// derive both axes' tick settings from the left one, so beside a
+/// logarithmic `left_y` a linear `right_y` over 1..1000 got a one-unit
+/// spacing with eight minors: about 8000 inside ticks, painted as a solid
+/// bar down the right edge. Beside a linear `left_y` a logarithmic
+/// `right_y` got a linear spacing read as decades and drew no decade inside
+/// the range. A second independent value axis on the right is an overlay
+/// layer. The probes read the right axis's inside ticks in two columns: two
+/// pixels in from the axis line every tick crosses, four pixels in only the
+/// majors (`major_tick_length` 5, `minor_tick_length` 3).
+#[test]
+fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
+    use AxisScale::{Linear, Logarithmic};
+    let mut r = renderer();
+    let settings = |scale: &AxisScale| match scale {
+        Linear => (renderer::tick::axis_major_spacing(&Linear, 1.0, 1000.0), 4),
+        Logarithmic => (1.0, 8),
+        AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+    };
+    for (left, right) in [
+        (Logarithmic, Linear),
+        (Logarithmic, Logarithmic),
+        (Linear, Logarithmic),
+    ] {
+        let mut chart = bare_chart(400, 300);
+        chart.config_mut().left_y.scale = left.clone();
+        chart.config_mut().right_y.scale = right.clone();
+        chart.set_x_range(0.0, 4.0);
+        chart.set_y_range(1.0, 1000.0);
+
+        let cfg = chart.config();
+        let case = format!("{left:?} left_y, {right:?} right_y before");
+        assert_eq!(
+            (&cfg.left_y.scale, &cfg.right_y.scale),
+            (&left, &left),
+            "{case}: right_y takes the left axis's scale"
+        );
+        let (spacing, minors) = settings(&left);
+        for (name, axis) in [("left_y", &cfg.left_y), ("right_y", &cfg.right_y)] {
+            assert_eq!(
+                (axis.major_spacing, axis.minor_count),
+                (spacing, minors),
+                "{case}: {name} takes the tick settings of the left axis's scale"
+            );
+        }
+
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let da = cfg.data_area().expect("data area");
+        let (top, bottom) = (da.y, da.y + da.height);
+        let inked = |x: u32, y: u32| img.rgba[((y * img.width + x) * 4 + 3) as usize] > 128;
+        // The right axis line: the column right of the data area's middle
+        // that is inked down its whole height.
+        let line_x = (da.x + da.width / 2..img.width)
+            .rev()
+            .find(|&x| (top + 2..bottom - 2).all(|y| inked(x, y)))
+            .expect("the right axis line is drawn");
+        // The inked runs of column `x` between the top and bottom axis
+        // lines, as (first row, length).
+        let runs = |x: u32| {
+            let mut runs = Vec::new();
+            let mut start = None;
+            for y in top + 3..bottom - 3 {
+                match (inked(x, y), start) {
+                    (true, None) => start = Some(y),
+                    (false, Some(s)) => {
+                        runs.push((s, y - s));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(s) = start {
+                runs.push((s, bottom - 3 - s));
+            }
+            runs
+        };
+
+        let widest = runs(line_x - 2).iter().map(|&(_, len)| len).max();
+        assert!(
+            widest.is_some_and(|len| len <= 3),
+            "{case}: the widest inked run next to the right axis line is \
+             {widest:?} px; each tick is a thin stroke, not a bar"
+        );
+
+        let to_px = |v: f64| {
+            let t = match left {
+                AxisScale::Linear => (v - 1.0) / 999.0,
+                AxisScale::Logarithmic => v.log10() / 3.0,
+                AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+            };
+            bottom as f64 - t * da.height as f64
+        };
+        // Top to bottom, the order `runs` reads them in.
+        let mut expected: Vec<f64> = match left {
+            AxisScale::Linear => (1..)
+                .map(|k| k as f64 * spacing)
+                .take_while(|&v| v < 1000.0)
+                .map(to_px)
+                .collect(),
+            AxisScale::Logarithmic => [10.0, 100.0].map(to_px).to_vec(),
+            AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+        };
+        expected.sort_by(f64::total_cmp);
+        let majors: Vec<f64> = runs(line_x - 4)
+            .iter()
+            .map(|&(s, len)| s as f64 + (len as f64 - 1.0) / 2.0)
+            .collect();
+        assert_eq!(
+            majors.len(),
+            expected.len(),
+            "{case}: right_y majors at rows {majors:?}, expected {expected:?}"
+        );
+        for (got, want) in majors.iter().zip(&expected) {
+            assert!(
+                (got - want).abs() <= 1.5,
+                "{case}: right_y major at row {got}, expected {want} ({majors:?})"
+            );
+        }
+    }
+}
+
 /// The fill-between declaration is validated before any GPU work: a different
 /// x column, an unknown series and a self reference are explicit errors.
 #[test]
