@@ -132,7 +132,11 @@ fn contour_label_capacity_and_private_storage_match_the_model_contract() {
 
     let rust = read("src/gpu_contour.rs");
     let shader = read("src/contour_anchor.wgsl");
-    assert!(rust.contains("pub const MAX_CONTOUR_LABELS_TOTAL: u32 = 1024;"));
+    // The label buffer takes the model's explicit-anchor limit (#107).
+    assert_eq!(renderer::data_config::MAX_CONTOUR_LABEL_ANCHORS, 1024);
+    assert!(rust.contains(
+        "pub const MAX_CONTOUR_LABELS_TOTAL: u32 = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS as u32;"
+    ));
     assert!(
         rust.contains("MAX_ANCHOR_CANDIDATES >= crate::data_config::MAX_CONTOUR_LEVELS as u32")
     );
