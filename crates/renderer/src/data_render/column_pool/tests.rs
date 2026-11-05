@@ -370,7 +370,21 @@ fn growth_peak_is_the_old_and_new_buffers_and_settles_to_the_new_one() {
             timeout: None,
         })
         .expect("retired pool copy completes");
-    assert_eq!(retired(), 0);
+    // The device is shared with the tests running beside this one, and the
+    // credit arrives in a completion callback that whichever thread polled
+    // runs after its poll has released the device. So the wait above can
+    // return while another test's poll still holds the callback.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while retired() != 0 {
+        device
+            .poll(wgpu::PollType::Poll)
+            .expect("polling the shared device");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retirement callback timeout"
+        );
+        std::thread::yield_now();
+    }
 }
 
 #[test]

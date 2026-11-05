@@ -115,6 +115,25 @@ fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
     )
 }
 
+/// Wait for the submitted work, then for its retirement credits. A credit
+/// arrives in a completion callback that whichever thread polled the shared
+/// device runs after its poll has released the device: wgpu-core collects
+/// finished closures under its locks and fires them afterwards. So the wait
+/// can end while another test's poll still holds the credit, and a reading
+/// taken then counts a retired buffer as held.
+fn settle(renderer: &Renderer) {
+    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while renderer.gpu_memory_usage().retired_bytes() != 0 {
+        renderer.service_gpu_completions().unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retirement callback timeout"
+        );
+        std::thread::yield_now();
+    }
+}
+
 const COLUMN_VALUE_BYTES: u64 = 8;
 /// Smallest scale that still separates signal from the fixed cost.
 const SMALL_INPUT_BYTES: u64 = 1 << 20;
@@ -174,7 +193,7 @@ fn sample_f32(values: usize, grow_from_small_pool: bool) -> Option<Sample> {
     });
     renderer.end_gpu_frame();
 
-    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    settle(&renderer);
 
     let usage = renderer.gpu_memory_usage();
     let sample = Sample {
@@ -311,7 +330,7 @@ fn f64_input_costs_one_stored_byte_per_input_byte() {
         let rss_before = rss_bytes().unwrap_or(0) as i64;
         renderer.add_column("scale", &column).unwrap();
         renderer.end_gpu_frame();
-        test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+        settle(&renderer);
         let usage = renderer.gpu_memory_usage();
         assert_eq!(renderer.pool().used_bytes(), stored);
         samples.push(Sample {
@@ -365,18 +384,18 @@ fn releasing_the_data_returns_the_pool_to_empty() {
         return;
     };
     renderer.end_gpu_frame();
-    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    settle(&renderer);
     let baseline = renderer.gpu_memory_usage();
     let dc = baseline.total_bytes();
 
     renderer.add_column("released", &column).unwrap();
     renderer.end_gpu_frame();
-    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    settle(&renderer);
     assert_eq!(renderer.pool().used_bytes(), stored);
 
     assert!(renderer.remove_column("released").unwrap());
     renderer.end_gpu_frame();
-    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
+    settle(&renderer);
     let after = renderer.gpu_memory_usage();
     assert_eq!(
         renderer.pool().used_bytes(),
