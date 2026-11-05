@@ -40,23 +40,31 @@ jobs:
         with:
           shared-key: packages-dx12
           save-if: false
-      - name: Probe the contour label test's overflow
+      - name: Probe which part of pick_field_data overflows WARP's default stack
         shell: bash
         run: |
           set +e
           export CARGO_TARGET_DIR="$(pwd -W)/target"
           T=contour_label_gaps_pick_and_highlight_nothing
+          W=crates/renderer/src/data_render/field_columnar.wgsl
           run() {
-            label=$1; shift
-            cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement --no-run || exit 1
+            label=$1
+            cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement --no-run > build.log 2>&1 || { echo "RESULT $label build failed"; tail -20 build.log; return; }
             python -c "import glob, os, shutil; [shutil.copy(f, os.path.join(os.environ['CARGO_TARGET_DIR'], 'debug', 'deps')) for f in glob.glob(os.path.join(os.environ['RUNNER_TEMP'], 'figgy-dx12', '*.dll'))]"
-            for n in 1; do
-              timeout 300 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement $T -- --exact --nocapture --test-threads=1 > t.log 2>&1
-              echo "RESULT $label run $n exit=$?"
-              grep -E "overflowed|test result|panicked" t.log | head -3; tail -2 t.log
-            done
+            timeout 300 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement $T -- --exact --nocapture --test-threads=1 > t.log 2>&1
+            echo "RESULT $label exit=$?"
+            grep -E "overflowed|test result|panicked" t.log | head -3
           }
-          for mb in 2 4 8; do
-            export RUSTFLAGS="-C link-arg=/STACK:$((mb * 1048576))"
-            run stack${mb}m
-          done
+          patch() {
+            git checkout -- $W
+            python -c "import sys; p=sys.argv[1]; s=open(p).read(); a=sys.argv[2]; b=sys.argv[3]; assert a in s, a; open(p,'w').write(s.replace(a,b))" $W "$1" "$2"
+          }
+          patch "data_pick_output = field_pick_cell(t);" "data_pick_output = field_pick_invalid();"
+          run contour-only
+          patch "let contour = field_pick_contour(t);" "let contour = field_pick_invalid();"
+          run cell-only
+          patch "if (contour.valid != 0u && !contour_label_gap_contains(t)) {" "if (contour.valid != 0u) {"
+          run no-label-gap
+          patch "let steps = select(0u, CONTOUR_POLAR_FOOT_STEPS, transform.polar_angle.x >= 0.5);" "let steps = 0u;"
+          run no-polar-foot-steps
+          git checkout -- $W
