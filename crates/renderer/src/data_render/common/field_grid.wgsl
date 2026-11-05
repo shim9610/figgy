@@ -153,18 +153,29 @@ struct CellHit {
     /// Position inside that quad, 0 at its low boundary, 1 at its high one.
     frac: f32,
     hit: bool,
+    /// The quad's boundaries in axis `t`, `boundary_t` of `index` and of
+    /// `index + 1`, so a caller that needs the quad's span reads them here
+    /// instead of transforming both boundaries again.
+    lo_t: f32,
+    hi_t: f32,
 };
 
 /// Which quad along one axis contains `t`, and where inside it.
 ///
 /// Boundaries are monotone in `t` but may descend (inverted axis), so the
 /// direction is read off the two ends rather than assumed. The loop is
-/// `O(log count)` — it stops as soon as the bracket is one wide.
+/// `O(log count)` — it stops as soon as the bracket is one wide. The
+/// bracket's two boundaries are kept as it shrinks, so each boundary is
+/// transformed once: a software GPU compiler pays for every inlined
+/// `boundary_t`, and `contour_sample` runs inside the polar foot-point
+/// iteration.
 fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> CellHit {
     var out: CellHit;
     out.index = 0u;
     out.frac = 0.0;
     out.hit = false;
+    out.lo_t = 0.0;
+    out.hi_t = 0.0;
     if (count == 0u || n == 0u || !f32_is_finite(t)) {
         return out;
     }
@@ -179,6 +190,9 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     let ascending = last >= first;
     var lo = 0u;
     var hi = count;
+    // `boundary_t` at `lo` and at `hi`.
+    var a = first;
+    var b = last;
     // Each step strictly shrinks the unsigned bracket, so a u32 count takes
     // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
     // can make software GPU compilers expand contour projection excessively.
@@ -191,17 +205,20 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
         let before = select(tm > t, tm <= t, ascending);
         if (before) {
             lo = mid;
+            a = tm;
         } else {
             hi = mid;
+            b = tm;
         }
     }
-    let a = boundary_t(base, n, lo, axis, lattice);
-    let b = boundary_t(base, n, lo + 1u, axis, lattice);
+    // The bracket is one wide: `hi` is `lo + 1`.
     let span = grid_rounded_subtract(b, a);
     if (!f32_is_finite(a) || !f32_is_finite(b) || !f32_is_finite(span)) {
         return out;
     }
     out.index = lo;
+    out.lo_t = a;
+    out.hi_t = b;
     // A zero-width quad (a lone centre) has no inside; treat it as its start.
     var frac = 0.0;
     if (span != 0.0) {
@@ -493,10 +510,8 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
     // (u, v) are cell fractions; the chain rule needs the cell's span in axis
     // `t`. The span may be negative on an inverted axis, which flips the
     // gradient's sign exactly as it should.
-    let x_span = boundary_t(field.x_base, field.x_len, x.index + 1u, 0u, LATTICE_SAMPLES)
-        - boundary_t(field.x_base, field.x_len, x.index, 0u, LATTICE_SAMPLES);
-    let y_span = boundary_t(field.y_base, field.y_len, y.index + 1u, 1u, LATTICE_SAMPLES)
-        - boundary_t(field.y_base, field.y_len, y.index, 1u, LATTICE_SAMPLES);
+    let x_span = x.hi_t - x.lo_t;
+    let y_span = y.hi_t - y.lo_t;
     let u_span = select(x_span, y_span, columns_are_y);
     let v_span = select(y_span, x_span, columns_are_y);
     if (!f32_is_finite(u_span) || !f32_is_finite(v_span)

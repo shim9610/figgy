@@ -477,9 +477,15 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
         return 1e30;
     }
     let rising = p_last.along > p_first.along;
-    // The last segment start whose along is not past the cursor.
+    // The last segment start whose along is not past the cursor. `a` and
+    // `b` are the points at `lo` and `hi`, kept as the bracket shrinks, so
+    // the search reads each point once: a software GPU compiler pays for
+    // every inlined `violin_point`, and this runs per group and per half
+    // (Chromium's SwiftShader passed 8 GB building this pipeline).
     var lo = first;
     var hi = end - 1u;
+    var a = p_first;
+    var b = p_last;
     loop {
         if (hi - lo <= 1u) {
             break;
@@ -489,12 +495,13 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
         let before = select(m.along >= along, m.along <= along, rising);
         if (m.ok && before) {
             lo = mid;
+            a = m;
         } else {
             hi = mid;
+            b = m;
         }
     }
-    let a = violin_point(h, lo, position, place.thickness);
-    let b = violin_point(h, lo + 1u, position, place.thickness);
+    // `hi` is `lo + 1`: `a` and `b` are the segment's ends.
     if (!a.ok || !b.ok) {
         return 1e30;
     }
@@ -515,21 +522,22 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
     let pa = vec2<f32>(a.along, a.width);
     let pb = vec2<f32>(b.along, b.width);
     var d = violin_edge_distance(q, pa, pb);
-    if (lo > first) {
-        let prev = violin_point(h, lo - 1u, position, place.thickness);
-        if (prev.ok) {
-            d = min(d, violin_edge_distance(q, vec2<f32>(prev.along, prev.width), pa));
+    // The segment before (`k` 0) and after (`k` 1) this one, or the cap at
+    // the curve's end where there is none. One loop, so `violin_point` is
+    // inlined once for both neighbours.
+    for (var k = 0u; k < 2u; k = k + 1u) {
+        let before = k == 0u;
+        let end_point = select(pb, pa, before);
+        if (select(lo + 2u < end, lo > first, before)) {
+            let n = violin_point(h, select(lo + 2u, lo - 1u, before), position, place.thickness);
+            if (n.ok) {
+                let pn = vec2<f32>(n.along, n.width);
+                d = min(d, violin_edge_distance(q, select(end_point, pn, before), select(pn, end_point, before)));
+            }
+        } else {
+            let cap = vec2<f32>(end_point.x, select(-end_point.y, 0.0, sign != 0.0));
+            d = min(d, violin_edge_distance(q, cap, end_point));
         }
-    } else {
-        d = min(d, violin_edge_distance(q, vec2<f32>(a.along, select(-a.width, 0.0, sign != 0.0)), pa));
-    }
-    if (lo + 2u < end) {
-        let next = violin_point(h, lo + 2u, position, place.thickness);
-        if (next.ok) {
-            d = min(d, violin_edge_distance(q, pb, vec2<f32>(next.along, next.width)));
-        }
-    } else {
-        d = min(d, violin_edge_distance(q, vec2<f32>(b.along, select(-b.width, 0.0, sign != 0.0)), pb));
     }
     if (sign != 0.0 && t >= 0.0 && t <= 1.0 && mix(a.width, b.width, t) > 0.0) {
         d = min(d, abs(u));
