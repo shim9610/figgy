@@ -1186,6 +1186,16 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
+  A backend's shader compiler can need more stack than the calling thread
+  has: on Windows WARP the largest pipelines need 2 to 4 MiB, and a Windows
+  main thread has 1 MiB, so pipeline creation could overflow the host's
+  stack. Natively the renderer now creates every shader module and pipeline
+  on a scoped thread with a 16 MiB stack (reserved, not committed). Errors
+  still reach the caller's error scope: the compile thread captures them and
+  the creation is repeated on the calling thread. No API change; the browser
+  build is unchanged.
+
 - **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
   A chart with a probability axis on any axis or subplot is refused at
   registration and at export with `InvalidConfig` ("probability axes are not
