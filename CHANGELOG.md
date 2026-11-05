@@ -3175,6 +3175,20 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **Shaders a browser refuses.** Chrome's WGSL compiler refused eight
+  modules that naga accepts (the line, bar and surface draw modules and
+  the five GPU pick modules), so their pipelines failed in the browser:
+  a constant that evaluates to NaN (`bitcast<f32>(0x7fc00000u)`, the
+  parallel-coordinate ends, the box-plot value label's missing top and a
+  ternary pick past its third column), a literal past `f32::MAX`
+  (`3.4028235e38`, the raincloud member check), and a `fwidth` after a
+  return that depends on the fragment (the surface's picked patch). Each
+  now carries validity by an explicit flag or a bit test, and the patch
+  colour is computed before the choice. `shader_assembly`'s
+  `no_assembled_module_holds_a_constant_a_browser_refuses` scans every
+  assembled module for the first two forms. None of these shaders was in
+  a release.
+
 - **Older documents are checked by what they draw** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `tests/released_documents.rs` no longer requires the released bytes back:
   each released document must parse, read back as the same value after a

@@ -268,11 +268,15 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let style = box_body_style(category_geometry_style(), row);
     let horizontal = category_params.horizontal != 0u;
     var place = box_layout(s, style);
-    var top = bitcast<f32>(0x7fc00000u);
+    // No top until the box or a violin curve gives one (an explicit flag,
+    // not a NaN constant: WGSL refuses a constant that evaluates to NaN).
+    var top = 0.0;
+    var has_top = false;
     var position = s.position;
     if (s.valid && place.valid) {
         // The top of the box: the smallest y down, or the largest x.
         top = box_along(s.position, s.high);
+        has_top = true;
         if (s.has_mean) {
             top = value_label_farther(top, box_along(s.position, s.mean), horizontal);
         }
@@ -311,13 +315,14 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
                 continue;
             }
             let along = box_along(position, v);
-            top = select(value_label_farther(top, along, horizontal), along, !bar_finite(top));
+            top = select(value_label_farther(top, along, horizontal), along, !has_top || !bar_finite(top));
+            has_top = true;
             if (!place.valid) {
                 place = box_slot(position, v, style);
             }
         }
     }
-    if (!place.valid || !bar_finite(top)) {
+    if (!place.valid || !has_top || !bar_finite(top)) {
         return value_label_hidden();
     }
     let gap = value_label.metrics.x;

@@ -13,7 +13,8 @@ fn category_frame_px(ndc: vec2<f32>, pixel_to_ndc: vec2<f32>) -> vec2<f32> {
 }
 
 fn category_member_finite(v: f32) -> bool {
-    return v == v && abs(v) <= 3.4028235e38;
+    // Neither NaN nor an infinity: the exponent bits are not all set.
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
 /// Member `member` of `members` in the slot between `slot_a` and `slot_b`

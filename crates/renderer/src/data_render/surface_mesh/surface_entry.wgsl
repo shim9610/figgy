@@ -139,11 +139,11 @@ fn fs_selected(in: SurfaceOut) -> @location(0) vec4<f32> {
         discard;
     }
     // An outline 1.5 px wide at the patch's border, the brightened surface
-    // inside it.
+    // inside it. The surface colour is computed before the choice: its
+    // wireframe calls `fwidth`, which WGSL allows only in uniform control
+    // flow, so not after a return that depends on the fragment.
     let fw = max(fwidth(in.frac), vec2<f32>(1e-6));
     let edge = min((0.5 - d.x) / fw.x, (0.5 - d.y) / fw.y);
-    if (edge < 1.5) {
-        return style.color_premul;
-    }
-    return surface_color(in, surface.material.finish.w);
+    let inside = surface_color(in, surface.material.finish.w);
+    return select(inside, style.color_premul, edge < 1.5);
 }

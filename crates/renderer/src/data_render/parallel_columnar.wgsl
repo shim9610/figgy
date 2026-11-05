@@ -80,17 +80,24 @@ fn parallel_value(base: u32, row: u32) -> vec2<f32> {
 
 // Where `v` sits along axis `axis`: 0 at its min, 1 at its max, not
 // clamped (a value past the range places past the axis's end, as a point
-// past a Cartesian axis does). NaN for a non-finite value or a non-positive
-// one on a logarithmic axis, which `parallel_end_valid` rejects.
-fn parallel_fraction(axis: ParallelAxis, v: vec2<f32>) -> f32 {
+// past a Cartesian axis does). Invalid for a non-finite value or a
+// non-positive one on a logarithmic axis, which `parallel_end_valid`
+// rejects (an explicit flag, not a NaN constant: WGSL refuses a constant
+// that evaluates to NaN).
+struct ParallelEnd {
+    f: f32,
+    valid: bool,
+};
+
+fn parallel_fraction(axis: ParallelAxis, v: vec2<f32>) -> ParallelEnd {
     if (!sample_finite(v.x) || !sample_finite(v.y)) {
-        return bitcast<f32>(0x7fc00000u);
+        return ParallelEnd(0.0, false);
     }
     var f: f32;
     if ((axis.mode & PARALLEL_AXIS_LOG) != 0u) {
         let value = v.x + v.y;
         if (!(value > 0.0)) {
-            return bitcast<f32>(0x7fc00000u);
+            return ParallelEnd(0.0, false);
         }
         f = (log(value) / log(10.0) - (axis.lo.x + axis.lo.y)) * axis.span_inv;
     } else {
@@ -98,11 +105,11 @@ fn parallel_fraction(axis: ParallelAxis, v: vec2<f32>) -> f32 {
         // close f64 values keep their distance.
         f = ((v.x - axis.lo.x) + (v.y - axis.lo.y)) * axis.span_inv;
     }
-    return select(f, 1.0 - f, (axis.mode & PARALLEL_AXIS_INVERTED) != 0u);
+    return ParallelEnd(select(f, 1.0 - f, (axis.mode & PARALLEL_AXIS_INVERTED) != 0u), true);
 }
 
-fn parallel_end_valid(f: f32) -> bool {
-    return sample_finite(f);
+fn parallel_end_valid(end: ParallelEnd) -> bool {
+    return end.valid && sample_finite(end.f);
 }
 
 // Segment `inst`'s row and first axis.
@@ -129,9 +136,9 @@ fn parallel_stroke(inst: u32, vid: u32) -> VsOut {
     // along x, the fraction along the normalized band.
     var in: VsIn;
     in.x_a = vec2<f32>(f32(i), 0.0);
-    in.y_a = vec2<f32>(fa, 0.0);
+    in.y_a = vec2<f32>(fa.f, 0.0);
     in.x_b = vec2<f32>(f32(i + 1u), 0.0);
-    in.y_b = vec2<f32>(fb, 0.0);
+    in.y_b = vec2<f32>(fb.f, 0.0);
     // A solid stroke: no arc prefix, the dash phase is zero.
     var arc: VsArc;
     arc.arc_a = vec2<u32>(0u, 0u);
@@ -263,8 +270,8 @@ fn parallel_pick_candidate(inst: u32) -> DataPickCandidate {
     if (!parallel_end_valid(fa) || !parallel_end_valid(fb)) {
         return parallel_pick_invalid();
     }
-    let a = data_to_px(transform, vec2<f32>(f32(i), 0.0), vec2<f32>(fa, 0.0));
-    let b = data_to_px(transform, vec2<f32>(f32(i + 1u), 0.0), vec2<f32>(fb, 0.0));
+    let a = data_to_px(transform, vec2<f32>(f32(i), 0.0), vec2<f32>(fa.f, 0.0));
+    let b = data_to_px(transform, vec2<f32>(f32(i + 1u), 0.0), vec2<f32>(fb.f, 0.0));
     let cursor = data_pick_query.cursor_ndc_t.xy / transform.pixel_to_ndc;
     let distance = parallel_segment_distance(cursor, a, b);
     if (!(distance <= data_pick_query.limits.x)) {
