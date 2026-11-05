@@ -496,11 +496,18 @@ axis-`t` gradient to pixels, `g = dz.x · jac_x + dz.y · jac_y`, and the
 bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
 the polar field is not a quadratic, so `contour_level_distance_at` finds the
 closest point on the level set by foot-point iteration
-(`CONTOUR_POLAR_FOOT_STEPS`, 4): at the current point the level set is
-linearized from the field read through `field_lookup` and `contour_sample`,
-and the point moves to the foot of the perpendicular from the fragment.
-The distance is the Euclidean pixel distance to the isoline; the paint, the
-pick and the selected-level highlight read it. A rectangular chart keeps
+(`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then
+`contour_foot_step`): at the current point the level set is linearized from
+the field read through `field_lookup` and `contour_sample`, and the point
+moves to the foot of the perpendicular from the fragment. The distance is
+the Euclidean pixel distance to the isoline; the paint, the pick and the
+selected-level highlight read it. The pick (`field_pick_contour`) takes the
+same two functions in one flat loop over its levels and steps: nested in
+its loop over the levels, the foot-point loop and the binary searches
+inside it made Chromium's SwiftShader compute compiler pass 12 GB. `locate`
+returns the bracket's boundaries (`CellHit.lo_t`, `hi_t`), which
+`contour_sample` takes for the cell's span instead of transforming them
+again. A rectangular chart keeps
 `contour_level_distance_px`. The
 picked cell's outline is the annular sector between its boundaries as a
 `radial_sector.wgsl` `Sector`, measured by `footprint` as the rose wedge is

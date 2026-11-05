@@ -149,7 +149,10 @@ async fn a_probability_axis_draws_picks_anchors_steps_and_exports() {
 
         let png = chart.export_png(2.0).await.unwrap();
         assert!(png.length() > 0);
+        // Text is written as glyph outlines (`<path id="g…">`), not as
+        // characters, and the data as an embedded image.
         let svg = chart.export_svg(1.0).await.unwrap();
-        assert!(svg.contains("%"), "{scale:?}: the percent tick labels");
+        assert!(svg.contains("<path id=\"g"), "{scale:?}: the tick label glyphs");
+        assert!(svg.contains("<image"), "{scale:?}: the data image");
     }
 }

@@ -3178,6 +3178,25 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **The field contour and violin picks compile in a browser's software
+  GPU.** Creating the `field contour data pick` and `violin data pick`
+  pipelines grew Chromium's SwiftShader GPU process past 12 GB, so a
+  browser without a GPU lost the device at its first pick (the field
+  pipeline also overflowed Windows WARP's stack, #226). The polar
+  foot-point iteration (#208) and the binary searches inside it were
+  nested in the contour pick's loop over the levels; the pick now runs
+  each level's steps in one flat loop, through
+  `contour_foot_begin` and `contour_foot_step`, which the paint and the
+  highlight share. `locate` keeps the bracket's boundaries as it bisects
+  and returns them (`CellHit.lo_t`, `hi_t`), so `contour_sample` no longer
+  transforms four boundaries again for the cell's span. Distances and
+  picks are unchanged. The violin pick's segment search keeps the two
+  points it brackets instead of reading them again, and reads both
+  neighbouring points through one call. In SwiftShader the contour pick
+  now builds in about 60 s at 850 MB and the violin pick in about 90 s at
+  530 MB; the cell pick goes from 17 s to 9 s and the contour paint from
+  8 s to 4 s.
+
 - **Shaders a browser refuses.** Chrome's WGSL compiler refused eight
   modules that naga accepts (the line, bar and surface draw modules and
   the five GPU pick modules), so their pipelines failed in the browser:

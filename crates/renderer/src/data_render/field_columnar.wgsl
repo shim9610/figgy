@@ -341,19 +341,85 @@ fn contour_level_distance_px(s: ContourSample, metric: ContourMetric, level: f32
 /// data count.
 const CONTOUR_POLAR_FOOT_STEPS: u32 = 4u;
 
+/// The first estimate of `contour_level_distance_at` and, on a polar chart
+/// within `reach`, the foot-point iteration's start (#208). `refine` is
+/// false where `start` is the answer: a rectangular chart, an unplaceable
+/// level, a fragment beyond `reach`, or no gradient to step along.
+struct ContourFoot {
+    start: f32,
+    /// The current point relative to the fragment, in the draw's pixel
+    /// frame. The first step uses the fragment's own sample.
+    q: vec2<f32>,
+    refine: bool,
+};
+
+fn contour_foot_begin(s: ContourSample, metric: ContourMetric, level: f32, reach: f32) -> ContourFoot {
+    var out: ContourFoot;
+    out.start = contour_level_distance_px(s, metric, level);
+    out.q = vec2<f32>(0.0, 0.0);
+    out.refine = false;
+    if (transform.polar_angle.x < 0.5 || out.start < 0.0 || !f32_is_finite(reach)
+        || out.start > reach || metric.g_len <= 0.0 || !vec2_f32_is_finite(metric.n)) {
+        return out;
+    }
+    let q = -(s.z - level) / metric.g_len * metric.n;
+    if (!vec2_f32_is_finite(q)) {
+        return out;
+    }
+    out.q = q;
+    out.refine = true;
+    return out;
+}
+
+/// One foot-point step from `q` (relative to the fragment at chart-area
+/// `chart_t`): the level set is linearized at `q` (`z(q) + g(q) · (x - q) =
+/// level`, `g` the pixel gradient through `field_lookup` and
+/// `contour_sample`, crossing cells as `q` moves) and the result is the foot
+/// of the perpendicular from the fragment onto that line. `moved` is false,
+/// and `q` unchanged, where the step cannot be taken; the iteration stops
+/// there.
+struct ContourFootStep {
+    q: vec2<f32>,
+    moved: bool,
+};
+
+fn contour_foot_step(chart_t: vec2<f32>, q: vec2<f32>, level: f32, reach: f32) -> ContourFootStep {
+    var out = ContourFootStep(q, false);
+    let t_per_px = transform.pixel_to_ndc * 0.5;
+    let lookup = field_lookup(chart_t + q * t_per_px, LATTICE_SAMPLES);
+    if (!lookup.hit) {
+        return out;
+    }
+    let at = contour_sample(lookup.t);
+    if (!at.hit) {
+        return out;
+    }
+    let g = at.dz.x * lookup.jac_x + at.dz.y * lookup.jac_y;
+    let g2 = dot(g, g);
+    // The foot of the perpendicular from the fragment (the origin) onto the
+    // level set linearized at `q`.
+    let next = -((at.z - level) - dot(g, q)) / g2 * g;
+    if (!f32_is_finite(g2) || g2 <= 0.0 || !vec2_f32_is_finite(next)
+        || length(next) > reach + 1.0) {
+        return out;
+    }
+    out.q = next;
+    out.moved = true;
+    return out;
+}
+
 /// The distance in pixels from the fragment at chart-area `chart_t` to
 /// `level` (#208). A rectangular chart returns `contour_level_distance_px`
 /// unchanged. On a polar chart the field along a pixel line is the bilinear
 /// field composed with the polar inverse, so a closed form along one line
 /// is not the distance to the curve. Instead the closest point `q` on the
-/// level set is found by foot-point iteration: at `q` the level set is
-/// linearized (`z(q) + g(q) · (x - q) = level`, `g` the pixel gradient
-/// through `field_lookup` and `contour_sample`, crossing cells as `q`
-/// moves), and `q` moves to the foot of the perpendicular from the fragment
-/// onto that line. The fixed point is the foot of the perpendicular onto the
-/// curve itself, so the result is the Euclidean distance to the level set.
-/// Only a fragment whose first estimate is within `reach` pixels is
-/// refined; beyond it the stroke paints and picks nothing.
+/// level set is found by foot-point iteration (`contour_foot_begin`, then
+/// up to `CONTOUR_POLAR_FOOT_STEPS` of `contour_foot_step`). The fixed point
+/// is the foot of the perpendicular onto the curve itself, so the result is
+/// the Euclidean distance to the level set. Only a fragment whose first
+/// estimate is within `reach` pixels is refined; beyond it the stroke paints
+/// and picks nothing. The pick (`field_pick_contour`) runs the same two
+/// functions in one flat loop over its levels and steps.
 fn contour_level_distance_at(
     chart_t: vec2<f32>,
     s: ContourSample,
@@ -361,43 +427,22 @@ fn contour_level_distance_at(
     level: f32,
     reach: f32,
 ) -> f32 {
-    let start = contour_level_distance_px(s, metric, level);
-    if (transform.polar_angle.x < 0.5 || start < 0.0 || !f32_is_finite(reach)
-        || start > reach || metric.g_len <= 0.0 || !vec2_f32_is_finite(metric.n)) {
-        return start;
+    let begin = contour_foot_begin(s, metric, level, reach);
+    if (!begin.refine) {
+        return begin.start;
     }
-    let t_per_px = transform.pixel_to_ndc * 0.5;
-    // `q` relative to the fragment, in the draw's pixel frame. The first
-    // step uses the fragment's own sample.
-    var q = -(s.z - level) / metric.g_len * metric.n;
-    if (!vec2_f32_is_finite(q)) {
-        return start;
-    }
+    var q = begin.q;
     // The bound is read from the transform rather than written as the
     // constant, so a shader compiler keeps the loop rolled instead of
-    // copying its body into each caller (the paint, the pick and the
-    // highlight). Only a polar chart gets here, so the count is the
-    // constant's.
+    // copying its body into each caller (the paint and the highlight).
+    // Only a polar chart gets here, so the count is the constant's.
     let steps = select(0u, CONTOUR_POLAR_FOOT_STEPS, transform.polar_angle.x >= 0.5);
     for (var step = 0u; step < steps; step = step + 1u) {
-        let lookup = field_lookup(chart_t + q * t_per_px, LATTICE_SAMPLES);
-        if (!lookup.hit) {
+        let next = contour_foot_step(chart_t, q, level, reach);
+        if (!next.moved) {
             break;
         }
-        let at = contour_sample(lookup.t);
-        if (!at.hit) {
-            break;
-        }
-        let g = at.dz.x * lookup.jac_x + at.dz.y * lookup.jac_y;
-        let g2 = dot(g, g);
-        // The foot of the perpendicular from the fragment (the origin) onto
-        // the level set linearized at `q`.
-        let next = -((at.z - level) - dot(g, q)) / g2 * g;
-        if (!f32_is_finite(g2) || g2 <= 0.0 || !vec2_f32_is_finite(next)
-            || length(next) > reach + 1.0) {
-            break;
-        }
-        q = next;
+        q = next.q;
     }
     return length(q);
 }
@@ -747,11 +792,46 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
     }
     let half_width = max(data_pick_query.limits.z, 0.0) * 0.5;
     let max_distance = max(data_pick_query.limits.x, 0.0);
+    let reach = half_width + max_distance + 1.0;
+    // Each level's distance is `contour_level_distance_at`'s, taken in one
+    // flat loop: an iteration either begins a level (`step` 0) or takes one
+    // foot-point step of it. Nesting the polar foot-point loop, and the
+    // binary searches inside it, in a loop over the levels made a software
+    // GPU compiler's compute path grow without bound (Chromium's SwiftShader
+    // passed 12 GB building this pipeline; Windows WARP overflowed its
+    // stack, #226). The fragment entries keep the nested form, which
+    // compiles there.
     var level_index = 0u;
-    while (level_index < field.level_count) {
-        let center_distance = contour_level_distance_at(
-            cursor_t, s, metric, levels[level_index], half_width + max_distance + 1.0,
-        );
+    var step = 0u;
+    var q = vec2<f32>(0.0, 0.0);
+    var center_distance = -1.0;
+    loop {
+        if (level_index >= field.level_count) {
+            break;
+        }
+        let level = levels[level_index];
+        var finished = false;
+        if (step == 0u) {
+            let begin = contour_foot_begin(s, metric, level, reach);
+            center_distance = begin.start;
+            q = begin.q;
+            finished = !begin.refine;
+            step = 1u;
+        } else {
+            let next = contour_foot_step(cursor_t, q, level, reach);
+            if (next.moved) {
+                q = next.q;
+            }
+            if (!next.moved || step >= CONTOUR_POLAR_FOOT_STEPS) {
+                center_distance = length(q);
+                finished = true;
+            } else {
+                step = step + 1u;
+            }
+        }
+        if (!finished) {
+            continue;
+        }
         if (center_distance >= 0.0) {
             let hit_distance = max(center_distance - half_width, 0.0);
             if (f32_is_finite(hit_distance) && hit_distance <= max_distance
@@ -770,6 +850,7 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
             }
         }
         level_index = level_index + 1u;
+        step = 0u;
     }
     return best;
 }
