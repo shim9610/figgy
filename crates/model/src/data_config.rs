@@ -2422,6 +2422,16 @@ pub enum Shading {
 /// truncating them.
 pub const MAX_CONTOUR_LEVELS: usize = 1024;
 
+/// Maximum number of explicit label anchors one series accepts
+/// ([`ContourLabelConfig::anchors`]). A longer list is rejected by
+/// [`ContourLabelConfig::validate`] rather than truncated. Automatic
+/// placement keeps at most this many labels too: both share the renderer's
+/// label buffer. A configuration-list limit, not a data count (#107).
+pub const MAX_CONTOUR_LABEL_ANCHORS: usize = 1024;
+
+// `ContourLabelConfig::TOO_MANY_ANCHORS_REASON` names the number.
+const _: () = assert!(MAX_CONTOUR_LABEL_ANCHORS == 1024);
+
 fn push_contour_level(levels: &mut Vec<f64>, value: f64) -> Result<(), TickError> {
     if levels.len() == MAX_CONTOUR_LEVELS {
         return Err(TickError::InvalidRange);
@@ -2613,12 +2623,13 @@ pub struct ContourLabelConfig {
     /// Where the labels go — an **override**.
     ///
     /// Empty is the normal case: the GPU projects a seed lattice onto each
-    /// level's isoline and selects a separated subset. For an explicit list, the
-    /// renderer removes anchors whose `level_index` is outside `levels`, keeps at
-    /// most 1024 in input order, and uses that resolved list as the override. If
-    /// resolution leaves it empty, automatic placement remains active. Automatic
-    /// and explicit placement share the same 1024-label draw capacity. Either way
-    /// the same anchor record reaches the same draw.
+    /// level's isoline and selects a separated subset. An explicit list holds at
+    /// most [`MAX_CONTOUR_LABEL_ANCHORS`] anchors; a longer one fails
+    /// [`ContourLabelConfig::validate`]. The renderer removes anchors whose
+    /// `level_index` is outside `levels` and uses the rest, in input order, as
+    /// the override. If that leaves it empty, automatic placement remains
+    /// active. Automatic and explicit placement share the same 1024-label draw
+    /// capacity. Either way the same anchor record reaches the same draw.
     pub anchors: Vec<ContourLabelAnchor>,
     /// Fill painted behind the text, so a label over a line stays readable.
     ///
@@ -2645,11 +2656,16 @@ fn default_contour_label_color() -> Color {
 impl ContourLabelConfig {
     pub const INVALID_SPACING_REASON: &'static str =
         "contour label spacing_px must be finite and greater than zero";
+    pub const TOO_MANY_ANCHORS_REASON: &'static str =
+        "contour label anchors exceed the supported maximum of 1024";
 
     /// Validate invariants owned by the label configuration itself.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.spacing_px.is_finite() || self.spacing_px <= 0.0 {
             return Err(Self::INVALID_SPACING_REASON);
+        }
+        if self.anchors.len() > MAX_CONTOUR_LABEL_ANCHORS {
+            return Err(Self::TOO_MANY_ANCHORS_REASON);
         }
         Ok(())
     }
@@ -6739,6 +6755,35 @@ mod contour_level_tests {
                 Err(ContourLabelConfig::INVALID_SPACING_REASON)
             );
         }
+    }
+
+    #[test]
+    fn explicit_contour_label_anchors_past_the_limit_are_rejected() {
+        let anchors = |count: usize| ContourLabelConfig {
+            visible: true,
+            font_size: 12.0,
+            color: Color::BLACK,
+            format: LabelFormat::Decimal,
+            significant_digits: 3,
+            spacing_px: 120.0,
+            anchors: (0..count)
+                .map(|i| ContourLabelAnchor {
+                    level_index: 0,
+                    x: i as f64,
+                    y: 0.0,
+                    tx: 1.0,
+                    ty: 0.0,
+                })
+                .collect(),
+            bg_color: None,
+            bg_padding_px: 0.0,
+        };
+        assert_eq!(anchors(0).validate(), Ok(()));
+        assert_eq!(anchors(MAX_CONTOUR_LABEL_ANCHORS).validate(), Ok(()));
+        assert_eq!(
+            anchors(MAX_CONTOUR_LABEL_ANCHORS + 1).validate(),
+            Err(ContourLabelConfig::TOO_MANY_ANCHORS_REASON)
+        );
     }
 
     /// Asking for more levels gets more, and they stay inside. That is the whole

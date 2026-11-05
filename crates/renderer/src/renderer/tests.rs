@@ -2096,6 +2096,57 @@ fn renderer_owned_series_boundaries_reject_spacing_without_state_changes() {
     }
 }
 
+/// An explicit anchor list past `MAX_CONTOUR_LABEL_ANCHORS` is an error at
+/// every series boundary, and nothing changes; at the limit it registers.
+#[test]
+fn explicit_contour_label_anchors_past_the_limit_are_rejected_without_state_changes() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_contour_grid(&mut renderer);
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let chart = renderer.register_chart(config.clone(), Vec::new()).unwrap();
+    let with_anchors = |count: usize| {
+        let anchors = (0..count)
+            .map(|i| crate::data_config::ContourLabelAnchor {
+                level_index: 0,
+                x: 0.5,
+                y: 0.5 + i as f64 * 1e-4,
+                tx: 1.0,
+                ty: 0.0,
+            })
+            .collect();
+        state_test_labelled_contour(120.0, anchors)
+    };
+    let limit = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS;
+    fn assert_rejected<T>(result: Result<T>) {
+        let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+            panic!("an oversized anchor list was accepted or returned the wrong error")
+        };
+        assert_eq!(
+            reason,
+            crate::data_config::ContourLabelConfig::TOO_MANY_ANCHORS_REASON
+        );
+    }
+
+    renderer
+        .set_chart_series(chart, vec![with_anchors(limit)])
+        .unwrap();
+    let before_series = renderer.chart_series(chart).unwrap().to_vec();
+    let before_visual = renderer.visual_revision();
+    assert_rejected(renderer.set_chart_series(chart, vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+    assert_eq!(renderer.visual_revision(), before_visual);
+    assert_rejected(renderer.set_chart_state(chart, config.clone(), vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+    assert_eq!(renderer.visual_revision(), before_visual);
+    let before_order = renderer.chart_order().to_vec();
+    assert_rejected(renderer.register_chart(config, vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_order(), before_order);
+    assert_eq!(renderer.visual_revision(), before_visual);
+}
+
 #[test]
 fn demo_load_rejects_invalid_spacing_without_publishing_candidate_state() {
     let Some(mut renderer) = state_test_renderer() else {

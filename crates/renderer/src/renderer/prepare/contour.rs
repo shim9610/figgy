@@ -548,8 +548,9 @@ impl PrepareContext<'_> {
             )?;
             // An anchor naming a level the declaration no longer has is stale,
             // not fatal: it draws nothing and the rest still do.
+            // The list holds at most `MAX_CONTOUR_LABEL_ANCHORS` anchors:
+            // `ContourLabelConfig::validate` rejected a longer one.
             anchors.retain(|anchor| anchor.level < level_count);
-            anchors.truncate(crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL as usize);
             let texts = axis_render::contour_label_texts(chart_config, labels, &contour.levels);
             label_sig = data_render::ContourLabelAtlasInput::from_config(
                 chart_config,

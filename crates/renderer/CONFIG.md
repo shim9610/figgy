@@ -1163,10 +1163,12 @@ selection targets
 `spacing_px` separation, but the per-level fallback may keep a closer candidate
 rather than omit a level. `spacing_px` must always be finite and greater than zero,
 including for hidden labels and explicit overrides. Automatic and explicit
-placement share a 1024-label capacity. Explicit anchors whose `level_index` is
-invalid are discarded, and only the first 1024 valid anchors are retained in
-input order. If that resolved list is empty, automatic placement runs; otherwise
-the resolved list overrides it. Only automatic placement multiplies spacing by
+placement share a 1024-label capacity. An explicit list longer than
+`MAX_CONTOUR_LABEL_ANCHORS` (1024) is rejected with `InvalidSeriesConfig`
+("contour label anchors exceed the supported maximum of 1024"), rather than cut.
+Explicit anchors whose `level_index` is invalid are discarded, and the rest are
+used in input order. If that resolved list is empty, automatic placement runs;
+otherwise the resolved list overrides it. Only automatic placement multiplies spacing by
 the frame/export scale; export validates that product after clamping the scale.
 The atlas must also fit the adapter's texture-dimension limit. Invalid spacing,
 scale-product overflow, or an oversized atlas fails before publishing renderer
@@ -1905,7 +1907,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 `ContourLabelConfig.anchors`는 라벨 위치를 직접 지정할 때 사용한다. 기본값인 빈 목록에서는 GPU가 데이터 영역에 `spacing_px` 간격으로 후보를 만들고 각 후보를 해당 등고선 위로 투영한다. 투영된 후보는 도착한 셀 안에서 레벨을 실제로 가로지를 때만 남는다. 셀 꼭짓점 값의 범위가 레벨을 포함해야 하며, 이는 선을 그리는 조건과 같다. 따라서 레벨에 가깝기만 한 얕은 극값에는 라벨을 붙이지 않는다. 일반 선택에서는 이 간격을 목표로 후보를 남기지만, 레벨이 누락되지 않도록 추가로 고르는 후보는 더 가까울 수 있다.
 
-`spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 항상 유한한 양수여야 한다. 자동 배치와 직접 지정 모두 최대 1024개를 사용한다. 직접 지정한 목록에서는 잘못된 `level_index`를 제외하고 유효한 앞 1024개만 남긴다. 이 결과가 비면 자동 배치하고, 하나라도 남으면 해당 목록으로 자동 배치를 대신한다.
+`spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 항상 유한한 양수여야 한다. 자동 배치와 직접 지정 모두 최대 1024개를 사용한다. 직접 지정한 목록이 `MAX_CONTOUR_LABEL_ANCHORS`(1024)보다 길면 잘라 내지 않고 `InvalidSeriesConfig`로 거부한다. 직접 지정한 목록에서는 잘못된 `level_index`를 제외하고 나머지를 입력 순서대로 사용한다. 이 결과가 비면 자동 배치하고, 하나라도 남으면 해당 목록으로 자동 배치를 대신한다.
 
 출력 배율은 자동 배치 간격에만 곱한다. 출력 배율을 허용 범위로 제한한 뒤 그 곱도 유한한 양수인지 확인한다. 라벨 아틀라스는 어댑터의 텍스처 크기 한도를 지켜야 한다. 간격 오류, 곱셈 오버플로, 아틀라스 크기 초과가 발생하면 상태를 반영하기 전에 실패하므로 기존 차트와 GPU 자원을 유지한다. 앵커는 데이터 좌표와 데이터 공간의 접선으로 저장하므로 확대·이동 시 화면 좌표로 다시 투영할 수 있다.
 
