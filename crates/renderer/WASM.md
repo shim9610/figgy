@@ -473,11 +473,27 @@ series[0].render_type.Line.line.line_color = { r: 1, g: 0, b: 1, a: 1 };
 chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 ```
 
+확률 축(#209)도 같은 방식으로 바꾼다. 범위는 퍼센트가 아니라 `(0, 1)` 안의 확률이고, 두 경계 모두 그 안에 있어야 한다. 눈금은 범위로 정하므로 `major_spacing`은 쓰지 않는다. 데이터는 호스트가 계산한 플로팅 위치(예: Hazen `(i − 0.5) / n`)를 Y 컬럼으로 넣는다.
+
+```js
+const cfg = JSON.parse(chart.get_config());
+for (const axis of [cfg.left_y, cfg.right_y]) {
+  axis.scale = { Probability: "Normal" };  // "Weibull", "Logistic"
+  axis.min = 0.001;
+  axis.max = 0.999;
+  axis.label_style.format = "Percent";
+  axis.minor_count = 1;
+}
+chart.set_config(JSON.stringify(cfg));
+// 선택 지점의 주석 앵커도 확률로 돌아온다: {"Data":{"x":…,"y":0.97}}
+const anchor = JSON.parse(chart.pointer_to_anchor(x, y, "Data"));
+```
+
 `set_series(json)`는 `Vector` 시리즈를 두 형식으로 받는다. `components.Points`는 기준점과 인덱스가 맞는 `u` / `v` 컬럼을, `components.Grid`는 좌표 컬럼 위의 행렬 두 개를 사용한다. 색상 매핑을 쓰는 벡터 시리즈에는 `colorbar`가 필요하다. 선택한 화살표나 셀의 `selection_details`는 `u`, `v`를 돌려주고, 색상 매핑을 쓰면 `color_value`도 돌려준다. 3D 차트의 점 벡터(`z_column`과 `w`를 지정, #211)는 `z`와 `w`도 돌려준다. 자세한 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
 
 <!-- contour-contract: scope=wasm max-levels=1024 -->
 `set_series(json)`에서 `Contour`와 `HeatmapContour`의 `contour.levels`는 `0..=1024`개를 허용한다. 1025개 이상이면 JavaScript 예외를 반환하고 이전 설정·시리즈·GPU 스타일을 유지한다. 다음 프레임도 이전 상태로 그린다. WASM에만 더 작은 상한을 두거나 배열을 잘라서 처리하지 않는다.
-등고선 라벨도 자동·직접 지정 모두 1024개까지 지원한다. `spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 유한한 양수여야 한다. 자동 배치에서는 허용 범위로 제한한 프레임·출력 배율과 간격의 곱도 검사한다. 이 곱이 넘치거나 라벨 아틀라스가 어댑터의 텍스처 크기 한도를 넘으면 GPU 상태를 바꾸기 전에 실패해 이전 차트와 자원을 유지한다.
+등고선 라벨도 자동·직접 지정 모두 1024개까지 지원한다. 직접 지정한 `anchors`가 1024개를 넘으면 잘라 내지 않고 JavaScript 예외를 반환한다. `spacing_px`는 라벨을 숨겼거나 앵커를 직접 지정했더라도 유한한 양수여야 한다. 자동 배치에서는 허용 범위로 제한한 프레임·출력 배율과 간격의 곱도 검사한다. 이 곱이 넘치거나 라벨 아틀라스가 어댑터의 텍스처 크기 한도를 넘으면 GPU 상태를 바꾸기 전에 실패해 이전 차트와 자원을 유지한다.
 
 `set_config`는 JSON을 검증한 뒤 `set_chart_config(chart_id, config)`로 렌더러의 설정을 교체한다. 설정이 바뀌면 차트의 렌더 스탬프도 바뀌므로 다음 `frame()`이 데이터 화면과 축 이미지를 다시 그린다([3.2절](#32-렌더-루프--requestanimationframe--renderer-stamp) 참고).
 축 스케일을 바꾸면 `major_spacing`의 단위도 바뀐다. 선형축에서는 데이터 단위이고 로그축에서는 10배 간격을 뜻하는 decade 단위다. 웹의 `auto_fit_x` / `auto_fit_y`와 Rust의 `Chart::set_x_range` 같은 범위 헬퍼는 이를 맞춰 주지만(웹 API에는 `set_x_range`가 없다) JSON을 직접 편집할 때는 함께 수정해야 한다. `AxisOptions.inverted`도 JSON 필드로 지정한다. 축·데이터·피킹이 같은 방향 반전을 적용한다.

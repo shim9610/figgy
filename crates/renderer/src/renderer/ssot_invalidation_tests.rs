@@ -883,6 +883,122 @@ fn log_tick_edits() -> Vec<Edit> {
     cases
 }
 
+/// `c` with every axis bounded inside `(0, 1)`, so any of them can take a
+/// probability scale (#209): `max` 1.0 is outside the domain.
+fn in_unit_interval(mut c: Config) -> Config {
+    fn bound(axis: &mut crate::config::AxisOptions) {
+        axis.min = 0.1;
+        axis.max = 0.9;
+        axis.major_spacing = 0.2;
+    }
+    for axis in [&mut c.bottom_x, &mut c.left_y, &mut c.top_x, &mut c.right_y] {
+        bound(axis);
+    }
+    for overlay in &mut c.overlays {
+        bound(&mut overlay.y_axis);
+    }
+    for subplot in &mut c.subplots {
+        let s = &mut subplot.config;
+        for axis in [&mut s.bottom_x, &mut s.left_y, &mut s.top_x, &mut s.right_y] {
+            bound(axis);
+        }
+    }
+    c
+}
+
+/// Probability scale edits (#209), each scale on each of the four axes, the
+/// overlay axis and a subplot axis. A scale moves every sample on its axis
+/// as the logarithmic edit does, so the base axes replay, the partner axes
+/// redraw chrome only, and the overlay and subplot pack. The stream pass
+/// refuses a probability base axis, so these are resident only.
+fn probability_edits() -> Vec<Edit> {
+    use crate::config::ProbabilityScale::{Logistic, Normal, Weibull};
+    let mut cases = Vec::new();
+    let mut push = |name, apply, work| {
+        cases.push(Edit {
+            name,
+            apply,
+            work,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: false,
+        });
+    };
+    macro_rules! scale {
+        ($($field:ident).+, $kind:ident, $work:ident) => {
+            push(
+                concat!(stringify!($($field).+), ".scale (Probability ", stringify!($kind), ")"),
+                (|c: &mut Config| c.$($field).+.scale = AxisScale::Probability($kind))
+                    as fn(&mut Config),
+                Work::$work,
+            )
+        };
+    }
+    scale!(bottom_x, Normal, Replay);
+    scale!(bottom_x, Weibull, Replay);
+    scale!(bottom_x, Logistic, Replay);
+    scale!(left_y, Normal, Replay);
+    scale!(left_y, Weibull, Replay);
+    scale!(left_y, Logistic, Replay);
+    scale!(top_x, Normal, Prefix);
+    scale!(top_x, Weibull, Prefix);
+    scale!(top_x, Logistic, Prefix);
+    scale!(right_y, Normal, Prefix);
+    scale!(right_y, Weibull, Prefix);
+    scale!(right_y, Logistic, Prefix);
+    cases
+}
+
+/// A probability edit of an overlay or subplot axis: packed, as the
+/// logarithmic one is.
+fn packed_probability_edit(name: &'static str, apply: fn(&mut Config)) -> Edit {
+    Edit {
+        name,
+        apply,
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: false,
+    }
+}
+
+fn probability_overlay_edits() -> Vec<Edit> {
+    use crate::config::ProbabilityScale::{Logistic, Normal, Weibull};
+    vec![
+        packed_probability_edit("overlays[0].y_axis.scale (Probability Normal)", |c| {
+            c.overlays[0].y_axis.scale = AxisScale::Probability(Normal)
+        }),
+        packed_probability_edit("overlays[0].y_axis.scale (Probability Weibull)", |c| {
+            c.overlays[0].y_axis.scale = AxisScale::Probability(Weibull)
+        }),
+        packed_probability_edit("overlays[0].y_axis.scale (Probability Logistic)", |c| {
+            c.overlays[0].y_axis.scale = AxisScale::Probability(Logistic)
+        }),
+    ]
+}
+
+fn probability_subplot_edits() -> Vec<Edit> {
+    use crate::config::ProbabilityScale::{Logistic, Normal, Weibull};
+    vec![
+        packed_probability_edit(
+            "subplots[0].config.left_y.scale (Probability Normal)",
+            |c| c.subplots[0].config.left_y.scale = AxisScale::Probability(Normal),
+        ),
+        packed_probability_edit(
+            "subplots[0].config.left_y.scale (Probability Weibull)",
+            |c| c.subplots[0].config.left_y.scale = AxisScale::Probability(Weibull),
+        ),
+        packed_probability_edit(
+            "subplots[0].config.left_y.scale (Probability Logistic)",
+            |c| c.subplots[0].config.left_y.scale = AxisScale::Probability(Logistic),
+        ),
+    ]
+}
+
 /// Overlay edits run against a baseline whose one series is scaled by an
 /// overlay layer. The overlay's Y range, scale, direction and series list are
 /// geometry of its own panel; its band (`out_margin + major_tick_length`)
@@ -1508,6 +1624,15 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_categories(), category_edits()),
         (baseline_with_log_axes(), log_tick_edits()),
         (baseline_with_breaks(), break_edits()),
+        (in_unit_interval(baseline()), probability_edits()),
+        (
+            in_unit_interval(baseline_with_overlay()),
+            probability_overlay_edits(),
+        ),
+        (
+            in_unit_interval(baseline_with_subplot()),
+            probability_subplot_edits(),
+        ),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",

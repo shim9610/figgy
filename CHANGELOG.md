@@ -1265,6 +1265,9 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   stamp (codes 2 to 4) and the render warnings take the new scale.
   Migration: a `ScatterTransform` literal adds
   `scale_prob: renderer::data_render::NO_PROBABILITY` (`[0.0; 4]`).
+  The `probability_paper` example (`gallery-probability.png`) draws normal
+  paper and Weibull paper over a log time axis; the playground has the same
+  scene and an axis scale menu in place of its log checkboxes.
 
 - **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
   series' stems are the error-bar module's second draw: one quad per point

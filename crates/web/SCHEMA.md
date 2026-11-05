@@ -816,7 +816,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 <!-- contour-contract: scope=schema max-levels=1024 -->
 - `ContourConfig.levels`에는 데이터 단위의 등고선 값을 명시한다. 레벨을 자동으로 고르려면 웹의 `set_contour_nice_levels(series_id, target_count, use_colormap_colors)`를 호출한다. 색상 막대 Z축 범위 안에서 눈금 규칙으로 고른 값을 이 배열에 기록하고 레벨 수를 반환하며, `use_colormap_colors`가 `true`이면 `per_level_color`도 색상표의 색으로 채운다. `0..=1024`개를 허용하며 1025개 이상이면 `set_series`가 실패한다. 배열을 잘라 처리하지 않고 이전 설정·시리즈·GPU 스타일을 유지한다.
 - `ContourLabelConfig.spacing_px`는 자동 배치의 목표 간격이다. 레벨 누락을 막기 위해 추가로 고르는 후보는 더 가까울 수 있다. 라벨을 숨겼거나 위치를 직접 지정했더라도 간격은 유한한 양수여야 한다.
-- 자동·직접 배치는 모두 최대 1024개를 사용한다. 직접 지정한 `anchors`에서는 잘못된 `level_index`를 제외하고 입력 순서대로 유효한 앞 1024개를 사용한다. 남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.
+- 자동·직접 배치는 모두 최대 1024개를 사용한다. 직접 지정한 `anchors`가 1024개를 넘으면 잘라 내지 않고 `set_series`가 실패한다. 그 안에서는 잘못된 `level_index`를 제외하고 나머지를 입력 순서대로 사용한다. 남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.
 - 자동 배치 간격에는 출력 배율(예: PNG 2x 내보내기의 2)을 곱하며, 곱한 값도 유한한 양수여야 한다. 라벨 글자를 담는 텍스처(아틀라스)는 WebGPU 어댑터의 최대 텍스처 크기를 넘을 수 없다. 두 조건 중 하나를 어기면 렌더링이나 PNG 내보내기가 해당 시리즈의 오류를 반환한다. 앵커는 데이터 좌표 `(x, y)`와 접선 `(tx, ty)`로 저장하며 확대·이동 시 화면에 다시 투영한다.
 - `ContourLabelConfig.color`는 선 색과 `per_level_color`에 영향을 받지 않는 라벨 글자색이다. 소수 표시는 등고선 간격(없으면 색상 막대 간격)과 `significant_digits`를 사용한다. 선은 실제 라벨 사각형 안에서 끊으며 `bg_padding_px`만큼 추가로 비운다. 배경색이 없어도 이 간격을 적용한다.
 

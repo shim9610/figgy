@@ -6,7 +6,8 @@
 //! they edit the document, so drags stay exact at any window size.
 
 use renderer::config::{
-    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, SketchOptions,
+    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, ProbabilityScale,
+    SketchOptions,
 };
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
@@ -72,6 +73,15 @@ const COLORMAPS: &[ColorMap] = &[
     ColorMap::RdBu,
 ];
 const SIZE_SCALES: &[SizeScale] = &[SizeScale::Area, SizeScale::Radius];
+/// The axis scales the "X scale" / "Y scale" combos offer (#209).
+const SCALES: &[AxisScale] = &[
+    AxisScale::Linear,
+    AxisScale::Logarithmic,
+    AxisScale::Probability(ProbabilityScale::Normal),
+    AxisScale::Probability(ProbabilityScale::Weibull),
+    AxisScale::Probability(ProbabilityScale::Logistic),
+];
+
 const CORNERS: &[LegendCorner] = &[
     LegendCorner::TopLeft,
     LegendCorner::TopRight,
@@ -912,14 +922,16 @@ impl CartesianHost {
                 ui.checkbox(&mut config.grid.show_minor_y, "minor Y");
             });
             ui.horizontal(|ui| {
-                let mut log_x = config.bottom_x.scale == AxisScale::Logarithmic;
-                let mut log_y = config.left_y.scale == AxisScale::Logarithmic;
-                if ui.checkbox(&mut log_x, "log X").changed() {
-                    set_log(&mut config, true, log_x);
+                let mut scale_x = config.bottom_x.scale.clone();
+                let mut scale_y = config.left_y.scale.clone();
+                if choice(ui, "X scale", &mut scale_x, SCALES) {
+                    set_scale(&mut config, true, scale_x);
                 }
-                if ui.checkbox(&mut log_y, "log Y").changed() {
-                    set_log(&mut config, false, log_y);
+                if choice(ui, "Y scale", &mut scale_y, SCALES) {
+                    set_scale(&mut config, false, scale_y);
                 }
+            });
+            ui.horizontal(|ui| {
                 let mut inv_x = config.bottom_x.inverted;
                 let mut inv_y = config.left_y.inverted;
                 if ui.checkbox(&mut inv_x, "invert X").changed() {
@@ -1441,21 +1453,21 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
     }
 }
 
-fn set_log(config: &mut Config, x: bool, log: bool) {
-    let scale = if log {
-        AxisScale::Logarithmic
-    } else {
-        AxisScale::Linear
-    };
+/// Put the X or Y axis pair on `scale`, keeping the range where the scale
+/// can draw it: a logarithmic axis needs a positive minimum, a probability
+/// axis both bounds strictly inside `(0, 1)`.
+fn set_scale(config: &mut Config, x: bool, scale: AxisScale) {
     let (min, max) = {
         let axis = if x { &config.bottom_x } else { &config.left_y };
         (axis.min, axis.max)
     };
-    let (min, max) = if log && min <= 0.0 {
-        let max = if max > 0.0 { max } else { 1.0 };
-        (max / 1000.0, max)
-    } else {
-        (min, max)
+    let (min, max) = match scale {
+        AxisScale::Logarithmic if min <= 0.0 => {
+            let max = if max > 0.0 { max } else { 1.0 };
+            (max / 1000.0, max)
+        }
+        AxisScale::Probability(_) if !(min > 0.0 && max < 1.0 && min < max) => (0.001, 0.999),
+        _ => (min, max),
     };
     let mut chart = Chart::new(config.clone());
     chart.with_axis_range_change(|c| {
