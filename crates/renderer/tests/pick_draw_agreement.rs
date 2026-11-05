@@ -1540,6 +1540,7 @@ fn arrows(
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style: renderer::data_config::VectorStyle {
                 color: RED,
@@ -1817,6 +1818,7 @@ fn arrows_ringed() -> SeriesConfig {
             components: VectorComponents::Points {
                 u: "ring_u".into(),
                 v: "ring_v".into(),
+                w: None,
             },
             style: VectorStyle {
                 color: RED,
@@ -2330,6 +2332,206 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
     }
 }
 
+/// #208: on a polar chart a heatmap cell picks exactly the pixels it
+/// paints, at its ring, spoke, hole and sector edges, and a contour stroke
+/// (here a spiral, so the polar Jacobian carries both axes) picks within
+/// its fringe wherever it paints and at distance zero only where it covers
+/// half the pixel. Flat and interpolated, at 1x and 2x.
+#[test]
+fn polar_heatmaps_and_contours_pick_where_they_paint() {
+    use renderer::data_config::{
+        ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout,
+        MatrixOrientation, MatrixRef, Shading,
+    };
+    let mut renderer = renderer();
+    let spiral: Vec<Column<f64>> = (0..=6)
+        .map(|i| col((0..=4).map(|j| j as f64 * 2.5 + i as f64).collect()))
+        .collect();
+    let mut batch: Vec<(&str, &dyn renderer::ColumnSource)> = Vec::new();
+    let columns = [
+        ("pa", col(vec![20.0, 100.0, 190.0, 300.0])),
+        ("pr", col(vec![0.15, 0.45, 0.7, 0.95])),
+        ("pca", col(vec![60.0, 145.0, 245.0])),
+        ("pcr", col(vec![0.3, 0.575, 0.825])),
+        // z_min (transparent ramp end), NaN (transparent nan_color) and
+        // opaque values.
+        ("p0", col(vec![0.0, 5.0, 10.0])),
+        ("p1", col(vec![7.0, 4.0, 3.0])),
+        ("p2", col(vec![10.0, 0.0, f64::NAN])),
+        ("sa", col((0..=6).map(|i| i as f64 * 60.0).collect())),
+        ("sr", col((0..=4).map(|j| j as f64 * 0.25).collect())),
+    ];
+    batch.extend(
+        columns
+            .iter()
+            .map(|(id, c)| (*id, c as &dyn renderer::ColumnSource)),
+    );
+    let spiral_ids: Vec<String> = (0..=6).map(|i| format!("s{i}")).collect();
+    batch.extend(
+        spiral_ids
+            .iter()
+            .zip(&spiral)
+            .map(|(id, c)| (id.as_str(), c as &dyn renderer::ColumnSource)),
+    );
+    renderer.add_columns(&batch).expect("upload");
+    let mut chart = bare_polar_chart(renderer::polar::PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.1,
+        sector: Some([10.0, 330.0]),
+        ..renderer::polar::PolarOptions::default()
+    });
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![
+            Color {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0,
+                a: 0.0,
+            },
+            RED,
+        ],
+    };
+    bar.nan_color = Color {
+        r: 0.0,
+        g: 1.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    bar.axis.min = 0.0;
+    bar.axis.max = 10.0;
+    bar.axis.major_spacing = 2.0;
+    bar.visible = false;
+    chart.config_mut().colorbar = Some(bar);
+    let field = |x: &str, y: &str, ids: Vec<String>, layout, fill, contour| SeriesConfig {
+        series_id: "field".into(),
+        source_id: None,
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: layout,
+            },
+            fill,
+            contour,
+            surface: None,
+        }),
+    };
+    let cells = |shading: Shading| {
+        let fill = Some(FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading: shading.clone(),
+            opacity: 1.0,
+        });
+        let ids = vec!["p0".into(), "p1".into(), "p2".into()];
+        match shading {
+            Shading::Flat => field("pa", "pr", ids, GridLayout::Edges, fill, None),
+            _ => field("pca", "pcr", ids, GridLayout::Centers, fill, None),
+        }
+    };
+    let export = |renderer: &mut Renderer, series: &[SeriesConfig], scale: f32| {
+        renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, series),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap()
+    };
+    for shading in [Shading::Flat, Shading::Interpolated] {
+        let series = [cells(shading.clone())];
+        for scale in [1.0, 2.0] {
+            let what = format!("polar {shading:?} at {scale}x");
+            let with = export(&mut renderer, &series, scale);
+            let without = export(&mut renderer, &[], scale);
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut failures = Vec::new();
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                let request = (px as f32 + 0.9, py as f32 + 0.1);
+                let hit = probe.pick_data_at(&mut renderer, request, 0.0);
+                let cell = match &hit {
+                    Some(renderer::PickedData::MatrixCell { .. }) => true,
+                    None => false,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
+                    failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(painted > 800, "{what}: {painted}");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+    let contour = ContourConfig {
+        levels: vec![3.0, 6.5],
+        line: DataLineStyleConfig {
+            line_style: renderer::line::LineStylePreset::Solid,
+            line_color: RED,
+            line_width: 2.5,
+            fill: None,
+            fill_color: None,
+            interpolation: renderer::data_config::LineInterpolation::Linear,
+        },
+        per_level_color: None,
+        labels: None,
+    };
+    let series = [field(
+        "sa",
+        "sr",
+        spiral_ids.clone(),
+        GridLayout::Centers,
+        None,
+        Some(contour),
+    )];
+    for scale in [1.0, 2.0] {
+        let with = export(&mut renderer, &series, scale);
+        let without = export(&mut renderer, &[], scale);
+        let window = ink_window(&with, &without, 2);
+        let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+        let painted = count_painted(window, is_painted);
+        let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let mut failures = Vec::new();
+        for (x, y) in edge_band(window, is_painted) {
+            let ink = difference(&with, &without, x, y);
+            let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+            let distance = match &hit {
+                Some(renderer::PickedData::ContourLevel { distance_px, .. }) => Some(*distance_px),
+                None => None,
+                Some(other) => panic!("({x}, {y}) picked {other:?}"),
+            };
+            if ink >= PAINTED && distance.is_none() {
+                failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+            }
+            if distance == Some(0.0) && ink < STRICT.zero_ink {
+                failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+            }
+        }
+        renderer.remove_chart(probe.id).unwrap();
+        assert!(
+            failures.is_empty(),
+            "polar contour at {scale}x: {} disagreements, first {:?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
+        assert!(painted > 200, "polar contour at {scale}x: {painted}");
+    }
+}
+
 /// G9: a labelled contour leaves a gap under each label, and the gap is not
 /// picked and not highlighted: the pick and the selected-level highlight run
 /// the draw's own gap test on the draw's own label placement. Elsewhere the
@@ -2659,6 +2861,7 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
         renderer::config::AxisScale::Logarithmic => {
             (value.log10() - axis.min.log10()) / (axis.max.log10() - axis.min.log10())
         }
+        renderer::config::AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
     };
     start + t * length
 }
@@ -2688,12 +2891,14 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
             let range = |scale: &AxisScale| match scale {
                 AxisScale::Linear => (magnitude, 2.0 * magnitude),
                 AxisScale::Logarithmic => (magnitude / 100.0, magnitude * 100.0),
+                AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
             };
             let value = |scale: &AxisScale, f: f64| {
                 let (lo, hi) = range(scale);
                 match scale {
                     AxisScale::Linear => lo + f * (hi - lo),
                     AxisScale::Logarithmic => lo * (hi / lo).powf(f),
+                    AxisScale::Probability(_) => unreachable!("a linear or log sweep"),
                 }
             };
             let xs: Vec<f64> = fractions.iter().map(|f| value(&x_scale, *f)).collect();

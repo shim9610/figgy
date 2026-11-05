@@ -15,6 +15,7 @@
 //! follows zoom and range changes, a ratio-anchored item stays put.
 
 use crate::color::Color;
+use crate::config::AxisScale;
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::AnnotationLayer;
@@ -479,6 +480,13 @@ pub enum AxisMap {
     /// A logarithmic value axis over `min..max` (both positive). Non-positive
     /// values have no position, as on line and scatter series.
     Log { min: f64, max: f64 },
+    /// A probability axis over `min..max` (both in `(0, 1)`, #209), placed at
+    /// `F⁻¹(p)` of `scale`. Values outside `(0, 1)` have no position.
+    Probability {
+        scale: crate::config::ProbabilityScale,
+        min: f64,
+        max: f64,
+    },
     /// The category axis of a bar or box chart: category `i` is centred at
     /// coordinate `i`, so `-0.5..0.5` is the first category's slot.
     Index { count: usize },
@@ -537,8 +545,11 @@ impl AxisSpace {
             return None;
         }
         let t = match self.map {
-            AxisMap::Linear { min, max } => span_fraction(value, min, max, false)?,
-            AxisMap::Log { min, max } => span_fraction(value, min, max, true)?,
+            AxisMap::Linear { min, max } => span_fraction(value, min, max, &AxisScale::Linear)?,
+            AxisMap::Log { min, max } => span_fraction(value, min, max, &AxisScale::Logarithmic)?,
+            AxisMap::Probability { scale, min, max } => {
+                span_fraction(value, min, max, &AxisScale::Probability(scale))?
+            }
             AxisMap::Index { count } => {
                 if count == 0 {
                     return None;
@@ -591,6 +602,11 @@ impl AxisSpace {
                     return None;
                 }
                 10f64.powf(min.log10() + t * (max.log10() - min.log10()))
+            }
+            AxisMap::Probability { scale, min, max } => {
+                let scale = AxisScale::Probability(scale);
+                let (low, high) = (scale.forward(min)?, scale.forward(max)?);
+                scale.inverse(low + t * (high - low))?
             }
             AxisMap::Index { count } => {
                 if count == 0 {

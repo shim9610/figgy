@@ -6603,6 +6603,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style: crate::data_config::VectorStyle {
                 color: Color::new(1.0, 0.0, 0.0, 1.0),
@@ -7018,6 +7019,34 @@ fn streamed_series_reject_polar_charts() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("polar") && reason.contains("streamed sources are not supported")
+    ));
+    // A polar heatmap (#208) is held to the same rule: no new streaming.
+    let field = SeriesConfig {
+        series_id: "stream_field".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Centers,
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &field),
         Err(FiggyError::InvalidSeriesConfig { reason, .. })
             if reason.contains("polar") && reason.contains("streamed sources are not supported")
     ));

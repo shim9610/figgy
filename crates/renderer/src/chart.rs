@@ -169,6 +169,49 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field,
             reason: error.reason,
         },
+    })?;
+    refuse_probability_axes(config)
+}
+
+/// The model holds probability axes (#209); the GPU transform does not place
+/// them yet, so a chart naming one is refused, at registration and at
+/// export, rather than drawn linearly.
+pub(crate) fn refuse_probability_axes(config: &Config) -> Result<()> {
+    match probability_axis(config) {
+        Some(field) => Err(FiggyError::InvalidConfig {
+            field,
+            reason: "probability axes are not drawn yet (#209)".into(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The first axis of `config`, its overlays or its subplots on a
+/// probability scale (#209).
+fn probability_axis(config: &Config) -> Option<&'static str> {
+    let probability = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Probability(_));
+    let own = [
+        ("top_x", &config.top_x),
+        ("bottom_x", &config.bottom_x),
+        ("left_y", &config.left_y),
+        ("right_y", &config.right_y),
+    ]
+    .into_iter()
+    .find(|(_, axis)| probability(axis))
+    .map(|(field, _)| field);
+    own.or_else(|| {
+        config
+            .overlays
+            .iter()
+            .any(|overlay| probability(&overlay.y_axis))
+            .then_some("overlays")
+    })
+    .or_else(|| {
+        config
+            .subplots
+            .iter()
+            .any(|subplot| probability_axis(&subplot.config).is_some())
+            .then_some("subplots")
     })
 }
 
@@ -1209,7 +1252,14 @@ impl Chart {
                 DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                 _ => {
                     if let Some(id) = cfg.z_column.as_deref() {
-                        z.union(&Self::slot_extent(pool, id)?);
+                        let anchors = Self::slot_extent(pool, id)?;
+                        z.union(&anchors);
+                        // A `Data`-scaled 3D arrow's tips are its anchor
+                        // heights plus `factor · w` (#211, D7): the bound
+                        // from the two columns' statistics holds every tip.
+                        if let Some(tips) = Self::vector_tip_heights(pool, cfg, &anchors)? {
+                            z.union(&tips);
+                        }
                     }
                     continue;
                 }
@@ -1232,6 +1282,43 @@ impl Chart {
             apply_axis_range(&mut chart.right_y, min, max, log);
         });
         Ok(())
+    }
+
+    /// The heights a `Data`-scaled 3D point vector's tips can reach, from
+    /// its anchor heights' extent and its `w` column's statistics:
+    /// `[z_min + f·w_min, z_max + f·w_max]`, ordered for a negative factor.
+    /// A display parameter (rule 1): a superset of the tips, never the tips.
+    /// `None` for any other series.
+    fn vector_tip_heights(
+        pool: &ColumnPool,
+        cfg: &SeriesConfig,
+        anchors: &FitExtent,
+    ) -> Result<Option<FitExtent>> {
+        use crate::data_config::{VectorComponents, VectorScale};
+        let DataRenderType::Vector {
+            components: VectorComponents::Points { w: Some(w), .. },
+            style,
+        } = &cfg.render_type
+        else {
+            return Ok(None);
+        };
+        let VectorScale::Data { factor } = style.scale else {
+            return Ok(None);
+        };
+        let w = Self::slot_extent(pool, w)?;
+        let (low, high) = if factor >= 0.0 {
+            (w.min, w.max)
+        } else {
+            (w.max, w.min)
+        };
+        let min = anchors.min + factor * low;
+        let max = anchors.max + factor * high;
+        if !(min.is_finite() && max.is_finite()) {
+            return Ok(None);
+        }
+        let mut tips = FitExtent::point(min);
+        tips.union(&FitExtent::point(max));
+        Ok(Some(tips))
     }
 
     /// The `x` and `y` extents of series `series_id` of `config` as they are
@@ -1271,6 +1358,40 @@ impl Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A probability axis (#209) is refused with the explicit error until the
+    /// GPU transform places it, on a chart axis and on a subplot.
+    #[test]
+    fn probability_axes_are_refused_until_they_are_drawn() {
+        let probability = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        let on = |axis: &mut AxisOptions| {
+            axis.scale = probability.clone();
+            axis.min = 0.01;
+            axis.max = 0.99;
+        };
+        let base = crate::default::default_config();
+        assert!(validate_renderer_config(&base).is_ok());
+        let mut left = base.clone();
+        on(&mut left.left_y);
+        let mut subplot = base.clone();
+        let mut inner = base.clone();
+        on(&mut inner.bottom_x);
+        subplot.subplots.push(crate::Subplot {
+            config: inner,
+            series: vec![],
+            link_x: None,
+            link_y: None,
+        });
+        for (config, field) in [(left, "left_y"), (subplot, "subplots")] {
+            match refuse_probability_axes(&config) {
+                Err(FiggyError::InvalidConfig { field: got, reason }) => {
+                    assert_eq!(got, field);
+                    assert!(reason.contains("not drawn yet"), "{reason}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
     use crate::default::default_config;
 
     fn dummy_config() -> Config {

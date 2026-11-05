@@ -17,7 +17,10 @@
 //!   per instance index from index-aligned columns, from a grid
 //!   declaration, or from an arc slot along a streamline series' drawn path
 //!   (with `common/arc_walk.wgsl`'s group 3 and `common/path_arrow.wgsl`);
-//! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`.
+//! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`;
+//! - on a 3D chart (#211), `common/project_3d.wgsl` with
+//!   `vector/project_box3d.wgsl` in place of the flat projection, and
+//!   `vector/vector_entry_3d.wgsl`'s ID pick entries.
 //!
 //! [`VECTOR_POINTS_SHADER`], [`VECTOR_GRID_SHADER`] and
 //! [`VECTOR_PATH_SHADER`] splice the fragments
@@ -40,11 +43,20 @@ pub enum VectorInput {
     /// the drawn path, group 3 the arc slot data (`common/arc_walk.wgsl`),
     /// drawn indirect.
     Path,
+    /// `VectorComponents::Points` on a 3D chart (#211): the points input
+    /// with its height and `w` columns, projected through the camera
+    /// (`vector/project_box3d.wgsl`), group 3 the camera.
+    Points3d,
 }
 
 impl VectorInput {
     /// Every assembled combination, so coverage can enumerate them.
-    pub const ALL: [VectorInput; 3] = [VectorInput::Points, VectorInput::Grid, VectorInput::Path];
+    pub const ALL: [VectorInput; 4] = [
+        VectorInput::Points,
+        VectorInput::Grid,
+        VectorInput::Path,
+        VectorInput::Points3d,
+    ];
 
     /// The shader module label, as the compile contract records it.
     pub fn label(self) -> &'static str {
@@ -52,6 +64,7 @@ impl VectorInput {
             VectorInput::Points => "figgy vector points shader",
             VectorInput::Grid => "figgy vector grid shader",
             VectorInput::Path => "figgy vector path shader",
+            VectorInput::Points3d => "figgy vector points 3D shader",
         }
     }
 }
@@ -106,6 +119,27 @@ pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/vector/vector_entry.wgsl",
 );
 
+/// The assembled vector module for [`VectorInput::Points3d`]: the point
+/// form with the flat projection replaced by the camera
+/// (`common/project_3d.wgsl`, `vector/project_box3d.wgsl`) and the 3D ID
+/// pick entries after the entry. The glyph, the input and the entry are the
+/// point form's (rule 9).
+pub const VECTOR_POINTS_3D_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/arrow.wgsl",
+    "data_render/common/project_3d.wgsl",
+    "data_render/vector/project_box3d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_points.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+    "data_render/vector/vector_entry_3d.wgsl",
+);
+
 /// The assembled WGSL source of one input form, spliced at compile time.
 /// `shader_assembly`'s `every_module_is_its_fragments_concatenated` holds it
 /// to its fragment list.
@@ -114,6 +148,7 @@ pub const fn assemble(input: VectorInput) -> &'static str {
         VectorInput::Points => VECTOR_POINTS_SHADER.source,
         VectorInput::Grid => VECTOR_GRID_SHADER.source,
         VectorInput::Path => VECTOR_PATH_SHADER.source,
+        VectorInput::Points3d => VECTOR_POINTS_3D_SHADER.source,
     }
 }
 
@@ -150,6 +185,9 @@ pub const VECTOR_FLAG_SCALE_PIXELS: u32 = 8;
 pub const VECTOR_FLAG_LOG_Z: u32 = 16;
 /// `VectorParamsGpu::flags`: arrows are coloured through the colourbar.
 pub const VECTOR_FLAG_COLOR_MAP: u32 = 32;
+/// `VectorParamsGpu::flags`: a 3D arrow (#211): the points input reads the
+/// anchor height and the z component.
+pub const VECTOR_FLAG_THREE_D: u32 = 64;
 
 /// `VectorParamsGpu::pivot`: the tail sits on the anchor.
 pub const VECTOR_PIVOT_TAIL: u32 = 0;
@@ -160,7 +198,7 @@ pub const VECTOR_PIVOT_TIP: u32 = 2;
 
 /// Everything the vector shader needs beyond `Transform` and `Style`.
 ///
-/// GPU twin: `vector_input_common.wgsl::VectorParams`, 128 B. Points form:
+/// GPU twin: `vector_input_common.wgsl::VectorParams`, 144 B. Points form:
 /// `*_base` are f32 lane indices into the pool, `*_len` logical lengths and
 /// `count` the shortest of them. Grid form: `u_base` / `v_base` / `c_base`
 /// index the grid table (one entry per constituent column), `cols` / `rows`
@@ -219,6 +257,14 @@ pub struct VectorParamsGpu {
     pub spacing_px: f32,
     /// Alignment padding.
     pub pad1: f32,
+    /// Pool lane of the anchor height column ([`VECTOR_FLAG_THREE_D`]).
+    pub height_base: u32,
+    /// Logical length of the anchor height column.
+    pub height_len: u32,
+    /// Pool lane of the z component column ([`VECTOR_FLAG_THREE_D`]).
+    pub w_base: u32,
+    /// Logical length of the z component column.
+    pub w_len: u32,
     /// The colourbar's minimum as a `(hi, lo)` pair.
     pub z_min: [f32; 2],
     /// The colourbar's maximum as a `(hi, lo)` pair.
@@ -227,7 +273,7 @@ pub struct VectorParamsGpu {
     pub nan_color_premul: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<VectorParamsGpu>() == 128);
+const _: () = assert!(std::mem::size_of::<VectorParamsGpu>() == 144);
 
 /// Bind group layout for the vector series' own data (group 2): the column
 /// pool as read-only storage, the grid table, the colourmap stops and the
@@ -428,6 +474,7 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
         VectorInput::Points => "figgy vector points pipeline",
         VectorInput::Grid => "figgy vector grid pipeline",
         VectorInput::Path => "figgy vector path pipeline",
+        VectorInput::Points3d => "figgy vector points 3D flat pipeline",
     };
     crate::gpu_compile::render_pipeline(
         device,
@@ -467,6 +514,75 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
     )
 }
 
+/// The 3D vector pipeline (#211) of [`VectorInput::Points3d`]: groups 0–2
+/// as the flat point form, group 3 the camera
+/// (`surface_mesh::create_surface_data_bind_group_layout`, binding 4), the
+/// depth test of a 3D point (`point_depth_stencil`). `pass` picks the draw
+/// (`vs_main` / `fs_main`, alpha to coverage on a multisampled target) or
+/// the 1×1 ID pick (`vs_3d_pick` / `fs_3d_pick`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_vector_view3d_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    vector_bgl: &wgpu::BindGroupLayout,
+    camera_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    pass: super::View3dPass,
+) -> wgpu::RenderPipeline {
+    let (vs, fs, label) = match pass {
+        super::View3dPass::Pick => ("vs_3d_pick", "fs_3d_pick", "figgy vector 3D pick pipeline"),
+        _ => ("vs_main", "fs_main", "figgy vector 3D pipeline"),
+    };
+    let layout = crate::gpu_compile::pipeline_layout(
+        device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy vector 3D layout"),
+            bind_group_layouts: &[
+                Some(transform_bgl),
+                Some(style_bgl),
+                Some(vector_bgl),
+                Some(camera_bgl),
+            ],
+            immediate_size: 0,
+        },
+    );
+    crate::gpu_compile::render_pipeline(
+        device,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(vs),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: pass.depth_stencil(),
+            multisample: pass.multisample(sample_count),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(fs),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(pass.color_target(target_format))],
+            }),
+            multiview_mask: None,
+            cache: None,
+        },
+    )
+}
+
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2
 /// bound to the whole column pool, the series' tables and its params (which
 /// carry the lane bases). The streamline arrowheads draw indirect instead:
@@ -490,6 +606,9 @@ pub struct ColumnVectorLayer<'a> {
     /// group 3, the arc slot data the path input walks (the arc prefix, the
     /// pool and `StarVsParams`). `None` for the other forms.
     pub indirect: Option<(&'a wgpu::Buffer, &'a wgpu::BindGroup)>,
+    /// [`VectorInput::Points3d`] (#211): group 3, the panel's camera, bound
+    /// when the arrows draw with the surfaces. `None` for a flat chart.
+    pub view3d: Option<super::surface_mesh::View3dBinding>,
 }
 
 #[cfg(test)]
@@ -503,6 +622,7 @@ mod tests {
             VectorInput::Points => VECTOR_POINTS_SHADER.fragments,
             VectorInput::Grid => VECTOR_GRID_SHADER.fragments,
             VectorInput::Path => VECTOR_PATH_SHADER.fragments,
+            VectorInput::Points3d => VECTOR_POINTS_3D_SHADER.fragments,
         }
     }
 
@@ -510,10 +630,19 @@ mod tests {
     fn assembled_vector_shaders_end_in_the_entry_and_differ_by_input() {
         for input in VectorInput::ALL {
             // The entry is last: the interfaces the other layers declare are
-            // in place before the entry calls them.
+            // in place before the entry calls them. The 3D form's pick
+            // entries follow it, since they call its `vector_vertex`.
+            let entry = fragments(input)
+                .iter()
+                .rposition(|f| *f == "data_render/vector/vector_entry.wgsl");
+            let after: &[&str] = match input {
+                VectorInput::Points3d => &["data_render/vector/vector_entry_3d.wgsl"],
+                _ => &[],
+            };
             assert_eq!(
-                fragments(input).last(),
-                Some(&"data_render/vector/vector_entry.wgsl")
+                entry.map(|i| &fragments(input)[i + 1..]),
+                Some(after),
+                "{input:?}"
             );
         }
         assert_ne!(assemble(VectorInput::Points), assemble(VectorInput::Grid));
@@ -540,6 +669,26 @@ mod tests {
                 &"data_render/common/arc_walk.wgsl",
                 &"data_render/common/path_arrow.wgsl",
                 &"data_render/vector/vector_input_path.wgsl",
+            ]
+        );
+    }
+
+    /// The 3D point form (#211) is the point form with the projection layer
+    /// replaced and the 3D pick entries added (rule 9): the glyph, the input
+    /// and the entry are the same fragments.
+    #[test]
+    fn the_3d_form_replaces_only_the_projection() {
+        let three_d = fragments(VectorInput::Points3d);
+        let points = fragments(VectorInput::Points);
+        let missing: Vec<_> = points.iter().filter(|f| !three_d.contains(f)).collect();
+        assert_eq!(missing, [&"data_render/vector/project_cartesian2d.wgsl"]);
+        let extra: Vec<_> = three_d.iter().filter(|f| !points.contains(f)).collect();
+        assert_eq!(
+            extra,
+            [
+                &"data_render/common/project_3d.wgsl",
+                &"data_render/vector/project_box3d.wgsl",
+                &"data_render/vector/vector_entry_3d.wgsl",
             ]
         );
     }

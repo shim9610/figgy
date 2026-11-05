@@ -47,7 +47,7 @@ pub struct Config {
 ### `AxisOptions` (top_x / bottom_x / left_y / right_y)
 | Field | Type | Meaning |
 |---|---|---|
-| `scale` | `AxisScale` | `Linear` or `Logarithmic` (log10). The range helpers (`Chart::set_x_range` / `set_y_range`, the `auto_fit_*` family, the subplot setters) give `top_x` and `right_y` the scale of `bottom_x` and `left_y`, except on a 3D or ternary chart and on a categorical axis; a second value axis with its own scale is an overlay layer |
+| `scale` | `AxisScale` | `Linear`, `Logarithmic` (log10) or `Probability(ProbabilityScale)` (#209): `Normal` (probit, `Φ⁻¹(p)`), `Weibull` (`ln(−ln(1 − p))`) or `Logistic` (logit), so a sample of that distribution plotted against its plotting positions falls on a line. The range and the values are probabilities in `(0, 1)`, not percent; both bounds must lie strictly inside, and a value outside has no position. The majors come from the range: the decades, then the 1-2-5 and 1 to 9 multiples of the tail `min(p, 1 − p)`, mirrored at 0.5 and with 0.5 on every ladder, the sparsest with four majors; a window too narrow for that (`0.45..0.55`) takes a linear grid in `p`. `major_spacing` and `log_ticks` are ignored and `minor_count` is a switch. A categorical axis, a colourbar axis, a parallel axis, the polar radius, a 3D chart, the polar angle, ternary axes and the value axis of category bars and box plots (the position axis of range bars) refuse it. f64 inputs end the upper tail at `1 − p = 2⁻⁵³`; the lower tail reaches the smallest f64. The renderer refuses a chart with a probability axis ("not drawn yet") until the GPU transform places it. The range helpers (`Chart::set_x_range` / `set_y_range`, the `auto_fit_*` family, the subplot setters) give `top_x` and `right_y` the scale of `bottom_x` and `left_y`, except on a 3D or ternary chart and on a categorical axis; a second value axis with its own scale is an overlay layer. |
 | `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; a manual non-positive or non-finite `min` is guarded to `1e-12` on renderer/axis paths, and a `max` that is non-positive, non-finite or not above `min` becomes one decade above `min`. Non-positive line/scatter coordinates are omitted on the corresponding logarithmic axis; line segments touching an omitted sample form gaps rather than connecting across it. The source data and other valid samples are preserved |
 | `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …) under `log_ticks: Decades` (an `Adaptive` log axis ignores it). When a linear spacing is non-finite, ≤ 0, too small to advance from the range ends, or would draw more than 1000 intervals across the range, the raster draws the automatic spacing for the range instead (`tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span, the spacing `Chart::set_x_range` writes). A log step is floored to a whole number of decades and capped at 2147483647 (`i32::MAX`); a step below 1 or non-finite draws 1. Each substitution is reported by `ChartView::render_warnings` after the next refresh |
 | `minor_count` | usize | Minors per major (linear). On a logarithmic axis the value is a switch: 0 hides the minors and any other value draws the eight sub-decade minors 2..9 of every decade, less the ones an `Adaptive` ladder draws as majors (`Chart::set_x_range` / `set_y_range` write 8). A linear count over 99 draws 99 minors per major and is reported the same way |
@@ -88,7 +88,7 @@ Nothing is drawn inside a gap: data, its picked highlight and value labels, grid
 | `label_visible` | bool | Tick-label visibility, combined with `visible` (both must be `true`). Turning either off keeps the axis line and ticks and leaves `out_margin` unchanged |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans. A family that is neither registered nor installed also falls back to it; `text_render::font_family_available(name)` tells hosts whether a name resolves. A character the face cannot draw falls back per character to registered fonts, the bundled Liberation Sans, then (native only) installed system fonts |
 | `label_offset_x / y` | f32 | Fine nudge offset (px). In polar mode the angle axis reads `y` along the spoke and ignores `x`; the radius axis reads `x` along the ray and `y` across it (see `PolarOptions`) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Plain`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`). `Plain(PlainNumberFormat { decimals, trim_zeros })` writes the value alone, ignoring scale, spacing and `significant_digits`: with `decimals: None` (`PlainNumberFormat::AUTO`) `0` for zero, `1.23e6` / `-5.00e-4` when \|v\| ≥ 1e6 or < 0.001, and otherwise six decimals with trailing zeros trimmed (`2.5`, `1000`); with `Some(d)` exactly `d` decimals, trailing fractional zeros trimmed when `trim_zeros` is set |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Percent / Plain`. `Percent` writes the value times 100 with `%` (`25%`); on a probability axis each label keeps the decimals its tail needs (`0.1%`, `50%`, `99.9%`, `99.99%`), and `Decimal` there writes `0.001`, `0.5`, `0.999`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`). `Plain(PlainNumberFormat { decimals, trim_zeros })` writes the value alone, ignoring scale, spacing and `significant_digits`: with `decimals: None` (`PlainNumberFormat::AUTO`) `0` for zero, `1.23e6` / `-5.00e-4` when \|v\| ≥ 1e6 or < 0.001, and otherwise six decimals with trailing zeros trimmed (`2.5`, `1000`); with `Some(d)` exactly `d` decimals, trailing fractional zeros trimmed when `trim_zeros` is set |
 | `significant_digits` | u8 | Requested numeric precision (1–15 for decimal/scientific labels). Linear decimal labels share a decimal count based on range magnitude, raised only as needed to distinguish the tick interval; logarithmic labels round each value. Does not change tick positions |
 
 Numeric labels that would overlap along an axis are drawn at a coarser label stride;
@@ -242,8 +242,11 @@ Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
 `start < end` of at most one turn, arc pieces in `1..=64`, a linear and
 non-inverted angle axis (use `clockwise`), a categorical angle axis for a
 `Polygon` grid, and no `overlays`. Series that have
-no polar form are rejected with `InvalidSeriesConfig`: histograms, heatmaps,
-contours, error bars and vectors; `Arc` needs a linearly interpolated line.
+no polar form are rejected with `InvalidSeriesConfig`: histograms, images,
+error bars, stems and vectors, among others; `Arc` needs a linearly
+interpolated line. Heatmaps and contours draw their cells as annular sectors
+in (angle, radius) (#208); a hexagonal lattice and a field on a `Polygon`
+grid are refused ([Polar plots](POLAR.md#heatmaps-and-contours)).
 Streamed sources are rejected. Annotations are placed by ratio only:
 reference lines, spans and data anchors report a skip (`NoValueAxis`).
 Subplots carry their own `polar`, so polar and rectangular panels mix in one
@@ -304,7 +307,8 @@ linear or logarithmic and not categorical; neither polar nor ternary; no
 `Config::validate_view3d_series` (reported as `InvalidSeriesConfig` at
 registration): a 3D chart draws heatmaps, contours, heatmap contours and
 the scatter, line and scatter-line series that name a `z_column` (linear,
-without an area fill); a surface's fill is continuous, a floor contour has
+without an area fill), and point vectors that name a `z_column` and a `w`
+([Vector fields in 3D](#vector-fields-in-3d)); a surface's fill is continuous, a floor contour has
 no labels and a colour grid matches its height grid. Streamed sources are
 rejected. Fits also fit `right_y` to the heights and the z columns.
 Annotations are placed by ratio only. Subplots carry their own `view_3d`.
@@ -778,7 +782,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `RgbImage { red, green, blue, range, shading, opacity }` | fill | A colour image: three matrices on one lattice, each channel mapped linearly from `range` to 0..1; no colourbar. See [Colour images](#colour-images-imshow) |
 | `Contour { matrix, contour }` | contour | Contour lines only; on a 3D chart's floor |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | Filled field with lines over it; on a 3D chart, the surface with the lines on the floor |
-| `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
+| `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. On a 3D chart a `Points` vector also reads `w` and the series' `z_column` ([Vector fields in 3D](#vector-fields-in-3d)). See [Vector fields](#vector-fields) |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. On a polar chart with a categorical angle axis the bars are wedges, a rose ([POLAR.md](POLAR.md#roses-polar-bars)). See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
@@ -844,8 +848,12 @@ points on the next draw.
 `components` names where the (u, v) components come from; the series'
 `x_column` / `y_column` stay the anchors, as for every other render type:
 
-- `VectorComponents::Points { u, v }`: two value columns index-aligned with the
-  anchors, one arrow per index. The count is the shortest of the four columns.
+- `VectorComponents::Points { u, v, w }`: value columns index-aligned with the
+  anchors, one arrow per index. The count is the shortest of the four columns
+  (five with a colour column). `w: Option<ColumnId>` is the z component, read
+  on a 3D chart only together with the anchor height `SeriesConfig.z_column`
+  (see [Vector fields in 3D](#vector-fields-in-3d)); on a flat chart both are
+  kept and unused, and `w` is omitted from JSON when `None`.
 - `VectorComponents::Grid { u, v }`: two `MatrixRef`s declared exactly like a
   heatmap's matrix over the series' coordinate columns, with the same
   `orientation` and `grid_layout` (a mismatch is rejected). Under `Centers` the
@@ -893,6 +901,38 @@ The shader is assembled from fragments (Cartesian projection, input form, arrow
 glyph, entry; [src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md)
 §5.3) and reads the component columns from the column pool on every draw.
 `crates/renderer/examples/vector_field.rs` shows both forms.
+
+<a id="vector-fields-in-3d"></a>
+
+##### Vector fields in 3D
+
+On a 3D chart (`Config.view_3d`, [SURFACE.md](SURFACE.md)) a point vector
+draws one arrow per row from `(x, y, z)` along `(u, v, w)` (#211). It names
+its anchor height in `SeriesConfig.z_column` (read on `right_y`) and its z
+component in `w`; a missing one is rejected with its own error. The grid form
+is rejected on a 3D chart ("a grid vector draws flat"), and a host uploads a
+3D lattice as point columns. The count is the shortest of x, y, z, u, v, w
+and the colour column.
+
+- The glyph is the flat one: camera-facing, with its widths and head in
+  logical pixels, at the depth of the front of a tube of half its head width,
+  depth tested against surfaces, 3D marks and other arrows.
+- `Data { factor }` puts the tip at `anchor + factor · (u, v, w)` in each
+  axis's data units, through the camera, so the arrow is foreshortened. An
+  arrow whose anchor or tip leaves the box is not drawn.
+- `Pixels { px_per_unit }` is the length in the screen plane at the anchor:
+  an arrow lying in that plane is `px_per_unit · |(u, v, w)|` logical pixels
+  long, and others are foreshortened.
+- The pivot shifts along the projected axis, exact under the orthographic
+  camera and a sub-pixel approximation under perspective.
+- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` writes the
+  scale so the longest vector the bounds allow, `hypot(max |u|, max |v|,
+  max |w|)`, is `target` long. Colouring by speed takes a magnitude column the
+  host uploads (rule 1).
+- The z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a `Data` arrow,
+  from column statistics.
+- Pick, the anchor ring, `step_selection` and `selection_details` (adding
+  `z` and `w`) work as for a 3D marker. Streamed sources are rejected.
 
 #### Area fill and step lines
 
@@ -1085,8 +1125,8 @@ is the smallest of the three channels', reported through
 The rules (`Config::validate_rgb_image_series`, at registration): the three
 channels have the same number of columns, orientation and grid layout,
 `range` is finite with a smaller low end,
-`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular (a
-polar chart rejects every field series), and the columns are resident
+`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular
+("images are not drawn on polar axes"), and the columns are resident
 (streamed sources are rejected).
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
@@ -1280,7 +1320,7 @@ pub struct Config {
 ### `AxisOptions` (top_x / bottom_x / left_y / right_y)
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10). 범위 편의 함수(`Chart::set_x_range` / `set_y_range`, `auto_fit_*` 계열, 서브플롯 범위 함수)는 `top_x`와 `right_y`의 스케일을 `bottom_x`와 `left_y`에 맞춘다. 3D·삼각좌표 차트와 범주 축은 예외다. 스케일이 다른 값 축을 하나 더 두려면 오버레이 레이어를 쓴다 |
+| `scale` | `AxisScale` | `Linear`, `Logarithmic` (log10), `Probability(ProbabilityScale)`(#209) 중 하나. 확률 축은 `Normal`(프로빗, `Φ⁻¹(p)`), `Weibull`(`ln(−ln(1 − p))`), `Logistic`(로짓)이며, 그 분포의 표본을 플로팅 위치에 대해 그리면 직선이 된다. 범위와 값은 퍼센트가 아닌 `(0, 1)` 안의 확률이고, 두 경계 모두 그 안에 있어야 하며 밖의 값은 위치가 없다. 주 눈금은 범위로 정한다. 꼬리 `min(p, 1 − p)`의 10배 간격, 1·2·5, 1~9 배수를 0.5에서 대칭으로 놓고 0.5는 늘 포함하며, 주 눈금이 넷 이상인 가장 성긴 단계를 고른다. 그보다 좁은 범위(`0.45..0.55`)는 `p`의 선형 격자를 쓴다. `major_spacing`과 `log_ticks`는 무시하고 `minor_count`는 켜고 끄는 데만 쓴다. 범주형 축, 색상 막대 축, 평행 좌표 축, 극좌표 반지름, 3D 차트, 극좌표 각도, 삼각 좌표 축, 범주 막대와 박스 플롯의 값 축(범위 막대의 위치 축)은 이 스케일을 거부한다. f64 입력이라 위쪽 꼬리는 `1 − p = 2⁻⁵³`에서 끝나고 아래쪽 꼬리는 가장 작은 f64까지 간다. GPU 변환이 확률 축을 놓기 전까지 렌더러는 확률 축이 있는 차트를 거부한다("not drawn yet") 범위 편의 함수(`Chart::set_x_range` / `set_y_range`, `auto_fit_*` 계열, 서브플롯 범위 함수)는 `top_x`와 `right_y`의 스케일을 `bottom_x`와 `left_y`에 맞춘다. 3D·삼각좌표 차트와 범주 축은 예외다. 스케일이 다른 값 축을 하나 더 두려면 오버레이 레이어를 쓴다 |
 | `min, max` | f64 | 데이터 좌표 범위. 로그축에서는 양수 경계를 그대로 쓴다. 로그축의 수동 최솟값이 0 이하이거나 유한하지 않으면 `1e-12`로, 최댓값이 최솟값 이하이거나 유한하지 않으면 최솟값의 10배로 보정한다. 로그축에 대응하는 선·산점도 좌표가 0 이하이면 해당 점을 그리지 않는다. 그 점에 닿는 선분도 생략해 빈 구간으로 남기며, 원본 데이터와 나머지 유효한 점은 유지한다. |
 | `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 범위 끝값에 더하거나 빼도 값이 바뀌지 않을 만큼 작거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 자동 간격은 `tick::axis_major_spacing`이 범위 폭에서 고르는 0.2·0.5·1 × 10^k 간격이며, `Chart::set_x_range`가 쓰는 값과 같다. `log_ticks`가 `Decades`인 로그축 간격은 1 이상 2147483647(`i32::MAX`) 이하의 정수 중 그 값을 넘지 않는 가장 큰 수로 그리고, 1보다 작거나 유한하지 않으면 1로 그린다. `Adaptive`인 로그축은 이 값을 쓰지 않는다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
 | `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 보조 눈금을 켜고 끄는 값으로만 쓴다. 0이면 숨기고, 1 이상이면 값과 관계없이 decade마다 2배~9배 위치 8곳에 그리되 `Adaptive`가 주 눈금으로 쓰는 위치는 뺀다(`Chart::set_x_range` / `set_y_range`는 8을 쓴다). 선형축에서 99를 넘으면 주 눈금 사이에 99개만 그리고 같은 방식으로 알린다. |
@@ -1320,7 +1360,7 @@ pub struct Config {
 | `label_visible` | bool | 눈금 라벨 표시 여부. `visible`과 둘 다 `true`여야 라벨을 그리며, 어느 쪽을 꺼도 축선과 눈금은 그대로 그리고 `out_margin`도 바뀌지 않는다. |
 | `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans를 쓴다. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다. 이 글꼴에 없는 글자는 글자마다 등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. |
 | `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px). 극좌표 모드에서 각도 축은 `y`를 스포크 방향으로 읽고 `x`를 무시하며, 반지름 축은 `x`를 반직선 방향, `y`를 수직 방향으로 읽는다(`PolarOptions` 참고) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Plain`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. `Plain(PlainNumberFormat { decimals, trim_zeros })`은 축 스케일·눈금 간격·`significant_digits`와 관계없이 값만으로 라벨을 정한다. `decimals: None`(`PlainNumberFormat::AUTO`)이면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6` / `-5.00e-4`처럼 지수 표기로 적고, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0을 지운다(`2.5`, `1000`). `Some(d)`이면 소수 `d`자리로 적고, `trim_zeros`가 켜져 있으면 소수 끝의 0을 지운다. |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Percent / Plain`. `Percent`는 값에 100을 곱해 `%`를 붙인다(`25%`). 확률 축에서는 라벨마다 꼬리를 구분하는 데 필요한 소수 자리를 쓴다(`0.1%`, `50%`, `99.9%`, `99.99%`). 같은 축에서 `Decimal`은 `0.001`, `0.5`, `0.999`로 적는다. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. `Plain(PlainNumberFormat { decimals, trim_zeros })`은 축 스케일·눈금 간격·`significant_digits`와 관계없이 값만으로 라벨을 정한다. `decimals: None`(`PlainNumberFormat::AUTO`)이면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6` / `-5.00e-4`처럼 지수 표기로 적고, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0을 지운다(`2.5`, `1000`). `Some(d)`이면 소수 `d`자리로 적고, `trim_zeros`가 켜져 있으면 소수 끝의 0을 지운다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
 축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘리거나 `layout::auto_layout`을 호출한다. 이 함수는 여백을 늘리고, 라벨과 겹치는 제목에 라벨 옆으로 옮기는 오프셋을 주고, 너무 긴 소수 라벨을 `Power` 형식으로 바꾼 설정을 반환한다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
@@ -1399,8 +1439,9 @@ pub struct Config {
 검증(`Config::validate_polar`, `InvalidConfig { field: "polar" }`로 보고): 유한한 각도,
 범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,
 선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), `Polygon` 격자일 때 범주형 각도 축, 그리고 `overlays` 없음. 극좌표 형태가 없는
-시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
-선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
+시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 이미지, 오차 막대, 스템, 벡터 등. `Arc`는
+선형 보간 선이 필요하다. 히트맵과 등고선은 셀을 (각도, 반지름)의 고리 부채꼴로 그리며(#208), 육각
+격자와 `Polygon` 격자 위의 필드는 거부한다([극좌표 플롯](POLAR.md#히트맵과-등고선)). 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
 (`ReferenceLine`)·구간(`Span`)·데이터 앵커는 건너뛴 것으로 보고한다(`NoValueAxis`). 서브플롯은
 각자 `polar`를 가지므로 한 문서에 극좌표 패널과 직교 패널을 섞을 수 있다.
 
@@ -1576,7 +1617,7 @@ pub struct Config {
 | `border_color`, `border_width` | `Color`, f32 | 색상 막대 테두리 |
 | `axis` | `AxisOptions` | Z축 범위와 눈금·라벨 설정 |
 
-색상 막대의 `axis`는 차트의 네 축과 같은 `AxisOptions`를 사용한다. `scale`과 `Logarithmic`, `min`/`max`, `major_spacing`, `minor_count`, `label_style`과 `LabelFormat::Power`, `tick`, `title_option`의 의미가 모두 같다. 눈금 생성, 라벨 형식, 로그 처리를 같은 코드로 수행한다.
+색상 막대의 `axis`는 차트의 네 축과 같은 `AxisOptions`를 사용한다(확률 스케일은 거부한다, #209). `scale`과 `Logarithmic`, `min`/`max`, `major_spacing`, `minor_count`, `label_style`과 `LabelFormat::Power`, `tick`, `title_option`의 의미가 모두 같다. 눈금 생성, 라벨 형식, 로그 처리를 같은 코드로 수행한다.
 
 배치와 동작 규칙은 다음과 같다.
 
@@ -1690,7 +1731,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `RgbImage { red, green, blue, range, shading, opacity }` | fill | 컬러 이미지. 같은 격자 위의 행렬 세 개를 R·G·B 채널로 읽어 `range`를 0..1로 선형 매핑한다. 색상 막대를 쓰지 않는다 |
 | `Contour { matrix, contour }` | contour | 선만. 3D 차트에서는 바닥에 |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | 면 + 그 위의 선. 3D 차트에서는 곡면과 바닥의 선 |
-| `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
+| `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. 3D 차트에서 `Points` 벡터는 `w`와 시리즈의 `z_column`도 읽는다([3D 벡터장](#3d-벡터장)). [벡터장](#벡터장) 참고 |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 범주형 각도 축을 가진 극좌표 차트에서는 막대가 쐐기, 즉 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 된다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
 | `EnergyLevels(EnergyLevelSeries)` | energy levels | 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203)). DataLess 시리즈라 모든 값이 SSOT에 있고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 자세한 내용은 [에너지 준위](#energylevels-ko)를 참고한다 |
@@ -1718,7 +1759,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 `DataRenderType::Vector { components, style }`는 표본마다 화살표 하나를 그린다. `components`는 (u, v) 성분을 읽을 곳이며, 다른 종류와 마찬가지로 시리즈의 `x_column` / `y_column`이 기준점이다.
 
-- `VectorComponents::Points { u, v }`: 기준점과 인덱스가 맞는 값 컬럼 두 개. 인덱스마다 화살표를 하나 그리며, 개수는 네 컬럼(`VectorColorMap::Column`이 있으면 다섯 컬럼) 중 가장 짧은 길이다.
+- `VectorComponents::Points { u, v, w }`: 기준점과 인덱스가 맞는 값 컬럼. 인덱스마다 화살표를 하나 그리며, 개수는 네 컬럼(`VectorColorMap::Column`이 있으면 다섯 컬럼) 중 가장 짧은 길이다. `w: Option<ColumnId>`는 z 성분으로, 3D 차트에서만 기준점 높이 `SeriesConfig.z_column`과 함께 읽는다([3D 벡터장](#3d-벡터장) 참고). 평면 차트에서는 둘 다 보관만 하고 쓰지 않으며, `w`가 `None`이면 JSON에서 생략한다.
 - `VectorComponents::Grid { u, v }`: 히트맵 행렬과 똑같이 시리즈의 좌표 컬럼 위에 선언한 `MatrixRef` 두 개. 두 격자의 `orientation`과 `grid_layout`이 같아야 하며 다르면 거부한다. `Centers`에서는 좌표 위에, `Edges`에서는 셀 중심(두 경계의 데이터 좌표 중점이라 로그축에서는 화면 중점과 다르다)에 화살표를 놓는다. 두 격자가 공통으로 덮는 범위까지만 그리고, 짧은 히트맵 행렬처럼 잘림으로 보고한다. 같은 격자의 히트맵·등고선과 좌표 컬럼을 함께 쓸 수 있으며, 촘촘한 필드 위에 성긴 화살표를 그리려면 더 성긴 좌표 컬럼을 따로 등록한다.
 
 `VectorStyle`은 화살표 모양이다.
@@ -1732,6 +1773,20 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 상호작용은 성분 형식을 따른다. 점 벡터는 마커처럼 기준점에서 피킹하며, 반지름은 머리와 몸통 중 넓은 쪽의 절반이다. 선택 테두리, 웹 `step_selection`과 `selection_details`(`u`, `v`, `color_value`), PNG 출력도 같은 기준을 쓴다. 격자 벡터는 히트맵 셀처럼 `u` 격자의 셀 단위로 피킹하고 강조한다. 자동 범위 맞춤(`begin_series_fit_extent`, 웹 범위 요청)은 기준점과 데이터 배율 점 벡터의 끝점을 포함하며, 격자 벡터의 데이터 배율 끝점은 포함하지 않는다. 성분에는 GPU 상주 컬럼이 필요하므로 스트리밍 소스는 거부한다. Sketch·Milkyway·Constellation 스타일은 벡터를 그리지 않는다(`draw_style_supports`가 `false`를 돌려준다). 범례 기호는 시리즈 색의 화살표 머리가 달린 선이다.
 
 셰이더는 직교 투영, 입력 형식, 화살표 글리프, 진입점 조각을 조립해 만들며([src/data_render/SHADER_COMMON.md](src/data_render/SHADER_COMMON.md) §5.3), 그릴 때마다 컬럼 풀에서 성분 컬럼을 읽는다. [examples/vector_field.rs](examples/vector_field.rs)에 두 형식의 예제가 있다.
+
+<a id="3d-벡터장"></a>
+
+##### 3D 벡터장
+
+3D 차트(`Config.view_3d`, [SURFACE.md](SURFACE.md))에서 점 벡터는 행마다 `(x, y, z)`에서 `(u, v, w)` 방향으로 화살표 하나를 그린다(#211). 기준점 높이는 `SeriesConfig.z_column`(`right_y`로 읽음), z 성분은 `w`에 적으며, 빠진 쪽마다 따로 오류를 낸다. 격자 형식은 3D 차트에서 거부하므로("a grid vector draws flat"), 3D 격자는 호스트가 점 컬럼으로 올린다. 개수는 x, y, z, u, v, w와 색 컬럼 중 가장 짧은 길이다.
+
+- 글리프는 평면과 같다. 카메라를 향하고 두께와 머리는 논리 픽셀이며, 머리 폭 절반 굵기의 관 앞면 깊이에 놓여 곡면, 3D 표식, 다른 화살표와 깊이 테스트를 한다.
+- `Data { factor }`는 축마다 데이터 단위로 끝점을 `anchor + factor · (u, v, w)`에 두고 카메라로 투영하므로 화살표가 원근에 따라 짧아진다. 기준점이나 끝점이 상자를 벗어나면 그리지 않는다.
+- `Pixels { px_per_unit }`은 기준점에서 화면 평면 안의 길이다. 화면 평면에 놓인 화살표는 `px_per_unit · |(u, v, w)|` 논리 픽셀이고, 나머지는 카메라에 따라 짧아진다.
+- 피벗은 투영한 축을 따라 옮긴다. 정사영에서는 정확하고 원근 투영에서는 1픽셀 미만의 근사다.
+- `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)`은 범위로 가능한 가장 긴 벡터 `hypot(max |u|, max |v|, max |w|)`가 `target` 길이가 되도록 배율을 쓴다. 속력으로 칠하려면 호스트가 크기 컬럼을 올린다(규칙 1).
+- z 축 맞춤은 `Data` 화살표에 대해 컬럼 통계로 `[z_min + f·w_min, z_max + f·w_max]`를 더한다.
+- 피킹, 기준점 테두리, `step_selection`, `selection_details`(`z`, `w` 추가)는 3D 마커와 같다. 스트리밍 소스는 거부한다.
 
 <a id="유선"></a>
 

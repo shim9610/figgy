@@ -874,7 +874,7 @@ fn registration_names_what_an_image_cannot_read() {
     polar.set_polar(Some(renderer::polar::PolarOptions::default()));
     assert_eq!(
         reason(&mut r, &polar, flat("img", &ids)),
-        "field and contour series are not drawn on polar axes"
+        "images are not drawn on polar axes"
     );
     let mut unregistered = flat("img", &ids);
     if let DataRenderType::RgbImage { blue, .. } = &mut unregistered.render_type {

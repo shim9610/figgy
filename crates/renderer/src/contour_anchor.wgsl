@@ -188,8 +188,14 @@ fn anchor_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
             ap.clip_x + f32(cell % ap.lattice_x) * step.x,
             ap.clip_y + f32(cell / ap.lattice_x) * step.y,
         );
-        out.x = px_to_t(cell_lo + 0.5 * step);
-        out.level = level;
+        // On a polar chart the seed's pixel is read in (angle, radius)
+        // `t`, so the Newton steps below walk the field's own lattice
+        // (#208). A rectangular chart's lookup is the identity.
+        let lookup = field_lookup(px_to_t(cell_lo + 0.5 * step), LATTICE_SAMPLES);
+        if (lookup.hit) {
+            out.x = lookup.t;
+            out.level = level;
+        }
     }
     cand[gid.x] = out;
 }
@@ -279,7 +285,15 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         cand[gid.x] = out;
         return;
     }
-    let hit_px = t_to_px(p);
+    let out_x = t_to_pair_x(p.x);
+    let out_y = t_to_pair_y(p.y);
+    let polar = transform.polar_angle.x > 0.5;
+    var hit_px = t_to_px(p);
+    if (polar) {
+        // Lookup `t` is (angle, radius): the hit's pixel is its polar
+        // placement, as the label draw places it.
+        hit_px = t_to_px((data_to_ndc(transform, out_x, out_y) + vec2<f32>(1.0, 1.0)) * 0.5);
+    }
     if (!vec2_f32_is_finite(hit_px)
         || hit_px.x < cell_lo.x || hit_px.x >= cell_lo.x + step.x
         || hit_px.y < cell_lo.y || hit_px.y >= cell_lo.y + step.y) {
@@ -287,13 +301,14 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let out_x = t_to_pair_x(p.x);
-    let out_y = t_to_pair_y(p.y);
     // The isoline's tangent is perpendicular to the gradient — exactly, not as a
     // difference of two traced endpoints. Converted back into data units so the
     // record means what a host-written one means, and kept to a hundredth of the
     // range so the render shader's finite difference stays local on a log axis.
-    let tangent = normalize(vec2<f32>(-s.dz.y, s.dz.x)) * 1e-2;
+    // On a polar chart the step is (angle, radius): the label frame's finite
+    // difference through `data_to_ndc` is a chord of the drawn isoline, kept
+    // to a thousandth so it turns with the screen tangent.
+    let tangent = normalize(vec2<f32>(-s.dz.y, s.dz.x)) * select(1e-2, 1e-3, polar);
     let out_dir = vec2<f32>(
         t_step_to_data(out_x, t_to_pair_x(p.x + tangent.x)),
         t_step_to_data(out_y, t_to_pair_y(p.y + tangent.y)),

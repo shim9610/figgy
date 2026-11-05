@@ -162,6 +162,7 @@ fn polar_px(config: &Config, theta: f64, r: f64) -> (f64, f64) {
     let t = match axis.scale {
         AxisScale::Logarithmic => (r.ln() - axis.min.ln()) / (axis.max.ln() - axis.min.ln()),
         AxisScale::Linear => (r - axis.min) / (axis.max - axis.min),
+        AxisScale::Probability(_) => unreachable!("a polar radius is linear or logarithmic"),
     };
     let t = if axis.inverted { 1.0 - t } else { t };
     let inner = f64::from(polar.inner_radius_fraction);

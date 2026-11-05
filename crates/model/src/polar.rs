@@ -4,10 +4,13 @@
 //! ring) and `left_y` as the radius (the labelled ray); `top_x` and
 //! `right_y` stay in the document but are not drawn. Scatter, line and
 //! scatter-line series, with their fills, keep their columns, picking and
-//! export, and radar series draw their polygons. Histogram, field,
-//! contour, error-bar, vector, category bar and box plot series, overlay
-//! layers and streamed sources are rejected with an error. `None` (the
-//! default, omitted from JSON) draws the rectangular chart.
+//! export, radar series draw their polygons, category bars draw a rose
+//! (#133), and heatmaps and contours draw their cells as annular sectors in
+//! (angle, radius) (#208). Histogram, image, hexagonal-grid, error-bar,
+//! stem, vector, box plot and the other kinds listed in
+//! `Config::validate_series_on_polar`, overlay layers and streamed sources
+//! are rejected with an error. `None` (the default, omitted from JSON)
+//! draws the rectangular chart.
 //!
 //! A categorical angle axis (`bottom_x.categories`) puts category `i` at
 //! `i / n` of the full turn, or of the sector, from `zero_angle_degrees` in
@@ -356,6 +359,9 @@ impl PolarOptions {
         if config.left_y.categories.is_some() {
             return Err("the polar radius axis (left_y) cannot be categorical");
         }
+        if matches!(config.left_y.scale, AxisScale::Probability(_)) {
+            return Err("the polar radius axis (left_y) is linear or logarithmic");
+        }
         if !config.overlays.is_empty() {
             return Err("polar charts have no overlay layers");
         }
@@ -509,6 +515,12 @@ mod tests {
         assert_eq!(
             c.validate_polar(),
             Err("the polar radius axis (left_y) cannot be categorical")
+        );
+        let mut c = config.clone();
+        c.left_y.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        assert_eq!(
+            c.validate_polar(),
+            Err("the polar radius axis (left_y) is linear or logarithmic")
         );
         let mut c = config.clone();
         c.overlays.push(crate::layer::OverlayLayer::default());

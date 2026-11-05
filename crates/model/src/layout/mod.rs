@@ -8,11 +8,12 @@ mod rect;
 pub use fit::FitStrategy;
 pub use geometry::{
     BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
-    TitleBand, TitlePlacement, auto_layout, axis_anchor, axis_cross, axis_fraction, axis_offset,
-    axis_title_offset_to_screen, axis_title_placement, chart_title_placement,
-    chart_title_placement_in, colorbar_rect, colorbar_title_placement, fit_chart_title_margin,
-    guarded_log_range, label_origin, label_rect, legend_rect, mirrored_breaks, point_on_rect_side,
-    screen_offset_to_axis_title, span_fraction, value_in_cut, visible_colorbar_rect,
+    PROBABILITY_RANGE_FALLBACK, TitleBand, TitlePlacement, auto_layout, axis_anchor, axis_cross,
+    axis_fraction, axis_offset, axis_title_offset_to_screen, axis_title_placement,
+    chart_title_placement, chart_title_placement_in, colorbar_rect, colorbar_title_placement,
+    fit_chart_title_margin, guarded_log_range, guarded_probability_range, label_origin, label_rect,
+    legend_rect, mirrored_breaks, point_on_rect_side, screen_offset_to_axis_title, span_fraction,
+    value_in_cut, visible_colorbar_rect,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF};

@@ -131,6 +131,7 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style,
         },
@@ -252,6 +253,7 @@ fn axis_t(axis: &AxisOptions, v: f64) -> f64 {
     let t = match axis.scale {
         AxisScale::Logarithmic => (v.ln() - axis.min.ln()) / (axis.max.ln() - axis.min.ln()),
         AxisScale::Linear => (v - axis.min) / (axis.max - axis.min),
+        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     if axis.inverted { 1.0 - t } else { t }
 }
@@ -1457,6 +1459,7 @@ fn vector_series_are_validated_at_registration() {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "nope".into(),
+            w: None,
         },
         style: pixels(1.0),
     };

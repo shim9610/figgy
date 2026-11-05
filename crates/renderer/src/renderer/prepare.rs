@@ -749,7 +749,11 @@ pub(super) fn draw_panel_composite(
     series: super::composite::PieceSeries<'_, '_>,
 ) {
     let three_d = series.piece(0).iter().any(|s| {
-        s.surface.is_some() || s.floor.is_some() || s.line_3d.is_some() || s.scatter_3d.is_some()
+        s.surface.is_some()
+            || s.floor.is_some()
+            || s.line_3d.is_some()
+            || s.scatter_3d.is_some()
+            || s.vector_3d.is_some()
     });
     // A flat panel with the stencil attachment (a ternary chart with a
     // region fill) draws in two passes: the region fills into the stencil,

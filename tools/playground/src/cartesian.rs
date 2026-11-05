@@ -1428,6 +1428,8 @@ fn to_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => v.max(f64::MIN_POSITIVE).log10(),
         AxisScale::Linear => v,
+        // The model's scale map (#209); a value off the paper stays put.
+        AxisScale::Probability(_) => axis.scale.forward(v).unwrap_or(v),
     }
 }
 
@@ -1435,6 +1437,7 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => 10f64.powf(v),
         AxisScale::Linear => v,
+        AxisScale::Probability(_) => axis.scale.inverse(v).unwrap_or(v),
     }
 }
 
@@ -1666,7 +1669,7 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
     let DataRenderType::Vector {
-        components: VectorComponents::Points { u, v },
+        components: VectorComponents::Points { u, v, .. },
         style,
     } = t
     else {

@@ -73,10 +73,12 @@ pub enum SceneKind {
     EnergyLevels,
     Stem,
     Lollipop,
+    PolarHeatmap,
+    Quiver3d,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 36] = [
+    pub const ALL: [SceneKind; 38] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -113,6 +115,8 @@ impl SceneKind {
         SceneKind::EnergyLevels,
         SceneKind::Stem,
         SceneKind::Lollipop,
+        SceneKind::PolarHeatmap,
+        SceneKind::Quiver3d,
     ];
 
     pub fn label(self) -> &'static str {
@@ -153,6 +157,8 @@ impl SceneKind {
             SceneKind::EnergyLevels => "Energy levels (He I)",
             SceneKind::Stem => "Stems (impulse response)",
             SceneKind::Lollipop => "Lollipop (ranked)",
+            SceneKind::PolarHeatmap => "Polar heatmap (radar)",
+            SceneKind::Quiver3d => "3D vector field (ABC flow)",
         }
     }
 
@@ -311,6 +317,18 @@ impl SceneKind {
             SceneKind::Lollipop => {
                 "Horizontal stems on a categorical y axis, from a baseline of 0 marked by a \
                  draggable reference line."
+            }
+            SceneKind::PolarHeatmap => {
+                "A weather radar sweep: reflectivity over azimuth and range, clockwise \
+                 from north, the blind range a hole at the centre, 30 and 45 dBZ \
+                 contours labelled along their curves. Pick a gate and step along the \
+                 azimuths and ranges with the arrows."
+            }
+            SceneKind::Quiver3d => {
+                "An Arnold-Beltrami-Childress flow sampled on a 6 x 6 x 6 lattice \
+                 in a 3D box: one arrow per sample along (u, v, w), coloured by \
+                 its speed, which the host computes. Drag the plot to orbit; pick \
+                 an arrow and step with the arrows."
             }
         }
     }
@@ -511,6 +529,8 @@ pub fn build(
         SceneKind::EnergyLevels => energy_levels(r),
         SceneKind::Stem => stem(r),
         SceneKind::Lollipop => lollipop(r),
+        SceneKind::PolarHeatmap => polar_heatmap(r),
+        SceneKind::Quiver3d => quiver_3d(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -1267,6 +1287,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             components: VectorComponents::Points {
                 u: "vf_pu".into(),
                 v: "vf_pv".into(),
+                w: None,
             },
             style: probe_style,
         },
@@ -3125,6 +3146,114 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     })
 }
 
+/// An Arnold-Beltrami-Childress flow on a lattice in a 3D box (#211): the
+/// host computes the components and the speed the arrows are coloured by
+/// (rule 1); the arrows are `Data`-scaled so the longest is 0.8 of the
+/// lattice spacing (`fit_scale_3d`), and the z fit covers their tips.
+fn quiver_3d(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    };
+    use renderer::view3d::View3d;
+    const N: usize = 6;
+    let tau = std::f64::consts::TAU;
+    let spacing = tau / N as f64;
+    let at = |k: usize| (k as f64 + 0.5) * spacing;
+    let (a, b, c) = (1.0, 0.8, 0.6);
+    let flow = |x: f64, y: f64, z: f64| {
+        [
+            a * z.sin() + c * y.cos(),
+            b * x.sin() + a * z.cos(),
+            c * y.sin() + b * x.cos(),
+        ]
+    };
+    let mut anchors = Vec::with_capacity(N * N * N);
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                anchors.push([at(i), at(j), at(k)]);
+            }
+        }
+    }
+    let vectors: Vec<[f64; 3]> = anchors.iter().map(|p| flow(p[0], p[1], p[2])).collect();
+    let component = |set: &[[f64; 3]], k: usize| set.iter().map(|p| p[k]).collect::<Vec<_>>();
+    let bounds = |k: usize| {
+        vectors
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+                (l.min(v[k]), h.max(v[k]))
+            })
+    };
+    let speed: Vec<f64> = vectors
+        .iter()
+        .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+        .collect();
+    for (id, data) in [
+        ("q3_x", component(&anchors, 0)),
+        ("q3_y", component(&anchors, 1)),
+        ("q3_z", component(&anchors, 2)),
+        ("q3_u", component(&vectors, 0)),
+        ("q3_v", component(&vectors, 1)),
+        ("q3_w", component(&vectors, 2)),
+        ("q3_s", speed),
+    ] {
+        upload(r, id, data)?;
+    }
+    let mut style = VectorStyle {
+        color: Color::from_rgb8(40, 40, 40),
+        width_px: 1.6,
+        scale: VectorScale::Data { factor: 1.0 },
+        pivot: VectorPivot::Middle,
+        head_length_px: 7.0,
+        head_width_px: 6.0,
+        min_length_px: 0.0,
+        color_map: Some(VectorColorMap::Column("q3_s".into())),
+    };
+    style.fit_scale_3d(bounds(0), bounds(1), bounds(2), 0.8 * spacing);
+    let mut arrows = series(
+        "flow",
+        "q3_x",
+        "q3_y",
+        DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "q3_u".into(),
+                v: "q3_v".into(),
+                w: Some("q3_w".into()),
+            },
+            style,
+        },
+    );
+    arrows.z_column = Some("q3_z".into());
+    let series = vec![arrows];
+    let mut config = base_config("ABC flow", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "z",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.min = 0.0;
+        axis.max = tau;
+        axis.major_spacing = 2.0;
+    }
+    config.right_y.major_spacing = 2.0;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["q3_s"], 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
 fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color) -> SeriesConfig {
     use renderer::data_config::{CategoryBarSeriesLabels, CategoryBarStyle, RangeColor};
     series(
@@ -4243,5 +4372,125 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene {
         config,
         series: vec![data("he", series), data("he-fine", fine)],
+    })
+}
+
+/// A weather radar sweep (#208): reflectivity in dBZ over 180 azimuths of
+/// 2° and 60 range gates of 2.5 km, the host's synthetic storm (a squall
+/// line and two cells), no echo left as NaN.
+fn polar_heatmap(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::polar::PolarOptions;
+    const AZIMUTHS: usize = 180;
+    const GATES: usize = 60;
+    let ids: Vec<String> = (0..AZIMUTHS).map(|a| format!("radar_z{a}")).collect();
+    if r.handle_for("radar_az").is_err() {
+        let dbz = |az: f64, range: f64| {
+            let (x, y) = (range * az.to_radians().sin(), range * az.to_radians().cos());
+            let blob =
+                |cx: f64, cy: f64, w: f64| (-((x - cx).powi(2) + (y - cy).powi(2)) / w).exp();
+            // A squall line running south-west to north-east, ahead of it
+            // two cells, the stronger with a hook.
+            let line = (-((x - y * 0.8 + 40.0).powi(2)) / 700.0).exp()
+                * (-(y + 10.0).powi(2) / 5000.0).exp();
+            let z = 42.0 * line
+                + 54.0 * blob(55.0, 60.0, 500.0)
+                + 44.0 * blob(70.0, -45.0, 700.0)
+                + 22.0 * blob(-30.0, 80.0, 1600.0)
+                + 1.5 * noise(91, (az * 7.0 + range) as usize);
+            if z < 8.0 { f64::NAN } else { z.min(65.0) }
+        };
+        let azimuths: Vec<f64> = (0..=AZIMUTHS).map(|a| a as f64 * 2.0).collect();
+        let ranges: Vec<f64> = (0..=GATES).map(|g| g as f64 * 2.5).collect();
+        let grid: Vec<Column<f64>> = (0..AZIMUTHS)
+            .map(|a| Column {
+                data: (0..GATES)
+                    .map(|g| dbz(a as f64 * 2.0 + 1.0, g as f64 * 2.5 + 1.25))
+                    .collect(),
+            })
+            .collect();
+        let az = Column { data: azimuths };
+        let range = Column { data: ranges };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> =
+            vec![("radar_az", &az), ("radar_range", &range)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Radar reflectivity (dBZ)", "Azimuth", "Range (km)");
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![
+            Color::from_rgb8(4, 233, 231),
+            Color::from_rgb8(1, 159, 244),
+            Color::from_rgb8(2, 253, 2),
+            Color::from_rgb8(1, 197, 1),
+            Color::from_rgb8(253, 248, 2),
+            Color::from_rgb8(253, 149, 0),
+            Color::from_rgb8(253, 0, 0),
+            Color::from_rgb8(188, 0, 0),
+            Color::from_rgb8(248, 0, 253),
+        ],
+    };
+    bar.nan_color = Color::new(0.0, 0.0, 0.0, 0.0);
+    bar.axis.min = 5.0;
+    bar.axis.max = 65.0;
+    bar.axis.major_spacing = 10.0;
+    bar.axis.title_option.text = RichText::plain("dBZ", Color::BLACK, 12.0, "");
+    bar.axis.title_option.visible = true;
+    config.colorbar = Some(bar);
+    config.set_polar(Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.06,
+        // Between the 0° and 45° spokes, clear of the top angle label.
+        radial_label_angle_degrees: 67.5,
+        ..PolarOptions::default()
+    }));
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 360.0);
+    chart.set_y_range(0.0, 150.0);
+    // The range functions set the tick plan; the spacing and format follow.
+    chart.config_mut().bottom_x.major_spacing = 45.0;
+    chart.config_mut().bottom_x.label_style.format = LabelFormat::Degrees;
+    chart.config_mut().left_y.major_spacing = 25.0;
+    let ink = Color::from_rgb8(30, 30, 30);
+    let series = vec![series(
+        "radar",
+        "radar_az",
+        "radar_range",
+        DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Edges,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![30.0, 45.0],
+                line: line_style(ink, 1.0),
+                per_level_color: None,
+                labels: Some(ContourLabelConfig {
+                    visible: true,
+                    font_size: 10.0,
+                    color: ink,
+                    format: LabelFormat::Decimal,
+                    significant_digits: 2,
+                    spacing_px: 120.0,
+                    anchors: Vec::new(),
+                    bg_color: None,
+                    bg_padding_px: 2.0,
+                }),
+            }),
+            surface: None,
+        }),
+    )];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
     })
 }

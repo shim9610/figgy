@@ -74,6 +74,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
         return fail("logarithmic axis bounds must be positive");
     }
+    if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
+        return fail("probability axis bounds must lie strictly between 0 and 1");
+    }
     Ok(())
 }
 
@@ -101,6 +104,12 @@ impl Config {
             return Err(ConfigError::chart(
                 "colorbar.axis",
                 "a colourbar axis cannot be categorical",
+            ));
+        }
+        if colorbar_axis.is_some_and(|axis| matches!(axis.scale, AxisScale::Probability(_))) {
+            return Err(ConfigError::chart(
+                "colorbar.axis",
+                "a colourbar axis is linear or logarithmic: not a probability axis",
             ));
         }
         let axes = [
@@ -339,8 +348,22 @@ impl Config {
             DataRenderType::Histogram { .. } => {
                 return Err("histogram series are not drawn on polar axes");
             }
-            DataRenderType::Field(_) | DataRenderType::RgbImage { .. } => {
-                return Err("field and contour series are not drawn on polar axes");
+            // A polar heatmap (#208): cells are annular sectors between angle
+            // and radius boundaries, so the lattice must be rectangular in
+            // (angle, radius) and the rings circles.
+            DataRenderType::Field(field) => {
+                if field.matrix.grid_layout == crate::data_config::GridLayout::Hexagonal {
+                    return Err("a hexagonal grid is drawn on a rectangular chart");
+                }
+                if polar.grid_shape() == crate::polar::GridShape::Polygon {
+                    return Err(
+                        "a polar heatmap's cells follow circular rings: not on a polygon grid",
+                    );
+                }
+                None
+            }
+            DataRenderType::RgbImage { .. } => {
+                return Err("images are not drawn on polar axes");
             }
             DataRenderType::Vector { .. } => {
                 return Err("vector series are not drawn on polar axes");
@@ -523,6 +546,84 @@ mod tests {
             default_config().validate_series_on_polar(&scatter("a")),
             Ok(())
         );
+    }
+
+    fn polar_field(layout: crate::data_config::GridLayout, contour: bool) -> SeriesConfig {
+        use crate::data_config::{
+            ContourConfig, FieldFillConfig, FieldSeries, FillMode, MatrixOrientation, MatrixRef,
+            Shading,
+        };
+        let mut series = scatter("f");
+        series.render_type = DataRenderType::Field(FieldSeries {
+            matrix: MatrixRef {
+                columns: vec!["z0".into(), "z1".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: layout,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: contour.then(|| ContourConfig {
+                levels: vec![0.5],
+                line: crate::data_config::DataLineStyleConfig::default(),
+                per_level_color: None,
+                labels: None,
+            }),
+            surface: None,
+        });
+        series
+    }
+
+    /// A polar heatmap (#208): fills and contours draw on circular rings; a
+    /// hexagonal lattice and a polygon grid are refused with their reasons.
+    #[test]
+    fn a_polar_heatmap_is_held_to_its_rules() {
+        use crate::data_config::GridLayout;
+        let mut config = default_config();
+        config.set_polar(Some(PolarOptions::default()));
+        for layout in [GridLayout::Edges, GridLayout::Centers] {
+            for contour in [false, true] {
+                assert_eq!(
+                    config.validate_series_on_polar(&polar_field(layout.clone(), contour)),
+                    Ok(())
+                );
+            }
+        }
+        assert_eq!(
+            config.validate_series_on_polar(&polar_field(GridLayout::Hexagonal, false)),
+            Err("a hexagonal grid is drawn on a rectangular chart")
+        );
+        config.polar_mut().unwrap().grid_shape = Some(crate::polar::GridShape::Polygon);
+        assert_eq!(
+            config.validate_series_on_polar(&polar_field(GridLayout::Edges, false)),
+            Err("a polar heatmap's cells follow circular rings: not on a polygon grid")
+        );
+    }
+
+    /// A polar heatmap document has no new key: it parses and re-serializes
+    /// byte-identically.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_polar_heatmap_document_round_trips() {
+        use crate::data_config::GridLayout;
+        let mut config = default_config();
+        config.set_polar(Some(PolarOptions {
+            inner_radius_fraction: 0.1,
+            clockwise: true,
+            ..PolarOptions::default()
+        }));
+        let series = vec![polar_field(GridLayout::Edges, true)];
+        let config_json = serde_json::to_string(&config).unwrap();
+        let series_json = serde_json::to_string(&series).unwrap();
+        let config_back: crate::config::Config = serde_json::from_str(&config_json).unwrap();
+        let series_back: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(config_back, config);
+        assert_eq!(series_back, series);
+        assert_eq!(serde_json::to_string(&config_back).unwrap(), config_json);
+        assert_eq!(serde_json::to_string(&series_back).unwrap(), series_json);
+        assert_eq!(config_back.validate_series(&series_back), Ok(()));
     }
 
     #[test]

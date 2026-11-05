@@ -8,11 +8,11 @@
 //
 // Pixel space here is the chart area's, centred, y up, one unit per logical
 // pixel: `px = ndc / transform.pixel_to_ndc`. The glyph layer works in this
-// space and the entry converts back with `px_to_clip`.
+// space and the entry converts a corner back with `arrow_clip`.
 //
-// A later 3D projection fragment replaces this file alone: it has to provide
-// the same `project_arrow` with the same `VectorSample` / `ArrowPx` types, and
-// may ignore the hi/lo split once it has its own camera.
+// The 3D projection fragment (`vector/project_box3d.wgsl`, #211) replaces
+// this file alone: it provides the same `project_arrow` and `arrow_clip`
+// with the same `VectorSample` / `ArrowPx` types.
 
 // ── Projection ──────────────────────────────────────────────────────────────
 
@@ -30,9 +30,11 @@ struct VectorSample {
 };
 
 /// An arrow in chart-area pixels, before the pivot and head are applied.
+/// `depth` is the NDC depth at the tail and the tip; a flat arrow has none.
 struct ArrowPx {
     tail: vec2<f32>,
     tip: vec2<f32>,
+    depth: vec2<f32>,
     valid: bool,
 };
 
@@ -49,6 +51,12 @@ fn ndc_to_px(ndc: vec2<f32>) -> vec2<f32> {
 
 fn px_to_clip(px: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(px * transform.pixel_to_ndc, 0.0, 1.0);
+}
+
+/// The clip position of a quad corner of `arrow`: a flat arrow has no
+/// depth, so this is `px_to_clip`.
+fn arrow_clip(corner: vec2<f32>, arrow: ArrowPx) -> vec4<f32> {
+    return px_to_clip(corner);
 }
 
 /// `axis_px_per_unit_at` for one axis of the transform: 0 = x, 1 = y.
@@ -68,6 +76,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     var out: ArrowPx;
     out.tail = vec2<f32>(0.0, 0.0);
     out.tip = vec2<f32>(0.0, 0.0);
+    out.depth = vec2<f32>(0.0, 0.0);
     out.valid = false;
     let ox = vec2<f32>(sample.origin_hi.x, sample.origin_lo.x);
     let oy = vec2<f32>(sample.origin_hi.y, sample.origin_lo.y);

@@ -1748,6 +1748,7 @@ mod web {
                             )),
                             line: None,
                             errors: None,
+                            stem: None,
                         }),
                     ),
                     pick: point("scatter", 2),
@@ -1773,12 +1774,47 @@ mod web {
                             components: VectorComponents::Points {
                                 u: "vu".into(),
                                 v: "vv".into(),
+                                w: None,
                             },
                             style: vector_style(Some(VectorColorMap::Column("vc".into()))),
                         },
                     ),
                     pick: point("arrows", 1),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
+                },
+                SelectionScene {
+                    name: "3D point vector with its height and z component",
+                    columns: vec![
+                        column("ax", &[0.2, 0.5, 0.8]),
+                        column("ay", &[0.3, 0.5, 0.7]),
+                        column("az", &[0.1, 0.4, 0.6]),
+                        column("au", &[0.1, 0.0, -0.1]),
+                        column("av", &[0.0, 0.1, 0.0]),
+                        column("aw", &[0.2, 0.3, 0.1]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: |config| {
+                        config.set_view_3d(Some(renderer::view3d::View3d::default()));
+                    },
+                    series: SeriesConfig {
+                        z_column: Some("az".into()),
+                        ..series(
+                            "arrows3d",
+                            "ax",
+                            "ay",
+                            DataRenderType::Vector {
+                                components: VectorComponents::Points {
+                                    u: "au".into(),
+                                    v: "av".into(),
+                                    w: Some("aw".into()),
+                                },
+                                style: vector_style(None),
+                            },
+                        )
+                    },
+                    pick: point("arrows3d", 1),
+                    keys: keys(&["x", "y", "z", "u", "v", "w"]),
                 },
                 SelectionScene {
                     name: "parallel rows over twenty axes with a colour column",
@@ -2234,6 +2270,11 @@ mod web {
                 if scene.name.starts_with("parallel") {
                     assert_eq!(details["values"].as_array().map(Vec::len), Some(20));
                 }
+                if scene.name.starts_with("3D point vector") {
+                    for (key, value) in [("z", 0.4), ("u", 0.0), ("v", 0.1), ("w", 0.3)] {
+                        assert_eq!(details[key], value, "{key}");
+                    }
+                }
             }
         }
 
@@ -2349,6 +2390,7 @@ mod web {
                             scatter: None,
                             line: Some(DataLineStyleConfig::default()),
                             errors: None,
+                            stem: None,
                         }),
                     })
                     .collect();

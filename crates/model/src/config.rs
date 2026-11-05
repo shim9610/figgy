@@ -5,6 +5,7 @@ use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer, Subplot};
 use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
 use crate::polar::PolarOptions;
+pub use crate::probability::ProbabilityScale;
 use crate::text::RichText;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +77,41 @@ pub struct GridOptions {
 pub enum AxisScale {
     Linear,
     Logarithmic,
+    /// Probability paper (#209): the range and the values are cumulative
+    /// probabilities in `(0, 1)`, placed at `F⁻¹(p)` of the scale
+    /// ([`crate::probability`]). JSON `{"Probability": "Normal"}`.
+    Probability(ProbabilityScale),
+}
+
+impl AxisScale {
+    /// The transformed position of `value` on this scale, in which the axis
+    /// is linear: the value itself on a linear axis, `log10` on a
+    /// logarithmic one, `F⁻¹(p)` on a probability axis. `None` for a value
+    /// with no position: non-finite, non-positive on a logarithmic axis, or
+    /// outside `(0, 1)` on a probability axis. The one CPU scale map: the
+    /// geometry, the ticks, the annotation space and the range helpers read
+    /// it.
+    pub fn forward(&self, value: f64) -> Option<f64> {
+        if !value.is_finite() {
+            return None;
+        }
+        match self {
+            AxisScale::Linear => Some(value),
+            AxisScale::Logarithmic => (value > 0.0).then(|| value.log10()),
+            AxisScale::Probability(scale) => scale.forward(value),
+        }
+    }
+
+    /// The value at transformed position `t`, the inverse of
+    /// [`Self::forward`]. `None` for a non-finite `t` or result.
+    pub fn inverse(&self, t: f64) -> Option<f64> {
+        let value = match self {
+            AxisScale::Linear => t,
+            AxisScale::Logarithmic => 10f64.powf(t),
+            AxisScale::Probability(scale) => return scale.inverse(t),
+        };
+        (t.is_finite() && value.is_finite()).then_some(value)
+    }
 }
 
 /// Which major ticks a logarithmic axis draws ([`AxisOptions::log_ticks`]).
@@ -519,6 +555,7 @@ impl AxisOptions {
             return Err("an axis can cut out at most three ranges");
         }
         let log = matches!(self.scale, AxisScale::Logarithmic);
+        let probability = matches!(self.scale, AxisScale::Probability(_));
         let mut last = f64::NEG_INFINITY;
         for cut in &breaks.ranges {
             if !cut.from.is_finite() || !cut.to.is_finite() || cut.from >= cut.to {
@@ -526,6 +563,9 @@ impl AxisOptions {
             }
             if log && cut.from <= 0.0 {
                 return Err("a cut range on a logarithmic axis must be positive");
+            }
+            if probability && !(cut.from > 0.0 && cut.to < 1.0) {
+                return Err("a cut range on a probability axis must lie strictly between 0 and 1");
             }
             if cut.from <= last {
                 return Err("cut ranges must be sorted and must not touch");
@@ -583,8 +623,12 @@ impl AxisOptions {
         if let Some(groups) = &self.category_groups {
             groups.validate(categories)?;
         }
-        if self.scale == AxisScale::Logarithmic {
-            return Err("a categorical axis cannot be logarithmic");
+        match self.scale {
+            AxisScale::Linear => {}
+            AxisScale::Logarithmic => return Err("a categorical axis cannot be logarithmic"),
+            AxisScale::Probability(_) => {
+                return Err("a categorical axis cannot be a probability axis");
+            }
         }
         Ok(())
     }
@@ -1108,6 +1152,8 @@ impl ColorBarOptions {
                 }
                 (z.log10(), axis.min.log10(), axis.max.log10())
             }
+            // Refused on a colourbar axis (#209): no colour.
+            AxisScale::Probability(_) => return None,
         };
         let span = high - low;
         if span <= 0.0 {

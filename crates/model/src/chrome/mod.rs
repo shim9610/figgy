@@ -33,6 +33,7 @@ pub use tick_format::*;
 mod side_tag;
 pub use side_tag::*;
 mod box3d;
+pub(crate) use box3d::box_label_reach as box3d_label_reach;
 mod parallel;
 mod polar;
 mod ternary;

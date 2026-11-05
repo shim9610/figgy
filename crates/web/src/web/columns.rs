@@ -10,9 +10,10 @@ pub(super) fn vector_columns(rt: &DataRenderType) -> Option<VectorColumns<'_>> {
         return None;
     };
     Some(match components {
-        VectorComponents::Points { u, v } => VectorColumns::Points {
+        VectorComponents::Points { u, v, w } => VectorColumns::Points {
             u,
             v,
+            w: w.as_deref(),
             color: match style.color_map.as_ref() {
                 Some(VectorColorMap::Column(column)) => Some(column),
                 _ => None,
@@ -33,6 +34,8 @@ pub(super) enum VectorColumns<'a> {
     Points {
         u: &'a str,
         v: &'a str,
+        /// The z component, drawn on a 3D chart only (#211).
+        w: Option<&'a str>,
         color: Option<&'a str>,
     },
     Grid {

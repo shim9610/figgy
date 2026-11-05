@@ -1678,6 +1678,15 @@ pub enum VectorComponents {
         u: ColumnId,
         /// The y component column.
         v: ColumnId,
+        /// The z component column (#211): with the anchor height in
+        /// [`SeriesConfig::z_column`], a 3D chart (`Config.view_3d`) draws
+        /// each row as an arrow from `(x, y, z)` along `(u, v, w)`. A flat
+        /// chart keeps it and draws `(u, v)`. Omitted from JSON when `None`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        w: Option<ColumnId>,
     },
     /// `u` and `v` are grids over the coordinate columns, both with the same
     /// orientation and layout. With `Centers` the arrow sits on the
@@ -1837,6 +1846,39 @@ impl VectorStyle {
             min.abs().max(max.abs())
         };
         let longest = reach(u_bounds).hypot(reach(v_bounds));
+        if !longest.is_finite() || longest <= 0.0 || !target.is_finite() || target <= 0.0 {
+            return false;
+        }
+        match &mut self.scale {
+            VectorScale::Data { factor } => *factor = target / longest,
+            VectorScale::Pixels { px_per_unit } => *px_per_unit = target / longest,
+        }
+        true
+    }
+
+    /// [`fit_scale`](Self::fit_scale) for a 3D vector field (#211): the
+    /// longest vector the bounds allow is `hypot(max |u|, max |v|, max |w|)`
+    /// over the three component columns' statistics, and it draws `target`
+    /// long. In [`VectorScale::Pixels`] that is its length in the screen plane
+    /// at its anchor; an arrow out of that plane is foreshortened by the
+    /// camera. The same display helper: a non-finite or zero extent, or a
+    /// `target` that is not finite and positive, leaves the style unchanged
+    /// and returns `false`.
+    pub fn fit_scale_3d(
+        &mut self,
+        u_bounds: (f64, f64),
+        v_bounds: (f64, f64),
+        w_bounds: (f64, f64),
+        target: f64,
+    ) -> bool {
+        let reach = |(min, max): (f64, f64)| {
+            if !min.is_finite() || !max.is_finite() {
+                return f64::NAN;
+            }
+            min.abs().max(max.abs())
+        };
+        let (u, v, w) = (reach(u_bounds), reach(v_bounds), reach(w_bounds));
+        let longest = (u * u + v * v + w * w).sqrt();
         if !longest.is_finite() || longest <= 0.0 || !target.is_finite() || target <= 0.0 {
             return false;
         }
@@ -2490,6 +2532,15 @@ impl ContourConfig {
                 let decades = crate::tick::LogDecades::new(start as i32, end as i32, step as i32)
                     .ok_or(TickError::InvalidRange)?;
                 for (_, value) in decades {
+                    if inside(value) {
+                        push_contour_level(&mut out, value)?;
+                    }
+                }
+            }
+            // The probability axis's own majors (#209); a colourbar refuses
+            // the scale, so this serves another caller's axis.
+            AxisScale::Probability(_) => {
+                for value in crate::tick::major_ticks(axis) {
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
                     }
@@ -3530,7 +3581,7 @@ impl crate::config::Config {
                     "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("category bars need a linear numeric value axis");
             }
             for (k, item) in members().enumerate() {
@@ -4411,7 +4462,7 @@ impl crate::config::Config {
                     "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("box plots need a linear numeric value axis");
             }
             for item in members() {
@@ -4804,7 +4855,7 @@ impl crate::config::Config {
                 return Err("range bars need a numeric value axis");
             }
             let categorical = position_axis.categories.is_some();
-            if !categorical && position_axis.scale == AxisScale::Logarithmic {
+            if !categorical && position_axis.scale != AxisScale::Linear {
                 return Err(
                     "range bars need a categorical or linear numeric position axis: bottom_x \
                      for vertical bars, left_y for horizontal ones",
@@ -5506,11 +5557,15 @@ impl crate::config::Config {
                 };
                 // A point vector draws only where all four columns have a value.
                 if let DataRenderType::Vector {
-                    components: VectorComponents::Points { u, v },
+                    components: VectorComponents::Points { u, v, w },
                     ..
                 } = &next.render_type
                 {
                     count = count.min(len(u)).min(len(v));
+                    // A 3D arrow needs its z component too (#211).
+                    if let (Some(w), Some(_)) = (w, self.drawn_z_column(next)) {
+                        count = count.min(len(w));
+                    }
                 }
                 // A 3D point needs its height too (#207).
                 if let Some(z) = self.drawn_z_column(next) {
@@ -5722,6 +5777,22 @@ mod vector_style_tests {
         let mut data = style(VectorScale::Data { factor: 1.0 });
         assert!(data.fit_scale((-3.0, 1.0), (0.0, 4.0), 0.5));
         assert_eq!(data.scale, VectorScale::Data { factor: 0.1 });
+    }
+
+    /// The 3D fit (#211) takes the longest vector over three components.
+    #[test]
+    fn fit_scale_3d_targets_the_longest_vector_in_3d() {
+        let mut pixels = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        // |u| = 2, |v| = 3, |w| = 6: length 7.
+        assert!(pixels.fit_scale_3d((-2.0, 1.0), (0.0, 3.0), (-6.0, 5.0), 35.0));
+        assert_eq!(pixels.scale, VectorScale::Pixels { px_per_unit: 5.0 });
+        let mut data = style(VectorScale::Data { factor: 1.0 });
+        assert!(data.fit_scale_3d((-2.0, 1.0), (0.0, 3.0), (-6.0, 5.0), 14.0));
+        assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
+        assert!(!data.fit_scale_3d((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), 1.0));
+        assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (f64::NAN, 1.0), 1.0));
+        assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), -1.0));
+        assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
     }
 
     #[test]
@@ -6168,6 +6239,7 @@ mod serde_tests {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
+                    w: None,
                 },
                 style: style.clone(),
             },
@@ -6220,6 +6292,31 @@ mod serde_tests {
         assert!(!again.contains("min_length_px"));
         assert!(!again.contains("color_map"));
         assert!(again.contains("\"pivot\":\"Tail\""));
+
+        // A 2D document has no `w` (#211) and re-serializes without one; a
+        // 3D vector writes it and reads it back.
+        assert!(!again.contains("\"w\""));
+        let DataRenderType::Vector { components, .. } = &parsed.render_type else {
+            unreachable!()
+        };
+        assert!(matches!(
+            components,
+            VectorComponents::Points { w: None, .. }
+        ));
+        let mut with_w = parsed.clone();
+        if let DataRenderType::Vector {
+            components: VectorComponents::Points { w, .. },
+            ..
+        } = &mut with_w.render_type
+        {
+            *w = Some("w".into());
+        }
+        let json = serde_json::to_string(&with_w).unwrap();
+        assert!(
+            json.contains("\"Points\":{\"u\":\"u\",\"v\":\"v\",\"w\":\"w\"}"),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), with_w);
     }
 
     fn a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate() {
@@ -7509,6 +7606,12 @@ mod box_plot_tests {
             config.validate_box_plots(&[boxes("a")]),
             Err("box plots need a linear numeric value axis")
         );
+        // A probability value axis too (#209).
+        config.bottom_x.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        assert_eq!(
+            config.validate_box_plots(&[boxes("a")]),
+            Err("box plots need a linear numeric value axis")
+        );
         let mut polar = chart(3);
         polar.set_polar(Some(Default::default()));
         assert_eq!(
@@ -8472,6 +8575,7 @@ mod step_selection_tests {
                 vector(VectorComponents::Points {
                     u: "u".into(),
                     v: "vv".into(),
+                    w: None,
                 }),
             ),
         ];
@@ -9753,9 +9857,12 @@ impl SeriesConfig {
             }
             DataRenderType::Vector { components, style } => {
                 match components {
-                    VectorComponents::Points { u, v } => {
+                    VectorComponents::Points { u, v, w } => {
                         visit(u);
                         visit(v);
+                        if let Some(w) = w {
+                            visit(w);
+                        }
                     }
                     VectorComponents::Grid { u, v } => {
                         for column in u.columns.iter().chain(&v.columns) {

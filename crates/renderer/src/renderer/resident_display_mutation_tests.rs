@@ -435,6 +435,26 @@ fn radar_series() -> Vec<SeriesConfig> {
     vec![first, second]
 }
 
+/// A polar panel holding the panel's heatmap and its contours (#208).
+fn polar_field_config() -> Config {
+    let mut c = chart_config();
+    c.set_polar(Some(crate::polar::PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.1,
+        ..Default::default()
+    }));
+    c
+}
+
+/// The panel's heatmap and contour series alone.
+fn polar_field_series() -> Vec<SeriesConfig> {
+    chart_series()
+        .into_iter()
+        .filter(|s| s.series_id == "field")
+        .collect()
+}
+
 fn line_style(color: Color) -> DataLineStyleConfig {
     DataLineStyleConfig {
         line_style: LineStylePreset::Dash,
@@ -590,6 +610,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
+                    w: None,
                 },
                 style: VectorStyle {
                     color: Color::new(0.6, 0.1, 0.6, 1.0),
@@ -798,6 +819,12 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     ));
     tally.absorb(run_suite("box", box_config(), box_series(), SIZE));
     tally.absorb(run_suite("radar", radar_config(), radar_series(), SIZE));
+    tally.absorb(run_suite(
+        "polar_field",
+        polar_field_config(),
+        polar_field_series(),
+        SIZE,
+    ));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

@@ -182,6 +182,72 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   stem with the rest of the series. Migration: an `XySeries { .. }`
   literal adds `stem: None`, and a pattern that names every field adds
   `stem` or `..`.
+- **Heatmaps and contours on polar charts** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  `Config::validate_series_on_polar` accepts a field series. It refuses a
+  hexagonal lattice ("a hexagonal grid is drawn on a rectangular chart")
+  and a field on a `GridShape::Polygon` grid ("a polar heatmap's cells
+  follow circular rings: not on a polygon grid"). An image keeps its
+  refusal under its own reason, "images are not drawn on polar axes"
+  (previously "field and contour series are not drawn on polar axes").
+  No type or serialized key is added: a polar heatmap document parses and
+  re-serializes byte-identically.
+- **Probability axis scales** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  `AxisScale::Probability(ProbabilityScale)` places a probability `p` in
+  `(0, 1)` at `F⁻¹(p)`: `Normal` (probit, Wichura's AS241 `PPND16`, its
+  inverse through Cody's `erfc`), `Weibull` and `Logistic`, in the new
+  module `probability`. `AxisScale::forward` / `inverse` are the one CPU
+  scale map, which the geometry (`axis_fraction`, `axis_cross`, the break
+  map), the annotation space (`AxisMap::Probability`), `shift_axis` (line
+  offsets in units of `F⁻¹(p)`) and the ticks read.
+  `guarded_probability_range` and `PROBABILITY_RANGE_FALLBACK` (0.001 to
+  0.999) guard an unvalidated range. Ticks come from the range: the tail
+  `min(p, 1 − p)` walks the log ladders (decades, 1-2-5, 1 to 9) mirrored at
+  0.5, with 0.5 on every ladder, the sparsest with four majors, then a linear
+  grid in `p` for a narrow window (`ProbabilityTicks`, a `Copy` walk bounded
+  by `MAX_LOG_DECADES`); minors are the next denser ladder; label pruning
+  demotes along the tails (`ladder_multiple`). `compute_nice_ticks` widens a
+  probability range to the next tail decade and returns the new
+  `TickError::OutsideProbability` for a range outside `(0, 1)`. The new
+  `LabelFormat::Percent` writes `25%`, and on a probability axis `0.1%`,
+  `50%`, `99.9%` with the decimals each tail needs. Validation: bounds and
+  cut ranges strictly inside `(0, 1)`; a categorical axis, a colourbar axis,
+  a parallel axis, the polar radius and the value axis of category bars and
+  box plots (the position axis of range bars, which tested
+  `== Logarithmic`) refuse the scale; polar angle, ternary, 3D and
+  hexagonal grids already accepted only linear axes. JSON:
+  `"scale": {"Probability": "Normal"}`; the unit variants stay strings, so
+  older documents parse and re-serialize byte-identically. Migration: a
+  `match` on `AxisScale`, `AxisMap`, `LabelFormat` or `TickError` adds the
+  new variant; `layout::span_fraction(value, min, max, logarithmic: bool)`
+  takes `&AxisScale` (`false` → `&AxisScale::Linear`, `true` →
+  `&AxisScale::Logarithmic`).
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  `VectorComponents::Points` gains `w: Option<ColumnId>`, the z component.
+  On a 3D chart a point vector draws when it names its anchor height in
+  `SeriesConfig.z_column` and its z component in `w`;
+  `Config::validate_view3d_series` refuses each missing one with its own
+  reason ("a vector series on a 3D chart names its anchor height column
+  (z_column)", "... names its z component (w)") and a grid vector ("a grid
+  vector draws flat: not on a 3D chart"). On a flat chart both are kept and
+  unused. `Config::drawn_z_column` names a 3D point vector's height, the
+  step count includes the height and `w` on a 3D chart, and
+  `SeriesConfig::visit_columns` visits `w`.
+  `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` sizes the
+  longest vector the bounds allow, `hypot(max |u|, max |v|, max |w|)`. On the
+  wire `w` is omitted when `None`, so older documents parse and re-serialize
+  byte-identically. Migration: a `VectorComponents::Points { u, v }` literal
+  becomes `Points { u, v, w: None }`, and a pattern that names every field
+  adds `w` or `..`.
+- **A box axis title clears its widest tick label** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  The title of a 3D box axis sat a fixed band (about 1.4 label heights)
+  past its edge. On a near-vertical edge a wide label (`3.00` on the z
+  axis) reaches farther along the normal than that, and the title ran into
+  it. The band is now at least the widest drawn label's extent along the
+  edge's normal. `Config::box_title_placement(k, offset, extents,
+  label_reach)` takes that reach (`None` keeps the fixed band); the
+  decoration layout, which the draw and the hit map share, passes the
+  measured one. Migration: a direct caller adds
+  `None`, or the reach of its own labels.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -1120,6 +1186,12 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  A chart with a probability axis on any axis or subplot is refused at
+  registration and at export with `InvalidConfig` ("probability axes are not
+  drawn yet"), rather than drawn as a linear axis, until the GPU transform
+  places them. The annotation space, the fit stamp (codes 2 to 4) and the
+  render warnings take the new scale.
 - **The partner axis takes the main axis's scale.** `Chart::set_x_range`,
   `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
   to a registered chart) and the subplot range setters write the range to
@@ -1160,6 +1232,61 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   (`STREAMED_STEM_REASON`). Every row draws a stem: 1,000,001 rows draw in
   about 1.2 s and pick their last row in about 4.7 s on lavapipe, measured
   by `tests/stem_render.rs` and never capped.
+
+- **Polar heatmaps and contours** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  A field on a polar chart draws each cell as the annular sector between
+  its angle and radius boundaries. The field draw stays one quad: each
+  fragment's pixel offset from the centre is inverted by `polar_unproject`
+  (`common/projection.wgsl`) and read by `field_lookup`
+  (`common/field_grid.wgsl`), which wraps the angle into the turn from the
+  grid's low boundary and carries the lookup's per-pixel Jacobian. The
+  fill, the cell pick, the picked cell's outline (the rose's
+  `radial_sector.wgsl` footprint, now spliced into the field module), the
+  contour stroke (the Euclidean pixel distance to the isoline, by
+  foot-point iteration on the field through the polar placement), the
+  contour pick and highlight, and the contour label
+  anchor pass (seeded and stepped in (angle, radius); the anchor module
+  now splices `sample_validity.wgsl`) all walk this one lookup. A
+  rectangular chart's lookup is the identity and its path is unchanged.
+  Edges and centres, both orientations, flat and interpolated shading, log
+  and inverted radius axes, a categorical angle axis, the hole and the
+  sector work; an interpolated full circle closes its seam when the host
+  names the first column again one turn on. Streaming stays refused for
+  every polar chart. No count limit: 65,537 angle cells by 64 rings draw
+  in about 0.4 s and a 2,048 by 2,048 grid in about 0.5 s on lavapipe,
+  measured by `tests/polar_heatmap_render.rs`. The `PolarHeatmap` scene is
+  a weather radar sweep and `polar_plot` writes a fifth image, an antenna
+  gain heatmap. The shader prewarm contract is regenerated.
+
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A point vector on a 3D chart draws one arrow per row from `(x, y, z)`
+  along `(u, v, w)`, depth tested against the surfaces, the 3D marks and
+  the other arrows. The new assembled module `VECTOR_POINTS_3D_SHADER`
+  (`VectorInput::Points3d`) is the point form with the flat projection
+  fragment replaced by `common/project_3d.wgsl` and the new
+  `vector/project_box3d.wgsl`, plus the ID pick entries of the new
+  `vector/vector_entry_3d.wgsl`; the glyph and the input are unchanged
+  (rule 9). Both projection fragments now define `arrow_clip(corner,
+  arrow)`, and `ArrowPx` carries the NDC depth at the tail and tip; the
+  entry's body is `vector_vertex`, and the 2D vector modules draw
+  byte-identical pixels. The glyph stays camera-facing in logical pixels.
+  `Data` tips are placed through the axes and the camera, and an arrow
+  whose anchor or tip leaves the box is not drawn; `Pixels` length is the
+  screen-plane length at the anchor. `VectorParamsGpu` grows from 128 to
+  144 bytes (`height_base`, `height_len`, `w_base`, `w_len`) and
+  `VECTOR_FLAG_THREE_D` (64) selects the height and `w` reads.
+  `View3dPipeline` gains `Vector` and `VectorPick` (`VIEW3D_PIPELINES` 10).
+  The 3D ID pick answers an arrow's row where its shaft or head covers at
+  least half the pixel, the picked ring sits at the anchor at half the head
+  width, and the z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a
+  `Data` arrow from column statistics. `SeriesDrawInfo` counts the height
+  and `w`, and registration checks `w` on a 3D chart. A change of a
+  series' `z_column` is now a data declaration change (it moved no
+  revision before). Streamed sources are refused. No count limit:
+  `(1 << 20) + 1` arrows draw, pick their last row and step to it in
+  `tests/surface_render.rs`. The `Quiver3d` scene draws an
+  Arnold-Beltrami-Childress flow coloured by a host-computed speed. The
+  shader prewarm contract is regenerated.
 
 - **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
   A radial chart whose sectors are all Flat, level (no tilt or depth),
@@ -2628,6 +2755,10 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A picked arrow of a 3D point vector reports `z` and `w` in
+  `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON
+  carries `w` in `components.Points`, omitted when absent.
 - **Legend rows follow their series** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `set_series_label`, `remove_series`, `remove_column`, `add_line_series`,
   `set_series` and `load_demo` find a series' legend row by the series its

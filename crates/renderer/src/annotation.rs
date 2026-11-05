@@ -75,6 +75,10 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
             let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
             AxisMap::Log { min, max }
         }
+        AxisScale::Probability(scale) => {
+            let (min, max) = crate::layout::guarded_probability_range(axis.min, axis.max);
+            AxisMap::Probability { scale, min, max }
+        }
     };
     AxisSpace {
         map,

@@ -1088,6 +1088,7 @@ mod tests {
                                 parallel: None,
                                 line_3d: None,
                                 scatter_3d: None,
+                                vector_3d: None,
                                 line: line.then_some(ColumnLineLayer {
                                     pipeline: &line_pipeline,
                                     transform_bg: &tbg,

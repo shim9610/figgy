@@ -149,6 +149,34 @@ field is kept and unused.
   chart. `z_column: None` on a 3D chart is rejected; on a flat chart it is
   kept and unused, so a trajectory switches between 2D and 3D with the
   view too.
+- **`Vector`** in the points form draws one arrow per row from
+  `(x, y, z)` along `(u, v, w)` (#211). The series names its anchor height
+  in `SeriesConfig.z_column` and its z component in
+  `VectorComponents::Points.w`; each missing column is rejected on a 3D
+  chart, and on a flat chart both are kept and unused. The arrow is the
+  flat glyph (`common/arrow.wgsl`), camera-facing and in logical pixels:
+  `width_px`, `head_length_px` and `head_width_px` are constant on screen,
+  and the arrow sits at the depth of the front of a tube of half its head
+  width, so it is depth tested against the surfaces, the 3D marks and the
+  other arrows.
+  - `Data { factor }`: the tip is the anchor plus `factor · (u, v, w)` in
+    each axis's data units, placed through the axes and the camera, so an
+    arrow is foreshortened as it turns. An arrow whose anchor or tip leaves
+    the box, or is non-positive on a logarithmic axis, is not drawn, as a 3D
+    line drops a segment whose end leaves it.
+  - `Pixels { px_per_unit }`: an arrow lying in the screen plane at its
+    anchor is `px_per_unit · |(u, v, w)|` logical pixels long; other arrows
+    are foreshortened by the camera. The length holds under `zoom_view`.
+  - The pivot shifts along the projected axis: exact under the
+    orthographic camera, a sub-pixel approximation under perspective.
+  - `arrow_place` scales the head down for a short arrow, so an arrow
+    pointing at the eye shrinks to its head, and below `min_length_px` it
+    is not drawn.
+  - `VectorStyle::fit_scale_3d` sizes the longest vector the component
+    statistics allow, `hypot(max |u|, max |v|, max |w|)`, to a target
+    length. Colouring by speed takes a magnitude column the host uploads.
+  - The grid form draws flat: it is rejected on a 3D chart (a host uploads
+    lattice points as columns). Streamlines are rejected too.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -161,7 +189,7 @@ field is kept and unused.
 A 3D chart draws only these kinds, in the Precise draw style. It rejects
 overlays, line offsets, the polar and ternary systems and streamed sources,
 each with an explicit error. There is no limit on the grid's size or on a
-series' rows: every quad, marker and segment is drawn.
+series' rows: every quad, marker, segment and arrow is drawn.
 
 ## Interaction
 
@@ -171,16 +199,19 @@ series' rows: every quad, marker and segment is drawn.
   column and row. A sample hidden behind the surface is never answered.
   A floor contour answers its level, as on a flat chart. A marker answers
   `PickedData::Point` with its index, a stroke the index of its segment's
-  nearer end (its dashes, not its gaps); a mark behind a surface never
+  nearer end (its dashes, not its gaps), an arrow its row where its shaft
+  or head covers at least half the pixel; a mark behind a surface never
   answers.
 - **Highlight.** The picked sample's patch, the halves of the quads around
   it nearest the sample, is outlined and brightened. It is drawn over
   anything in front of it, so a selection is visible from every side. A
-  picked point is ringed at its projected place, over its occluders too.
+  picked point is ringed at its projected place, over its occluders too;
+  a picked arrow is ringed at its anchor at half its head width.
 - **`step_selection`** walks the grid samples, as on a flat heatmap, and a
   point series' rows.
 - **`selection_details()`** reports the sample's x, y and height, plus the
-  colour grid's value when set; a point's x, y and `z`.
+  colour grid's value when set; a point's x, y and `z`; an arrow's x, y,
+  `z`, `u`, `v` and `w`, and its colour value when colour mapped.
 - **Camera.** Dragging the data area orbits the camera
   (`Config::orbit_view`, half a degree per pixel). `Config::zoom_view`
   zooms it (the WASM kernel's `zoom_view(factor)`). The data area's edges
@@ -192,8 +223,10 @@ series' rows: every quad, marker and segment is drawn.
     `label_offset_x` along the edge and `label_offset_y` along its normal.
   - Titles (`Element::AxisTitle`) move in screen space.
 - **Fit.** `auto_fit_layer_union` and the browser's `autoFitAll` also fit
-  `right_y` to the union of the height columns' statistics. Nothing is
-  read back.
+  `right_y` to the union of the height columns' statistics. A `Data`
+  arrow adds the bound `[z_min + f·w_min, z_max + f·w_max]` of its tips
+  (ordered for a negative factor), from the same statistics, which holds
+  every tip. Nothing is read back.
 - **Annotations.** Ratio and pixel anchors draw. A 3D chart has no
   separable value axes, so data anchors, reference lines and spans are
   skipped as `NoValueAxis`.
@@ -207,7 +240,8 @@ The surface draws into the panel composite with a depth-stencil
 attachment (`Depth24PlusStencil8`, at the target's sample count), created
 only for a 3D panel. Floor contours draw first without writing depth, then
 the surfaces with the depth test, so a translucent surface shows the
-contours below it; then every series' 3D line and every series' 3D markers,
+contours below it; then every series' 3D arrows, every series' 3D line and
+every series' 3D markers,
 depth tested at the front of their tube and ball
 (`project_box_front`, `surface_mesh::point_depth_stencil`), with alpha to
 coverage on a multisampled composite so a mark's antialiased fringe writes
@@ -215,7 +249,16 @@ depth only where it covers a sample and a dense trajectory stays solid. The 2D p
 the shared frame and export passes are unchanged: the 3D markers and
 strokes are the scatter and line modules' own entries (`vs_3d`,
 `vs_3d_mapped`, `vs_3d_pick`, `vs_pick_ring_3d`) placing the flat marker
-and stroke through the camera.
+and stroke through the camera. The 3D arrows are the vector glyph with the
+flat projection fragment swapped for `vector/project_box3d.wgsl`
+(`VECTOR_POINTS_3D_SHADER`, rule 9), plus the ID pick entries of
+`vector/vector_entry_3d.wgsl`.
+
+Expected cost of the arrows: six vertices per arrow, and in `Pixels` mode
+four box projections per vertex (anchor, screen-plane step, tip and front
+shift). The ID pick redraws every arrow of the series into its 1×1 target,
+as the 3D scatter pick does. `(1 << 20) + 1` arrows draw, pick and step in
+the tests; nothing caps the count.
 
 Expected memory: 4 bytes per sample of the attachment, about 12 MB for an
 1100 × 700 panel at 4x MSAA.

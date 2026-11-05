@@ -19,11 +19,13 @@ fn fraction(axis: &AxisOptions, value: f64) -> Option<f64> {
     let f = match axis.scale {
         AxisScale::Logarithmic => {
             let (lo, hi) = crate::layout::guarded_log_range(axis.min, axis.max);
-            crate::layout::span_fraction(value, lo, hi, true)
+            crate::layout::span_fraction(value, lo, hi, &AxisScale::Logarithmic)
         }
-        _ => {
+        // A 3D chart refuses a probability axis (#209).
+        AxisScale::Probability(_) => None,
+        AxisScale::Linear => {
             let (lo, hi) = axis.data_range();
-            crate::layout::span_fraction(value, lo, hi, false)
+            crate::layout::span_fraction(value, lo, hi, &AxisScale::Linear)
         }
     }?;
     let f = if axis.inverted { 1.0 - f } else { f };
@@ -145,6 +147,35 @@ pub fn emit_box_axis_strokes(
         |value| fraction(axis, value).map(|f| f as f32),
         |f, offset| edge.point(f, offset),
     );
+}
+
+/// How far axis `k`'s tick labels reach past its edge along the edge's
+/// normal, as [`emit_box_labels`] places them: the tick gap plus the
+/// largest extent along the normal of a label of any major (the drawn
+/// labels are those or a pruned subset), and the label offset along it. `None` when the labels are hidden or the chart is not 3D. The title
+/// sits past this, so a wide label on a near-vertical edge (the z axis's
+/// `3.00`) does not run into it.
+pub(crate) fn box_label_reach(config: &Config, k: usize, measure: &dyn MeasureText) -> Option<f32> {
+    let edge = config.box_axis_edge(k)?;
+    let axis = box_axis(config, k);
+    let ls = &axis.label_style;
+    if !ls.visible || !ls.label_visible {
+        return None;
+    }
+    let n = edge.normal;
+    let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;
+    // Every major the axis walks: the labels drawn are these or a pruned
+    // subset, so the widest of them bounds the band without a list.
+    crate::tick::major_ticks(axis)
+        .filter(|value| fraction(axis, *value).is_some())
+        .map(|value| {
+            let (_, m) = super::polar::tick_text(axis, value, measure);
+            n[0].abs() * m.width + n[1].abs() * (m.ascent + m.descent)
+        })
+        .fold(None, |widest: Option<f32>, extent| {
+            Some(widest.map_or(extent, |w| w.max(extent)))
+        })
+        .map(|widest| gap + widest + ls.label_offset_y.max(0.0))
 }
 
 /// Axis `k`'s tick labels (`Element::AxisLabel` of its side): centred past
