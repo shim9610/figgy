@@ -96,10 +96,18 @@ fn cut_scale(c: AxisCuts) -> f32 {
     return c.count_scale.y;
 }
 
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32, cuts: AxisCuts) -> f32 {
+// `prob` is the axis' probability code (`Transform.scale_prob`, #209): on
+// a probability axis `min` / `max` hold `F⁻¹` of the bounds and the sample
+// is placed at `prob_forward`, before the linear and log arithmetic, which
+// stays as it was.
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, prob: f32, panel_scale: f32, panel_offset: f32, cuts: AxisCuts) -> f32 {
+    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
+    if (prob > 0.5) {
+        let prob_num = (prob_forward(v, prob) - min_hi) - min_lo;
+        return fma(cut_remap(cuts, prob_num / range), panel_scale, panel_offset);
+    }
     let raw = v.x + v.y;
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
     if is_log > 0.5 {
         return fma(cut_remap(cuts, log_num / range), panel_scale, panel_offset);
@@ -124,8 +132,8 @@ fn polar_ndc(t: Transform, ty: f32, xv: vec2<f32>) -> vec2<f32> {
 }
 
 fn data_to_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, t.data_min.x, t.data_max.x, t.data_min_lo.x, t.data_max_lo.x, t.scale_log.x, t.data_to_panel_scale.x, t.data_to_panel_offset.x, cuts_of(t.breaks, t.break_info, 0u));
-    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y, cuts_of(t.breaks, t.break_info, 1u));
+    let tx = axis_pair_to_t(xv, t.data_min.x, t.data_max.x, t.data_min_lo.x, t.data_max_lo.x, t.scale_log.x, t.scale_prob.x, t.data_to_panel_scale.x, t.data_to_panel_offset.x, cuts_of(t.breaks, t.break_info, 0u));
+    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.scale_prob.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y, cuts_of(t.breaks, t.break_info, 1u));
     if (t.polar_angle.x > 0.5) {
         return polar_ndc(t, ty, xv);
     }
@@ -154,6 +162,15 @@ fn ternary_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>, cv: vec2<f32>) -> vec
 fn axis_baseline_ndc(t: Transform, base: vec2<f32>, axis: u32) -> f32 {
     let value = base.x + base.y;
     let one = vec2<f32>(1.0, 0.0);
+    // A probability axis (#209): a baseline at or past 0 or 1 has no
+    // position either and is clamped to the axis end on its side (p ≤ 0 the
+    // low end, p ≥ 1 the high end, which an inverted axis swaps).
+    if (t.scale_prob[axis] > 0.5 && !prob_in_domain(base)) {
+        let range = (t.data_max[axis] - t.data_min[axis]) + (t.data_max_lo[axis] - t.data_min_lo[axis]);
+        let low = value < 0.5;
+        let data_t = select(1.0, 0.0, low == (range > 0.0));
+        return fma(data_t, t.data_to_panel_scale[axis], t.data_to_panel_offset[axis]) * 2.0 - 1.0;
+    }
     if (axis == 0u) {
         if (t.scale_log.x != 0.0 && !(value > 0.0)) {
             return t.data_to_panel_offset.x * 2.0 - 1.0;

@@ -1002,6 +1002,7 @@ mod tests {
                     ternary_r: [0.0; 4],
                     breaks: crate::data_render::NO_BREAKS,
                     break_info: crate::data_render::NO_BREAK_INFO,
+                    scale_prob: crate::data_render::NO_PROBABILITY,
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);

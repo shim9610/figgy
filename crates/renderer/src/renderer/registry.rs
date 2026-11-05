@@ -88,7 +88,7 @@ impl AxisViewState {
             inverted,
         } = self;
         axis.scale = scale.clone();
-        crate::chart::apply_axis_range(axis, *min, *max, matches!(scale, AxisScale::Logarithmic));
+        crate::chart::apply_axis_range(axis, *min, *max, scale);
         axis.inverted = *inverted;
     }
 }
@@ -1094,6 +1094,12 @@ pub(super) fn validate_axis_view_state(field: &'static str, axis: &AxisViewState
         return Err(FiggyError::InvalidConfig {
             field,
             reason: "logarithmic axis bounds must be positive",
+        });
+    }
+    if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
+        return Err(FiggyError::InvalidConfig {
+            field,
+            reason: "probability axis bounds must lie strictly between 0 and 1",
         });
     }
     Ok(())

@@ -35,6 +35,7 @@ To change shared shader code:
 | `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
+| `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
 | `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, scatter, line, line_arc, the 3D point vector module (§5.3) |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
@@ -113,7 +114,7 @@ reuse the line stroke and its fragment stage.
 
 ## 1. `Transform` 유니폼(group 0, binding 0)
 
-`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 288바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 극좌표용 `vec4<f32>` 2개(오프셋 112·128), 삼각좌표용 `vec4<f32>` 2개(오프셋 144·160), 끊긴 축의 `array<vec4<f32>, 6>` 하나(오프셋 176, 간격 16바이트)와 `vec4<f32>` 하나(오프셋 272)로 구성된다.
+`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 304바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 극좌표용 `vec4<f32>` 2개(오프셋 112·128), 삼각좌표용 `vec4<f32>` 2개(오프셋 144·160), 끊긴 축의 `array<vec4<f32>, 6>` 하나(오프셋 176, 간격 16바이트)와 `vec4<f32>` 하나(오프셋 272), 확률 축의 `vec4<f32>` 하나(오프셋 288)로 구성된다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
 The code is the fragment [`data_render/common/transform.wgsl`](common/transform.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
@@ -123,6 +124,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `data_min`, `data_max` | `Config.bottom_x`·`Config.left_y` 범위의 시작과 끝을 f32 쌍으로 나눈 상위(hi) 값. `.x`가 X축, `.y`가 Y축이다. 선형축은 설정값을, 로그축은 CPU에서 계산한 log10 값을 쓴다. 반전된 축은 두 값을 맞바꿔 담으므로 `data_min`에 최댓값이 들어간다. 데이터 영역 여백을 이유로 범위를 별도로 늘리지 않는다. |
 | `data_min_lo`, `data_max_lo` | 같은 값의 하위(lo) 부분. `axis_pair_to_t`는 hi와 lo를 따로 빼서 큰 절댓값에서도 작은 차이를 유지한다. |
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
+| `scale_prob` | 확률 축([#209](https://github.com/shim9610/figgy/issues/209))의 척도 코드 `(x, y, 0, 0)`. 0은 선형·로그, 1은 정규, 2는 와이블, 3은 로지스틱이다. 확률 축에서는 `scale_log`가 0이고 `data_min`·`data_max`에 경계의 `F⁻¹`가 담긴다(CPU `transform::probability_code`). 코드이므로 `mix` 가중치로 쓰지 않는다(§5.24). |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
 | `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함), 레이더, 범주 막대(로즈), 필드(히트맵·등고선, #208)에 허용된다. 히스토그램·이미지·오차 막대·스템·벡터 시리즈는 `Config::validate_series_on_polar`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. 필드는 `polar_unproject`(§4)와 `field_lookup`(§5)으로 프래그먼트를 (각도, 반지름)에서 읽는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
@@ -138,7 +140,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
 not a numeric f32 conversion. `styled_point_index` adds the local instance id
 as an integer, so identities above 2^24 keep all bits. Resident transforms write
-zero. `create_stream_point_transform_bind_group` copies the whole 144-byte
+zero. `create_stream_point_transform_bind_group` copies the whole 304-byte
 transform, with the base written into `[2].z`, into a separately charged
 immutable uniform; it never
 rewrites the shared view transform or copies source payloads. Callers validate
@@ -371,6 +373,12 @@ a `.x` swizzle, and may be a field of a path (`transform.scale_log.x`,
 | Flag | Kind | Where |
 | --- | --- | --- |
 | `scale_log` | f32 0/1 uniform field, one lane per axis | `Transform` (`common/transform.wgsl`), the pick transform |
+
+`scale_prob` (§5.24) is a code (0 to 3), not a 0/1 flag: it is compared with
+thresholds (`> 0.5`, `< 1.5`, …) and never weights a `mix`.
+`every_scale_log_reader_reads_scale_prob` (`tests/shader_consistency.rs`)
+holds that, and that every function reading `scale_log` reads `scale_prob`
+too, except in the charts that refuse the scale (polar, category bars, 3D).
 | `polar_angle.x` | f32 0/1 uniform lane (the other lanes are not flags) | `Transform`, the pick transform |
 | `is_log` | parameter name | `maybe_log`, `axis_pair_to_t`, `axis_px_per_unit_at` |
 | `let`/`var NAME = select(0.0, 1.0, …)` or `select(1.0, 0.0, …)` | local, flag within its function | `ramp_t` (`is_log`) |
@@ -1944,6 +1952,45 @@ tie. The candidate is kind 0 (a point) with `index0` the row and `index1`
 the nearer axis, so the pick answers `PickedData::Point { point_index }`.
 The bundle's pipeline is `DataPickPipelineBundle.parallel`
 (`GpuDataPickGeometry::Parallel`).
+
+### 5.24 Probability axes (`common/probability.wgsl`)
+
+[#209](https://github.com/shim9610/figgy/issues/209). A probability `p` in
+`(0, 1)` is drawn at `F⁻¹(p)` for the axis' code `kind`
+(`Transform.scale_prob`). It places given data: projection (CLAUDE.md
+rule 1). Every function reads the column's `(hi, lo)` pair, not its sum:
+`q = (1 − hi) − lo` keeps the upper tail that `hi` alone rounds away.
+
+| Function | What it computes |
+| --- | --- |
+| `prob_in_domain(pair)` | `p > 0` and `q > 0`, which also rules out NaN and ±∞ |
+| `prob_forward(pair, kind)` | Normal: AS241 `PPND7` on `min(p, q)`, signed by side (about 1e-7 relative). Weibull: `ln(w)`, `w = −ln(1 − p)` by the series below `p = 0.01` and `−ln(q)` above. Logistic: `ln(p) − ln(q)`. `p` and `q` are floored at `1e-30` first |
+| `prob_slope(pair, kind)` | `dF⁻¹/dp`: `√(2π)·exp(z²/2)`, `1/(q·w)`, `1/(p·q)` |
+| `prob_inverse(y, kind)` | `(p, 0)` below the median and `(1, −q)` above; the normal uses Numerical Recipes' `erfcc` (under 1.2e-7) |
+
+**Sites.** `axis_pair_to_t` and `axis_px_per_unit_at` take `prob` after
+`is_log` and branch on it first, so the linear and log arithmetic is
+unchanged. `sample_valid` and `pick_coordinate_is_valid` omit a value with
+no position (a line breaks there, as at a non-positive sample on a log
+axis). `axis_baseline_ndc` clamps an area or stem baseline at or past 0 or
+1 to the axis end on its side (`p ≤ 0` the low end, `p ≥ 1` the high one;
+an inverted axis swaps them). An error bar or bar end outside `(0, 1)` goes
+through the floor, far past the axis end, and is cut by the scissor.
+`t_to_pair` (the contour label anchors) inverts through `prob_inverse`. The
+polar radius, category bars, 3D boxes, the colourbar and parallel axes
+refuse the scale and pass 0.
+
+**Accuracy.** The ticks are placed in f64 (`figgy_model::probability`,
+`PPND16`), the data in f32. Over `0.1 %..99.9 %` an f32 error of about
+5e-6 in `z` is 0.003 px on a 4096 px axis.
+`probability_axis_places_points_at_every_tail` (`tests/pick_draw_agreement.rs`,
+in `NUMERIC_TESTS`) draws each scale at both tails and checks the ink
+centroid within 0.5 px at 2x (the antialiased marker's centroid, not the
+f32 error, sets that bound) and the GPU and CPU picks within 0.5 px. The
+low tail reaches the floor (`z ≈ −11.4`); the high tail ends at the f64
+input, `q ≥ 2⁻⁵³` (`z ≤ 8.2`). A window like `0.4999..0.5001` shows the
+f32 error, as a log axis does. CPU twin (test support):
+`cpu_twin::prob_forward`.
 
 ## Checklist
 

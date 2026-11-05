@@ -14,7 +14,7 @@ fn polar_sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
         return true;
     }
     // A polar radius: polar charts have no breaks.
-    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y, no_cuts());
+    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, 0.0, t.data_to_panel_scale.y, t.data_to_panel_offset.y, no_cuts());
     let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
     return rt >= 0.0;
 }
@@ -41,6 +41,8 @@ fn sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
         && sample_finite(x) && sample_finite(y)
         && (t.scale_log.x == 0.0 || x > 0.0)
         && (t.scale_log.y == 0.0 || y > 0.0)
+        && (t.scale_prob.x < 0.5 || prob_in_domain(xv))
+        && (t.scale_prob.y < 0.5 || prob_in_domain(yv))
         && polar_sample_valid(t, xv, yv);
 }
 

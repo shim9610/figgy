@@ -474,6 +474,14 @@ When `AxisOptions.scale = Logarithmic`:
 - CPU: `scatter_transform_from_config` pre-converts the guarded range to log10 and sets the relevant `scale_log` axis flag.
 - GPU line/scatter paths check finite coordinates and the positive log domain before drawing or picking. Invalid markers and line segments touching an invalid endpoint are omitted, leaving a gap; valid data is not rejected or connected across that gap. The same rule covers precise, sketch, ribbon/arc and star line paths. Histogram zero baselines remain clipped to the visible positive range; color-mapped non-positive z values use `nan_color`.
 
+### Probability scales on the GPU
+
+When `AxisOptions.scale = Probability(_)` ([#209](https://github.com/shim9610/figgy/issues/209)):
+- CPU: `scatter_transform_from_config` writes `F⁻¹` of the guarded range (`guarded_probability_range`, f64) into `data_min` / `data_max` and the scale's code into `scale_prob`; `scale_log` stays 0.
+- GPU: `common/probability.wgsl` places each sample at `F⁻¹(p)` in f32 from its `(hi, lo)` pair (SHADER_COMMON §5.24). Values at or past 0 or 1 have no position: markers and line segments touching them are omitted, as non-positive samples on a log axis; an area or stem baseline there is clamped to the axis end on its side.
+- Auto-fit keeps both ends inside `(0, 1)`: an end at 0 or 1 takes the mirror of the other, and the padding is in `F⁻¹` units.
+- Streamed series are refused (rule 8).
+
 ### Export pipeline
 
 ![Requested-resolution offscreen export, resident or replayed streaming input, row readback and PNG encoding](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-en.png)
@@ -817,6 +825,15 @@ redraw_pending = false;
 - 수동으로 지정한 경계가 0 이하이거나 유효하지 않으면 `1e-12`로 보정한다. 유효한 양수는 `1e-12`보다 작아도 유지한다.
 - CPU의 `scatter_transform_from_config`가 보정된 범위를 log10으로 변환하고 해당 축의 `scale_log`를 설정한다.
 - GPU의 선·산점도 경로는 그리기와 피킹 전에 좌표가 유한하고 로그축에서 양수인지 확인한다. 유효하지 않은 점과 그 점에 닿는 선분은 생략해 빈 구간으로 남기며, 나머지 데이터를 거부하거나 빈 구간을 선으로 잇지 않는다. 정밀·스케치·리본/호·별 선 경로에도 같은 규칙을 적용한다. 히스토그램의 0 기준선은 양수 표시 범위로 잘라 그리며, 로그 색상표의 0 이하 Z값은 `nan_color`를 사용한다.
+
+### GPU의 확률 축 처리
+
+`AxisOptions.scale = Probability(_)`이면([#209](https://github.com/shim9610/figgy/issues/209)) 다음 규칙을 적용한다.
+
+- CPU의 `scatter_transform_from_config`가 보정된 범위(`guarded_probability_range`, f64)의 `F⁻¹`를 `data_min`·`data_max`에 쓰고 척도 코드를 `scale_prob`에 쓴다. `scale_log`는 0이다.
+- GPU에서는 `common/probability.wgsl`이 각 표본을 `(hi, lo)` 쌍에서 f32로 `F⁻¹(p)`에 놓는다(SHADER_COMMON §5.24). 0이나 1, 또는 그 바깥의 값은 위치가 없다. 그런 점과 그 점에 닿는 선분은 로그축의 0 이하 표본처럼 생략하고, 면적이나 줄기의 기준선은 그쪽 축 끝에 고정한다.
+- 자동 범위 맞춤은 두 끝을 `(0, 1)` 안에 둔다. 0이나 1인 끝은 다른 끝의 대칭을 쓰고, 여백은 `F⁻¹` 단위로 둔다.
+- 스트리밍 계열은 거부한다(규칙 8).
 
 <a id="export-파이프라인"></a>
 

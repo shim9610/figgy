@@ -895,6 +895,7 @@ mod stream_tests {
             ternary_r: [0.0; 4],
             breaks: crate::data_render::NO_BREAKS,
             break_info: crate::data_render::NO_BREAK_INFO,
+            scale_prob: crate::data_render::NO_PROBABILITY,
         };
         let transform_uniform = create_scatter_transform_uniform_buffer(device, &transform);
         let transform_bg =

@@ -57,6 +57,11 @@ pub(crate) const STREAMED_TERNARY_REASON: &str =
 pub(crate) const STREAMED_BREAK_REASON: &str =
     "broken axes require GPU-resident columns; streamed sources are not supported";
 
+/// Why a streamed series on a probability axis is rejected (CLAUDE.md
+/// rule 8, #209): the probability transform is resident-only.
+pub(crate) const STREAMED_PROBABILITY_REASON: &str =
+    "probability axes require GPU-resident columns; streamed sources are not supported";
+
 /// Why a streamed image series is rejected (CLAUDE.md rule 8, #139).
 pub(crate) const STREAMED_IMAGE_REASON: &str =
     "image series require GPU-resident columns; streamed sources are not supported";

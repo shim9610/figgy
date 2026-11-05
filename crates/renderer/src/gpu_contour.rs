@@ -29,6 +29,7 @@ use std::sync::Arc;
 pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
@@ -38,6 +39,7 @@ pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crat
 pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/label_quad.wgsl",
     "contour_label.wgsl",
@@ -476,6 +478,7 @@ impl ContourLabelPipelines {
         let common = crate::shader_assembly::wgsl_module!(
             "data_render/common/transform.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/grid_pair.wgsl",
             "data_render/common/field_grid.wgsl",

@@ -21,6 +21,7 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
