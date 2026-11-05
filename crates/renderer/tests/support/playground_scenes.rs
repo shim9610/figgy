@@ -75,10 +75,11 @@ pub enum SceneKind {
     Lollipop,
     PolarHeatmap,
     Quiver3d,
+    ProbabilityPaper,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 38] = [
+    pub const ALL: [SceneKind; 39] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -117,6 +118,7 @@ impl SceneKind {
         SceneKind::Lollipop,
         SceneKind::PolarHeatmap,
         SceneKind::Quiver3d,
+        SceneKind::ProbabilityPaper,
     ];
 
     pub fn label(self) -> &'static str {
@@ -159,6 +161,7 @@ impl SceneKind {
             SceneKind::Lollipop => "Lollipop (ranked)",
             SceneKind::PolarHeatmap => "Polar heatmap (radar)",
             SceneKind::Quiver3d => "3D vector field (ABC flow)",
+            SceneKind::ProbabilityPaper => "Probability paper (normal, Weibull)",
         }
     }
 
@@ -329,6 +332,13 @@ impl SceneKind {
                  in a 3D box: one arrow per sample along (u, v, w), coloured by \
                  its speed, which the host computes. Drag the plot to orbit; pick \
                  an arrow and step with the arrows."
+            }
+            SceneKind::ProbabilityPaper => {
+                "Probability axes: tensile strengths on normal paper, where a normal \
+                 sample is a straight line, and failure times on Weibull paper over \
+                 a log time axis, where the line's slope is the shape parameter. \
+                 The host computes the Hazen plotting positions and the fitted \
+                 lines. Pick a point; drag the percent tick labels."
             }
         }
     }
@@ -531,6 +541,7 @@ pub fn build(
         SceneKind::Lollipop => lollipop(r),
         SceneKind::PolarHeatmap => polar_heatmap(r),
         SceneKind::Quiver3d => quiver_3d(r),
+        SceneKind::ProbabilityPaper => probability_paper(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -800,6 +811,141 @@ fn stem(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// Probability paper (#209): a normal panel and a Weibull subplot over a log
+/// time axis. The host computes everything a reader takes as data, the
+/// Hazen plotting positions `(i - 0.5) / n` and the fitted lines, and the
+/// renderer only places them (CLAUDE.md rule 1).
+fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisScale, ProbabilityScale};
+    let normal = ProbabilityScale::Normal;
+    let weibull = ProbabilityScale::Weibull;
+    let n = 40;
+    let hazen: Vec<f64> = (0..n).map(|i| (i as f64 + 0.5) / n as f64).collect();
+    // Tensile strengths: a normal sample (mean 420 MPa, sd 18) with a little
+    // scatter about its quantiles, sorted as a probability plot reads it.
+    let (mean, sd) = (420.0, 18.0);
+    let mut strength: Vec<f64> = hazen
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let z = normal
+                .forward(*p)
+                .expect("a Hazen position is inside (0, 1)");
+            mean + sd * z + 4.0 * noise(209, i)
+        })
+        .collect();
+    strength.sort_by(f64::total_cmp);
+    // Failure times: Weibull with shape 1.8 and scale 1000 h.
+    let (shape, scale) = (1.8_f64, 1000.0_f64);
+    let mut hours: Vec<f64> = hazen
+        .iter()
+        .enumerate()
+        .map(|(i, p)| scale * (-(1.0 - p).ln()).powf(1.0 / shape) * (1.0 + 0.08 * noise(211, i)))
+        .collect();
+    hours.sort_by(f64::total_cmp);
+    // The fitted lines, sampled across the axis ranges.
+    let fit_p = [0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999];
+    let fit_strength: Vec<f64> = fit_p
+        .iter()
+        .map(|p| mean + sd * normal.forward(*p).expect("inside (0, 1)"))
+        .collect();
+    let fit_hours: Vec<f64> = fit_p
+        .iter()
+        .map(|p| scale * (-(1.0 - p).ln()).powf(1.0 / shape))
+        .collect();
+    upload(r, "pp_p", hazen)?;
+    upload(r, "pp_strength", strength)?;
+    upload(r, "pp_hours", hours)?;
+    upload(r, "pp_fit_p", fit_p.to_vec())?;
+    upload(r, "pp_fit_strength", fit_strength)?;
+    upload(r, "pp_fit_hours", fit_hours)?;
+
+    let (w, h) = (DOC_W / 2, DOC_H);
+    let cell = |x: u32, title: &str, xt: &str, yt: &str| -> Config {
+        let mut c = base_config(title, xt, yt);
+        c.chart_area = ChartArea(Rect {
+            x,
+            y: 0,
+            width: w,
+            height: h,
+        });
+        c.grid.show_major_x = true;
+        c.grid.show_major_y = true;
+        c
+    };
+    let mut config = cell(
+        0,
+        "Tensile strength",
+        "Strength [MPa]",
+        "Cumulative probability",
+    );
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.scale = AxisScale::Probability(normal);
+    }
+    let mut times = Subplot {
+        config: cell(w, "Time to failure", "Time [h]", "Unreliability"),
+        series: vec!["failures".into(), "weibull_fit".into()],
+        link_x: None,
+        link_y: None,
+    };
+    for axis in [&mut times.config.left_y, &mut times.config.right_y] {
+        axis.scale = AxisScale::Probability(weibull);
+    }
+    for axis in [&mut times.config.bottom_x, &mut times.config.top_x] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    }
+    config.subplots = vec![times];
+
+    let blue = Color::from_rgb8(31, 119, 180);
+    let red = Color::from_rgb8(200, 60, 40);
+    let points = |id: &str, x: &str, color: Color, shape: ScatterShape| {
+        series(
+            id,
+            x,
+            "pp_p",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style(color, shape, 7.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        )
+    };
+    let fit = |id: &str, x: &str, color: Color| {
+        series(
+            id,
+            x,
+            "pp_fit_p",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line_style(color, 1.5)),
+                errors: None,
+                stem: None,
+            }),
+        )
+    };
+    let series = vec![
+        points("strength", "pp_strength", blue, ScatterShape::CircleFilled),
+        fit("normal_fit", "pp_fit_strength", blue),
+        points("failures", "pp_hours", red, ScatterShape::SquareFilled),
+        fit("weibull_fit", "pp_fit_hours", red),
+    ];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_x(r.pool(), "pp_strength", 0.08)?;
+    chart.set_y_range(0.001, 0.999);
+    chart.set_subplot_x_range(0, 30.0, 5000.0);
+    chart.set_subplot_y_range(0, 0.001, 0.999);
+    // Hours read as plain numbers (50, 100, 200 …) rather than powers.
+    chart.with_axis_range_change(|c| {
+        c.subplots[0].config.bottom_x.label_style.format = LabelFormat::Decimal;
+    });
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series[..2]),
         series,
     })
 }
