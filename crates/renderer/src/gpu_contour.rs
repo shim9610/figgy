@@ -63,8 +63,9 @@ pub const LABEL_VERTICES: u32 = 6;
 ///
 /// A ceiling, and also the size of the private arrays the select pass compares
 /// against — GPU twin: `contour_anchor.wgsl::MAX_KEPT`. Automatic and explicit
-/// placement share the model's full 1024-level capacity.
-pub const MAX_CONTOUR_LABELS_TOTAL: u32 = 1024;
+/// placement share the model's full 1024-level capacity, and the model
+/// rejects a longer explicit list (`MAX_CONTOUR_LABEL_ANCHORS`).
+pub const MAX_CONTOUR_LABELS_TOTAL: u32 = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS as u32;
 
 /// Candidate slots the project pass may write: `lattice cells x levels`.
 ///

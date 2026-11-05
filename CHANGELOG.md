@@ -36,6 +36,16 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Too many explicit contour label anchors is an error** ([#107](https://github.com/shim9610/figgy/issues/107)).
+  `ContourLabelConfig::validate` rejects an `anchors` list longer than the new
+  `MAX_CONTOUR_LABEL_ANCHORS` (1024) with
+  `ContourLabelConfig::TOO_MANY_ANCHORS_REASON`. Registration, series edits,
+  prepare and export report it as `InvalidSeriesConfig`. Before, the renderer
+  kept the first 1024 valid anchors and dropped the rest silently. The limit
+  is unchanged; the renderer's label buffer (`MAX_CONTOUR_LABELS_TOTAL`) now
+  takes its value from this constant. Migration: a host that passed more than
+  1024 anchors keeps at most 1024 itself.
+
 - **A legend symbol names its series** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `RichSegment` gains `series_id: Option<String>`, and
   `series_symbol_segments` sets it on the symbol it makes.
