@@ -78,9 +78,9 @@ fn pool_pair(base: u32, i: u32) -> vec2<f32> {
 /// `axis_pair_to_t` for whichever axis: 0 = x, 1 = y.
 fn axis_t(pair: vec2<f32>, axis: u32) -> f32 {
     if (axis == 0u) {
-        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x, cuts_of(transform.breaks, transform.break_info, 0u));
+        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.scale_prob.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x, cuts_of(transform.breaks, transform.break_info, 0u));
     }
-    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y, cuts_of(transform.breaks, transform.break_info, 1u));
+    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.scale_prob.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y, cuts_of(transform.breaks, transform.break_info, 1u));
 }
 
 /// Cell boundary `k` along one axis, in pool `(hi, lo)` pair form.

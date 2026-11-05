@@ -871,7 +871,7 @@ pub(crate) struct PickCandidateGpu {
     pub(crate) _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 768);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 784);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]

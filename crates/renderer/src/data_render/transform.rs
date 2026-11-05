@@ -5,11 +5,11 @@ use super::*;
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 288 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
+/// 304 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
 /// offset 64, stride 16, two polar `vec4<f32>` at 112 and 128, two
 /// ternary `vec4<f32>` at 144 and 160, the break table
-/// `array<vec4<f32>, 6>` at 176 and its `vec4<f32>` info at 272, WGSL
-/// uniform layout). Pixel sizes (point radius, cap half-length) live in
+/// `array<vec4<f32>, 6>` at 176, its `vec4<f32>` info at 272 and the
+/// probability scale codes at 288, WGSL uniform layout). Pixel sizes (point radius, cap half-length) live in
 /// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -69,7 +69,27 @@ pub struct ScatterTransform {
     pub breaks: [[f32; 4]; 6], // offset 176
     /// `(cuts on x, cuts on y, piece scale x, piece scale y)`; zero cuts is
     /// the identity.
-    pub break_info: [f32; 4], // offset 272 → 288 byte
+    pub break_info: [f32; 4], // offset 272
+    /// Probability axes (#209): `(code x, code y, 0, 0)`, 0 for a linear or
+    /// logarithmic axis, 1 normal, 2 Weibull, 3 logistic
+    /// (`probability_code`). On a probability axis `scale_log` is 0 and
+    /// `data_min` / `data_max` hold `F⁻¹` of the axis bounds.
+    pub scale_prob: [f32; 4], // offset 288 → 304 byte
+}
+
+/// The probability codes of a chart with no probability axis.
+pub const NO_PROBABILITY: [f32; 4] = [0.0; 4];
+
+/// The shader's code for `scale` (`Transform.scale_prob`): 0 for a linear
+/// or logarithmic axis, 1 normal, 2 Weibull, 3 logistic.
+pub(crate) fn probability_code(scale: &crate::config::AxisScale) -> f32 {
+    use crate::config::{AxisScale, ProbabilityScale};
+    match scale {
+        AxisScale::Linear | AxisScale::Logarithmic => 0.0,
+        AxisScale::Probability(ProbabilityScale::Normal) => 1.0,
+        AxisScale::Probability(ProbabilityScale::Weibull) => 2.0,
+        AxisScale::Probability(ProbabilityScale::Logistic) => 3.0,
+    }
 }
 
 /// The break table entries of an unbroken chart.
@@ -241,32 +261,44 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let chart_h = ca.height.max(1) as f32;
 
     use crate::config::AxisScale;
-    // A categorical axis is linear over its category range.
+    // A categorical axis is linear over its category range (and refuses a
+    // probability scale in validation).
     let log_x = matches!(config.bottom_x.scale, AxisScale::Logarithmic)
         && config.bottom_x.categories.is_none();
     let log_y =
         matches!(config.left_y.scale, AxisScale::Logarithmic) && config.left_y.categories.is_none();
+    let prob_x = if config.bottom_x.categories.is_none() {
+        probability_code(&config.bottom_x.scale)
+    } else {
+        0.0
+    };
+    let prob_y = if config.left_y.categories.is_none() {
+        probability_code(&config.left_y.scale)
+    } else {
+        0.0
+    };
 
-    // For log axes, guard only the axis range. Data values still follow the
-    // shader's NaN/non-positive handling.
+    // For log and probability axes, guard only the axis range. Data values
+    // still follow the shader's out-of-domain handling. A probability axis
+    // holds `F⁻¹` of its bounds (#209), in f64 before the hi/lo split.
     let to_log = |v: f64| v.log10();
-    let (x_min, x_max) = if log_x {
-        crate::chart::guarded_log_range(config.bottom_x.min, config.bottom_x.max)
-    } else {
-        config.bottom_x.data_range()
+    let axis_range = |axis: &crate::config::AxisOptions, log: bool, prob: f32| {
+        if log {
+            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
+            (to_log(min), to_log(max))
+        } else if prob > 0.0 {
+            let (min, max) = crate::layout::guarded_probability_range(axis.min, axis.max);
+            let forward = |p: f64| axis.scale.forward(p).unwrap_or(0.0);
+            (forward(min), forward(max))
+        } else {
+            axis.data_range()
+        }
     };
-    let (y_min, y_max) = if log_y {
-        crate::chart::guarded_log_range(config.left_y.min, config.left_y.max)
-    } else {
-        config.left_y.data_range()
-    };
-
-    let data_min_x = if log_x { to_log(x_min) } else { x_min };
-    let data_max_x = if log_x { to_log(x_max) } else { x_max };
-    let data_min_y = if log_y { to_log(y_min) } else { y_min };
-    let data_max_y = if log_y { to_log(y_max) } else { y_max };
+    let (data_min_x, data_max_x) = axis_range(&config.bottom_x, log_x, prob_x);
+    let (data_min_y, data_max_y) = axis_range(&config.left_y, log_y, prob_y);
 
     let scale_log = [if log_x { 1.0 } else { 0.0 }, if log_y { 1.0 } else { 0.0 }];
+    let scale_prob = [prob_x, prob_y, 0.0, 0.0];
 
     // 1 px in NDC: NDC spans 2 across chart_w pixels.
     let pixel_to_ndc = [2.0 / chart_w, 2.0 / chart_h];
@@ -336,6 +368,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         ternary_r,
         breaks,
         break_info,
+        scale_prob,
     }
 }
 

@@ -469,6 +469,9 @@ fn axis_px_per_unit(transform: &data_render::ScatterTransform, axis: usize, valu
     let range = (transform.data_max[axis] - transform.data_min[axis])
         + (transform.data_max_lo[axis] - transform.data_min_lo[axis]);
     let linear = 2.0 * transform.data_to_panel_scale[axis] / (range * transform.pixel_to_ndc[axis]);
+    if transform.scale_prob[axis] > 0.5 {
+        return linear * prob_slope(value, transform.scale_prob[axis]);
+    }
     let log_slope = linear / (value * std::f32::consts::LN_10);
     if transform.scale_log[axis] > 0.5 {
         log_slope
@@ -1186,6 +1189,11 @@ fn project_data_to_canvas_px(
     if (transform.scale_log[0] != 0.0 && x <= 0.0) || (transform.scale_log[1] != 0.0 && y <= 0.0) {
         return None;
     }
+    let out_of_domain =
+        |v: f32, axis: usize| transform.scale_prob[axis] > 0.5 && !(v > 0.0 && 1.0 - v > 0.0);
+    if out_of_domain(x, 0) || out_of_domain(y, 1) {
+        return None;
+    }
     let axis_t = |value: f32, axis: usize| {
         let min_hi = transform.data_min[axis];
         let max_hi = transform.data_max[axis];
@@ -1193,6 +1201,11 @@ fn project_data_to_canvas_px(
         let max_lo = transform.data_max_lo[axis];
         let linear_num = (value - min_hi) - min_lo;
         let range = (max_hi - min_hi) + (max_lo - min_lo);
+        if transform.scale_prob[axis] > 0.5 {
+            let prob_num = (prob_forward(value, transform.scale_prob[axis]) - min_hi) - min_lo;
+            return transform.data_to_panel_offset[axis]
+                + (prob_num / range) * transform.data_to_panel_scale[axis];
+        }
         let log_num = (maybe_log(value, transform.scale_log[axis]) - min_hi) - min_lo;
         // Chosen exactly, as the shaders' early return does (SHADER_COMMON §3).
         let data_t = if transform.scale_log[axis] > 0.5 {
@@ -1226,6 +1239,63 @@ fn project_data_to_canvas_px(
     } else {
         None
     }
+}
+
+/// CPU twin of `probability.wgsl::prob_forward` (#209), in f32 on a value
+/// whose pair has no low lane: AS241 `PPND7`, the Weibull series below
+/// 0.01, the logit. Test support, never product code.
+pub(crate) fn prob_forward(p: f32, kind: f32) -> f32 {
+    let floor = 1e-30_f32;
+    let q = 1.0 - p;
+    if kind < 1.5 {
+        return prob_normal(p, q);
+    }
+    if kind < 2.5 {
+        return prob_weibull_w(p, q).ln();
+    }
+    p.max(floor).ln() - q.max(floor).ln()
+}
+
+fn prob_normal(p: f32, q: f32) -> f32 {
+    let half = p - 0.5;
+    if half.abs() <= 0.425 {
+        let r = 0.180625 - half * half;
+        return half * (((59.10937472 * r + 159.29113202) * r + 50.434271938) * r + 3.3871327179)
+            / (((67.1875636 * r + 78.757757664) * r + 17.895169469) * r + 1.0);
+    }
+    let mut r = (-(p.min(q).max(1e-30)).ln()).sqrt();
+    let z = if r <= 5.0 {
+        r -= 1.6;
+        (((0.17023821103 * r + 1.3067284816) * r + 2.75681539) * r + 1.4234372777)
+            / ((0.12021132975 * r + 0.7370016425) * r + 1.0)
+    } else {
+        r -= 5.0;
+        (((0.017337203997 * r + 0.42868294337) * r + 3.081226386) * r + 6.657905115)
+            / ((0.012258202635 * r + 0.24197894225) * r + 1.0)
+    };
+    if half < 0.0 { -z } else { z }
+}
+
+fn prob_weibull_w(p: f32, q: f32) -> f32 {
+    let p = p.max(1e-30);
+    if p < 0.01 {
+        p * (1.0 + p * (0.5 + p * (1.0 / 3.0 + p * (0.25 + p * 0.2))))
+    } else {
+        -q.max(1e-30).ln()
+    }
+}
+
+/// Twin of `prob_slope`: `dF⁻¹/dp`.
+fn prob_slope(p: f32, kind: f32) -> f32 {
+    let (p, q) = (p.max(1e-30), (1.0 - p).max(1e-30));
+    if kind < 1.5 {
+        let z = prob_normal(p, q);
+        return 2.506_628_3 * (0.5 * z * z).exp();
+    }
+    if kind < 2.5 {
+        return 1.0 / (q * prob_weibull_w(p, q));
+    }
+    1.0 / (p * q)
 }
 
 /// CPU twin of the shaders' `maybe_log` (SHADER_COMMON §3).

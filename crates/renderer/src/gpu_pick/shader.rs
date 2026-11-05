@@ -69,6 +69,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "gpu_pick/gate_entries.wgsl",
         ),
@@ -78,6 +79,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -98,6 +100,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -123,6 +126,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/arc_pair.wgsl",
@@ -144,6 +148,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
