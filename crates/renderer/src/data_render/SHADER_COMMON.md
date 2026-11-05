@@ -1929,7 +1929,8 @@ row `r = inst / (axes − 1)`: both ends are read from the pool through the
 lanes (`parallel_value`), placed by their axes (`parallel_fraction`: `(v −
 lo) · span_inv`, the high parts' difference first so close f64 values keep
 their distance, in `log10` on a logarithmic axis, flipped when inverted;
-NaN for a non-finite value or a non-positive one on a logarithmic axis),
+invalid, by an explicit flag, for a non-finite value or a non-positive one
+on a logarithmic axis),
 and the quad is `line_stroke_vertex` (§5.6) between `(i, f_a)` and
 `(i + 1, f_b)` in the chart's data space (the categorical `bottom_x`
 positions, the normalized band of `left_y`), with no arc prefix (the

@@ -300,16 +300,17 @@ fn pick_ternary() -> bool {
     return pick_variant(PICK_VARIANT_TERNARY) && pick_query_params.transform.ternary_r.z > 0.5;
 }
 
-// The third component of sample `i`, NaN past its column.
+// The third component of sample `i`; zero past its column, where
+// `pick_ternary_valid` already refuses the sample.
 fn pick_ternary_c(i: u32) -> vec2<f32> {
     if i >= pick_query_params.size_map.w {
-        return vec2<f32>(bitcast<f32>(0x7fc00000u));
+        return vec2<f32>(0.0);
     }
     return pick_read_pair(pick_query_params.size_map.z, i);
 }
 
 fn pick_ternary_valid(i: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
-    return ternary_sample_valid(x, y, pick_ternary_c(i));
+    return i < pick_query_params.size_map.w && ternary_sample_valid(x, y, pick_ternary_c(i));
 }
 
 // Sample `i` in the draw's pixel frame (y up), as `vs_ternary` places it.
