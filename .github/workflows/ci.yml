@@ -50,12 +50,13 @@ jobs:
             label=$1; shift
             cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement --no-run || exit 1
             python -c "import glob, os, shutil; [shutil.copy(f, os.path.join(os.environ['CARGO_TARGET_DIR'], 'debug', 'deps')) for f in glob.glob(os.path.join(os.environ['RUNNER_TEMP'], 'figgy-dx12', '*.dll'))]"
-            for n in 1 2; do
-              timeout 600 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement $T -- --exact --nocapture --test-threads=1 > t.log 2>&1
+            for n in 1; do
+              timeout 300 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test pick_draw_agreement $T -- --exact --nocapture --test-threads=1 > t.log 2>&1
               echo "RESULT $label run $n exit=$?"
               grep -E "overflowed|test result|panicked" t.log | head -3; tail -2 t.log
             done
           }
-          run default
-          export RUSTFLAGS="-C link-arg=/STACK:16777216"
-          run stack16m
+          for mb in 2 4 8; do
+            export RUSTFLAGS="-C link-arg=/STACK:$((mb * 1048576))"
+            run stack${mb}m
+          done
