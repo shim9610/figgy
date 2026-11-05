@@ -918,7 +918,10 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
                 && event.phase == crate::init::InitPhase::Started
                 && matches!(
                     event.stage,
-                    "pick_histogram_bin" | "pick_field_data" | "pick_vector_cell"
+                    "pick_histogram_bin"
+                        | "pick_field_contour"
+                        | "pick_field_cell"
+                        | "pick_vector_cell"
                 )
         })
         .count();
@@ -932,7 +935,7 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         .count();
     assert_eq!(pipeline_starts, 3);
     assert_eq!(setup_starts, 1);
-    assert_eq!(data_pipeline_starts, 3);
+    assert_eq!(data_pipeline_starts, 4);
     assert_eq!(data_setup_starts, 1);
     assert!(renderer.picker.active.is_none());
 }
