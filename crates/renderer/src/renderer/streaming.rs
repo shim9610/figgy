@@ -172,6 +172,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Ternary { .. }
             | DataRenderType::Parallel { .. }
             | DataRenderType::EnergyLevels(_)
+            // Never streamed: a streamed mesh is rejected (#210).
+            | DataRenderType::TriMesh(_)
             | DataRenderType::Feynman(_)
             // Never streamed either; its colours are its data.
             | DataRenderType::RgbImage { .. }

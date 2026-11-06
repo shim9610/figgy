@@ -226,6 +226,12 @@ pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
     LevelView, Transition, TransitionDirection,
 };
+/// Triangle mesh fields (#210): the [`DataRenderType::TriMesh`] series, its
+/// value location and look.
+pub mod tri_mesh {
+    pub use model::tri_mesh::*;
+}
+pub use model::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 /// Feynman diagrams (#234): a DataLess series kind, re-exported from the
 /// model.
 pub mod feynman {

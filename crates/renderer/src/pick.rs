@@ -74,6 +74,18 @@ pub enum PickedData {
         part: Option<crate::energy_levels::LabelPart>,
         distance_px: f32,
     },
+    /// One triangle of a triangle mesh series (#210): its row in the
+    /// triangle index column. `vertex_index` is the triangle's vertex
+    /// nearest the cursor, a hover answer that the stored selection
+    /// ([`PickedDataRef::MeshTriangle`](crate::config::PickedDataRef::MeshTriangle))
+    /// does not keep. `distance_px` is 0 inside the triangle.
+    MeshTriangle {
+        source_id: Option<String>,
+        series_id: String,
+        triangle_index: usize,
+        vertex_index: usize,
+        distance_px: f32,
+    },
     /// A vertex of a Feynman series (#234): its row in `vertices`.
     /// `distance_px` is the distance to its marker, 0 on it.
     FeynmanVertex {
@@ -109,6 +121,7 @@ impl PickedData {
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
             | Self::ValueLabel { source_id, .. }
+            | Self::MeshTriangle { source_id, .. }
             | Self::FeynmanVertex { source_id, .. }
             | Self::FeynmanPropagator { source_id, .. }
             | Self::FeynmanLabel { source_id, .. } => source_id.as_deref(),
@@ -122,6 +135,7 @@ impl PickedData {
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
             | Self::ValueLabel { series_id, .. }
+            | Self::MeshTriangle { series_id, .. }
             | Self::FeynmanVertex { series_id, .. }
             | Self::FeynmanPropagator { series_id, .. }
             | Self::FeynmanLabel { series_id, .. } => series_id,
@@ -135,6 +149,7 @@ impl PickedData {
             | Self::MatrixCell { distance_px, .. }
             | Self::ContourLevel { distance_px, .. }
             | Self::ValueLabel { distance_px, .. }
+            | Self::MeshTriangle { distance_px, .. }
             | Self::FeynmanVertex { distance_px, .. }
             | Self::FeynmanPropagator { distance_px, .. }
             | Self::FeynmanLabel { distance_px, .. } => *distance_px,
@@ -202,6 +217,16 @@ impl PickedData {
                 series_id: series_id.clone(),
                 category_index: *category_index,
                 part: *part,
+            },
+            Self::MeshTriangle {
+                source_id,
+                series_id,
+                triangle_index,
+                ..
+            } => crate::config::PickedDataRef::MeshTriangle {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                triangle_index: *triangle_index,
             },
             Self::FeynmanVertex {
                 source_id,

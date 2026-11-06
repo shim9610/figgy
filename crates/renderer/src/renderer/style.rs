@@ -997,6 +997,7 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => false,
     }
 }

@@ -58,6 +58,14 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_STEM_REASON.into(),
             });
         }
+        // Nor to triangle meshes (rule 8, #210): a triangle reads three
+        // vertices anywhere in the resident columns.
+        if series.tri_mesh().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
+            });
+        }
         // Nor to energy-level series (rule 8, #203): they are DataLess.
         if series.energy_levels().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

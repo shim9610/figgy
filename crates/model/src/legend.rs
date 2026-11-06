@@ -390,6 +390,15 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => {
             colormap.map_or_else(blank_symbol, colormap_symbol)
         }
+        // A mesh reads as a field (#210): its contour line, or the
+        // colourbar's ramp under a fill alone.
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(contour),
+            ..
+        }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. }) => {
+            colormap.map_or_else(blank_symbol, colormap_symbol)
+        }
         // An image's colours are its data: no mark stands for them.
         DataRenderType::RgbImage { .. } => blank_symbol(),
         // A level reads as its stroke (#203).

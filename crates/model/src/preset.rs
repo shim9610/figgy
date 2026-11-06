@@ -291,7 +291,15 @@ impl ColorCycle {
             }) => {
                 contour.line.line_color = c;
             }
+            // A mesh's contour line joins the cycle as a field's does (#210).
+            DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+                contour: Some(contour),
+                ..
+            }) => {
+                contour.line.line_color = c;
+            }
             DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. })
+            | DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. })
             | DataRenderType::RgbImage { .. } => {}
             // The arrow colour joins the cycle; a colour map, when set, still
             // draws from the colourbar.

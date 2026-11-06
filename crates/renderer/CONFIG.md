@@ -1201,6 +1201,51 @@ opaque or absent. A `bg_color` box is antialiased at any rotation: the label qua
 extends past the box into the atlas cell's transparent gutter, so the box edge is
 filtered like the glyphs inside it rather than rasterized as the quad edge.
 
+<a id="triangle-meshes"></a>
+
+#### Triangle meshes
+
+`DataRenderType::TriMesh(TriMeshSeries { triangles, values, fill, contour,
+surface })` ([#210](https://github.com/shim9610/figgy/issues/210)) draws a
+field over triangles the host gives: the mesh of a finite element or finite
+volume solver, or scattered measurements the host triangulated. The renderer
+never triangulates (rule 1).
+
+- `x_column` / `y_column` are the vertex coordinates, one row per vertex; on
+  a 3D chart `z_column` is the vertex height on `right_y`.
+- `triangles` names a triangle index column (`Renderer::upsert_triangles`):
+  three vertex rows per triangle, in triangle order.
+- `values: MeshValues { column, at }` names the value column and where its
+  values sit: `MeshValueLocation::Vertices` (one per vertex) or `Faces` (one
+  per triangle). It is never inferred from the lengths.
+- `fill`, `contour` and `surface` are the field's `FieldFillConfig`,
+  `ContourConfig` and `SurfaceStyle`, coloured through `Config.colorbar`.
+
+The rules (`TriMeshSeries::validate` and
+`Config::validate_tri_mesh_series`, at registration):
+
+- the triangle, value, x and y columns are named;
+- a fill, contour lines or both, and a surface look only with a fill;
+- vertex values are shaded `Interpolated` (linearly across each triangle)
+  and face values `Flat`. A flat colour from vertex values would be a mean
+  the colourbar shows, and interpolating face values needs values at the
+  vertices: both are host work;
+- contour lines need vertex values (a field constant on each triangle has
+  cell boundaries, not isolines) and carry no labels;
+- the surface look takes no `color_matrix`: the values colour the mesh;
+- polar, ternary and parallel charts refuse the kind; on a 3D chart the
+  series names its `z_column` and its fill is continuous, not banded.
+
+A picked triangle is `PickedDataRef::MeshTriangle { source_id, series_id,
+triangle_index }` (serde tag `mesh_triangle`). `step_selection` moves it by
+`dx` over the triangles of its series and by `dy` across the mesh series, in
+series order; a contour level does not step.
+
+Status: the series kind, its rules, its serialized form and its selection are
+in place, and registering a `TriMesh` series fails with `InvalidSeriesConfig`
+("triangle mesh series are not drawn by this renderer yet") until the draw
+path lands under #210.
+
 <a id="parallel-coordinates"></a>
 
 #### Parallel coordinates
@@ -1944,6 +1989,30 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 출력 배율은 자동 배치 간격에만 곱한다. 출력 배율을 허용 범위로 제한한 뒤 그 곱도 유한한 양수인지 확인한다. 라벨 아틀라스는 어댑터의 텍스처 크기 한도를 지켜야 한다. 간격 오류, 곱셈 오버플로, 아틀라스 크기 초과가 발생하면 상태를 반영하기 전에 실패하므로 기존 차트와 GPU 자원을 유지한다. 앵커는 데이터 좌표와 데이터 공간의 접선으로 저장하므로 확대·이동 시 화면 좌표로 다시 투영할 수 있다.
 
 라벨 글자색은 선 색이나 `per_level_color`와 별도로 `ContourLabelConfig.color`에서 정한다. 소수 표시는 아래쪽 X축이 아니라 등고선 레벨 간격을 기준으로 하며, 간격을 구할 수 없으면 색상 막대의 간격을 사용한다. `significant_digits`를 적용하되 인접 레벨이 같은 문자열로 표시되지 않도록 조절한다. 등고선 셰이더는 라벨을 그릴 때와 같은 앵커 버퍼를 읽어 라벨 사각형 안의 선을 그리지 않는다. `bg_color`가 없어도 `bg_padding_px`만큼 선을 더 비운다. `bg_color` 상자는 어떤 각도로 회전해도 가장자리가 부드럽다. 라벨 사각형이 상자 바깥의 투명한 아틀라스 여백까지 이어져, 상자 가장자리가 사각형 경계로 잘리지 않고 글자처럼 텍스처 필터링을 거친다.
+
+<a id="삼각-메시"></a>
+
+#### 삼각 메시
+
+`DataRenderType::TriMesh(TriMeshSeries { triangles, values, fill, contour, surface })`([#210](https://github.com/shim9610/figgy/issues/210))는 호스트가 준 삼각형 위에 필드를 그린다. 유한요소·유한체적 해석기의 메시나, 호스트가 삼각분할한 흩어진 측정점이 대상이다. 렌더러는 삼각분할을 하지 않는다(규칙 1).
+
+- `x_column` / `y_column`은 꼭짓점 좌표로, 한 행이 꼭짓점 하나다. 3D 차트에서는 `z_column`이 `right_y`의 꼭짓점 높이다.
+- `triangles`는 삼각형 인덱스 열(`Renderer::upsert_triangles`)의 ID다. 삼각형마다 꼭짓점 행 번호 세 개를 삼각형 순서대로 담는다.
+- `values: MeshValues { column, at }`은 값 열과 값의 위치를 정한다. `MeshValueLocation::Vertices`는 꼭짓점마다, `Faces`는 삼각형마다 값이 하나다. 길이로 추측하지 않는다.
+- `fill`, `contour`, `surface`는 필드의 `FieldFillConfig`, `ContourConfig`, `SurfaceStyle`을 그대로 쓰며 `Config.colorbar`로 색을 정한다.
+
+등록할 때 `TriMeshSeries::validate`와 `Config::validate_tri_mesh_series`가 다음을 확인한다.
+
+- 삼각형 열, 값 열, x·y 열의 ID가 있어야 한다.
+- 채우기, 등고선 또는 둘 다를 그리며, 표면 모양은 채우기가 있을 때만 쓴다.
+- 꼭짓점 값은 `Interpolated`(삼각형 안에서 선형 보간), 삼각형 값은 `Flat`으로 칠한다. 꼭짓점 값으로 삼각형 하나의 색을 정하면 색상 막대에 평균값이 나타나고, 삼각형 값을 보간하려면 꼭짓점 값이 필요하다. 둘 다 호스트가 계산할 일이다.
+- 등고선에는 꼭짓점 값이 필요하다. 삼각형마다 일정한 필드에는 등값선이 아니라 셀 경계만 있기 때문이다. 등고선 라벨은 지원하지 않는다.
+- 표면 모양에는 `color_matrix`를 쓰지 않는다. 메시의 색은 값 열이 정한다.
+- 극좌표, 삼원, 평행 좌표 차트에는 그리지 않는다. 3D 차트에서는 `z_column`이 있어야 하고 채우기가 띠(`Bands`)가 아닌 연속이어야 한다.
+
+선택된 삼각형은 `PickedDataRef::MeshTriangle { source_id, series_id, triangle_index }`(serde 태그 `mesh_triangle`)다. `step_selection`은 `dx`로 같은 시리즈의 삼각형 사이를, `dy`로 메시 시리즈 사이를 시리즈 순서대로 옮긴다. 등고선 레벨은 옮기지 않는다.
+
+현재 상태: 시리즈 종류, 규칙, 직렬화 형식과 선택 타입이 들어가 있다. 그리기 경로가 #210으로 들어오기 전까지 `TriMesh` 시리즈를 등록하면 `InvalidSeriesConfig`("triangle mesh series are not drawn by this renderer yet")로 실패한다.
 
 <a id="그리기-정보-범위-맞춤과-시리즈-스타일"></a>
 

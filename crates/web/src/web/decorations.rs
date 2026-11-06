@@ -206,6 +206,8 @@ impl FiggyChart {
                         union(id)?;
                     }
                 }
+                // A mesh colours by its value column (#210).
+                DataRenderType::TriMesh(mesh) => union(&mesh.values.column)?,
                 DataRenderType::Xy(renderer::data_config::XySeries {
                     scatter: Some(scatter),
                     ..

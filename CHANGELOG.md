@@ -30,7 +30,8 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 the ternary series' `region`, `view_3d`, the heatmaps' `surface`, the
 axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 `part`, a category's `rich_label`, the axes' `category_groups`, the
-chart's `plot_background` and the xy series' `stem`) are additive.
+chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
+kind and the `mesh_triangle` selection) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -1226,6 +1227,27 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   an `AxisOptions { .. }` literal adds `category_groups: None`; a
   `Config { .. }` literal adds `plot_background: None`.
 
+- **Triangle mesh series** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `DataRenderType::TriMesh(TriMeshSeries)` (new module `tri_mesh`) is a
+  field over host-given triangles: `triangles` names a triangle index
+  column, `values: MeshValues { column, at }` the value column and whether
+  its values sit at the `MeshValueLocation::Vertices` or `Faces`, and
+  `fill`, `contour` and `surface` are the heatmap's `FieldFillConfig`,
+  `ContourConfig` and `SurfaceStyle`; `x_column` / `y_column` are the
+  vertex coordinates and `z_column` the vertex height on a 3D chart.
+  `TriMeshSeries::validate` and `Config::validate_tri_mesh_series` (in
+  `validate_series`) hold the rules: vertex values shaded `Interpolated`,
+  face values `Flat`, contour lines only over vertex values and without
+  labels, no surface `color_matrix`, not on polar, ternary or parallel
+  charts, and on a 3D chart a `z_column` and a continuous fill. A picked
+  triangle is `PickedDataRef::MeshTriangle { source_id, series_id,
+  triangle_index }` (serde tag `mesh_triangle`); `step_selection` moves it
+  by `dx` over the triangles (the triangle index column's `column_len` over
+  three) and by `dy` across the mesh series. The legend mark and the colour
+  cycle treat a mesh as a field. Migration: an exhaustive `match` on
+  `DataRenderType` adds `TriMesh(_)`, one on `PickedDataRef` adds
+  `MeshTriangle { .. }`.
+
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
@@ -1280,6 +1302,19 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   `Column<u32>` implements `ColumnSource`, writing each value's exact
   `(hi, lo)` split. The streaming refusal for composite ids now reads
   "streaming is not extended to records, ragged and triangle columns".
+
+- **Triangle mesh series: the kind ahead of its draw path** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The model's `TriMesh` series kind and `MeshTriangle` selection are
+  re-exported (`renderer::tri_mesh`). Until the mesh draw path lands,
+  registering a `TriMesh` series fails with `InvalidSeriesConfig` ("triangle
+  mesh series are not drawn by this renderer yet") after the model's rules,
+  and a streamed display refuses one ("triangle mesh series require
+  GPU-resident columns; streamed sources are not supported", rule 8).
+  `PickedData::MeshTriangle { source_id, series_id, triangle_index,
+  vertex_index, distance_px }` is the pick result to come; `to_ref` drops
+  the hover-only `vertex_index`. `series_draw_info` counts a mesh's whole
+  triangles. Migration: an exhaustive `match` on `PickedData` adds
+  `MeshTriangle { .. }`.
 
 - **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
   A backend's shader compiler can need more stack than the calling thread
@@ -2911,6 +2946,11 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   `register_triangles(id, Uint32Array)` registers or replaces a triangle
   index column, borrowing the array for the upload, and
   `remove_triangles(id)` removes one.
+- **Triangle mesh series JSON** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The `TriMesh` render_type and the `mesh_triangle` selection parse and
+  write through serde (SCHEMA.md); a `pick_data` hit on a mesh will report
+  `kind: "mesh_triangle"` with its `triangle_index` and `vertex_index`.
+  `set_series` refuses a mesh series until the draw path lands.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
   `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON

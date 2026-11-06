@@ -94,6 +94,7 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
 
         | DataRenderType::EnergyLevels(_)
 
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
         DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
         // A contour's `contour.line` is not this line. This one is the polyline
@@ -127,6 +128,7 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
 
         | DataRenderType::EnergyLevels(_)
 
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
@@ -192,6 +194,7 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -230,6 +233,7 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -265,6 +269,7 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -293,6 +298,7 @@ pub(super) fn extract_vector(
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -334,6 +340,14 @@ pub(super) fn series_draw_info_from_pool(
         DataRenderType::EnergyLevels(levels) => SeriesDrawInfo {
             drawn_count: (levels.levels.len() + levels.limits.len() + levels.transitions.len())
                 as u64,
+            cols: None,
+            rows: None,
+            truncated: false,
+        },
+        // A triangle mesh counts its whole triangles (#210); the vertex
+        // bound that can drop some is checked where it is drawn.
+        DataRenderType::TriMesh(mesh) => SeriesDrawInfo {
+            drawn_count: len(&mesh.triangles) / 3,
             cols: None,
             rows: None,
             truncated: false,
@@ -619,6 +633,7 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
 
         | DataRenderType::EnergyLevels(_)
 
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -648,6 +663,7 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -667,6 +683,7 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }
@@ -686,6 +703,7 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => None,
     }
 }

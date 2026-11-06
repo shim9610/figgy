@@ -71,6 +71,12 @@ pub(crate) const STREAMED_IMAGE_REASON: &str =
 pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series require GPU-resident columns; streamed sources are not \
      supported";
 
+/// Why a streamed triangle mesh series is rejected (CLAUDE.md rule 8,
+/// #210): a triangle reads its three vertices anywhere in the resident
+/// columns, and its indices are a resident triangle index column.
+pub(crate) const STREAMED_TRI_MESH_REASON: &str =
+    "triangle mesh series require GPU-resident columns; streamed sources are not supported";
+
 /// Why a streamed stem series is rejected (CLAUDE.md rule 8, #206): the
 /// error-bar path the stems reuse streams, but streaming is not extended to
 /// stems.
@@ -105,6 +111,7 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Feynman(_) => false,
     }
 }
@@ -864,6 +871,14 @@ fn stream_draw_phases(
         DataRenderType::EnergyLevels(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             reason: STREAMED_ENERGY_LEVELS_REASON.into(),
+        }
+        .into()),
+        // Nor to triangle meshes (rule 8, #210): a triangle reads three
+        // vertices anywhere in the resident columns. Rejected before a
+        // cursor exists; this is a backstop.
+        DataRenderType::TriMesh(_) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: STREAMED_TRI_MESH_REASON.into(),
         }
         .into()),
         DataRenderType::Feynman(_) => Err(FiggyError::InvalidSeriesConfig {

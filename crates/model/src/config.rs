@@ -929,6 +929,18 @@ pub enum PickedDataRef {
         )]
         part: Option<crate::energy_levels::LabelPart>,
     },
+    /// One triangle of a triangle mesh series (#210): its row in the
+    /// triangle index column, in triangle order. The vertex nearest the
+    /// cursor is a hover answer and is not stored.
+    MeshTriangle {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        triangle_index: usize,
+    },
     /// A vertex of a Feynman series (#234): its row in `vertices`. A drag
     /// moves it (`FeynmanSeries::drag_vertex`).
     FeynmanVertex {
@@ -974,6 +986,7 @@ impl PickedDataRef {
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
             | Self::ValueLabel { source_id, .. }
+            | Self::MeshTriangle { source_id, .. }
             | Self::FeynmanVertex { source_id, .. }
             | Self::FeynmanPropagator { source_id, .. }
             | Self::FeynmanLabel { source_id, .. } => source_id.as_deref(),
@@ -987,6 +1000,7 @@ impl PickedDataRef {
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
             | Self::ValueLabel { series_id, .. }
+            | Self::MeshTriangle { series_id, .. }
             | Self::FeynmanVertex { series_id, .. }
             | Self::FeynmanPropagator { series_id, .. }
             | Self::FeynmanLabel { series_id, .. } => series_id,

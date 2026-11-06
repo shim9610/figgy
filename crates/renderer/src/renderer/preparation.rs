@@ -126,6 +126,8 @@ impl PreparationFeature {
                 // Drawn on the CPU and composited (#203, #234): no GPU
                 // pipeline.
                 DataRenderType::EnergyLevels(_) | DataRenderType::Feynman(_) => continue,
+                // Refused at registration until its draw path lands (#210).
+                DataRenderType::TriMesh(_) => continue,
             };
             if !result.contains(&group) {
                 result.push(group);
