@@ -1193,3 +1193,322 @@ fn a_band_fills_its_run_and_answers_picks() {
         }
     }
 }
+
+// #205: on the base layer a press on an inset's plot selects its frame. The
+// frame's selection box and its eight handles lie inside the frame, so the
+// box is composited into the inset's own panel wherever the inset is, at 1x
+// and 2x; the parent's plot beside the inset stays the parent's.
+#[test]
+fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
+    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection};
+    use renderer::layout::RectF;
+    let r = renderer();
+    let chart = chart_with_inset();
+    let config = chart.config();
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let map = renderer::select::HitMap::for_active_layer(config);
+    let plot = config.subplot_config(0).unwrap().data_area().unwrap().0;
+    let centre = (
+        plot.x as f32 + plot.width as f32 / 2.0,
+        plot.y as f32 + plot.height as f32 / 2.0,
+    );
+    let hit = map
+        .hit_test(config, &measure, centre.0, centre.1)
+        .expect("the inset's plot is hit");
+    assert_eq!(map.get(hit).unwrap().element_id(), "subplot_0:frame");
+    let parent = config.data_area().unwrap().0;
+    let beside = map
+        .hit_test(
+            config,
+            &measure,
+            parent.x as f32 + parent.width as f32 * 0.25,
+            parent.y as f32 + parent.height as f32 * 0.75,
+        )
+        .expect("the parent's plot is hit");
+    assert_eq!(map.get(beside).unwrap().element_id(), "data_area");
+    for scale in [1.0f32, 2.0] {
+        let scaled = Chart::new(config.scaled(scale));
+        let sb = r
+            .selection_box(&scaled, "subplot_0:frame")
+            .expect("a selection box");
+        let frame = RectF::from_rect(&scaled.config().subplots[0].config.chart_area.0);
+        let rect = sb.rect();
+        assert!(
+            rect.x > frame.x
+                && rect.y > frame.y
+                && rect.x + rect.width < frame.x + frame.width
+                && rect.y + rect.height < frame.y + frame.height,
+            "{scale}x box {rect:?} inside frame {frame:?}"
+        );
+        let handles = sb.handles();
+        assert_eq!(handles.len(), 8, "{scale}x");
+        for handle in handles {
+            assert!(
+                frame.contains(handle.x, handle.y)
+                    && frame.contains(handle.x + handle.width, handle.y + handle.height),
+                "{scale}x handle {handle:?} inside frame {frame:?}"
+            );
+        }
+        // Rastered into the inset's own panel, the highlight is drawn.
+        let panel = scaled.config().subplot_config(0).unwrap();
+        let plain =
+            try_raster_chart_layer_to_rgba_with_selection(&panel, AxisLayerKind::Decoration, &[])
+                .unwrap();
+        let selected = try_raster_chart_layer_to_rgba_with_selection(
+            &panel,
+            AxisLayerKind::Decoration,
+            std::slice::from_ref(&sb),
+        )
+        .unwrap();
+        let changed = plain
+            .chunks(4)
+            .zip(selected.chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            changed > 0,
+            "{scale}x the box is drawn in the inset's panel"
+        );
+    }
+}
+
+// #205: a subplot moved out of its parent is a panel of its own: the
+// document grows to hold it, it draws there at 1x and 2x, a base-layer pick
+// in it answers its series, the vector exports carry it, and the moved
+// document round-trips.
+#[test]
+fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    let list = vec![series("he", records()), inset_series()];
+    let parent = chart.config().chart_area.0;
+    let frame = Rect {
+        x: parent.x + parent.width + 20,
+        y: 30,
+        width: 160,
+        height: 120,
+    };
+    chart
+        .config_mut()
+        .set_subplot_area(0, ChartArea(frame))
+        .unwrap();
+    assert_eq!(chart.config().insets().count(), 0, "a panel of its own");
+    assert_eq!(
+        chart
+            .config()
+            .subplot_at(frame.x as f32 + 80.0, frame.y as f32 + 60.0),
+        Some(0)
+    );
+    assert_eq!(
+        chart
+            .config()
+            .subplot_at(parent.x as f32 + 40.0, parent.y as f32 + 40.0),
+        None
+    );
+    let document = chart.config().document_area();
+    assert_eq!((document.x, document.y), (0, 0));
+    assert_eq!(document.x + document.width, frame.x + frame.width);
+    let inset = chart.config().subplot_config(0).unwrap();
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), list.clone())
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let s = |v: u32| (v as f32 * scale).round() as u32;
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert_eq!(
+            (img.width, img.height),
+            (s(document.width), s(document.height)),
+            "{scale}x document size"
+        );
+        // The parent's lowest level still draws in column a.
+        assert!(
+            near(&img, at(&chart, -0.25, 20.0, scale), 3, is_red),
+            "{scale}x parent"
+        );
+        // The subplot's component at 45 draws in its own axes at the new place.
+        let space = renderer::annotation::pixel_space_for_config(&inset.scaled(scale));
+        use renderer::AnnotationSpace as _;
+        let px = space
+            .value_to_px(renderer::AnnotationAxis::X, -0.25)
+            .unwrap();
+        let py = space
+            .value_to_px(renderer::AnnotationAxis::Y, 45.0)
+            .unwrap();
+        let at_inset = (px.round() as u32, py.round() as u32);
+        assert!(
+            near(&img, at_inset, 3, is_red),
+            "{scale}x the moved subplot's component"
+        );
+        // A base-layer pick there answers the subplot's series.
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [at_inset.0 as f32, at_inset.1 as f32],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: s(document.width),
+                height: s(document.height),
+            },
+            display_scale: scale,
+            max_distance_px: 4.0 * scale,
+        };
+        match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+            Some(renderer::PickedData::HistogramBin {
+                series_id,
+                bin_index,
+                ..
+            }) => assert_eq!((series_id.as_str(), bin_index), ("inset", 2), "{scale}x"),
+            other => panic!("{scale}x pick in the moved subplot: {other:?}"),
+        }
+        let svg = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(svg.contains("<image"), "{scale}x svg");
+        let pdf = r
+            .export_pdf(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(pdf.starts_with(b"%PDF"), "{scale}x pdf");
+    }
+    r.remove_chart(id).unwrap();
+    let json = serde_json::to_string(chart.config()).unwrap();
+    let back: renderer::config::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+}
+
+// #205: a frame move is an SSOT edit of the document: the registered chart
+// redraws the inset at its new place at 1x and 2x.
+#[test]
+fn a_moved_frame_redraws_the_inset_where_it_now_is() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().subplots[0].config.plot_background = Some(Color::from_rgb8(255, 250, 200));
+    let list = vec![series("he", records()), inset_series()];
+    let id = r.register_chart(chart.config().clone(), list).unwrap();
+    let before = chart.config().subplots[0].config.chart_area.0;
+    let after = Rect {
+        y: before.y + 60,
+        ..before
+    };
+    // A quarter up the inset's plot, off the component's stroke.
+    let probe = |frame: Rect, scale: f32| {
+        let mut inset = chart.config().subplots[0].config.clone();
+        inset.chart_area = ChartArea(frame);
+        let plot = inset.data_area().unwrap().0;
+        (
+            ((plot.x as f32 + plot.width as f32 * 0.5) * scale).round() as u32,
+            ((plot.y as f32 + plot.height as f32 * 0.75) * scale).round() as u32,
+        )
+    };
+    let is_cream = |p: &[u8]| p[0] >= 250 && p[1] >= 245 && (150..=215).contains(&p[2]);
+    for scale in [1.0f32, 2.0] {
+        let first = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let (x, y) = probe(before, scale);
+        assert!(
+            is_cream(pixel(&first, x, y)),
+            "{scale}x the inset's fill at its first place"
+        );
+        let (x, y) = probe(after, scale);
+        assert!(
+            !is_cream(pixel(&first, x, y)),
+            "{scale}x nothing of it at the next place yet"
+        );
+        let mut moved = chart.config().clone();
+        moved.set_subplot_area(0, ChartArea(after)).unwrap();
+        r.set_chart_config(id, moved).unwrap();
+        let second = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let (x, y) = probe(after, scale);
+        assert!(
+            is_cream(pixel(&second, x, y)),
+            "{scale}x the fill follows the frame"
+        );
+        let (x, y) = probe(before, scale);
+        assert!(
+            !is_cream(pixel(&second, x, y)),
+            "{scale}x and leaves its first place"
+        );
+        r.set_chart_config(id, chart.config().clone()).unwrap();
+    }
+}
+
+// #205: while a host holds the display placement, a frame moved past the
+// document's edge grows the document without rescaling the page under the
+// pointer; the release fits the document to the surface again.
+#[test]
+fn a_held_display_keeps_its_scale_and_origin_while_a_frame_grows_the_document() {
+    let mut r = renderer();
+    let chart = chart_with_inset();
+    let id = r
+        .register_chart(
+            chart.config().clone(),
+            vec![series("he", records()), inset_series()],
+        )
+        .unwrap();
+    let surface = (WIDTH * 2, HEIGHT * 2);
+    r.set_chart_display(id, Some(surface)).unwrap();
+    let (origin, scale) = {
+        let (placed, _, scale) = r.chart_display_config(id).unwrap();
+        (placed.chart_area.0, scale)
+    };
+    assert_eq!(scale, 2.0);
+    r.hold_chart_display(id, true).unwrap();
+    let far = Rect {
+        x: WIDTH + 20,
+        y: 30,
+        width: 160,
+        height: 120,
+    };
+    let mut moved = chart.config().clone();
+    moved.set_subplot_area(0, ChartArea(far)).unwrap();
+    r.set_chart_config(id, moved.clone()).unwrap();
+    {
+        let (held, _, held_scale) = r.chart_display_config(id).unwrap();
+        assert_eq!(held_scale, 2.0, "the hold keeps the scale");
+        assert_eq!(held.chart_area.0, origin, "and the parent's place");
+        assert_eq!(
+            held.subplots[0].config.chart_area.0,
+            Rect {
+                x: origin.x + far.x * 2,
+                y: origin.y + far.y * 2,
+                width: far.width * 2,
+                height: far.height * 2,
+            },
+            "the subplot is placed at the held scale from the parent's origin"
+        );
+    }
+    r.hold_chart_display(id, false).unwrap();
+    let (_, _, fitted) = r.chart_display_config(id).unwrap();
+    let document = moved.document_area();
+    let (expected, _) = renderer::fit_display_panel((document.width, document.height), surface);
+    assert_eq!(
+        fitted, expected,
+        "released, the document fits the surface again"
+    );
+    assert!(fitted < 2.0);
+}

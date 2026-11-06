@@ -4432,12 +4432,6 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 
     let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
     config.legend.visible = false;
-    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
-    config.grid.show_major_x = false;
-    config.grid.show_major_y = false;
-    config.grid.show_minor_y = false;
-    config.top_x.tick = renderer::config::TickVisibility::None;
-    config.right_y.tick = renderer::config::TickVisibility::None;
     config.chart_area = ChartArea(Rect {
         x: 0,
         y: 0,
@@ -4503,11 +4497,14 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         style: AxisBreakStyle::Continuous,
         gap: 0.015,
         mark: renderer::config::BreakMark::default(),
-        // No piece frames: a frame on a half pixel blurs at 1x (#205).
-        frame_each_panel: false,
-        // A thin ground-state strip at a scale of its own (#205).
-        sizing: renderer::config::PieceSizing::Weights(vec![1.0, 9.0]),
+        // Framed pieces: the frames snap to whole logical pixels (#205).
+        frame_each_panel: true,
+        // Sized by the Grotrian preset below.
+        sizing: renderer::config::PieceSizing::ByValue,
     });
+    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks,
+    // and the ground-state strip thin at a scale of its own (#205).
+    config.apply_axis_preset(renderer::AxisPreset::Grotrian);
     series
         .write_continuum(
             &mut config.annotations,

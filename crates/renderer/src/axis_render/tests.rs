@@ -1970,7 +1970,8 @@ fn a_polar_tick_label_selection_boxes_each_label() {
             &measure,
             &mut Parts(&mut |part| if let DrawnPart::Text(r) = part {
                 labels.push(r)
-            })
+            }),
+            1.0
         ));
         assert!(labels.len() >= 4, "{side:?}: {} labels", labels.len());
 
@@ -2261,6 +2262,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         None,
         &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &majors,
+        1.0,
         |stroke, a, _| {
             if let AxisStroke::Tick(_) = stroke {
                 ticks.push(a.0);
@@ -2349,6 +2351,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         None,
         &CpuTextMeasure::with_policy(fp),
         &majors,
+        1.0,
         |stroke, a, b| match stroke {
             AxisStroke::Line => line = Some((a, b)),
             AxisStroke::Tick(_) => ticks.push(a),

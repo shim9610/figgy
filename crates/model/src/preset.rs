@@ -11,7 +11,7 @@
 //! series' GPU style (`Renderer::create_style_for_series`) after recoloring.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config, TickVisibility};
+use crate::config::{AxisBreakStyle, AxisOptions, Config, PieceSizing, TickVisibility};
 use crate::data_config::{DataRenderType, SeriesConfig};
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Color {
@@ -29,6 +29,8 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// leaves data ranges, margins, tick lengths, colors, and title text
 /// untouched — it only switches which axis lines are drawn, the tick
 /// direction, and which sides show tick-value labels.
+/// [`AxisPreset::Grotrian`] also switches the grid off and gives a
+/// continuous `left_y` break a thin lowest piece (#205).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisPreset {
     /// Closed box frame with ticks pointing **inward** on all four sides —
@@ -46,6 +48,14 @@ pub enum AxisPreset {
     /// No axis lines and no ticks; tick-value labels only. Pair with a grid
     /// for a minimal, web-dashboard look.
     Minimal,
+    /// A Grotrian (energy-level) diagram
+    /// ([#205](https://github.com/shim9610/figgy/issues/205)): the boxed
+    /// frame with outward ticks and labels on the bottom and left only, no
+    /// grid, and a thin ground-state strip: a `Continuous` break on `left_y`
+    /// shares the height `1 : 9 : …` between its lowest piece and the rest
+    /// (`PieceSizing::Weights`, one weight per piece). A `Panels` break or
+    /// an unbroken axis keeps its sizing.
+    Grotrian,
 }
 
 /// Per-side knobs a preset controls.
@@ -130,6 +140,34 @@ impl Config {
                     labels: false,
                 },
             ),
+            AxisPreset::Grotrian => {
+                self.grid.show_major_x = false;
+                self.grid.show_major_y = false;
+                self.grid.show_minor_x = false;
+                self.grid.show_minor_y = false;
+                if let Some(breaks) = self.left_y.breaks.as_mut()
+                    && breaks.style == AxisBreakStyle::Continuous
+                    && !breaks.ranges.is_empty()
+                {
+                    // One weight per piece (#205): the lowest piece thin,
+                    // the rest sharing the height equally.
+                    let mut weights = vec![9.0; breaks.ranges.len() + 1];
+                    weights[0] = 1.0;
+                    breaks.sizing = PieceSizing::Weights(weights);
+                }
+                (
+                    SideStyle {
+                        line: true,
+                        tick: Outside,
+                        labels: true,
+                    },
+                    SideStyle {
+                        line: true,
+                        tick: NoTick,
+                        labels: false,
+                    },
+                )
+            }
         };
 
         apply_side(&mut self.bottom_x, labeled.clone());
@@ -392,6 +430,52 @@ mod tests {
             assert_eq!(axis.tick, TickVisibility::None);
         }
         assert!(cfg.bottom_x.label_style.label_visible);
+    }
+
+    // #205: the Grotrian preset keeps the boxed frame with labels and
+    // outward ticks on the bottom and left, drops the grid and the mirrored
+    // ticks, and gives a continuous `left_y` break a thin lowest piece; a
+    // `Panels` break or an unbroken axis keeps its sizing.
+    #[test]
+    fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
+        use crate::config::{AxisBreak, AxisBreaks};
+        let mut cfg = default_config();
+        cfg.left_y.min = 0.0;
+        cfg.left_y.max = 25.0;
+        cfg.left_y.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(0.5, 10.0), AxisBreak::new(12.0, 20.0)],
+            ..AxisBreaks::default()
+        });
+        cfg.apply_axis_preset(AxisPreset::Grotrian);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
+            assert!(axis.line_visible);
+        }
+        assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
+        assert_eq!(cfg.left_y.tick, TickVisibility::Outside);
+        assert_eq!(cfg.top_x.tick, TickVisibility::None);
+        assert_eq!(cfg.right_y.tick, TickVisibility::None);
+        assert!(cfg.bottom_x.label_style.label_visible && cfg.left_y.label_style.label_visible);
+        assert!(!cfg.top_x.label_style.label_visible && !cfg.right_y.label_style.label_visible);
+        assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
+        assert!(!cfg.grid.show_minor_x && !cfg.grid.show_minor_y);
+        assert_eq!(
+            cfg.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
+            Some(PieceSizing::Weights(vec![1.0, 9.0, 9.0]))
+        );
+        let mut panels = default_config();
+        panels.left_y.breaks = Some(AxisBreaks {
+            ranges: vec![AxisBreak::new(0.5, 10.0)],
+            style: AxisBreakStyle::Panels,
+            ..AxisBreaks::default()
+        });
+        panels.apply_axis_preset(AxisPreset::Grotrian);
+        assert_eq!(
+            panels.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
+            Some(PieceSizing::ByValue)
+        );
+        let mut plain = default_config();
+        plain.apply_axis_preset(AxisPreset::Grotrian);
+        assert!(plain.left_y.breaks.is_none());
     }
 
     // A preset must not disturb anything outside frame/tick/label visibility.

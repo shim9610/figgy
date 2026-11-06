@@ -70,6 +70,7 @@ pub fn emit_parallel_axis_strokes(
     let (off_x, off_y) = axis_offset(Side::Left, axis.line_offset);
     let majors = major_tick_values_for_axis(&axis, Side::Left, &plot, measure);
     let dash = axis.line_style.pattern();
+    // A parallel axis has no breaks, so the frame snap's scale is unused.
     each_axis_stroke(
         &axis,
         Side::Left,
@@ -77,6 +78,7 @@ pub fn emit_parallel_axis_strokes(
         None,
         measure,
         &majors,
+        1.0,
         |stroke, mut a, mut b| {
             let tag = match stroke {
                 AxisStroke::Line => {

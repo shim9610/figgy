@@ -356,6 +356,8 @@ pub(crate) struct ExportFrame {
     pub(crate) size: (u32, u32),
     /// The exported area's size in logical pixels.
     pub(crate) logical: (u32, u32),
+    /// The export scale `chart`'s pixel values carry.
+    pub(crate) scale: f32,
     /// The scaled document, placed at the target's origin.
     pub(crate) chart: Chart,
     /// The expanded panels of a layered document; empty for a single-layer
@@ -786,8 +788,8 @@ impl Renderer {
         let panel_rect = scaled_config.chart_area.0;
         let scaled_chart = Chart::new(scaled_config);
 
-        // 2) Temp ChartView with scaled axis textures.
-        let view = self.create_chart_view(&scaled_chart, panel_rect)?;
+        // 2) Temp ChartView with scaled axis textures, at the export scale.
+        let view = self.create_chart_view_at(&scaled_chart, panel_rect, scale)?;
 
         // 3) Series styles — line_width also scales (extracted from render_type).
         let scaled_styles: Vec<ChartStyle> = series
@@ -967,6 +969,7 @@ impl Renderer {
         Ok(ExportFrame {
             size: (w, h),
             logical: (orig.width, orig.height),
+            scale,
             chart: scaled_chart,
             panel_configs,
             items: prepared_items,

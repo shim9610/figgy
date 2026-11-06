@@ -94,7 +94,8 @@ fn drawn_labels(cfg: &Config, element: &Element) -> usize {
             if let DrawnPart::Text(_) = part {
                 count += 1;
             }
-        })
+        }),
+        1.0
     ));
     count
 }

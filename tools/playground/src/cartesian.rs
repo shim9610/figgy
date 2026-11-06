@@ -31,12 +31,13 @@ use crate::big_data::{self, BigData, FrameTime};
 use crate::scenes::{self, SceneKind};
 use crate::widgets::{self, choice, color, rich_text, section, slider};
 
-const AXIS_PRESETS: [AxisPreset; 5] = [
+const AXIS_PRESETS: [AxisPreset; 6] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
+    AxisPreset::Grotrian,
 ];
 const COLOR_CYCLES: [ColorCycle; 5] = [
     ColorCycle::Classic,
@@ -137,6 +138,14 @@ pub struct CartesianHost {
     selected: Option<HitId>,
     selected_annotation: Option<usize>,
     drag: Drag,
+    /// The pointer in document pixels while an element drags: the press
+    /// point advanced by every move. A subplot frame steps by whole pixels
+    /// from it, polar axes turn by its angle.
+    drag_pointer: [f32; 2],
+    /// While a subplot frame drags (#205): the display scale and the
+    /// surface position of the parent's chart area, held from the press so
+    /// a document the drag grows does not rescale under the pointer.
+    hold: Option<(f32, [i64; 2])>,
     mode: PointerMode,
     picks: Vec<PickedData>,
     /// One line per pick: the picked point's coordinates and, for a colour-
@@ -174,6 +183,8 @@ impl CartesianHost {
             selected: None,
             selected_annotation: None,
             drag: Drag::None,
+            drag_pointer: [0.0; 2],
+            hold: None,
             mode: PointerMode::Edit,
             picks: Vec::new(),
             pick_notes: Vec::new(),
@@ -267,12 +278,23 @@ impl CartesianHost {
         if vp.width < 8 || vp.height < 8 {
             return None;
         }
-        let doc = cfg.document_area();
-        let (scale, mut document) =
-            fit_display_panel((doc.width, doc.height), (vp.width, vp.height));
-        document.x += vp.x;
-        document.y += vp.y;
-        let config = place_document(cfg, scale, document);
+        let (config, document, scale) = match self.hold {
+            Some((scale, origin)) => {
+                let mut config = cfg.scaled(scale);
+                let at = config.chart_area.0;
+                config.translate_areas(origin[0] - i64::from(at.x), origin[1] - i64::from(at.y));
+                let document = config.document_area();
+                (config, document, scale)
+            }
+            None => {
+                let doc = cfg.document_area();
+                let (scale, mut document) =
+                    fit_display_panel((doc.width, doc.height), (vp.width, vp.height));
+                document.x += vp.x;
+                document.y += vp.y;
+                (place_document(cfg, scale, document), document, scale)
+            }
+        };
         let panel = config.chart_area.0;
         Some(Display {
             config,
@@ -314,7 +336,7 @@ impl CartesianHost {
         let chart = Chart::new(d.config.clone());
         let view = match self.view.take() {
             Some(v) => v,
-            None => match r.create_chart_view(&chart, d.panel) {
+            None => match r.create_chart_view_at(&chart, d.panel, d.scale) {
                 Ok(v) => {
                     self.raster_dirty = true;
                     v
@@ -333,7 +355,13 @@ impl CartesianHost {
                 .and_then(|id| hitmap.get(id))
                 .map(|el| el.element_id());
             if let Err(e) =
-                r.refresh_axis_with_selection(&mut view, &chart, d.panel, selected.as_deref())
+                r.refresh_axis_with_selection_at(
+                    &mut view,
+                    &chart,
+                    d.panel,
+                    selected.as_deref(),
+                    d.scale,
+                )
             {
                 self.error = Some(format!("refresh: {e}"));
             }
@@ -428,6 +456,8 @@ impl CartesianHost {
         }
         if released {
             self.drag = Drag::None;
+            // The document fits the viewport again.
+            changed |= self.hold.take().is_some();
         }
         if pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
             changed |= self.pan(r, &d, delta.x * ppp, delta.y * ppp);
@@ -478,11 +508,16 @@ impl CartesianHost {
             self.drag = Drag::Annotation;
             return;
         }
+        self.drag_pointer = self.document_point(r, d, p);
         if let Some(id) = self.selected
             && let Some(rz) = hitmap.get(id).and_then(|e| e.as_resizable())
             && let Some(handle) = rz.hit_resize_handle(&d.config, &measure, p[0], p[1])
         {
             self.drag = Drag::Resize(handle);
+            let (horizontal, vertical) = rz.resize_targets(handle);
+            if moves_subplot_frame(horizontal.as_ref()) || moves_subplot_frame(vertical.as_ref()) {
+                self.hold_display(d);
+            }
             return;
         }
         let hit = hitmap.hit_test(&d.config, &measure, p[0], p[1]);
@@ -518,6 +553,35 @@ impl CartesianHost {
             self.selected_annotation = None;
         }
         self.drag = if draggable { Drag::Element } else { Drag::None };
+        let frame = hit
+            .and_then(|id| hitmap.get(id))
+            .and_then(|e| e.as_draggable())
+            .map(|e| e.nudge_element());
+        if moves_subplot_frame(frame.as_ref()) {
+            self.hold_display(d);
+        }
+    }
+
+    /// A surface point in document pixels: the inverse of the display's
+    /// scale and placement.
+    fn document_point(&self, r: &Renderer, d: &Display, p: [f32; 2]) -> [f32; 2] {
+        let Ok(cfg) = r.chart_config(self.id) else {
+            return p;
+        };
+        let doc = cfg.document_area();
+        if d.scale <= 0.0 {
+            return p;
+        }
+        [
+            doc.x as f32 + (p[0] - d.document.x as f32) / d.scale,
+            doc.y as f32 + (p[1] - d.document.y as f32) / d.scale,
+        ]
+    }
+
+    /// Hold the display where it is while a subplot frame drags (#205).
+    fn hold_display(&mut self, d: &Display) {
+        let at = d.config.chart_area.0;
+        self.hold = Some((d.scale, [i64::from(at.x), i64::from(at.y)]));
     }
 
     fn on_move(&mut self, r: &mut Renderer, d: &Display, dx: f32, dy: f32) -> bool {
@@ -571,12 +635,14 @@ impl CartesianHost {
                 let Some(el) = hitmap.get(id) else {
                     return false;
                 };
+                let at = self.drag_pointer;
+                self.drag_pointer = [at[0] + dx, at[1] + dy];
                 match self.drag {
                     Drag::Resize(h) => el.as_resizable().is_some_and(|rz| {
-                        rz.resize_by(&mut config, &measure, h, dx, dy) == NudgeResult::Moved
+                        rz.resize_from(&mut config, &measure, h, at, dx, dy) == NudgeResult::Moved
                     }),
                     _ => el.as_draggable().is_some_and(|dr| {
-                        dr.drag_by(&mut config, &measure, dx, dy) == NudgeResult::Moved
+                        dr.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved
                     }),
                 }
             }
@@ -2312,9 +2378,42 @@ fn new_overlay(n: usize) -> OverlayLayer {
     o
 }
 
-/// Lay the parent and every subplot out on a grid filling the document.
+/// Lay the parent and every subplot that is not an inset out on a grid
+/// filling the document. An inset moves with the panel it is nested in, so
+/// it keeps its place on it (#205).
 fn retile(config: &mut Config) {
-    let n = 1 + config.subplots.len() as u32;
+    let count = config.subplots.len() + 1;
+    let area = |config: &Config, index: usize| match index {
+        0 => config.chart_area.0,
+        _ => config.subplots[index - 1].config.chart_area.0,
+    };
+    // Each panel's inset parent and frame before the re-tile.
+    let before: Vec<(Option<usize>, Rect)> = {
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = |index: usize| {
+            let panel = match index {
+                0 => &*config,
+                _ => &config.subplots[index - 1].config,
+            };
+            (panel.chart_area.0, panel.data_area().map_or(empty, |d| d.0))
+        };
+        (0..count)
+            .map(|index| {
+                (
+                    renderer::layout::inset_parent(count, rects, index),
+                    area(config, index),
+                )
+            })
+            .collect()
+    };
+    // The insets outer before inner, from the layout before the re-tile.
+    let order: Vec<usize> = config.insets().collect();
+    let n = before.iter().filter(|(parent, _)| parent.is_none()).count() as u32;
     let cols = (n as f64).sqrt().ceil() as u32;
     let rows = n.div_ceil(cols);
     let (w, h) = (scenes::DOC_W / cols, scenes::DOC_H / rows);
@@ -2327,8 +2426,26 @@ fn retile(config: &mut Config) {
         })
     };
     config.chart_area = cell(0);
+    let mut next = 1;
     for (i, s) in config.subplots.iter_mut().enumerate() {
-        s.config.chart_area = cell(i as u32 + 1);
+        if before[i + 1].0.is_none() {
+            s.config.chart_area = cell(next);
+            next += 1;
+        }
+    }
+    // Insets follow their parent, outer before inner: a parent's new frame
+    // is set before its children read it.
+    for subplot in order {
+        let index = subplot + 1;
+        let (Some(parent), old) = before[index] else {
+            continue;
+        };
+        let (from, to) = (before[parent].1, area(config, parent));
+        let shift =
+            |v: u32, a: u32, b: u32| (i64::from(v) + i64::from(b) - i64::from(a)).max(0) as u32;
+        let frame = &mut config.subplots[subplot].config.chart_area.0;
+        frame.x = shift(old.x, from.x, to.x);
+        frame.y = shift(old.y, from.y, to.y);
     }
 }
 
@@ -2501,6 +2618,7 @@ fn layers_controls(
     ui.label(egui::RichText::new("Subplots (separate charts, optional axis links)").strong());
     let mut remove_subplot = None;
     let mut fit_subplot = None;
+    let mut place_subplot = None;
     for j in 0..config.subplots.len() {
         ui.push_id(("sp", j), |ui| {
             let sub = &mut config.subplots[j];
@@ -2535,6 +2653,48 @@ fn layers_controls(
             targets.extend((0..j).map(|t| Some(CellRef::Subplot(t))));
             choice(ui, "link X", &mut sub.link_x, &targets);
             choice(ui, "link Y", &mut sub.link_y, &targets);
+            // Its frame in document pixels, anywhere (#205): a drag on the
+            // frame on the base layer does the same.
+            let mut frame = sub.config.chart_area.0;
+            let placed = ui
+                .horizontal(|ui| {
+                    ui.label("frame");
+                    let mut changed = false;
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut frame.x).prefix("x "))
+                        .changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut frame.y).prefix("y "))
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut frame.width)
+                                .prefix("w ")
+                                .range(1..=20_000),
+                        )
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut frame.height)
+                                .prefix("h ")
+                                .range(1..=20_000),
+                        )
+                        .changed();
+                    changed
+                })
+                .inner;
+            if placed {
+                place_subplot = Some((j, frame));
+            }
+            ui.horizontal(|ui| {
+                let mut filled = sub.config.plot_background.is_some();
+                if ui.checkbox(&mut filled, "plot background").changed() {
+                    sub.config.plot_background = filled.then_some(Color::WHITE);
+                }
+                if let Some(fill) = sub.config.plot_background.as_mut() {
+                    color(ui, "", fill);
+                }
+            });
             let mut remove_inner = None;
             for k in 0..sub.config.overlays.len() {
                 ui.horizontal(|ui| {
@@ -2553,6 +2713,11 @@ fn layers_controls(
                 status = Some(format!("Removed overlay {k} of subplot {j}"));
             }
         });
+    }
+    if let Some((j, frame)) = place_subplot
+        && let Err(error) = config.set_subplot_area(j, ChartArea(frame))
+    {
+        status = Some(format!("Subplot {j} cannot take that frame: {error:?}"));
     }
     match fit_subplot {
         Some((j, false)) => fit_layer(config, series, r, LayerRef::Subplot(j)),
@@ -2821,4 +2986,15 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         println!("ok  long labels through auto_layout");
     }
     Ok(())
+}
+
+/// Whether a drag or handle target moves a subplot's frame (#205).
+fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
+    matches!(
+        element,
+        Some(
+            renderer::layout::Element::SubplotFrame(_)
+                | renderer::layout::Element::SubplotFrameEdge(..)
+        )
+    )
 }

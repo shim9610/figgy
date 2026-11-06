@@ -2194,6 +2194,84 @@ impl crate::config::Config {
     }
 }
 
+impl crate::config::Config {
+    /// The subplot whose frame (`chart_area`) is drawn on top at `(x, y)`
+    /// (in this config's pixels), any subplot at any place (#205): panels of
+    /// their own in list order, then insets in
+    /// [`crate::layout::inset_paint_order`], the order they are painted in.
+    /// A pointer there belongs to that subplot on the base layer, inside the
+    /// parent chart or outside it. `None` when no frame holds it.
+    pub fn subplot_at(&self, x: f32, y: f32) -> Option<usize> {
+        use crate::layout::{Rect, inset_paint_order, inset_parent};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        let holds = |index: usize| {
+            let area = rects(index).0;
+            x >= area.x as f32
+                && y >= area.y as f32
+                && x < (area.x + area.width) as f32
+                && y < (area.y + area.height) as f32
+        };
+        let count = self.subplots.len() + 1;
+        if count == 1 {
+            return None;
+        }
+        inset_paint_order(count, rects)
+            .filter(|&index| index != 0 && holds(index))
+            .last()
+            .or_else(|| {
+                (1..count)
+                    .filter(|&index| inset_parent(count, rects, index).is_none() && holds(index))
+                    .last()
+            })
+            .map(|index| index - 1)
+    }
+}
+
+impl crate::config::Config {
+    /// The subplots that are insets now, nested in another panel's data
+    /// area, in the order they are painted ([`crate::layout::inset_paint_order`],
+    /// #205): bottom to top. A subplot moved out of every data area is a
+    /// panel of its own and is not listed; it still takes the pointer on the
+    /// base layer ([`Self::subplot_at`]).
+    pub fn insets(&self) -> impl Iterator<Item = usize> + '_ {
+        use crate::layout::{Rect, inset_paint_order};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = move |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        inset_paint_order(self.subplots.len() + 1, rects)
+            .filter(|&index| index != 0)
+            .map(|index| index - 1)
+    }
+}
+
 /// Where an inset's marker is drawn on its parent (#205), in the parent's
 /// pixels: the window clipped to the parent's plot and, when the marker
 /// draws them and the inset's plot lies clear of the window, the two

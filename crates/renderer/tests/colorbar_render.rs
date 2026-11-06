@@ -460,7 +460,8 @@ fn an_adaptive_log_colorbar_labels_its_ladder() {
                 if let DrawnPart::Text(_) = part {
                     count += 1;
                 }
-            })
+            }),
+            1.0
         ));
         count
     };

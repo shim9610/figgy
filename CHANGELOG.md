@@ -31,7 +31,9 @@ the ternary series' `region`, `view_3d`, the heatmaps' `surface`, the
 axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 `part`, a category's `rich_label`, the axes' `category_groups`, the
 chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
-kind and the `mesh_triangle` selection) are additive.
+kind and the `mesh_triangle` selection, the axes' `category_window`, the
+breaks' `sizing`, the energy-level `bands` and `band` style and a
+subplot's `marker`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -1192,6 +1194,78 @@ kind and the `mesh_triangle` selection) are additive.
   adds `part: None`; a `Category { .. }` literal adds `rich_label: None`;
   an `AxisOptions { .. }` literal adds `category_groups: None`; a
   `Config { .. }` literal adds `plot_background: None`.
+
+- **Grotrian diagrams at atlas scale** ([#205](https://github.com/shim9610/figgy/issues/205)).
+  A crowded categorical axis staggers its labels over rows instead of
+  thinning them (as many rows as the stride would have thinned by, each one
+  label extent further out), so every category keeps its name; group headers
+  sit past the outermost row. `AxisOptions` gains `category_window:
+  Option<[f64; 2]>`, the slots a categorical axis shows, which the view
+  helpers (`set_x_range` / `set_y_range`, the subplot and overlay setters, a
+  view state) set in place of `min` / `max`; `data_range` follows it, so
+  ticks, grid, data, picks and annotations do, and the `auto_fit_*` family
+  leaves a categorical axis as before. `AxisBreaks` gains `sizing:
+  PieceSizing` (`ByValue`, the default; `Equal`; `Weights(Vec<f32>)`): with
+  `Equal` or `Weights` each piece has a scale of its own (`BreakMap::scale_at`,
+  `per_piece`) and walks its own tick spacing (`tick::piece_ticks`,
+  `PieceTicks`); a `Panels` axis refuses any but `ByValue`, and a view whose
+  end falls inside a cut leaves no zero-span piece. `EnergyLevelSeries` gains
+  `bands: Vec<LevelBand>` (`id`, `column`, `first`, `last`, `label`,
+  `label_offset`), each a light fill with one label over thin inner levels
+  (`EnergyLevelStyle::band: LevelBandStyle { fill, inner_width }`), picked
+  as its first level on the fill and as `LabelPart::Band` on the label.
+  The placement is one layout per raster and pick (`LevelLayout`): level
+  labels stack per lane with leader lines, a column whose labels would leave
+  the plot draws them on the other side, a level outside the plot draws no
+  label, a dense run of four or more labels collapses to its first and last
+  joined by a bracket, a crowd (a stack that would move a label more than one
+  and a half label heights) collapses its dense runs and is stacked again,
+  arrows meeting one end of a level spread across its slot, and each
+  wavelength label takes the first clear spot along its arrow.
+  `Subplot` gains `marker: Option<InsetMarker>` (`window`, `line`,
+  `connectors`): the window an inset magnifies, derived from the inset
+  (`Config::inset_window`) when `None`, emitted on the parent's annotation
+  layer on every draw (`Config::inset_marker_parts`, `emit_inset_markers`),
+  which supersedes the static `Config::inset_marker` annotations.
+  `layout::inset_parent` and `inset_paint_order` give the tree order insets
+  are painted in; `Config::insets` lists them bottom to top,
+  `Config::nested_subplot_at` answers the inset drawn on top, and
+  `Config::subplot_at` the subplot drawn on top at a point, inset or not.
+  `AxisPreset::Grotrian` is the diagrams' preset: the boxed frame with
+  outward ticks and labels on the bottom and left, the grid off, and a
+  continuous `left_y` break sized `1 : 9 : …` (one weight per piece, the
+  lowest thin); a `Panels` break or an unbroken axis keeps its sizing.
+  Subplot frames: `Config::set_subplot_area` places a subplot anywhere, and
+  `Element::SubplotFrame(i)` / `SubplotFrameEdge(i, side)` move and resize
+  it by whole pixels through `Config::nudge_from`, shifting the document
+  when a frame passes its top or left edge. `HitMap::for_active_layer(Base)`
+  now also registers every subplot's frame (`SubplotFrameElement`,
+  `subplot_<i>:frame`, selected by a press on the subplot's plot) and its
+  decorations over the parent's, each answering only where its subplot is
+  drawn on top (new `Selectable::owns_point`, default everywhere), so a
+  base-layer `hit_test` can answer a `subplot_<i>:…` id; new
+  `Resizable::resize_from` carries the pointer into a resize (default
+  `resize_by`). Migration: an exhaustive `match` on `Element` adds
+  `SubplotFrame(_)` and `SubplotFrameEdge(..)`, one on `LabelPart` adds
+  `Band` and one on `AxisPreset` adds `Grotrian`; an `AxisOptions { .. }`
+  literal adds `category_window: None`, an `AxisBreaks { .. }` literal
+  `sizing: PieceSizing::ByValue`, an
+  `EnergyLevelSeries { .. }` literal `bands: Vec::new()`, an
+  `EnergyLevelStyle { .. }` literal `band: LevelBandStyle::default()` and a
+  `Subplot { .. }` literal `marker: None`; a host that keys on the base
+  layer's hit ids sees the new `subplot_<i>:` ids only on a document with
+  subplots. Documents written before these fields parse and re-serialize
+  unchanged. The chrome emit takes the display or export scale the config's
+  pixels carry: `chrome::emit_chart_chrome(config, measure, sink, scale)`,
+  `chrome::emit_part_of(config, element, measure, sink, scale)`,
+  `chrome::line::emit_axis` / `emit_axis_strokes(.., sink, scale)` and
+  `each_axis_stroke(.., majors, scale, each)`. Only a broken axis reads
+  it: with `frame_each_panel` each piece frame is snapped to whole logical
+  pixels and then scaled, so it is one crisp row at 1x and 2x is 1x
+  doubled; the hit map passes 1, within a logical pixel of the drawn frame
+  and inside the stroke grab width. Migration: a caller of any of these
+  passes `1.0` for a config drawn as stored, or the scale it scaled the
+  config by.
 
 - **Triangle mesh series** ([#210](https://github.com/shim9610/figgy/issues/210)).
   `DataRenderType::TriMesh(TriMeshSeries)` (new module `tri_mesh`) is a
@@ -2901,6 +2975,38 @@ kind and the `mesh_triangle` selection) are additive.
   `part: None`; a `SeriesLayers` literal adds `energy_levels: None` (or
   starts from `SeriesLayers::empty()`).
 
+- **Grotrian diagrams at atlas scale** ([#205](https://github.com/shim9610/figgy/issues/205)).
+  Each inset is painted as one unit (data, chrome, highlights) in the tree
+  order of `layout::inset_paint_order`: after the panel it is nested in and
+  before that panel's next sibling, so an inset drawn on top takes the
+  pointer. A base-layer pick (`pick_chart`, `pick_chart_data`) whose cursor
+  lies in a subplot's frame runs on that subplot (`Config::subplot_at`), as
+  if it were the active layer. The shader reads each broken piece's slope
+  off its bounding knots (`cut_piece_slope`) for `Equal` and `Weights`
+  sizing, with no new uniform, and the vector and line-pick derivatives take
+  `cut_scale_at` at the point they measure; staggered category labels,
+  per-piece ticks, level bands and the label layout draw through the
+  existing axis and energy-level paths. New `Renderer::hold_chart_display(id,
+  hold)`: while held, the document keeps the display scale and the position
+  of its parent chart it had when the hold began, so a subplot dragged past
+  the document's edge does not rescale the page under the pointer; the
+  release fits the document to the surface again. The `nist_grotrian_gallery`
+  example draws He I, Ar I, Cu I and U I from trimmed NIST exports through
+  `support/nist_csv.rs` and `support/grotrian_sets.rs`, shared with the
+  playground's `EnergyLevelsAr`, `EnergyLevelsCu`, `EnergyLevelsU` and
+  `EnergyLevelsArAll` scenes. The display or export scale reaches the chrome
+  emit (the maintainer's option A on #205): new
+  `Renderer::create_chart_view_at(chart, panel_rect, scale)` and
+  `Renderer::refresh_axis_with_selection_at(view, chart, panel_rect,
+  selected, scale)` take the scale a placed or exported chart's pixels
+  carry, and the view keeps it for `refresh_axis` /
+  `refresh_axis_with_selection`; `create_chart_view` and the plain refresh
+  stay at scale 1. `axis_render::try_raster_chart_layer_to_rgba_with_selection_at`
+  is the CPU raster at a scale. The export and the vector export pass their
+  scale, the web wrapper its display scale, and the playground its display's,
+  so a broken axis' piece frames (`frame_each_panel`) are crisp at 1x and
+  2x is 1x doubled; the Grotrian scenes draw their pieces framed again.
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -3166,6 +3272,22 @@ kind and the `mesh_triangle` selection) are additive.
   `press_energy_label(series_id, part, index)` selects a label and starts
   its drag, which writes the row's `label_offset`. Group headers drag
   through the decoration routes like the other chrome.
+
+- **Grotrian diagrams at atlas scale** ([#205](https://github.com/shim9610/figgy/issues/205)).
+  `set_config` and `set_series` take the new keys (`category_window`,
+  `breaks.sizing`, `bands`, `style.band`, a subplot's `marker`) as JSON. On
+  the base layer every subplot's frame (`subplot_<i>:frame`) and its own
+  decorations answer `hit_test` and `on_press` over the parent's: a press on
+  a subplot's plot selects its frame, `on_move` drags the subplot by whole
+  pixels, anywhere, and its handles resize it; the wrapper holds the display
+  placement during the drag and `on_release()` releases it, so `on_release`
+  now returns `Result` and throws on a renderer error. New
+  `set_subplot_area(index, x, y, width, height)`, `subplot_area(index)`,
+  `set_subplot_background(index, color)` and `insets()`, on `FiggyChart` and
+  `<figgy-chart>`; `AxisPreset.Grotrian` is the new value `apply_axis_preset`
+  takes. `pick_point` answers a band as its first level and a band
+  label with `part: "band"`; `press_energy_label(series_id, "band", index)`
+  drags it into the band's `label_offset`.
 
 <a id="unreleased-bounded-migration"></a>
 

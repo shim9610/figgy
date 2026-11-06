@@ -123,7 +123,7 @@ pub(super) async fn create_chart_kernel(
         legend_auto_managed: true,
         color_seq: 0,
         hitmap: HitMap::standard_chart(),
-        hitmap_layer: (renderer::LayerRef::Base, 0, None),
+        hitmap_layer: (renderer::LayerRef::Base, 0, None, 0),
         dragging: false,
         drag_pointer: [0.0; 2],
         resizing: None,
@@ -136,6 +136,7 @@ pub(super) async fn create_chart_kernel(
         annotation_selection_dirty: false,
         annotation_pointer: false,
         value_label_pointer: false,
+        display_held: false,
     };
 
     emit_init_progress(
@@ -227,9 +228,10 @@ pub struct FiggyChart {
     /// Monotonic color assignment for newly registered series.
     pub(super) color_seq: usize,
     pub(super) hitmap: HitMap,
-    /// The (active layer, overlay count) the hit map was registered for.
-    /// Either change rebuilds it with `HitMap::for_active_layer`.
-    pub(super) hitmap_layer: (renderer::LayerRef, usize, Option<usize>),
+    /// The (active layer, overlay count, active subplot's overlay count,
+    /// subplot count) the hit map was registered for. Any change rebuilds
+    /// it with `HitMap::for_active_layer`.
+    pub(super) hitmap_layer: (renderer::LayerRef, usize, Option<usize>, usize),
     pub(super) dragging: bool,
     /// The pointer in document coordinates while a chart element drags:
     /// the press point advanced by every move. Polar axes and tick
@@ -257,6 +259,9 @@ pub struct FiggyChart {
     /// The current drag started on a value label (`press_value_label`), so
     /// `on_move` moves the selected label instead of a chart element.
     pub(super) value_label_pointer: bool,
+    /// A subplot frame drag holds the display placement
+    /// (`Renderer::hold_chart_display`, #205) until the pointer's release.
+    pub(super) display_held: bool,
 }
 
 impl FiggyChart {
@@ -293,7 +298,8 @@ impl FiggyChart {
     }
 
     /// The hit map's registration set depends only on the active layer,
-    /// the overlay count and the active subplot's overlay count. Rebuild
+    /// the overlay count, the active subplot's overlay count and the
+    /// subplot count (every subplot registers on the base layer). Rebuild
     /// it when any of them changed; the registry has already dropped any
     /// `HitId` of the previous map. A layer change also clears the
     /// annotation selection: it is the element selection of the
@@ -311,7 +317,12 @@ impl FiggyChart {
             }
             _ => None,
         };
-        let key = (layer, config.overlays.len(), subplot_overlays);
+        let key = (
+            layer,
+            config.overlays.len(),
+            subplot_overlays,
+            config.subplots.len(),
+        );
         if key != self.hitmap_layer {
             let layer_changed = key.0 != self.hitmap_layer.0;
             self.hitmap = HitMap::for_active_layer(config);
@@ -328,8 +339,14 @@ impl FiggyChart {
     }
 
     /// The display scale and where the whole document lands on the
-    /// surface.
+    /// surface: fitted to it, or where the held placement puts it while a
+    /// subplot frame drags (#205), so pointer conversions and picks follow
+    /// what is drawn.
     pub(super) fn display_scale_and_panel(&self) -> Result<(f32, Rect), JsValue> {
+        if self.display_held {
+            let (placed, _, scale) = self.display_config()?;
+            return Ok((scale, placed.document_area()));
+        }
         let logical = self.chart_config()?.document_area();
         Ok(renderer::fit_display_panel(
             (logical.width, logical.height),
@@ -1410,18 +1427,19 @@ impl FiggyChart {
         // Browser resize is preview zoom, not a document mutation. The
         // stored chart remains the export SSoT; the live canvas renders a
         // scaled/letterboxed display chart derived from it.
-        let (display_config, panel_rect, _) = self.display_config()?;
+        let (display_config, panel_rect, display_scale) = self.display_config()?;
         let display_chart = Chart::new(display_config.into_owned());
         if refresh_raster {
             let selected_id: Option<String> = self
                 .chart_selection()?
                 .and_then(|id| self.hitmap.get(id).map(|el| el.element_id()));
             self.renderer
-                .refresh_axis_with_selection(
+                .refresh_axis_with_selection_at(
                     &mut self.view,
                     &display_chart,
                     panel_rect,
                     selected_id.as_deref(),
+                    display_scale,
                 )
                 .map_err(js_err)?;
         }

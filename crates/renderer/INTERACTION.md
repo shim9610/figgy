@@ -227,7 +227,8 @@ series' `labels.text[i]` (SSOT configuration, written by `format_labels`,
 a value), drawn at the bar end, past the top of the box or outside the
 vertex along its spoke, from the pool on every draw, and moved by its drag
 offset `labels.offsets[i]` (logical pixels, x right, y down). Labels never
-displace each other; thinning the category axis is the only thinning.
+displace each other, and nothing is thinned: a crowded categorical axis
+staggers its labels over rows ([#205](https://github.com/shim9610/figgy/issues/205)) instead.
 
 - **Hover and click.** A label is a typed pick target: `pick_chart_data`
   answers `PickedData::ValueLabel { series_id, category_index, distance_px }`
@@ -647,11 +648,42 @@ parent's. Every element measures against the subplot's chart
 single-chart policy to that chart, stored back in `subplots[i].config`: the
 subplot's data area moves and resizes through its own margins, its axes,
 labels, titles and legend move as on any chart. The set depends on the active
-layer, the overlay count and the active subplot's overlay count; rebuild the
-map when any of them changes. A subplot or overlay index past its list
+layer, the overlay count, the active subplot's overlay count and the subplot
+count; rebuild the map when any of them changes. A subplot or overlay index past its list
 recovers to `Base`, a missing subplot overlay to its subplot. GPU picking of an
 active subplot layer uses that subplot's panel in its own area and only the
 series it draws.
+
+**Subplot frames on the base layer** ([#205](https://github.com/shim9610/figgy/issues/205)).
+With `Base` active, `HitMap::for_active_layer` also registers, over the
+parent's elements, every subplot's frame (`SubplotFrameElement`,
+`subplot_<i>:frame`, `Element::SubplotFrame(i)`) and that subplot's own
+base set except its plot (`subplot_<i>:axis_left`, `subplot_<i>:legend`, …,
+as `SubplotElement`s). These answer only where their subplot is drawn on
+top (`Selectable::owns_point`, from `Config::subplot_at`: panels of their
+own in list order, then insets in paint order, the last that holds the
+point), so where panels overlap the one painted over the others takes the
+pointer, and the parent's plot beside an inset stays the parent's. A press
+on a subplot's plot selects its frame. The frame drags as a whole
+(`Draggable::drag_from`, with the pointer) and its eight handles resize it
+(`Resizable::resize_from`, `Element::SubplotFrameEdge(i, side)`), both by
+whole pixels: the step is how far the rounded pointer moved, so sub-pixel
+moves add up. A frame goes anywhere, inside the parent chart or outside it;
+one moved past the document's top or left edge shifts every chart area by
+the overshoot (`Config::translate_areas`), and a resize that would lose the
+frame's last pixel or leave no room for the subplot's plot is rejected. The
+frame's selection box lies inside the frame, inset by the selection padding
+and half a handle, so it is composited into the subplot's own panel
+wherever the subplot is. The registration does not depend on where the
+subplots are, so a frame moved over or out of another panel keeps its ids.
+A host that scales the document to its surface holds the placement for the
+drag (`Renderer::hold_chart_display(id, true)` on the press that starts
+it, `false` on the release): the document keeps the scale and the position
+of its parent chart it had when the hold began, so a frame dragged past the
+document's edge, which grows the document, does not rescale the page under
+the pointer; parts that leave the surface are cut, and the release fits the
+document again. The WASM wrapper does this in `on_press` / `on_release`,
+the playground in its pointer handlers.
 
 **Linked axes.** `ChartViewState::subplots` carries one view state per
 subplot (a linked axis reads as its root's range) and must match the
@@ -682,14 +714,22 @@ extents.
 whole document (`Config::document_area`, the union of every chart area) to the
 surface and returns the rect where the parent's area lands;
 `GpuPickRequest::display_panel_px` is the displayed document rect
-(`fit_display_panel` of the document area). The document export renders the
+(`fit_display_panel` of the document area), or the held placement while a
+subplot frame drags (above). A base-layer pick (`pick_chart`,
+`pick_chart_data`) whose cursor lies in a subplot's frame runs on that
+subplot, as if it were the active layer (`Config::subplot_at`, #205); on any
+other active layer the host has chosen the layer itself. The document export renders the
 union; the panel export (`ExportScope::Panel`) keeps the parent's area. The document's one annotation
 layer stays in the parent's area: it is drawn there only, anchored in the
 parent's axes, and its items answer the pointer route
 (`ChartView::hit_test_active_layer`) only while `Annotations` is active; with
 a subplot active the route reaches the subplot's own elements.
 `ChartView::render_warnings` tags a subplot's warnings
-`WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`).
+`WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`). A
+subplot's `marker` (`InsetMarker`, #205) is emitted into the parent's
+annotation layer on every draw, under the insets: the window the inset
+magnifies, clipped to the parent's plot, and connectors to the inset's plot;
+it is not selectable.
 
 **Limits.** Subplots nest one level (a subplot's chart has overlays but no
 subplots), are Cartesian only, keep no annotation layer of their own, and a

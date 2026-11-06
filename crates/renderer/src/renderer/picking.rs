@@ -735,6 +735,24 @@ impl LayerPickInputs {
     }
 }
 
+/// The config a base-layer pick at `cursor` (in `displayed`'s pixels) runs
+/// on: `config` with the subplot drawn on top there as its active layer
+/// ([`Config::subplot_at`], #205). `None` off every subplot, or on any
+/// other active layer, where the host has chosen the layer itself.
+pub(super) fn subplot_route(
+    config: &Config,
+    displayed: &Config,
+    cursor: [f32; 2],
+) -> Option<Config> {
+    if config.active_layer() != crate::LayerRef::Base {
+        return None;
+    }
+    let index = displayed.subplot_at(cursor[0], cursor[1])?;
+    let mut routed = config.clone();
+    routed.active_layer = crate::LayerRef::Subplot(index);
+    Some(routed)
+}
+
 pub(super) fn active_layer_pick_inputs(
     config: &Config,
     series: &[SeriesConfig],
@@ -1885,16 +1903,35 @@ impl Renderer {
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
         self.pick_health()?;
-        self.prepare_gpu_picking_for_chart(id)?;
         let state = self
             .chart_states
             .get(&id)
             .ok_or(crate::gpu_pick::GpuPickError::UnknownChart(id))?;
-        let displayed = place_document(
+        let mut displayed = place_document(
             &state.config,
             request.display_scale,
             request.display_panel_px,
         );
+        // On the base layer a pointer over a subplot's frame belongs to the
+        // subplot drawn on top there (#205), inside the parent chart or
+        // outside it: the query runs on that subplot's layer, its registry
+        // prepared from the same routed config.
+        let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
+        if let Some(config) = &routed {
+            displayed.active_layer = config.active_layer;
+        }
+        for series in &state.series {
+            if let Err(FiggyError::ColumnNotResident { id }) = self.require_resident_series(series)
+            {
+                return Err(crate::gpu_pick::GpuPickError::ColumnNotResident(id));
+            }
+        }
+        self.picker.prepare_chart(
+            &self.pool,
+            id,
+            routed.as_ref().unwrap_or(&state.config),
+            &state.series,
+        )?;
         let inputs = active_layer_pick_inputs(&displayed, &state.series)?;
         let (display_config, layer_series) = (&inputs.panel, &inputs.series);
         let (request, moved) = pick_request_outside_gaps(display_config, request);
@@ -2063,7 +2100,6 @@ impl Renderer {
         {
             self.ensure_registered_styles(id)?;
         }
-        let inset_routed;
         let (config, series, display_config, members, styles) = {
             let state = self
                 .chart_states
@@ -2082,21 +2118,13 @@ impl Renderer {
                 request.display_scale,
                 request.display_panel_px,
             );
-            // A pointer inside an inset (a subplot nested in the parent's
-            // data area, #203) belongs to the inset, which is drawn over
-            // the parent: on the base layer it is routed there.
-            let [cx, cy] = request.canvas_position_px;
-            let inset = match state.config.active_layer() {
-                crate::LayerRef::Base => displayed.nested_subplot_at(cx, cy),
-                _ => None,
-            };
-            let routed = inset.map(|index| {
-                let mut config = state.config.clone();
-                config.active_layer = crate::LayerRef::Subplot(index);
-                displayed.active_layer = crate::LayerRef::Subplot(index);
-                config
-            });
-            inset_routed = routed.is_some();
+            // A pointer over a subplot's frame (an inset over the parent, or
+            // any subplot elsewhere, #203, #205) belongs to the subplot drawn
+            // on top there: on the base layer it is routed there.
+            let routed = subplot_route(&state.config, &displayed, request.canvas_position_px);
+            if let Some(config) = &routed {
+                displayed.active_layer = config.active_layer;
+            }
             let inputs =
                 active_layer_pick_inputs(routed.as_ref().unwrap_or(&state.config), &state.series)?;
             let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
@@ -2151,18 +2179,8 @@ impl Renderer {
         }
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
-        // Its registry is the active layer's: under an inset the parent's
-        // points are covered, so it is asked nowhere (an inset's own points
-        // answer once the host makes the inset the active layer).
-        let given = if inset_routed {
-            GpuPickRequest {
-                canvas_position_px: [-1.0e6, -1.0e6],
-                max_distance_px: 0.0,
-                ..given
-            }
-        } else {
-            given
-        };
+        // It routes the same cursor to the same subplot, so the points it
+        // answers are the ones drawn on top there.
         let point_ticket = self.pick_chart(id, given)?;
         let data_bundle = self.picker.ready_data_bundle()?;
 

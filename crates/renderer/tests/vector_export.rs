@@ -27,7 +27,7 @@ mod svg_parts;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::config::{AxisOptions, DrawStyle, SketchOptions, TickVisibility};
 use renderer::layout::Rect;
 use renderer::radial::{
@@ -490,8 +490,22 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                 placed.chart_area.0, target,
                 "{context}: one panel covers the target"
             );
-            let below = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Grid).unwrap();
-            let above = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Decoration).unwrap();
+            // The rasters at the export's scale: a broken axis' piece frames
+            // snap on the logical grid the export used (#205).
+            let below = try_raster_chart_layer_to_rgba_with_selection_at(
+                &placed,
+                AxisLayerKind::Grid,
+                &[],
+                scale,
+            )
+            .unwrap();
+            let above = try_raster_chart_layer_to_rgba_with_selection_at(
+                &placed,
+                AxisLayerKind::Decoration,
+                &[],
+                scale,
+            )
+            .unwrap();
             let svg = svg_parts::read(
                 &r.export_svg(
                     renderer::ExportSource::chart(&chart, &scene.series),

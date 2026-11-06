@@ -82,9 +82,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use renderer::axis_render::{
-    AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
-};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::drag::DragConfig;
 use renderer::layout::{Element, NudgeResult, RectF, Side};
 use renderer::legend::Legend;
@@ -1436,7 +1434,7 @@ fn cartesian_scene(
             scale,
         };
         let phase = Instant::now();
-        let ink = match SceneInk::new(&doc, &codes) {
+        let ink = match SceneInk::new(&doc, &codes, scale) {
             Ok(ink) => ink,
             Err(e) => {
                 report.check(&document, "<raster>", Inv::I7, false, || e);
@@ -1907,13 +1905,18 @@ struct SceneInk {
 }
 
 impl SceneInk {
-    fn new(doc: &Config, codes: &[Code]) -> Result<Self, String> {
-        Self::reusing(doc, codes, None)
+    fn new(doc: &Config, codes: &[Code], scale: f32) -> Result<Self, String> {
+        Self::reusing(doc, codes, None, scale)
     }
 
     /// The ink of `doc`, reusing every panel of `previous` whose config is
     /// unchanged: a drag re-rasters only the panels it moved.
-    fn reusing(doc: &Config, codes: &[Code], previous: Option<&SceneInk>) -> Result<Self, String> {
+    fn reusing(
+        doc: &Config,
+        codes: &[Code],
+        previous: Option<&SceneInk>,
+        scale: f32,
+    ) -> Result<Self, String> {
         let area = doc.document_area();
         let (w, h) = (area.width as usize, area.height as usize);
         let mut panels = Vec::new();
@@ -1934,8 +1937,13 @@ impl SceneInk {
                 panels.push(p.clone());
                 continue;
             }
-            let rgba = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration)
-                .map_err(|e| format!("{layer:?} raster: {e}"))?;
+            let rgba = try_raster_chart_layer_to_rgba_with_selection_at(
+                &config,
+                AxisLayerKind::Decoration,
+                &[],
+                scale,
+            )
+            .map_err(|e| format!("{layer:?} raster: {e}"))?;
             let a = config.chart_area.0;
             let (pw, ph) = (a.width as usize, a.height as usize);
             let local: Vec<usize> = table
@@ -2833,10 +2841,11 @@ fn check_i3(report: &mut Report, at: &At<'_>, measured: &[Measured], ink: &Scene
                 continue;
             }
             report.count(at, "selection rasters", 1);
-            let selected = match try_raster_chart_layer_to_rgba_with_selection(
+            let selected = match try_raster_chart_layer_to_rgba_with_selection_at(
                 &p.config,
                 AxisLayerKind::Decoration,
                 boxes,
+                at.scale,
             ) {
                 Ok(rgba) => rgba,
                 Err(e) => {
@@ -3410,7 +3419,7 @@ fn check_i6(
             }),
         }
         // I2 on the new ink, for the dragged element.
-        let ink2 = match SceneInk::reusing(&moved, codes, Some(ink)) {
+        let ink2 = match SceneInk::reusing(&moved, codes, Some(ink), at.scale) {
             Ok(ink2) => ink2,
             Err(e) => {
                 report.check(at, &m.name, Inv::I6, false, || e);

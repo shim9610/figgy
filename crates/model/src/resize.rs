@@ -113,6 +113,24 @@ pub trait Resizable<C: DragConfig = Config>: Selectable<C> {
         hit
     }
 
+    /// [`Self::resize_by`] with the pointer position `at` the delta was
+    /// measured from, for hosts that have it. A target stored in whole
+    /// pixels (a subplot frame, #205) steps by how far the rounded pointer
+    /// moved, so sub-pixel deltas add up; the default is
+    /// [`Self::resize_by`].
+    fn resize_from(
+        &self,
+        cfg: &mut C,
+        measure: &dyn MeasureText,
+        handle: ResizeHandle,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let _ = at;
+        self.resize_by(cfg, measure, handle, dx, dy)
+    }
+
     /// Default resize pipeline: each motion component routes through
     /// [`Config::nudge`] on its target element, so resize obeys exactly the
     /// same feasibility rules as dragging those elements directly.

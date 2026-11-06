@@ -641,6 +641,7 @@ fn below_places(document: &Config, panels: &[Config], index: usize) -> bool {
         return owns_backdrop(document, index);
     }
     let mut count = PaintCount::default();
+    // Only the count matters here, so the frame snap's scale is unused.
     emit_chart_chrome(
         panel,
         &crate::text_render::CpuTextMeasure::for_style(&panel.draw_style),
@@ -648,6 +649,7 @@ fn below_places(document: &Config, panels: &[Config], index: usize) -> bool {
             slot: Slot::Below,
             inner: &mut count,
         },
+        1.0,
     );
     count.0 > 0
 }
@@ -866,7 +868,13 @@ fn annotation_request(document: &Config) -> RasterRequest<'_> {
 /// Run every non-data pass's emit into `sink`: the chrome of a panel for
 /// its slot, or the annotation layer's slot. What the writer writes for the
 /// pass, part for part; the Milkyway backdrop is not a part.
-pub(crate) fn emit_pass(document: &Config, panels: &[Config], pass: &Pass, sink: &mut dyn Sink) {
+pub(crate) fn emit_pass(
+    document: &Config,
+    panels: &[Config],
+    pass: &Pass,
+    sink: &mut dyn Sink,
+    scale: f32,
+) {
     match *pass {
         Pass::Below(i) | Pass::Above(i) => {
             let panel = &panels[i];
@@ -882,6 +890,7 @@ pub(crate) fn emit_pass(document: &Config, panels: &[Config], pass: &Pass, sink:
                 panel,
                 &crate::text_render::CpuTextMeasure::for_style(&panel.draw_style),
                 &mut SlotFilter { slot, inner: sink },
+                scale,
             );
         }
         Pass::Underlay | Pass::Overlay => {
@@ -916,6 +925,7 @@ fn write_pass(
     document: &Config,
     panels: &[Config],
     pass: &Pass,
+    scale: f32,
 ) -> Result<()> {
     let clip = pass_clip(document, panels, pass);
     out.push_clip(clip);
@@ -946,7 +956,7 @@ fn write_pass(
             1.0,
             clip,
         );
-        emit_pass(document, panels, pass, &mut sink);
+        emit_pass(document, panels, pass, &mut sink, scale);
         sink.error.map_or(Ok(()), Err)
     })();
     out.pop_clip();
@@ -984,7 +994,13 @@ impl DocumentWriter {
                         return Ok(Some((range, area)));
                     }
                 }
-                pass => write_pass(out, frame.chart.config(), frame.panels(), &pass)?,
+                pass => write_pass(
+                    out,
+                    frame.chart.config(),
+                    frame.panels(),
+                    &pass,
+                    frame.scale,
+                )?,
             }
         }
         Ok(None)
@@ -1373,7 +1389,7 @@ pub fn written_document_parts(
                 let clip = pass_clip(&document, &panels, &pass);
                 let mut twin =
                     PartsTwin::new(out, FontPolicy::for_style(style), [0.0, 0.0], 1.0, clip);
-                emit_pass(&document, &panels, &pass, &mut twin);
+                emit_pass(&document, &panels, &pass, &mut twin, scale);
             }
         }
     }
@@ -1394,7 +1410,7 @@ mod tests {
         let mut passes = Passes::new();
         while let Some(pass) = passes.next(config, panels) {
             if !matches!(pass, Pass::Data(_)) {
-                write_pass(&mut out, config, panels, &pass).unwrap();
+                write_pass(&mut out, config, panels, &pass, 1.0).unwrap();
             }
         }
         out.finish()
@@ -1429,7 +1445,7 @@ mod tests {
         let mut passes = Passes::new();
         while let Some(pass) = passes.next(&config, panels) {
             if !matches!(pass, Pass::Data(_)) {
-                write_pass(&mut out, &config, panels, &pass).unwrap();
+                write_pass(&mut out, &config, panels, &pass, 1.0).unwrap();
             }
         }
         let pdf = out.finish().unwrap();
@@ -1652,9 +1668,9 @@ mod tests {
                         }
                         let clip = pass_clip(&placed, slice, &pass);
                         assert!(clip.width > 0 && clip.height > 0, "{pass:?}");
-                        emit_pass(&placed, slice, &pass, &mut PaintCount::default());
-                        write_pass(&mut svg, &placed, slice, &pass).unwrap();
-                        write_pass(&mut pdf, &placed, slice, &pass).unwrap();
+                        emit_pass(&placed, slice, &pass, &mut PaintCount::default(), scale);
+                        write_pass(&mut svg, &placed, slice, &pass, scale).unwrap();
+                        write_pass(&mut pdf, &placed, slice, &pass, scale).unwrap();
                     }
                     assert_eq!(data_end, n);
                     assert_eq!(above, n);

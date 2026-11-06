@@ -25,7 +25,6 @@ use super::gallery::chart;
 use super::nist_csv::{self, LevelRow, Levels, LineRow};
 use renderer::config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category, CategoryGroup, CategoryGroups,
-    TickVisibility,
 };
 use renderer::energy_levels::{
     EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelBand, LevelRole, Transition,
@@ -200,11 +199,9 @@ fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
         axis.label_style.font_size = 18.0;
         axis.title_option.text.font_size = 20.0;
     }
-    config.grid.show_major_x = false;
-    config.grid.show_major_y = false;
-    config.grid.show_minor_y = false;
-    config.top_x.tick = TickVisibility::None;
-    config.right_y.tick = TickVisibility::None;
+    // The Grotrian preset (#205): no grid, no mirrored ticks. Each diagram
+    // adds and sizes its own break afterwards.
+    config.apply_axis_preset(renderer::AxisPreset::Grotrian);
     config.bottom_x.categories = Some(categories);
     config.bottom_x.out_margin = 84.0;
     c
@@ -251,7 +248,7 @@ fn break_sized(
         style: AxisBreakStyle::Continuous,
         gap: 0.015,
         mark: BreakMark::default(),
-        frame_each_panel: false,
+        frame_each_panel: true,
         sizing,
     });
 }

@@ -59,6 +59,15 @@ pub enum Element {
     /// `bottom_x` (#203). A drag updates the axis'
     /// `category_groups.offset`.
     CategoryGroupLabel(Side),
+    /// Subplot `i`'s frame, its `chart_area` (#205): a drag moves the
+    /// subplot, plot and decorations together, by whole pixels. A frame may
+    /// go anywhere; one moved past the document's top or left edge shifts
+    /// the whole document so its coordinates stay non-negative.
+    SubplotFrame(usize),
+    /// One edge of subplot `i`'s frame: the resize target of its handles,
+    /// mirroring [`Self::DataAreaEdge`]. The subplot's plot must stay
+    /// feasible inside the resized frame.
+    SubplotFrameEdge(usize, Side),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,7 +149,9 @@ impl Config {
             | Element::ColorBarAxis
             | Element::DataAreaEdge(_)
             | Element::DataArea
-            | Element::ColorBarEdge(_) => return None,
+            | Element::ColorBarEdge(_)
+            | Element::SubplotFrame(_)
+            | Element::SubplotFrameEdge(..) => return None,
         })
     }
 
@@ -198,7 +209,9 @@ impl Config {
             | Element::ColorBarAxis
             | Element::DataAreaEdge(_)
             | Element::DataArea
-            | Element::ColorBarEdge(_) => {}
+            | Element::ColorBarEdge(_)
+            | Element::SubplotFrame(_)
+            | Element::SubplotFrameEdge(..) => {}
         }
     }
 
@@ -254,6 +267,10 @@ impl Config {
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
+        // A subplot's frame belongs to the document, whatever the chart.
+        if let Element::SubplotFrame(_) | Element::SubplotFrameEdge(..) = element {
+            return self.nudge_subplot_frame(&element, at, dx, dy);
+        }
         if self.polar().is_some() {
             match &element {
                 Element::Axis(side) => return self.nudge_polar_axis(side.clone(), at, dx, dy),
@@ -322,6 +339,101 @@ impl Config {
             self.set_offset(&element, previous);
             return reject;
         }
+        NudgeResult::Moved
+    }
+
+    /// Subplot frame rule (#205): translate subplot `i`'s `chart_area`, or
+    /// move one of its edges, by whole pixels. With the pointer `at`, the
+    /// step is how far the rounded pointer moved, so sub-pixel deltas add
+    /// up across moves; without it the delta is rounded. A frame moved past
+    /// the top or left edge shifts every chart area by the overshoot, so
+    /// the layout keeps its shape in non-negative coordinates. An edge move
+    /// is rejected when the frame would lose its last pixel or the
+    /// subplot's plot would not fit in it ([`Self::data_area`]).
+    fn nudge_subplot_frame(
+        &mut self,
+        element: &Element,
+        at: Option<[f32; 2]>,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let (index, edge) = match element {
+            Element::SubplotFrame(index) => (*index, None),
+            Element::SubplotFrameEdge(index, side) => (*index, Some(side)),
+            _ => return reject,
+        };
+        let Some(rect) = self.subplots.get(index).map(|s| s.config.chart_area.0) else {
+            return reject;
+        };
+        let step = |from: Option<f32>, delta: f32| -> i64 {
+            let moved = match from {
+                Some(from) => (from + delta).round() - from.round(),
+                None => delta.round(),
+            };
+            if moved.is_finite() { moved as i64 } else { 0 }
+        };
+        let sx = step(at.map(|p| p[0]), dx);
+        let sy = step(at.map(|p| p[1]), dy);
+        let (mut x, mut y) = (i64::from(rect.x), i64::from(rect.y));
+        let (mut w, mut h) = (i64::from(rect.width), i64::from(rect.height));
+        match edge {
+            None => {
+                x += sx;
+                y += sy;
+            }
+            Some(Side::Left) => {
+                x += sx;
+                w -= sx;
+            }
+            Some(Side::Right) => w += sx,
+            Some(Side::Top) => {
+                y += sy;
+                h -= sy;
+            }
+            Some(Side::Bottom) => h += sy,
+        }
+        if (x, y, w, h)
+            == (
+                i64::from(rect.x),
+                i64::from(rect.y),
+                rect.width.into(),
+                rect.height.into(),
+            )
+        {
+            return reject;
+        }
+        let (shift_x, shift_y) = ((-x).max(0), (-y).max(0));
+        let fits = |v: i64| u32::try_from(v).ok();
+        let (Some(nx), Some(ny), Some(nw), Some(nh)) =
+            (fits(x + shift_x), fits(y + shift_y), fits(w), fits(h))
+        else {
+            return reject;
+        };
+        let moved = super::Rect {
+            x: nx,
+            y: ny,
+            width: nw,
+            height: nh,
+        };
+        if nw == 0 || nh == 0 || nx.checked_add(nw).is_none() || ny.checked_add(nh).is_none() {
+            return reject;
+        }
+        // The plot depends on the frame's size only, so a translation never
+        // needs the check.
+        if edge.is_some() {
+            let Some(mut probe) = self.subplot_config(index) else {
+                return reject;
+            };
+            probe.chart_area.0 = moved;
+            if probe.data_area().is_err() {
+                return reject;
+            }
+        }
+        if shift_x > 0 || shift_y > 0 {
+            self.translate_areas(shift_x, shift_y);
+        }
+        self.subplots[index].config.chart_area.0 = moved;
         NudgeResult::Moved
     }
 

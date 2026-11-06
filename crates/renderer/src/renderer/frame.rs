@@ -93,6 +93,22 @@ pub fn display_config_for_surface(
     (display_config, panel_rect, scale)
 }
 
+/// `config` scaled by `scale` and moved so its parent's `chart_area` starts
+/// at `origin` on the surface: a held display placement
+/// ([`Renderer::hold_chart_display`], #205). Areas moved off the surface's
+/// top or left edge stop at it.
+pub(super) fn held_display_config(
+    config: &Config,
+    scale: f32,
+    origin: [i64; 2],
+) -> (Config, Rect, f32) {
+    let mut placed = config.scaled(scale);
+    let at = placed.chart_area.0;
+    placed.translate_areas(origin[0] - i64::from(at.x), origin[1] - i64::from(at.y));
+    let panel_rect = placed.chart_area.0;
+    (placed, panel_rect, scale)
+}
+
 /// `config` scaled by `scale` and moved so its document area starts at
 /// `document_rect`'s origin. A document without subplots is placed exactly
 /// as before subplots existed: its `chart_area` becomes `document_rect`.
@@ -1561,6 +1577,11 @@ pub struct ChartView {
     pub(super) stream_revision: Arc<std::sync::atomic::AtomicU64>,
     /// Panel pixel rect in surface coordinates.
     pub(super) panel_rect: Rect,
+    /// The display or export scale the view's rasters were drawn at
+    /// ([`Renderer::create_chart_view_at`],
+    /// [`Renderer::refresh_axis_with_selection_at`]; 1 otherwise), the one a
+    /// broken axis' piece frames snapped on (#205).
+    pub(super) display_scale: f32,
     /// Generation of the renderer's cached constellation backdrop currently
     /// uploaded into `grid_texture` (`None` = non-cached content). Lets
     /// `refresh_axis` skip the full-panel texture write on cache hits.
@@ -1593,6 +1614,9 @@ pub(super) struct PanelRasterKey {
     pub(super) selection: Vec<crate::select::SelectionBox>,
     pub(super) font_generation: u64,
     pub(super) panel_rect: Rect,
+    /// The display or export scale the raster snapped its piece frames on
+    /// (#205).
+    pub(super) scale: f32,
 }
 
 impl PanelRasterKey {
@@ -1603,6 +1627,7 @@ impl PanelRasterKey {
         selection: &[crate::select::SelectionBox],
         font_generation: u64,
         panel_rect: Rect,
+        scale: f32,
     ) -> Self {
         let mut config = config.clone();
         config.annotations = crate::AnnotationLayer::default();
@@ -1611,6 +1636,7 @@ impl PanelRasterKey {
             selection: selection.to_vec(),
             font_generation,
             panel_rect,
+            scale,
         }
     }
 }
@@ -1883,10 +1909,11 @@ pub(super) fn raster_panel_layers(
     overlay: bool,
     selection: &[crate::select::SelectionBox],
     grid: bool,
+    scale: f32,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let milkyway = matches!(config.draw_style, DrawStyle::Milkyway(_));
     let (grid_rgba, dec_rgba) =
-        axis_render::raster_panel_layers(config, selection, grid && !(overlay && milkyway))?;
+        axis_render::raster_panel_layers(config, selection, grid && !(overlay && milkyway), scale)?;
     if grid && overlay && milkyway {
         let (w, h) = (config.chart_area.0.width, config.chart_area.0.height);
         let len = (w as usize)
@@ -2129,19 +2156,37 @@ impl Renderer {
     /// bind groups, plus the transform uniform buffer + bind group.
     /// `panel_rect` is the panel's pixel rect in surface coordinates.
     /// `chart.config_mut().chart_area` must match `panel_rect` before this
-    /// call so the axis raster is drawn correctly.
+    /// call so the axis raster is drawn correctly. The chart is taken as
+    /// stored (scale 1): [`Self::create_chart_view_at`] takes a placed or
+    /// exported one.
     pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
+        self.create_chart_view_at(chart, panel_rect, 1.0)
+    }
+
+    /// [`Self::create_chart_view`] for a `chart` whose pixel values carry
+    /// the display or export `scale` (#205): the view's rasters snap a
+    /// broken axis' piece frames to whole logical pixels, then scale, so a
+    /// 2x raster is the 1x raster doubled. The view keeps the scale for
+    /// [`Self::refresh_axis`] and [`Self::refresh_axis_with_selection`].
+    pub fn create_chart_view_at(
+        &self,
+        chart: &Chart,
+        panel_rect: Rect,
+        scale: f32,
+    ) -> Result<ChartView> {
         self.health.check()?;
         let panels = expand_for_render(chart.config())?;
         let places = panel_places(chart.config(), &panels, panel_rect);
         let font_generation = crate::text_render::font_generation();
-        let mut view = self.create_panel_view(&panels[0], panel_rect, false, font_generation)?;
+        let mut view =
+            self.create_panel_view(&panels[0], panel_rect, false, font_generation, scale)?;
         for (panel, place) in panels[1..].iter().zip(&places[1..]) {
             view.overlay_views.push(self.create_panel_view(
                 panel,
                 place.rect,
                 !place.draws_backdrop,
                 font_generation,
+                scale,
             )?);
         }
         // Annotation layer: two optional textures from one shared raster
@@ -2175,6 +2220,7 @@ impl Renderer {
         panel_rect: Rect,
         overlay: bool,
         font_generation: u64,
+        scale: f32,
     ) -> Result<ChartView> {
         let (w, h) = checked_panel_raster_size(self.caps, config, panel_rect)?;
 
@@ -2182,7 +2228,7 @@ impl Renderer {
         // data) and the decoration (drawn above). An overlay panel in the
         // Milkyway style gets a transparent grid: the backdrop is the base
         // panel's.
-        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, &[], true)?;
+        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, &[], true, scale)?;
         let grid = self.create_layer_texture(&grid_rgba, w, h)?;
         let decoration = self.create_layer_texture(&dec_rgba, w, h)?;
 
@@ -2219,6 +2265,7 @@ impl Renderer {
             content_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             stream_revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             panel_rect,
+            display_scale: scale,
             grid_space_gen: None,
             tick_warnings: axis_render::tick_warnings(config),
             render_warnings: Vec::new(),
@@ -2228,6 +2275,7 @@ impl Renderer {
                 &[],
                 font_generation,
                 panel_rect,
+                scale,
             )),
             raster_generation: 1,
         })
@@ -2419,7 +2467,27 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<&str>,
     ) -> Result<()> {
-        let result = self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected);
+        let scale = view.display_scale;
+        let result =
+            self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected, scale);
+        self.reported(result)
+    }
+
+    /// [`Self::refresh_axis_with_selection`] for a `chart` whose pixel
+    /// values carry the display or export `scale` (#205), which the view
+    /// then keeps: a host that shows a document scaled to its surface passes
+    /// the placement's scale with the placed chart, so a broken axis' piece
+    /// frames snap to whole logical pixels and 2x stays 1x doubled.
+    pub fn refresh_axis_with_selection_at(
+        &mut self,
+        view: &mut ChartView,
+        chart: &Chart,
+        panel_rect: Rect,
+        selected: Option<&str>,
+        scale: f32,
+    ) -> Result<()> {
+        let result =
+            self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected, scale);
         self.reported(result)
     }
 
@@ -2429,8 +2497,10 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<&str>,
+        scale: f32,
     ) -> Result<()> {
         self.health.check()?;
+        view.display_scale = scale;
         let selection: Vec<crate::select::SelectionBox> = selected
             .and_then(|id| self.selection_box(chart, id))
             .into_iter()
@@ -2450,6 +2520,7 @@ impl Renderer {
                 place.rect,
                 !place.draws_backdrop,
                 font_generation,
+                scale,
             )?;
             view.overlay_views.push(layer);
         }
@@ -2470,6 +2541,7 @@ impl Renderer {
                 &routed[index],
                 !places[index].draws_backdrop,
                 font_generation,
+                scale,
             )?;
         }
         view.panel_rect = panel_rect;
@@ -2511,9 +2583,10 @@ impl Renderer {
         selection: &[crate::select::SelectionBox],
         overlay: bool,
         font_generation: u64,
+        scale: f32,
     ) -> Result<()> {
         let (w, h) = checked_panel_raster_size(self.caps, config, panel_rect)?;
-        let key = PanelRasterKey::new(config, selection, font_generation, panel_rect);
+        let key = PanelRasterKey::new(config, selection, font_generation, panel_rect, scale);
         if view.raster_key.as_ref() == Some(&key) {
             // Same raster: the revisions still advance so a token prepared
             // before this call is retired, exactly as for a real rewrite.
@@ -2532,7 +2605,8 @@ impl Renderer {
         // Milkyway style takes its grid texture from the cached backdrop
         // instead of a grid raster.
         let backdrop = matches!(config.draw_style, DrawStyle::Milkyway(_)) && !overlay;
-        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, selection, !backdrop)?;
+        let (grid_rgba, dec_rgba) =
+            raster_panel_layers(config, overlay, selection, !backdrop, scale)?;
         if view.panel_rect != panel_rect {
             view.advance_stream_revision()?;
         }
