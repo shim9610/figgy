@@ -1839,6 +1839,15 @@ impl Spans {
     };
 
     fn push(&mut self, t0: f64, t1: f64) {
+        // A circle meets a rectangle at most 8 times, so a path within one
+        // has at most 5 visible spans and the slots never fill: widening
+        // the last over hidden range would sample off-screen length.
+        // `spans_never_overflow_for_lines_and_arcs_crossing_a_plot`
+        // exercises this.
+        debug_assert!(
+            self.len < SPAN_SLOTS || self.spans[self.len - 1][1] >= t0,
+            "a path's visible spans overflowed SPAN_SLOTS"
+        );
         if let Some(last) = self.len.checked_sub(1)
             && (self.spans[last][1] >= t0 || self.len == SPAN_SLOTS)
         {
@@ -2046,18 +2055,18 @@ impl Placed<'_> {
         let Some((rank, count, from_low)) = self.topology.fan(series, index) else {
             return 0.0;
         };
+        // In f64: a rank and a count are exact there to 2^53 lines, where
+        // f32 would merge ranks past 2^24.
+        let fan_step = f64::from(series.style.fan_step);
         let step = if count > 1 {
-            series
-                .style
-                .fan_step
-                .min(2.0 * MAX_BEND / (count - 1) as f32)
+            fan_step.min(2.0 * f64::from(MAX_BEND) / (count - 1) as f64)
         } else {
-            series.style.fan_step
+            fan_step
         };
-        let canonical = (count as f32 - 1.0) / 2.0 - rank as f32;
+        let canonical = (count as f64 - 1.0) / 2.0 - rank as f64;
         // The fan is laid out from the lower row; a line running the other
         // way bends the other way to land on the same arc.
-        canonical * step * if from_low { 1.0 } else { -1.0 }
+        (canonical * step * if from_low { 1.0 } else { -1.0 }) as f32
     }
 
     /// The geometry of propagator `index`, or `None` when an end is not

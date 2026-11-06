@@ -939,3 +939,72 @@ fn a_feynman_label_moves_by_part_and_row_not_by_a_value_label_index() {
         "a new vertex leaves the propagator label's identity"
     );
 }
+
+// SPAN_SLOTS (#234, item 13): straight lines and arcs of every bend,
+// crossing, grazing, entering, leaving and missing a plot, at every
+// direction and every scale from a pixel to a billion pixels long. Each
+// path's spans fit the slots without the widening fallback (the
+// debug_assert in `Spans::push` fires otherwise), and no path has more than
+// the five visible pieces a circle can make in a rectangle.
+#[test]
+fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
+    let plot = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 100.0,
+    };
+    let mut paths = 0usize;
+    let mut most = 0usize;
+    let centres = [
+        [100.0f32, 50.0],
+        [0.0, 0.0],
+        [200.0, 100.0],
+        [-30.0, 50.0],
+        [100.0, 140.0],
+    ];
+    for centre in centres {
+        for scale in [1.0f32, 30.0, 300.0, 3e4, 3e6, 1e9] {
+            for k in 0..24 {
+                let angle = k as f32 * std::f32::consts::TAU / 24.0;
+                let d = [scale * angle.cos(), scale * angle.sin()];
+                let (a, b) = (sub(centre, d), add(centre, scale_v(d, 0.7)));
+                for half in [0.0f32, 1e-9, 1e-4, 0.05, 0.4, 1.0, 1.6, 2.3, 2.96] {
+                    for sign in [1.0f32, -1.0] {
+                        let base = if half == 0.0 {
+                            Base::Line { a, b }
+                        } else {
+                            Base::Bow {
+                                a,
+                                b,
+                                half: sign * half,
+                            }
+                        };
+                        let spans = base.spans_within(plot);
+                        most = most.max(spans.iter().count());
+                        paths += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Loops of every size about every place.
+    for centre in centres {
+        for radius in [0.5f32, 18.0, 90.0, 500.0] {
+            let spans = Base::Ring {
+                centre,
+                radius,
+                start: 0.3,
+            }
+            .spans_within(plot);
+            most = most.max(spans.iter().count());
+            paths += 1;
+        }
+    }
+    assert!(most <= 5, "{most} spans in one path");
+    assert!(paths > 10_000, "{paths} paths");
+}
+
+fn scale_v(a: [f32; 2], s: f32) -> [f32; 2] {
+    [a[0] * s, a[1] * s]
+}

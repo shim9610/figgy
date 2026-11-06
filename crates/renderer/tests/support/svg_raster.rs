@@ -424,7 +424,7 @@ pub fn assert_same_picture(
     };
     let painted =
         |img: &renderer::RasterImage, x: u32, y: u32| img.rgba[((y * w + x) * 4 + 3) as usize] > 16;
-    let near = |img: &renderer::RasterImage, x: u32, y: u32| {
+    let near = |img: &renderer::RasterImage, x: u32, y: u32, reach: u32| {
         (y.saturating_sub(reach)..=(y + reach).min(h - 1)).any(|py| {
             (x.saturating_sub(reach)..=(x + reach).min(w - 1)).any(|px| painted(img, px, py))
         })
@@ -448,31 +448,50 @@ pub fn assert_same_picture(
             })
         })
     };
+    // Counted, not stopped at the first: the PR reports every count, so a
+    // small shift shows in the numbers before it fails.
     let (mut ink, mut compared) = (0usize, 0usize);
+    let (mut outside, mut beyond_one) = (0usize, 0usize);
+    let (mut off_colour, mut over_two) = (0usize, 0usize);
+    let mut first: Option<String> = None;
     for y in 0..h {
         for x in 0..w {
             for (a, b, which) in [(png, file, "PNG"), (file, png, "file")] {
                 if inked(a, x, y) {
-                    assert!(
-                        near(b, x, y),
-                        "{context}: the {which} inks ({x}, {y}) and the other paints nothing within {reach} px"
-                    );
+                    if !near(b, x, y, reach) {
+                        outside += 1;
+                        first.get_or_insert_with(|| {
+                            format!("the {which} inks ({x}, {y}) and the other paints nothing within {reach} px")
+                        });
+                    }
+                    beyond_one += usize::from(!near(b, x, y, 1));
                 }
             }
             ink += usize::from(inked(png, x, y));
             if inside(x, y) {
                 let i = ((y * w + x) * 4) as usize;
-                for k in 0..3 {
-                    let d = png.rgba[i + k].abs_diff(file.rgba[i + k]);
-                    assert!(
-                        d <= tolerance,
-                        "{context}: the colour at ({x}, {y}) differs by {d} in channel {k}"
-                    );
+                let d = (0..3)
+                    .map(|k| png.rgba[i + k].abs_diff(file.rgba[i + k]))
+                    .max()
+                    .unwrap_or(0);
+                if d > tolerance {
+                    off_colour += 1;
+                    first.get_or_insert_with(|| format!("the colour at ({x}, {y}) differs by {d}"));
                 }
+                over_two += usize::from(d > 2);
                 compared += 1;
             }
         }
     }
+    eprintln!(
+        "picture {context}: {ink} inked px; outside {reach} px: {outside}, colour over {tolerance}/255: {off_colour} \
+         (of {compared} compared); beyond 1 px: {beyond_one}, colour over 2/255: {over_two}"
+    );
+    assert!(
+        outside == 0 && off_colour == 0,
+        "{context}: {outside} px outside {reach} px, {off_colour} px over {tolerance}/255; first: {}",
+        first.unwrap_or_default()
+    );
     assert!(ink > 0, "{context}: the PNG draws nothing to compare");
     assert!(
         compared > 0,
