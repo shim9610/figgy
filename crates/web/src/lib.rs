@@ -351,6 +351,7 @@ fn prepare_demo_declarations(
                 | DataRenderType::RgbImage { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,
                 DataRenderType::EnergyLevels(levels) => levels.style.level.color,
+                DataRenderType::Feynman(diagram) => diagram.style.color,
                 DataRenderType::Streamlines { line, .. }
                 | DataRenderType::Parallel { line, .. } => line.line_color,
                 DataRenderType::Ternary { scatter, line, .. } => scatter

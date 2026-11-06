@@ -243,6 +243,8 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
+                // A Feynman series maps no value (#234).
+                DataRenderType::Feynman(_) => {}
                 // An energy-level series' mapped transition values are SSOT
                 // (#203): each finite one widens the extent.
                 DataRenderType::EnergyLevels(levels) => {

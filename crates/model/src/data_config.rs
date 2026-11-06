@@ -412,6 +412,14 @@ pub enum DataRenderType {
     /// [`crate::energy_levels`] and
     /// [`Config::validate_energy_levels`](crate::config::Config::validate_energy_levels).
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    /// A Feynman diagram (#234): vertices, the propagators that join them
+    /// and their particles. DataLess: every value is SSOT configuration
+    /// ([`FeynmanSeries`](crate::feynman::FeynmanSeries)), so `x_column` and
+    /// `y_column` stay empty and nothing is registered. A vertex position
+    /// is optional; the automatic layout places the rest. Drawn through the
+    /// CPU sink and composited after the GPU data. See [`crate::feynman`]
+    /// and [`Config::validate_feynman`](crate::config::Config::validate_feynman).
+    Feynman(crate::feynman::FeynmanSeries),
 }
 
 /// Markers, a line and error bars over a series' x and y columns: the
@@ -779,6 +787,7 @@ impl From<WireRenderType> for DataRenderType {
                 color_column,
             },
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
+            WireRenderType::Feynman(diagram) => DataRenderType::Feynman(diagram),
         }
     }
 }
@@ -991,6 +1000,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                 color_column,
             },
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
+            DataRenderType::Feynman(diagram) => WireRenderType::Feynman(diagram),
         })
     }
 }
@@ -1550,6 +1560,7 @@ pub(crate) enum WireRenderType {
         color_column: Option<ColumnId>,
     },
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    Feynman(crate::feynman::FeynmanSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -3280,6 +3291,7 @@ impl DataRenderType {
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
@@ -5465,7 +5477,9 @@ impl DataRenderType {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::RangeBars { .. }
             // Its transitions step as points by their own rule (#203).
-            | DataRenderType::EnergyLevels(_) => false,
+            | DataRenderType::EnergyLevels(_)
+            // Its vertices and propagators step by their own rule (#234).
+            | DataRenderType::Feynman(_) => false,
         }
     }
 }
@@ -5545,6 +5559,12 @@ impl crate::config::Config {
         // An energy-level series steps over the rows of its SSOT (#203).
         if series[position].energy_levels().is_some() {
             return Ok(crate::energy_levels::stepped_selection(
+                series, position, reference, dx, dy,
+            ));
+        }
+        // A Feynman series steps over the rows of its SSOT (#234).
+        if series[position].feynman().is_some() {
+            return Ok(crate::feynman::stepped_selection(
                 series, position, reference, dx, dy,
             ));
         }
@@ -5743,7 +5763,13 @@ impl crate::config::Config {
                     ),
                 })
             }
-            PickedDataRef::ContourLevel { .. } | PickedDataRef::ValueLabel { .. } => None,
+            PickedDataRef::ContourLevel { .. }
+            | PickedDataRef::ValueLabel { .. }
+            // A Feynman part on another kind of series names nothing to
+            // step (#234).
+            | PickedDataRef::FeynmanVertex { .. }
+            | PickedDataRef::FeynmanPropagator { .. }
+            | PickedDataRef::FeynmanLabel { .. } => None,
         })
     }
 }
@@ -9794,8 +9820,8 @@ impl SeriesConfig {
     /// columns, and a vector field's components and colour. Records and
     /// ragged columns are visited by [`Self::visit_composite_columns`].
     pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
-        // A DataLess energy-level series reads no column (#203).
-        if self.energy_levels().is_some() {
+        // A DataLess series reads no column (#203, #234).
+        if self.is_dataless() {
             return;
         }
         visit(&self.x_column);
@@ -9847,6 +9873,7 @@ impl SeriesConfig {
             // Nothing beyond what is visited above.
             DataRenderType::Xy(_)
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}

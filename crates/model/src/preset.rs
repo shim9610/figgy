@@ -277,6 +277,11 @@ impl ColorCycle {
             DataRenderType::EnergyLevels(levels) => {
                 levels.style.level.color = c;
             }
+            // The lines take the cycle colour; per-line overrides stay
+            // (#234).
+            DataRenderType::Feynman(diagram) => {
+                diagram.style.color = c;
+            }
             // The contour line joins the cycle like any other line. The fill
             // does not: its colours come from the colormap, and overwriting one
             // of them with a cycle entry would make the colourbar lie.

@@ -82,6 +82,11 @@ pub(crate) const STREAMED_STEM_REASON: &str =
 pub(crate) const STREAMED_ENERGY_LEVELS_REASON: &str =
     "energy-level series are DataLess (SSOT only); streamed displays do not draw them";
 
+/// Why a Feynman series in a streamed display is rejected (CLAUDE.md rule
+/// 8, #234): it is DataLess, so no stream can feed it.
+pub(crate) const STREAMED_FEYNMAN_REASON: &str =
+    "Feynman series are DataLess (SSOT only); streamed displays do not draw them";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => true,
@@ -99,7 +104,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => false,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::Feynman(_) => false,
     }
 }
 
@@ -858,6 +864,11 @@ fn stream_draw_phases(
         DataRenderType::EnergyLevels(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
             reason: STREAMED_ENERGY_LEVELS_REASON.into(),
+        }
+        .into()),
+        DataRenderType::Feynman(_) => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: STREAMED_FEYNMAN_REASON.into(),
         }
         .into()),
         DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. })

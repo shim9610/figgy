@@ -36,6 +36,27 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A DataLess series kind, `DataRenderType::Feynman(FeynmanSeries)`: the
+  topology is the data (vertices with an incoming, outgoing or internal
+  role, propagators naming two vertices and a `ParticleLine`: plain,
+  fermion, antifermion, photon, charged boson, gluon, scalar, charged
+  scalar, ghost, Majorana, graviton, double line), with optional vertex
+  positions, markers, bends, labels and momentum arrows.
+  `FeynmanSeries::positions` places every unplaced vertex by a deterministic
+  layout (legs on the early and late edges of the frame, the rest at the
+  mean of their neighbours, solved by conjugate gradients; bubbles on a
+  circle), and `auto_layout` commits it into `at`, the auto-fit pattern.
+  `FeynmanPlacement` places, emits (through `Sink::path` for arcs, waves and
+  coils) and picks a diagram from one placement; `drag_vertex` (which
+  commits the layout on the first drag), `drag_bend` and `drag_label` edit
+  it; `Config::validate_feynman` holds a series to a rectangular chart with
+  a numeric `bottom_x`. `PickedDataRef` gains `FeynmanVertex`,
+  `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,
+  `feynman_propagator`, `feynman_label`), stepped by `step_selection` over
+  the rows and the Feynman series. `SeriesConfig::is_dataless` names the
+  energy-level and Feynman kinds. No count limit. Migration: an exhaustive
+  match on `DataRenderType` or `PickedDataRef` adds the new arms.
 - **Stroked paths in the sink** ([#234](https://github.com/shim9610/figgy/issues/234)).
   `Sink::path(slot, &[PathSegment], &StrokeStyle)` places a stroked path of
   straight and cubic segments, stroked as one path so a dash runs along it

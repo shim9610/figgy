@@ -277,7 +277,7 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>;
-        let rules: [(&'static str, Rule); 11] = [
+        let rules: [(&'static str, Rule); 12] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
@@ -285,6 +285,7 @@ impl Config {
             ("ternary", Config::validate_ternary_series),
             ("parallel", Config::validate_parallel_series),
             ("energy_levels", Config::validate_energy_levels),
+            ("feynman", Config::validate_feynman),
             ("view_3d", Config::validate_view3d_series),
             ("hexagonal", Config::validate_hexagonal_series),
             ("rgb_image", Config::validate_rgb_image_series),
@@ -382,6 +383,9 @@ impl Config {
             }
             DataRenderType::EnergyLevels(_) => {
                 return Err("energy-level series are not drawn on polar axes");
+            }
+            DataRenderType::Feynman(_) => {
+                return Err("Feynman series are not drawn on polar axes");
             }
             DataRenderType::Ternary { .. } => {
                 return Err("ternary series are drawn on ternary charts, not polar axes");

@@ -187,7 +187,9 @@ impl GpuSeriesFitMode {
             // A parallel chart's axes are the categorical positions and the
             // normalized band; each parallel axis fits from its column's
             // statistics (`Chart::auto_fit_parallel_axes`).
-            DataRenderType::Parallel { .. } | DataRenderType::EnergyLevels(_) => return None,
+            DataRenderType::Parallel { .. }
+            | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_) => return None,
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -278,6 +280,7 @@ impl GpuSeriesExtentMode {
             // A DataLess energy-level series has no column to fit; its
             // extent is read from the SSOT (#203).
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Field(_)
             | DataRenderType::RgbImage { .. } => None,
         }
