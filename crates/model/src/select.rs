@@ -280,6 +280,18 @@ pub fn part_outline(part: &DrawnPart) -> PartOutline {
         DrawnPart::Polygon { points, width } => {
             PartOutline::Polygon(padded_polygon(points, width * 0.5 + SELECTION_PADDING))
         }
+        DrawnPart::Path { width, .. } => {
+            // The extent of the path's points, which bounds the curve.
+            let r = part
+                .extent()
+                .expanded(SELECTION_PADDING.max(STROKE_GRAB_HALF_WIDTH - width * 0.5));
+            PartOutline::Quad([
+                [r.x, r.y],
+                [r.x + r.width, r.y],
+                [r.x + r.width, r.y + r.height],
+                [r.x, r.y + r.height],
+            ])
+        }
         &DrawnPart::Text(r) | &DrawnPart::Rect(r) => {
             let r = r.expanded(SELECTION_PADDING);
             PartOutline::Quad([

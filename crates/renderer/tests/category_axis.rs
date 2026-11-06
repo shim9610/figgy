@@ -340,6 +340,7 @@ impl Sink for TextLog {
     fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
     fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<Border<'_>>) {}
     fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn path(&mut self, _: Slot, _: &[renderer::sink::PathSegment], _: &StrokeStyle<'_>) {}
     fn polygon(&mut self, _: Slot, _: &[[f32; 2]], _: Option<Color>, _: Option<&StrokeStyle<'_>>) {}
     fn ramp(&mut self, _: Slot, _: RectF, _: &ColorBarOptions) {}
 }

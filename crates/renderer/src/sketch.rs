@@ -212,18 +212,11 @@ pub(crate) fn sketch_line(
 }
 
 /// One segment of a smoothed path: [`smooth_cubics`] hands these out in
-/// path order.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum PathSegment {
-    /// Start a subpath.
-    Move((f32, f32)),
-    /// A straight segment to the point.
-    Line((f32, f32)),
-    /// A cubic Bézier segment: two control points, then the end point.
-    Cubic((f32, f32), (f32, f32), (f32, f32)),
-    /// Close the subpath (glyph outlines; a smoothed stroke never closes).
-    Close,
-}
+/// path order. The model's stroked-path segment ([`Sink::path`]), which
+/// the vector writers take too.
+///
+/// [`Sink::path`]: crate::sink::Sink::path
+pub(crate) use crate::sink::PathSegment;
 
 /// The smooth path through `points`: a uniform Catmull–Rom spline as cubic
 /// Bézier segments, the pen-stroke look of the sketch stroker. Non-finite

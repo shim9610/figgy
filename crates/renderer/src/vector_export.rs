@@ -159,6 +159,11 @@ impl Sink for SlotFilter<'_> {
             self.inner.triangle(slot, points, color);
         }
     }
+    fn path(&mut self, slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>) {
+        if slot == self.slot {
+            self.inner.path(slot, segments, style);
+        }
+    }
     fn polygon(
         &mut self,
         slot: Slot,
@@ -193,6 +198,9 @@ impl Sink for PaintCount {
     }
     fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], color: Color) {
         self.0 += usize::from(color.a > 0.0);
+    }
+    fn path(&mut self, _: Slot, _: &[PathSegment], style: &StrokeStyle<'_>) {
+        self.0 += usize::from(style.color.a > 0.0);
     }
     fn polygon(
         &mut self,
@@ -505,6 +513,40 @@ impl Sink for VectorSink<'_> {
             });
         }
         self.out.segment(PathSegment::Close);
+        self.out.end_path();
+    }
+
+    fn path(&mut self, _slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>) {
+        if style.color.a <= 0.0 {
+            return;
+        }
+        // As the canvas: one path, a width under a pixel raised to one, the
+        // dash scaled, the shape as placed in every style.
+        let width = (style.width * self.scale).max(1.0);
+        let mut scaled = [0.0f32; 8];
+        let n = style.dash.len().min(scaled.len());
+        for (slot, value) in scaled.iter_mut().zip(style.dash) {
+            *slot = value * self.scale;
+        }
+        let dash = valid_dash(&scaled[..n]);
+        self.out.begin_path(PathPaint::Stroke {
+            color: style.color,
+            width,
+            dash,
+        });
+        for segment in segments {
+            let mapped = match *segment {
+                PathSegment::Move(p) => PathSegment::Move(self.point([p.0, p.1])),
+                PathSegment::Line(p) => PathSegment::Line(self.point([p.0, p.1])),
+                PathSegment::Cubic(c1, c2, p) => PathSegment::Cubic(
+                    self.point([c1.0, c1.1]),
+                    self.point([c2.0, c2.1]),
+                    self.point([p.0, p.1]),
+                ),
+                PathSegment::Close => PathSegment::Close,
+            };
+            self.out.segment(mapped);
+        }
         self.out.end_path();
     }
 
@@ -1462,6 +1504,10 @@ impl<'a> PartsTwin<'a> {
                     points: points.iter().map(|p| map(*p)).collect(),
                     width: width * scale,
                 },
+                DrawnPart::Path { points, width } => DrawnPart::Path {
+                    points: points.iter().map(|p| map(*p)).collect(),
+                    width: width * scale,
+                },
             }));
         }));
     }
@@ -1533,6 +1579,24 @@ impl Sink for PartsTwin<'_> {
     fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color) {
         if color.a > 0.0 {
             self.parts(|sink| sink.triangle(slot, points, color));
+        }
+    }
+
+    fn path(&mut self, slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>) {
+        if style.color.a <= 0.0 {
+            return;
+        }
+        // One part per subpath, as a file reads back.
+        let mut rest = segments;
+        while let Some(start) = rest.iter().position(|s| matches!(s, PathSegment::Move(_))) {
+            let after = &rest[start + 1..];
+            let end = after
+                .iter()
+                .position(|s| matches!(s, PathSegment::Move(_)))
+                .map_or(rest.len(), |k| start + 1 + k);
+            let subpath = &rest[start..end];
+            self.parts(|sink| sink.path(slot, subpath, style));
+            rest = &rest[end..];
         }
     }
 
@@ -1686,6 +1750,96 @@ pub fn written_document_parts(
 mod tests {
     use super::*;
     use crate::default::default_config;
+
+    /// A dashed cubic from (10, 40) to (70, 40), bulging up to y 10.
+    const ARC: [PathSegment; 2] = [
+        PathSegment::Move((10.0, 40.0)),
+        PathSegment::Cubic((10.0, 0.0), (70.0, 0.0), (70.0, 40.0)),
+    ];
+
+    fn arc_style() -> StrokeStyle<'static> {
+        StrokeStyle {
+            width: 1.5,
+            color: Color::from_rgb8(255, 0, 0),
+            dash: &[4.0, 2.0],
+            tag: "arc",
+        }
+    }
+
+    // A stroked path (#234) is one SVG path at the sink's scale: its width
+    // and dash scaled, its cubic kept a cubic, so the dash runs along the
+    // whole curve.
+    #[test]
+    fn a_path_is_written_as_one_scaled_dashed_curve() {
+        let mut out = SvgOut::new((160, 100), page_points((80, 50)));
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 160,
+            height: 100,
+        };
+        let mut sink = VectorSink::new(
+            &mut out,
+            DecoStroker::Precise,
+            FontPolicy::default(),
+            [0.0, 0.0],
+            2.0,
+            area,
+        );
+        sink.path(Slot::Above, &ARC, &arc_style());
+        assert!(sink.error.is_none());
+        let svg = out.finish();
+        let path = svg
+            .lines()
+            .find(|line| line.contains("stroke=\"#ff0000\""))
+            .expect("the path");
+        assert!(path.contains("stroke-width=\"3\""), "{path}");
+        assert!(path.contains("stroke-dasharray=\"8 4\""), "{path}");
+        assert!(path.contains("M20 80C20 0 140 0 140 80"), "{path}");
+        assert_eq!(svg.matches("stroke=\"#ff0000\"").count(), 1, "one path");
+    }
+
+    // The canvas strokes the same curve: ink where the cubic passes at its
+    // middle (40, 10), none at the chord's middle (40, 40) under it.
+    #[test]
+    fn a_path_is_stroked_on_the_canvas_along_its_curve() {
+        let mut canvas = Canvas::new(80, 50).unwrap();
+        let mut sink = crate::decoration_render::CanvasSink::new(
+            None,
+            Some(&mut canvas),
+            DecoStroker::Precise,
+            FontPolicy::default(),
+        );
+        let solid = StrokeStyle {
+            dash: &[],
+            width: 3.0,
+            ..arc_style()
+        };
+        sink.path(Slot::Above, &ARC, &solid);
+        // A slot without a canvas paints nothing.
+        sink.path(Slot::Below, &ARC, &solid);
+        sink.finish().unwrap();
+        let rgba = canvas.into_rgba();
+        let alpha = |x: usize, y: usize| rgba[(y * 80 + x) * 4 + 3];
+        assert!(alpha(40, 10) > 200, "ink on the curve");
+        assert_eq!(alpha(40, 40), 0, "no ink on the chord");
+    }
+
+    // The geometry sinks bound a path by every point it names: the Bézier
+    // lies in its control points' hull.
+    #[test]
+    fn a_path_part_is_bounded_by_its_control_points() {
+        let mut parts = Vec::new();
+        crate::sink::Parts(&mut |part| parts.push(part)).path(Slot::Above, &ARC, &arc_style());
+        let [part] = parts.as_slice() else {
+            panic!("one part: {parts:?}")
+        };
+        let extent = part.extent();
+        assert_eq!(
+            (extent.x, extent.y, extent.width, extent.height),
+            (9.25, -0.75, 61.5, 41.5)
+        );
+    }
 
     /// The non-data passes of `config` written as an SVG document.
     fn chrome_svg(config: &Config) -> String {

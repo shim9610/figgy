@@ -36,6 +36,19 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Stroked paths in the sink** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `Sink::path(slot, &[PathSegment], &StrokeStyle)` places a stroked path of
+  straight and cubic segments, stroked as one path so a dash runs along it
+  without restarting: the coming Feynman propagators' arcs, waves and coils.
+  `PathSegment` (`Move`, `Line`, `Cubic`, `Close`) moves from the renderer's
+  sketch stroker into `model::sink`, and `DrawnPart::Path { points, width }`
+  records every point a path names, control points included, so its
+  extent bounds the curve. The canvas sink strokes it with tiny-skia, the
+  vector export writes it as one SVG `<path>` or PDF path with its cubics
+  kept, and the geometry sinks bound it. Migration: an implementation of
+  `Sink` adds `path` (a sink that ignores strokes adds an empty one, or
+  forwards each segment to `stroke`); an exhaustive match on `DrawnPart`
+  adds the `Path` arm.
 - **Too many explicit contour label anchors is an error** ([#107](https://github.com/shim9610/figgy/issues/107)).
   `ContourLabelConfig::validate` rejects an `anchors` list longer than the new
   `MAX_CONTOUR_LABEL_ANCHORS` (1024) with

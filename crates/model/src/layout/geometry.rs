@@ -1008,6 +1008,10 @@ impl Sink for Probe {
         self.add(DrawnPart::Triangle(points).extent());
     }
 
+    fn path(&mut self, slot: Slot, segments: &[crate::sink::PathSegment], style: &StrokeStyle<'_>) {
+        Parts(&mut |part| self.add(part.extent())).path(slot, segments, style);
+    }
+
     fn polygon(
         &mut self,
         _slot: Slot,

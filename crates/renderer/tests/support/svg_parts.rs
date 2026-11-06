@@ -479,6 +479,31 @@ pub fn assert_parts_match(
                     fail();
                 }
             }
+            // A stroked path (#234) reads back as a curve or, straight, a
+            // segment, from its first point to its last.
+            (
+                ReadPart::Curve { first, last, width },
+                WrittenPart::Part(DrawnPart::Path { points, width: ew }),
+            )
+            | (
+                ReadPart::Part(
+                    DrawnPart::Segment {
+                        a: first, b: last, ..
+                    },
+                    Some(width),
+                ),
+                WrittenPart::Part(DrawnPart::Path { points, width: ew }),
+            ) => {
+                let (Some(a), Some(b)) = (points.first(), points.last()) else {
+                    fail()
+                };
+                if far(*first, *a) > tolerance
+                    || far(*last, *b) > tolerance
+                    || !near(*width, ew.max(1.0))
+                {
+                    fail();
+                }
+            }
             (
                 ReadPart::Curve { width, .. },
                 WrittenPart::Part(DrawnPart::Rect(_) | DrawnPart::Polygon { .. }),
