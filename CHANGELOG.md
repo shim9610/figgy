@@ -1256,14 +1256,20 @@ kind and the `mesh_triangle` selection) are additive.
   to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
   exhaustive `match` on `PickedData` adds `MeshTriangle { .. }`.
 
-- **A frame of more field series than the scratch cache holds draws them all.**
-  The field scratch cache (`FIELD_SCRATCH_CACHE_LIMIT`, 256 entries) cleared
-  itself when the 257th series of one frame was prepared, so the frame's
-  layers lost the earlier series' scratches and failed with an internal
-  error: a frame of more than 256 heatmaps (or triangle meshes) did not
-  draw (rule 10). The cache is now bounded before a frame resolves, keeping
-  the series that frame draws, and evicts nothing while it runs; a lone
-  preparation (a pick) still evicts as before.
+- **A frame of more series than a scratch cache holds draws them all.**
+  The per-series scratch caches (256 entries each) cleared themselves when
+  the 257th series of one frame was prepared, so that frame's layers lost
+  the earlier series' scratches and the frame failed with an internal
+  error: more than 256 heatmaps, images, vector series, colour-mapped
+  scatter, streamline or parallel series (or triangle meshes) in one frame
+  did not draw (rule 10). Each cache (`field`, `vector`, `value_map`,
+  `contour`, which also holds value label atlases and energy-level
+  rasters) is now bounded before a frame resolves, keeping the series that
+  frame draws, and evicts nothing while it runs; a lone preparation (a
+  pick) still evicts as before. The contour cache never failed (its frame
+  keeps snapshots), and now also stops rebuilding the frame's own entries.
+  Tests draw 300 heatmaps, vector series, colour-mapped scatter series,
+  contours and triangle meshes in one frame.
 
 - **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
   A backend's shader compiler can need more stack than the calling thread

@@ -2704,6 +2704,7 @@ impl Renderer {
         (
             &self.chart_states,
             PrepareContext {
+                in_frame: false,
                 device: &self.device,
                 queue: &self.queue,
                 caps: &self.caps,

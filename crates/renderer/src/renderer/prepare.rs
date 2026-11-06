@@ -41,6 +41,19 @@ pub(super) fn evict_if_full<V>(cache: &mut HashMap<String, V>, series_id: &str, 
     }
 }
 
+impl PrepareContext<'_> {
+    /// Run `body` as one frame's batch (`in_frame` set, restored after).
+    pub(super) fn frame_batch<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let outer = std::mem::replace(&mut self.in_frame, true);
+        let result = body(self);
+        self.in_frame = outer;
+        result
+    }
+}
+
 /// Bound a per-series scratch cache before a frame resolves `items`: when
 /// it is full, keep only the entries the frame's series use. Inside the
 /// frame nothing is evicted, so a frame of more series than `limit` keeps
@@ -65,6 +78,12 @@ pub(super) fn retain_frame_series<V>(
 // Disjoint GPU borrows let registered preparation read the registry in place.
 // This context never owns chart Config or SeriesConfig values.
 pub(super) struct PrepareContext<'a> {
+    /// True while one frame's batch (`ensure_*_scratches`) resolves its
+    /// items: a scratch cache was bounded before the batch began
+    /// (`retain_frame_series`) and evicts nothing while it runs, so every
+    /// scratch the frame's layers read is still there (rule 10). A lone
+    /// preparation (a pick) evicts as before.
+    pub(super) in_frame: bool,
     pub(super) device: &'a wgpu::Device,
     pub(super) queue: &'a wgpu::Queue,
     pub(super) caps: &'a RendererDeviceCaps,

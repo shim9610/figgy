@@ -133,6 +133,13 @@ impl PrepareContext<'_> {
         &mut self,
         items: &[ChartDrawItem<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_field_scratches_in_frame(items))
+    }
+
+    fn ensure_field_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
         for item in items {
@@ -143,7 +150,7 @@ impl PrepareContext<'_> {
                 {
                     continue;
                 }
-                let sources = self.ensure_field_scratch_in(item.chart_config, cfg, true)?;
+                let sources = self.ensure_field_scratch(item.chart_config, cfg)?;
                 receipts
                     .try_reserve(1)
                     .map_err(|error| FiggyError::StateAllocationFailed {
@@ -165,6 +172,14 @@ impl PrepareContext<'_> {
         items: &[ChartDrawItem<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_mesh_scratches_in_frame(items, scale))
+    }
+
+    fn ensure_mesh_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
         for item in items {
@@ -175,7 +190,7 @@ impl PrepareContext<'_> {
                 if !(primitives.mesh || primitives.mesh_contour) {
                     continue;
                 }
-                let sources = self.ensure_mesh_scratch(item.chart_config, cfg, scale, true)?;
+                let sources = self.ensure_mesh_scratch(item.chart_config, cfg, scale)?;
                 receipts
                     .try_reserve(1)
                     .map_err(|error| FiggyError::StateAllocationFailed {
@@ -195,16 +210,11 @@ impl PrepareContext<'_> {
     /// index column. The fill's colourbar and bands and the contours' levels,
     /// stroke width and colours share the one group, cached in `field_cache`
     /// under the series id and compared by its signature like a heatmap's.
-    ///
-    /// `in_frame` is true inside a frame's batch, which bounded the cache
-    /// before it began (`retain_frame_series`) and evicts nothing while it
-    /// runs; a lone call evicts as every scratch cache does.
     pub(in crate::renderer) fn ensure_mesh_scratch(
         &mut self,
         chart_config: &Config,
         cfg: &SeriesConfig,
         scale: f32,
-        in_frame: bool,
     ) -> Result<Arc<GridSources>> {
         let mesh = cfg
             .tri_mesh()
@@ -375,7 +385,7 @@ impl PrepareContext<'_> {
         owned.extend_from_slice(&epochs);
         let sources = Arc::new(GridSources { ids, epochs: owned });
         let scratch = self.build_field_scratch(signature, sources)?;
-        if !in_frame {
+        if !self.in_frame {
             evict_if_full(
                 &mut self.field_cache,
                 cfg.series_id.as_str(),
@@ -517,17 +527,6 @@ impl PrepareContext<'_> {
         &mut self,
         chart_config: &Config,
         cfg: &SeriesConfig,
-    ) -> Result<Arc<GridSources>> {
-        self.ensure_field_scratch_in(chart_config, cfg, false)
-    }
-
-    /// [`Self::ensure_field_scratch`], inside a frame's batch when `in_frame`
-    /// (no eviction while the frame resolves, as `ensure_mesh_scratch`).
-    fn ensure_field_scratch_in(
-        &mut self,
-        chart_config: &Config,
-        cfg: &SeriesConfig,
-        in_frame: bool,
     ) -> Result<Arc<GridSources>> {
         let rt = &cfg.render_type;
         let matrix =
@@ -760,7 +759,7 @@ impl PrepareContext<'_> {
         // Bounded like `arc_cache`: a host cycling through thousands of series
         // ids must not grow this without limit. A frame's batch bounded it
         // before it began and evicts nothing while it runs.
-        if !in_frame {
+        if !self.in_frame {
             evict_if_full(
                 &mut self.field_cache,
                 cfg.series_id.as_str(),

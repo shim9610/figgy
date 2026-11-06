@@ -2016,3 +2016,27 @@ fn streamlines_draw_inside_their_subplot() {
         .count();
     assert_eq!(parent_red, 0, "the parent draws no streamline");
 }
+
+/// Rule 10: a frame of three hundred vector series draws every one, past
+/// the vector scratch cache's 256 entries.
+#[test]
+fn three_hundred_vector_series_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 2.0)], &[(40.0, 0.0)]);
+    let chart = bare_chart();
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| points(&format!("arrows{k}"), pixels(1.0)))
+        .collect();
+    for _ in 0..2 {
+        let img = export(&mut renderer, &chart, &series);
+        assert_red(
+            &img,
+            data_to_px(&chart, 2.0, 2.0),
+            20.0,
+            0.0,
+            "shaft middle",
+        );
+    }
+}

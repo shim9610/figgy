@@ -14901,6 +14901,43 @@ fn a_triangle_mesh_series_registers_after_the_model_rules() {
     );
 }
 
+// Rule 10: a frame of three hundred colour-mapped scatter series draws every
+// one, past the value map scratch cache's 256 entries: the cache is bounded
+// before the frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_colour_mapped_scatters_in_one_frame_all_draw() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.2, 0.5, 0.8]);
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = state_test_scatter(&format!("s{k}"), None, "x", "y");
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                ..
+            }) = &mut s.render_type
+            {
+                scatter.point_color_map =
+                    Some(crate::data_config::PointColorMap { column: "y".into() });
+            }
+            s
+        })
+        .collect();
+    let chart = crate::Chart::new(config);
+    for _ in 0..2 {
+        renderer
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+    }
+}
+
 // A series label is a rich text like any title: a math label registers, and
 // a malformed math tree is refused with the series named.
 #[test]

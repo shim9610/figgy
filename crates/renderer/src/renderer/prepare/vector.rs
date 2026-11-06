@@ -44,6 +44,15 @@ impl PrepareContext<'_> {
         items: &[ChartDrawItem<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_vector_scratches_in_frame(items, scale))
+    }
+
+    fn ensure_vector_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        retain_frame_series(&mut self.vector_cache, items, VECTOR_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
         for item in items {
             for series in item.series {
@@ -399,11 +408,13 @@ impl PrepareContext<'_> {
         });
         let scratch = self.build_vector_scratch(signature, sources)?;
 
-        evict_if_full(
-            &mut self.vector_cache,
-            cfg.series_id.as_str(),
-            VECTOR_SCRATCH_CACHE_LIMIT,
-        );
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.vector_cache,
+                cfg.series_id.as_str(),
+                VECTOR_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.vector_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {
