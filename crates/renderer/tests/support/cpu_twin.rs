@@ -573,7 +573,9 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
 
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -594,7 +596,9 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
 
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 

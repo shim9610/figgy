@@ -673,6 +673,9 @@ impl Config {
                 DataRenderType::Parallel { .. } if self.view_3d().is_some() => {
                     return Err("a parallel series draws flat: not on a 3D chart");
                 }
+                // A trisurf (#210): its own rules are
+                // `Config::validate_tri_mesh_series`.
+                DataRenderType::TriMesh(_) => continue,
                 DataRenderType::Field(crate::data_config::FieldSeries {
                     matrix,
                     fill: Some(fill),
@@ -739,6 +742,12 @@ fn validate_surface_style(style: &SurfaceStyle, matrix: &MatrixRef) -> Result<()
             return Err("a surface's color_matrix names its columns");
         }
     }
+    validate_surface_look(style)
+}
+
+/// A surface style's wireframe, gloss, texture and emphasis in range: the
+/// rules a field's and a triangle mesh's surface share.
+pub(crate) fn validate_surface_look(style: &SurfaceStyle) -> Result<(), &'static str> {
     if let Some(wire) = &style.wireframe
         && (!finite_in(wire.width, 0.0, 24.0)
             || ![wire.color.r, wire.color.g, wire.color.b, wire.color.a]

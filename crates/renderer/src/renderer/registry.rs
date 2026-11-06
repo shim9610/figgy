@@ -1320,6 +1320,11 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
 ///
 /// The config is needed because a field series is only fully declared with it:
 /// `Config.colorbar` owns the z range and colormap.
+/// Why a triangle mesh series is refused at registration while the renderer
+/// does not draw it yet (#210).
+pub(crate) const TRI_MESH_NOT_DRAWN_REASON: &str =
+    "triangle mesh series are not drawn by this renderer yet";
+
 pub(super) fn validate_renderer_series(
     pool: &impl ColumnRegistration,
     config: &Config,
@@ -1360,6 +1365,15 @@ pub(super) fn validate_renderer_series(
         // values are SSOT, held to the model's rule above.
         if item.energy_levels().is_some() {
             continue;
+        }
+        // A triangle mesh (#210) is modelled ahead of its draw path; until
+        // the renderer draws it, registering one is refused rather than
+        // drawn blank.
+        if item.tri_mesh().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: TRI_MESH_NOT_DRAWN_REASON.into(),
+            });
         }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {

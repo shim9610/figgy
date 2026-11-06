@@ -125,6 +125,8 @@ impl PreparationFeature {
                 | DataRenderType::Parallel { .. } => Self::Basic,
                 // Drawn on the CPU and composited (#203): no GPU pipeline.
                 DataRenderType::EnergyLevels(_) => continue,
+                // Refused at registration until its draw path lands (#210).
+                DataRenderType::TriMesh(_) => continue,
             };
             if !result.contains(&group) {
                 result.push(group);

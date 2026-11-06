@@ -102,6 +102,7 @@ pub mod energy_levels;
 pub mod parallel;
 pub mod polar;
 pub mod ternary;
+pub mod tri_mesh;
 pub mod view3d;
 pub use energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelLabelSide,
@@ -112,6 +113,7 @@ pub use polar::{
     AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
     PolarOptions,
 };
+pub use tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 pub mod radar;
 #[allow(deprecated)]
 pub use radar::*;

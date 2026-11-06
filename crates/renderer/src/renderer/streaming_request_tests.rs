@@ -2573,6 +2573,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::Ternary { .. }
                     | DataRenderType::Parallel { .. }
                     | DataRenderType::EnergyLevels(_)
+                    | DataRenderType::TriMesh(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

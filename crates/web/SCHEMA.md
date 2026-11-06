@@ -289,6 +289,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 하나(`labels.text[category_index]`)를 가리킨다. 선택한 라벨은 라벨 테두리를 `SELECTION_PADDING`만큼 넓힌 선택 상자로
 표시하며, `step_selection`은 라벨을 옮기지 않는다.
 
+`{ "kind": "mesh_triangle", "series_id": "pressure", "triangle_index": 17 }`은 [`TriMesh` 시리즈](#trimesh-render_type)의 삼각형 하나(삼각형 인덱스 열의 17번째 삼각형)를 가리킨다. `pick_data` 결과에는 커서에 가장 가까운 꼭짓점 `vertex_index`도 들어 있지만, 이 값은 마우스를 올렸을 때의 답일 뿐 선택에는 저장하지 않는다. `step_selection`은 `dx`로 삼각형을, `dy`로 메시 시리즈를 옮긴다.
+
 <a id="resident-selection-details"></a>
 
 ### 상주 선택 값 조회와 키보드 이동
@@ -1428,6 +1430,48 @@ A picked row's `selection_details()` carries `index` (the row), `x`, `y`
 and `color_value` when mapped; `step_selection(dx, 0)` walks the rows.
 Each axis's tick labels are the element `parallel_axis_labels_<i>`, dragged
 into the axis's `label_offset`.
+
+<a id="trimesh-render_type"></a>
+
+## `TriMesh` render_type
+
+A triangle mesh series ([#210](https://github.com/shim9610/figgy/issues/210))
+draws a field over triangles the host gives. `x_column` / `y_column` are the
+vertex coordinates (and `z_column` the vertex height on a 3D chart);
+`triangles` names a triangle index column registered with
+`register_triangles(id, Uint32Array)`, three vertex rows per triangle;
+`values` names the value column and whether its values sit at the
+`"Vertices"` or the `"Faces"`. `fill`, `contour` and `surface` are the
+heatmap's, each omitted when absent, and the colours come from `colorbar`.
+
+```json
+{
+  "series_id": "pressure",
+  "x_column": "node_x",
+  "y_column": "node_y",
+  "render_type": {
+    "TriMesh": {
+      "triangles": "elements",
+      "values": { "column": "cp", "at": "Vertices" },
+      "fill": { "mode": "Continuous", "shading": "Interpolated", "opacity": 1.0 },
+      "contour": {
+        "levels": [-1.0, -0.5, 0.0, 0.5],
+        "line": { "line_style": "Solid", "line_color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 }, "line_width": 1.0 }
+      }
+    }
+  }
+}
+```
+
+Vertex values are shaded `"Interpolated"` and face values `"Flat"`;
+contour lines need vertex values and take no `labels`; `surface` takes no
+`color_matrix`. Polar, ternary and parallel charts refuse the kind, and a
+3D chart needs `z_column` and a continuous fill. A picked triangle is the
+`"mesh_triangle"` selection ([above](#데이터-종류별-선택-표시picked_data)).
+
+Status: the JSON form, its rules and the selection kind are in place;
+`set_series` with a `TriMesh` series fails ("triangle mesh series are not
+drawn by this renderer yet") until the draw path lands under #210.
 
 <a id="radar-render_type"></a>
 

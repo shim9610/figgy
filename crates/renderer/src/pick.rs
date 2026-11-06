@@ -74,6 +74,18 @@ pub enum PickedData {
         part: Option<crate::energy_levels::LabelPart>,
         distance_px: f32,
     },
+    /// One triangle of a triangle mesh series (#210): its row in the
+    /// triangle index column. `vertex_index` is the triangle's vertex
+    /// nearest the cursor, a hover answer that the stored selection
+    /// ([`PickedDataRef::MeshTriangle`](crate::config::PickedDataRef::MeshTriangle))
+    /// does not keep. `distance_px` is 0 inside the triangle.
+    MeshTriangle {
+        source_id: Option<String>,
+        series_id: String,
+        triangle_index: usize,
+        vertex_index: usize,
+        distance_px: f32,
+    },
 }
 
 impl PickedData {
@@ -83,7 +95,8 @@ impl PickedData {
             | Self::HistogramBin { source_id, .. }
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
-            | Self::ValueLabel { source_id, .. } => source_id.as_deref(),
+            | Self::ValueLabel { source_id, .. }
+            | Self::MeshTriangle { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -93,7 +106,8 @@ impl PickedData {
             | Self::HistogramBin { series_id, .. }
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
-            | Self::ValueLabel { series_id, .. } => series_id,
+            | Self::ValueLabel { series_id, .. }
+            | Self::MeshTriangle { series_id, .. } => series_id,
         }
     }
 
@@ -103,7 +117,8 @@ impl PickedData {
             | Self::HistogramBin { distance_px, .. }
             | Self::MatrixCell { distance_px, .. }
             | Self::ContourLevel { distance_px, .. }
-            | Self::ValueLabel { distance_px, .. } => *distance_px,
+            | Self::ValueLabel { distance_px, .. }
+            | Self::MeshTriangle { distance_px, .. } => *distance_px,
         }
     }
 
@@ -168,6 +183,16 @@ impl PickedData {
                 series_id: series_id.clone(),
                 category_index: *category_index,
                 part: *part,
+            },
+            Self::MeshTriangle {
+                source_id,
+                series_id,
+                triangle_index,
+                ..
+            } => crate::config::PickedDataRef::MeshTriangle {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                triangle_index: *triangle_index,
             },
         }
     }

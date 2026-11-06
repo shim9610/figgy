@@ -22,6 +22,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Parallel { .. }
         // An energy level is a stroke, never a marker (#203).
         | DataRenderType::EnergyLevels(_)
+        // A mesh is a field over triangles (#210): no markers.
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
