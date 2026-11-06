@@ -985,6 +985,7 @@ impl TargetPipelines {
         let mut need_contour = false;
         let mut need_mesh = false;
         let mut need_mesh_contour = false;
+        let mut need_mesh_selection = false;
         let mut need_contour_label = false;
         let mut need_line = false;
         let mut need_line_mapped = false;
@@ -1063,6 +1064,18 @@ impl TargetPipelines {
                 need_contour |= primitives.contour;
                 need_mesh |= primitives.mesh;
                 need_mesh_contour |= primitives.mesh_contour;
+                // A picked triangle or level redraws through the mesh's
+                // selection entry (#210).
+                need_mesh_selection |= (primitives.mesh || primitives.mesh_contour)
+                    && typed_picks.is_some_and(|config| {
+                        config.refs.iter().any(|picked| {
+                            matches!(
+                                picked,
+                                PickedDataRef::MeshTriangle { .. }
+                                    | PickedDataRef::ContourLevel { .. }
+                            )
+                        })
+                    });
                 need_line |= primitives.line;
                 // Streamline arrowheads draw through the path vector pipeline.
                 need_vector_path |= primitives.line
@@ -1276,6 +1289,14 @@ impl TargetPipelines {
                     pass,
                 );
             }
+        }
+        if need_mesh_selection {
+            self.ensure_tri_mesh_pass(
+                device,
+                [transform_bgl, data_selection_bgl, field_bgl],
+                surface_format,
+                data_render::tri_mesh::TriMeshPass::Selection,
+            );
         }
         if need_contour && self.contour.is_none() {
             self.contour = Some(data_render::create_field_columnar_pipeline_with_entry(
@@ -2195,7 +2216,13 @@ impl TargetPipelines {
                             device,
                             shader,
                             transform_bgl,
-                            style_bgl,
+                            // The selection entry binds the data selection
+                            // uniform as group 1.
+                            if pass == data_render::tri_mesh::TriMeshPass::Selection {
+                                data_selection_bgl
+                            } else {
+                                style_bgl
+                            },
                             field_bgl,
                             surface_format,
                             self.sample_count,

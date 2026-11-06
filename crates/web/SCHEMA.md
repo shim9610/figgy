@@ -1469,9 +1469,20 @@ contour lines need vertex values and take no `labels`; `surface` takes no
 3D chart needs `z_column` and a continuous fill. A picked triangle is the
 `"mesh_triangle"` selection ([above](#데이터-종류별-선택-표시picked_data)).
 
-Status: a flat chart draws the fill and the contours; picking, the picked
-highlight, `selection_details()` and 3D charts follow under #210, and until
-then `set_series` refuses a `TriMesh` series on a 3D chart.
+`pick_data(x, y, d)` answers a triangle as
+`{ "kind": "mesh_triangle", "source_id", "series_id", "triangle_index",
+"vertex_index", "distance_px" }` (`vertex_index` is the vertex nearest the
+cursor) and a stroke over it as a `"contour_level"` whose `x_index` is the
+triangle. With a `"mesh_triangle"` selection, `selection_details()` reports
+`index` (the triangle), `vertices` (its three vertex indices, read from the
+triangle index column), `x` and `y` (their coordinates), `values` (their
+values) or, for face values, `value` (the triangle's), and `at`
+(`"Vertices"` or `"Faces"`); the samples are read back from the GPU columns
+the draw used.
+
+Status: a flat chart draws, picks and highlights the fill and the contours;
+3D charts follow under #210, and until then `set_series` refuses a
+`TriMesh` series on a 3D chart.
 
 <a id="radar-render_type"></a>
 

@@ -2079,6 +2079,38 @@ plateau and draws nothing; face values draw no contours. The interpolant is
 continuous across a shared edge, so a stroke continues into the neighbour;
 at the mesh boundary half the stroke is clipped.
 
+**Pick.** `pick_tri_mesh` is a compute entry over the same group 2 (layout:
+transform, the data pick query, the field's group 2), in one 64-lane
+workgroup that walks every triangle and reduces in shared memory, as
+`pick_parallel` does. It works in the draw's pixel frame (axis `t` times the
+target size) at the centre of the cursor's pixel:
+
+- A triangle is a candidate inside it (distance 0) or within one output
+  pixel of its edge (`MESH_PICK_FRINGE_PX`, the multisampled fringe), and
+  only where the fill paints there (`field_fill_paints` on the value at the
+  nearest point of the triangle). Nearer wins; on a tie the higher triangle,
+  which is drawn later. It answers `DATA_PICK_KIND_MESH_TRIANGLE` (5) with
+  `index0` the triangle and `index1` its vertex nearest the cursor.
+- With `DATA_PICK_FLAG_CONTOUR`, the drawn triangle nearest the cursor
+  within the fringe gives the stroke test after the reduce: for each level,
+  `max(|f − L| / |∇f| − w/2, 0)` from that triangle's linear interpolant at
+  its nearest point, plus the cursor's distance to the triangle. A stroke
+  within `limits.x` wins over the fill and answers
+  `DATA_PICK_KIND_CONTOUR_LEVEL` with `index0` the level and `index1` the
+  triangle. The level loop runs once, after the reduce: no loop is nested in
+  another (#236).
+
+The bundle compiles its own mesh module for this entry, since the draw
+compiles the module only when a mesh is drawn.
+
+**Selection.** `fs_tri_selection` runs over `vs_tri` with the data selection
+uniform as group 1 (`TriMeshPass::Selection`), through the selection layer's
+instances: the picked triangle alone (`DATA_SELECTION_KIND_MESH_TRIANGLE`,
+`indices.y` the triangle), outlined inside its edges at `metrics.x` from the
+barycentrics over their `fwidth` (taken first, in uniform control flow); or
+every triangle (`DATA_SELECTION_KIND_CONTOUR_LEVEL`, `indices.y` the level),
+painting that level's stroke widened by `metrics.y`.
+
 The gradient only sets stroke coverage, and the blend only shades given
 values: nothing the reader reads as data is computed (rule 1), and nothing
 per vertex is stored (rule 2).

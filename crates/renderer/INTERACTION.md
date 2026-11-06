@@ -188,6 +188,19 @@ ratio anchors and `bottom_x` data anchors (the y axis is the normalized
 band `0..1`); parallel subplots carry their own axes; overlays and streamed
 sources are rejected.
 
+Triangle mesh series (`DataRenderType::TriMesh`, #210) are picked by
+`pick_chart_data` as `PickedData::MeshTriangle { series_id, triangle_index,
+vertex_index }`: the triangle under the cursor's pixel, or within one output
+pixel of its edge, where the fill paints, the later triangle on overlap;
+`vertex_index` is its vertex nearest the cursor and is not kept in the
+selection. A contour stroke within the pick distance answers first, as
+`PickedData::ContourLevel` with the triangle in `x_index`. The picked
+triangle is outlined inside its edges and a picked level redrawn wider.
+`step_selection` walks the triangles with `dx` and the mesh series with
+`dy`; `selection_details()` reports the triangle's vertex indices and their
+coordinates and values. Decorations, the plot area, the annotation layer,
+overlays and subplots work as on any Cartesian chart.
+
 3D charts (`Config.view_3d`, a heatmap drawn as a surface,
 [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
 pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
