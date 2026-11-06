@@ -1552,6 +1552,11 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
         DataRenderType::EnergyLevels(_) => "energy levels",
+        DataRenderType::TriMesh(mesh) => match (mesh.fill.is_some(), mesh.contour.is_some()) {
+            (_, false) => "triangle mesh",
+            (false, true) => "triangle mesh contour",
+            (true, true) => "triangle mesh+contour",
+        },
     }
 }
 
@@ -1831,7 +1836,11 @@ fn stem_controls(ui: &mut egui::Ui, stem: &mut Option<renderer::data_config::Ste
     let Some(stem) = stem else {
         return;
     };
-    ui.add(egui::DragValue::new(&mut stem.baseline).speed(0.05).prefix("stem baseline "));
+    ui.add(
+        egui::DragValue::new(&mut stem.baseline)
+            .speed(0.05)
+            .prefix("stem baseline "),
+    );
     let mut horizontal = stem.direction == CategoryBarDirection::Horizontal;
     if ui.checkbox(&mut horizontal, "horizontal stems").changed() {
         stem.direction = if horizontal {
@@ -2008,6 +2017,16 @@ fn series_controls(
                 );
             }
             if let Some(contour) = &mut field.contour {
+                contour_controls(ui, contour, config);
+            }
+        }
+        // A triangle mesh (#210): its shading follows where its values sit,
+        // so only the opacity and the contour lines are offered.
+        DataRenderType::TriMesh(mesh) => {
+            if let Some(fill) = &mut mesh.fill {
+                slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+            }
+            if let Some(contour) = &mut mesh.contour {
                 contour_controls(ui, contour, config);
             }
         }

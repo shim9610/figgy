@@ -35,9 +35,10 @@ pub struct SeriesConfig {
     /// Y column id.
     pub y_column: ColumnId,
     /// Z column id: the height of a `Scatter`, `Line` or `ScatterLine`
-    /// series on a 3D chart (`Config.view_3d`), read on `right_y`. Kept
-    /// and unused on a flat chart; `None` (omitted from JSON) is every
-    /// other series.
+    /// series, the anchor height of a point vector, or the vertex height of
+    /// a triangle mesh (#210) on a 3D chart (`Config.view_3d`), read on
+    /// `right_y`. Kept and unused on a flat chart; `None` (omitted from
+    /// JSON) is every other series.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -412,6 +413,15 @@ pub enum DataRenderType {
     /// [`crate::energy_levels`] and
     /// [`Config::validate_energy_levels`](crate::config::Config::validate_energy_levels).
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    /// A field over host-given triangles (#210): a fill, contour lines or
+    /// both over the triangles of a triangle index column, whose vertices
+    /// are rows of `x_column` / `y_column` (and of `z_column`, the height,
+    /// on a 3D chart). The values are given per vertex or per face; the
+    /// renderer interpolates given vertex values across each triangle and
+    /// draws the level set of that interpolant, and computes nothing the
+    /// reader reads as data. See [`crate::tri_mesh`] and
+    /// [`Config::validate_tri_mesh_series`](crate::config::Config::validate_tri_mesh_series).
+    TriMesh(crate::tri_mesh::TriMeshSeries),
 }
 
 /// Markers, a line and error bars over a series' x and y columns: the
@@ -779,6 +789,7 @@ impl From<WireRenderType> for DataRenderType {
                 color_column,
             },
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
+            WireRenderType::TriMesh(mesh) => DataRenderType::TriMesh(mesh),
         }
     }
 }
@@ -991,6 +1002,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                 color_column,
             },
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
+            DataRenderType::TriMesh(mesh) => WireRenderType::TriMesh(mesh),
         })
     }
 }
@@ -1550,6 +1562,7 @@ pub(crate) enum WireRenderType {
         color_column: Option<ColumnId>,
     },
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    TriMesh(crate::tri_mesh::TriMeshSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -3280,6 +3293,7 @@ impl DataRenderType {
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::TriMesh(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
@@ -5465,7 +5479,9 @@ impl DataRenderType {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::RangeBars { .. }
             // Its transitions step as points by their own rule (#203).
-            | DataRenderType::EnergyLevels(_) => false,
+            | DataRenderType::EnergyLevels(_)
+            // Its triangles step by their own rule (#210).
+            | DataRenderType::TriMesh(_) => false,
         }
     }
 }
@@ -5500,6 +5516,10 @@ impl crate::config::Config {
     ///   by `dx` over the level rows its view draws and a transition (a
     ///   point) over the transitions it draws, and `dy` moves across the
     ///   energy-level series, in series order.
+    /// - A mesh triangle (#210) steps by `dx` over the triangles of its
+    ///   series and `dy` moves across the triangle mesh series, in series
+    ///   order. For a triangle index column `column_len` answers its index
+    ///   count, three per triangle.
     ///
     /// A contour level and a value label do not step. An error names a
     /// matrix cell selection whose series draws no matrix any more.
@@ -5741,6 +5761,31 @@ impl crate::config::Config {
                         dy,
                         ny.min(len(&selected.y_column).saturating_sub(edges)),
                     ),
+                })
+            }
+            PickedDataRef::MeshTriangle {
+                series_id,
+                triangle_index,
+                ..
+            } => {
+                let meshes = || series.iter().filter(|s| s.tri_mesh().is_some());
+                let Some(index) = meshes().position(|s| s.series_id == *series_id) else {
+                    return Ok(None);
+                };
+                let Some(next) = meshes().nth(shift(index, dy, meshes().count())) else {
+                    return Ok(None);
+                };
+                let Some(mesh) = next.tri_mesh() else {
+                    return Ok(None);
+                };
+                let count = crate::tri_mesh::TriMeshSeries::triangle_count(len(&mesh.triangles));
+                if count == 0 {
+                    return Ok(None);
+                }
+                Some(PickedDataRef::MeshTriangle {
+                    series_id: next.series_id.clone(),
+                    source_id: next.source_id.clone(),
+                    triangle_index: shift(*triangle_index, dx, count),
                 })
             }
             PickedDataRef::ContourLevel { .. } | PickedDataRef::ValueLabel { .. } => None,
@@ -9851,6 +9896,12 @@ impl SeriesConfig {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}
             DataRenderType::Ternary { c_column, .. } => visit(c_column),
+            // Its triangle index column and its value column (#210); the
+            // height is the `z_column` visited above.
+            DataRenderType::TriMesh(mesh) => {
+                visit(&mesh.triangles);
+                visit(&mesh.values.column);
+            }
             // The first two axis columns are its x and y columns.
             DataRenderType::Parallel {
                 columns,

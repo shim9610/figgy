@@ -203,6 +203,20 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             }
             value
         }
+        renderer::PickedData::MeshTriangle {
+            source_id,
+            series_id,
+            triangle_index,
+            vertex_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "mesh_triangle",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "triangle_index": triangle_index,
+            "vertex_index": vertex_index,
+            "distance_px": distance_px,
+        }),
     };
     serde_json::to_string(&value)
 }
@@ -345,8 +359,16 @@ fn prepare_demo_declarations(
                 }) => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch
                 // this demo could reuse; an image's colours are its data.
+                DataRenderType::TriMesh(renderer::tri_mesh::TriMeshSeries {
+                    contour: Some(contour),
+                    ..
+                }) => contour.line.line_color,
                 DataRenderType::Field(renderer::data_config::FieldSeries {
                     contour: None, ..
+                })
+                | DataRenderType::TriMesh(renderer::tri_mesh::TriMeshSeries {
+                    contour: None,
+                    ..
                 })
                 | DataRenderType::RgbImage { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,

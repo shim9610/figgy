@@ -14838,6 +14838,73 @@ fn triangle_columns_upsert_replace_and_remove_through_the_renderer() {
     );
 }
 
+// A triangle mesh series (#210) is modelled ahead of its draw path: the
+// model's own rules answer first, and a valid mesh is refused at
+// registration rather than drawn blank.
+#[test]
+fn a_triangle_mesh_series_is_refused_until_it_is_drawn() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0, 0.0]);
+    renderer
+        .upsert_column(
+            "cp",
+            &Column {
+                data: vec![0.0f32, 0.5, 1.0],
+            },
+        )
+        .unwrap();
+    renderer
+        .upsert_triangles(
+            "tris",
+            &TriangleSource {
+                indices: &Column {
+                    data: vec![0u32, 1, 2],
+                },
+            },
+        )
+        .unwrap();
+    let mut series = state_test_scatter("mesh", None, "x", "y");
+    series.render_type = DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+        triangles: "tris".into(),
+        values: crate::tri_mesh::MeshValues {
+            column: "cp".into(),
+            at: crate::tri_mesh::MeshValueLocation::Vertices,
+        },
+        fill: Some(crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Interpolated,
+            opacity: 1.0,
+        }),
+        contour: None,
+        surface: None,
+    });
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let result = renderer.register_chart(config.clone(), vec![series.clone()]);
+    let Err(FiggyError::InvalidSeriesConfig { series_id, reason }) = result else {
+        panic!("a triangle mesh registered before its draw path: {result:?}");
+    };
+    assert_eq!(series_id, "mesh");
+    assert_eq!(reason, super::registry::TRI_MESH_NOT_DRAWN_REASON);
+
+    // The model's rule answers first: flat shading of vertex values.
+    if let DataRenderType::TriMesh(mesh) = &mut series.render_type {
+        mesh.fill.as_mut().unwrap().shading = crate::data_config::Shading::Flat;
+    }
+    let result = renderer.register_chart(config, vec![series]);
+    let Err(error) = result else {
+        panic!("an invalid mesh registered: {result:?}");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("vertex values are shaded Interpolated"),
+        "{error}"
+    );
+}
+
 // A series label is a rich text like any title: a math label registers, and
 // a malformed math tree is refused with the series named.
 #[test]

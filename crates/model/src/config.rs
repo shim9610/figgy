@@ -929,6 +929,18 @@ pub enum PickedDataRef {
         )]
         part: Option<crate::energy_levels::LabelPart>,
     },
+    /// One triangle of a triangle mesh series (#210): its row in the
+    /// triangle index column, in triangle order. The vertex nearest the
+    /// cursor is a hover answer and is not stored.
+    MeshTriangle {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        triangle_index: usize,
+    },
 }
 
 impl PickedDataRef {
@@ -938,7 +950,8 @@ impl PickedDataRef {
             | Self::HistogramBin { source_id, .. }
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
-            | Self::ValueLabel { source_id, .. } => source_id.as_deref(),
+            | Self::ValueLabel { source_id, .. }
+            | Self::MeshTriangle { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -948,7 +961,8 @@ impl PickedDataRef {
             | Self::HistogramBin { series_id, .. }
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
-            | Self::ValueLabel { series_id, .. } => series_id,
+            | Self::ValueLabel { series_id, .. }
+            | Self::MeshTriangle { series_id, .. } => series_id,
         }
     }
 }
