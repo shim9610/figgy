@@ -391,6 +391,7 @@ fn prepare_cost_is_independent_of_series_length() {
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         };
         let style = renderer.create_style_for_series(&series_config).unwrap();
@@ -426,6 +427,114 @@ fn prepare_cost_is_independent_of_series_length() {
         "a series {}× longer changed the frame's host allocation count \
          ({short_count} → {long_count}). Frame work must be per series and per \
          chunk, never per point.",
+        long / short
+    );
+}
+
+/// A polar heatmap (#208) prepares in the same number of host allocations
+/// whatever its radius rows: the frame's tables are per constituent column,
+/// never per cell. Sixteen angle columns of 64 rows and of 65,536 rows.
+#[test]
+fn polar_field_prepare_cost_is_independent_of_its_rows() {
+    let _measurement = measurement_guard();
+    let Some(mut renderer) = renderer_with_pool(64 << 20) else {
+        no_gpu("polar field prepare-vs-rows measurement");
+        return;
+    };
+    let columns = 16usize;
+    let (short, long) = (64usize, 65_536usize);
+    for (prefix, rows) in [("s", short), ("l", long)] {
+        renderer
+            .add_column(
+                &format!("{prefix}a"),
+                &Column {
+                    data: (0..=columns).map(|i| i as f32 * 22.5).collect(),
+                },
+            )
+            .unwrap();
+        renderer
+            .add_column(
+                &format!("{prefix}r"),
+                &Column {
+                    data: (0..=rows).map(|j| j as f32).collect(),
+                },
+            )
+            .unwrap();
+        for i in 0..columns {
+            renderer
+                .add_column(
+                    &format!("{prefix}z{i}"),
+                    &Column {
+                        data: (0..rows).map(|j| ((i + j) % 7) as f32).collect(),
+                    },
+                )
+                .unwrap();
+        }
+    }
+    renderer.end_gpu_frame();
+
+    let mut config = panel_config(320, 240);
+    config.set_polar(Some(renderer::polar::PolarOptions::default()));
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 6.0;
+    bar.axis.major_spacing = 1.0;
+    config.colorbar = Some(bar);
+    let mut counts = Vec::new();
+    for (prefix, rows) in [("s", short), ("l", long)] {
+        let mut chart = Chart::new(config.clone());
+        chart.set_x_range(0.0, 360.0);
+        chart.set_y_range(0.0, rows as f64);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let series_config = renderer::SeriesConfig {
+            series_id: format!("field-{rows}"),
+            source_id: None,
+            label: None,
+            x_column: format!("{prefix}a"),
+            y_column: format!("{prefix}r"),
+            z_column: None,
+            render_type: renderer::DataRenderType::Field(renderer::data_config::FieldSeries {
+                matrix: renderer::data_config::MatrixRef {
+                    columns: (0..columns).map(|i| format!("{prefix}z{i}")).collect(),
+                    orientation: renderer::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: renderer::data_config::GridLayout::Edges,
+                },
+                fill: Some(renderer::data_config::FieldFillConfig {
+                    mode: renderer::data_config::FillMode::Continuous,
+                    shading: renderer::data_config::Shading::Flat,
+                    opacity: 1.0,
+                }),
+                contour: None,
+                surface: None,
+            }),
+        };
+        let style = renderer.create_style_for_series(&series_config).unwrap();
+        let series = [renderer::Series {
+            config: &series_config,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+        renderer.prepare(&items).unwrap();
+        let before = calls();
+        let prepared = renderer.prepare(&items).unwrap();
+        let allocations = calls() - before;
+        drop(prepared);
+        println!("polar field prepare with {rows} rows: {allocations} allocations");
+        counts.push(allocations);
+    }
+    let (short_count, long_count) = (counts[0], counts[1]);
+    assert!(
+        long_count.abs_diff(short_count) <= 4,
+        "a polar field with {}× the rows changed the frame's host allocation \
+         count ({short_count} → {long_count}). Frame work must be per column, \
+         never per cell.",
         long / short
     );
 }

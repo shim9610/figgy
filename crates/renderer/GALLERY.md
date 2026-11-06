@@ -57,6 +57,7 @@ in each example.
 | `gallery-thermostat.png` | [area_step.rs](examples/area_step.rs), `thermostat` | A setpoint schedule as a `StepPost` line filled to 14 °C, the room temperature over it |
 | `gallery-twin-axes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `twin_axes` | Voltage on the left axis with a light fill, current on an overlay layer's right axis |
 | `gallery-subplots.png` | [subplots.rs](examples/subplots.rs), `small_multiples` | Four sensors in a 2 × 2 grid sharing the hour axis, each with its own range, colour and fill |
+| `gallery-probability.png` | [probability_paper.rs](examples/probability_paper.rs), `probability_paper` | Probability paper (#209): tensile strengths on normal paper and failure times on Weibull paper over a log time axis, each sample a straight line with its fitted line; the host computes the Hazen plotting positions and the fits |
 
 `twin_axes` and `small_multiples` export with
 `export_rgba`: the panel export draws the base panel

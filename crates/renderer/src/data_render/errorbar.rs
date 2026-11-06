@@ -7,8 +7,12 @@ pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
+    "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
+    "data_render/common/arc_pair.wgsl",
     "data_render/common/sketch_noise.wgsl",
+    "data_render/common/line_stroke.wgsl",
     "data_render/common/errorbar_segment.wgsl",
     "data_render/errorbar_columnar.wgsl",
 );
@@ -362,6 +366,32 @@ pub(crate) fn create_errorbar_columnar_pipeline_full(
             multiview_mask: None,
             cache: None,
         },
+    )
+}
+
+/// A stem series' pipeline (#206): the error-bar module's `vs_stem` (or
+/// `vs_stem_sketch`) into `fs_stem`, over the same six vertex slots, one
+/// quad per instance.
+pub(crate) fn create_stem_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vs_entry: &str,
+) -> wgpu::RenderPipeline {
+    create_errorbar_columnar_pipeline_full(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        target_format,
+        sample_count,
+        vs_entry,
+        "fs_stem",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        "figgy stem pipeline",
     )
 }
 

@@ -115,6 +115,7 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
                     }]),
                 },
             }),
+            stem: None,
         }),
     };
     let chart_id = renderer

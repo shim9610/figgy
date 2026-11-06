@@ -50,6 +50,13 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
             (count, edge)
         });
     }
+    // A triangle mesh fits from its vertex columns' statistics (#210).
+    if series.tri_mesh().is_some() {
+        return Some((
+            Chart::slot_extent(r.pool(), &series.x_column).ok()?,
+            Chart::slot_extent(r.pool(), &series.y_column).ok()?,
+        ));
+    }
     crate::test_gpu::block_on(r.ensure_errorbar_extent_engine()).unwrap();
     let ticket = r.begin_series_fit_extent(series).ok()??;
     let extent = crate::test_gpu::block_on(ticket.resolve()).ok()??;
@@ -101,8 +108,15 @@ fn fit_config(active: LayerRef) -> (Config, (u32, u32)) {
 }
 
 fn run_fit_suite(name: &str, active: LayerRef) -> Tally {
-    let (config, _) = fit_config(active);
-    let series = chart_series();
+    run_fit_suite_over(name, active, fit_config(active).0, chart_series())
+}
+
+fn run_fit_suite_over(
+    name: &str,
+    active: LayerRef,
+    config: Config,
+    series: Vec<SeriesConfig>,
+) -> Tally {
     let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
     add_columns(&mut r);
     let id = r.register_chart(config.clone(), series.clone()).unwrap();
@@ -204,6 +218,12 @@ fn every_leaf_that_changes_a_fit_changes_the_fit_token() {
     let mut tally = run_fit_suite("base", LayerRef::Base);
     tally.absorb(run_fit_suite("overlay", LayerRef::Overlay(0)));
     tally.absorb(run_fit_suite("subplot", LayerRef::Subplot(0)));
+    tally.absorb(run_fit_suite_over(
+        "tri_mesh",
+        LayerRef::Base,
+        super::chart_config(),
+        super::tri_mesh_series(),
+    ));
     eprintln!("{}", tally.summary("fit (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

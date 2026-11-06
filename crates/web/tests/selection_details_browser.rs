@@ -177,6 +177,7 @@ async fn point_vector_selection_steps_along_its_anchors() {
             components: VectorComponents::Points {
                 u: "vu".into(),
                 v: "vv".into(),
+                w: None,
             },
             style: VectorStyle {
                 color: Color::BLACK,
@@ -231,6 +232,7 @@ fn trace(id: &str) -> SeriesConfig {
                 ..Default::default()
             }),
             errors: None,
+            stem: None,
         }),
     }
 }

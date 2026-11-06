@@ -256,6 +256,9 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// The line's area fill (`line_width_px` must be set too: it is part of
     /// the line primitive). Resident series only.
     pub(crate) area: Option<GpuPickArea>,
+    /// The stems drawn with the markers (#206; `scatter` must be set too:
+    /// they are part of the scatter primitive). Resident series only.
+    pub(crate) stem: Option<GpuPickStem>,
     /// Whether the line is a closed polygon (a radar series): the segment
     /// from the last point back to the first is a candidate too, naming its
     /// nearer endpoint. Such a series scans every point directly.
@@ -306,6 +309,20 @@ pub(crate) struct GpuPickErrorBarStyle<'a> {
     pub(crate) style_index_column: Option<ColumnId>,
     pub(crate) style_slots: &'a [ScatterStyleSlotGpu],
     pub(crate) style_overrides: &'a [ScatterStyleOverrideGpu],
+}
+
+/// The stems of a marker series as `vs_stem` draws them (#206,
+/// SHADER_COMMON.md §5.11): the baseline, the direction, the width and dash
+/// in logical pixels, and whether the colour paints.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GpuPickStem {
+    pub(crate) baseline: f64,
+    pub(crate) horizontal: bool,
+    pub(crate) width_px: f32,
+    pub(crate) dash: crate::line::LineStylePreset,
+    /// Whether the colour paints: a zero-alpha stem draws nothing under
+    /// Precise and Sketch (a Milkyway jet's core always paints).
+    pub(crate) paints: bool,
 }
 
 /// A line's area fill as the line shader's `vs_area` draws it
@@ -833,6 +850,12 @@ pub(crate) struct PickQueryParamsGpu {
     pub(crate) category: [f32; 4],
     /// `(member, members, horizontal 0/1, seed)`; zero without raw points.
     pub(crate) category_slot: [u32; 4],
+    /// Stems (#206): `(baseline hi, baseline lo, width, 0)`, logical pixels.
+    pub(crate) stem: [f32; 4],
+    /// The stem's dash pattern in canvas pixels.
+    pub(crate) stem_dash: [[f32; 4]; 2],
+    /// `(1 with stems, ERRORBAR_HAS_* direction, dash count, base paints 0/1)`.
+    pub(crate) stem_info: [u32; 4],
 }
 
 #[repr(C)]
@@ -848,7 +871,7 @@ pub(crate) struct PickCandidateGpu {
     pub(crate) _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 704);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 784);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -915,6 +938,8 @@ pub(super) struct PickSeriesGpu {
     pub(super) errorbar: Option<PickErrorBarGpu>,
     /// The line's area fill, resident series only.
     pub(super) area: Option<PickAreaGpu>,
+    /// The stems drawn with the markers (#206), resident series only.
+    pub(super) stem: Option<GpuPickStem>,
     /// The per-series part of the exact variant, fixed at build
     /// (`series_exact_key`).
     pub(super) exact_key: PickExactKey,

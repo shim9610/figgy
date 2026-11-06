@@ -1461,41 +1461,56 @@ fn all_stale_anchors_fall_back_to_automatic_placement() {
     );
 }
 
-/// Explicit anchors are resolved in declaration order and capped at the shared
-/// 1024-label draw capacity. The 1025th valid anchor must not replace an earlier
-/// one.
+/// Explicit anchors fill the shared 1024-label draw capacity in declaration
+/// order: the 1024th one draws. A 1025th makes the list invalid, so the export
+/// fails with `InvalidSeriesConfig` instead of dropping it.
 #[test]
-fn explicit_anchors_keep_the_first_1024_in_input_order() {
+fn explicit_anchors_draw_up_to_1024_and_reject_more() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
     plane_fixture(&mut renderer);
     let chart = bare_chart(colorbar(0.0, 4.0));
-    let filler = (0..1023).map(|_| anchor(0, 0.3, 0.3, 1.0, 0.0));
-    let kept_1024th = std::iter::once(anchor(0, 1.0, 0.7, 1.0, 0.0));
-    let dropped_1025th = std::iter::once(anchor(0, 1.7, 1.7, 1.0, 0.0));
-    let mut labels = label_config(
-        filler.chain(kept_1024th).chain(dropped_1025th).collect(),
-        true,
-    );
-    labels.bg_color = Some(LABEL_BG);
-    labels.bg_padding_px = 3.0;
-    let series = vec![labelled(vec![2.0], None, labels)];
+    let filler = || (0..1023).map(|_| anchor(0, 0.3, 0.3, 1.0, 0.0));
+    let last_1024th = || std::iter::once(anchor(0, 1.0, 0.7, 1.0, 0.0));
+    let series_with = |anchors: Vec<_>| {
+        let mut labels = label_config(anchors, true);
+        labels.bg_color = Some(LABEL_BG);
+        labels.bg_padding_px = 3.0;
+        vec![labelled(vec![2.0], None, labels)]
+    };
+
+    let full = series_with(filler().chain(last_1024th()).collect());
     let img = renderer
         .export_rgba(
-            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportSource::chart(&chart, &full),
             renderer::ExportOptions::panel(1.0),
         )
         .block_on()
         .unwrap();
-
     assert!(
         near(&img, data_to_px(&chart, 1.0, 0.7), 16, is_magenta),
-        "the distinguishable 1024th anchor must remain drawable"
+        "the 1024th anchor must draw"
     );
-    assert!(
-        !near(&img, data_to_px(&chart, 1.7, 1.7), 16, is_magenta),
-        "the 1025th anchor must be dropped instead of replacing an earlier one"
+
+    let over = series_with(
+        filler()
+            .chain(last_1024th())
+            .chain(std::iter::once(anchor(0, 1.7, 1.7, 1.0, 0.0)))
+            .collect(),
+    );
+    let result = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &over),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on();
+    let Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+        panic!("1025 explicit anchors were accepted or returned the wrong error");
+    };
+    assert_eq!(
+        reason,
+        renderer::data_config::ContourLabelConfig::TOO_MANY_ANCHORS_REASON
     );
 }
 
@@ -2425,4 +2440,33 @@ fn probe_dir() -> String {
 fn save_probe(name: &str, img: &RasterImage) {
     let png = encode_png(img).expect("encode png");
     std::fs::write(format!("{}/probe_contour_{name}.png", probe_dir()), png).expect("write png");
+}
+
+/// Rule 10: a frame of three hundred contour series draws every one, past
+/// the contour scratch cache's 256 entries. The cache is bounded before the
+/// frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_contours_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    plane_fixture(&mut renderer);
+    let chart = bare_chart(colorbar(0.0, 4.0));
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = contour_only(&["p0", "p1", "p2"], vec![2.0], None);
+            s.series_id = format!("contour{k}");
+            s
+        })
+        .collect();
+    for _ in 0..2 {
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        assert!(near(&img, data_to_px(&chart, 1.0, 1.0), 3, is_blue));
+    }
 }

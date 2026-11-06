@@ -132,12 +132,14 @@ fn parity_with_samples(
             }),
             line: Some(line),
             errors: None,
+            stem: None,
         })
     } else {
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
             line: Some(line),
             errors: None,
+            stem: None,
         })
     };
     let series = vec![SeriesConfig {

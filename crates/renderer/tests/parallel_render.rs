@@ -822,6 +822,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         scatter: None,
         line: Some(line(RED, 1.0)),
         errors: None,
+        stem: None,
     });
     assert_eq!(
         reason(&mut r, &config, vec![plain_line]),

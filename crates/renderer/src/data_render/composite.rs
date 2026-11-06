@@ -14,6 +14,11 @@ pub struct SeriesLayers<'a> {
     /// The field covers the whole grid, so it goes under everything else —
     /// see `issue_series_data` for the full order.
     pub field: Option<ColumnFieldLayer<'a>>,
+    /// A triangle mesh's fill (#210), the backdrop a field is: issued
+    /// right after `field`.
+    pub mesh: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
+    /// A triangle mesh's contour strokes, issued where `contour` is.
+    pub mesh_contour: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
     /// A heatmap on a 3D chart, drawn as a surface into the panel
     /// composite with the depth test (`issue_series_surfaces`), never by
     /// `issue_series_data`.
@@ -42,6 +47,9 @@ pub struct SeriesLayers<'a> {
     /// own stroked marks.
     pub vector: Option<vector::ColumnVectorLayer<'a>>,
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
+    /// A stem series' stems (#206): the error-bar module's second draw,
+    /// one quad per point, drawn first of the series' marker parts.
+    pub stem: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
     /// The rows of a parallel coordinates series (#141), drawn where a line
     /// is; its picked row is redrawn with the picked highlights.
@@ -57,6 +65,9 @@ pub struct SeriesLayers<'a> {
     /// A scatter series on a 3D chart (#132), drawn as `line_3d` is, after
     /// every series' 3D line.
     pub scatter_3d: Option<ColumnScatterLayer<'a>>,
+    /// A point vector series on a 3D chart (#211), drawn as `line_3d` is,
+    /// before every series' 3D line.
+    pub vector_3d: Option<vector::ColumnVectorLayer<'a>>,
     pub selected_bars: Vec<ColumnBarSelectionLayer<'a>>,
     pub selected_fields: Vec<ColumnFieldSelectionLayer<'a>>,
     pub picked: Vec<ColumnPickRingLayer<'a>>,
@@ -77,6 +88,8 @@ impl SeriesLayers<'_> {
         Self {
             area: None,
             field: None,
+            mesh: None,
+            mesh_contour: None,
             surface: None,
             floor: None,
             selected_surface: None,
@@ -88,12 +101,14 @@ impl SeriesLayers<'_> {
             contour: None,
             vector: None,
             errorbar: None,
+            stem: None,
             line: None,
             parallel: None,
             line_extra: None,
             scatter: None,
             line_3d: None,
             scatter_3d: None,
+            vector_3d: None,
             selected_bars: Vec::new(),
             selected_fields: Vec::new(),
             picked: Vec::new(),
@@ -174,6 +189,10 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
         pass.set_bind_group(2, &f.field_bg, &[]);
         pass.draw(0..FIELD_VERTICES, 0..1);
     }
+    // A triangle mesh's fill is a field over triangles: a backdrop too.
+    if let Some(m) = series.mesh.as_ref() {
+        super::tri_mesh::issue_tri_mesh_layer(pass, m);
+    }
 
     // Bars next: they are filled areas, and the stroked primitives below must
     // land on top of them rather than under.
@@ -241,64 +260,28 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
             pass.draw_indirect(l.snapshot.indirect(), 0);
         }
     }
+    // A triangle mesh's contours: the same triangles through
+    // `fs_tri_contour`, over its fill.
+    if let Some(m) = series.mesh_contour.as_ref() {
+        super::tri_mesh::issue_tri_mesh_layer(pass, m);
+    }
 
     // Arrows: over the field and contours, under errorbars, lines and markers.
     // No vertex buffers; `vs_main` reads sample `instance_index` from group 2.
     // Streamline arrowheads draw indirect: one instance per arc slot, the
     // count the arc scan wrote on the GPU, group 3 the slots' arc data.
     if let Some(v) = series.vector.as_ref() {
-        match v.indirect {
-            Some((args, slots)) => {
-                pass.set_pipeline(v.pipeline);
-                pass.set_bind_group(0, v.transform_bg, &[]);
-                pass.set_bind_group(1, &v.style_bg, &[]);
-                pass.set_bind_group(2, &v.vector_bg, &[]);
-                pass.set_bind_group(3, slots, &[]);
-                pass.draw_indirect(args, 0);
-            }
-            None if v.count > 0 => {
-                pass.set_pipeline(v.pipeline);
-                pass.set_bind_group(0, v.transform_bg, &[]);
-                pass.set_bind_group(1, &v.style_bg, &[]);
-                pass.set_bind_group(2, &v.vector_bg, &[]);
-                pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
-            }
-            None => {}
-        }
+        draw_vector_layer(pass, v);
     }
 
+    // Stems first (#206): under the error bars, the line and the markers.
+    if let Some(stem) = series.stem.as_ref() {
+        // 6 vertices = one quad (see `vs_stem`).
+        draw_errorbar_layer(pass, stem, 6);
+    }
     if let Some(eb) = series.errorbar.as_ref() {
-        let count = [
-            eb.x.len_values,
-            eb.y.len_values,
-            eb.err_y_lo.len_values,
-            eb.err_y_hi.len_values,
-            eb.err_x_lo.len_values,
-            eb.err_x_hi.len_values,
-        ]
-        .into_iter()
-        .min()
-        .unwrap_or(0) as u32;
-        if count > 0 {
-            pass.set_pipeline(eb.pipeline);
-            pass.set_bind_group(0, eb.transform_bg, &[]);
-            pass.set_bind_group(1, eb.style_bg, &[]);
-            if let Some(map) = eb.style_map_bg {
-                pass.set_bind_group(2, map, &[]);
-            }
-            pass.set_vertex_buffer(0, eb.pool_buffer.slice(eb.x.byte_range()));
-            pass.set_vertex_buffer(1, eb.pool_buffer.slice(eb.y.byte_range()));
-            pass.set_vertex_buffer(2, eb.pool_buffer.slice(eb.err_y_lo.byte_range()));
-            pass.set_vertex_buffer(3, eb.pool_buffer.slice(eb.err_y_hi.byte_range()));
-            pass.set_vertex_buffer(4, eb.pool_buffer.slice(eb.err_x_lo.byte_range()));
-            pass.set_vertex_buffer(5, eb.pool_buffer.slice(eb.err_x_hi.byte_range()));
-            if eb.style_map_bg.is_some() {
-                let style_index = eb.style_index.as_ref().unwrap_or(&eb.x);
-                pass.set_vertex_buffer(6, eb.pool_buffer.slice(style_index.byte_range()));
-            }
-            // 36 vertices = 6 quads × 2 triangles (see errorbar_columnar.wgsl).
-            pass.draw(0..36, 0..count);
-        }
+        // 36 vertices = 6 quads × 2 triangles (see errorbar_columnar.wgsl).
+        draw_errorbar_layer(pass, eb, 36);
     }
 
     if let Some(l) = series.line.as_ref() {
@@ -437,7 +420,7 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         if let Some(label) = series.contour.as_ref().and_then(|c| c.label.as_ref()) {
             pass.set_bind_group(3, label.snapshot.label_gap_bind_group(), &[]);
         }
-        pass.draw(0..FIELD_VERTICES, 0..1);
+        pass.draw(0..selection.vertices, selection.instances.clone());
     }
 
     for p in &series.picked {
@@ -508,6 +491,33 @@ pub(crate) fn issue_series_regions(
     }
 }
 
+/// One vector series' arrows: direct, one instance per arrow, or indirect
+/// for the streamline arrowheads (group 3 their arc slot data); a 3D
+/// series' arrows (#211) bind the camera as group 3.
+fn draw_vector_layer(pass: &mut wgpu::RenderPass<'_>, v: &vector::ColumnVectorLayer<'_>) {
+    match v.indirect {
+        Some((args, slots)) => {
+            pass.set_pipeline(v.pipeline);
+            pass.set_bind_group(0, v.transform_bg, &[]);
+            pass.set_bind_group(1, &v.style_bg, &[]);
+            pass.set_bind_group(2, &v.vector_bg, &[]);
+            pass.set_bind_group(3, slots, &[]);
+            pass.draw_indirect(args, 0);
+        }
+        None if v.count > 0 => {
+            pass.set_pipeline(v.pipeline);
+            pass.set_bind_group(0, v.transform_bg, &[]);
+            pass.set_bind_group(1, &v.style_bg, &[]);
+            pass.set_bind_group(2, &v.vector_bg, &[]);
+            if let Some(camera) = &v.view3d {
+                pass.set_bind_group(3, &camera.bind_group, &[]);
+            }
+            pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
+        }
+        None => {}
+    }
+}
+
 pub(crate) fn issue_series_surfaces(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
@@ -525,9 +535,14 @@ pub(crate) fn issue_series_surfaces(
             super::surface_mesh::issue_surface_layer(pass, surface);
         }
     }
-    // The 3D lines and markers (#132), depth tested against the surfaces
-    // and each other: every series' line, then every series' markers, as
-    // the flat bodies order them.
+    // The 3D arrows (#211), lines and markers (#132), depth tested against
+    // the surfaces and each other: every series' arrows, then lines, then
+    // markers, as the flat bodies order them (arrows under lines).
+    for s in series_list {
+        if let Some(vector) = &s.vector_3d {
+            draw_vector_layer(pass, vector);
+        }
+    }
     for s in series_list {
         if let Some(line) = &s.line_3d {
             draw_line_layer(pass, line);
@@ -549,5 +564,44 @@ pub(crate) fn issue_series_bodies(
     }
     for s in series_list {
         issue_series_data(pass, s);
+    }
+}
+
+/// Issue one error-bar module draw over its anchor and error columns: an
+/// error bar (36 vertices, six quads) or a stem (6 vertices, one quad).
+fn draw_errorbar_layer(
+    pass: &mut wgpu::RenderPass<'_>,
+    eb: &ColumnErrorBarDraw<'_>,
+    vertices: u32,
+) {
+    let count = [
+        eb.x.len_values,
+        eb.y.len_values,
+        eb.err_y_lo.len_values,
+        eb.err_y_hi.len_values,
+        eb.err_x_lo.len_values,
+        eb.err_x_hi.len_values,
+    ]
+    .into_iter()
+    .min()
+    .unwrap_or(0) as u32;
+    if count > 0 {
+        pass.set_pipeline(eb.pipeline);
+        pass.set_bind_group(0, eb.transform_bg, &[]);
+        pass.set_bind_group(1, eb.style_bg, &[]);
+        if let Some(map) = eb.style_map_bg {
+            pass.set_bind_group(2, map, &[]);
+        }
+        pass.set_vertex_buffer(0, eb.pool_buffer.slice(eb.x.byte_range()));
+        pass.set_vertex_buffer(1, eb.pool_buffer.slice(eb.y.byte_range()));
+        pass.set_vertex_buffer(2, eb.pool_buffer.slice(eb.err_y_lo.byte_range()));
+        pass.set_vertex_buffer(3, eb.pool_buffer.slice(eb.err_y_hi.byte_range()));
+        pass.set_vertex_buffer(4, eb.pool_buffer.slice(eb.err_x_lo.byte_range()));
+        pass.set_vertex_buffer(5, eb.pool_buffer.slice(eb.err_x_hi.byte_range()));
+        if eb.style_map_bg.is_some() {
+            let style_index = eb.style_index.as_ref().unwrap_or(&eb.x);
+            pass.set_vertex_buffer(6, eb.pool_buffer.slice(style_index.byte_range()));
+        }
+        pass.draw(0..vertices, 0..count);
     }
 }

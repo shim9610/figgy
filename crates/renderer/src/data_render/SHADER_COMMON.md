@@ -32,13 +32,15 @@ To change shared shader code:
 
 | Fragment | Modules |
 |---|---|
-| `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
-| `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
+| `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, triangle mesh, line_arc, contour anchor and label, vector |
+| `style.wgsl` (§2) | scatter, line, errorbar, bar, field, triangle mesh, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
-| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
-| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
+| `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
+| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, triangle mesh, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
+| `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, scatter, line, line_arc, the 3D point vector module (§5.3) |
+| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor, surface mesh, triangle mesh (§5.25); `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
-| `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
+| `ramp.wgsl` (§5.4) | field, triangle mesh, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
 | `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
@@ -49,13 +51,14 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector, line (the parallel row pick, §5.23) |
-| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, the radial pick module |
-| `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, field (the polar cell outline, §5), the radial pick module |
+| `radial_sector.wgsl` (§5.12) | radial, bar (the rose wedge), field (the polar cell outline, §5), the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
+| `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh |
 | `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
 | `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
 | `value_label.wgsl` (§5.17) | bar |
@@ -112,7 +115,7 @@ reuse the line stroke and its fragment stage.
 
 ## 1. `Transform` 유니폼(group 0, binding 0)
 
-`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 288바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 극좌표용 `vec4<f32>` 2개(오프셋 112·128), 삼각좌표용 `vec4<f32>` 2개(오프셋 144·160), 끊긴 축의 `array<vec4<f32>, 6>` 하나(오프셋 176, 간격 16바이트)와 `vec4<f32>` 하나(오프셋 272)로 구성된다.
+`Transform`은 데이터 좌표를 NDC로 바꾸는 값, 로그축 여부, 픽셀과 NDC의 비율, 스케치·별자리 등 현재 스타일의 옵션을 전달한다. 크기는 304바이트다. `vec2<f32>` 8개, `array<vec4<f32>, 3>` 하나(바이트 오프셋 64, 원소 간 간격 16바이트), 극좌표용 `vec4<f32>` 2개(오프셋 112·128), 삼각좌표용 `vec4<f32>` 2개(오프셋 144·160), 끊긴 축의 `array<vec4<f32>, 6>` 하나(오프셋 176, 간격 16바이트)와 `vec4<f32>` 하나(오프셋 272), 확률 축의 `vec4<f32>` 하나(오프셋 288)로 구성된다.
 점 반지름과 오차 막대 끝선 길이 같은 픽셀 크기는 `Style`에 저장한다. 셰이더는 `pixel_to_ndc`로 이를 NDC 크기로 환산한다.
 
 The code is the fragment [`data_render/common/transform.wgsl`](common/transform.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
@@ -122,9 +125,10 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `data_min`, `data_max` | `Config.bottom_x`·`Config.left_y` 범위의 시작과 끝을 f32 쌍으로 나눈 상위(hi) 값. `.x`가 X축, `.y`가 Y축이다. 선형축은 설정값을, 로그축은 CPU에서 계산한 log10 값을 쓴다. 반전된 축은 두 값을 맞바꿔 담으므로 `data_min`에 최댓값이 들어간다. 데이터 영역 여백을 이유로 범위를 별도로 늘리지 않는다. |
 | `data_min_lo`, `data_max_lo` | 같은 값의 하위(lo) 부분. `axis_pair_to_t`는 hi와 lo를 따로 빼서 큰 절댓값에서도 작은 차이를 유지한다. |
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
+| `scale_prob` | 확률 축([#209](https://github.com/shim9610/figgy/issues/209))의 척도 코드 `(x, y, 0, 0)`. 0은 선형·로그, 1은 정규, 2는 와이블, 3은 로지스틱이다. 확률 축에서는 `scale_log`가 0이고 `data_min`·`data_max`에 경계의 `F⁻¹`가 담긴다(CPU `transform::probability_code`). 코드이므로 `mix` 가중치로 쓰지 않는다(§5.24). |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer/registry.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함), 레이더, 범주 막대(로즈), 필드(히트맵·등고선, #208)에 허용된다. 히스토그램·이미지·오차 막대·스템·벡터 시리즈는 `Config::validate_series_on_polar`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. 필드는 `polar_unproject`(§4)와 `field_lookup`(§5)으로 프래그먼트를 (각도, 반지름)에서 읽는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
 | `breaks`, `break_info` | 끊긴 축([#200](https://github.com/shim9610/figgy/issues/200))의 잘라낸 구간 표. `breaks[0..3]`은 X축, `breaks[3..6]`은 Y축이며 각 원소는 `(from, to, start, end)`다. `from..to`는 잘라낸 값의 원래 `t` 구간, `start..end`는 그 구간을 그리는 빈칸이다(반전된 축은 `data_min`·`data_max`를 맞바꾼 `t`로 뒤집어 담는다). `break_info`는 (X 구간 수, Y 구간 수, X 조각 배율, Y 조각 배율)이며 구간 수가 0이면 항등 변환이다. CPU에서 `data_render::break_constants`가 `layout::BreakMap`으로 채운다. `Panels` 스타일 축은 이 표를 쓰지 않는다(구간 수 0). 그 축은 첫 조각의 선형 사상으로 그리고, 조각마다 `data_to_panel_offset`을 옮긴 변환을 따로 바인딩한다(`renderer::composite::DataPieces`). |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer/style.rs` (`[f32; 12]`). |
 
@@ -137,7 +141,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
 not a numeric f32 conversion. `styled_point_index` adds the local instance id
 as an integer, so identities above 2^24 keep all bits. Resident transforms write
-zero. `create_stream_point_transform_bind_group` copies the whole 144-byte
+zero. `create_stream_point_transform_bind_group` copies the whole 304-byte
 transform, with the base written into `[2].z`, into a separately charged
 immutable uniform; it never
 rewrites the shared view transform or copies source payloads. Callers validate
@@ -370,6 +374,12 @@ a `.x` swizzle, and may be a field of a path (`transform.scale_log.x`,
 | Flag | Kind | Where |
 | --- | --- | --- |
 | `scale_log` | f32 0/1 uniform field, one lane per axis | `Transform` (`common/transform.wgsl`), the pick transform |
+
+`scale_prob` (§5.24) is a code (0 to 3), not a 0/1 flag: it is compared with
+thresholds (`> 0.5`, `< 1.5`, …) and never weights a `mix`.
+`every_scale_log_reader_reads_scale_prob` (`tests/shader_consistency.rs`)
+holds that, and that every function reading `scale_log` reads `scale_prob`
+too, except in the charts that refuse the scale (polar, category bars, 3D).
 | `polar_angle.x` | f32 0/1 uniform lane (the other lanes are not flags) | `Transform`, the pick transform |
 | `is_log` | parameter name | `maybe_log`, `axis_pair_to_t`, `axis_px_per_unit_at` |
 | `let`/`var NAME = select(0.0, 1.0, …)` or `select(1.0, 0.0, …)` | local, flag within its function | `ramp_t` (`is_log`) |
@@ -448,6 +458,15 @@ varyings (from `polar_clip_offset` / `polar_clip_limits` /
 entry starts with `polar_fragment_visible`, since the transform bind group
 is vertex-visible only.
 
+`polar_unproject(t, px)` (`projection.wgsl`, #208) is the inverse of
+`polar_ndc`: from a pixel offset from the centre (`polar_clip_offset`, the
+draw's pixel frame, y up) it returns the angle value in the turn `atan2`
+returns (before any wrap), the radius axis `t` as `axis_pair_to_t` gives it,
+and their derivatives per pixel (`d_angle`, `d_ty`). The centre has no
+angle: its derivatives are zero. It places given data, so it is projection,
+not data (CLAUDE.md rule 1). CPU twin: none; the polar heatmap tests compute
+expected pixels from `polar_geometry` and `polar_angle_map`.
+
 The code is the fragment [`data_render/common/sample_validity.wgsl`](common/sample_validity.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
 
 ## 5. 격자 샘플링(group 2)과 공통 블록 밖의 정의
@@ -456,6 +475,8 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `locate`의 `lattice` 인자는 검색할 격자를 정한다. 채움은 `Shading`에 따른 사각형 격자를, 등고선은 실제 Z값이 있는 표본 격자를 사용한다. 두 경우 모두 같은 이진 탐색을 수행한다.
 
+The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate` on each axis followed by `contour_sample_cells`, which evaluates the located cell. A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
 대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(80바이트), `create_field_data_bind_group_layout`이다.
@@ -463,6 +484,56 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
+
+**Polar lookup** (`field_lookup`, `field_grid.wgsl`, #208). Every field
+entry that locates a cell first turns the fragment's (or the cursor's)
+chart-area `t` into lookup `t` with `field_lookup(t, lattice)`, which also
+returns the lookup `t`'s derivatives per pixel (`jac_x`, `jac_y`). On a
+rectangular chart it returns `t` and the axis-aligned `pixel_to_ndc / 2`
+(the identity: the rectangular path is unchanged). On a polar chart it
+takes the pixel offset (`polar_clip_offset`), misses outside the outer ring,
+inside the hole and outside the sector (`polar_fragment_visible`), inverts
+the placement (`polar_unproject`, §4), wraps the angle into the turn that
+starts at the grid's low angle boundary (`boundary_t` at 0 and at the
+count), and carries the Jacobian. `fs_main`, `field_pick_cell` and
+`selected_cell_coverage` look up on the quad lattice; `contour_paint`,
+`field_pick_contour`, `selected_contour_coverage` and the anchor pass
+(`anchor_seed`, whose Newton steps then run in (angle, radius)) on the
+sample lattice. The polar contour metric (`contour_metric_at`) carries the
+axis-`t` gradient to pixels, `g = dz.x · jac_x + dz.y · jac_y`, and the
+bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
+the polar field is not a quadratic, so `contour_level_distance_at` finds the
+closest point on the level set by foot-point iteration
+(`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then the walk
+`contour_foot_walk` / `contour_foot_advance`): at the current point the
+level set is linearized from the field read through `field_lookup` and the
+located cell (`contour_sample_cells`), and the point moves to the foot of
+the perpendicular from the fragment. The distance is the Euclidean pixel
+distance to the isoline; the paint, the pick and the selected-level
+highlight read it. The walk is advanced by its caller's own loop, one
+iteration at a time: an iteration looks the current point up, begins or
+halves one axis's cell search (`locate_begin`, `locate_step`; the two axes
+share one call site of each), or takes the step from the located cell. The
+paint (`contour_paint`) and the pick (`field_pick_contour`) run it inside
+their one flat loop over the levels (the paint: the candidates of each level
+block), and `contour_level_distance_at` (the selected-level highlight) in a
+loop of its own, so no foot-point step and no cell search runs as a loop
+inside another loop. Chromium's SwiftShader compiles a fragment entry at its
+first draw and a compute entry when its pipeline is created. With the
+foot-point loop nested in the loop over the levels it passed 12 GB on the
+contour entries, and with the cell search nested in the foot-point step it
+took 24 to 30 s and 0.7 GB per contour entry. `locate`
+returns the bracket's boundaries (`CellHit.lo_t`, `hi_t`), which
+`contour_sample` takes for the cell's span instead of transforming them
+again. A rectangular chart keeps
+`contour_level_distance_px`. The
+picked cell's outline is the annular sector between its boundaries as a
+`radial_sector.wgsl` `Sector`, measured by `footprint` as the rose wedge is
+(`polar_cell_coverage`). An anchor's pixel is its polar placement
+(`data_to_ndc`), and its tangent step is a thousandth of the range, so the
+label frame's chord turns with the isoline's screen tangent. The fragment
+splices `projection.wgsl` and `sample_validity.wgsl` beside it: the field
+and anchor modules do.
 
 **Hexagonal lattice** (`FIELD_HEXAGONAL`, `GridLayout::Hexagonal`, #134).
 With the flag set, `field_cell_sample`, `field_pick_cell` and
@@ -547,6 +618,43 @@ the `grid_pair` and `data_pick` fragments), `common/arrow.wgsl` and
 `vector/vector_entry.wgsl`, in that order. The grid input places an `Edges`
 arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
 
+**3D form (#211).** `VECTOR_POINTS_3D_SHADER` draws a point vector on a 3D
+chart: the point form with the flat projection `vector/project_cartesian2d.wgsl`
+replaced by `common/project_3d.wgsl` (§5.21) and `vector/project_box3d.wgsl`,
+and `vector/vector_entry_3d.wgsl` appended; nothing else differs (rule 9,
+tested by `the_3d_form_replaces_only_the_projection`). Both projection
+fragments define the same interface: `VectorSample`, `ArrowPx` (which carries
+`depth`, the NDC depth at the tail and tip; the flat fragment sets 0),
+`project_arrow` and `arrow_clip(corner, arrow)`, the clip position of a quad
+corner in pixels. The flat `arrow_clip` is `px_to_clip(corner)`; the box one
+extrapolates the depth linearly along the tail → tip screen axis, which is
+exact because NDC depth is affine along a projected line. The entry's body is
+`vector_vertex(vertex_index, instance_index)`, which `vs_main` returns and the
+3D pick entry reuses, since WGSL cannot call an entry point; the 2D modules
+emit byte-identical pixels after the change. Under `VECTOR_FLAG_THREE_D` the
+point input reads the anchor height (`height_base` / `height_len`) into
+`origin_*.z` and `w` (`w_base` / `w_len`) into `vector.z`; the 2D modules
+never set it.
+
+`project_box3d.wgsl::project_arrow` hides an arrow unless its anchor is a
+valid box point (`view3d_point_valid`). `Data` puts the tip at
+`origin + scale · (u, v, w)` through `pair_add` and hides the arrow when the
+tip is not a valid box point, as a 3D line drops a segment whose end leaves
+the box. `Pixels` carries the vector into box space by each axis's local
+derivative (`box_t_per_unit`, exact on a linear axis, local on a log one) and
+scales it to `scale · |(u, v, w)|` pixels in the screen plane at the anchor,
+measured by projecting a small step perpendicular to `view3d.eye`. The tail
+and tip are placed at the front of a tube of half the head width
+(`project_box_front`). `vector_entry_3d.wgsl` holds `vs_3d_pick` /
+`fs_3d_pick`: the same placement, and `(view3d_pick_id(), 1, instance, 0)`
+where `arrow_coverage` is at least 0.5, so the shaft and the head pick where
+they paint. The draw pipeline (`View3dPipeline::Vector`) and the pick
+(`View3dPipeline::VectorPick`) bind the surface group (bindings 4 and 5) as
+group 3 and take `surface_mesh::point_depth_stencil`; the draw converts
+coverage to sample coverage on a multisampled composite, as the 3D markers
+do. The picked ring is the 3D marker ring (`vs_pick_ring_3d`) at the anchor
+with half the head width as its radius.
+
 **Path form.** `VECTOR_PATH_SHADER` draws a streamline series' arrowheads
 (`DataRenderType::Streamlines` with `arrows`): the point form's fragments
 with `vector/vector_input_path.wgsl` as the input, which splices
@@ -579,8 +687,9 @@ grid table (`GridColumn { base, len }`, laid out like the field shader's
 binding 1; CPU twin `field.rs::GridColumnGpu`): one padding entry for the
 points form, and for the grid form the `u`, `v` and colour grids' columns
 appended in that order, each addressed from its own base in `VectorParams`. Binding 2 is the colourbar's ramp control points (straight
-RGBA, at least one entry). Binding 3 is `VectorParams` (128 B; CPU twin
+RGBA, at least one entry). Binding 3 is `VectorParams` (144 B; CPU twin
 `vector.rs::VectorParamsGpu`): the x / y / u / v / colour lanes and lengths,
+the 3D form's height and `w` lanes and lengths,
 the grid's `cols` / `rows`, the flags, the arrow count, the stop count, the
 pivot, the scale (`Data`: the factor; `Pixels`: `px_per_unit` times the
 export scale), the pixel sizes (shaft width, head length, head width, minimum
@@ -590,7 +699,8 @@ export scale) and the colourbar's bounds as hi/lo pairs, already log10 under
 
 Flags: `GRID` selects the grid input, `COLUMNS_ARE_Y` and `CENTERS` are the
 `u` grid's orientation and layout, `SCALE_PIXELS` the scale mode, `LOG_Z` the
-colourbar's scale and `COLOR_MAP` whether a colour column or grid is bound.
+colourbar's scale, `COLOR_MAP` whether a colour column or grid is bound and
+`THREE_D` (64) the 3D form's height and `w` reads.
 `vector_sample(i)` returns the anchor as hi/lo pairs, the (u, v) components
 and the colour value: under `Centers` the anchor is the coordinate, under
 `Edges` the data-space midpoint of two consecutive coordinates (the field's
@@ -1067,6 +1177,48 @@ The struct, the constants and the functions are the fragment
 spliced after `sketch_noise.wgsl` into the errorbar module and the pick
 marker modules by `wgsl_module!` (`shader_assembly.rs`).
 
+#### Stems (#206)
+
+A stem series' stems are the error-bar module's second draw: one quad per
+instance (`0..6` vertices), from the baseline to the point.
+
+```wgsl
+const ERRORBAR_STEM: u32 = 32u;
+fn stem_segment(x: vec2<f32>, y: vec2<f32>, baseline: vec2<f32>, flags: u32, half_stroke: f32) -> ErrorBarSegment
+fn stem_quad(flags: u32) -> u32
+fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec2<f32>
+```
+
+- The stem's `Style` is its own (`ChartStyle.stem_bg`): `color_premul`,
+  `line_width_px` and `dash` / `dash_len` are the stem's colour, width and
+  dash. `primitive_flags` is `ERRORBAR_STEM` (bit 5) with `ERRORBAR_HAS_Y`
+  (a vertical stem) or `ERRORBAR_HAS_X` (a horizontal one). A stem has no
+  caps, so `cap_half_px` / `cap_width_px` hold the baseline as the pool's
+  `(hi, lo)` pair.
+- `stem_segment` is quad 0 (vertical) or quad 3 (horizontal) of the error
+  bar: end A at the baseline, end B at the point. `stem_quad` names the quad
+  for the sketch hash.
+- `stem_end_ndc` places end B with `data_to_ndc` and end A's value-axis
+  coordinate with `axis_baseline_ndc` (`common/projection.wgsl`), which
+  draws a baseline at or below zero on a logarithmic axis at the axis
+  minimum. The area fill's `area_baseline_ndc_y` calls the same function.
+- `vs_stem` / `vs_stem_sketch` (`errorbar_columnar.wgsl`) draw a stem where
+  `sample_valid` holds for its point and collapse it otherwise. They pass
+  `along_px`, the pixel distance from the baseline end, so `fs_stem`'s
+  `dash_pattern_on` starts every stem's dash at its baseline with no arc
+  scan. `vs_jet` draws a stem as one beam whose source is the point
+  (`t_src = 1`) when `ERRORBAR_STEM` is set.
+- The error slots of a stem draw are bound to the anchor columns as filler
+  and never read.
+- The pick's `pick_stem_candidate` (`gpu_pick/errorbar.wgsl`, under
+  `PICK_VARIANT_ERRORBAR`) measures the same quad with
+  `pick_errorbar_quad_distance`, the same sketch offsets and a jet's beam
+  width. A cursor beside a dash gap measures along the stem to the nearer
+  dash end (`dash_gap`, `common/line_stroke.wgsl`, which the line's
+  `pick_dash_gap` also reads). `PickQueryParams.stem` holds
+  `(baseline hi, baseline lo, width, 0)`, `stem_dash` the pattern in canvas
+  pixels and `stem_info` `(1, direction, dash count, base paints)`.
+
 ### 5.12 Radial sector
 
 The radial chart draws each slice as a solid: an extruded sector, its
@@ -1244,23 +1396,28 @@ the group layout. The value axis fit reads only the value columns' own
 statistics (`ColumnSlot::min` / `max`); the per-category totals exist only
 in this shader, on every draw.
 
-### 5.14 Records and ragged columns in the pool
+### 5.14 Records, ragged and triangle columns in the pool
 
-A record (`ColumnPool::upsert_record`) and a ragged column
-(`ColumnPool::upsert_ragged`) are ordinary pool columns, so a shader reads
-them as every column: through the pool bound as `array<f32>` storage, at a
-lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
-lanes `base + 2i` and `base + 2i + 1`. A ragged column's offsets are the one
-exception: they are indices, stored as `u32` lanes (below).
+A record (`ColumnPool::upsert_record`), a ragged column
+(`ColumnPool::upsert_ragged`) and a triangle index column
+(`ColumnPool::upsert_triangles`, #210) are ordinary pool columns, so a shader
+reads them as every column: through the pool bound as `array<f32>` storage,
+at a lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
+lanes `base + 2i` and `base + 2i + 1`. A ragged column's offsets and a
+triangle column's indices are the exception: they are indices, stored as
+`u32` lanes (below).
 
 | Source | Lane bases | Convention |
 |---|---|---|
 | Record | one per present schema field (`RecordRef::field_at(k)`), at most `MAX_RECORD_FIELDS` (12, three `vec4<u32>`) | row `r` of field `k` is value `r` of that field's column; an absent optional field has no column and reads as NaN; how a consumer marks it in its uniform is that consumer's contract |
 | Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `offsets[g]..offsets[g + 1]`. Offset `i` is a `u32` index: lane `base + 2i` holds its bits, read as `bitcast<u32>(pool[base + 2i])`, and lane `base + 2i + 1` holds 0. The pool writes the lanes from the source's `(hi, lo)` pair, the integer `hi + lo` summed in f64, so every offset up to `u32::MAX` is exact and a ragged column has no value cap below the `u32` index space; `offsets[0] = 0`, `offsets[groups] = total` and the integer, non-decreasing offsets are checked at upload. CPU writer: `ColumnPairWriter` in index lane mode (`data.rs`) |
 
+| Triangle index column | the indices (`TriangleRef::indices`) | triangle `t` is the vertices at indices `3t`, `3t + 1` and `3t + 2`; index `i` is a `u32` lane as a ragged offset is, read as `bitcast<u32>(pool[base + 2i])`, exact up to `u32::MAX`. The pool checks at upload that the count is a non-zero multiple of 3 and that every index is an integer in `0..=u32::MAX`, and records `TriangleStats { triangles, min_index, max_index }`; whether an index names a vertex the mesh has is checked against the vertex columns when a series registers. CPU writer: `ColumnPairWriter` in index lane mode |
+
 The box plot entries (§5.15) read them; the convention is also held by
-the pool test
-`a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset`.
+the pool tests
+`a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset` and
+`a_shader_reads_a_triangle_by_pool_offset`.
 
 ### 5.15 Box plots (group 3, bindings 8 to 10)
 
@@ -1644,13 +1801,18 @@ target's (the live highlight), and `box_space_point` to box space for shading.
 `box_visible` clips a fragment to the box. Both matrices are
 `Config::view_matrix` composed on the host with the target's pixel map, so
 the draw, the ID pick and the CPU decorations project through one camera.
-This is the projection layer a later 3D vector glyph reuses (rule 9).
+This is the projection layer the 3D vector glyph reuses (rule 9, §5.3 3D
+form).
 
 [`common/field_paint.wgsl`](common/field_paint.wgsl) holds the colour a
-field paints: `z_ramp_t`, `field_fill_color` (continuous or banded),
-`contour_paint` and the lookup metadata at group 2 binding 6. The heatmap
-fill (`field_columnar.wgsl`) and the surface splice it, so a surface is
-coloured exactly as the heatmap of its grid.
+field paints: `z_ramp_t`, `field_fill_color` (continuous or banded) over
+`field_value_color` (a placed value's colour, shared with the triangle
+mesh, §5.25), the contour level search (`contour_block_candidates`), the
+stroke compositing (`contour_level_over`, `ContourPaint`) and the lookup
+metadata at group 2 binding 6. The heatmap fill (`field_columnar.wgsl`),
+the surface and the triangle mesh splice it, so a surface is coloured
+exactly as the heatmap of its grid and a mesh's contours are searched and
+composited as the heatmap's.
 
 The surface module (`surface_mesh/`, assembled by `wgsl_module!` with the
 field grid, the field paint, the ramp, the material and the projection)
@@ -1801,7 +1963,8 @@ row `r = inst / (axes − 1)`: both ends are read from the pool through the
 lanes (`parallel_value`), placed by their axes (`parallel_fraction`: `(v −
 lo) · span_inv`, the high parts' difference first so close f64 values keep
 their distance, in `log10` on a logarithmic axis, flipped when inverted;
-NaN for a non-finite value or a non-positive one on a logarithmic axis),
+invalid, by an explicit flag, for a non-finite value or a non-positive one
+on a logarithmic axis),
 and the quad is `line_stroke_vertex` (§5.6) between `(i, f_a)` and
 `(i + 1, f_b)` in the chart's data space (the categorical `bottom_x`
 positions, the normalized band of `left_y`), with no arc prefix (the
@@ -1824,6 +1987,138 @@ tie. The candidate is kind 0 (a point) with `index0` the row and `index1`
 the nearer axis, so the pick answers `PickedData::Point { point_index }`.
 The bundle's pipeline is `DataPickPipelineBundle.parallel`
 (`GpuDataPickGeometry::Parallel`).
+
+### 5.24 Probability axes (`common/probability.wgsl`)
+
+[#209](https://github.com/shim9610/figgy/issues/209). A probability `p` in
+`(0, 1)` is drawn at `F⁻¹(p)` for the axis' code `kind`
+(`Transform.scale_prob`). It places given data: projection (CLAUDE.md
+rule 1). Every function reads the column's `(hi, lo)` pair, not its sum:
+`q = (1 − hi) − lo` keeps the upper tail that `hi` alone rounds away.
+
+| Function | What it computes |
+| --- | --- |
+| `prob_in_domain(pair)` | `p > 0` and `q > 0`, which also rules out NaN and ±∞ |
+| `prob_forward(pair, kind)` | Normal: AS241 `PPND7` on `min(p, q)`, signed by side (about 1e-7 relative). Weibull: `ln(w)`, `w = −ln(1 − p)` by the series below `p = 0.01` and `−ln(q)` above. Logistic: `ln(p) − ln(q)`. `p` and `q` are floored at `1e-30` first |
+| `prob_slope(pair, kind)` | `dF⁻¹/dp`: `√(2π)·exp(z²/2)`, `1/(q·w)`, `1/(p·q)` |
+| `prob_inverse(y, kind)` | `(p, 0)` below the median and `(1, −q)` above; the normal uses Numerical Recipes' `erfcc` (under 1.2e-7) |
+
+**Sites.** `axis_pair_to_t` and `axis_px_per_unit_at` take `prob` after
+`is_log` and branch on it first, so the linear and log arithmetic is
+unchanged. `sample_valid` and `pick_coordinate_is_valid` omit a value with
+no position (a line breaks there, as at a non-positive sample on a log
+axis). `axis_baseline_ndc` clamps an area or stem baseline at or past 0 or
+1 to the axis end on its side (`p ≤ 0` the low end, `p ≥ 1` the high one;
+an inverted axis swaps them). An error bar or bar end outside `(0, 1)` goes
+through the floor, far past the axis end, and is cut by the scissor.
+`t_to_pair` (the contour label anchors) inverts through `prob_inverse`. The
+polar radius, category bars, 3D boxes, the colourbar and parallel axes
+refuse the scale and pass 0.
+
+**Accuracy.** The ticks are placed in f64 (`figgy_model::probability`,
+`PPND16`), the data in f32. Over `0.1 %..99.9 %` an f32 error of about
+5e-6 in `z` is 0.003 px on a 4096 px axis.
+`probability_axis_places_points_at_every_tail` (`tests/pick_draw_agreement.rs`,
+in `NUMERIC_TESTS`) draws each scale at both tails and checks the ink
+centroid within 0.5 px at 2x (the antialiased marker's centroid, not the
+f32 error, sets that bound) and the GPU and CPU picks within 0.5 px. The
+low tail reaches the floor (`z ≈ −11.4`); the high tail ends at the f64
+input, `q ≥ 2⁻⁵³` (`z ≤ 8.2`). A window like `0.4999..0.5001` shows the
+f32 error, as a log axis does. CPU twin (test support):
+`cpu_twin::prob_forward`.
+
+### 5.25 Triangle meshes (group 2 under `FIELD_MESH`)
+
+The triangle mesh module (`tri_mesh.rs::TRI_MESH_SHADER`, #210) splices
+transform, style, projection, probability, sample validity, `grid_pair`,
+`field_grid`, the ramp and `field_paint`, then
+[`tri_mesh/mesh_input.wgsl`](tri_mesh/mesh_input.wgsl) and
+[`tri_mesh/mesh_entry.wgsl`](tri_mesh/mesh_entry.wgsl). It binds the field's
+group 2 layout unchanged (`create_field_data_bind_group_layout`) and reads it
+under the `FIELD_MESH` flag (128):
+
+| Member | Meaning for a mesh |
+|---|---|
+| `x_base`, `x_len`, `y_base`, `y_len` | the vertex coordinate columns (lane base and length) |
+| `cols` | the grid table's entries: 2 |
+| `rows` | the triangle count (`TriangleStats::triangles`) |
+| `flags` | `FIELD_MESH`; `FIELD_FACE_VALUES` (256) for one value per triangle; `FIELD_INTERPOLATED`, `FIELD_BANDS` and `FIELD_LOG_Z` as for a heatmap fill |
+| `level_count`, `stop_count`, `z_min`, `z_max`, `opacity` | as for a heatmap fill: the colourbar's ramp and bands |
+| `line_width_px`, `level_color_count` | the contour stroke, as a contour group's: one group serves the fill and the contours |
+| grid table entry 0 (`MESH_VALUES`) | the value column, read with `grid_value(0, i)` and its bound check |
+| grid table entry 1 (`MESH_INDICES`) | the triangle index column, three `u32` lanes per triangle (§5.14) |
+
+CPU writer: `renderer/prepare/field.rs::ensure_mesh_scratch`, cached in
+`field_cache` under the series id and compared by `FieldSignature` (which
+carries the level colours a mesh's one group holds).
+
+**Draw.** One instance per triangle, three vertices, no vertex buffers:
+`draw(0..3, 0..rows)`. `vs_tri` reads the triangle's three indices and
+places all three vertices (`mesh_triangle`), so the three invocations agree
+on whether it draws and on its flat varyings. A triangle is not drawn (every
+vertex outside the clip volume) when it is past `mesh_triangle_count()`
+(`rows`, the index column's whole triangles, and for face values the value
+column's length), names a vertex at or past `mesh_vertex_count()` (the
+shortest coordinate column and, for vertex values, the value column), or
+has a vertex `sample_valid` refuses. The vertex check runs on every draw: a
+later upload can shorten a column, and it also keeps every read inside its
+own column.
+
+**Fill.** `fs_tri` shades `field_value_color(mesh_fragment_value(..))`:
+the triangle's own value under `FIELD_FACE_VALUES`, else the barycentric
+blend of its corners' value pairs. The barycentrics are interpolated
+`perspective, centroid` (an orthographic flat chart has `w = 1`, so this is
+linear in screen space, and an edge sample never extrapolates). A
+non-finite corner value paints the whole triangle `nan_color`. The fill is
+opaque per sample without coverage antialiasing: under MSAA each sample of a
+shared edge is covered by exactly one triangle, so adjacent triangles do not
+seam.
+
+**Contours.** `fs_tri_contour` draws the same instances after the fill. The
+vertex stage computes the length of the triangle's gradient in output pixels
+from its three placed vertices (`mesh_gradient_px`, analytic, never
+`dpdx`); the fragment's distance to level `L` is `|f − L| / |∇f|`, exact for
+a linear function. The level search (`contour_block_candidates`) and the
+compositing (`contour_level_over`) are the heatmap's. A zero gradient is a
+plateau and draws nothing; face values draw no contours. The interpolant is
+continuous across a shared edge, so a stroke continues into the neighbour;
+at the mesh boundary half the stroke is clipped.
+
+**Pick.** `pick_tri_mesh` is a compute entry over the same group 2 (layout:
+transform, the data pick query, the field's group 2), in one 64-lane
+workgroup that walks every triangle and reduces in shared memory, as
+`pick_parallel` does. It works in the draw's pixel frame (axis `t` times the
+target size) at the centre of the cursor's pixel:
+
+- A triangle is a candidate inside it (distance 0) or within one output
+  pixel of its edge (`MESH_PICK_FRINGE_PX`, the multisampled fringe), and
+  only where the fill paints there (`field_fill_paints` on the value at the
+  nearest point of the triangle). Nearer wins; on a tie the higher triangle,
+  which is drawn later. It answers `DATA_PICK_KIND_MESH_TRIANGLE` (5) with
+  `index0` the triangle and `index1` its vertex nearest the cursor.
+- With `DATA_PICK_FLAG_CONTOUR`, the drawn triangle nearest the cursor
+  within the fringe gives the stroke test after the reduce: for each level,
+  `max(|f − L| / |∇f| − w/2, 0)` from that triangle's linear interpolant at
+  its nearest point, plus the cursor's distance to the triangle. A stroke
+  within `limits.x` wins over the fill and answers
+  `DATA_PICK_KIND_CONTOUR_LEVEL` with `index0` the level and `index1` the
+  triangle. The level loop runs once, after the reduce: no loop is nested in
+  another (#236).
+
+The bundle compiles its own mesh module for this entry, since the draw
+compiles the module only when a mesh is drawn.
+
+**Selection.** `fs_tri_selection` runs over `vs_tri` with the data selection
+uniform as group 1 (`TriMeshPass::Selection`), through the selection layer's
+instances: the picked triangle alone (`DATA_SELECTION_KIND_MESH_TRIANGLE`,
+`indices.y` the triangle), outlined inside its edges at `metrics.x` from the
+barycentrics over their `fwidth` (taken first, in uniform control flow); or
+every triangle (`DATA_SELECTION_KIND_CONTOUR_LEVEL`, `indices.y` the level),
+painting that level's stroke widened by `metrics.y`.
+
+The gradient only sets stroke coverage, and the blend only shades given
+values: nothing the reader reads as data is computed (rule 1), and nothing
+per vertex is stored (rule 2).
 
 ## Checklist
 

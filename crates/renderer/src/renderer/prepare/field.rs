@@ -47,6 +47,10 @@ pub(in crate::renderer) struct FieldSignature {
     pub(in crate::renderer) levels: Vec<f32>,
     pub(in crate::renderer) stops: Vec<[f32; 4]>,
     pub(in crate::renderer) nan_color: [u32; 4],
+    /// The premultiplied contour stroke colour per level: a triangle mesh's
+    /// one group serves its fill and its contours (#210). Empty for a
+    /// heatmap fill, whose group carries the padding entry.
+    pub(in crate::renderer) level_colors: Vec<[f32; 4]>,
 }
 
 /// One field series' resolved GPU state.
@@ -129,6 +133,14 @@ impl PrepareContext<'_> {
         &mut self,
         items: &[ChartDrawItem<'_>],
     ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_field_scratches_in_frame(items))
+    }
+
+    fn ensure_field_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+    ) -> Result<Vec<Arc<GridSources>>> {
+        retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
         for item in items {
             for series in item.series {
@@ -149,6 +161,243 @@ impl PrepareContext<'_> {
             }
         }
         Ok(receipts)
+    }
+
+    /// Resolve every triangle mesh series' group 2 (#210), reusing what has
+    /// not changed: one group per mesh serves its fill and its contours.
+    /// `scale` is the export multiplier the contour stroke width takes, as
+    /// `ensure_contour_scratches`' is.
+    pub(in crate::renderer) fn ensure_mesh_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_mesh_scratches_in_frame(items, scale))
+    }
+
+    fn ensure_mesh_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        retain_frame_series(&mut self.field_cache, items, FIELD_SCRATCH_CACHE_LIMIT);
+        let mut receipts = Vec::new();
+        for item in items {
+            for series in item.series {
+                let cfg = series.config;
+                let primitives =
+                    effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type);
+                if !(primitives.mesh || primitives.mesh_contour) {
+                    continue;
+                }
+                let sources = self.ensure_mesh_scratch(item.chart_config, cfg, scale)?;
+                receipts
+                    .try_reserve(1)
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "mesh source receipts",
+                        reason: error.to_string(),
+                    })?;
+                receipts.push(sources);
+            }
+        }
+        Ok(receipts)
+    }
+
+    /// Build or reuse one triangle mesh series' group 2 (#210, SHADER_COMMON.md
+    /// §5.24): the field's layout under `FIELD_FLAG_MESH`, the vertex
+    /// coordinate columns in the coordinate slots, the triangle count in
+    /// `rows`, and a two-entry table of the value column and the triangle
+    /// index column. The fill's colourbar and bands and the contours' levels,
+    /// stroke width and colours share the one group, cached in `field_cache`
+    /// under the series id and compared by its signature like a heatmap's.
+    pub(in crate::renderer) fn ensure_mesh_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Arc<GridSources>> {
+        let mesh = cfg
+            .tri_mesh()
+            .ok_or(FiggyError::internal("a mesh series has a mesh"))?;
+        let bar =
+            chart_config
+                .colorbar
+                .as_ref()
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: "a triangle mesh series needs Config.colorbar".into(),
+                })?;
+        let unknown = |id: &str| FiggyError::UnknownColumn { id: id.to_owned() };
+        let x = self
+            .pool
+            .handle_for(&cfg.x_column)
+            .ok_or_else(|| unknown(&cfg.x_column))?;
+        let y = self
+            .pool
+            .handle_for(&cfg.y_column)
+            .ok_or_else(|| unknown(&cfg.y_column))?;
+        let values_id = mesh.values.column.as_str();
+        let values = self
+            .pool
+            .handle_for(values_id)
+            .ok_or_else(|| unknown(values_id))?;
+        let triangles = self
+            .pool
+            .triangles(&mesh.triangles)
+            .ok_or_else(|| unknown(&mesh.triangles))?;
+        let member = triangles.slot().indices.as_str();
+        let indices = triangles.indices().ok_or_else(|| unknown(member))?;
+        let triangle_count = triangles.stats().triangles;
+        let epoch = |id: &str| self.pool.allocation_epoch(id).ok_or_else(|| unknown(id));
+        let epochs = [epoch(values_id)?, epoch(member)?];
+        let column = |handle: &ColumnHandle, resource| -> Result<data_render::GridColumnGpu> {
+            Ok(data_render::GridColumnGpu {
+                base: lane_u32(handle.offset / 4, resource)?,
+                len: u32::try_from(handle.len_values).unwrap_or(u32::MAX),
+            })
+        };
+        let grid = [
+            column(&values, "mesh value column lane")?,
+            column(&indices, "mesh index column lane")?,
+        ];
+
+        let mut flags = data_render::FIELD_FLAG_MESH;
+        if mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces {
+            flags |= data_render::FIELD_FLAG_FACE_VALUES;
+        }
+        let opacity = match &mesh.fill {
+            Some(fill) => {
+                if matches!(fill.shading, crate::data_config::Shading::Interpolated) {
+                    flags |= data_render::FIELD_FLAG_INTERPOLATED;
+                }
+                if matches!(fill.mode, crate::data_config::FillMode::Bands) {
+                    flags |= data_render::FIELD_FLAG_BANDS;
+                }
+                fill.opacity.clamp(0.0, 1.0)
+            }
+            None => 1.0,
+        };
+        let colorbar = colorbar_gpu(bar);
+        if colorbar.log_z {
+            flags |= data_render::FIELD_FLAG_LOG_Z;
+        }
+        let ColorbarStops { stops, stop_count } = colorbar_stops("mesh colourmap stops", bar)?;
+        let declared: &[f64] = mesh.contour.as_ref().map_or(&[], |c| &c.levels);
+        if declared.len() > crate::data_config::MAX_CONTOUR_LEVELS {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: cfg.series_id.clone(),
+                reason: format!(
+                    "contour level count {} exceeds the supported maximum {}",
+                    declared.len(),
+                    crate::data_config::MAX_CONTOUR_LEVELS
+                ),
+            });
+        }
+        let mut levels = crate::gpu_contour::try_collect(
+            "mesh contour levels",
+            declared.iter().map(|l| *l as f32),
+        )?;
+        if levels.is_empty() {
+            levels.push(0.0);
+        }
+        let level_count = u32::try_from(declared.len()).unwrap_or(u32::MAX);
+        let (line_width_px, level_colors) = match &mesh.contour {
+            Some(contour) => (
+                contour.line.line_width * scale,
+                crate::gpu_contour::try_collect(
+                    "mesh contour level colours",
+                    (0..declared.len()).map(|index| {
+                        let color = contour
+                            .per_level_color
+                            .as_ref()
+                            .and_then(|colors| colors.get(index))
+                            .copied()
+                            .unwrap_or(contour.line.line_color);
+                        let a = color.a.clamp(0.0, 1.0);
+                        [color.r * a, color.g * a, color.b * a, a]
+                    }),
+                )?,
+            ),
+            None => (0.0, Vec::new()),
+        };
+        let params = data_render::FieldParamsGpu {
+            x_base: lane_u32(x.offset / 4, "mesh x column lane")?,
+            y_base: lane_u32(y.offset / 4, "mesh y column lane")?,
+            x_len: u32::try_from(x.len_values).unwrap_or(u32::MAX),
+            y_len: u32::try_from(y.len_values).unwrap_or(u32::MAX),
+            cols: grid.len() as u32,
+            rows: triangle_count,
+            level_count,
+            stop_count,
+            flags,
+            opacity,
+            line_width_px,
+            level_color_count: u32::try_from(level_colors.len()).unwrap_or(u32::MAX),
+            z_min: colorbar.z_min,
+            z_max: colorbar.z_max,
+            image: [0; 4],
+        };
+        let nan = bar.nan_color;
+        let alloc = |resource: &'static str| {
+            move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
+                resource,
+                reason: error.to_string(),
+            }
+        };
+        let mut grid_table = Vec::new();
+        grid_table
+            .try_reserve_exact(grid.len())
+            .map_err(alloc("mesh grid table"))?;
+        grid_table.extend_from_slice(&grid);
+        let mut epoch_list = Vec::new();
+        epoch_list
+            .try_reserve_exact(epochs.len())
+            .map_err(alloc("mesh grid epochs"))?;
+        epoch_list.extend_from_slice(&epochs);
+        let signature = FieldSignature {
+            pool_layout_generation: self.pool.layout_generation(),
+            params,
+            grid: grid_table,
+            epochs: epoch_list,
+            levels,
+            stops,
+            nan_color: [
+                nan.r.to_bits(),
+                nan.g.to_bits(),
+                nan.b.to_bits(),
+                nan.a.to_bits(),
+            ],
+            level_colors,
+        };
+        if let Some(scratch) = self.field_cache.get(cfg.series_id.as_str())
+            && scratch.signature == signature
+        {
+            return Ok(Arc::clone(&scratch.sources));
+        }
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(2).map_err(alloc("mesh source ids"))?;
+        ids.push(values_id.to_owned());
+        ids.push(member.to_owned());
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(epochs.len())
+            .map_err(alloc("mesh source epochs"))?;
+        owned.extend_from_slice(&epochs);
+        let sources = Arc::new(GridSources { ids, epochs: owned });
+        let scratch = self.build_field_scratch(signature, sources)?;
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.field_cache,
+                cfg.series_id.as_str(),
+                FIELD_SCRATCH_CACHE_LIMIT,
+            );
+        }
+        self.field_cache
+            .try_reserve(1)
+            .map_err(alloc("field scratch cache"))?;
+        let receipt = Arc::clone(&scratch.sources);
+        self.field_cache.insert(cfg.series_id.clone(), scratch);
+        Ok(receipt)
     }
 
     /// A grid declaration resolved against the pool: the coordinate handles, the
@@ -471,6 +720,7 @@ impl PrepareContext<'_> {
                 nan.b.to_bits(),
                 nan.a.to_bits(),
             ],
+            level_colors: Vec::new(),
         };
 
         if let Some(scratch) = self.field_cache.get(cfg.series_id.as_str())
@@ -507,12 +757,15 @@ impl PrepareContext<'_> {
         let scratch = self.build_field_scratch(signature, sources)?;
 
         // Bounded like `arc_cache`: a host cycling through thousands of series
-        // ids must not grow this without limit.
-        evict_if_full(
-            &mut self.field_cache,
-            cfg.series_id.as_str(),
-            FIELD_SCRATCH_CACHE_LIMIT,
-        );
+        // ids must not grow this without limit. A frame's batch bounded it
+        // before it began and evicts nothing while it runs.
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.field_cache,
+                cfg.series_id.as_str(),
+                FIELD_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.field_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {
@@ -538,10 +791,15 @@ impl PrepareContext<'_> {
     ) -> Result<FieldScratch> {
         let params = &signature.params;
         // Interpolated shading spans point-to-point, so it needs two samples
-        // along each axis before it has a quad to draw.
+        // along each axis before it has a quad to draw. A mesh draws when it
+        // has a triangle (#210).
         let interpolated = params.flags & data_render::FIELD_FLAG_INTERPOLATED != 0;
         let minimum = if interpolated { 2 } else { 1 };
-        let drawable = params.cols >= minimum && params.rows >= minimum;
+        let drawable = if params.flags & data_render::FIELD_FLAG_MESH != 0 {
+            params.rows >= 1
+        } else {
+            params.cols >= minimum && params.rows >= minimum
+        };
 
         let [r, g, b, a] = signature.nan_color;
         let nan_color = Color::new(
@@ -569,8 +827,13 @@ impl PrepareContext<'_> {
                 grid: &signature.grid,
                 levels: &signature.levels,
                 stops: &lookup_tables.stops,
-                // Fill-only bind group: the stroke colour table is padding.
-                level_colors: &[[0.0; 4]],
+                // A heatmap fill's stroke colour table is padding; a mesh's
+                // holds its contour colours.
+                level_colors: if signature.level_colors.is_empty() {
+                    &[[0.0; 4]]
+                } else {
+                    &signature.level_colors
+                },
                 lookup_metadata: &lookup_tables.metadata,
                 params,
             },
@@ -608,6 +871,18 @@ impl Renderer {
         self.preparation_parts().1.ensure_field_scratches(items)
     }
 
+    /// Resolve every triangle mesh series' group 2 (#210), as
+    /// [`Self::ensure_field_scratches`] does every field's.
+    pub(in crate::renderer) fn ensure_mesh_scratches(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        self.preparation_parts()
+            .1
+            .ensure_mesh_scratches(items, scale)
+    }
+
     /// Build or reuse one field series' group-2 bind group.
     ///
     /// The signature is compared before anything is created, so a steady frame
@@ -624,5 +899,19 @@ impl Renderer {
         self.preparation_parts()
             .1
             .ensure_field_scratch(chart_config, cfg)
+    }
+
+    /// Build or reuse one triangle mesh series' group 2 at `scale` (#210),
+    /// as [`Self::ensure_field_scratch`] does a field's: the pick reads the
+    /// group the draw does.
+    pub(in crate::renderer) fn ensure_mesh_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Arc<GridSources>> {
+        self.preparation_parts()
+            .1
+            .ensure_mesh_scratch(chart_config, cfg, scale)
     }
 }

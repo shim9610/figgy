@@ -110,6 +110,7 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(filled),
                 errors: None,
+                stem: None,
             }),
         ),
         series(
@@ -120,6 +121,7 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
                 scatter: None,
                 line: Some(line(lavender, 2.5)),
                 errors: None,
+                stem: None,
             }),
         ),
     ];

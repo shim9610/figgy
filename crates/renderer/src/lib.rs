@@ -117,7 +117,8 @@ pub use data_config::{
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
     GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats,
-    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats,
+    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats, TriangleId,
+    TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
@@ -225,6 +226,12 @@ pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
     LevelView, Transition, TransitionDirection,
 };
+/// Triangle mesh fields (#210): the [`DataRenderType::TriMesh`] series, its
+/// value location and look.
+pub mod tri_mesh {
+    pub use model::tri_mesh::*;
+}
+pub use model::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {

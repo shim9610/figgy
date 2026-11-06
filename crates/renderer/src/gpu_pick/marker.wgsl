@@ -270,8 +270,9 @@ fn pick_marker_candidate(
 }
 
 // A marker series' scatter primitive: the marker and, when the series draws
-// error bars (`PICK_VARIANT_ERRORBAR`, a non-zero bar count), its error bar,
-// whichever is nearer (the marker on a tie: it is painted over the bar).
+// error bars or stems (`PICK_VARIANT_ERRORBAR`, a non-zero bar count or the
+// stem flag), its error bar and its stem, whichever is nearest (the marker
+// on a tie: it is painted over the bar and the stem).
 // The bar does not depend on the marker being drawn: a log axis hides a
 // nonpositive marker but still draws its bar.
 fn pick_scatter_candidate(
@@ -280,12 +281,23 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let marker = pick_marker_candidate(point_index, x, y);
-    if !pick_variant(PICK_VARIANT_ERRORBAR) || pick_query_params.errorbar.x == 0u {
+    if !pick_variant(PICK_VARIANT_ERRORBAR) {
         return marker;
     }
-    let bar = pick_errorbar_candidate(point_index, x, y);
-    if pick_candidate_is_better(bar, marker) {
-        return bar;
+    var best = marker;
+    if pick_query_params.errorbar.x != 0u {
+        let bar = pick_errorbar_candidate(point_index, x, y);
+        if pick_candidate_is_better(bar, best) {
+            best = bar;
+        }
     }
-    return marker;
+    // A stem (#206) loses a tie to the marker and the error bar, which are
+    // painted over it.
+    if pick_query_params.stem_info.x != 0u {
+        let stem = pick_stem_candidate(point_index, x, y);
+        if pick_candidate_is_better(stem, best) {
+            best = stem;
+        }
+    }
+    return best;
 }

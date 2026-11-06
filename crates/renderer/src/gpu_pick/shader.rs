@@ -69,6 +69,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "gpu_pick/gate_entries.wgsl",
         ),
@@ -78,10 +79,13 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
+            "data_render/common/arc_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
+            "data_render/common/line_stroke.wgsl",
             "data_render/common/category_jitter.wgsl",
             "data_render/common/errorbar_segment.wgsl",
             "data_render/common/marker.wgsl",
@@ -96,6 +100,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
@@ -121,6 +126,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/arc_pair.wgsl",
@@ -142,6 +148,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         assembled!(
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
+            "data_render/common/probability.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",

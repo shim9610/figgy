@@ -90,7 +90,7 @@ impl AxisViewState {
             inverted,
         } = self;
         axis.scale = scale.clone();
-        crate::chart::apply_view_range(axis, *min, *max, matches!(scale, AxisScale::Logarithmic));
+        crate::chart::apply_view_range(axis, *min, *max, scale);
         axis.inverted = *inverted;
     }
 }
@@ -1032,6 +1032,10 @@ pub(super) trait ColumnRegistration {
     /// The uniform step of resident column `id`'s values
     /// (`ColumnSlot::uniform_step`, #134); `None` for a streamed column.
     fn uniform_step(&self, id: &str) -> Option<f64>;
+
+    /// The statistics of resident triangle index column `id` (#210); `None`
+    /// when `id` is not one. Triangle columns are resident only.
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats>;
 }
 
 impl ColumnRegistration for ColumnPool {
@@ -1053,6 +1057,10 @@ impl ColumnRegistration for ColumnPool {
             .filter(|_| !self.is_member_column(id))
             .and_then(|slot| slot.uniform_step)
     }
+
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats> {
+        ColumnPool::triangle_stats(self, id)
+    }
 }
 
 impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
@@ -1072,6 +1080,10 @@ impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamCol
             return None;
         }
         self.0.uniform_step(id)
+    }
+
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats> {
+        self.0.triangle_stats(id)
     }
 }
 
@@ -1100,6 +1112,12 @@ pub(super) fn validate_axis_view_state(field: &'static str, axis: &AxisViewState
         return Err(FiggyError::InvalidConfig {
             field,
             reason: "logarithmic axis bounds must be positive",
+        });
+    }
+    if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
+        return Err(FiggyError::InvalidConfig {
+            field,
+            reason: "probability axis bounds must lie strictly between 0 and 1",
         });
     }
     Ok(())
@@ -1162,6 +1180,8 @@ pub(super) fn data_series_declarations_equal(
                 && left.source_id == right.source_id
                 && left.x_column == right.x_column
                 && left.y_column == right.y_column
+                // A 3D series' height column is data too (#132, #211).
+                && left.z_column == right.z_column
                 && left.render_type == right.render_type
         })
 }
@@ -1318,6 +1338,12 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
 ///
 /// The config is needed because a field series is only fully declared with it:
 /// `Config.colorbar` owns the z range and colormap.
+/// Why a triangle mesh series on a 3D chart is refused at registration while
+/// the renderer draws meshes flat only (#210; the trisurf is step 5 of its
+/// plan).
+pub(crate) const TRI_MESH_3D_NOT_DRAWN_REASON: &str =
+    "triangle mesh series are drawn on flat charts: this renderer does not draw them in 3D yet";
+
 pub(super) fn validate_renderer_series(
     pool: &impl ColumnRegistration,
     config: &Config,
@@ -1357,6 +1383,10 @@ pub(super) fn validate_renderer_series(
         // A DataLess energy-level series registers no column (#203): its
         // values are SSOT, held to the model's rule above.
         if item.energy_levels().is_some() {
+            continue;
+        }
+        if let Some(mesh) = item.tri_mesh() {
+            validate_tri_mesh_series(pool, config, item, mesh)?;
             continue;
         }
         validate_registered_column(pool, &item.x_column)?;
@@ -1478,6 +1508,85 @@ pub(super) fn validate_renderer_series(
     Ok(())
 }
 
+/// A triangle mesh series' renderer rules (#210), after the model's: its
+/// coordinate and value columns are registered, its triangles are a resident
+/// triangle index column, a colourbar colours it, its contour level count is
+/// in range, and every index names a vertex the mesh has.
+///
+/// The vertex count is the shortest of `x_column`, `y_column` and, for vertex
+/// values, the value column; only the index column's statistics and the
+/// column lengths are read, never an index. A later upload that shortens a
+/// column is not re-checked: the draw drops the triangles that name a vertex
+/// past the end and `series_draw_info` reports the truncation.
+pub(super) fn validate_tri_mesh_series(
+    pool: &impl ColumnRegistration,
+    config: &Config,
+    item: &SeriesConfig,
+    mesh: &crate::tri_mesh::TriMeshSeries,
+) -> Result<()> {
+    let fail = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason,
+    };
+    if config.view_3d().is_some() {
+        return Err(fail(TRI_MESH_3D_NOT_DRAWN_REASON.into()));
+    }
+    validate_registered_column(pool, &item.x_column)?;
+    validate_registered_column(pool, &item.y_column)?;
+    validate_registered_column(pool, &mesh.values.column)?;
+    let stats = pool.triangle_stats(&mesh.triangles).ok_or_else(|| {
+        fail(format!(
+            "triangle mesh {:?} is not a resident triangle index column: upload it with \
+             `upsert_triangles`",
+            mesh.triangles
+        ))
+    })?;
+    if config.colorbar.is_none() {
+        return Err(fail(
+            "a triangle mesh series needs Config.colorbar: it owns the z range and colormap, \
+             so without it there is no value to draw"
+                .into(),
+        ));
+    }
+    if let Some(contour) = &mesh.contour
+        && contour.levels.len() > crate::data_config::MAX_CONTOUR_LEVELS
+    {
+        return Err(fail(format!(
+            "contour level count {} exceeds the supported maximum {}",
+            contour.levels.len(),
+            crate::data_config::MAX_CONTOUR_LEVELS
+        )));
+    }
+    let len = |id: &str| pool.column_len(id).unwrap_or(0);
+    let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
+    let mut shortest = (len(&item.x_column), item.x_column.as_str());
+    let values = (!faces).then(|| (len(&mesh.values.column), mesh.values.column.as_str()));
+    for candidate in [Some((len(&item.y_column), item.y_column.as_str())), values]
+        .into_iter()
+        .flatten()
+    {
+        if candidate.0 < shortest.0 {
+            shortest = candidate;
+        }
+    }
+    let (vertices, column) = shortest;
+    if u64::from(stats.max_index) >= vertices {
+        return Err(fail(format!(
+            "triangle index {} names a vertex past the {vertices} vertices of column {column:?}",
+            stats.max_index
+        )));
+    }
+    if faces && len(&mesh.values.column) < u64::from(stats.triangles) {
+        return Err(fail(format!(
+            "face value column {:?} has {} values for {} triangles",
+            mesh.values.column,
+            len(&mesh.values.column),
+            stats.triangles
+        )));
+    }
+    Ok(())
+}
+
 /// A streamline series' rules: its own (`data_config::validate_streamline_series`:
 /// a linear line without a fill and valid arrows), a registered colour
 /// column, and the colourbar a colour map maps through.
@@ -1573,9 +1682,17 @@ pub(super) fn validate_vector_series(
     };
     style.validate().map_err(|reason| invalid(reason.into()))?;
     let grid = match components {
-        VectorComponents::Points { u, v } => {
+        VectorComponents::Points { u, v, w } => {
             validate_registered_column(pool, u)?;
             validate_registered_column(pool, v)?;
+            // The z component is read only where the arrow is drawn in 3D;
+            // on a flat chart it is kept and unused (#211).
+            if let Some(w) = w
+                .as_deref()
+                .filter(|_| config.drawn_z_column(item).is_some())
+            {
+                validate_registered_column(pool, w)?;
+            }
             None
         }
         VectorComponents::Grid { u, v } => {
@@ -1885,6 +2002,7 @@ impl Renderer {
         Ok(series_draw_info_from_pool(
             &(&self.pool, &self.streaming_sources),
             series,
+            state.config.drawn_z_column(series),
         ))
     }
 
@@ -3546,22 +3664,109 @@ impl Renderer {
         Ok(true)
     }
 
-    /// Records and ragged columns are resident only: streaming is not
-    /// extended to them (CLAUDE.md rule 8).
+    /// Insert or replace the triangle index column `id` (#210): three vertex
+    /// indices per triangle, uploaded as one member column whose write
+    /// observer rejects a length that is not a non-zero multiple of 3 or an
+    /// index that is not an integer in `0..=u32::MAX`
+    /// ([`ColumnPool::upsert_triangles`]). Resident only, as
+    /// [`Self::upsert_record`].
+    pub fn upsert_triangles(
+        &mut self,
+        id: impl Into<TriangleId>,
+        source: &TriangleSource<'_>,
+    ) -> Result<TriangleId> {
+        let result = self.upsert_triangles_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_triangles_unreported(
+        &mut self,
+        id: impl Into<TriangleId>,
+        source: &TriangleSource<'_>,
+    ) -> Result<TriangleId> {
+        self.health.check()?;
+        let id = id.into();
+        self.reject_streamed_composite(&id, "a triangle index column")?;
+        let old = self
+            .pool
+            .triangles(&id)
+            .map(|triangles| triangles.slot().indices.clone());
+        let changed_ids = match old.as_deref() {
+            Some(indices) => [id.as_str(), indices],
+            None => [id.as_str(), ""],
+        };
+        let replaced = old.is_some();
+        let changed = &changed_ids[..if replaced { 2 } else { 1 }];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let ctx = pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger);
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let (relocated, picker) =
+            self.pool
+                .upsert_triangles_with(id.clone(), source, ctx, move |pool, relocated| {
+                    let picker = prepare_picker_for_pool_mutation(
+                        picker_state,
+                        pool,
+                        chart_states,
+                        relocated,
+                        changed,
+                    )?;
+                    Ok((relocated, picker))
+                })?;
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.settle_composite_defrag(relocated, replaced);
+        Ok(id)
+    }
+
+    /// Delete the triangle index column `id` and free its member column.
+    /// `false` when no such column is resident.
+    pub fn remove_triangles(&mut self, id: &str) -> Result<bool> {
+        let result = self.remove_triangles_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_triangles_unreported(&mut self, id: &str) -> Result<bool> {
+        self.health.check()?;
+        let Some(triangles) = self.pool.triangles(id) else {
+            return Ok(false);
+        };
+        let indices = triangles.slot().indices.clone();
+        let changed_ids = [id, indices.as_str()];
+        let changed = &changed_ids[..];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let picker = self.pool.remove_triangles_with(id, move |pool| {
+            prepare_picker_for_pool_mutation(picker_state, pool, chart_states, false, changed)
+        })?;
+        let Some(picker) = picker else {
+            return Ok(false);
+        };
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.pending_defrag = true;
+        Ok(true)
+    }
+
+    /// Records, ragged and triangle columns are resident only: streaming is
+    /// not extended to them (CLAUDE.md rule 8).
     fn reject_streamed_composite(&self, id: &str, kind: &str) -> Result<()> {
         if self.streaming_sources.contains_key(id) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: id.to_owned(),
                 reason: format!(
-                    "the id is a streamed column; streaming is not extended to records and \
-                     ragged columns, so {kind} needs a resident id"
+                    "the id is a streamed column; streaming is not extended to records, \
+                     ragged and triangle columns, so {kind} needs a resident id"
                 ),
             });
         }
         Ok(())
     }
 
-    /// Maintenance after a record or ragged upsert: freed old members leave
+    /// Maintenance after a record, ragged or triangle upsert: freed old members leave
     /// holes worth compacting; a relayout without them already compacted.
     fn settle_composite_defrag(&mut self, relocated: bool, replaced: bool) {
         if replaced {

@@ -19,6 +19,13 @@ const FIELD_BANDS: u32 = 8u;
 const FIELD_LOG_Z: u32 = 16u;
 const FIELD_HEXAGONAL: u32 = 32u;
 const FIELD_RGB: u32 = 64u;
+/// A triangle mesh (#210, SHADER_COMMON.md §5.24): `x_base` / `y_base` are
+/// the vertex coordinate columns, `rows` the triangle count, and the grid
+/// table holds the value column (entry 0) and the triangle index column
+/// (entry 1, `u32` lanes).
+const FIELD_MESH: u32 = 128u;
+/// With `FIELD_MESH`: the values are one per triangle, painted flat.
+const FIELD_FACE_VALUES: u32 = 256u;
 
 /// Everything the field needs that is not already in `Transform` / `Style`.
 ///
@@ -78,9 +85,9 @@ fn pool_pair(base: u32, i: u32) -> vec2<f32> {
 /// `axis_pair_to_t` for whichever axis: 0 = x, 1 = y.
 fn axis_t(pair: vec2<f32>, axis: u32) -> f32 {
     if (axis == 0u) {
-        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x, cuts_of(transform.breaks, transform.break_info, 0u));
+        return axis_pair_to_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.scale_prob.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x, cuts_of(transform.breaks, transform.break_info, 0u));
     }
-    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y, cuts_of(transform.breaks, transform.break_info, 1u));
+    return axis_pair_to_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.scale_prob.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y, cuts_of(transform.breaks, transform.break_info, 1u));
 }
 
 /// Cell boundary `k` along one axis, in pool `(hi, lo)` pair form.
@@ -153,18 +160,63 @@ struct CellHit {
     /// Position inside that quad, 0 at its low boundary, 1 at its high one.
     frac: f32,
     hit: bool,
+    /// The quad's boundaries in axis `t`, `boundary_t` of `index` and of
+    /// `index + 1`, so a caller that needs the quad's span reads them here
+    /// instead of transforming both boundaries again.
+    lo_t: f32,
+    hi_t: f32,
 };
 
 /// Which quad along one axis contains `t`, and where inside it.
 ///
 /// Boundaries are monotone in `t` but may descend (inverted axis), so the
 /// direction is read off the two ends rather than assumed. The loop is
-/// `O(log count)` — it stops as soon as the bracket is one wide.
+/// `O(log count)` — it stops as soon as the bracket is one wide. The
+/// bracket's two boundaries are kept as it shrinks, so each boundary is
+/// transformed once: a software GPU compiler pays for every inlined
+/// `boundary_t`.
+///
+/// The search is `locate_begin`, `locate_step` and `locate_end`. A caller
+/// that already loops (the polar foot-point walk, `contour_foot_advance`)
+/// takes one `locate_step` per iteration of its own loop instead of calling
+/// this: a loop nested in a loop made Chromium's SwiftShader compile the
+/// contour entries for seconds to minutes.
 fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> CellHit {
-    var out: CellHit;
-    out.index = 0u;
-    out.frac = 0.0;
-    out.hit = false;
+    var search = locate_begin(base, n, count, axis, t, lattice);
+    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
+    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
+    // can make software GPU compilers expand contour projection excessively.
+    while (locate_searching(search)) {
+        search = locate_step(base, n, axis, lattice, search);
+    }
+    return locate_end(search);
+}
+
+/// A binary search for `t` along one axis, between `locate_begin` and
+/// `locate_end`.
+struct CellSearch {
+    lo: u32,
+    hi: u32,
+    /// `boundary_t` at `lo` and at `hi`.
+    a: f32,
+    b: f32,
+    t: f32,
+    ascending: bool,
+    /// False once the search has missed: `t` outside the axis, or a
+    /// boundary that is not finite. `locate_end` then reports no hit.
+    valid: bool,
+};
+
+/// The whole axis as the bracket, or a miss.
+fn locate_begin(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> CellSearch {
+    var out: CellSearch;
+    out.lo = 0u;
+    out.hi = 0u;
+    out.a = 0.0;
+    out.b = 0.0;
+    out.t = t;
+    out.ascending = true;
+    out.valid = false;
     if (count == 0u || n == 0u || !f32_is_finite(t)) {
         return out;
     }
@@ -176,36 +228,64 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     if (t < min(first, last) || t > max(first, last)) {
         return out;
     }
-    let ascending = last >= first;
-    var lo = 0u;
-    var hi = count;
-    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
-    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
-    // can make software GPU compilers expand contour projection excessively.
-    while (hi - lo > 1u) {
-        let mid = lo + (hi - lo) / 2u;
-        let tm = boundary_t(base, n, mid, axis, lattice);
-        if (!f32_is_finite(tm)) {
-            return out;
-        }
-        let before = select(tm > t, tm <= t, ascending);
-        if (before) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
+    out.ascending = last >= first;
+    out.hi = count;
+    out.a = first;
+    out.b = last;
+    out.valid = true;
+    return out;
+}
+
+/// Whether `locate_step` has a halving left to take.
+fn locate_searching(search: CellSearch) -> bool {
+    return search.valid && search.hi - search.lo > 1u;
+}
+
+/// One halving of the bracket.
+fn locate_step(base: u32, n: u32, axis: u32, lattice: u32, search: CellSearch) -> CellSearch {
+    var out = search;
+    let mid = search.lo + (search.hi - search.lo) / 2u;
+    let tm = boundary_t(base, n, mid, axis, lattice);
+    if (!f32_is_finite(tm)) {
+        out.valid = false;
+        return out;
     }
-    let a = boundary_t(base, n, lo, axis, lattice);
-    let b = boundary_t(base, n, lo + 1u, axis, lattice);
+    let before = select(tm > search.t, tm <= search.t, search.ascending);
+    if (before) {
+        out.lo = mid;
+        out.a = tm;
+    } else {
+        out.hi = mid;
+        out.b = tm;
+    }
+    return out;
+}
+
+/// The quad a finished search found, and where inside it `t` is.
+fn locate_end(search: CellSearch) -> CellHit {
+    var out: CellHit;
+    out.index = 0u;
+    out.frac = 0.0;
+    out.hit = false;
+    out.lo_t = 0.0;
+    out.hi_t = 0.0;
+    if (!search.valid) {
+        return out;
+    }
+    // The bracket is one wide: `hi` is `lo + 1`.
+    let a = search.a;
+    let b = search.b;
     let span = grid_rounded_subtract(b, a);
     if (!f32_is_finite(a) || !f32_is_finite(b) || !f32_is_finite(span)) {
         return out;
     }
-    out.index = lo;
+    out.index = search.lo;
+    out.lo_t = a;
+    out.hi_t = b;
     // A zero-width quad (a lone centre) has no inside; treat it as its start.
     var frac = 0.0;
     if (span != 0.0) {
-        frac = grid_rounded_subtract(t, a) / span;
+        frac = grid_rounded_subtract(search.t, a) / span;
         if (!f32_is_finite(frac)) {
             return out;
         }
@@ -417,6 +497,17 @@ struct ContourSample {
 };
 
 fn contour_sample(t: vec2<f32>) -> ContourSample {
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let across_cells = select(field.rows, field.cols, columns_are_y);
+    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u, t.x, LATTICE_SAMPLES);
+    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u, t.y, LATTICE_SAMPLES);
+    return contour_sample_cells(x, y);
+}
+
+/// `contour_sample` at the sample-lattice cells `x` and `y` already
+/// located: the polar foot-point walk locates them one halving at a time.
+fn contour_sample_cells(x: CellHit, y: CellHit) -> ContourSample {
     var out: ContourSample;
     out.hit = false;
     out.z = 0.0;
@@ -425,10 +516,6 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
     out.z_lo = 0.0;
     out.z_hi = 0.0;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let along_cells = select(field.cols, field.rows, columns_are_y);
-    let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u, t.x, LATTICE_SAMPLES);
-    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u, t.y, LATTICE_SAMPLES);
     if (!x.hit || !y.hit) {
         return out;
     }
@@ -493,10 +580,8 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
     // (u, v) are cell fractions; the chain rule needs the cell's span in axis
     // `t`. The span may be negative on an inverted axis, which flips the
     // gradient's sign exactly as it should.
-    let x_span = boundary_t(field.x_base, field.x_len, x.index + 1u, 0u, LATTICE_SAMPLES)
-        - boundary_t(field.x_base, field.x_len, x.index, 0u, LATTICE_SAMPLES);
-    let y_span = boundary_t(field.y_base, field.y_len, y.index + 1u, 1u, LATTICE_SAMPLES)
-        - boundary_t(field.y_base, field.y_len, y.index, 1u, LATTICE_SAMPLES);
+    let x_span = x.hi_t - x.lo_t;
+    let y_span = y.hi_t - y.lo_t;
     let u_span = select(x_span, y_span, columns_are_y);
     let v_span = select(y_span, x_span, columns_are_y);
     if (!f32_is_finite(u_span) || !f32_is_finite(v_span)
@@ -537,4 +622,70 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
 /// pixel in NDC — so one pixel is `pixel_to_ndc / 2` of `t`.
 fn grad_px(dz: vec2<f32>) -> vec2<f32> {
     return dz * transform.pixel_to_ndc * 0.5;
+}
+
+// ── Polar lookup (#208) ────────────────────────────────────────────────────
+//
+// Splices with `projection.wgsl` (`polar_unproject`) and `sample_validity.wgsl`
+// (the polar clip). The field draw, its pick and the contour label anchor
+// pass all locate cells through it.
+
+/// Where a fragment's (or a cursor's) chart-area `t` lands in the field's
+/// lookup space, with the lookup `t`'s derivatives per pixel (`jac_x` is
+/// `d t.x / d px`, `jac_y` is `d t.y / d px`, in the draw's pixel frame).
+struct FieldLookup {
+    hit: bool,
+    t: vec2<f32>,
+    jac_x: vec2<f32>,
+    jac_y: vec2<f32>,
+};
+
+/// The cell lookup's `t` at chart-area `t` (#208). On a rectangular chart it
+/// is `t` itself, one pixel being `pixel_to_ndc / 2` of it. On a polar chart
+/// the point is unprojected (`polar_unproject`): outside the outer ring, in
+/// the hole or outside the sector it is a miss (`polar_fragment_visible`, the
+/// lines' and markers' cut); otherwise its angle value is wrapped into the
+/// turn that starts at the grid's low angle boundary on `lattice` and turned
+/// into axis `t`, and its radius is the radius axis `t`. So a grid no wider
+/// than one turn draws each cell once, where a marker at the same angle
+/// draws. The fill, the cell pick, the highlight and the contours all call
+/// it, so they agree.
+fn field_lookup(t: vec2<f32>, lattice: u32) -> FieldLookup {
+    var out: FieldLookup;
+    out.hit = true;
+    out.t = t;
+    out.jac_x = vec2<f32>(transform.pixel_to_ndc.x * 0.5, 0.0);
+    out.jac_y = vec2<f32>(0.0, transform.pixel_to_ndc.y * 0.5);
+    if (transform.polar_angle.x < 0.5) {
+        return out;
+    }
+    let px = polar_clip_offset(transform, t * 2.0 - vec2<f32>(1.0, 1.0));
+    if (!polar_fragment_visible(px, polar_clip_limits(transform), polar_clip_sector(transform))) {
+        out.hit = false;
+        return out;
+    }
+    let u = polar_unproject(transform, px);
+    // The angle axis is linear on a polar chart: one angle unit is `kx` of
+    // `t`, and a turn `turn_t`.
+    let range_x = (transform.data_max.x - transform.data_min.x)
+        + (transform.data_max_lo.x - transform.data_min_lo.x);
+    let kx = transform.data_to_panel_scale.x / range_x;
+    let turn_t = abs(6.283185307179586 / transform.polar_angle.z * kx);
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let count = quad_count(along_cells, lattice);
+    let b0 = boundary_t(field.x_base, field.x_len, 0u, 0u, lattice);
+    let b1 = boundary_t(field.x_base, field.x_len, count, 0u, lattice);
+    var tx = axis_t(vec2<f32>(u.angle, 0.0), 0u);
+    if (!f32_is_finite(tx) || !f32_is_finite(turn_t) || turn_t <= 0.0
+        || !f32_is_finite(b0) || !f32_is_finite(b1)) {
+        out.hit = false;
+        return out;
+    }
+    let low = min(b0, b1);
+    tx = tx - floor((tx - low) / turn_t) * turn_t;
+    out.t = vec2<f32>(tx, u.ty);
+    out.jac_x = u.d_angle * kx;
+    out.jac_y = u.d_ty;
+    return out;
 }

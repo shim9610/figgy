@@ -132,6 +132,22 @@ fn add_columns(r: &mut Renderer) {
         .unwrap();
     r.add_column("rvb", &column(vec![0.3, 0.6, 0.2, 0.5]))
         .unwrap();
+    // A triangle mesh (#210): four vertices, two triangles, a value each.
+    r.add_column("tmx", &column(vec![0.1, 0.9, 0.9, 0.1]))
+        .unwrap();
+    r.add_column("tmy", &column(vec![0.1, 0.1, 0.9, 0.9]))
+        .unwrap();
+    r.add_column("tmv", &column(vec![0.1, 0.5, 0.9, 0.4]))
+        .unwrap();
+    r.upsert_triangles(
+        "tmt",
+        &crate::TriangleSource {
+            indices: &crate::data::Column {
+                data: vec![0u32, 1, 2, 0, 2, 3],
+            },
+        },
+    )
+    .unwrap();
     r.upsert_ragged(
         "out_a",
         &crate::RaggedSource {
@@ -436,6 +452,54 @@ fn radar_series() -> Vec<SeriesConfig> {
     vec![first, second]
 }
 
+/// A triangle mesh with a fill and contours (#210).
+fn tri_mesh_series() -> Vec<SeriesConfig> {
+    vec![declared(
+        "mesh",
+        "tmx",
+        "tmy",
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            triangles: "tmt".into(),
+            values: crate::tri_mesh::MeshValues {
+                column: "tmv".into(),
+                at: crate::tri_mesh::MeshValueLocation::Vertices,
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Interpolated,
+                opacity: 0.9,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![0.3, 0.6],
+                line: line_style(Color::BLACK),
+                per_level_color: None,
+                labels: None,
+            }),
+            surface: None,
+        }),
+    )]
+}
+
+/// A polar panel holding the panel's heatmap and its contours (#208).
+fn polar_field_config() -> Config {
+    let mut c = chart_config();
+    c.set_polar(Some(crate::polar::PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        inner_radius_fraction: 0.1,
+        ..Default::default()
+    }));
+    c
+}
+
+/// The panel's heatmap and contour series alone.
+fn polar_field_series() -> Vec<SeriesConfig> {
+    chart_series()
+        .into_iter()
+        .filter(|s| s.series_id == "field")
+        .collect()
+}
+
 fn line_style(color: Color) -> DataLineStyleConfig {
     DataLineStyleConfig {
         line_style: LineStylePreset::Dash,
@@ -522,6 +586,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                stem: None,
             }),
         ),
         declared(
@@ -547,6 +612,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         ),
         declared(
@@ -589,6 +655,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
+                    w: None,
                 },
                 style: VectorStyle {
                     color: Color::new(0.6, 0.1, 0.6, 1.0),
@@ -797,6 +864,18 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     ));
     tally.absorb(run_suite("box", box_config(), box_series(), SIZE));
     tally.absorb(run_suite("radar", radar_config(), radar_series(), SIZE));
+    tally.absorb(run_suite(
+        "tri_mesh",
+        chart_config(),
+        tri_mesh_series(),
+        SIZE,
+    ));
+    tally.absorb(run_suite(
+        "polar_field",
+        polar_field_config(),
+        polar_field_series(),
+        SIZE,
+    ));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

@@ -52,6 +52,36 @@ pub(super) enum FitExtentParams {
     /// A histogram: the counts' extent includes the baseline, and the
     /// orientation decides which column is edges and which is counts.
     Histogram { baseline_bits: u64, orientation: u8 },
+    /// A stem series (#206): the value axis' extent includes the baseline
+    /// (y for a vertical stem, x for a horizontal one), before a line
+    /// offset member's shift.
+    Stem {
+        baseline_bits: u64,
+        horizontal: bool,
+    },
+}
+
+impl FitExtentParams {
+    /// The baseline a stem series adds to its value axis' extent, as
+    /// `(x part, y part)`; empty for every other kind.
+    pub(super) fn stem_extents(&self) -> (crate::chart::FitExtent, crate::chart::FitExtent) {
+        let Self::Stem {
+            baseline_bits,
+            horizontal,
+        } = self
+        else {
+            return (
+                crate::chart::FitExtent::EMPTY,
+                crate::chart::FitExtent::EMPTY,
+            );
+        };
+        let baseline = crate::chart::FitExtent::point(f64::from_bits(*baseline_bits));
+        if *horizontal {
+            (baseline, crate::chart::FitExtent::EMPTY)
+        } else {
+            (crate::chart::FitExtent::EMPTY, baseline)
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -114,6 +144,9 @@ pub(super) fn axis_fit_stamp(axis: &AxisOptions) -> (u8, u64, u64) {
     let scale = match axis.scale {
         AxisScale::Linear => 0,
         AxisScale::Logarithmic => 1,
+        AxisScale::Probability(crate::config::ProbabilityScale::Normal) => 2,
+        AxisScale::Probability(crate::config::ProbabilityScale::Weibull) => 3,
+        AxisScale::Probability(crate::config::ProbabilityScale::Logistic) => 4,
     };
     (scale, axis.min.to_bits(), axis.max.to_bits())
 }
@@ -239,7 +272,7 @@ pub(super) fn build_fit_token_from_state(
         }
         // A `Data`-scaled point vector's tips depend on its components, so
         // they stamp the token too.
-        if let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+        if let Some((crate::data_config::VectorComponents::Points { u, v, .. }, style)) =
             extract_vector(&item.render_type)
             && matches!(style.scale, crate::data_config::VectorScale::Data { .. })
         {
@@ -262,6 +295,12 @@ pub(super) fn build_fit_token_from_state(
                     crate::data_config::BarOrientation::Vertical => 0,
                     crate::data_config::BarOrientation::Horizontal => 1,
                 },
+            },
+            DataRenderType::Xy(crate::data_config::XySeries {
+                stem: Some(stem), ..
+            }) => FitExtentParams::Stem {
+                baseline_bits: stem.baseline.to_bits(),
+                horizontal: stem.direction == crate::data_config::CategoryBarDirection::Horizontal,
             },
             _ => FitExtentParams::Columns,
         };
@@ -434,7 +473,7 @@ pub(super) fn begin_series_fit_extent_from_pool(
                 crate::gpu_extent::GpuExtentError::Internal {
                     invariant: "the tips mode comes from a Data-scaled point vector",
                 };
-            let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
+            let Some((crate::data_config::VectorComponents::Points { u, v, .. }, style)) =
                 extract_vector(&series.render_type)
             else {
                 return Err(TIPS);
@@ -1201,12 +1240,18 @@ impl Renderer {
                     let Some(extent) = extent else {
                         continue;
                     };
+                    // A stem's baseline joins its value axis (#206), before
+                    // a line offset member's shift.
+                    let (stem_x, stem_y) = stamp.params.stem_extents();
+                    let (mut x_own, mut y_own) = (fit_extent_of(extent.x), fit_extent_of(extent.y));
+                    x_own.union(&stem_x);
+                    y_own.union(&stem_y);
                     // A line offset member fits where it is drawn.
                     let (x_part, y_part) = crate::chart::Chart::line_offset_fit_extents(
                         &state.config,
                         &stamp.series_id,
-                        fit_extent_of(extent.x),
-                        fit_extent_of(extent.y),
+                        x_own,
+                        y_own,
                     );
                     if *x {
                         x_extent.union(&x_part);
@@ -1240,6 +1285,26 @@ impl Renderer {
                     }
                     if y {
                         y_extent.union(&y_part);
+                    }
+                }
+                // A triangle mesh fits from its vertex columns' statistics
+                // (#210): every registered vertex, referenced or not.
+                for item in &state.series {
+                    if item.tri_mesh().is_none() {
+                        continue;
+                    }
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    if x {
+                        x_extent.union(&crate::chart::Chart::slot_extent(
+                            &self.pool,
+                            &item.x_column,
+                        )?);
+                    }
+                    if y {
+                        y_extent.union(&crate::chart::Chart::slot_extent(
+                            &self.pool,
+                            &item.y_column,
+                        )?);
                     }
                 }
                 chart.auto_fit_layer_extent(layer, &x_extent, &y_extent, padding);

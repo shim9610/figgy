@@ -79,6 +79,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
         return fail("logarithmic axis bounds must be positive");
     }
+    if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
+        return fail("probability axis bounds must lie strictly between 0 and 1");
+    }
     Ok(())
 }
 
@@ -106,6 +109,12 @@ impl Config {
             return Err(ConfigError::chart(
                 "colorbar.axis",
                 "a colourbar axis cannot be categorical",
+            ));
+        }
+        if colorbar_axis.is_some_and(|axis| matches!(axis.scale, AxisScale::Probability(_))) {
+            return Err(ConfigError::chart(
+                "colorbar.axis",
+                "a colourbar axis is linear or logarithmic: not a probability axis",
             ));
         }
         let axes = [
@@ -273,7 +282,7 @@ impl Config {
             })?;
         }
         type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>;
-        let rules: [(&'static str, Rule); 11] = [
+        let rules: [(&'static str, Rule); 12] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
             ("range_bars", Config::validate_range_bars),
@@ -281,6 +290,7 @@ impl Config {
             ("ternary", Config::validate_ternary_series),
             ("parallel", Config::validate_parallel_series),
             ("energy_levels", Config::validate_energy_levels),
+            ("tri_mesh", Config::validate_tri_mesh_series),
             ("view_3d", Config::validate_view3d_series),
             ("hexagonal", Config::validate_hexagonal_series),
             ("rgb_image", Config::validate_rgb_image_series),
@@ -332,6 +342,9 @@ impl Config {
             DataRenderType::Xy(xy) if xy.errors.is_some() => {
                 return Err("error bars are not drawn on polar axes");
             }
+            DataRenderType::Xy(xy) if xy.stem.is_some() => {
+                return Err("stems are not drawn on polar axes");
+            }
             DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
             DataRenderType::CategoryBars { .. } => None,
             DataRenderType::Radar { .. } => item
@@ -341,8 +354,22 @@ impl Config {
             DataRenderType::Histogram { .. } => {
                 return Err("histogram series are not drawn on polar axes");
             }
-            DataRenderType::Field(_) | DataRenderType::RgbImage { .. } => {
-                return Err("field and contour series are not drawn on polar axes");
+            // A polar heatmap (#208): cells are annular sectors between angle
+            // and radius boundaries, so the lattice must be rectangular in
+            // (angle, radius) and the rings circles.
+            DataRenderType::Field(field) => {
+                if field.matrix.grid_layout == crate::data_config::GridLayout::Hexagonal {
+                    return Err("a hexagonal grid is drawn on a rectangular chart");
+                }
+                if polar.grid_shape() == crate::polar::GridShape::Polygon {
+                    return Err(
+                        "a polar heatmap's cells follow circular rings: not on a polygon grid",
+                    );
+                }
+                None
+            }
+            DataRenderType::RgbImage { .. } => {
+                return Err("images are not drawn on polar axes");
             }
             DataRenderType::Vector { .. } => {
                 return Err("vector series are not drawn on polar axes");
@@ -361,6 +388,9 @@ impl Config {
             }
             DataRenderType::EnergyLevels(_) => {
                 return Err("energy-level series are not drawn on polar axes");
+            }
+            DataRenderType::TriMesh(_) => {
+                return Err("a triangle mesh is not drawn on polar axes");
             }
             DataRenderType::Ternary { .. } => {
                 return Err("ternary series are drawn on ternary charts, not polar axes");
@@ -410,6 +440,7 @@ mod tests {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -428,6 +459,80 @@ mod tests {
         assert_eq!(error.field, "series_id");
         let error = config.validate_series(&[scatter("")]).unwrap_err();
         assert_eq!(error.series_id.as_deref(), Some(""));
+    }
+
+    /// A stem needs markers, a finite baseline and a finite width of at
+    /// least 0, and it is refused on polar and 3D charts (#206). The colour
+    /// cycle recolours it with the rest of the series.
+    #[test]
+    fn stem_rules_are_checked() {
+        use crate::data_config::{CategoryBarDirection, Stem, XySeries};
+        let stem = Stem {
+            baseline: 0.0,
+            direction: CategoryBarDirection::Vertical,
+            color: Color::BLACK,
+            width: 1.0,
+            line_style: crate::line::LineStylePreset::Solid,
+        };
+        let with = |stem: Stem| {
+            let mut series = scatter("s");
+            if let DataRenderType::Xy(xy) = &mut series.render_type {
+                xy.stem = Some(stem);
+            }
+            series
+        };
+        let config = default_config();
+        assert_eq!(config.validate_series(&[with(stem.clone())]), Ok(()));
+        let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().reason;
+        assert_eq!(
+            reason(with(Stem {
+                baseline: f64::NAN,
+                ..stem.clone()
+            })),
+            "a stem baseline must be finite"
+        );
+        for width in [-1.0, f32::INFINITY, f32::NAN] {
+            assert_eq!(
+                reason(with(Stem {
+                    width,
+                    ..stem.clone()
+                })),
+                "a stem width must be finite and at least 0"
+            );
+        }
+        let mut bare = with(stem.clone());
+        if let DataRenderType::Xy(XySeries { scatter, line, .. }) = &mut bare.render_type {
+            *scatter = None;
+            *line = Some(crate::data_config::DataLineStyleConfig::default());
+        }
+        assert_eq!(reason(bare), "stems are drawn with markers");
+
+        let mut polar = default_config();
+        polar.bottom_x.min = 0.0;
+        polar.bottom_x.max = 360.0;
+        polar.set_polar(Some(PolarOptions::default()));
+        assert_eq!(
+            polar.validate_series_on_polar(&with(stem.clone())),
+            Err("stems are not drawn on polar axes")
+        );
+        let mut three_d = default_config();
+        three_d.set_view_3d(Some(crate::view3d::View3d::default()));
+        let mut tall = with(stem.clone());
+        tall.z_column = Some("z".into());
+        assert_eq!(
+            three_d.validate_view3d_series(&[tall]),
+            Err("stems draw flat: not on a 3D chart")
+        );
+
+        let mut cycled = with(stem);
+        crate::preset::ColorCycle::Balanced.apply_to_series(&mut cycled, 3);
+        let DataRenderType::Xy(XySeries {
+            stem: Some(stem), ..
+        }) = &cycled.render_type
+        else {
+            panic!("the stem stays");
+        };
+        assert_eq!(stem.color, crate::preset::ColorCycle::Balanced.color(3));
     }
 
     #[test]
@@ -450,6 +555,84 @@ mod tests {
             default_config().validate_series_on_polar(&scatter("a")),
             Ok(())
         );
+    }
+
+    fn polar_field(layout: crate::data_config::GridLayout, contour: bool) -> SeriesConfig {
+        use crate::data_config::{
+            ContourConfig, FieldFillConfig, FieldSeries, FillMode, MatrixOrientation, MatrixRef,
+            Shading,
+        };
+        let mut series = scatter("f");
+        series.render_type = DataRenderType::Field(FieldSeries {
+            matrix: MatrixRef {
+                columns: vec!["z0".into(), "z1".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: layout,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: contour.then(|| ContourConfig {
+                levels: vec![0.5],
+                line: crate::data_config::DataLineStyleConfig::default(),
+                per_level_color: None,
+                labels: None,
+            }),
+            surface: None,
+        });
+        series
+    }
+
+    /// A polar heatmap (#208): fills and contours draw on circular rings; a
+    /// hexagonal lattice and a polygon grid are refused with their reasons.
+    #[test]
+    fn a_polar_heatmap_is_held_to_its_rules() {
+        use crate::data_config::GridLayout;
+        let mut config = default_config();
+        config.set_polar(Some(PolarOptions::default()));
+        for layout in [GridLayout::Edges, GridLayout::Centers] {
+            for contour in [false, true] {
+                assert_eq!(
+                    config.validate_series_on_polar(&polar_field(layout.clone(), contour)),
+                    Ok(())
+                );
+            }
+        }
+        assert_eq!(
+            config.validate_series_on_polar(&polar_field(GridLayout::Hexagonal, false)),
+            Err("a hexagonal grid is drawn on a rectangular chart")
+        );
+        config.polar_mut().unwrap().grid_shape = Some(crate::polar::GridShape::Polygon);
+        assert_eq!(
+            config.validate_series_on_polar(&polar_field(GridLayout::Edges, false)),
+            Err("a polar heatmap's cells follow circular rings: not on a polygon grid")
+        );
+    }
+
+    /// A polar heatmap document has no new key: it parses and re-serializes
+    /// byte-identically.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_polar_heatmap_document_round_trips() {
+        use crate::data_config::GridLayout;
+        let mut config = default_config();
+        config.set_polar(Some(PolarOptions {
+            inner_radius_fraction: 0.1,
+            clockwise: true,
+            ..PolarOptions::default()
+        }));
+        let series = vec![polar_field(GridLayout::Edges, true)];
+        let config_json = serde_json::to_string(&config).unwrap();
+        let series_json = serde_json::to_string(&series).unwrap();
+        let config_back: crate::config::Config = serde_json::from_str(&config_json).unwrap();
+        let series_back: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(config_back, config);
+        assert_eq!(series_back, series);
+        assert_eq!(serde_json::to_string(&config_back).unwrap(), config_json);
+        assert_eq!(serde_json::to_string(&series_back).unwrap(), series_json);
+        assert_eq!(config_back.validate_series(&series_back), Ok(()));
     }
 
     #[test]

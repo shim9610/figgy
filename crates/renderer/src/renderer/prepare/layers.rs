@@ -330,6 +330,15 @@ impl PrepareContext<'_> {
             pipeline: &'p wgpu::RenderPipeline,
             texture_bg: Option<&'p wgpu::BindGroup>,
         }
+        // The stem pipeline (#206) per draw style: the precise and sketch
+        // stem entries, a Milkyway jet (its `vs_jet` stem branch), none
+        // under Constellation, which drops a stem series.
+        let stem_pipe = match styled {
+            None => pipelines.errorbar_stem.as_ref(),
+            Some(StyleSet::Sketch { stem, .. }) => Some(stem),
+            Some(StyleSet::Milkyway(c)) => Some(&c.jets),
+            Some(StyleSet::Constellation(_)) => None,
+        };
         let (line_pick, stars_pick, scatter_pick, errorbar_pipe) = match styled {
             None => (
                 pipelines.line.as_ref().map(|pipeline| LinePick {
@@ -349,6 +358,7 @@ impl PrepareContext<'_> {
                 scatter,
                 errorbar,
                 line_verts,
+                ..
             }) => (
                 Some(LinePick {
                     pipeline: line,
@@ -439,9 +449,12 @@ impl PrepareContext<'_> {
             // (#132), and its camera group: the surface layout for the
             // precise entries, the combined value map and camera layout for
             // the mapped markers and their ring.
+            // A point vector names its height too (#211): its arrows and its
+            // picked anchor's ring draw through the camera.
             let z_3d = match (camera_3d.as_ref(), cfg.z_column.as_deref()) {
                 (Some(_), Some(z))
-                    if (primitives.line || primitives.scatter) && phase.is_none() =>
+                    if (primitives.line || primitives.scatter || primitives.vector)
+                        && phase.is_none() =>
                 {
                     Some(lookup(z)?)
                 }
@@ -499,6 +512,49 @@ impl PrepareContext<'_> {
             } else {
                 None
             };
+
+            // A triangle mesh (#210): its fill and its contours draw the one
+            // group 2 `ensure_mesh_scratches` resolved, instancing the
+            // triangle count (the shader rechecks every index on every draw).
+            let mut mesh = None;
+            let mut mesh_contour = None;
+            if (primitives.mesh || primitives.mesh_contour) && phase.is_none() {
+                let scratch = self
+                    .field_cache
+                    .get(cfg.series_id.as_str())
+                    .ok_or(FiggyError::internal("prepare ensured this mesh's scratch"))?;
+                let triangles = if scratch.drawable {
+                    scratch.signature.params.rows
+                } else {
+                    0
+                };
+                for (wanted, pass, slot) in [
+                    (
+                        primitives.mesh,
+                        data_render::tri_mesh::TriMeshPass::Fill,
+                        &mut mesh,
+                    ),
+                    (
+                        primitives.mesh_contour,
+                        data_render::tri_mesh::TriMeshPass::Contour,
+                        &mut mesh_contour,
+                    ),
+                ] {
+                    if !wanted {
+                        continue;
+                    }
+                    *slot = Some(data_render::tri_mesh::ColumnTriMeshLayer {
+                        pipeline: pipelines.tri_mesh[pass as usize]
+                            .as_ref()
+                            .ok_or(FiggyError::internal("prepare ensured the mesh pipeline"))?,
+                        transform_bg: &view.transform_bg,
+                        style_bg: scratch.style_bg.clone(),
+                        field_bg: scratch.field_bg.clone(),
+                        charge: Arc::clone(&scratch.charge),
+                        triangles,
+                    });
+                }
+            }
 
             // A heatmap on a 3D chart draws as a surface into the panel
             // composite, not as the flat field: the same group 2, its own
@@ -608,8 +664,15 @@ impl PrepareContext<'_> {
                         }
                         data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
                         data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
+                        data_render::vector::VectorInput::Points3d => {
+                            pipelines.view3d[View3dPipeline::Vector as usize].as_ref()
+                        }
                     }
                     .ok_or(FiggyError::internal("prepare ensured vector pipeline"))?;
+                    // A 3D chart's arrows (#211) bind the panel's camera.
+                    let view3d = (scratch.input == data_render::vector::VectorInput::Points3d)
+                        .then(|| camera_binding(false))
+                        .transpose()?;
                     Some(data_render::vector::ColumnVectorLayer {
                         pipeline,
                         transform_bg: &view.transform_bg,
@@ -618,6 +681,7 @@ impl PrepareContext<'_> {
                         charge: Arc::clone(&scratch.charge),
                         count: scratch.count,
                         indirect: None,
+                        view3d,
                     })
                 } else if primitives.line
                     && phase.is_none()
@@ -648,6 +712,7 @@ impl PrepareContext<'_> {
                             charge: Arc::clone(&scratch.charge),
                             count: scratch.count,
                             indirect: Some((&slots.indirect, &slots.vs_bg)),
+                            view3d: None,
                         })
                 } else {
                     None
@@ -1338,6 +1403,31 @@ impl PrepareContext<'_> {
                 }
             };
 
+            // The stems (#206): the error-bar module's second draw, the
+            // error slots bound to the anchor columns as filler (the stem
+            // reads only x and y). Every row is drawn (rule 10). A streamed
+            // phase never draws one (rule 8: refused before a cursor).
+            let stem = match (series.style.stem_bg.as_ref(), phase) {
+                (Some(stem_bg), None) if !constellation_only && primitives.scatter => {
+                    Some(ColumnErrorBarDraw {
+                        pipeline: stem_pipe
+                            .ok_or(FiggyError::internal("prepare ensured stem pipeline"))?,
+                        transform_bg: &view.transform_bg,
+                        style_bg: stem_bg,
+                        style_map_bg: None,
+                        pool_buffer: column_buffer,
+                        x: x_h,
+                        y: y_h,
+                        err_y_lo: y_h,
+                        err_y_hi: y_h,
+                        err_x_lo: x_h,
+                        err_x_hi: x_h,
+                        style_index: None,
+                    })
+                }
+                _ => None,
+            };
+
             let selection_prepare::SelectionLayers {
                 picked,
                 selected_bars,
@@ -1367,7 +1457,7 @@ impl PrepareContext<'_> {
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
                         view3d: z_3d
-                            .filter(|_| primitives.scatter)
+                            .filter(|_| primitives.scatter || primitives.vector)
                             .map(|z| {
                                 camera_binding(
                                     styled.is_none() && series.style.scatter_map.is_some(),
@@ -1526,9 +1616,15 @@ impl PrepareContext<'_> {
                 Some(_) => (None, scatter),
                 None => (scatter, None),
             };
+            let (vector, vector_3d) = match &vector {
+                Some(layer) if layer.view3d.is_some() => (None, vector),
+                _ => (vector, None),
+            };
             out.push(data_render::SeriesLayers {
                 area,
                 field,
+                mesh,
+                mesh_contour,
                 bar,
                 violin,
                 category_bars,
@@ -1536,12 +1632,14 @@ impl PrepareContext<'_> {
                 contour,
                 vector,
                 errorbar,
+                stem,
                 line,
                 parallel,
                 line_extra,
                 scatter,
                 line_3d,
                 scatter_3d,
+                vector_3d,
                 selected_bars,
                 selected_fields,
                 picked,

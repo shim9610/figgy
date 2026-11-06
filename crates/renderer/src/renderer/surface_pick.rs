@@ -77,6 +77,7 @@ impl Renderer {
             View3dPipeline::ScatterPick,
             View3dPipeline::ScatterMappedPick,
             View3dPipeline::LinePick,
+            View3dPipeline::VectorPick,
         ] {
             self.pipelines.ensure_view3d_pass(
                 &self.device,
@@ -86,6 +87,7 @@ impl Renderer {
                     &self.per_point_style_map_bgl,
                     &self.surface_bgl,
                     &self.view3d_value_map_bgl,
+                    &self.vector_bgl,
                 ],
                 self.surface_format,
                 kind,
@@ -99,6 +101,24 @@ impl Renderer {
                 let z = cfg.z_column.as_deref()?;
                 let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
                 (primitives.line || primitives.scatter).then_some((cfg, style, z, primitives))
+            })
+        };
+        // The 3D point vector series (#211): those that draw through the
+        // camera, by series position; their pick ids follow the points'.
+        let vectors = || {
+            series.iter().filter(|cfg| {
+                config.drawn_z_column(cfg).is_some()
+                    && effective_series_primitives(&config.draw_style, &cfg.render_type).vector
+                    && matches!(
+                        &cfg.render_type,
+                        DataRenderType::Vector {
+                            components: crate::data_config::VectorComponents::Points {
+                                w: Some(_),
+                                ..
+                            },
+                            ..
+                        }
+                    )
             })
         };
         let floors = || {
@@ -118,6 +138,9 @@ impl Renderer {
             }
             for cfg in floors() {
                 ctx.ensure_contour_scratch(cfg, config, request.display_scale)?;
+            }
+            for cfg in vectors() {
+                ctx.ensure_vector_scratch(config, cfg, request.display_scale)?;
             }
         }
         let (px, py) = (
@@ -302,8 +325,14 @@ impl Renderer {
         let mut identities = Vec::new();
         let mut charges = Vec::new();
         identities
-            .try_reserve_exact(surfaces().count() + floors().count() + point_count)
-            .and_then(|()| charges.try_reserve_exact(surfaces().count() + floors().count() + 1))
+            .try_reserve_exact(
+                surfaces().count() + floors().count() + point_count + vectors().count(),
+            )
+            .and_then(|()| {
+                charges.try_reserve_exact(
+                    surfaces().count() + floors().count() + vectors().count() + 1,
+                )
+            })
             .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "surface pick identities",
                 reason: error.to_string(),
@@ -458,6 +487,43 @@ impl Renderer {
                     series_id: cfg.series_id.clone(),
                     columns_are_y: false,
                 });
+            }
+            // The 3D arrows (#211), before the strokes and markers as the
+            // draw paints them: each row writes kind 1 and its index where
+            // the arrow covers at least half the pixel, depth tested.
+            for cfg in vectors() {
+                let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
+                identities.push(crate::gpu_data_pick::SurfacePickIdentity {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    columns_are_y: false,
+                });
+                let (Some(mut cam), Some(scratch)) =
+                    (camera, self.vector_cache.get(cfg.series_id.as_str()))
+                else {
+                    continue;
+                };
+                if scratch.input != data_render::vector::VectorInput::Points3d || scratch.count == 0
+                {
+                    continue;
+                }
+                cam.flags[3] = pick_id as f32;
+                let binding = mesh::create_view3d_binding(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    &cam,
+                    request.display_scale,
+                    pick_id,
+                    None,
+                )?;
+                pass.set_pipeline(view3d(View3dPipeline::VectorPick)?);
+                pass.set_bind_group(0, &point_transform_bg, &[]);
+                pass.set_bind_group(1, &scratch.style_bg, &[]);
+                pass.set_bind_group(2, &scratch.vector_bg, &[]);
+                pass.set_bind_group(3, &binding.bind_group, &[]);
+                pass.draw(0..data_render::vector::ARROW_VERTICES, 0..scratch.count);
+                charges.push(binding.charge);
             }
             let pool_buffer = self.pool.buffer();
             for ((cfg, style, _, _), pick) in points().zip(&point_picks) {

@@ -219,6 +219,18 @@ impl PrepareContext<'_> {
         scale: f32,
         contour_spacings: &[Vec<Option<f32>>],
     ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        self.frame_batch(|ctx| {
+            ctx.ensure_contour_scratches_in_frame(items, scale, contour_spacings)
+        })
+    }
+
+    fn ensure_contour_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+        contour_spacings: &[Vec<Option<f32>>],
+    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        retain_frame_series(&mut self.contour_cache, items, CONTOUR_SCRATCH_CACHE_LIMIT);
         let mut prepared = Vec::with_capacity(items.len());
         let mut receipts = Vec::new();
         if items.len() != contour_spacings.len() {
@@ -548,8 +560,9 @@ impl PrepareContext<'_> {
             )?;
             // An anchor naming a level the declaration no longer has is stale,
             // not fatal: it draws nothing and the rest still do.
+            // The list holds at most `MAX_CONTOUR_LABEL_ANCHORS` anchors:
+            // `ContourLabelConfig::validate` rejected a longer one.
             anchors.retain(|anchor| anchor.level < level_count);
-            anchors.truncate(crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL as usize);
             let texts = axis_render::contour_label_texts(chart_config, labels, &contour.levels);
             label_sig = data_render::ContourLabelAtlasInput::from_config(
                 chart_config,
@@ -621,11 +634,13 @@ impl PrepareContext<'_> {
             None => None,
         };
 
-        evict_if_full(
-            &mut self.contour_cache,
-            cfg.series_id.as_str(),
-            CONTOUR_SCRATCH_CACHE_LIMIT,
-        );
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.contour_cache,
+                cfg.series_id.as_str(),
+                CONTOUR_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.contour_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {

@@ -80,6 +80,80 @@ fn band_t(raw: f32) -> f32 {
     return (f32(reached) + 0.5) / f32(field.level_count + 1u);
 }
 
+/// The declaration-order mask of block `block`'s levels that can reach a
+/// fragment whose value spans `search_lo..=search_hi`: one binary search
+/// per bound over the block's sorted lookup copy. A single mask restores
+/// the block's declaration order, which preserves duplicate-level colour
+/// and source-over behaviour without walking all 32 levels when only a few
+/// can reach the fragment. The heatmap and the triangle mesh contours
+/// (#210) search through this one function.
+fn contour_block_candidates(block: u32, search_lo: f32, search_hi: f32) -> u32 {
+    let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
+    let count = contour_lookup_metadata[block].finite_count;
+    let first = contour_lower_bound(start, count, search_lo);
+    let last = contour_upper_bound(start, count, search_hi);
+    var candidates = 0u;
+    for (var sorted = first; sorted < last; sorted = sorted + 1u) {
+        let record = contour_search_record(start + sorted);
+        let original = u32(record.y) - start;
+        candidates = candidates | (1u << original);
+    }
+    return candidates;
+}
+
+fn vec4_f32_is_finite(v: vec4<f32>) -> bool {
+    return vec2_f32_is_finite(v.xy) && vec2_f32_is_finite(v.zw);
+}
+
+/// The stroke colour of contour level `i`, premultiplied.
+///
+/// A level past the end of the table takes the last entry rather than nothing:
+/// the host writes one entry per level, and a short table is a mismatch to draw
+/// through with the last declared colour, not a reason to drop the contour.
+fn level_color(i: u32) -> vec4<f32> {
+    if (field.level_color_count == 0u) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return level_colors[min(i, field.level_color_count - 1u)];
+}
+
+/// What the contour strokes paint at a fragment: the composited colour and
+/// the declaration index of the topmost level painted there, or
+/// `0xffffffff` where none is. The draw takes the colour; a 3D chart's
+/// floor ID pick (`fs_floor_contour_pick`) the level, so the two agree.
+struct ContourPaint {
+    color: vec4<f32>,
+    level: u32,
+};
+
+fn contour_paint_none() -> ContourPaint {
+    var out: ContourPaint;
+    out.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.level = 0xffffffffu;
+    return out;
+}
+
+/// `paint` with level `i`'s stroke composited over it at the unclamped
+/// coverage `coverage` (half the width minus the distance plus half a
+/// pixel); a level painted at half coverage or more becomes the topmost.
+fn contour_level_over(paint: ContourPaint, i: u32, coverage: f32) -> ContourPaint {
+    var out = paint;
+    let cov = clamp(coverage, 0.0, 1.0);
+    if (!f32_is_finite(coverage) || !f32_is_finite(cov) || cov <= 0.0) {
+        return out;
+    }
+    let c = level_color(i) * cov;
+    let composited = c + paint.color * (1.0 - c.a);
+    if (!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)) {
+        return out;
+    }
+    out.color = composited;
+    if (cov >= 0.5) {
+        out.level = i;
+    }
+    return out;
+}
+
 /// The colourmap at `t`. Twin of `model::colormap::sample` through the shared
 /// `ramp_segment` / `ramp_blend`; only the stop lookup is this shader's.
 fn ramp(t: f32) -> vec4<f32> {
@@ -216,7 +290,30 @@ fn field_image_paints(c: u32, r: u32, fc: f32, fr: f32) -> bool {
 // `nan_color` is the premultiplied colour of an unplaceable sample.
 fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
     z11: GridValue, fc: f32, fr: f32, nan_color: vec4<f32>) -> vec4<f32> {
-    let v = field_fill_value(z00, z10, z01, z11, fc, fr);
+    return field_value_color(field_fill_value(z00, z10, z01, z11, fc, fr), nan_color);
+}
+
+/// A shaded value `z` placed on the colourbar: unplaceable where `z` is
+/// not finite or the ramp cannot place it. The triangle mesh (#210) shades
+/// its barycentric blend through this, the heatmap its cell's value or
+/// bilinear blend through `field_fill_value`.
+fn field_placed_value(z: vec2<f32>) -> FieldFillValue {
+    var out: FieldFillValue;
+    out.placeable = false;
+    out.z = z;
+    out.t = -1.0;
+    if (!vec2_f32_is_finite(z)) {
+        return out;
+    }
+    out.t = z_ramp_t(z);
+    out.placeable = out.t >= 0.0;
+    return out;
+}
+
+/// The premultiplied colour of a shaded value: the ramp (continuous or
+/// banded) at the fill's opacity, or `nan_color` where it is unplaceable.
+/// The heatmap and the triangle mesh colour through this one function.
+fn field_value_color(v: FieldFillValue, nan_color: vec4<f32>) -> vec4<f32> {
     if (!v.placeable) {
         // `nan_color`, already premultiplied by the caller. Not multiplied by
         // `opacity` — that multiplies the *ramp*'s alpha.

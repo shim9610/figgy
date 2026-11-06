@@ -108,7 +108,8 @@ pub fn prune_numeric_labels(
         .collect();
     // The ladder the labels are demoted to; `None` keeps every label.
     let on_ladder = |label: &NumericTickLabel, mask: u16| {
-        crate::tick::log_multiple(label.value).is_some_and(|multiple| mask & (1 << multiple) != 0)
+        crate::tick::ladder_multiple(label.value, &axis.scale)
+            .is_some_and(|multiple| mask & (1 << multiple) != 0)
     };
     let kept = |ladder: Option<u16>, label: &NumericTickLabel| {
         ladder.is_none_or(|mask| on_ladder(label, mask))

@@ -118,7 +118,14 @@ fn t_to_px(t: vec2<f32>) -> vec2<f32> {
 /// stays in its own magnitude regime, which is the entire point of the split. A
 /// logarithmic axis has to exponentiate, so its result is a single f32 — accuracy
 /// on a log axis is relative anyway.
-fn t_to_pair(t: f32, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32) -> vec2<f32> {
+/// On a probability axis (`prob`, #209) the inverse is `prob_inverse`, whose
+/// pair keeps the upper tail.
+fn t_to_pair(t: f32, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, prob: f32) -> vec2<f32> {
+    if (prob > 0.5) {
+        let lo_v = min_hi + min_lo;
+        let hi_v = max_hi + max_lo;
+        return prob_inverse(lo_v + t * (hi_v - lo_v), prob);
+    }
     if (is_log != 0.0) {
         let lo_v = min_hi + min_lo;
         let hi_v = max_hi + max_lo;
@@ -130,13 +137,13 @@ fn t_to_pair(t: f32, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log:
 fn t_to_pair_x(t: f32) -> vec2<f32> {
     let data_t = cut_unmap(cuts_of(transform.breaks, transform.break_info, 0u),
         (t - transform.data_to_panel_offset.x) / transform.data_to_panel_scale.x);
-    return t_to_pair(data_t, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
+    return t_to_pair(data_t, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.scale_prob.x);
 }
 
 fn t_to_pair_y(t: f32) -> vec2<f32> {
     let data_t = cut_unmap(cuts_of(transform.breaks, transform.break_info, 1u),
         (t - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y);
-    return t_to_pair(data_t, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
+    return t_to_pair(data_t, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.scale_prob.y);
 }
 
 /// A `t` step as a data-space delta, through the same inverse.
@@ -188,8 +195,14 @@ fn anchor_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
             ap.clip_x + f32(cell % ap.lattice_x) * step.x,
             ap.clip_y + f32(cell / ap.lattice_x) * step.y,
         );
-        out.x = px_to_t(cell_lo + 0.5 * step);
-        out.level = level;
+        // On a polar chart the seed's pixel is read in (angle, radius)
+        // `t`, so the Newton steps below walk the field's own lattice
+        // (#208). A rectangular chart's lookup is the identity.
+        let lookup = field_lookup(px_to_t(cell_lo + 0.5 * step), LATTICE_SAMPLES);
+        if (lookup.hit) {
+            out.x = lookup.t;
+            out.level = level;
+        }
     }
     cand[gid.x] = out;
 }
@@ -279,7 +292,15 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         cand[gid.x] = out;
         return;
     }
-    let hit_px = t_to_px(p);
+    let out_x = t_to_pair_x(p.x);
+    let out_y = t_to_pair_y(p.y);
+    let polar = transform.polar_angle.x > 0.5;
+    var hit_px = t_to_px(p);
+    if (polar) {
+        // Lookup `t` is (angle, radius): the hit's pixel is its polar
+        // placement, as the label draw places it.
+        hit_px = t_to_px((data_to_ndc(transform, out_x, out_y) + vec2<f32>(1.0, 1.0)) * 0.5);
+    }
     if (!vec2_f32_is_finite(hit_px)
         || hit_px.x < cell_lo.x || hit_px.x >= cell_lo.x + step.x
         || hit_px.y < cell_lo.y || hit_px.y >= cell_lo.y + step.y) {
@@ -287,13 +308,14 @@ fn anchor_project(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let out_x = t_to_pair_x(p.x);
-    let out_y = t_to_pair_y(p.y);
     // The isoline's tangent is perpendicular to the gradient — exactly, not as a
     // difference of two traced endpoints. Converted back into data units so the
     // record means what a host-written one means, and kept to a hundredth of the
     // range so the render shader's finite difference stays local on a log axis.
-    let tangent = normalize(vec2<f32>(-s.dz.y, s.dz.x)) * 1e-2;
+    // On a polar chart the step is (angle, radius): the label frame's finite
+    // difference through `data_to_ndc` is a chord of the drawn isoline, kept
+    // to a thousandth so it turns with the screen tangent.
+    let tangent = normalize(vec2<f32>(-s.dz.y, s.dz.x)) * select(1e-2, 1e-3, polar);
     let out_dir = vec2<f32>(
         t_step_to_data(out_x, t_to_pair_x(p.x + tangent.x)),
         t_step_to_data(out_y, t_to_pair_y(p.y + tangent.y)),

@@ -149,6 +149,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
                     y: Some(err_y),
                     style: err_style,
                 }),
+            ..
         }) => {
             prefix_error_column(err_x);
             prefix_error_column(err_y);
@@ -165,6 +166,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
         | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
@@ -783,6 +785,7 @@ fn sketch_errorbar_stream_export_matches_browser_fixture() {
                     }),
                     style: error,
                 }),
+                stem: None,
             });
             cfg
         })
@@ -1194,6 +1197,7 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                                     interpolation: crate::data_config::LineInterpolation::Linear,
                                 }),
                                 errors: None,
+                                stem: None,
                             })
                         } else if errorbars {
                             DataRenderType::Xy(crate::data_config::XySeries {
@@ -1210,12 +1214,14 @@ fn styled_stream_runtime_matches_resident_pixels_and_ignores_point_maps() {
                                     }),
                                     style: error_style(color),
                                 }),
+                                stem: None,
                             })
                         } else {
                             DataRenderType::Xy(crate::data_config::XySeries {
                                 scatter: Some(scatter(color)),
                                 line: None,
                                 errors: None,
+                                stem: None,
                             })
                         };
                         series
@@ -1447,6 +1453,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::Ternary { .. }
                     | DataRenderType::Parallel { .. }
                     | DataRenderType::EnergyLevels(_)
+                    | DataRenderType::TriMesh(_)
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
@@ -1525,6 +1532,7 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             });
             let id = r.register_chart(config, vec![series]).unwrap();
             let result = r.begin_streaming_chart(

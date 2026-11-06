@@ -44,6 +44,15 @@ impl PrepareContext<'_> {
         items: &[ChartDrawItem<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_vector_scratches_in_frame(items, scale))
+    }
+
+    fn ensure_vector_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<Vec<Arc<GridSources>>> {
+        retain_frame_series(&mut self.vector_cache, items, VECTOR_SCRATCH_CACHE_LIMIT);
         let mut receipts = Vec::new();
         for item in items {
             for series in item.series {
@@ -160,6 +169,10 @@ impl PrepareContext<'_> {
             aa_px: scale,
             spacing_px: 0.0,
             pad1: 0.0,
+            height_base: 0,
+            height_len: 0,
+            w_base: 0,
+            w_len: 0,
             z_min: [0.0; 2],
             z_max: [0.0; 2],
             nan_color_premul: [0.0; 4],
@@ -224,7 +237,7 @@ impl PrepareContext<'_> {
                 grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
                 vector_render::VectorInput::Path
             }
-            Some((VectorComponents::Points { u, v }, style)) => {
+            Some((VectorComponents::Points { u, v, w }, style)) => {
                 let u_h = handle(u)?;
                 let v_h = handle(v)?;
                 params.u_base = lane(&u_h)?;
@@ -236,15 +249,32 @@ impl PrepareContext<'_> {
                     .min(y.len_values)
                     .min(u_h.len_values)
                     .min(v_h.len_values);
-                ids.try_reserve_exact(3)
+                // On a 3D chart (#211) the anchor height and the z
+                // component are read too, and the camera projects the arrow.
+                let three_d = chart_config.drawn_z_column(cfg).zip(w.as_deref());
+                ids.try_reserve_exact(5)
                     .map_err(alloc("vector source ids"))?;
                 epochs
-                    .try_reserve_exact(3)
+                    .try_reserve_exact(5)
                     .map_err(alloc("vector source epochs"))?;
                 ids.push(u.clone());
                 epochs.push(epoch(u)?);
                 ids.push(v.clone());
                 epochs.push(epoch(v)?);
+                if let Some((z, w)) = three_d {
+                    let z_h = handle(z)?;
+                    let w_h = handle(w)?;
+                    params.height_base = lane(&z_h)?;
+                    params.height_len = len32(&z_h);
+                    params.w_base = lane(&w_h)?;
+                    params.w_len = len32(&w_h);
+                    params.flags |= vector_render::VECTOR_FLAG_THREE_D;
+                    count = count.min(z_h.len_values).min(w_h.len_values);
+                    ids.push(z.to_string());
+                    epochs.push(epoch(z)?);
+                    ids.push(w.to_string());
+                    epochs.push(epoch(w)?);
+                }
                 if let Some(VectorColorMap::Column(column)) = style.color_map.as_ref() {
                     let c_h = handle(column)?;
                     params.c_base = lane(&c_h)?;
@@ -256,7 +286,11 @@ impl PrepareContext<'_> {
                 params.count = u32::try_from(count).unwrap_or(u32::MAX);
                 // A storage binding cannot be zero-sized: one padding entry.
                 grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
-                vector_render::VectorInput::Points
+                if three_d.is_some() {
+                    vector_render::VectorInput::Points3d
+                } else {
+                    vector_render::VectorInput::Points
+                }
             }
             Some((VectorComponents::Grid { u, v }, style)) => {
                 let mut extent: Option<(usize, usize)> = None;
@@ -374,11 +408,13 @@ impl PrepareContext<'_> {
         });
         let scratch = self.build_vector_scratch(signature, sources)?;
 
-        evict_if_full(
-            &mut self.vector_cache,
-            cfg.series_id.as_str(),
-            VECTOR_SCRATCH_CACHE_LIMIT,
-        );
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.vector_cache,
+                cfg.series_id.as_str(),
+                VECTOR_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.vector_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {

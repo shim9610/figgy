@@ -370,7 +370,21 @@ fn growth_peak_is_the_old_and_new_buffers_and_settles_to_the_new_one() {
             timeout: None,
         })
         .expect("retired pool copy completes");
-    assert_eq!(retired(), 0);
+    // The device is shared with the tests running beside this one, and the
+    // credit arrives in a completion callback that whichever thread polled
+    // runs after its poll has released the device. So the wait above can
+    // return while another test's poll still holds the callback.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while retired() != 0 {
+        device
+            .poll(wgpu::PollType::Poll)
+            .expect("polling the shared device");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retirement callback timeout"
+        );
+        std::thread::yield_now();
+    }
 }
 
 #[test]
@@ -3839,6 +3853,318 @@ fn records_and_ragged_columns_survive_defragmentation_and_clear() {
     pool.clear().unwrap();
     assert!(pool.record("box").is_none());
     assert!(pool.composite_kind("box").is_none());
+}
+
+fn col_u32(data: Vec<u32>) -> Column<u32> {
+    Column { data }
+}
+
+/// A triangle index column (#210) uploads its indices as `u32` index lanes
+/// in one member column; the observer measures the triangle count and the
+/// index range. A `Column<u32>` writes every index exactly, past 2^24 and up
+/// to `u32::MAX`.
+#[test]
+fn a_triangle_column_uploads_its_indices_as_index_lanes_with_statistics() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let indices = col_u32(INDEX_LANE_PROBES.to_vec());
+    let creations = ledger.snapshot().creations_of(GpuResourceKind::ColumnPool);
+    let id = pool
+        .upsert_triangles("mesh", &TriangleSource { indices: &indices }, ctx())
+        .unwrap();
+    assert_eq!(id, "mesh");
+    assert_eq!(
+        ledger.snapshot().creations_of(GpuResourceKind::ColumnPool) - creations,
+        1,
+        "one staging buffer"
+    );
+    let triangles = pool.triangles("mesh").unwrap();
+    assert_eq!(triangles.slot().triangles, 2);
+    assert_eq!(
+        triangles.stats(),
+        TriangleStats {
+            triangles: 2,
+            min_index: 0,
+            max_index: u32::MAX,
+        }
+    );
+    assert_eq!(pool.triangle_stats("mesh"), Some(triangles.stats()));
+    let words = read_column_words(ctx(), &pool, triangles.indices().unwrap());
+    for (k, &probe) in INDEX_LANE_PROBES.iter().enumerate() {
+        assert_eq!((words[2 * k], words[2 * k + 1]), (probe, 0), "index {k}");
+    }
+    assert_eq!(
+        triangles.slot().epoch,
+        pool.allocation_epoch(&triangles.slot().indices).unwrap()
+    );
+    assert_eq!(pool.composite_kind("mesh"), Some("a triangle index column"));
+    assert!(pool.is_member_column(&triangles.slot().indices));
+    assert_eq!(
+        pool.composite_kind(&triangles.slot().indices),
+        Some("a member column of a record, ragged or triangle column")
+    );
+    assert!(
+        pool.column_ids().next().is_none(),
+        "the member is no column"
+    );
+    assert_eq!(pool.used_bytes(), ALIGN);
+
+    // An f64 source writes its (hi, lo) split, which reaches the lanes as
+    // exactly.
+    let split = INDEX_LANE_PROBES.map(f64::from);
+    let source = SplitPairSource(&split);
+    pool.upsert_triangles("split", &TriangleSource { indices: &source }, ctx())
+        .unwrap();
+    let words = read_column_words(
+        ctx(),
+        &pool,
+        pool.triangles("split").unwrap().indices().unwrap(),
+    );
+    for (k, &probe) in INDEX_LANE_PROBES.iter().enumerate() {
+        assert_eq!(words[2 * k], probe, "split index {k}");
+    }
+}
+
+/// Rows written in an order other than 0, 1, 2, ...: the triangle observer
+/// rejects the upload.
+struct ReversedSource<'a>(&'a [f64]);
+
+impl ColumnSource for ReversedSource<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        for (index, &value) in self.0.iter().enumerate().rev() {
+            dst.write_value(index, value);
+        }
+    }
+}
+
+/// An empty index column, a length that is not a multiple of 3, an index
+/// that is not an integer in `0..=u32::MAX` and indices written out of row
+/// order are rejected; the abandoned batch leaves the pool exactly as it
+/// was, an old triangle column included.
+#[test]
+fn invalid_triangle_indices_are_rejected_and_roll_the_batch_back() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let good = col_u32(vec![0, 1, 2, 2, 1, 3]);
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &good }, ctx())
+        .unwrap();
+    let before = full_pool_state(&pool);
+    let stats = pool.triangle_stats("mesh").unwrap();
+
+    let cases: [(&[f64], &str); 7] = [
+        (&[], "at least one triangle"),
+        (&[0.0, 1.0, 2.0, 3.0], "not a multiple of 3"),
+        (&[0.0, 1.5, 2.0], "finite integers"),
+        (&[0.0, -1.0, 2.0], "finite integers"),
+        (&[0.0, f64::NAN, 2.0], "finite integers"),
+        (&[0.0, f64::INFINITY, 2.0], "finite integers"),
+        (&[0.0, 4_294_967_296.0, 2.0], "finite integers"),
+    ];
+    for (indices, expected) in cases {
+        let indices = col_f64(indices.to_vec());
+        for id in ["mesh", "fresh"] {
+            let reason = invalid_reason(pool.upsert_triangles(
+                id,
+                &TriangleSource { indices: &indices },
+                ctx(),
+            ));
+            assert!(
+                reason.contains(expected),
+                "{id}: {reason:?} lacks {expected:?}"
+            );
+            assert_eq!(full_pool_state(&pool), before, "{expected}");
+        }
+    }
+    let reversed = [0.0, 1.0, 2.0];
+    let reason = invalid_reason(pool.upsert_triangles(
+        "fresh",
+        &TriangleSource {
+            indices: &ReversedSource(&reversed),
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("once, in row order"), "{reason}");
+    assert_eq!(full_pool_state(&pool), before);
+    assert!(pool.triangles("fresh").is_none());
+    assert_eq!(pool.triangle_stats("mesh"), Some(stats));
+    assert_eq!(
+        read_column_words(
+            ctx(),
+            &pool,
+            pool.triangles("mesh").unwrap().indices().unwrap()
+        ),
+        [0, 0, 1, 0, 2, 0, 2, 0, 1, 0, 3, 0]
+    );
+}
+
+/// A triangle replacement takes a new count and a new epoch and frees the
+/// old member; a triangle column shares the one id space with columns,
+/// records and ragged columns, in both directions; its member cannot be
+/// removed or replaced through the column API.
+#[test]
+fn a_triangle_replacement_takes_new_triangles_and_ids_are_shared() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let small = col_u32(vec![0, 1, 2]);
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &small }, ctx())
+        .unwrap();
+    let old = pool.triangles("mesh").unwrap().slot().clone();
+
+    // 33 triangles: 99 pairs = 792 bytes, four blocks.
+    let large = col_u32((0..99).map(|i| i % 7 + 5).collect());
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &large }, ctx())
+        .unwrap();
+    let new = pool.triangles("mesh").unwrap();
+    assert!(new.slot().epoch > old.epoch);
+    assert_eq!(
+        new.stats(),
+        TriangleStats {
+            triangles: 33,
+            min_index: 5,
+            max_index: 11,
+        }
+    );
+    assert!(pool.slot(&old.indices).is_none(), "the old member is freed");
+    assert_eq!(pool.used_bytes(), 4 * ALIGN);
+
+    let member = new.slot().indices.clone();
+    assert_eq!(
+        pool.remove_column(&member),
+        Err(AllocError::MemberColumn(member.clone()))
+    );
+    assert!(matches!(
+        pool.upsert_column(member.clone(), &col_f64(vec![1.0]), ctx()),
+        Err(AllocError::MemberColumn(_))
+    ));
+
+    // The id space is shared: a column, a record and a ragged column cannot
+    // take a triangle column's id, nor it theirs.
+    pool.add_column("x".into(), &col_f64(vec![1.0]), ctx())
+        .unwrap();
+    let reason =
+        invalid_reason(pool.upsert_triangles("x", &TriangleSource { indices: &small }, ctx()));
+    assert!(reason.contains("the id is a column"), "{reason}");
+    let columns = five_fields(2, 0.0);
+    let fields = box_fields(&columns);
+    let record = RecordSource {
+        schema: BOX_PLOT_RECORD,
+        fields: &fields,
+    };
+    let reason = invalid_reason(pool.upsert_record("mesh", &record, ctx()));
+    assert!(
+        reason.contains("the id is a triangle index column"),
+        "{reason}"
+    );
+    let values = col_f64(vec![1.0, 2.0]);
+    let offsets = col_f64(vec![0.0, 2.0]);
+    let ragged = RaggedSource {
+        values: &values,
+        offsets: &offsets,
+    };
+    let reason = invalid_reason(pool.upsert_ragged("mesh", &ragged, ctx()));
+    assert!(
+        reason.contains("the id is a triangle index column"),
+        "{reason}"
+    );
+    pool.upsert_record("box", &record, ctx()).unwrap();
+    pool.upsert_ragged("outliers", &ragged, ctx()).unwrap();
+    for (id, kind) in [("box", "a record"), ("outliers", "a ragged column")] {
+        let reason =
+            invalid_reason(pool.upsert_triangles(id, &TriangleSource { indices: &small }, ctx()));
+        assert!(reason.contains(&format!("the id is {kind}")), "{reason}");
+    }
+    let reason = invalid_reason(pool.upsert_triangles(
+        format!("bad{MEMBER_SEPARATOR}id"),
+        &TriangleSource { indices: &small },
+        ctx(),
+    ));
+    assert!(reason.contains("U+001F"), "{reason}");
+
+    assert!(pool.remove_triangles("mesh").unwrap());
+    assert!(!pool.remove_triangles("mesh").unwrap());
+    assert!(pool.slot(&member).is_none());
+    assert!(pool.composite_kind("mesh").is_none());
+}
+
+/// Defragmentation moves the member like any column, and the triangle
+/// column follows because it names its member; clear drops it.
+#[test]
+fn triangle_columns_survive_defragmentation_and_clear() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(32 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let filler = col_f64(vec![0.0; 100]);
+    pool.add_column("filler".into(), &filler, ctx()).unwrap();
+    let indices = col_u32(vec![3, 1, 2, (1 << 24) + 1, 0, 7]);
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &indices }, ctx())
+        .unwrap();
+    let before = pool.triangles("mesh").unwrap().indices().unwrap().offset;
+    pool.remove_column("filler").unwrap();
+    assert!(pool.defragment(ctx()).unwrap());
+    let after = pool.triangles("mesh").unwrap().indices().unwrap();
+    assert!(after.offset < before, "the member moved");
+    assert_eq!(
+        read_column_words(ctx(), &pool, after),
+        [3, 0, 1, 0, 2, 0, (1 << 24) + 1, 0, 0, 0, 7, 0]
+    );
+    assert_eq!(
+        pool.triangle_stats("mesh"),
+        Some(TriangleStats {
+            triangles: 2,
+            min_index: 0,
+            max_index: (1 << 24) + 1,
+        })
+    );
+
+    pool.clear().unwrap();
+    assert!(pool.triangles("mesh").is_none());
+    assert!(pool.composite_kind("mesh").is_none());
+}
+
+/// A shader reads triangle `t`'s three vertex indices by the member's pool
+/// lane base (`offset / 4`), lane `2 (3t + k)`, with `bitcast<u32>`: the
+/// read the mesh vertex stage makes, exact past 2^24.
+#[test]
+fn a_shader_reads_a_triangle_by_pool_offset() {
+    let Some((device, queue, ledger, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::new(&device, &queue, &ledger);
+    let filler = col_f64(vec![9.0; 40]);
+    pool.add_column("filler".into(), &filler, ctx()).unwrap();
+    let indices = col_u32(INDEX_LANE_PROBES.to_vec());
+    pool.upsert_triangles("mesh", &TriangleSource { indices: &indices }, ctx())
+        .unwrap();
+    let handle = pool.triangles("mesh").unwrap().indices().unwrap();
+    // (index lane base, the triangle to read)
+    let params: [u32; 4] = [(handle.offset / 4) as u32, 1, 0, 0];
+
+    const SHADER: &str = r#"
+struct Params { base: u32, triangle: u32 }
+@group(0) @binding(0) var<storage, read> pool: array<f32>;
+@group(0) @binding(1) var<storage, read> params: Params;
+@group(0) @binding(2) var<storage, read_write> out: array<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+    for (var k = 0u; k < 3u; k++) {
+        out[k] = bitcast<u32>(pool[params.base + 2u * (3u * params.triangle + k)]);
+    }
+}
+"#;
+    let read = run_pool_read_back(&device, &queue, &pool, SHADER, &params, 3);
+    assert_eq!(read, INDEX_LANE_PROBES[3..6]);
 }
 
 /// A shader reads a record field and a ragged group by their pool lane

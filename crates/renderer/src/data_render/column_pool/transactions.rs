@@ -333,6 +333,7 @@ impl ColumnBatchCandidate<'_> {
             slots,
             records: _,
             raggeds: _,
+            triangles: _,
             free,
             generation,
             allocation_epochs,
@@ -460,6 +461,7 @@ impl<const N: usize> ColumnBatchUpsert<'_, N> {
             slots,
             records: _,
             raggeds: _,
+            triangles: _,
             free,
             generation,
             allocation_epochs,
@@ -896,6 +898,7 @@ impl ColumnPool {
             slots: planned_slots,
             records: HashMap::new(),
             raggeds: HashMap::new(),
+            triangles: HashMap::new(),
             free: planned_free,
             generation: next_generation,
             allocation_epochs: planned_epochs,
@@ -1542,6 +1545,7 @@ impl ColumnPool {
             slots: planned_slots,
             records: HashMap::new(),
             raggeds: HashMap::new(),
+            triangles: HashMap::new(),
             free: planned_free,
             generation: next_generation,
             allocation_epochs: planned_allocation_epochs,
@@ -2145,6 +2149,33 @@ impl OffsetTally {
     }
 }
 
+/// The index checks of a triangle column (#210), measured in the write
+/// observer in one pass: no index is kept, only the range.
+struct IndexTally {
+    next_row: usize,
+    in_order: bool,
+    integral: bool,
+    min: f64,
+    max: f64,
+}
+
+impl IndexTally {
+    fn record(&mut self, row: usize, hi: f32, lo: f32) {
+        let value = hi as f64 + lo as f64;
+        if row != self.next_row {
+            self.in_order = false;
+        }
+        self.next_row = row.saturating_add(1);
+        if !(value.is_finite() && value >= 0.0 && value <= u32::MAX as f64 && value.fract() == 0.0)
+        {
+            self.integral = false;
+            return;
+        }
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+    }
+}
+
 fn composite_error(id: &str, reason: impl Into<String>) -> crate::FiggyError {
     crate::FiggyError::InvalidSeriesConfig {
         series_id: id.to_owned(),
@@ -2195,21 +2226,36 @@ impl ColumnPool {
         self.raggeds.get(id).map(|slot| slot.stats)
     }
 
-    /// What `id` names when it is a record, a ragged column or one of their
-    /// member columns, for the renderer's id checks.
+    /// The triangle index column `id`, when one is resident (#210).
+    pub fn triangles(&self, id: &str) -> Option<TriangleRef<'_>> {
+        self.triangles
+            .get(id)
+            .map(|slot| TriangleRef { pool: self, slot })
+    }
+
+    /// The scalar statistics of the triangle index column `id`.
+    pub fn triangle_stats(&self, id: &str) -> Option<TriangleStats> {
+        self.triangles.get(id).map(|slot| slot.stats)
+    }
+
+    /// What `id` names when it is a record, a ragged or triangle column or
+    /// one of their member columns, for the renderer's id checks.
     pub(crate) fn composite_kind(&self, id: &str) -> Option<&'static str> {
         if self.records.contains_key(id) {
             Some("a record")
         } else if self.raggeds.contains_key(id) {
             Some("a ragged column")
+        } else if self.triangles.contains_key(id) {
+            Some("a triangle index column")
         } else if self.is_member_column(id) {
-            Some("a member column of a record or ragged column")
+            Some("a member column of a record, ragged or triangle column")
         } else {
             None
         }
     }
 
-    /// Whether `id` is a member column of a resident record or ragged column.
+    /// Whether `id` is a member column of a resident record, ragged or
+    /// triangle column.
     pub(crate) fn is_member_column(&self, id: &str) -> bool {
         let Some((owner, _)) = id.split_once(MEMBER_SEPARATOR) else {
             return false;
@@ -2217,9 +2263,37 @@ impl ColumnPool {
         if let Some(record) = self.records.get(owner) {
             return record.fields.iter().flatten().any(|field| field == id);
         }
+        if let Some(triangles) = self.triangles.get(owner) {
+            return triangles.indices == id;
+        }
         self.raggeds
             .get(owner)
             .is_some_and(|ragged| ragged.values == id || ragged.offsets == id)
+    }
+
+    /// The composite kinds other than `kind` that already hold `id`: a
+    /// record, a ragged or a triangle column id is free only when no other
+    /// composite holds it (they share one id space).
+    fn check_composite_kind_free(&self, id: &str, kind: &str) -> crate::Result<()> {
+        let taken = if kind != "record" && self.records.contains_key(id) {
+            Some("a record")
+        } else if kind != "ragged column" && self.raggeds.contains_key(id) {
+            Some("a ragged column")
+        } else if kind != "triangle index column" && self.triangles.contains_key(id) {
+            Some("a triangle index column")
+        } else {
+            None
+        };
+        match taken {
+            Some(other) => Err(composite_error(
+                id,
+                format!(
+                    "the id is {other}; columns, records, ragged and triangle columns share \
+                     one id space"
+                ),
+            )),
+            None => Ok(()),
+        }
     }
 
     fn check_composite_id(&self, id: &str, kind: &str) -> crate::Result<()> {
@@ -2239,8 +2313,8 @@ impl ColumnPool {
             return Err(composite_error(
                 id,
                 format!(
-                    "the id is a column; columns, records and ragged columns share one id \
-                     space, so a {kind} needs an id of its own"
+                    "the id is a column; columns, records, ragged and triangle columns share \
+                     one id space, so a {kind} needs an id of its own"
                 ),
             ));
         }
@@ -2294,12 +2368,7 @@ impl ColumnPool {
         prepare: impl FnOnce(&ColumnPool, bool) -> crate::Result<T>,
     ) -> crate::Result<T> {
         self.check_composite_id(&id, "record")?;
-        if self.raggeds.contains_key(&id) {
-            return Err(composite_error(
-                &id,
-                "the id is a ragged column; columns, records and ragged columns share one id space",
-            ));
-        }
+        self.check_composite_kind_free(&id, "record")?;
         let schema = source.schema;
         if schema.len() > MAX_RECORD_FIELDS {
             return Err(composite_error(
@@ -2496,12 +2565,7 @@ impl ColumnPool {
         prepare: impl FnOnce(&ColumnPool, bool) -> crate::Result<T>,
     ) -> crate::Result<T> {
         self.check_composite_id(&id, "ragged column")?;
-        if self.records.contains_key(&id) {
-            return Err(composite_error(
-                &id,
-                "the id is a record; columns, records and ragged columns share one id space",
-            ));
-        }
+        self.check_composite_kind_free(&id, "ragged column")?;
         let total = source.values.len();
         if total == 0 {
             return Err(composite_error(
@@ -2704,6 +2768,166 @@ impl ColumnPool {
         let value = prepare(&*removal.pool)?;
         removal.commit();
         self.raggeds.remove(id);
+        Ok(Some(value))
+    }
+
+    /// Insert or replace the triangle index column `id` (failure-atomic,
+    /// #210).
+    ///
+    /// The indices upload as one member column stored as `u32` lanes
+    /// (SHADER_COMMON.md §5.14); the write observer checks them in the same
+    /// pass and measures the [`TriangleStats`]. The source must write every
+    /// index once, in row order, each a finite integer in `0..=u32::MAX`,
+    /// and hold a non-zero multiple of 3 indices; anything else is rejected
+    /// before anything is published. A replacement needs room for the new
+    /// member while the old one is live, as [`Self::upsert_record`]
+    /// describes.
+    pub fn upsert_triangles(
+        &mut self,
+        id: impl Into<TriangleId>,
+        source: &TriangleSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+    ) -> crate::Result<TriangleId> {
+        let id = id.into();
+        self.upsert_triangles_with(id.clone(), source, ctx, |_, _| Ok(()))?;
+        Ok(id)
+    }
+
+    /// [`Self::upsert_triangles`] with a `prepare` step, as
+    /// [`Self::upsert_record_with`].
+    pub(crate) fn upsert_triangles_with<T>(
+        &mut self,
+        id: TriangleId,
+        source: &TriangleSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+        prepare: impl FnOnce(&ColumnPool, bool) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        self.check_composite_id(&id, "triangle index column")?;
+        self.check_composite_kind_free(&id, "triangle index column")?;
+        let count = source.indices.len();
+        if count == 0 {
+            return Err(composite_error(
+                &id,
+                "a triangle index column needs at least one triangle (three indices)",
+            ));
+        }
+        if count % 3 != 0 {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "a triangle index column holds three vertex indices per triangle; \
+                     {count} indices is not a multiple of 3"
+                ),
+            ));
+        }
+        // The shader reads index `3t + k` by its `u32` lane: the index count
+        // is the GPU's index space, as a ragged column's value count is.
+        let triangles = u32::try_from(count / 3)
+            .ok()
+            .filter(|_| u32::try_from(count).is_ok())
+            .ok_or_else(|| {
+                composite_error(
+                    &id,
+                    format!(
+                        "a triangle index column holds at most {} indices, got {count}",
+                        u32::MAX
+                    ),
+                )
+            })?;
+
+        let token = self.member_token()?;
+        let indices_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}indices");
+        let columns: [(&str, &dyn ColumnSource); 1] = [(indices_id.as_str(), source.indices)];
+        let old = self.triangles.get(&id).map(|slot| slot.indices.clone());
+        let old_members: [&str; 1] = [old.as_deref().unwrap_or("")];
+        let old_count = usize::from(old.is_some());
+
+        self.triangles.try_reserve(1).map_err(|error| {
+            crate::FiggyError::StateAllocationFailed {
+                resource: "triangle column registry",
+                reason: error.to_string(),
+            }
+        })?;
+        let layout_before = self.layout_generation;
+        let mut tally = IndexTally {
+            next_row: 0,
+            in_order: true,
+            integral: true,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        };
+        let mut observe = |_column: usize, row: usize, hi: f32, lo: f32| {
+            tally.record(row, hi, lo);
+        };
+        let observer: &mut dyn FnMut(usize, usize, f32, f32) = &mut observe;
+        let batch = self.begin_add_columns_observed(&columns, ctx, Some(observer), Some(0))?;
+        // Rejections below drop `batch`, which un-inserts the member; its
+        // bytes went to a region that was free, so nothing live changed.
+        if !tally.in_order || tally.next_row != count {
+            return Err(composite_error(
+                &id,
+                "the triangle index source must write every index once, in row order",
+            ));
+        }
+        if !tally.integral {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "triangle indices must be finite integers in 0..={}",
+                    u32::MAX
+                ),
+            ));
+        }
+        let relocated = batch.pool.layout_generation != layout_before;
+        let epoch = batch
+            .pool
+            .allocation_epoch(&indices_id)
+            .ok_or(crate::FiggyError::internal(
+                "a provisional member has an allocation epoch",
+            ))?;
+        let value = finish_member_batch(batch, &old_members[..old_count], |pool| {
+            prepare(pool, relocated)
+        })?;
+
+        // Every index was checked to be an integer in `0..=u32::MAX`.
+        let stats = TriangleStats {
+            triangles,
+            min_index: tally.min as u32,
+            max_index: tally.max as u32,
+        };
+        self.triangles.insert(
+            id,
+            TriangleSlot {
+                indices: indices_id,
+                triangles,
+                epoch,
+                stats,
+            },
+        );
+        Ok(value)
+    }
+
+    /// Delete the triangle index column `id` and free its member column.
+    /// `false` when no such column is resident.
+    pub fn remove_triangles(&mut self, id: &str) -> crate::Result<bool> {
+        Ok(self.remove_triangles_with(id, |_| Ok(()))?.is_some())
+    }
+
+    /// [`Self::remove_triangles`] with a `prepare` step, as
+    /// [`Self::remove_record_with`].
+    pub(crate) fn remove_triangles_with<T>(
+        &mut self,
+        id: &str,
+        prepare: impl FnOnce(&ColumnPool) -> crate::Result<T>,
+    ) -> crate::Result<Option<T>> {
+        let Some(slot) = self.triangles.get(id) else {
+            return Ok(None);
+        };
+        let indices = slot.indices.clone();
+        let removal = self.begin_remove_columns(&[indices.as_str()])?;
+        let value = prepare(&*removal.pool)?;
+        removal.commit();
+        self.triangles.remove(id);
         Ok(Some(value))
     }
 }

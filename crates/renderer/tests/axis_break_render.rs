@@ -111,6 +111,7 @@ fn markers(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -134,6 +135,7 @@ fn line(id: &str, x: &str, y: &str, color: Color, fill: Option<LineFill>) -> Ser
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }

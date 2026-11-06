@@ -807,7 +807,13 @@ struct AxisProjection {
 
 impl AxisProjection {
     fn new(axis: &AxisOptions) -> Option<Self> {
-        let logarithmic = matches!(axis.scale, AxisScale::Logarithmic);
+        let logarithmic = match axis.scale {
+            AxisScale::Linear => false,
+            AxisScale::Logarithmic => true,
+            // A streamed series on a probability axis is refused (rule 8,
+            // #209): no residency projection.
+            AxisScale::Probability(_) => return None,
+        };
         let (min, max) = if logarithmic {
             (axis.min.log10(), axis.max.log10())
         } else {
@@ -1005,6 +1011,7 @@ mod tests {
                         interpolation: crate::data_config::LineInterpolation::Linear,
                     }),
                     errors: None,
+                    stem: None,
                 }),
             }];
             let candidate = ViewPackedCandidate::for_chart(&config, &series, 4096, 1.0).unwrap();
@@ -1031,6 +1038,7 @@ mod tests {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                ..
             }) = &mut larger[0].render_type
             {
                 line.line_width = 1000.0;

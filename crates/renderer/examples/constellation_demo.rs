@@ -69,6 +69,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -329,6 +330,7 @@ fn main() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         };
 
@@ -437,6 +439,7 @@ fn main() {
                 interpolation: renderer::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     export(
@@ -487,6 +490,7 @@ fn main() {
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         }),
     }];
     export(

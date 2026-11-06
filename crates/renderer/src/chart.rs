@@ -22,12 +22,14 @@ use crate::format::LabelFormat;
 use crate::text::{RichText, rich_segments_from_text};
 use crate::text_render::CpuTextMeasure;
 
-/// Apply min/max and scale-appropriate tick settings to one axis.
+/// Apply min/max and scale-appropriate tick settings to one axis, for the
+/// tick plan of `scale` (the axis' own scale or, for a mirrored axis, its
+/// partner's).
 pub(crate) fn apply_axis_range(
     axis: &mut crate::config::AxisOptions,
     min: f64,
     max: f64,
-    log: bool,
+    scale: &AxisScale,
 ) {
     // A categorical axis keeps its category range here: the `auto_fit_*`
     // family leaves it as is. A view moves it through `apply_view_range`.
@@ -36,35 +38,44 @@ pub(crate) fn apply_axis_range(
     }
     axis.min = min;
     axis.max = max;
-    if log {
-        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Logarithmic, min, max);
-        axis.minor_count = 8;
-        axis.label_style.format = LabelFormat::Power;
-        axis.label_style.significant_digits = 1;
-    } else {
-        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Linear, min, max);
-        axis.minor_count = 4;
-        if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
-            axis.label_style.format = LabelFormat::Decimal;
+    axis.major_spacing = crate::tick::axis_major_spacing(scale, min, max);
+    match scale {
+        AxisScale::Logarithmic => {
+            axis.minor_count = 8;
+            axis.label_style.format = LabelFormat::Power;
+            axis.label_style.significant_digits = 1;
         }
-        axis.label_style.significant_digits = 3;
+        // #209: the tick walk reads the range alone; `minor_count` is a
+        // switch, and the labels are percentages with each tail's digits.
+        AxisScale::Probability(_) => {
+            axis.minor_count = 1;
+            axis.label_style.format = LabelFormat::Percent;
+            axis.label_style.significant_digits = 1;
+        }
+        AxisScale::Linear => {
+            axis.minor_count = 4;
+            if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
+                axis.label_style.format = LabelFormat::Decimal;
+            }
+            axis.label_style.significant_digits = 3;
+        }
     }
 }
 
 /// How a range reaches one axis: [`apply_view_range`] or
 /// [`apply_axis_range`].
-type ApplyRange = fn(&mut AxisOptions, f64, f64, bool);
+type ApplyRange = fn(&mut AxisOptions, f64, f64, &AxisScale);
 
 /// Apply a view's range to one axis (#205): a categorical axis takes it as
 /// its [`AxisOptions::category_window`] (`None` again for the full range),
 /// a numeric one as [`apply_axis_range`] does.
-pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, log: bool) {
+pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, scale: &AxisScale) {
     if let Some(n) = axis.category_count() {
         let full = (-0.5, n as f64 - 0.5);
         axis.category_window = ((min, max) != full).then_some([min, max]);
         return;
     }
-    apply_axis_range(axis, min, max, log);
+    apply_axis_range(axis, min, max, scale);
 }
 
 /// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
@@ -87,6 +98,43 @@ pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
     (10f64.powf(lmin - pad), 10f64.powf(lmax + pad))
 }
 
+/// The in-domain ends of a probability axis' fit (#209): the extent's ends
+/// that lie in `(0, 1)`. An end outside takes the mirror of the other
+/// (`1 − p`), which is where plotting positions put it (`0.5/n` and
+/// `1 − 0.5/n`); the lower end may come from `min_positive` when the
+/// minimum is at or below zero. Both ends outside fit nothing. No new pool
+/// statistic (#209 open decision 6).
+fn probability_fit_ends(ext: &FitExtent) -> Option<(f64, f64)> {
+    let inside = |p: f64| p > 0.0 && p < 1.0;
+    let lower = if inside(ext.min) {
+        Some(ext.min)
+    } else {
+        ext.min_positive.filter(|&p| inside(p))
+    };
+    let upper = inside(ext.max).then_some(ext.max);
+    let (min, max) = match (lower, upper) {
+        (Some(min), Some(max)) => (min, max),
+        (Some(min), None) => (min, 1.0 - min),
+        (None, Some(max)) => (1.0 - max, max),
+        (None, None) => return None,
+    };
+    (min < max).then_some((min, max))
+}
+
+/// Padding for a probability axis (#209): `padding_ratio · span` in `F⁻¹`
+/// units on each side, then back to probabilities, so the padded range
+/// stays inside `(0, 1)`.
+fn probability_padded(scale: &AxisScale, min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
+    let (Some(lo), Some(hi)) = (scale.forward(min), scale.forward(max)) else {
+        return (min, max);
+    };
+    let pad = (hi - lo) * padding_ratio.max(0.0);
+    match (scale.inverse(lo - pad), scale.inverse(hi + pad)) {
+        (Some(a), Some(b)) if a > 0.0 && b < 1.0 && a < b => (a, b),
+        _ => (min, max),
+    }
+}
+
 /// One axis' fit input: the union of everything that must stay visible.
 /// `min_positive` carries the log-axis safe floor (smallest positive bound)
 /// so log fitting works even when the extent dips to zero or below.
@@ -104,6 +152,16 @@ impl FitExtent {
         max: f64::NEG_INFINITY,
         min_positive: None,
     };
+
+    /// The extent of one value: a baseline a histogram or a stem series
+    /// adds to its value axis (`min_positive` only when it is above zero).
+    pub fn point(value: f64) -> Self {
+        Self {
+            min: value,
+            max: value,
+            min_positive: (value > 0.0).then_some(value),
+        }
+    }
 
     /// Widen to also cover `other`.
     pub fn union(&mut self, other: &FitExtent) {
@@ -129,11 +187,26 @@ impl FitExtent {
     /// data units on a linear axis, `by` decades (a factor of `10^by`) on a
     /// logarithmic one. A display shift of a line offset member
     /// (`Config::line_offset_of`); the values themselves are not moved.
-    fn shifted(&self, by: f64, logarithmic: bool) -> Self {
+    fn shifted(&self, by: f64, scale: &AxisScale) -> Self {
         if by == 0.0 {
             return *self;
         }
-        if logarithmic {
+        if let AxisScale::Probability(_) = scale {
+            // Shifted in `F⁻¹` units, as `shift_axis` shifts the axis
+            // (#209); a value outside (0, 1) has no position and stays.
+            let shift = |p: f64| {
+                scale
+                    .forward(p)
+                    .and_then(|t| scale.inverse(t + by))
+                    .unwrap_or(p)
+            };
+            return Self {
+                min: shift(self.min),
+                max: shift(self.max),
+                min_positive: self.min_positive.map(shift),
+            };
+        }
+        if matches!(scale, AxisScale::Logarithmic) {
             let factor = 10f64.powf(by);
             return Self {
                 min: self.min * factor,
@@ -186,15 +259,20 @@ fn fitted_axis_range(
     if !ext.is_fittable() {
         return None;
     }
-    let range = if matches!(axis.scale, AxisScale::Logarithmic) {
-        let safe = if ext.min > 0.0 {
-            ext.min
-        } else {
-            ext.min_positive?
-        };
-        log_padded(safe, ext.max, padding_ratio)
-    } else {
-        Chart::padded(ext.min, ext.max, padding_ratio)
+    let range = match &axis.scale {
+        AxisScale::Logarithmic => {
+            let safe = if ext.min > 0.0 {
+                ext.min
+            } else {
+                ext.min_positive?
+            };
+            log_padded(safe, ext.max, padding_ratio)
+        }
+        AxisScale::Probability(_) => {
+            let (min, max) = probability_fit_ends(ext)?;
+            probability_padded(&axis.scale, min, max, padding_ratio)
+        }
+        AxisScale::Linear => Chart::padded(ext.min, ext.max, padding_ratio),
     };
     (range.0.is_finite() && range.1.is_finite() && range.1 > range.0).then_some(range)
 }
@@ -216,16 +294,64 @@ pub(crate) fn apply_auto_fit_all(
     if config.ternary().is_some() || config.parallel().is_some() {
         return;
     }
+    let mirror = partner_mirrors(config);
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
-        let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.bottom_x, min, max, log);
-        apply_axis_range(&mut config.top_x, min, max, log);
+        apply_pair_range(
+            [&mut config.bottom_x, &mut config.top_x],
+            mirror,
+            min,
+            max,
+            apply_axis_range,
+        );
     }
     if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
-        let log = matches!(config.left_y.scale, AxisScale::Logarithmic);
-        apply_axis_range(&mut config.left_y, min, max, log);
-        apply_axis_range(&mut config.right_y, min, max, log);
+        apply_pair_range(
+            [&mut config.left_y, &mut config.right_y],
+            mirror,
+            min,
+            max,
+            apply_axis_range,
+        );
     }
+}
+
+/// Write `min..max` to both axes of a pair, the main axis (`bottom_x` or
+/// `left_y`) and its partner (`top_x` or `right_y`), and derive their tick
+/// and label settings.
+///
+/// On a chart whose partner axis frames the main one ([`partner_mirrors`]),
+/// the partner first takes the main axis's `scale`, so both edges show the
+/// same ticks: a logarithmic `left_y` gives `right_y` decades too. A second
+/// independent value axis on the right is an overlay layer
+/// ([`Config::overlays`]), whose `y_axis` keeps its own scale. Each axis
+/// then takes the tick settings of its own scale, so where the partner is a
+/// separate axis (the z axis of a 3D chart, the c axis of a ternary one) it
+/// keeps its scale and gets the ticks of it. A categorical axis keeps its
+/// scale and range under a fit ([`apply_axis_range`]); a view moves its
+/// window ([`apply_view_range`]). `apply` is the one of the two.
+fn apply_pair_range(
+    pair: [&mut AxisOptions; 2],
+    mirror: bool,
+    min: f64,
+    max: f64,
+    apply: ApplyRange,
+) {
+    let [main, partner] = pair;
+    if mirror && main.categories.is_none() && partner.categories.is_none() {
+        partner.scale = main.scale.clone();
+    }
+    for axis in [main, partner] {
+        let scale = axis.scale.clone();
+        apply(axis, min, max, &scale);
+    }
+}
+
+/// Whether `config`'s `top_x` and `right_y` frame `bottom_x` and `left_y`
+/// (every chart but a 3D and a ternary one, where `right_y` is the z or the
+/// c axis), so the range helpers give them the main axis's scale
+/// ([`apply_pair_range`]).
+fn partner_mirrors(config: &Config) -> bool {
+    config.view_3d().is_none() && config.ternary().is_none()
 }
 
 /// The value-axis extent of the category bars `layer` of `config` draws,
@@ -606,7 +732,8 @@ impl Chart {
     /// ticks and formatting, write only `min` / `max` through
     /// [`Self::with_axis_range_change`] instead.
     ///
-    /// Branches on the bottom axis's scale:
+    /// `top_x` first takes `bottom_x`'s `scale` (on a 3D or ternary chart it
+    /// keeps its own), then each axis branches on its scale:
     /// - **Linear**: `major_spacing` is
     ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
     ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
@@ -624,27 +751,25 @@ impl Chart {
     /// which moves a categorical axis' window (#205), [`apply_axis_range`]
     /// for a fit, which leaves a categorical axis as it is.
     fn x_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
-        let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply(&mut c.bottom_x, min, max, log);
-            apply(&mut c.top_x, min, max, log);
+            let mirror = partner_mirrors(c);
+            apply_pair_range([&mut c.bottom_x, &mut c.top_x], mirror, min, max, apply);
         });
     }
 
-    /// Set both Y ranges (left + right) and derive their tick/label settings.
-    /// Log/linear branching uses the left axis's scale and mirrors
-    /// [`Self::set_x_range`]. To preserve ticks and formatting, write only
-    /// `min` / `max` through [`Self::with_axis_range_change`] instead.
+    /// Set both Y ranges (left + right) and derive their tick/label settings,
+    /// the Y counterpart of [`Self::set_x_range`]. To preserve ticks and
+    /// formatting, write only `min` / `max` through
+    /// [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
         self.y_range(min, max, apply_view_range);
     }
 
     /// The Y pair's range through `apply` (see [`Self::x_range`]).
     fn y_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
-        let log = matches!(self.config.left_y.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
-            apply(&mut c.left_y, min, max, log);
-            apply(&mut c.right_y, min, max, log);
+            let mirror = partner_mirrors(c);
+            apply_pair_range([&mut c.left_y, &mut c.right_y], mirror, min, max, apply);
         });
     }
 
@@ -658,17 +783,17 @@ impl Chart {
     /// Overlay layer `layer`'s Y range through `apply` (see
     /// [`Self::x_range`]).
     fn overlay_y_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
-        let Some(log) = self
+        let Some(scale) = self
             .config
             .overlays
             .get(layer)
-            .map(|overlay| matches!(overlay.y_axis.scale, AxisScale::Logarithmic))
+            .map(|overlay| overlay.y_axis.scale.clone())
         else {
             return;
         };
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
-                apply(&mut overlay.y_axis, min, max, log);
+                apply(&mut overlay.y_axis, min, max, &scale);
             }
         });
     }
@@ -727,14 +852,13 @@ impl Chart {
         let root = self.config.subplot_link_root(index, x);
         self.with_axis_range_change(|config| {
             let pair = |chart: &mut Config| {
-                let (main, secondary) = if x {
-                    (&mut chart.bottom_x, &mut chart.top_x)
+                let mirror = partner_mirrors(chart);
+                let axes = if x {
+                    [&mut chart.bottom_x, &mut chart.top_x]
                 } else {
-                    (&mut chart.left_y, &mut chart.right_y)
+                    [&mut chart.left_y, &mut chart.right_y]
                 };
-                let log = matches!(main.scale, AxisScale::Logarithmic);
-                apply(main, min, max, log);
-                apply(secondary, min, max, log);
+                apply_pair_range(axes, mirror, min, max, apply);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -881,10 +1005,10 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(axis, ext, padding_ratio) else {
             return;
         };
-        let log = matches!(axis.scale, AxisScale::Logarithmic);
+        let scale = axis.scale.clone();
         self.with_axis_range_change(|config| {
             if let Some(bar) = config.colorbar.as_mut() {
-                apply_axis_range(&mut bar.axis, min, max, log);
+                apply_axis_range(&mut bar.axis, min, max, &scale);
             }
         });
     }
@@ -1082,12 +1206,27 @@ impl Chart {
                         Ok(FitExtent::EMPTY)
                     }
                 };
-                let (member_x, member_y) = Self::line_offset_fit_extents(
-                    &self.config,
-                    &cfg.series_id,
-                    extent(fit_x, &cfg.x_column)?,
-                    extent(fit_y, &cfg.y_column)?,
-                );
+                let (mut own_x, mut own_y) =
+                    (extent(fit_x, &cfg.x_column)?, extent(fit_y, &cfg.y_column)?);
+                // A stem's baseline joins its value axis (#206), before a
+                // line offset member's shift.
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    stem: Some(stem), ..
+                }) = &cfg.render_type
+                {
+                    let baseline = FitExtent::point(stem.baseline);
+                    match stem.direction {
+                        crate::data_config::CategoryBarDirection::Vertical if fit_y => {
+                            own_y.union(&baseline)
+                        }
+                        crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                            own_x.union(&baseline)
+                        }
+                        _ => {}
+                    }
+                }
+                let (member_x, member_y) =
+                    Self::line_offset_fit_extents(&self.config, &cfg.series_id, own_x, own_y);
                 if fit_x {
                     x.union(&member_x);
                 }
@@ -1191,7 +1330,14 @@ impl Chart {
                 DataRenderType::Field(crate::data_config::FieldSeries { matrix, .. }) => matrix,
                 _ => {
                     if let Some(id) = cfg.z_column.as_deref() {
-                        z.union(&Self::slot_extent(pool, id)?);
+                        let anchors = Self::slot_extent(pool, id)?;
+                        z.union(&anchors);
+                        // A `Data`-scaled 3D arrow's tips are its anchor
+                        // heights plus `factor · w` (#211, D7): the bound
+                        // from the two columns' statistics holds every tip.
+                        if let Some(tips) = Self::vector_tip_heights(pool, cfg, &anchors)? {
+                            z.union(&tips);
+                        }
                     }
                     continue;
                 }
@@ -1203,7 +1349,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&chart.right_y, &z, padding_ratio) else {
             return Ok(());
         };
-        let log = matches!(chart.right_y.scale, AxisScale::Logarithmic);
+        let scale = chart.right_y.scale.clone();
         self.with_axis_range_change(|c| {
             let chart = match layer {
                 LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -1211,9 +1357,46 @@ impl Chart {
                 }
                 _ => c,
             };
-            apply_axis_range(&mut chart.right_y, min, max, log);
+            apply_axis_range(&mut chart.right_y, min, max, &scale);
         });
         Ok(())
+    }
+
+    /// The heights a `Data`-scaled 3D point vector's tips can reach, from
+    /// its anchor heights' extent and its `w` column's statistics:
+    /// `[z_min + f·w_min, z_max + f·w_max]`, ordered for a negative factor.
+    /// A display parameter (rule 1): a superset of the tips, never the tips.
+    /// `None` for any other series.
+    fn vector_tip_heights(
+        pool: &ColumnPool,
+        cfg: &SeriesConfig,
+        anchors: &FitExtent,
+    ) -> Result<Option<FitExtent>> {
+        use crate::data_config::{VectorComponents, VectorScale};
+        let DataRenderType::Vector {
+            components: VectorComponents::Points { w: Some(w), .. },
+            style,
+        } = &cfg.render_type
+        else {
+            return Ok(None);
+        };
+        let VectorScale::Data { factor } = style.scale else {
+            return Ok(None);
+        };
+        let w = Self::slot_extent(pool, w)?;
+        let (low, high) = if factor >= 0.0 {
+            (w.min, w.max)
+        } else {
+            (w.max, w.min)
+        };
+        let min = anchors.min + factor * low;
+        let max = anchors.max + factor * high;
+        if !(min.is_finite() && max.is_finite()) {
+            return Ok(None);
+        }
+        let mut tips = FitExtent::point(min);
+        tips.union(&FitExtent::point(max));
+        Ok(Some(tips))
     }
 
     /// The `x` and `y` extents of series `series_id` of `config` as they are
@@ -1230,7 +1413,6 @@ impl Chart {
         let Some([dx, dy]) = config.line_offset_of(series_id) else {
             return (x, y);
         };
-        let log = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Logarithmic);
         let (chart, y_axis) = match config.layer_of_series(series_id) {
             LayerRef::Subplot(index) => {
                 let chart = &config.subplots[index].config;
@@ -1244,8 +1426,8 @@ impl Chart {
             LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
         };
         (
-            x.shifted(dx, log(&chart.bottom_x)),
-            y.shifted(dy, log(y_axis)),
+            x.shifted(dx, &chart.bottom_x.scale),
+            y.shifted(dy, &y_axis.scale),
         )
     }
 }
@@ -1253,6 +1435,67 @@ impl Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A probability axis (#209) validates on a chart axis and a subplot:
+    /// the renderer draws it (the refusal of the model PR is gone).
+    #[test]
+    fn probability_axes_validate_for_drawing() {
+        let probability = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        let on = |axis: &mut AxisOptions| {
+            axis.scale = probability.clone();
+            axis.min = 0.01;
+            axis.max = 0.99;
+        };
+        let base = crate::default::default_config();
+        let mut left = base.clone();
+        on(&mut left.left_y);
+        let mut subplot = base.clone();
+        let mut inner = base.clone();
+        on(&mut inner.bottom_x);
+        subplot.subplots.push(crate::Subplot {
+            config: inner,
+            series: vec![],
+            link_x: None,
+            link_y: None,
+            marker: None,
+        });
+        for config in [left, subplot] {
+            validate_renderer_config(&config).expect("a probability axis draws");
+        }
+    }
+
+    /// The fit of a probability axis keeps its ends inside (0, 1): an end
+    /// at 0 or 1 takes the mirror of the other, the padding is in `F⁻¹`
+    /// units, and an extent with no in-domain end fits nothing.
+    #[test]
+    fn a_probability_fit_stays_inside_the_unit_interval() {
+        let mut axis = crate::default::default_config().left_y;
+        axis.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+        let fit = |min: f64, max: f64, min_positive: Option<f64>| {
+            fitted_axis_range(
+                &axis,
+                &FitExtent {
+                    min,
+                    max,
+                    min_positive,
+                },
+                0.05,
+            )
+        };
+        let (lo, hi) = fit(0.01, 0.99, Some(0.01)).expect("in domain");
+        assert!(lo > 0.0 && lo < 0.01 && hi > 0.99 && hi < 1.0, "{lo} {hi}");
+        assert!((lo - (1.0 - hi)).abs() < 1e-12, "symmetric: {lo} {hi}");
+        let (lo, hi) = fit(0.0, 0.98, None).expect("mirrored lower end");
+        assert!(lo > 0.0 && lo < 0.02 && hi < 1.0, "{lo} {hi}");
+        let (lo, hi) = fit(0.0, 1.0, Some(0.005)).expect("min_positive lower end");
+        assert!(
+            lo > 0.0 && lo < 0.005 && hi > 0.995 && hi < 1.0,
+            "{lo} {hi}"
+        );
+        assert_eq!(fit(-1.0, 2.0, None), None);
+        assert_eq!(fit(0.0, 1.0, Some(1.5)), None);
+    }
+
     use crate::default::default_config;
 
     fn dummy_config() -> Config {
@@ -1430,6 +1673,112 @@ mod tests {
         };
         c.auto_fit_y_extent(&ext, 0.0);
         assert_eq!((c.config().left_y.min, c.config().left_y.max), before);
+    }
+
+    /// Every pair helper gives the partner axis (`top_x`, `right_y`) the
+    /// main axis's scale on a framed chart, and writes each axis's ticks
+    /// from its scale: `set_x_range` / `set_y_range`, the auto-fit applied
+    /// to an owned config and the subplot setters. A logarithmic `left_y`
+    /// gives a linear `right_y` decades, and a linear one turns a
+    /// logarithmic partner linear. On a 3D chart `right_y` is the z axis: it
+    /// keeps its own scale and gets the ticks of it. Deriving a linear
+    /// partner's ticks from a logarithmic main axis gave it one-unit majors
+    /// with eight minors across 1..1000.
+    #[test]
+    fn pair_range_helpers_give_the_partner_the_main_axis_scale() {
+        use crate::Subplot;
+        let ticks = |axis: &AxisOptions| {
+            (
+                axis.major_spacing,
+                axis.minor_count,
+                axis.label_style.format.clone(),
+            )
+        };
+        let expected = |scale: &AxisScale| match scale {
+            AxisScale::Linear => (
+                crate::tick::axis_major_spacing(&AxisScale::Linear, 1.0, 1000.0),
+                4,
+                LabelFormat::Decimal,
+            ),
+            AxisScale::Logarithmic => (1.0, 8, LabelFormat::Power),
+            AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+        };
+        for view_3d in [false, true] {
+            for (main, partner) in [
+                (AxisScale::Logarithmic, AxisScale::Linear),
+                (AxisScale::Linear, AxisScale::Logarithmic),
+            ] {
+                let mut base = dummy_config();
+                if view_3d {
+                    base.set_view_3d(Some(crate::View3d::default()));
+                }
+                base.bottom_x.scale = main.clone();
+                base.left_y.scale = main.clone();
+                base.top_x.scale = partner.clone();
+                base.right_y.scale = partner.clone();
+                // A framed chart's partners mirror the main axes; a 3D
+                // chart's top_x and right_y (its z axis) keep their scales.
+                let drawn = if view_3d { &partner } else { &main };
+                let check = |cfg: &Config, helper: &str| {
+                    let case =
+                        format!("{helper}, {main:?} main, {partner:?} partner, view_3d {view_3d}");
+                    for (name, axis, scale) in [
+                        ("bottom_x", &cfg.bottom_x, &main),
+                        ("top_x", &cfg.top_x, drawn),
+                        ("left_y", &cfg.left_y, &main),
+                        ("right_y", &cfg.right_y, drawn),
+                    ] {
+                        assert_eq!(axis.scale, *scale, "{case}: {name} scale");
+                        assert_eq!((axis.min, axis.max), (1.0, 1000.0), "{case}: {name} range");
+                        assert_eq!(
+                            ticks(axis),
+                            expected(scale),
+                            "{case}: {name} ticks by its scale"
+                        );
+                    }
+                };
+
+                let mut c = Chart::new(base.clone());
+                c.set_x_range(1.0, 1000.0);
+                c.set_y_range(1.0, 1000.0);
+                check(c.config(), "set_x_range / set_y_range");
+
+                let mut fitted = base.clone();
+                let ext = FitExtent {
+                    min: 1.0,
+                    max: 1000.0,
+                    min_positive: Some(1.0),
+                };
+                apply_auto_fit_all(&mut fitted, &ext, &ext, 0.0);
+                check(&fitted, "apply_auto_fit_all");
+
+                let mut parent = dummy_config();
+                parent.subplots = vec![Subplot {
+                    config: base.clone(),
+                    ..Default::default()
+                }];
+                let mut c = Chart::new(parent);
+                c.set_subplot_x_range(0, 1.0, 1000.0);
+                c.set_subplot_y_range(0, 1.0, 1000.0);
+                check(
+                    &c.config().subplots[0].config,
+                    "set_subplot_x_range / set_subplot_y_range",
+                );
+            }
+        }
+    }
+
+    /// A categorical partner keeps its linear scale and its category range
+    /// when the main axis is logarithmic: only a numeric partner mirrors.
+    #[test]
+    fn a_categorical_partner_keeps_its_scale() {
+        let mut cfg = dummy_config();
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.right_y.categories = Some(vec![crate::config::Category::new("a", "A")]);
+        let before = cfg.right_y.clone();
+        let mut c = Chart::new(cfg);
+        c.set_y_range(1.0, 1000.0);
+        assert_eq!(c.config().right_y, before);
     }
 
     #[test]

@@ -25,7 +25,11 @@ struct GridColumn {
 /// `count = cols * rows`. `z_min` / `z_max` are the colourbar's bounds as
 /// `(hi, lo)` pairs, already log-transformed under `VECTOR_FLAG_LOG_Z`.
 ///
-/// CPU twin: `vector.rs::VectorParamsGpu` (`#[repr(C)]`, 128 B).
+/// 3D points form (`VECTOR_FLAG_THREE_D`, #211): `height_base` /
+/// `height_len` are the anchor height column (the series' `z_column`) and
+/// `w_base` / `w_len` the z component column.
+///
+/// CPU twin: `vector.rs::VectorParamsGpu` (`#[repr(C)]`, 144 B).
 struct VectorParams {
     x_base: u32,
     y_base: u32,
@@ -54,6 +58,10 @@ struct VectorParams {
     /// Path form: the arc between two arrowheads, render pixels.
     spacing_px: f32,
     pad1: f32,
+    height_base: u32,
+    height_len: u32,
+    w_base: u32,
+    w_len: u32,
     z_min: vec2<f32>,
     z_max: vec2<f32>,
     nan_color_premul: vec4<f32>,
@@ -65,6 +73,7 @@ const VECTOR_FLAG_CENTERS: u32 = 4u;
 const VECTOR_FLAG_SCALE_PIXELS: u32 = 8u;
 const VECTOR_FLAG_LOG_Z: u32 = 16u;
 const VECTOR_FLAG_COLOR_MAP: u32 = 32u;
+const VECTOR_FLAG_THREE_D: u32 = 64u;
 
 @group(2) @binding(0) var<storage, read> vector_pool: array<f32>;
 @group(2) @binding(1) var<storage, read> vector_grid: array<GridColumn>;

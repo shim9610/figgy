@@ -150,6 +150,8 @@ pub(super) enum StyleSet {
         line: wgpu::RenderPipeline,
         scatter: wgpu::RenderPipeline,
         errorbar: wgpu::RenderPipeline,
+        /// The sketch stem (#206): `vs_stem_sketch` into `fs_stem`.
+        stem: wgpu::RenderPipeline,
         line_verts: u32,
     },
     Milkyway(data_render::MilkywaySet),
@@ -204,6 +206,15 @@ pub(super) fn create_style_set(
                 sample_count,
                 "vs_sketch",
                 "figgy errorbar styled pipeline",
+            ),
+            stem: data_render::create_stem_pipeline(
+                device,
+                &shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+                "vs_stem_sketch",
             ),
             line_verts: data_render::LINE_SKETCH_VERTICES_PER_INSTANCE,
         },
@@ -804,6 +815,9 @@ pub struct ChartStyle {
     pub(super) area_bg: Option<wgpu::BindGroup>,
     pub(super) scatter_bg: wgpu::BindGroup,
     pub(super) errorbar_bg: wgpu::BindGroup,
+    /// A stem series' `Style` (stem colour, width, dash, direction and
+    /// baseline, #206), only when the series declares stems.
+    pub(super) stem_bg: Option<wgpu::BindGroup>,
     pub(super) bar_bg: wgpu::BindGroup,
     pub(super) scatter_map: Option<data_render::ScatterStyleMap>,
     pub(super) errorbar_map: Option<data_render::ErrorBarStyleMap>,
@@ -844,6 +858,11 @@ pub(super) struct EffectiveSeriesPrimitives {
     /// A parallel coordinates series' rows (#141). Precise mode only, like
     /// fields: its stroke has no stylized entry.
     pub(super) parallel: bool,
+    /// A triangle mesh series' fill (#210). Precise mode only, like fields:
+    /// a stylized mode has no mesh entry.
+    pub(super) mesh: bool,
+    /// A triangle mesh series' contour strokes, precise like the fill.
+    pub(super) mesh_contour: bool,
 }
 
 pub(super) fn effective_series_primitives(
@@ -864,6 +883,8 @@ pub(super) fn effective_series_primitives(
             box_points: false,
             vector: false,
             parallel: false,
+            mesh: false,
+            mesh_contour: false,
         };
     }
     EffectiveSeriesPrimitives {
@@ -908,6 +929,12 @@ pub(super) fn effective_series_primitives(
         vector: matches!(draw_style, DrawStyle::Precise) && has_vector(render_type),
         // A parallel series' rows are precise for the same reason.
         parallel: matches!(draw_style, DrawStyle::Precise) && render_type.parallel().is_some(),
+        // A triangle mesh is a field over triangles: precise for the
+        // field's reason (#210).
+        mesh: matches!(draw_style, DrawStyle::Precise)
+            && matches!(render_type, DataRenderType::TriMesh(mesh) if mesh.fill.is_some()),
+        mesh_contour: matches!(draw_style, DrawStyle::Precise)
+            && matches!(render_type, DataRenderType::TriMesh(mesh) if mesh.contour.is_some()),
     }
 }
 
@@ -955,12 +982,16 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
             scatter: Some(_),
             line: Some(_),
             errors: None,
+            stem: None,
         }) => true,
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
+        // Stems are dropped with the series, as error bars are (#206).
+        DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+        | DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. })
         | DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(_),
             line: None,
             errors: None,
+            ..
         })
         | DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(_),
@@ -978,7 +1009,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => false,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => false,
     }
 }
 
@@ -1156,6 +1188,34 @@ impl Renderer {
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
         errorbar.primitive_flags = errorbar_direction_flags(render_type);
+        // A stem's `Style` (#206, SHADER_COMMON.md §5.11): its colour, width
+        // and dash, `ERRORBAR_STEM` with the direction bit, and the baseline
+        // as the pool's `(hi, lo)` pair in `cap_half_px` / `cap_width_px`.
+        let stem = match render_type {
+            DataRenderType::Xy(xy) => xy.stem.as_ref(),
+            _ => None,
+        }
+        .map(|stem| {
+            let crate::data_config::Stem {
+                baseline,
+                direction,
+                color,
+                width,
+                line_style,
+            } = stem;
+            let mut s = PrimitiveStyle::from_color_with_width(*color, width * scale);
+            s.pack_dash_pattern(line_style.pattern(), scale);
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(*baseline);
+            s.cap_half_px = hi;
+            s.cap_width_px = lo;
+            s.primitive_flags = data_render::ERRORBAR_STEM
+                | match direction {
+                    crate::data_config::CategoryBarDirection::Vertical => ERRORBAR_HAS_Y,
+                    crate::data_config::CategoryBarDirection::Horizontal => ERRORBAR_HAS_X,
+                };
+            s.series_salt = series_salt;
+            s
+        });
         // Bars reinterpret the same `Style` bytes — fill, border, gap, baseline,
         // orientation. SHADER_COMMON.md's bar reinterpretation table is the SSoT.
         // A category bar series' lanes are its fill, outline and material
@@ -1205,6 +1265,7 @@ impl Renderer {
             area,
             scatter,
             errorbar,
+            stem,
             bar,
             scatter_map,
             errorbar_map,
@@ -1219,8 +1280,12 @@ impl Renderer {
         let max_storage = caps
             .max_buffer_size
             .min(u64::from(caps.max_storage_buffer_binding_size));
-        let primitive_uniforms =
-            4 + u64::from(extract_line(&cfg.render_type).is_some_and(|line| line.fill.is_some()));
+        let primitive_uniforms = 4
+            + u64::from(extract_line(&cfg.render_type).is_some_and(|line| line.fill.is_some()))
+            + u64::from(matches!(
+                &cfg.render_type,
+                DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+            ));
         let mut total = primitive_uniforms * std::mem::size_of::<PrimitiveStyle>() as u64;
         let overflow = || FiggyError::GpuResourceLimit {
             resource: "chart style bytes",
@@ -1318,6 +1383,7 @@ impl Renderer {
         area: Option<PrimitiveStyle>,
         scatter: PrimitiveStyle,
         errorbar: PrimitiveStyle,
+        stem: Option<PrimitiveStyle>,
         bar: PrimitiveStyle,
         scatter_map: Option<data_render::ScatterStyleMap>,
         errorbar_map: Option<data_render::ErrorBarStyleMap>,
@@ -1331,6 +1397,7 @@ impl Renderer {
         let area_buf = area.map(|area| data_render::create_style_uniform_buffer(dev, &area));
         let sc_buf = data_render::create_style_uniform_buffer(dev, &scatter);
         let eb_buf = data_render::create_style_uniform_buffer(dev, &errorbar);
+        let stem_buf = stem.map(|stem| data_render::create_style_uniform_buffer(dev, &stem));
         let bar_buf = data_render::create_style_uniform_buffer(dev, &bar);
         let tally = crate::gpu_memory::ChargeTally::new();
         tally.add(style_bytes);
@@ -1346,6 +1413,9 @@ impl Renderer {
                 .map(|buf| data_render::create_style_bind_group(dev, &self.style_bgl, buf)),
             scatter_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &sc_buf),
             errorbar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &eb_buf),
+            stem_bg: stem_buf
+                .as_ref()
+                .map(|buf| data_render::create_style_bind_group(dev, &self.style_bgl, buf)),
             bar_bg: data_render::create_style_bind_group(dev, &self.style_bgl, &bar_buf),
             scatter_map,
             errorbar_map,

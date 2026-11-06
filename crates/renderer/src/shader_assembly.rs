@@ -59,6 +59,7 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("errorbar", crate::data_render::ERRORBAR_SHADER),
     ("bar", crate::data_render::BAR_SHADER),
     ("field", crate::data_render::FIELD_SHADER),
+    ("tri_mesh", crate::data_render::tri_mesh::TRI_MESH_SHADER),
     ("surface", crate::data_render::surface_mesh::SURFACE_SHADER),
     ("line_arc", crate::data_render::line_arc::LINE_ARC_SHADER),
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
@@ -121,6 +122,89 @@ mod tests {
         }
     }
 
+    /// The constants of `source` that a browser's WGSL compiler refuses
+    /// although naga accepts them: a constant expression that evaluates to
+    /// NaN or an infinity (`bitcast<f32>(0x7fc00000u)`) and a float literal
+    /// past `f32::MAX` (`3.4028235e38`). WGSL makes both a shader-creation
+    /// error, so Chrome fails every pipeline of the module.
+    fn browser_rejected_constants(source: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for (number, line) in source.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            let mut rest = code;
+            while let Some(at) = rest.find("bitcast<f32>(") {
+                rest = &rest[at + "bitcast<f32>(".len()..];
+                let argument = rest.split(')').next().unwrap_or("").trim();
+                let bits = argument
+                    .strip_prefix("0x")
+                    .and_then(|hex| hex.strip_suffix('u'))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+                if bits.is_some_and(|bits| bits & 0x7f80_0000 == 0x7f80_0000) {
+                    found.push(format!("line {}: {}", number + 1, line.trim()));
+                }
+            }
+            let bytes = code.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                let starts = bytes[i].is_ascii_digit()
+                    && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'));
+                if !starts {
+                    i += 1;
+                    continue;
+                }
+                let begin = i;
+                if code[i..].starts_with("0x") || code[i..].starts_with("0X") {
+                    i += 2;
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.')
+                    {
+                        i += 1;
+                    }
+                    continue;
+                }
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                    i += 1;
+                }
+                if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+                    i += 1;
+                    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+                        i += 1;
+                    }
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+                let literal = &code[begin..i];
+                if literal
+                    .parse::<f64>()
+                    .is_ok_and(|v| v > f64::from(f32::MAX))
+                {
+                    found.push(format!("line {}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn no_assembled_module_holds_a_constant_a_browser_refuses() {
+        let mut found = Vec::new();
+        for (name, assembled) in super::MODULES {
+            for hit in browser_rejected_constants(assembled.source) {
+                found.push(format!("{name} {hit}"));
+            }
+        }
+        assert!(found.is_empty(), "{found:#?}");
+        // The scan finds both forms.
+        assert_eq!(
+            browser_rejected_constants(
+                "let a = bitcast<f32>(0x7fc00000u);\nlet b = abs(v) <= 3.4028235e38;\n\
+                 let c = bitcast<f32>(0x3f800000u); // bitcast<f32>(0x7f800000u)\nlet d = 3.4e38;"
+            )
+            .len(),
+            2
+        );
+    }
+
     fn parse(name: &str, source: &str) -> wgpu::naga::Module {
         wgpu::naga::front::wgsl::parse_str(source)
             .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)))
@@ -146,6 +230,10 @@ mod tests {
             ("FIELD_LOG_Z", dr::FIELD_FLAG_LOG_Z),
             ("FIELD_HEXAGONAL", dr::FIELD_FLAG_HEXAGONAL),
             ("FIELD_RGB", dr::FIELD_FLAG_RGB),
+            ("FIELD_MESH", dr::FIELD_FLAG_MESH),
+            ("FIELD_FACE_VALUES", dr::FIELD_FLAG_FACE_VALUES),
+            ("MESH_VALUES", dr::tri_mesh::MESH_TABLE_VALUES as u32),
+            ("MESH_INDICES", dr::tri_mesh::MESH_TABLE_INDICES as u32),
             ("VECTOR_FLAG_GRID", vector::VECTOR_FLAG_GRID),
             (
                 "VECTOR_FLAG_COLUMNS_ARE_Y",
@@ -313,6 +401,10 @@ mod tests {
                 "DATA_PICK_KIND_VALUE_LABEL",
                 data_pick::DATA_PICK_KIND_VALUE_LABEL,
             ),
+            (
+                "DATA_PICK_KIND_MESH_TRIANGLE",
+                data_pick::DATA_PICK_KIND_MESH_TRIANGLE,
+            ),
             ("VALUE_LABEL_KIND_BARS", dr::VALUE_LABEL_KIND_BARS),
             ("VALUE_LABEL_KIND_BOXES", dr::VALUE_LABEL_KIND_BOXES),
             ("VALUE_LABEL_KIND_RADAR", dr::VALUE_LABEL_KIND_RADAR),
@@ -440,6 +532,7 @@ mod tests {
                     ternary_r,
                     breaks,
                     break_info,
+                    scale_prob,
                 }
             )
             .with(module, wgsl)
@@ -594,6 +687,10 @@ mod tests {
                     aa_px,
                     spacing_px,
                     pad1,
+                    height_base,
+                    height_len,
+                    w_base,
+                    w_len,
                     z_min,
                     z_max,
                     nan_color_premul,
@@ -740,6 +837,9 @@ mod tests {
                     area_baseline,
                     category,
                     category_slot,
+                    stem,
+                    stem_dash,
+                    stem_info,
                 }
             ),
             mirror!(

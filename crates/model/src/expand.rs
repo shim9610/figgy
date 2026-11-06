@@ -809,9 +809,10 @@ impl Config {
     }
 }
 
-/// Move `axis`' range by `by`: `by` data units on a linear axis and `by`
-/// decades on a logarithmic one, so a value `v` lands where `v + by` (or
-/// `v · 10^by`) did. A categorical axis becomes the numeric axis of its
+/// Move `axis`' range by `by`: `by` data units on a linear axis, `by`
+/// decades on a logarithmic one and `by` units of `F⁻¹(p)` on a probability
+/// one (#209), so a value `v` lands where `v + by` (or `v · 10^by`, or
+/// `F(F⁻¹(v) + by)`) did. A categorical axis becomes the numeric axis of its
 /// range. Zero leaves the axis as it is.
 fn shift_axis(axis: &mut AxisOptions, by: f64) {
     if by == 0.0 {
@@ -841,6 +842,22 @@ fn shift_axis(axis: &mut AxisOptions, by: f64) {
             for cut in cuts {
                 cut.from /= factor;
                 cut.to /= factor;
+            }
+        }
+        AxisScale::Probability(scale) => {
+            // In transformed units; a bound past the f64 tails keeps its
+            // value, which validation then reports.
+            let shift = |p: f64| {
+                scale
+                    .forward(p)
+                    .and_then(|y| scale.inverse(y - by))
+                    .unwrap_or(p)
+            };
+            axis.min = shift(min);
+            axis.max = shift(max);
+            for cut in cuts {
+                cut.from = shift(cut.from);
+                cut.to = shift(cut.to);
             }
         }
     }
@@ -1283,6 +1300,27 @@ fn align_margins(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A probability axis shifts in units of `F⁻¹(p)` (#209): every value,
+    /// cut ends included, lands where `F(F⁻¹(v) − by)` is.
+    #[test]
+    fn a_probability_axis_shifts_in_transformed_units() {
+        let scale = crate::config::ProbabilityScale::Normal;
+        let mut axis = crate::default::default_config().left_y;
+        axis.scale = AxisScale::Probability(scale);
+        axis.min = 0.01;
+        axis.max = 0.99;
+        axis.breaks = Some(crate::config::AxisBreaks {
+            ranges: vec![crate::config::AxisBreak::new(0.4, 0.6)],
+            ..Default::default()
+        });
+        shift_axis(&mut axis, 0.5);
+        let moved = |p: f64| scale.inverse(scale.forward(p).unwrap() - 0.5).unwrap();
+        assert!((axis.min - moved(0.01)).abs() < 1e-15, "{}", axis.min);
+        assert!((axis.max - moved(0.99)).abs() < 1e-15, "{}", axis.max);
+        let cut = axis.breaks.as_ref().unwrap().ranges[0];
+        assert!((cut.from - moved(0.4)).abs() < 1e-15 && (cut.to - moved(0.6)).abs() < 1e-15);
+    }
     use crate::default::default_config;
     use crate::layer::OverlayLayer;
     use crate::layout::ChartArea;

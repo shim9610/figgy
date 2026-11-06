@@ -128,6 +128,7 @@ mod legend_update_tests {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -387,6 +388,15 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
             ..
         }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
         DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => {
+            colormap.map_or_else(blank_symbol, colormap_symbol)
+        }
+        // A mesh reads as a field (#210): its contour line, or the
+        // colourbar's ramp under a fill alone.
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(contour),
+            ..
+        }) => line_symbol(contour.line.line_color, contour.line.line_style, None),
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries { contour: None, .. }) => {
             colormap.map_or_else(blank_symbol, colormap_symbol)
         }
         // An image's colours are its data: no mark stands for them.
@@ -783,6 +793,7 @@ mod tests {
                     interpolation: crate::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -820,6 +831,7 @@ mod tests {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut filled.render_type
         else {
             unreachable!()
@@ -865,6 +877,7 @@ mod tests {
                     ..DataLineStyleConfig::default()
                 }),
                 errors: None,
+                stem: None,
             }),
             ..line_cfg(red)
         };

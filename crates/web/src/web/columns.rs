@@ -10,9 +10,10 @@ pub(super) fn vector_columns(rt: &DataRenderType) -> Option<VectorColumns<'_>> {
         return None;
     };
     Some(match components {
-        VectorComponents::Points { u, v } => VectorColumns::Points {
+        VectorComponents::Points { u, v, w } => VectorColumns::Points {
             u,
             v,
+            w: w.as_deref(),
             color: match style.color_map.as_ref() {
                 Some(VectorColorMap::Column(column)) => Some(column),
                 _ => None,
@@ -33,6 +34,8 @@ pub(super) enum VectorColumns<'a> {
     Points {
         u: &'a str,
         v: &'a str,
+        /// The z component, drawn on a 3D chart only (#211).
+        w: Option<&'a str>,
         color: Option<&'a str>,
     },
     Grid {
@@ -45,7 +48,9 @@ pub(super) enum VectorColumns<'a> {
 /// Every column id a series' render type references (x/y + error refs).
 pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
     // The model's list (#160): records and ragged columns are resident
-    // composites outside the column registry, so they are not visited.
+    // composites outside the column registry, so they are not visited; a
+    // triangle mesh's index column is (#210), and `column_registered`
+    // answers for it.
     let mut ids = Vec::new();
     cfg.visit_columns(&mut |id| ids.push(id));
     ids
@@ -332,6 +337,37 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Register or replace the triangle index column `id` (#210): three
+    /// vertex indices per triangle, triangle `t` being the vertices
+    /// `indices[3t]`, `indices[3t + 1]` and `indices[3t + 2]`.
+    ///
+    /// `indices` is a `Uint32Array` whose length is a non-zero multiple of 3;
+    /// anything else is an error and nothing is registered. The array is
+    /// borrowed for the upload, not copied, and every index up to
+    /// `u32::MAX` reaches the GPU exactly. Resident only, as
+    /// `register_record`.
+    pub fn register_triangles(&mut self, id: &str, indices: &[u32]) -> Result<(), JsValue> {
+        if self.renderer.logical_column(id).is_some() {
+            return Err(js_err(format!(
+                "triangle index column '{id}': the id is a registered column"
+            )));
+        }
+        let indices = BorrowedU32Column::new(indices);
+        let source = renderer::TriangleSource { indices: &indices };
+        self.renderer
+            .upsert_triangles(id, &source)
+            .map_err(column_registration_error)?;
+        Ok(())
+    }
+
+    /// Unregister the triangle index column `id` and free its GPU memory.
+    /// Returns `true` when it existed.
+    pub fn remove_triangles(&mut self, id: &str) -> Result<bool, JsValue> {
+        self.renderer
+            .remove_triangles(id)
+            .map_err(column_registration_error)
+    }
+
     /// Unregister a column. Series referencing it are removed too so the
     /// chart can never point at freed data. Auto-managed legends remove
     /// the corresponding rows; freely edited legends preserve their text
@@ -433,7 +469,7 @@ impl FiggyChart {
             for id in referenced_columns(item) {
                 // Every column a demo series reads is either one of the
                 // demo's own or already registered.
-                if !DEMO_COLUMN_IDS.contains(&id) && self.renderer.logical_column(id).is_none() {
+                if !DEMO_COLUMN_IDS.contains(&id) && !self.column_registered(id) {
                     return Err(js_err(format!(
                         "series '{}' references unregistered column '{id}'",
                         item.series_id

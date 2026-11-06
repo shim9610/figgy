@@ -76,6 +76,14 @@ mod tests {
             poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
             bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
         },
+        // The triangle mesh pick (#210), in the mesh module.
+        Case {
+            source: crate::data_render::tri_mesh::TRI_MESH_SHADER.source,
+            array: "mesh_pick_shared",
+            width: 64,
+            poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
+            bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
+        },
         // The ternary ring-start scan (#49).
         Case {
             source: crate::data_render::ternary_region::TERNARY_REGION_SHADER.source,

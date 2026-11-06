@@ -8,6 +8,7 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
@@ -16,6 +17,8 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/data_pick.wgsl",
     "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
     "data_render/field_columnar.wgsl",
 );
 
@@ -60,6 +63,16 @@ pub const FIELD_FLAG_HEXAGONAL: u32 = 32;
 /// grid table, each channel mapped linearly from `z_min..z_max` to 0..1; no
 /// colourbar is read.
 pub const FIELD_FLAG_RGB: u32 = 64;
+
+/// The group is a triangle mesh (`DataRenderType::TriMesh`, #210):
+/// `x_base` / `y_base` and `x_len` / `y_len` are the vertex coordinate
+/// columns, `rows` the triangle count, `cols` the grid table's entries, and
+/// the table holds the value column and the triangle index column
+/// (SHADER_COMMON.md §5.24).
+pub const FIELD_FLAG_MESH: u32 = 128;
+
+/// With [`FIELD_FLAG_MESH`]: one value per triangle, painted flat.
+pub const FIELD_FLAG_FACE_VALUES: u32 = 256;
 
 /// Everything the field shader needs beyond `Transform` and `Style`.
 ///
@@ -669,6 +682,34 @@ pub(super) fn create_field_columnar_pipeline_with_optional_extra_layout(
     fragment_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_field_render_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, field_bgl],
+        extra_bgl,
+        target_format,
+        sample_count,
+        "vs_main",
+        fragment_entry,
+        label,
+    )
+}
+
+/// A render pipeline over the field's groups (transform, style, the field's
+/// group 2 and an optional group 3) from `vertex_entry` into
+/// `fragment_entry`: the heatmap quad and the triangle mesh (#210) share it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_field_render_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
+    extra_bgl: Option<&wgpu::BindGroupLayout>,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vertex_entry: &str,
+    fragment_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let layouts = [
         Some(transform_bgl),
         Some(style_bgl),
@@ -691,7 +732,7 @@ pub(super) fn create_field_columnar_pipeline_with_optional_extra_layout(
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: shader,
-                entry_point: Some("vs_main"),
+                entry_point: Some(vertex_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
@@ -756,4 +797,9 @@ pub struct ColumnFieldSelectionLayer<'a> {
     pub field_bg: wgpu::BindGroup,
     pub charge: crate::gpu_memory::SharedCharge,
     pub drawable: bool,
+    /// The vertices and instances to draw: one quad
+    /// ([`FIELD_VERTICES`], `0..1`) for a field, the picked triangle or
+    /// every triangle of a mesh (#210).
+    pub vertices: u32,
+    pub instances: std::ops::Range<u32>,
 }

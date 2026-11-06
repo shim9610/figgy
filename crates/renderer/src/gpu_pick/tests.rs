@@ -191,6 +191,7 @@ fn scatter_series(
             scatter: Some(scatter),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -221,6 +222,7 @@ fn line_series(
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -252,6 +254,7 @@ fn scatter_descriptor(
         category_jitter: None,
         ternary_c: None,
         ternary_region: false,
+        stem: None,
     }
 }
 
@@ -273,6 +276,7 @@ fn test_query(canvas_position_px: [f32; 2]) -> GpuPickQuery {
             ternary_r: [0.0; 4],
             breaks: crate::data_render::NO_BREAKS,
             break_info: crate::data_render::NO_BREAK_INFO,
+            scale_prob: crate::data_render::NO_PROBABILITY,
         },
         chart_rect_px: [0.0, 0.0, 100.0, 100.0],
         data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -603,6 +607,7 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
         category_jitter: None,
         ternary_c: None,
         ternary_region: false,
+        stem: None,
     };
     for logarithmic in [false, true] {
         let origin = if logarithmic {
@@ -843,6 +848,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             category_jitter: None,
             ternary_c: None,
             ternary_region: false,
+            stem: None,
         };
         let query = test_query(cursor);
         let mut exact = PickExactPipelines::default();
@@ -1266,6 +1272,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1384,6 +1391,7 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1492,6 +1500,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1530,6 +1539,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1553,6 +1563,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1730,6 +1741,7 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1809,6 +1821,7 @@ fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1881,6 +1894,7 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1913,6 +1927,7 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
                 ternary_r: [0.0; 4],
                 breaks: crate::data_render::NO_BREAKS,
                 break_info: crate::data_render::NO_BREAK_INFO,
+                scale_prob: crate::data_render::NO_PROBABILITY,
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -1977,6 +1992,7 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -1999,6 +2015,7 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
             ternary_r: [0.0; 4],
             breaks: crate::data_render::NO_BREAKS,
             break_info: crate::data_render::NO_BREAK_INFO,
+            scale_prob: crate::data_render::NO_PROBABILITY,
         },
         chart_rect_px: [0.0, 0.0, 100.0, 100.0],
         data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -2098,6 +2115,7 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -2214,6 +2232,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
                 scatter: None,
                 line: Some(line),
                 errors: None,
+                ..
             }) = &mut cpu_series.render_type
             else {
                 unreachable!()
@@ -2241,6 +2260,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
                         category_jitter: None,
                         ternary_c: None,
                         ternary_region: false,
+                        stem: None,
                     },
                 )
                 .unwrap();
@@ -2387,6 +2407,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
             scatter: Some(scatter),
             line: Some(line),
             errors: None,
+            stem: None,
         }),
     };
     let later_series = scatter_series(
@@ -2450,6 +2471,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -2495,6 +2517,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -2563,6 +2586,7 @@ fn exact_gpu_f64_residual_selects_point_index() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();
@@ -3192,6 +3216,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
                 category_jitter: None,
                 ternary_c: None,
                 ternary_region: false,
+                stem: None,
             },
         )
         .unwrap();

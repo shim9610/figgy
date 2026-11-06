@@ -51,7 +51,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **데이터 출처 키**인 `SeriesConfig.source_id`와 모든 `PickedDataRef`의 `source_id`는 `None`이면 생략한다.
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **연속 값 매핑 키 2개**인 `DataScatterStyleConfig.point_color_map` / `point_size_map`도 `None`이면 생략한다. `point_color_map`은 `{ "column": "<id>" }`이며 색은 `Config.colorbar`가 정하므로 `colorbar`가 있어야 한다. `point_size_map`은 `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`이다. `scale`은 `"Area"`(기본값) 또는 `"Radius"`이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. 두 컬럼 모두 등록돼 있어야 하고 시리즈의 x/y 컬럼과 인덱스가 맞아야 한다. 자세한 내용은 [점 색·크기 매핑](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#점-색과-크기-매핑)을 참고한다.
-- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>" } }` 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+- **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>", "w": "<id>" } }`(`w`는 3D 차트의 z 성분이며 없으면 생략) 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
 - **유선 시리즈**의 `render_type`은 `{ "Streamlines": { "line": DataLineStyleConfig } }`이다. `arrows`(`{ "spacing_px": 70.0, "head_length_px": 9.0, "head_width_px": 8.0 }`)와 `color_map`(`{ "column": "<id>" }`)은 `None`이면 생략한다. `line.interpolation`은 `"Linear"`, `line.fill`은 없어야 하고, `color_map`이 있으면 `Config.colorbar`가 있어야 한다. 전체 예는 [`Streamlines` render_type](#streamlines-render_type), 필드 의미는 [유선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#유선)을 참고한다.
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
@@ -59,7 +59,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color`를 생략하면 모든 레벨을 `line.line_color`로 그린다. 목록이 레벨 수보다 짧으면 색이 없는 레벨도 `line.line_color`로 그리므로, 빈 목록 `[]`도 생략한 것과 같게 그려지지만 JSON에는 `[]`로 남는다.
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_data: {}`는 기본 선택 표시 설정으로 해석한다. 0.19 이전 문서의 `picked_points`는 읽을 때 `picked_data`의 `point` 참조로 옮기고, 저장할 때는 쓰지 않는다.
 - **`Plain` 라벨 형식**은 `{ "Plain": {} }`처럼 쓰며, `decimals`는 `None`이면, `trim_zeros`는 `false`이면 생략한다. 값만으로 라벨을 정하므로 축 스케일·눈금 간격·`significant_digits`의 영향을 받지 않는다. `decimals`를 생략하면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6`처럼 지수 표기로, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0과 소수점을 지운다. `decimals`를 주면 그 자릿수로 적고, `trim_zeros`가 `true`이면 소수 끝의 0과 소수점을 지운다. figgy-model 0.12.1 이하는 이 값을 거부한다.
-- **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며(`grid_shape`는 기본값 `"Circle"`이면 생략하고, `"Polygon"`이면 범주형 각도 축의 범주마다 고리를 현으로 잇는다) 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)과 레이더 시리즈만 그린다. `bottom_x.categories`가 있으면 각도 축은 범주형이며, `n`개 중 `i`번째 범주가 한 바퀴의 `i / n` 자리에 놓인다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
+- **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며(`grid_shape`는 기본값 `"Circle"`이면 생략하고, `"Polygon"`이면 범주형 각도 축의 범주마다 고리를 현으로 잇는다) 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)·레이더·범주 막대(로즈) 시리즈와 히트맵·등고선(#208)을 그린다. 히트맵 셀은 (각도, 반지름)의 고리 부채꼴이며 `pick_data`는 직교 차트처럼 `matrix_cell`(`x_index`는 각도 셀, `y_index`는 반지름 셀)과 `contour_level`을 돌려준다. `bottom_x.categories`가 있으면 각도 축은 범주형이며, `n`개 중 `i`번째 범주가 한 바퀴의 `i / n` 자리에 놓인다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·이미지·육각 격자·오차 막대·스템·벡터 시리즈, `Polygon` 격자 위의 필드, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
 - **평행 좌표 키** `parallel`([#141](https://github.com/shim9610/figgy/issues/141))은 `None`이면 생략한다. `{ "parallel": { "axes": [{ "min": 0.0, "max": 10.0 }, { "min": 1.0, "max": 1000.0, "scale": "Logarithmic" }] } }` 형태이며 축마다 `inverted`(기본 `false`), `scale`(기본 `"Linear"`), `label_offset`(기본 `[0, 0]`, 라벨을 끌어 옮긴 거리)은 기본값이면 생략한다. 켜면 `bottom_x`의 범주마다 그 범주 자리에 자기 범위의 세로 축을 세우고 `Parallel` 시리즈만 그린다. `bottom_x`는 축 수만큼의 범주를 가진 범주형이고 `left_y`는 선형 `0..1`이어야 하며 극좌표·삼각·3D·`overlays`·`line_offsets`와 함께 쓸 수 없다. 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#paralleloptions-configparallel)에 있다.
 - **선버스트**([#140](https://github.com/shim9610/figgy/issues/140)): 원형 차트 문서의 조각에 `"children": [slice, …]`를 두면 트리의 고리를 바깥쪽으로 그린다(비어 있으면 생략). 자식 값의 합은 부모 값 이하이며, 선택·호버·`step_selection`의 `{ "group", "index" }`는 고리와 그 고리 안의 문서 순서 위치다. `split`, `tilt_degrees`·`depth`와 함께 쓸 수 없다. 규칙은 [원형 차트 가이드](../renderer/RADIAL.md#선버스트중첩-고리)에 있다.
 - **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. 원형 차트는 `FiggyBoundedChart`가 그리는 `radial` 문서로(범주형 막대·박스플롯·레이더 문서는 `FiggyChart`의 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`로 연다), 컬럼 대신 문서 안에 값을 담는다. 원형 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
@@ -128,12 +128,12 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 
 | enum | 값 |
 |---|---|
-| `scale` (AxisScale) | `"Linear"` `"Logarithmic"` |
+| `scale` (AxisScale) | `"Linear"` `"Logarithmic"` `{ "Probability": "Normal" }` `{ "Probability": "Weibull" }` `{ "Probability": "Logistic" }` (#209, 범위는 `(0, 1)` 안의 확률) |
 | `log_ticks` (LogTickPolicy) | `"Decades"` `"Adaptive"` |
 | `breaks.style` (AxisBreakStyle) | `"Continuous"` `"Panels"` |
 | `breaks.mark` (BreakMark) | `"None"` `{ "Slash": { "size": 6.0, "width": 1.0 } }` `{ "Slash": { "size": 6.0, "color": { ... }, "width": 1.0 } }` |
 | `tick` (TickVisibility) | `"None"` `"Outside"` `"Inside"` `"Both"` |
-| `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` `"Degrees"` `"Radians"` `{ "Plain": {} }` `{ "Plain": { "decimals": 1, "trim_zeros": true } }` |
+| `format` (LabelFormat) | `"Decimal"` `"Scientific"` `"Power"` `{ "Timestamp": { ... } }` `"Degrees"` `"Radians"` `"Percent"` `{ "Plain": {} }` `{ "Plain": { "decimals": 1, "trim_zeros": true } }` |
 | `unit` (TimestampUnit) | `"Seconds"` `"Milliseconds"` `"Microseconds"` `"Nanoseconds"` |
 | `timezone` (TimestampZone) | `"Utc"` `{ "FixedOffsetMinutes": 540 }` |
 | `label` (TimestampLabelMode) | `"Auto"` `{ "Pattern": "%Y-%m-%d %H:%M:%S.%f" }` |
@@ -236,7 +236,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 정확하게 편집하려면 `get_config()` 결과에서 바꿀 필드만 고친 뒤 전체 설정을 `set_config()`로 전달한다. `set_config()`는 일부 필드가 아니라 전체 설정을 교체한다. 예를 들어 축의 `min` / `max`만 바꾸면 현재 눈금 간격, 보조 눈금 수, 라벨 형식은 바뀌지 않는다. 축은 서로 독립이므로 짝을 이루는 두 축은 같은 범위를 써야 할 때만 함께 고친다. `auto_fit_x`, `auto_fit_all`, `set_title` 같은 편의 함수는 눈금이나 제목 배치도 함께 조정할 수 있다. `auto_fit_all`은 활성 레이어(`active_layer`)의 축만 맞춘다. 자세한 규칙은 [설정 직접 편집과 편의 함수](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers)와 [WASM 편집 흐름](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md)을 참고한다.
 
-- `scale`을 바꾸면 `major_spacing`의 단위도 달라진다. `Linear`는 데이터 단위이고 `Logarithmic`은 10배 간격인 decade 단위다. 예를 들어 `1.0`은 값이 10배 커질 때마다 주 눈금을 놓는다. 범위가 10배 간격보다 좁으면 주 눈금이 없을 수도 있다.
+- `scale`을 바꾸면 `major_spacing`의 단위도 달라진다. `Linear`는 데이터 단위이고 `Logarithmic`은 10배 간격인 decade 단위다. 확률 축(`{ "Probability": ... }`)은 범위로 눈금을 정하므로 `major_spacing`을 읽지 않는다. 예를 들어 `1.0`은 값이 10배 커질 때마다 주 눈금을 놓는다. 범위가 10배 간격보다 좁으면 주 눈금이 없을 수도 있다.
 - 로그축의 `min` / `max`에는 양수를 지정한다.
 - 로그축의 주 눈금은 축의 `log_ticks`가 정한다(#42). 기본값 `"Decades"`는 JSON에 쓰지 않으며, 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `"Adaptive"`는 `major_spacing`을 무시하고 범위만 보고 주 눈금을 고른다. 범위가 6 decade보다 넓으면 n decade마다 놓고, 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 4개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9 × 10^k 가운데 주 눈금이 아닌 값이다. 라벨이 서로 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되, 라벨이 2개 미만이 되는 단계로는 내려가지 않는다. 그래도 겹치면 남은 라벨을 2개, 5개, 10개마다 하나씩 남긴다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 다시 맞추는 편의 함수(`auto_fit_*`)는 이 값을 바꾸지 않으므로, 확대·축소한 뒤에도 새 범위에 맞게 눈금을 다시 고른다. 연결된 서브플롯 축은 대상 축의 값을 따르고, 색상 막대 축은 `set_colorbar_axis`로도 바꿀 수 있다. figgy-model 0.12.1 이하는 이 키를 무시한다.
 - 축의 `breaks`는 축에서 잘라낼 구간이다(#200). 키가 없으면(기본값) 축을 자르지 않으며, `get_config`도 이 키를 쓰지 않는다. 예: `"breaks": { "ranges": [{ "from": 15, "to": 85 }], "style": "Panels", "gap": 0.05 }`. 빠진 키는 기본값(`"style": "Continuous"`, `"gap": 0.03`, 축선 색의 6 px 빗금, 조각 테두리 `"frame_each_panel": true`)을 쓴다. 빗금의 `color`를 생략하면 축선 색으로 그린다. `ranges`는 데이터 단위로 정렬되어 겹치지 않아야 하고 최대 3개이며, `gap`은 축 길이에 대한 비율(0~0.2)이다. `bottom_x`, `left_y`, 오버레이의 `y_axis`에만 지정할 수 있고, `top_x`·`right_y`는 짝이 되는 축의 구간을 같은 비율 위치로 따라 그린다. 극좌표·삼각좌표·3D·평행 좌표 차트와 색상 막대 축, 스트리밍 소스는 이 키를 거부한다. 빈칸 안에는 데이터·강조·주석을 그리지 않고, 빈칸을 가리킨 피킹은 아무것도 반환하지 않는다. figgy-model 0.12.1 이하는 이 키를 무시한다.
@@ -289,6 +289,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 하나(`labels.text[category_index]`)를 가리킨다. 선택한 라벨은 라벨 테두리를 `SELECTION_PADDING`만큼 넓힌 선택 상자로
 표시하며, `step_selection`은 라벨을 옮기지 않는다.
 
+`{ "kind": "mesh_triangle", "series_id": "pressure", "triangle_index": 17 }`은 [`TriMesh` 시리즈](#trimesh-render_type)의 삼각형 하나(삼각형 인덱스 열의 17번째 삼각형)를 가리킨다. `pick_data` 결과에는 커서에 가장 가까운 꼭짓점 `vertex_index`도 들어 있지만, 이 값은 마우스를 올렸을 때의 답일 뿐 선택에는 저장하지 않는다. `step_selection`은 `dx`로 삼각형을, `dy`로 메시 시리즈를 옮긴다.
+
 <a id="resident-selection-details"></a>
 
 ### 상주 선택 값 조회와 키보드 이동
@@ -309,7 +311,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 }
 ```
 
-`identity`에 `source_id`가 없으면 그 키를 생략한다. `value`는 저장된 막대 높이이며 개수·가중치·밀도·계단 그래프 값 중 무엇이든 될 수 있다. 가로 히스토그램은 `"Horizontal"`을 반환하고 Y 컬럼을 구간 경계로 사용한다. 점 결과에는 `index`, `x`, `y`가 있고, 시리즈에 `point_color_map`이 있으면 `color_value`, `point_size_map`이 있으면 `size_value`가 더해진다. 두 값은 점의 색과 반지름을 정한 원래 값이다. 행렬 결과에는 `x_index`, `y_index`, `x`, `y`, `value`가 있으며 `Edges` 격자에서는 셀 중심 좌표를 보고한다. 벡터 시리즈는 `u`와 `v`를 보고한다. 점 벡터는 점 결과에 `u` / `v`를 더하고, 격자 벡터는 `u` 격자 기준의 행렬 결과에서 `value` 대신 `u` / `v`를 쓴다. 벡터에 `color_map`이 있으면 `color_value`도 들어 있다. 모든 결과에는 `kind` 태그와 필드를 한 객체에 둔 `identity`와 `series_id`가 있다.
+`identity`에 `source_id`가 없으면 그 키를 생략한다. `value`는 저장된 막대 높이이며 개수·가중치·밀도·계단 그래프 값 중 무엇이든 될 수 있다. 가로 히스토그램은 `"Horizontal"`을 반환하고 Y 컬럼을 구간 경계로 사용한다. 점 결과에는 `index`, `x`, `y`가 있고, 시리즈에 `point_color_map`이 있으면 `color_value`, `point_size_map`이 있으면 `size_value`가 더해진다. 두 값은 점의 색과 반지름을 정한 원래 값이다. 행렬 결과에는 `x_index`, `y_index`, `x`, `y`, `value`가 있으며 `Edges` 격자에서는 셀 중심 좌표를 보고한다. 벡터 시리즈는 `u`와 `v`를 보고한다. 점 벡터는 점 결과에 `u` / `v`를 더하고, 3D 차트에서는 `z`와 `w`도 더하며, 격자 벡터는 `u` 격자 기준의 행렬 결과에서 `value` 대신 `u` / `v`를 쓴다. 벡터에 `color_map`이 있으면 `color_value`도 들어 있다. 모든 결과에는 `kind` 태그와 필드를 한 객체에 둔 `identity`와 `series_id`가 있다.
 
 `FiggyChart.step_selection(dx, dy)`는 동기 메서드이며 선택이 바뀌었는지를 반환한다. 세로 히스토그램에서는 `dx`가 구간을, `dy`가 방향이 같은 히스토그램 시리즈를 옮기고, 가로 히스토그램에서는 두 역할이 바뀐다. 구간 인덱스는 선택한 시리즈의 경계·값 개수가 허용하는 범위를 넘지 않는다. 점에서는 `dx`가 원본 인덱스를, `dy`가 점이나 선을 그리는 시리즈를 바꾼다. 점 벡터(`Points` 형식의 `Vector`)의 화살표도 산점도의 점처럼 시리즈의 점을 따라 옮긴다. 행렬 셀(격자 벡터의 셀 포함)에서는 `dx`가 X 인덱스를, `dy`가 Y 인덱스를 바꾼다. 등고선 참조는 옮기지 않는다. `selection_details()`와 `step_selection()`은 `<figgy-chart>` 래퍼에는 없는 저수준 WASM 메서드이므로, 호스트는 `selection_details()`가 끝날 때까지 [비동기 호출 중 객체 접근 제한](../renderer/WASM.md#39-async-메서드와-객체-잠금-필독)의 `busy` 토큰을 유지해야 한다.
 
@@ -816,7 +818,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 <!-- contour-contract: scope=schema max-levels=1024 -->
 - `ContourConfig.levels`에는 데이터 단위의 등고선 값을 명시한다. 레벨을 자동으로 고르려면 웹의 `set_contour_nice_levels(series_id, target_count, use_colormap_colors)`를 호출한다. 색상 막대 Z축 범위 안에서 눈금 규칙으로 고른 값을 이 배열에 기록하고 레벨 수를 반환하며, `use_colormap_colors`가 `true`이면 `per_level_color`도 색상표의 색으로 채운다. `0..=1024`개를 허용하며 1025개 이상이면 `set_series`가 실패한다. 배열을 잘라 처리하지 않고 이전 설정·시리즈·GPU 스타일을 유지한다.
 - `ContourLabelConfig.spacing_px`는 자동 배치의 목표 간격이다. 레벨 누락을 막기 위해 추가로 고르는 후보는 더 가까울 수 있다. 라벨을 숨겼거나 위치를 직접 지정했더라도 간격은 유한한 양수여야 한다.
-- 자동·직접 배치는 모두 최대 1024개를 사용한다. 직접 지정한 `anchors`에서는 잘못된 `level_index`를 제외하고 입력 순서대로 유효한 앞 1024개를 사용한다. 남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.
+- 자동·직접 배치는 모두 최대 1024개를 사용한다. 직접 지정한 `anchors`가 1024개를 넘으면 잘라 내지 않고 `set_series`가 실패한다. 그 안에서는 잘못된 `level_index`를 제외하고 나머지를 입력 순서대로 사용한다. 남은 항목이 없으면 자동 배치하고, 하나라도 있으면 그 목록을 사용한다.
 - 자동 배치 간격에는 출력 배율(예: PNG 2x 내보내기의 2)을 곱하며, 곱한 값도 유한한 양수여야 한다. 라벨 글자를 담는 텍스처(아틀라스)는 WebGPU 어댑터의 최대 텍스처 크기를 넘을 수 없다. 두 조건 중 하나를 어기면 렌더링이나 PNG 내보내기가 해당 시리즈의 오류를 반환한다. 앵커는 데이터 좌표 `(x, y)`와 접선 `(tx, ty)`로 저장하며 확대·이동 시 화면에 다시 투영한다.
 - `ContourLabelConfig.color`는 선 색과 `per_level_color`에 영향을 받지 않는 라벨 글자색이다. 소수 표시는 등고선 간격(없으면 색상 막대 간격)과 `significant_digits`를 사용한다. 선은 실제 라벨 사각형 안에서 끊으며 `bg_padding_px`만큼 추가로 비운다. 배경색이 없어도 이 간격을 적용한다.
 
@@ -1305,6 +1307,29 @@ the same shape) are omitted when absent. A picked sample's
 `selection_details()` carries `x_index`, `y_index`, `x`, `y` and `value`,
 plus `color_value` with a colour grid.
 
+A `"Vector"` series in the `"Points"` form draws one arrow per row in the
+box when it names its anchor height in `"z_column"` and its z component in
+`"w"` (#211); each missing key is rejected on a 3D chart, and a `"Grid"`
+vector is rejected there. On a flat chart both keys are kept and unused. A
+picked arrow's `selection_details()` carries `index`, `x`, `y`, `z`, `u`,
+`v` and `w`, plus `color_value` when colour mapped:
+
+```json
+{
+  "series_id": "flow",
+  "label": null,
+  "x_column": "qx",
+  "y_column": "qy",
+  "z_column": "qz",
+  "render_type": { "Vector": {
+    "components": { "Points": { "u": "qu", "v": "qv", "w": "qw" } },
+    "style": { "color": { "r": 0.1, "g": 0.1, "b": 0.1, "a": 1.0 }, "width_px": 1.6,
+               "scale": { "Data": { "factor": 0.3 } }, "pivot": "Middle",
+               "head_length_px": 7.0, "head_width_px": 6.0,
+               "color_map": { "Column": "speed" } } } }
+}
+```
+
 <a id="ternary-render_type"></a>
 
 ## `Ternary` render_type
@@ -1406,6 +1431,59 @@ and `color_value` when mapped; `step_selection(dx, 0)` walks the rows.
 Each axis's tick labels are the element `parallel_axis_labels_<i>`, dragged
 into the axis's `label_offset`.
 
+<a id="trimesh-render_type"></a>
+
+## `TriMesh` render_type
+
+A triangle mesh series ([#210](https://github.com/shim9610/figgy/issues/210))
+draws a field over triangles the host gives. `x_column` / `y_column` are the
+vertex coordinates (and `z_column` the vertex height on a 3D chart);
+`triangles` names a triangle index column registered with
+`register_triangles(id, Uint32Array)`, three vertex rows per triangle;
+`values` names the value column and whether its values sit at the
+`"Vertices"` or the `"Faces"`. `fill`, `contour` and `surface` are the
+heatmap's, each omitted when absent, and the colours come from `colorbar`.
+
+```json
+{
+  "series_id": "pressure",
+  "x_column": "node_x",
+  "y_column": "node_y",
+  "render_type": {
+    "TriMesh": {
+      "triangles": "elements",
+      "values": { "column": "cp", "at": "Vertices" },
+      "fill": { "mode": "Continuous", "shading": "Interpolated", "opacity": 1.0 },
+      "contour": {
+        "levels": [-1.0, -0.5, 0.0, 0.5],
+        "line": { "line_style": "Solid", "line_color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 }, "line_width": 1.0 }
+      }
+    }
+  }
+}
+```
+
+Vertex values are shaded `"Interpolated"` and face values `"Flat"`;
+contour lines need vertex values and take no `labels`; `surface` takes no
+`color_matrix`. Polar, ternary and parallel charts refuse the kind, and a
+3D chart needs `z_column` and a continuous fill. A picked triangle is the
+`"mesh_triangle"` selection ([above](#데이터-종류별-선택-표시picked_data)).
+
+`pick_data(x, y, d)` answers a triangle as
+`{ "kind": "mesh_triangle", "source_id", "series_id", "triangle_index",
+"vertex_index", "distance_px" }` (`vertex_index` is the vertex nearest the
+cursor) and a stroke over it as a `"contour_level"` whose `x_index` is the
+triangle. With a `"mesh_triangle"` selection, `selection_details()` reports
+`index` (the triangle), `vertices` (its three vertex indices, read from the
+triangle index column), `x` and `y` (their coordinates), `values` (their
+values) or, for face values, `value` (the triangle's), and `at`
+(`"Vertices"` or `"Faces"`); the samples are read back from the GPU columns
+the draw used.
+
+Status: a flat chart draws, picks and highlights the fill and the contours;
+3D charts follow under #210, and until then `set_series` refuses a
+`TriMesh` series on a 3D chart.
+
 <a id="radar-render_type"></a>
 
 ## `Radar` render_type
@@ -1446,7 +1524,7 @@ into the axis's `label_offset`.
 
 ## `Vector` render_type의 전체 형식
 
-점 벡터(`Points`)와 격자 벡터(`Grid`)의 `render_type` 값 예다. 최상위 키 `flow`와 `gradient`는 예시를 구분하는 이름이다. 두 형식 모두 시리즈의 `x_column` / `y_column`이 화살표의 기준점이다. `Points`의 `u` / `v`는 기준점 컬럼과 인덱스가 맞는 컬럼이고, `Grid`의 `u` / `v`는 히트맵 행렬과 같은 방식으로 좌표 컬럼 위에 선언한 격자다. `flow`에는 선택 키를 모두 적었다. `gradient`는 `get_series()`가 반환하는 형태로, `pivot`은 기본값 `"Tail"`이어도 기록하고 `0.0`인 `min_length_px`는 생략한다. 벡터는 정밀 모드에서만 그리며 스트리밍 소스는 오류로 거부한다. 키별 생략 규칙과 `color_map` 조건은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+점 벡터(`Points`)와 격자 벡터(`Grid`)의 `render_type` 값 예다. 최상위 키 `flow`와 `gradient`는 예시를 구분하는 이름이다. 두 형식 모두 시리즈의 `x_column` / `y_column`이 화살표의 기준점이다. `Points`의 `u` / `v`는 기준점 컬럼과 인덱스가 맞는 컬럼이고, `Grid`의 `u` / `v`는 히트맵 행렬과 같은 방식으로 좌표 컬럼 위에 선언한 격자다. `flow`에는 선택 키를 모두 적었다(`w`는 3D 차트에서만 읽으므로 뺐다). `gradient`는 `get_series()`가 반환하는 형태로, `pivot`은 기본값 `"Tail"`이어도 기록하고 `0.0`인 `min_length_px`는 생략한다. 벡터는 정밀 모드에서만 그리며 스트리밍 소스는 오류로 거부한다. 키별 생략 규칙과 `color_map` 조건은 [serde의 JSON 표현 규칙](#serde-표현-규칙-json을-읽을-때-알아야-할-것), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
 
 ```json
 {
@@ -1508,6 +1586,31 @@ into the axis's `label_offset`.
 ```
 
 `step_selection(dx, dy)`는 선 시리즈처럼 꼭짓점을 옮기며 NaN 구분 행도 꼭짓점으로 센다. 선이나 머리를 `pick_point`로 누르면 그 선분의 가까운 끝점이 돌아온다.
+
+## 스템 (`stem`)
+
+마커를 그리는 xy 종류 여덟 가지(`Scatter`, `ScatterLine`, `ScatterErrorbar*`, `LineScatterErrorbar*`)는 선택 키 `stem`을 받는다(#206). 기준선에서 점마다 선을 하나씩 그리며, 스템 플롯이나 롤리팝 차트가 된다. `stem`이 없는 문서는 키를 생략한 채 그대로 읽고 쓴다. `direction`은 기본값 `"Vertical"`, `line_style`은 기본값 `"Solid"`이며 둘 다 기본값이면 생략한다. `"Line"`에는 키가 없다(스템은 마커와 함께 그린다). 극좌표, 3D 차트, 스트리밍 소스는 오류로 거부한다. 필드 의미는 [스템](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#스템)을 참고한다.
+
+```json
+{
+  "Scatter": {
+    "scatter": {
+      "point_color": { "r": 0.1, "g": 0.3, "b": 0.8, "a": 1.0 },
+      "point_shape": "CircleFilled",
+      "point_size": 6.0
+    },
+    "stem": {
+      "baseline": 0.0,
+      "direction": "Horizontal",
+      "color": { "r": 0.4, "g": 0.4, "b": 0.4, "a": 1.0 },
+      "width": 1.5,
+      "line_style": "Dash"
+    }
+  }
+}
+```
+
+스템은 그 점으로 픽된다. `pick_point`와 `pick_data`는 점의 인덱스를 돌려주고, `step_selection(dx, dy)`는 점 시리즈처럼 움직이며, `selection_details()`는 `x`와 `y`만 알려 준다.
 
 ## 모든 오차 방향을 포함한 `get_series()` 전체 형식
 

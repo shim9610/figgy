@@ -131,6 +131,7 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
             components: VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style,
         },
@@ -252,6 +253,7 @@ fn axis_t(axis: &AxisOptions, v: f64) -> f64 {
     let t = match axis.scale {
         AxisScale::Logarithmic => (v.ln() - axis.min.ln()) / (axis.max.ln() - axis.min.ln()),
         AxisScale::Linear => (v - axis.min) / (axis.max - axis.min),
+        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     if axis.inverted { 1.0 - t } else { t }
 }
@@ -1458,6 +1460,7 @@ fn vector_series_are_validated_at_registration() {
         components: VectorComponents::Points {
             u: "u".into(),
             v: "nope".into(),
+            w: None,
         },
         style: pixels(1.0),
     };
@@ -2014,4 +2017,28 @@ fn streamlines_draw_inside_their_subplot() {
         .filter(|(x, y)| is_red(pixel(&img, *x, *y)))
         .count();
     assert_eq!(parent_red, 0, "the parent draws no streamline");
+}
+
+/// Rule 10: a frame of three hundred vector series draws every one, past
+/// the vector scratch cache's 256 entries.
+#[test]
+fn three_hundred_vector_series_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    point_fixture(&mut renderer, &[(2.0, 2.0)], &[(40.0, 0.0)]);
+    let chart = bare_chart();
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| points(&format!("arrows{k}"), pixels(1.0)))
+        .collect();
+    for _ in 0..2 {
+        let img = export(&mut renderer, &chart, &series);
+        assert_red(
+            &img,
+            data_to_px(&chart, 2.0, 2.0),
+            20.0,
+            0.0,
+            "shaft middle",
+        );
+    }
 }

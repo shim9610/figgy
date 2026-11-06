@@ -473,6 +473,84 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
         issue: "#49",
     },
+    // The 3D vector scene is a 3D chart: the Surface rows (#49).
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I2,
+        detail: "box * is * px past the padding from the ink extent*",
+        reason: "a box axis title runs along its slanted edge; its box is the bounding box of \
+                 the turned text box, whose turned corners hold no glyphs",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
+        reason: "the slanted title's turned box, as in I2",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "a 3D chart's data-area drag orbits the camera: every drag is a valid turn",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "the polar drag did not move it",
+        reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
+        issue: "#211",
+    },
+    // At the x axis's start corner the x axis line (`axis_bottom`) meets the
+    // z axis line (`axis_right`). Their antialiased blend decodes nearest to
+    // `tick_labels_top`'s code, which a 3D chart never draws: the corner's
+    // few pixels go to that code instead of the two lines.
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "tick_labels_top",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the x and z axis lines' blend at the box corner decodes as this code",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "tick_labels_top",
+        inv: Inv::I5,
+        detail: "*of its * ink pixels*differ by more than*box-filtered*",
+        reason: "the x and z axis lines' corner blend, as in I7: no 2x glyphs to compare",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "*",
+        element: "axis_bottom",
+        inv: Inv::I2,
+        detail: "*points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the x axis line's end pixels at the box corner decode as another code (I7)",
+        issue: "#211",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I5,
+        detail: "ink extent * at 2x (halved) is * px off *",
+        reason: "the corner pixels decode as the x axis at 2x and as another code at 1x (I7)",
+        issue: "#211",
+    },
     // The radar scene is a polar chart: the outer ring row above (its ray
     // line is hidden, so it has no ray drag row), and its ring labels.
     Exclusion {
@@ -498,6 +576,26 @@ const EXCLUSIONS: &[Exclusion] = &[
     },
     Exclusion {
         scene: "Rose",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring is the data boundary and belongs to no element",
+        issue: "#47",
+    },
+    // The radar scene is a polar chart with its ray line drawn: the Rose
+    // scene's two rows (#208).
+    Exclusion {
+        scene: "PolarHeatmap",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "the polar ray turns around the centre: every drag is a valid turn",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "PolarHeatmap",
         layer: "document",
         element: "axis_bottom",
         inv: Inv::I7,
@@ -1033,6 +1131,11 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Parallel => "Parallel",
         SceneKind::BrokenAxes => "BrokenAxes",
         SceneKind::EnergyLevels => "EnergyLevels",
+        SceneKind::Stem => "Stem",
+        SceneKind::Lollipop => "Lollipop",
+        SceneKind::PolarHeatmap => "PolarHeatmap",
+        SceneKind::Quiver3d => "Quiver3d",
+        SceneKind::ProbabilityPaper => "ProbabilityPaper",
         SceneKind::EnergyLevelsAr => "EnergyLevelsAr",
         SceneKind::EnergyLevelsCu => "EnergyLevelsCu",
         SceneKind::EnergyLevelsU => "EnergyLevelsU",

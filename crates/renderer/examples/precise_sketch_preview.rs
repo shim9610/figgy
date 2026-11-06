@@ -92,6 +92,7 @@ fn main() -> Result {
                         scatter: Some(scatter(color, 8.)),
                         line: Some(line(color, 2.5)),
                         errors: None,
+                        stem: None,
                     }),
                 ));
                 chart = chart.with_legend_entry(label, color, 2.5, LegendEntryKind::LineScatter);

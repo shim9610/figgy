@@ -39,6 +39,7 @@ pub use field::*;
 mod contour;
 pub mod surface_mesh;
 pub mod ternary_region;
+pub mod tri_mesh;
 pub use contour::*;
 mod value_label;
 pub use value_label::*;
@@ -58,7 +59,7 @@ pub use column_pool::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy,
     FreeRegion, GpuAllocCtx, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot,
     RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource,
-    RecordStats,
+    RecordStats, TriangleId, TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
 };
 
 // Instance, adapter, surface, and device setup.
@@ -71,7 +72,7 @@ pub use column_pool::{
 
 // WGSL mirror size guards. Field order and size must remain byte-identical to
 // every shader common block before either CPU structure changes.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 288);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 304);
 
 // Primitive style uniform — color and per-primitive options.
 // Bind groups: group(0) = transform (shared), group(1) = style (per primitive).

@@ -203,6 +203,20 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             }
             value
         }
+        renderer::PickedData::MeshTriangle {
+            source_id,
+            series_id,
+            triangle_index,
+            vertex_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "mesh_triangle",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "triangle_index": triangle_index,
+            "vertex_index": vertex_index,
+            "distance_px": distance_px,
+        }),
     };
     serde_json::to_string(&value)
 }
@@ -345,8 +359,16 @@ fn prepare_demo_declarations(
                 }) => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch
                 // this demo could reuse; an image's colours are its data.
+                DataRenderType::TriMesh(renderer::tri_mesh::TriMeshSeries {
+                    contour: Some(contour),
+                    ..
+                }) => contour.line.line_color,
                 DataRenderType::Field(renderer::data_config::FieldSeries {
                     contour: None, ..
+                })
+                | DataRenderType::TriMesh(renderer::tri_mesh::TriMeshSeries {
+                    contour: None,
+                    ..
                 })
                 | DataRenderType::RgbImage { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,
@@ -391,6 +413,7 @@ fn prepare_demo_declarations(
                     interpolation: renderer::data_config::LineInterpolation::Linear,
                 }),
                 errors: None,
+                stem: None,
             }),
         };
         // The legend entry is the one that stands for this series, not
@@ -510,6 +533,7 @@ mod tests {
                 scatter: None,
                 line: Some(line_style()),
                 errors: None,
+                stem: None,
             }),
         }
     }
@@ -610,6 +634,7 @@ mod tests {
                 scatter: Some(scatter_style()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         )];
         series[0].label = Some(config.chart_title.text.clone());
@@ -617,6 +642,47 @@ mod tests {
         assert!(json.contains(r#""greek":false,"math":true}"#), "{json}");
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series);
+    }
+
+    // A stem (#206) reaches JavaScript through `get_series` and comes back
+    // through `set_series` unchanged: the `stem` key on the marker variant,
+    // its defaults omitted, and no key at all without stems.
+    #[test]
+    fn series_json_carries_a_stem_both_ways() {
+        let stem = renderer::data_config::Stem {
+            baseline: -1.5,
+            direction: renderer::data_config::CategoryBarDirection::Horizontal,
+            color: renderer::Color::new(0.4, 0.4, 0.4, 1.0),
+            width: 1.5,
+            line_style: renderer::line::LineStylePreset::Solid,
+        };
+        let series = vec![series_config(
+            "s",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+                stem: Some(stem),
+            }),
+        )];
+        let json = serde_json::to_value(&series).unwrap();
+        let written = &json[0]["render_type"]["Scatter"]["stem"];
+        assert_eq!(written["baseline"], -1.5);
+        assert_eq!(written["direction"], "Horizontal");
+        assert!(written.get("line_style").is_none(), "{written}");
+        let back: Vec<SeriesConfig> = serde_json::from_value(json).unwrap();
+        assert_eq!(back, series);
+        let plain = vec![series_config(
+            "s",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter_style()),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
+        )];
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json[0]["render_type"]["Scatter"].get("stem").is_none());
     }
 
     // The math fields reach JavaScript and come back unchanged through
@@ -686,6 +752,7 @@ mod tests {
                 scatter: Some(scatter_style()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         )];
         series[0].label = Some(title);
@@ -870,6 +937,7 @@ mod tests {
                     scatter: None,
                     line: Some(line_style()),
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Line,
             ),
@@ -878,6 +946,7 @@ mod tests {
                     scatter: Some(scatter_style()),
                     line: None,
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Points,
             ),
@@ -886,6 +955,7 @@ mod tests {
                     scatter: Some(scatter_style()),
                     line: Some(line_style()),
                     errors: None,
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::Points,
             ),
@@ -898,6 +968,7 @@ mod tests {
                         y: None,
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsX,
             ),
@@ -910,6 +981,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsY,
             ),
@@ -922,6 +994,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsXY,
             ),
@@ -934,6 +1007,7 @@ mod tests {
                         y: None,
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsX,
             ),
@@ -946,6 +1020,7 @@ mod tests {
                         y: Some(y_error.clone()),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsY,
             ),
@@ -958,6 +1033,7 @@ mod tests {
                         y: Some(y_error),
                         style: errorbar_style(),
                     }),
+                    stem: None,
                 }),
                 GpuSeriesExtentMode::PointsXY,
             ),
@@ -1226,7 +1302,8 @@ mod web {
     use renderer::{InitEvent, InitPhase};
 
     use crate::borrowed_column::{
-        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, JsStreamColumn,
+        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedU32Column,
+        JsStreamColumn,
     };
     use crate::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
@@ -1694,6 +1771,7 @@ mod web {
                             )),
                             line: None,
                             errors: None,
+                            stem: None,
                         }),
                     ),
                     pick: point("scatter", 2),
@@ -1719,12 +1797,47 @@ mod web {
                             components: VectorComponents::Points {
                                 u: "vu".into(),
                                 v: "vv".into(),
+                                w: None,
                             },
                             style: vector_style(Some(VectorColorMap::Column("vc".into()))),
                         },
                     ),
                     pick: point("arrows", 1),
                     keys: keys(&["x", "y", "u", "v", "color_value"]),
+                },
+                SelectionScene {
+                    name: "3D point vector with its height and z component",
+                    columns: vec![
+                        column("ax", &[0.2, 0.5, 0.8]),
+                        column("ay", &[0.3, 0.5, 0.7]),
+                        column("az", &[0.1, 0.4, 0.6]),
+                        column("au", &[0.1, 0.0, -0.1]),
+                        column("av", &[0.0, 0.1, 0.0]),
+                        column("aw", &[0.2, 0.3, 0.1]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: |config| {
+                        config.set_view_3d(Some(renderer::view3d::View3d::default()));
+                    },
+                    series: SeriesConfig {
+                        z_column: Some("az".into()),
+                        ..series(
+                            "arrows3d",
+                            "ax",
+                            "ay",
+                            DataRenderType::Vector {
+                                components: VectorComponents::Points {
+                                    u: "au".into(),
+                                    v: "av".into(),
+                                    w: Some("aw".into()),
+                                },
+                                style: vector_style(None),
+                            },
+                        )
+                    },
+                    pick: point("arrows3d", 1),
+                    keys: keys(&["x", "y", "z", "u", "v", "w"]),
                 },
                 SelectionScene {
                     name: "parallel rows over twenty axes with a colour column",
@@ -2180,6 +2293,11 @@ mod web {
                 if scene.name.starts_with("parallel") {
                     assert_eq!(details["values"].as_array().map(Vec::len), Some(20));
                 }
+                if scene.name.starts_with("3D point vector") {
+                    for (key, value) in [("z", 0.4), ("u", 0.0), ("v", 0.1), ("w", 0.3)] {
+                        assert_eq!(details[key], value, "{key}");
+                    }
+                }
             }
         }
 
@@ -2295,6 +2413,7 @@ mod web {
                             scatter: None,
                             line: Some(DataLineStyleConfig::default()),
                             errors: None,
+                            stem: None,
                         }),
                     })
                     .collect();

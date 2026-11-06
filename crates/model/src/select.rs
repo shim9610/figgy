@@ -1127,7 +1127,8 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
         if cfg.ternary().is_some() {
             cfg.ternary_title_placement(k, offset, m)
         } else {
-            cfg.box_title_placement(k, offset, m)
+            let reach = crate::chrome::box3d_label_reach(cfg, k, measure);
+            cfg.box_title_placement(k, offset, m, reach)
         }
     });
     if (cfg.ternary().is_some() || cfg.view_3d().is_some()) && slanted.is_none() {

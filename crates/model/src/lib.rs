@@ -39,6 +39,7 @@ pub mod layout;
 pub mod legend;
 pub mod line;
 pub mod preset;
+pub mod probability;
 pub mod radial;
 pub mod resize;
 pub mod select;
@@ -62,10 +63,10 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorBars,
-    ErrorRef, FieldSeries, LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LEVELS,
-    PointColorMap, PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig,
-    SeriesRef, SizeScale, StreamlineArrows, StreamlinesRef, VectorColorMap, VectorComponents,
-    VectorPivot, VectorScale, VectorStyle, XySeries,
+    ErrorRef, FieldSeries, LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LABEL_ANCHORS,
+    MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape,
+    SeriesConfig, SeriesRef, SizeScale, StreamlineArrows, StreamlinesRef, VectorColorMap,
+    VectorComponents, VectorPivot, VectorScale, VectorStyle, XySeries,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};
@@ -101,6 +102,7 @@ pub mod energy_levels;
 pub mod parallel;
 pub mod polar;
 pub mod ternary;
+pub mod tri_mesh;
 pub mod view3d;
 pub use energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelLabelSide,
@@ -111,6 +113,7 @@ pub use polar::{
     AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
     PolarOptions,
 };
+pub use tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 pub mod radar;
 #[allow(deprecated)]
 pub use radar::*;

@@ -65,6 +65,14 @@ pub(super) fn has_errorbar(rt: &DataRenderType) -> bool {
     extract_err_x(rt).is_some() || extract_err_y(rt).is_some()
 }
 
+/// Whether an xy series draws stems (#206).
+pub(super) fn has_stem(rt: &DataRenderType) -> bool {
+    matches!(
+        rt,
+        DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+    )
+}
+
 /// The line a render type draws through `(x_column, y_column)`, borrowed
 /// from its config or, for a radar series, the polar line its outline and
 /// fill are drawn as ([`crate::data_config::RadarRef::line_style`]): a
@@ -84,7 +92,9 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // through `ParallelRef::line` where the parallel layer is built.
         DataRenderType::Parallel { .. }
 
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+
+        | DataRenderType::TriMesh(_) => None,
         DataRenderType::Xy(crate::data_config::XySeries { line: None, .. })
         // A contour's `contour.line` is not this line. This one is the polyline
         // through `(x_column, y_column)`; a contour is an implicit level set
@@ -115,7 +125,9 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         // A parallel series draws no markers.
         DataRenderType::Parallel { .. }
 
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+
+        | DataRenderType::TriMesh(_) => None,
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
@@ -179,7 +191,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -216,7 +229,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -250,7 +264,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -277,7 +292,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -291,13 +307,20 @@ pub(super) fn has_vector(rt: &DataRenderType) -> bool {
 /// deciding how its extent is reported. An unregistered column counts
 /// as zero: nothing draws, and that is reported rather than raised — checking
 /// registration is `validate_renderer_series`' job.
+///
+/// `drawn_z` is the height column that bounds the draw on a 3D panel
+/// (`Config::drawn_z_column`, #207): a 3D point needs its height too.
 pub(super) fn series_draw_info_from_pool(
     pool: &impl ColumnRegistration,
     series: &SeriesConfig,
+    drawn_z: Option<&str>,
 ) -> SeriesDrawInfo {
     let len = |id: &str| -> u64 { pool.column_len(id).unwrap_or(0) };
     let x = len(&series.x_column);
     let y = len(&series.y_column);
+    // The coordinate columns of an xy series: x, y and, on a 3D panel, z.
+    let xyz = [x, y, drawn_z.map_or(0, len)];
+    let xyz = &xyz[..if drawn_z.is_some() { 3 } else { 2 }];
     // Index-aligned roles: the shortest decides, and anything longer is surplus.
     let paired = |lengths: &[u64]| -> (u64, bool) {
         let low = lengths.iter().copied().min().unwrap_or(0);
@@ -315,9 +338,37 @@ pub(super) fn series_draw_info_from_pool(
             rows: None,
             truncated: false,
         },
+        // A triangle mesh counts its triangles (#210), face values bounding
+        // them. It is truncated when the shortest vertex column no longer
+        // reaches the largest index: the draw then drops every triangle
+        // that names a vertex past the end, which this does not count
+        // (no index is read on the CPU).
+        DataRenderType::TriMesh(mesh) => {
+            let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
+            let stats = pool.triangle_stats(&mesh.triangles);
+            let triangles = stats.map_or(0, |stats| u64::from(stats.triangles));
+            let values = len(&mesh.values.column);
+            let vertices = if faces {
+                x.min(y)
+            } else {
+                x.min(y).min(values)
+            };
+            let drawn = if faces {
+                triangles.min(values)
+            } else {
+                triangles
+            };
+            SeriesDrawInfo {
+                drawn_count: drawn,
+                cols: None,
+                rows: None,
+                truncated: drawn < triangles
+                    || stats.is_some_and(|stats| u64::from(stats.max_index) >= vertices),
+            }
+        }
         // A polyline draws one segment between adjacent points.
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
-            let (count, truncated) = paired(&[x, y]);
+            let (count, truncated) = paired(xyz);
             SeriesDrawInfo {
                 drawn_count: count.saturating_sub(1),
                 cols: None,
@@ -349,7 +400,7 @@ pub(super) fn series_draw_info_from_pool(
             errors: None,
             ..
         }) => {
-            let (count, truncated) = paired(&[x, y]);
+            let (count, truncated) = paired(xyz);
             SeriesDrawInfo {
                 drawn_count: count,
                 cols: None,
@@ -514,23 +565,30 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
-        // Point vectors: one arrow per index-aligned row of x, y, u, v and the
-        // colour column. Grid vectors: one arrow per cell of the smallest
-        // common extent of the u, v and colour grids.
+        // Point vectors: one arrow per index-aligned row of x, y, u, v, on a
+        // 3D panel z and w, and the colour column. Grid vectors: one arrow
+        // per cell of the smallest common extent of the u, v and colour
+        // grids.
         DataRenderType::Vector { components, style } => {
             let color_column = match style.color_map.as_ref() {
                 Some(crate::data_config::VectorColorMap::Column(column)) => Some(len(column)),
                 _ => None,
             };
             match components {
-                crate::data_config::VectorComponents::Points { u, v } => {
-                    let mut lengths = [x, y, len(u), len(v), 0];
-                    let used = if let Some(color) = color_column {
-                        lengths[4] = color;
-                        5
-                    } else {
-                        4
-                    };
+                crate::data_config::VectorComponents::Points { u, v, w } => {
+                    // On a 3D panel the anchor height and the z component
+                    // bound the draw too (#211).
+                    let three_d = drawn_z.map(|z| (len(z), w.as_deref().map_or(0, len)));
+                    let mut lengths = [x, y, len(u), len(v), 0, 0, 0];
+                    let mut used = 4;
+                    for value in three_d
+                        .into_iter()
+                        .flat_map(|(z, w)| [z, w])
+                        .chain(color_column)
+                    {
+                        lengths[used] = value;
+                        used += 1;
+                    }
                     let (count, truncated) = paired(&lengths[..used]);
                     SeriesDrawInfo {
                         drawn_count: count,
@@ -579,7 +637,9 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
 
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -607,7 +667,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -625,7 +686,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 
@@ -643,7 +705,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
         | DataRenderType::Parallel { .. }
-        | DataRenderType::EnergyLevels(_) => None,
+        | DataRenderType::EnergyLevels(_)
+        | DataRenderType::TriMesh(_) => None,
     }
 }
 

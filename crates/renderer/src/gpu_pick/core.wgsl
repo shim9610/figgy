@@ -79,6 +79,8 @@ struct Transform {
     // Broken axes (#200), as the draw's `Transform`.
     breaks: array<vec4<f32>, 6>,
     break_info: vec4<f32>,
+    // Probability axes (#209), as the draw's `Transform`.
+    scale_prob: vec4<f32>,
 };
 
 struct PickQueryParams {
@@ -166,6 +168,14 @@ struct PickQueryParams {
     // (member, members — zero without raw points —, 1 when the categories
     // run along y, series seed).
     category_slot: vec4<u32>,
+    // Stems (#206, `gpu_pick/errorbar.wgsl`): (baseline hi, baseline lo,
+    // width in logical pixels, 0).
+    stem: vec4<f32>,
+    // The stem's dash pattern, canvas pixels.
+    stem_dash: array<vec4<f32>, 2>,
+    // (1 with stems, the `ERRORBAR_HAS_*` direction, dash count, 1 when the
+    // base colour paints else 0).
+    stem_info: vec4<u32>,
 };
 
 struct PickScatterStyleSlot {
@@ -268,13 +278,14 @@ fn pick_pair_is_valid(v: vec2<f32>) -> bool {
 
 fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
     return pick_pair_is_valid(v)
-        && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0);
+        && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0)
+        && (pick_query_params.transform.scale_prob[axis] < 0.5 || prob_in_domain(v));
 }
 
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
     let tr = pick_query_params.transform;
     let t = axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
-        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis],
+        tr.scale_log[axis], tr.scale_prob[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis],
         cuts_of(tr.breaks, tr.break_info, axis));
     if axis == 0u {
         return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
@@ -289,16 +300,17 @@ fn pick_ternary() -> bool {
     return pick_variant(PICK_VARIANT_TERNARY) && pick_query_params.transform.ternary_r.z > 0.5;
 }
 
-// The third component of sample `i`, NaN past its column.
+// The third component of sample `i`; zero past its column, where
+// `pick_ternary_valid` already refuses the sample.
 fn pick_ternary_c(i: u32) -> vec2<f32> {
     if i >= pick_query_params.size_map.w {
-        return vec2<f32>(bitcast<f32>(0x7fc00000u));
+        return vec2<f32>(0.0);
     }
     return pick_read_pair(pick_query_params.size_map.z, i);
 }
 
 fn pick_ternary_valid(i: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
-    return ternary_sample_valid(x, y, pick_ternary_c(i));
+    return i < pick_query_params.size_map.w && ternary_sample_valid(x, y, pick_ternary_c(i));
 }
 
 // Sample `i` in the draw's pixel frame (y up), as `vs_ternary` places it.

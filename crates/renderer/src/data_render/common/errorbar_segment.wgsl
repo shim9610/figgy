@@ -12,6 +12,14 @@
 const ERRORBAR_HAS_Y: u32 = 1u;
 const ERRORBAR_HAS_X: u32 = 2u;
 
+// `Style.primitive_flags` bit 5 (#206): the style is a stem series' (one
+// quad per point from a baseline), not an error bar's. Bits 2-4 are the
+// line step and fill flags (`line_step.rs`). Under it `cap_half_px` /
+// `cap_width_px` hold the baseline's (hi, lo) pair, since a stem has no
+// caps, and `ERRORBAR_HAS_X` marks a horizontal stem (SHADER_COMMON.md
+// §5.11).
+const ERRORBAR_STEM: u32 = 32u;
+
 // Milkyway jets: the halo room past the core stroke (beams) and the cap
 // size (knots) that the glow needs.
 const JET_BEAM_HALO: f32 = 4.0;
@@ -141,6 +149,47 @@ fn errorbar_segment(seg: u32, s: ErrorBarSample, stroke: ErrorBarStroke) -> Erro
         g.half_stroke = stroke.cap_stroke_half;
     }
     return g;
+}
+
+// A stem (#206): quad 0 (vertical) or quad 3 (horizontal, `ERRORBAR_HAS_X`)
+// of the error bar, end A at the baseline and end B at the point. The
+// draw's `vs_stem` and the pick's `pick_stem_candidate` both build it here.
+fn stem_segment(x: vec2<f32>, y: vec2<f32>, baseline: vec2<f32>, flags: u32, half_stroke: f32) -> ErrorBarSegment {
+    var g: ErrorBarSegment;
+    g.a_px = vec2<f32>(0.0, 0.0);
+    g.b_px = vec2<f32>(0.0, 0.0);
+    g.half_stroke = half_stroke;
+    g.b = DataPoint(x, y);
+    if ((flags & ERRORBAR_HAS_X) != 0u) {
+        g.a = DataPoint(baseline, y);
+        g.perp = vec2<f32>(0.0, 1.0);
+    } else {
+        g.a = DataPoint(x, baseline);
+        g.perp = vec2<f32>(1.0, 0.0);
+    }
+    return g;
+}
+
+// The quad index a stem stands for: 3 for a horizontal stem, else 0. The
+// sketch wobble hashes it, as it hashes an error bar's stem.
+fn stem_quad(flags: u32) -> u32 {
+    return select(0u, 3u, (flags & ERRORBAR_HAS_X) != 0u);
+}
+
+// End A (the baseline) or B (the point) of stem `g` in NDC. The baseline
+// end takes its value-axis coordinate through `axis_baseline_ndc`, which
+// clamps a baseline at or below zero on a logarithmic axis to the axis
+// minimum, so every stem stays drawn.
+fn stem_end_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, flags: u32) -> vec2<f32> {
+    var ndc = data_to_ndc(t, g.b.x, g.b.y);
+    if (at_a) {
+        if ((flags & ERRORBAR_HAS_X) != 0u) {
+            ndc.x = axis_baseline_ndc(t, g.a.x, 0u);
+        } else {
+            ndc.y = axis_baseline_ndc(t, g.a.y, 1u);
+        }
+    }
+    return ndc;
 }
 
 // Triangle-list corner map [0,1,2, 2,1,3] over corners

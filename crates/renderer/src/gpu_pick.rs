@@ -60,7 +60,7 @@ use types::{
     ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, PickTernaryGpu, create_rows_buffer_checked,
 };
 use types::{FLAG_REGION, FLAG_STYLE_INDEX, FLAG_STYLE_MAP, FLAG_VECTOR, GATE_MASK_BYTES};
-pub(crate) use types::{GpuPickArea, GpuPickErrorBar, GpuPickErrorBarStyle};
+pub(crate) use types::{GpuPickArea, GpuPickErrorBar, GpuPickErrorBarStyle, GpuPickStem};
 pub(crate) use types::{
     GpuPickCategoryJitter, GpuPickSeriesDescriptor, GpuPickSizeMap, GpuPickVector, GpuStreamPick,
 };

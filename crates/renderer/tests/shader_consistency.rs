@@ -132,7 +132,11 @@ fn contour_label_capacity_and_private_storage_match_the_model_contract() {
 
     let rust = read("src/gpu_contour.rs");
     let shader = read("src/contour_anchor.wgsl");
-    assert!(rust.contains("pub const MAX_CONTOUR_LABELS_TOTAL: u32 = 1024;"));
+    // The label buffer takes the model's explicit-anchor limit (#107).
+    assert_eq!(renderer::data_config::MAX_CONTOUR_LABEL_ANCHORS, 1024);
+    assert!(rust.contains(
+        "pub const MAX_CONTOUR_LABELS_TOTAL: u32 = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS as u32;"
+    ));
     assert!(
         rust.contains("MAX_ANCHOR_CANDIDATES >= crate::data_config::MAX_CONTOUR_LEVELS as u32")
     );
@@ -246,7 +250,9 @@ fn field_derived_nonfinite_arithmetic_fails_closed() {
     assert!(field.contains("!ramp_finite(normalized)"));
     assert!(field.contains("!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)"));
     assert!(field.contains("!f32_is_finite(coverage_unclamped)"));
-    assert!(field.contains("if (!f32_is_finite(cov) || cov <= 0.0)"));
+    // The stroke coverage is checked in the shared `contour_level_over`
+    // (SHADER_COMMON.md), which the field and the triangle mesh both call.
+    assert!(field.contains("if (!f32_is_finite(coverage) || !f32_is_finite(cov) || cov <= 0.0)"));
     assert!(field.contains("!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)"));
 
     assert!(anchor.contains("if (!f32_is_finite(g2) || g2 <= 0.0"));
@@ -887,6 +893,15 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         ],
         &["vector_sample"],
     ),
+    // The vector projection layer's interface (#211): the flat and the box
+    // projection each define the placement and the corner's clip position.
+    (
+        &[
+            "data_render/vector/project_box3d.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &["arrow_clip", "project_arrow"],
+    ),
     (
         &["gpu_pick/line.wgsl", "gpu_pick/no_line.wgsl"],
         &["pick_line_candidate"],
@@ -899,7 +914,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         &["preview_texel"],
     ),
     // Not a paste: each workgroup entry zeroes its own `var<workgroup>` array
-    // before computing, so the six bodies differ by design (the contract is
+    // before computing, so the seven bodies differ by design (the contract is
     // in `workgroup_init.rs`, the per-shader zeroing in each module).
     (
         &[
@@ -907,6 +922,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
             "data_render/line_arc.wgsl",
             "data_render/parallel_columnar.wgsl",
             "data_render/ternary_region.wgsl",
+            "data_render/tri_mesh/mesh_entry.wgsl",
             "gpu_errorbar.wgsl",
             "gpu_pick/core.wgsl",
         ],
@@ -1474,4 +1490,57 @@ fn blank_test_items(code: &str) -> String {
         }
     }
     out.into_iter().collect()
+}
+
+// #209 (N12): a probability axis is a second scale code beside the log
+// flag. Every function that reads `scale_log` reads `scale_prob` too, so no
+// site silently draws a probability axis linearly, and `scale_prob` is a
+// code compared against thresholds, never a `mix` weight. The exceptions
+// are the charts that refuse a probability scale: polar (the radius),
+// category bars and box plots (the value axis), 3D boxes.
+#[test]
+fn every_scale_log_reader_reads_scale_prob() {
+    const REFUSING: [&str; 4] = [
+        "polar_sample_valid",
+        "category_radius_px",
+        "view3d_axis_t",
+        "box_t_per_unit",
+    ];
+    let mut shaders = Vec::new();
+    wgsl_files(&workspace_root().join("src"), &mut shaders);
+    shaders.sort();
+    let mut readers = 0;
+    let mut offending = Vec::new();
+    for path in shaders {
+        let source = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let code = strip_wgsl_comments(&source);
+        for (lo, hi) in function_bodies(&code) {
+            let body = &code[lo..hi];
+            let name = code[..lo]
+                .rfind("fn ")
+                .map(|at| {
+                    let rest = &code[at + 3..lo];
+                    rest[..rest.find('(').unwrap_or(rest.len())]
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            if body.contains("scale_log") {
+                readers += 1;
+                if !body.contains("scale_prob") && !REFUSING.contains(&name.as_str()) {
+                    offending.push(format!("{}: {name} reads scale_log only", path.display()));
+                }
+            }
+            for open in call_openings(&code, lo, hi, "mix") {
+                let (arguments, _) = call_arguments(&code, open);
+                if let Some(&(s, e)) = arguments.get(2)
+                    && code[s..e].contains("scale_prob")
+                {
+                    offending.push(format!("{}: {name} mixes by scale_prob", path.display()));
+                }
+            }
+        }
+    }
+    assert!(readers > 10, "found {readers} scale_log readers");
+    assert!(offending.is_empty(), "{offending:#?}");
 }

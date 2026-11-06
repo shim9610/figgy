@@ -156,6 +156,8 @@ pub(super) fn packet(
             field_bg,
             charge,
             drawable: true,
+            vertices: crate::data_render::FIELD_VERTICES,
+            instances: 0..1,
         }],
     };
     let mut packet = PreparedSeries::from_layers(layers.into_series_layers(), None, None);

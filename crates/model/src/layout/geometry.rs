@@ -65,16 +65,11 @@ pub fn axis_cross(config: &Config, side: &Side) -> Option<f32> {
         Side::Right => (&config.right_y, &config.bottom_x),
     };
     let value = axis.cross_at?;
-    let t = match perpendicular.scale {
-        _ if perpendicular.categories.is_some() => {
-            let (min, max) = perpendicular.data_range();
-            span_fraction(value, min, max, false)
-        }
-        AxisScale::Linear => span_fraction(value, perpendicular.min, perpendicular.max, false),
-        AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(perpendicular.min, perpendicular.max);
-            span_fraction(value, min, max, true)
-        }
+    let t = if perpendicular.categories.is_some() {
+        let (min, max) = perpendicular.data_range();
+        span_fraction(value, min, max, &AxisScale::Linear)
+    } else {
+        raw_axis_t(value, perpendicular)
     }?;
     let t = if perpendicular.inverted { 1.0 - t } else { t };
     Some(t.clamp(0.0, 1.0) as f32)
@@ -90,6 +85,34 @@ pub fn axis_offset(side: Side, line_offset: f32) -> (f32, f32) {
 
 /// The smallest positive range end a logarithmic axis falls back to.
 pub const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
+
+/// The range a probability axis falls back to where its stored range is not
+/// a probability range (#209): 0.1 % to 99.9 %.
+pub const PROBABILITY_RANGE_FALLBACK: (f64, f64) = (0.001, 0.999);
+
+/// A probability axis range the renderer, the ticks and the annotation space
+/// can place values in: both ends strictly inside `(0, 1)` and ordered, else
+/// [`PROBABILITY_RANGE_FALLBACK`]. Validation refuses such a range on a drawn
+/// chart; this keeps the paths that read an unvalidated range finite.
+pub fn guarded_probability_range(min: f64, max: f64) -> (f64, f64) {
+    let inside = |p: f64| p.is_finite() && p > 0.0 && p < 1.0;
+    if inside(min) && inside(max) && min < max {
+        (min, max)
+    } else {
+        PROBABILITY_RANGE_FALLBACK
+    }
+}
+
+/// The range of `axis` its scale can place values in: as stored on a linear
+/// axis, [`guarded_log_range`] on a logarithmic one and
+/// [`guarded_probability_range`] on a probability one.
+fn guarded_axis_range(axis: &AxisOptions) -> (f64, f64) {
+    match axis.scale {
+        AxisScale::Linear => (axis.min, axis.max),
+        AxisScale::Logarithmic => guarded_log_range(axis.min, axis.max),
+        AxisScale::Probability(_) => guarded_probability_range(axis.min, axis.max),
+    }
+}
 
 /// A logarithmic axis range the renderer, the ticks and the annotation space
 /// can take logarithms of: positive, finite and ordered, with a synthetic
@@ -130,17 +153,12 @@ pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
 /// A non-finite value, or a non-positive one on a logarithmic axis, has no
 /// position and maps to the axis start.
 pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
-    let t = match axis.scale {
+    let t = if axis.categories.is_some() {
         // A categorical axis is linear over its category range.
-        _ if axis.categories.is_some() => {
-            let (min, max) = axis.data_range();
-            span_fraction(value, min, max, false)
-        }
-        AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
-        AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
-            span_fraction(value, min, max, true)
-        }
+        let (min, max) = axis.data_range();
+        span_fraction(value, min, max, &AxisScale::Linear)
+    } else {
+        raw_axis_t(value, axis)
     }
     .unwrap_or(0.0);
     let t = BreakMap::of(axis).remap(t);
@@ -153,25 +171,18 @@ pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
 /// axis' scale, `None` for a value with no position. A categorical axis has
 /// no breaks.
 fn raw_axis_t(value: f64, axis: &AxisOptions) -> Option<f64> {
-    match axis.scale {
-        AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
-        AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
-            span_fraction(value, min, max, true)
-        }
-    }
+    let (min, max) = guarded_axis_range(axis);
+    span_fraction(value, min, max, &axis.scale)
 }
 
 /// The value at raw `t` of `axis`' range, the inverse of [`raw_axis_t`].
 fn value_at_raw_t(t: f64, axis: &AxisOptions) -> Option<f64> {
     let v = match axis.scale {
         AxisScale::Linear => axis.min + t * (axis.max - axis.min),
-        AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
-            if min <= 0.0 || max <= 0.0 {
-                return None;
-            }
-            10f64.powf(min.log10() + t * (max.log10() - min.log10()))
+        AxisScale::Logarithmic | AxisScale::Probability(_) => {
+            let (min, max) = guarded_axis_range(axis);
+            let (low, high) = (axis.scale.forward(min)?, axis.scale.forward(max)?);
+            axis.scale.inverse(low + t * (high - low))?
         }
     };
     v.is_finite().then_some(v)
@@ -451,22 +462,18 @@ impl BreakMap {
     }
 }
 
-/// Where `value` falls between `min` and `max`, linearly or by decades: the
-/// formula under [`axis_fraction`] and the annotation space. `None` when the
-/// value has no position: a non-finite value, an empty or non-finite span,
-/// or a non-positive value or bound on a logarithmic span.
-pub fn span_fraction(value: f64, min: f64, max: f64, logarithmic: bool) -> Option<f64> {
-    if !value.is_finite() {
-        return None;
-    }
-    let (value, min, max) = if logarithmic {
-        if value <= 0.0 || min <= 0.0 || max <= 0.0 {
-            return None;
-        }
-        (value.log10(), min.log10(), max.log10())
-    } else {
-        (value, min, max)
-    };
+/// Where `value` falls between `min` and `max` on `scale`: linearly, by
+/// decades, or by `F⁻¹(p)` on a probability axis ([`AxisScale::forward`]).
+/// The formula under [`axis_fraction`] and the annotation space. `None` when
+/// the value has no position: a non-finite value, an empty or non-finite
+/// span, a non-positive value or bound on a logarithmic span, or one outside
+/// `(0, 1)` on a probability span.
+pub fn span_fraction(value: f64, min: f64, max: f64, scale: &AxisScale) -> Option<f64> {
+    let (value, min, max) = (
+        scale.forward(value)?,
+        scale.forward(min)?,
+        scale.forward(max)?,
+    );
     let span = max - min;
     if !span.is_finite() || span == 0.0 {
         return None;

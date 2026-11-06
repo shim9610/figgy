@@ -8,11 +8,11 @@
 //
 // Pixel space here is the chart area's, centred, y up, one unit per logical
 // pixel: `px = ndc / transform.pixel_to_ndc`. The glyph layer works in this
-// space and the entry converts back with `px_to_clip`.
+// space and the entry converts a corner back with `arrow_clip`.
 //
-// A later 3D projection fragment replaces this file alone: it has to provide
-// the same `project_arrow` with the same `VectorSample` / `ArrowPx` types, and
-// may ignore the hi/lo split once it has its own camera.
+// The 3D projection fragment (`vector/project_box3d.wgsl`, #211) replaces
+// this file alone: it provides the same `project_arrow` and `arrow_clip`
+// with the same `VectorSample` / `ArrowPx` types.
 
 // ── Projection ──────────────────────────────────────────────────────────────
 
@@ -30,9 +30,11 @@ struct VectorSample {
 };
 
 /// An arrow in chart-area pixels, before the pivot and head are applied.
+/// `depth` is the NDC depth at the tail and the tip; a flat arrow has none.
 struct ArrowPx {
     tail: vec2<f32>,
     tip: vec2<f32>,
+    depth: vec2<f32>,
     valid: bool,
 };
 
@@ -51,16 +53,22 @@ fn px_to_clip(px: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(px * transform.pixel_to_ndc, 0.0, 1.0);
 }
 
+/// The clip position of a quad corner of `arrow`: a flat arrow has no
+/// depth, so this is `px_to_clip`.
+fn arrow_clip(corner: vec2<f32>, arrow: ArrowPx) -> vec4<f32> {
+    return px_to_clip(corner);
+}
+
 /// `axis_px_per_unit_at` for one axis of the transform: 0 = x, 1 = y.
 fn axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
     if (axis == 0u) {
         let range = fma(1.0, transform.data_max.x - transform.data_min.x, transform.data_max_lo.x - transform.data_min_lo.x);
-        let tx = axis_data_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x);
-        return axis_px_per_unit_at(range, transform.data_to_panel_scale.x * cut_scale_at(cuts_of(transform.breaks, transform.break_info, 0u), tx), transform.scale_log.x, transform.pixel_to_ndc.x, pair);
+        let tx = axis_data_t(pair, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.scale_prob.x);
+        return axis_px_per_unit_at(range, transform.data_to_panel_scale.x * cut_scale_at(cuts_of(transform.breaks, transform.break_info, 0u), tx), transform.scale_log.x, transform.scale_prob.x, transform.pixel_to_ndc.x, pair);
     }
     let range = fma(1.0, transform.data_max.y - transform.data_min.y, transform.data_max_lo.y - transform.data_min_lo.y);
-    let ty = axis_data_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y);
-    return axis_px_per_unit_at(range, transform.data_to_panel_scale.y * cut_scale_at(cuts_of(transform.breaks, transform.break_info, 1u), ty), transform.scale_log.y, transform.pixel_to_ndc.y, pair);
+    let ty = axis_data_t(pair, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.scale_prob.y);
+    return axis_px_per_unit_at(range, transform.data_to_panel_scale.y * cut_scale_at(cuts_of(transform.breaks, transform.break_info, 1u), ty), transform.scale_log.y, transform.scale_prob.y, transform.pixel_to_ndc.y, pair);
 }
 
 /// Project one sample. `mode` is a `VECTOR_SCALE_*` constant and `scale` the
@@ -70,6 +78,7 @@ fn project_arrow(sample: VectorSample, mode: u32, scale: f32) -> ArrowPx {
     var out: ArrowPx;
     out.tail = vec2<f32>(0.0, 0.0);
     out.tip = vec2<f32>(0.0, 0.0);
+    out.depth = vec2<f32>(0.0, 0.0);
     out.valid = false;
     let ox = vec2<f32>(sample.origin_hi.x, sample.origin_lo.x);
     let oy = vec2<f32>(sample.origin_hi.y, sample.origin_lo.y);

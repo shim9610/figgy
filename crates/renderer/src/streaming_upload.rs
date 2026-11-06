@@ -1002,6 +1002,7 @@ mod tests {
                     ternary_r: [0.0; 4],
                     breaks: crate::data_render::NO_BREAKS,
                     break_info: crate::data_render::NO_BREAK_INFO,
+                    scale_prob: crate::data_render::NO_PROBABILITY,
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);
@@ -1077,6 +1078,8 @@ mod tests {
                                 energy_levels: None,
                                 area: None,
                                 field: None,
+                                mesh: None,
+                                mesh_contour: None,
                                 bar: None,
                                 violin: None,
                                 category_bars: None,
@@ -1088,6 +1091,7 @@ mod tests {
                                 parallel: None,
                                 line_3d: None,
                                 scatter_3d: None,
+                                vector_3d: None,
                                 line: line.then_some(ColumnLineLayer {
                                     pipeline: &line_pipeline,
                                     transform_bg: &tbg,
@@ -1127,6 +1131,7 @@ mod tests {
                                 region: None,
                                 surface: None,
                                 floor: None,
+                                stem: None,
                             };
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: None,

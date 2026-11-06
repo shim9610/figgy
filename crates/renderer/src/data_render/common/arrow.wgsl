@@ -165,9 +165,13 @@ fn arrow_coverage(p: vec2<f32>, placed: ArrowPlacement, width_px: f32, aa_px: f3
 /// Pixels per data unit along one axis whose range is `range` (the hi/lo
 /// sum), at `pair`: the derivative of `axis_pair_to_t` mapped through NDC.
 /// Exact on a linear axis; the local direction on a logarithmic one, the way
-/// the contour labels orient themselves.
-fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: f32, pair: vec2<f32>) -> f32 {
+/// the contour labels orient themselves. On a probability axis (`prob`, the
+/// axis' `Transform.scale_prob` code, #209) it is `linear · dF⁻¹/dp`.
+fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, prob: f32, pixel_to_ndc: f32, pair: vec2<f32>) -> f32 {
     let linear = 2.0 * panel_scale / (range * pixel_to_ndc);
+    if (prob > 0.5) {
+        return linear * prob_slope(pair, prob);
+    }
     // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
     let value = pair.x + pair.y;
     let log_slope = linear / (value * log(10.0));

@@ -172,6 +172,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Ternary { .. }
             | DataRenderType::Parallel { .. }
             | DataRenderType::EnergyLevels(_)
+            // Never streamed: a streamed mesh is rejected (#210).
+            | DataRenderType::TriMesh(_)
             // Never streamed either; its colours are its data.
             | DataRenderType::RgbImage { .. }
             | DataRenderType::Field(crate::data_config::FieldSeries { fill: None, .. }) => false,
@@ -410,8 +412,8 @@ impl Renderer {
                 reason: "remove the streamed registration before resident insertion",
             });
         }
-        // A record's or ragged column's id, and its member columns, are not
-        // columns a host can insert or replace.
+        // A record's, ragged or triangle column's id, and its member columns,
+        // are not columns a host can insert or replace.
         if self.pool.is_member_column(id) {
             return Err(FiggyError::ReservedColumnId { id: id.to_owned() });
         }
@@ -516,8 +518,8 @@ impl Renderer {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: source.id.clone(),
                     reason: format!(
-                        "the id is {kind}; streaming is not extended to records and ragged \
-                         columns, which are resident only"
+                        "the id is {kind}; streaming is not extended to records, ragged and \
+                         triangle columns, which are resident only"
                     ),
                 });
             }

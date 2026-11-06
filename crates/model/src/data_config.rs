@@ -35,9 +35,10 @@ pub struct SeriesConfig {
     /// Y column id.
     pub y_column: ColumnId,
     /// Z column id: the height of a `Scatter`, `Line` or `ScatterLine`
-    /// series on a 3D chart (`Config.view_3d`), read on `right_y`. Kept
-    /// and unused on a flat chart; `None` (omitted from JSON) is every
-    /// other series.
+    /// series, the anchor height of a point vector, or the vertex height of
+    /// a triangle mesh (#210) on a 3D chart (`Config.view_3d`), read on
+    /// `right_y`. Kept and unused on a flat chart; `None` (omitted from
+    /// JSON) is every other series.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -412,6 +413,15 @@ pub enum DataRenderType {
     /// [`crate::energy_levels`] and
     /// [`Config::validate_energy_levels`](crate::config::Config::validate_energy_levels).
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    /// A field over host-given triangles (#210): a fill, contour lines or
+    /// both over the triangles of a triangle index column, whose vertices
+    /// are rows of `x_column` / `y_column` (and of `z_column`, the height,
+    /// on a 3D chart). The values are given per vertex or per face; the
+    /// renderer interpolates given vertex values across each triangle and
+    /// draws the level set of that interpolant, and computes nothing the
+    /// reader reads as data. See [`crate::tri_mesh`] and
+    /// [`Config::validate_tri_mesh_series`](crate::config::Config::validate_tri_mesh_series).
+    TriMesh(crate::tri_mesh::TriMeshSeries),
 }
 
 /// Markers, a line and error bars over a series' x and y columns: the
@@ -424,6 +434,65 @@ pub struct XySeries {
     pub line: Option<DataLineStyleConfig>,
     /// The error bars, or none. They need markers.
     pub errors: Option<ErrorBars>,
+    /// Stems from a baseline to each point (a stem or lollipop plot,
+    /// #206), or none. They need markers.
+    pub stem: Option<Stem>,
+}
+
+/// Stems from a baseline to each point: a stem or lollipop plot (#206).
+///
+/// A stem is drawn exactly where its marker's sample is valid, from the
+/// baseline to the point along the value axis. It reads no column of its
+/// own: the baseline is configuration.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Stem {
+    /// Where the stems start, in data units of the value axis (y for
+    /// `Vertical`, x for `Horizontal`). Finite. On a logarithmic value
+    /// axis a baseline at or below zero is drawn at the axis minimum.
+    pub baseline: f64,
+    /// `Vertical` (the default, omitted when written): stems along y.
+    /// `Horizontal`: stems along x. The column roles never swap.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_vertical_stem")
+    )]
+    pub direction: CategoryBarDirection,
+    /// The stroke colour.
+    pub color: Color,
+    /// The stroke width in logical pixels, finite and at least 0.
+    pub width: f32,
+    /// The dash (`Solid`, the default, omitted when written). Every stem's
+    /// dash starts at its baseline.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_solid_stem")
+    )]
+    pub line_style: crate::line::LineStylePreset,
+}
+
+#[cfg(feature = "serde")]
+fn is_vertical_stem(direction: &CategoryBarDirection) -> bool {
+    *direction == CategoryBarDirection::Vertical
+}
+
+#[cfg(feature = "serde")]
+fn is_solid_stem(style: &crate::line::LineStylePreset) -> bool {
+    *style == crate::line::LineStylePreset::default()
+}
+
+impl Stem {
+    /// A stem's own rules: a finite baseline and a finite width of at
+    /// least 0.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.baseline.is_finite() {
+            return Err("a stem baseline must be finite");
+        }
+        if !(self.width.is_finite() && self.width >= 0.0) {
+            return Err("a stem width must be finite and at least 0");
+        }
+        Ok(())
+    }
 }
 
 /// Error bars along x, y or both, with one style.
@@ -455,8 +524,9 @@ pub struct FieldSeries {
 }
 
 impl XySeries {
-    /// The combinations a series can draw: markers or a line (or both), and
-    /// error bars only with markers, along x, y or both.
+    /// The combinations a series can draw: markers or a line (or both),
+    /// error bars only with markers, along x, y or both, and stems only
+    /// with markers.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.scatter.is_none() && self.line.is_none() {
             return Err("an xy series draws markers, a line or both");
@@ -468,6 +538,12 @@ impl XySeries {
             if errors.x.is_none() && errors.y.is_none() {
                 return Err("error bars run along x, y or both");
             }
+        }
+        if let Some(stem) = &self.stem {
+            if self.scatter.is_none() {
+                return Err("stems are drawn with markers");
+            }
+            stem.validate()?;
         }
         Ok(())
     }
@@ -489,57 +565,80 @@ impl FieldSeries {
 
 impl From<WireRenderType> for DataRenderType {
     fn from(wire: WireRenderType) -> Self {
-        let xy = |scatter, line, errors| {
+        let xy = |scatter, line, errors, stem| {
             DataRenderType::Xy(XySeries {
                 scatter,
                 line,
                 errors,
+                stem,
             })
         };
         let errors = |x, y, style| Some(ErrorBars { x, y, style });
         match wire {
-            WireRenderType::Scatter { scatter } => xy(Some(scatter), None, None),
-            WireRenderType::Line { line } => xy(None, Some(line), None),
-            WireRenderType::ScatterLine { scatter, line } => xy(Some(scatter), Some(line), None),
+            WireRenderType::Scatter { scatter, stem } => xy(Some(scatter), None, None, stem),
+            WireRenderType::Line { line } => xy(None, Some(line), None, None),
+            WireRenderType::ScatterLine {
+                scatter,
+                line,
+                stem,
+            } => xy(Some(scatter), Some(line), None, stem),
             WireRenderType::ScatterErrorbarX {
                 scatter,
                 err_x,
                 err_style,
-            } => xy(Some(scatter), None, errors(Some(err_x), None, err_style)),
+                stem,
+            } => xy(
+                Some(scatter),
+                None,
+                errors(Some(err_x), None, err_style),
+                stem,
+            ),
             WireRenderType::ScatterErrorbarY {
                 scatter,
                 err_y,
                 err_style,
-            } => xy(Some(scatter), None, errors(None, Some(err_y), err_style)),
+                stem,
+            } => xy(
+                Some(scatter),
+                None,
+                errors(None, Some(err_y), err_style),
+                stem,
+            ),
             WireRenderType::ScatterErrorbarXY {
                 scatter,
                 err_x,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 None,
                 errors(Some(err_x), Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarX {
                 scatter,
                 line,
                 err_x,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(Some(err_x), None, err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarY {
                 scatter,
                 line,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(None, Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::LineScatterErrorbarXY {
                 scatter,
@@ -547,10 +646,12 @@ impl From<WireRenderType> for DataRenderType {
                 err_x,
                 err_y,
                 err_style,
+                stem,
             } => xy(
                 Some(scatter),
                 Some(line),
                 errors(Some(err_x), Some(err_y), err_style),
+                stem,
             ),
             WireRenderType::Heatmap {
                 matrix,
@@ -688,6 +789,7 @@ impl From<WireRenderType> for DataRenderType {
                 color_column,
             },
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
+            WireRenderType::TriMesh(mesh) => DataRenderType::TriMesh(mesh),
         }
     }
 }
@@ -701,12 +803,15 @@ impl TryFrom<DataRenderType> for WireRenderType {
         Ok(match render {
             DataRenderType::Xy(xy) => {
                 xy.validate()?;
+                let stem = xy.stem;
                 match (xy.scatter, xy.line, xy.errors) {
-                    (Some(scatter), None, None) => WireRenderType::Scatter { scatter },
+                    (Some(scatter), None, None) => WireRenderType::Scatter { scatter, stem },
                     (None, Some(line), None) => WireRenderType::Line { line },
-                    (Some(scatter), Some(line), None) => {
-                        WireRenderType::ScatterLine { scatter, line }
-                    }
+                    (Some(scatter), Some(line), None) => WireRenderType::ScatterLine {
+                        scatter,
+                        line,
+                        stem,
+                    },
                     (
                         Some(scatter),
                         line,
@@ -720,29 +825,34 @@ impl TryFrom<DataRenderType> for WireRenderType {
                             scatter,
                             err_x,
                             err_style,
+                            stem,
                         },
                         (None, None, Some(err_y)) => WireRenderType::ScatterErrorbarY {
                             scatter,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (None, Some(err_x), Some(err_y)) => WireRenderType::ScatterErrorbarXY {
                             scatter,
                             err_x,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (Some(line), Some(err_x), None) => WireRenderType::LineScatterErrorbarX {
                             scatter,
                             line,
                             err_x,
                             err_style,
+                            stem,
                         },
                         (Some(line), None, Some(err_y)) => WireRenderType::LineScatterErrorbarY {
                             scatter,
                             line,
                             err_y,
                             err_style,
+                            stem,
                         },
                         (Some(line), Some(err_x), Some(err_y)) => {
                             WireRenderType::LineScatterErrorbarXY {
@@ -751,6 +861,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                                 err_x,
                                 err_y,
                                 err_style,
+                                stem,
                             }
                         }
                         (_, None, None) => return Err("error bars run along x, y or both"),
@@ -891,6 +1002,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                 color_column,
             },
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
+            DataRenderType::TriMesh(mesh) => WireRenderType::TriMesh(mesh),
         })
     }
 }
@@ -914,6 +1026,11 @@ impl serde::Serialize for DataRenderType {
 pub(crate) enum WireRenderType {
     Scatter {
         scatter: DataScatterStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     Line {
         line: DataLineStyleConfig,
@@ -921,34 +1038,64 @@ pub(crate) enum WireRenderType {
     ScatterLine {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarX {
         scatter: DataScatterStyleConfig,
         err_x: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarY {
         scatter: DataScatterStyleConfig,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     ScatterErrorbarXY {
         scatter: DataScatterStyleConfig,
         err_x: ErrorRef,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarX {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
         err_x: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarY {
         scatter: DataScatterStyleConfig,
         line: DataLineStyleConfig,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     LineScatterErrorbarXY {
         scatter: DataScatterStyleConfig,
@@ -956,6 +1103,11 @@ pub(crate) enum WireRenderType {
         err_x: ErrorRef,
         err_y: ErrorRef,
         err_style: DataErrorBarStyleConfig,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        stem: Option<Stem>,
     },
     /// Bars from pre-binned data. Binning is the host's job: the renderer is
     /// handed `(edges, counts)` and draws them.
@@ -1410,6 +1562,7 @@ pub(crate) enum WireRenderType {
         color_column: Option<ColumnId>,
     },
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
+    TriMesh(crate::tri_mesh::TriMeshSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -1538,6 +1691,15 @@ pub enum VectorComponents {
         u: ColumnId,
         /// The y component column.
         v: ColumnId,
+        /// The z component column (#211): with the anchor height in
+        /// [`SeriesConfig::z_column`], a 3D chart (`Config.view_3d`) draws
+        /// each row as an arrow from `(x, y, z)` along `(u, v, w)`. A flat
+        /// chart keeps it and draws `(u, v)`. Omitted from JSON when `None`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        w: Option<ColumnId>,
     },
     /// `u` and `v` are grids over the coordinate columns, both with the same
     /// orientation and layout. With `Centers` the arrow sits on the
@@ -1697,6 +1859,39 @@ impl VectorStyle {
             min.abs().max(max.abs())
         };
         let longest = reach(u_bounds).hypot(reach(v_bounds));
+        if !longest.is_finite() || longest <= 0.0 || !target.is_finite() || target <= 0.0 {
+            return false;
+        }
+        match &mut self.scale {
+            VectorScale::Data { factor } => *factor = target / longest,
+            VectorScale::Pixels { px_per_unit } => *px_per_unit = target / longest,
+        }
+        true
+    }
+
+    /// [`fit_scale`](Self::fit_scale) for a 3D vector field (#211): the
+    /// longest vector the bounds allow is `hypot(max |u|, max |v|, max |w|)`
+    /// over the three component columns' statistics, and it draws `target`
+    /// long. In [`VectorScale::Pixels`] that is its length in the screen plane
+    /// at its anchor; an arrow out of that plane is foreshortened by the
+    /// camera. The same display helper: a non-finite or zero extent, or a
+    /// `target` that is not finite and positive, leaves the style unchanged
+    /// and returns `false`.
+    pub fn fit_scale_3d(
+        &mut self,
+        u_bounds: (f64, f64),
+        v_bounds: (f64, f64),
+        w_bounds: (f64, f64),
+        target: f64,
+    ) -> bool {
+        let reach = |(min, max): (f64, f64)| {
+            if !min.is_finite() || !max.is_finite() {
+                return f64::NAN;
+            }
+            min.abs().max(max.abs())
+        };
+        let (u, v, w) = (reach(u_bounds), reach(v_bounds), reach(w_bounds));
+        let longest = (u * u + v * v + w * w).sqrt();
         if !longest.is_finite() || longest <= 0.0 || !target.is_finite() || target <= 0.0 {
             return false;
         }
@@ -2240,6 +2435,16 @@ pub enum Shading {
 /// truncating them.
 pub const MAX_CONTOUR_LEVELS: usize = 1024;
 
+/// Maximum number of explicit label anchors one series accepts
+/// ([`ContourLabelConfig::anchors`]). A longer list is rejected by
+/// [`ContourLabelConfig::validate`] rather than truncated. Automatic
+/// placement keeps at most this many labels too: both share the renderer's
+/// label buffer. A configuration-list limit, not a data count (#107).
+pub const MAX_CONTOUR_LABEL_ANCHORS: usize = 1024;
+
+// `ContourLabelConfig::TOO_MANY_ANCHORS_REASON` names the number.
+const _: () = assert!(MAX_CONTOUR_LABEL_ANCHORS == 1024);
+
 fn push_contour_level(levels: &mut Vec<f64>, value: f64) -> Result<(), TickError> {
     if levels.len() == MAX_CONTOUR_LEVELS {
         return Err(TickError::InvalidRange);
@@ -2355,6 +2560,15 @@ impl ContourConfig {
                     }
                 }
             }
+            // The probability axis's own majors (#209); a colourbar refuses
+            // the scale, so this serves another caller's axis.
+            AxisScale::Probability(_) => {
+                for value in crate::tick::major_ticks(axis) {
+                    if inside(value) {
+                        push_contour_level(&mut out, value)?;
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -2422,12 +2636,13 @@ pub struct ContourLabelConfig {
     /// Where the labels go — an **override**.
     ///
     /// Empty is the normal case: the GPU projects a seed lattice onto each
-    /// level's isoline and selects a separated subset. For an explicit list, the
-    /// renderer removes anchors whose `level_index` is outside `levels`, keeps at
-    /// most 1024 in input order, and uses that resolved list as the override. If
-    /// resolution leaves it empty, automatic placement remains active. Automatic
-    /// and explicit placement share the same 1024-label draw capacity. Either way
-    /// the same anchor record reaches the same draw.
+    /// level's isoline and selects a separated subset. An explicit list holds at
+    /// most [`MAX_CONTOUR_LABEL_ANCHORS`] anchors; a longer one fails
+    /// [`ContourLabelConfig::validate`]. The renderer removes anchors whose
+    /// `level_index` is outside `levels` and uses the rest, in input order, as
+    /// the override. If that leaves it empty, automatic placement remains
+    /// active. Automatic and explicit placement share the same 1024-label draw
+    /// capacity. Either way the same anchor record reaches the same draw.
     pub anchors: Vec<ContourLabelAnchor>,
     /// Fill painted behind the text, so a label over a line stays readable.
     ///
@@ -2454,11 +2669,16 @@ fn default_contour_label_color() -> Color {
 impl ContourLabelConfig {
     pub const INVALID_SPACING_REASON: &'static str =
         "contour label spacing_px must be finite and greater than zero";
+    pub const TOO_MANY_ANCHORS_REASON: &'static str =
+        "contour label anchors exceed the supported maximum of 1024";
 
     /// Validate invariants owned by the label configuration itself.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.spacing_px.is_finite() || self.spacing_px <= 0.0 {
             return Err(Self::INVALID_SPACING_REASON);
+        }
+        if self.anchors.len() > MAX_CONTOUR_LABEL_ANCHORS {
+            return Err(Self::TOO_MANY_ANCHORS_REASON);
         }
         Ok(())
     }
@@ -3073,6 +3293,7 @@ impl DataRenderType {
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::TriMesh(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
@@ -3390,7 +3611,7 @@ impl crate::config::Config {
                     "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("category bars need a linear numeric value axis");
             }
             for (k, item) in members().enumerate() {
@@ -4271,7 +4492,7 @@ impl crate::config::Config {
                     "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
                 );
             };
-            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+            if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
                 return Err("box plots need a linear numeric value axis");
             }
             for item in members() {
@@ -4664,7 +4885,7 @@ impl crate::config::Config {
                 return Err("range bars need a numeric value axis");
             }
             let categorical = position_axis.categories.is_some();
-            if !categorical && position_axis.scale == AxisScale::Logarithmic {
+            if !categorical && position_axis.scale != AxisScale::Linear {
                 return Err(
                     "range bars need a categorical or linear numeric position axis: bottom_x \
                      for vertical bars, left_y for horizontal ones",
@@ -5258,7 +5479,9 @@ impl DataRenderType {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::RangeBars { .. }
             // Its transitions step as points by their own rule (#203).
-            | DataRenderType::EnergyLevels(_) => false,
+            | DataRenderType::EnergyLevels(_)
+            // Its triangles step by their own rule (#210).
+            | DataRenderType::TriMesh(_) => false,
         }
     }
 }
@@ -5293,6 +5516,10 @@ impl crate::config::Config {
     ///   by `dx` over the level rows its view draws and a transition (a
     ///   point) over the transitions it draws, and `dy` moves across the
     ///   energy-level series, in series order.
+    /// - A mesh triangle (#210) steps by `dx` over the triangles of its
+    ///   series and `dy` moves across the triangle mesh series, in series
+    ///   order. For a triangle index column `column_len` answers its index
+    ///   count, three per triangle.
     ///
     /// A contour level and a value label do not step. An error names a
     /// matrix cell selection whose series draws no matrix any more.
@@ -5366,11 +5593,19 @@ impl crate::config::Config {
                 };
                 // A point vector draws only where all four columns have a value.
                 if let DataRenderType::Vector {
-                    components: VectorComponents::Points { u, v },
+                    components: VectorComponents::Points { u, v, w },
                     ..
                 } = &next.render_type
                 {
                     count = count.min(len(u)).min(len(v));
+                    // A 3D arrow needs its z component too (#211).
+                    if let (Some(w), Some(_)) = (w, self.drawn_z_column(next)) {
+                        count = count.min(len(w));
+                    }
+                }
+                // A 3D point needs its height too (#207).
+                if let Some(z) = self.drawn_z_column(next) {
+                    count = count.min(len(z));
                 }
                 // A ternary sample needs its third component too.
                 if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
@@ -5528,6 +5763,31 @@ impl crate::config::Config {
                     ),
                 })
             }
+            PickedDataRef::MeshTriangle {
+                series_id,
+                triangle_index,
+                ..
+            } => {
+                let meshes = || series.iter().filter(|s| s.tri_mesh().is_some());
+                let Some(index) = meshes().position(|s| s.series_id == *series_id) else {
+                    return Ok(None);
+                };
+                let Some(next) = meshes().nth(shift(index, dy, meshes().count())) else {
+                    return Ok(None);
+                };
+                let Some(mesh) = next.tri_mesh() else {
+                    return Ok(None);
+                };
+                let count = crate::tri_mesh::TriMeshSeries::triangle_count(len(&mesh.triangles));
+                if count == 0 {
+                    return Ok(None);
+                }
+                Some(PickedDataRef::MeshTriangle {
+                    series_id: next.series_id.clone(),
+                    source_id: next.source_id.clone(),
+                    triangle_index: shift(*triangle_index, dx, count),
+                })
+            }
             PickedDataRef::ContourLevel { .. } | PickedDataRef::ValueLabel { .. } => None,
         })
     }
@@ -5578,6 +5838,22 @@ mod vector_style_tests {
         let mut data = style(VectorScale::Data { factor: 1.0 });
         assert!(data.fit_scale((-3.0, 1.0), (0.0, 4.0), 0.5));
         assert_eq!(data.scale, VectorScale::Data { factor: 0.1 });
+    }
+
+    /// The 3D fit (#211) takes the longest vector over three components.
+    #[test]
+    fn fit_scale_3d_targets_the_longest_vector_in_3d() {
+        let mut pixels = style(VectorScale::Pixels { px_per_unit: 1.0 });
+        // |u| = 2, |v| = 3, |w| = 6: length 7.
+        assert!(pixels.fit_scale_3d((-2.0, 1.0), (0.0, 3.0), (-6.0, 5.0), 35.0));
+        assert_eq!(pixels.scale, VectorScale::Pixels { px_per_unit: 5.0 });
+        let mut data = style(VectorScale::Data { factor: 1.0 });
+        assert!(data.fit_scale_3d((-2.0, 1.0), (0.0, 3.0), (-6.0, 5.0), 14.0));
+        assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
+        assert!(!data.fit_scale_3d((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), 1.0));
+        assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (f64::NAN, 1.0), 1.0));
+        assert!(!data.fit_scale_3d((-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), -1.0));
+        assert_eq!(data.scale, VectorScale::Data { factor: 2.0 });
     }
 
     #[test]
@@ -5768,6 +6044,7 @@ mod serde_tests {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &cfg.render_type
         else {
             panic!("expected scatter");
@@ -5815,6 +6092,7 @@ mod serde_tests {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            ..
         }) = &cfg.render_type
         else {
             panic!("expected scatter");
@@ -6022,6 +6300,7 @@ mod serde_tests {
                 components: VectorComponents::Points {
                     u: "u".into(),
                     v: "v".into(),
+                    w: None,
                 },
                 style: style.clone(),
             },
@@ -6074,6 +6353,31 @@ mod serde_tests {
         assert!(!again.contains("min_length_px"));
         assert!(!again.contains("color_map"));
         assert!(again.contains("\"pivot\":\"Tail\""));
+
+        // A 2D document has no `w` (#211) and re-serializes without one; a
+        // 3D vector writes it and reads it back.
+        assert!(!again.contains("\"w\""));
+        let DataRenderType::Vector { components, .. } = &parsed.render_type else {
+            unreachable!()
+        };
+        assert!(matches!(
+            components,
+            VectorComponents::Points { w: None, .. }
+        ));
+        let mut with_w = parsed.clone();
+        if let DataRenderType::Vector {
+            components: VectorComponents::Points { w, .. },
+            ..
+        } = &mut with_w.render_type
+        {
+            *w = Some("w".into());
+        }
+        let json = serde_json::to_string(&with_w).unwrap();
+        assert!(
+            json.contains("\"Points\":{\"u\":\"u\",\"v\":\"v\",\"w\":\"w\"}"),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), with_w);
     }
 
     fn a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate() {
@@ -6335,6 +6639,82 @@ mod serde_tests {
         let parsed: SeriesConfig = serde_json::from_value(bytes.clone()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), bytes);
     }
+
+    /// A stem is an additive key on the marker variants (#206): absent, it
+    /// reads back as `None` and is not written; present, its defaults
+    /// (`Vertical`, `Solid`) are omitted and the value round-trips.
+    #[test]
+    fn a_stem_round_trips_and_omits_its_defaults() {
+        let mut json = base_series_json();
+        json["render_type"]["Scatter"]["stem"] = serde_json::json!({
+            "baseline": 0.5,
+            "color": { "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+            "width": 1.5
+        });
+        let cfg: SeriesConfig = serde_json::from_value(json.clone()).expect("a stem parses");
+        let DataRenderType::Xy(super::XySeries {
+            stem: Some(stem), ..
+        }) = &cfg.render_type
+        else {
+            panic!("expected a stem: {:?}", cfg.render_type);
+        };
+        assert_eq!(stem.baseline, 0.5);
+        assert_eq!(stem.direction, super::CategoryBarDirection::Vertical);
+        assert_eq!(stem.line_style, crate::line::LineStylePreset::Solid);
+        let back = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(back["render_type"], json["render_type"]);
+
+        // The other direction and a dash are written.
+        let mut horizontal = cfg.clone();
+        if let DataRenderType::Xy(xy) = &mut horizontal.render_type {
+            let stem = xy.stem.as_mut().unwrap();
+            stem.direction = super::CategoryBarDirection::Horizontal;
+            stem.line_style = crate::line::LineStylePreset::Dash;
+        }
+        let written = serde_json::to_value(&horizontal).unwrap();
+        let stem_json = &written["render_type"]["Scatter"]["stem"];
+        assert_eq!(stem_json["direction"], "Horizontal");
+        assert_eq!(stem_json["line_style"], "Dash");
+        let reread: SeriesConfig = serde_json::from_value(written).unwrap();
+        assert_eq!(reread, horizontal);
+
+        // Without a stem nothing is written.
+        let plain: SeriesConfig = serde_json::from_value(base_series_json()).unwrap();
+        let written = serde_json::to_value(&plain).unwrap();
+        assert!(written["render_type"]["Scatter"].get("stem").is_none());
+
+        // Every marker variant carries the key.
+        let mut errored = base_series_json();
+        errored["render_type"] = serde_json::json!({
+            "LineScatterErrorbarXY": {
+                "scatter": base_series_json()["render_type"]["Scatter"]["scatter"],
+                "line": serde_json::to_value(super::DataLineStyleConfig::default()).unwrap(),
+                "err_x": { "Symmetric": { "column": "ex" } },
+                "err_y": { "Symmetric": { "column": "ey" } },
+                "err_style": {
+                    "error_bar_color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 },
+                    "error_bar_width": 1.0,
+                    "error_bar_cap_size": 4.0,
+                    "cap_width": 1.0
+                },
+                "stem": json["render_type"]["Scatter"]["stem"]
+            }
+        });
+        let cfg: SeriesConfig = serde_json::from_value(errored.clone()).unwrap();
+        assert!(matches!(
+            &cfg.render_type,
+            DataRenderType::Xy(super::XySeries {
+                stem: Some(_),
+                errors: Some(_),
+                line: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap()["render_type"],
+            errored["render_type"]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6420,6 +6800,35 @@ mod contour_level_tests {
                 Err(ContourLabelConfig::INVALID_SPACING_REASON)
             );
         }
+    }
+
+    #[test]
+    fn explicit_contour_label_anchors_past_the_limit_are_rejected() {
+        let anchors = |count: usize| ContourLabelConfig {
+            visible: true,
+            font_size: 12.0,
+            color: Color::BLACK,
+            format: LabelFormat::Decimal,
+            significant_digits: 3,
+            spacing_px: 120.0,
+            anchors: (0..count)
+                .map(|i| ContourLabelAnchor {
+                    level_index: 0,
+                    x: i as f64,
+                    y: 0.0,
+                    tx: 1.0,
+                    ty: 0.0,
+                })
+                .collect(),
+            bg_color: None,
+            bg_padding_px: 0.0,
+        };
+        assert_eq!(anchors(0).validate(), Ok(()));
+        assert_eq!(anchors(MAX_CONTOUR_LABEL_ANCHORS).validate(), Ok(()));
+        assert_eq!(
+            anchors(MAX_CONTOUR_LABEL_ANCHORS + 1).validate(),
+            Err(ContourLabelConfig::TOO_MANY_ANCHORS_REASON)
+        );
     }
 
     /// Asking for more levels gets more, and they stay inside. That is the whole
@@ -6931,6 +7340,7 @@ mod category_bar_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         assert_eq!(line.drag_value_label(0, 3, 1.0, 1.0), reject);
         assert_eq!(line.value_label_offsets(), None);
@@ -7038,6 +7448,7 @@ mod category_bar_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         let before = line.clone();
         format_labels(std::slice::from_mut(&mut line), &cats, read);
@@ -7239,6 +7650,7 @@ mod box_plot_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         // No box plot series: nothing to hold, not even a categorical axis.
         assert_eq!(
@@ -7280,6 +7692,12 @@ mod box_plot_tests {
         config.bottom_x.categories = None;
         assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
         config.bottom_x.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            config.validate_box_plots(&[boxes("a")]),
+            Err("box plots need a linear numeric value axis")
+        );
+        // A probability value axis too (#209).
+        config.bottom_x.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
         assert_eq!(
             config.validate_box_plots(&[boxes("a")]),
             Err("box plots need a linear numeric value axis")
@@ -8120,6 +8538,7 @@ mod step_selection_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         })
     }
 
@@ -8247,6 +8666,7 @@ mod step_selection_tests {
                 vector(VectorComponents::Points {
                     u: "u".into(),
                     v: "vv".into(),
+                    w: None,
                 }),
             ),
         ];
@@ -8597,6 +9017,7 @@ mod step_selection_tests {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut filled[1].render_type
         {
             line.fill = Some(LineFill::ToSeries("a".into()));
@@ -8691,6 +9112,7 @@ mod streamline_tests {
             scatter: None,
             line: Some(DataLineStyleConfig::default()),
             errors: None,
+            stem: None,
         });
         assert_eq!(validate_streamline_series(&line), Ok(()));
     }
@@ -9409,7 +9831,8 @@ mod image_tests {
 
 impl SeriesConfig {
     /// Every plain column this series reads, once per occurrence (#160):
-    /// its x and y columns (not a box plot's record), its markers' style,
+    /// its x and y columns (not a box plot's record), a 3D series' height
+    /// column (`z_column`, #207), its markers' style,
     /// colour and size columns, its error bars' style and error columns, a
     /// ternary series' third component, a parallel series' further axes and
     /// colour, a streamline colour column, a box plot's densities and raw
@@ -9424,6 +9847,12 @@ impl SeriesConfig {
         visit(&self.x_column);
         if self.render_type.box_plot().is_none() {
             visit(&self.y_column);
+        }
+        // A 3D series' height column (#132). A flat chart keeps it unused,
+        // but the series still names it: removing it removes the series,
+        // and a streamed one is refused (#207).
+        if let Some(z) = self.z_column.as_deref().filter(|z| !z.is_empty()) {
+            visit(z);
         }
         let scatter = match &self.render_type {
             DataRenderType::Xy(xy) => xy.scatter.as_ref(),
@@ -9468,6 +9897,12 @@ impl SeriesConfig {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}
             DataRenderType::Ternary { c_column, .. } => visit(c_column),
+            // Its triangle index column and its value column (#210); the
+            // height is the `z_column` visited above.
+            DataRenderType::TriMesh(mesh) => {
+                visit(&mesh.triangles);
+                visit(&mesh.values.column);
+            }
             // The first two axis columns are its x and y columns.
             DataRenderType::Parallel {
                 columns,
@@ -9519,9 +9954,12 @@ impl SeriesConfig {
             }
             DataRenderType::Vector { components, style } => {
                 match components {
-                    VectorComponents::Points { u, v } => {
+                    VectorComponents::Points { u, v, w } => {
                         visit(u);
                         visit(v);
+                        if let Some(w) = w {
+                            visit(w);
+                        }
                     }
                     VectorComponents::Grid { u, v } => {
                         for column in u.columns.iter().chain(&v.columns) {

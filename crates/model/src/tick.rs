@@ -8,7 +8,7 @@
 //! the legacy document readers' fixed value axes and contour levels use.
 
 use crate::config::{AxisOptions, AxisScale, Config, LogTickPolicy};
-use crate::layout::guarded_log_range;
+use crate::layout::{guarded_log_range, guarded_probability_range};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TickPlan {
@@ -23,6 +23,8 @@ pub enum TickError {
     InvalidRange,
     NonPositiveLog,
     ZeroTargetCount,
+    /// A probability axis range with an end outside `(0, 1)` (#209).
+    OutsideProbability,
 }
 
 /// Major ticks a linear Cartesian axis aims for: with
@@ -161,6 +163,8 @@ pub fn axis_major_spacing(scale: &AxisScale, min: f64, max: f64) -> f64 {
             let decades = (max.log10().ceil() - min.log10().floor()).max(1.0);
             nice_log_step(decades, AXIS_LOG_TARGET).unwrap_or(1.0)
         }
+        // The probability walk takes its majors from the range (#209).
+        AxisScale::Probability(_) => 1.0,
     }
 }
 
@@ -214,6 +218,41 @@ fn compute_linear(
     checked_plan(nice_min, nice_max, step, 4, data_min, data_max, false)
 }
 
+/// `p` widened to the next tail decade below it (#209): `10^⌊log₁₀ p⌋` in
+/// the lower half, `1 − 10^⌈log₁₀(1 − p)⌉` in the upper one, and at most
+/// back to 0.5. An exact decade (0.001, 0.999) stays.
+fn probability_floor(p: f64) -> f64 {
+    if p < 0.5 {
+        let widened = 10f64.powf(p.log10().floor());
+        return if widened > 0.0 && widened <= p {
+            widened
+        } else {
+            p
+        };
+    }
+    let tail = 10f64.powf((1.0 - p).log10().ceil());
+    if tail >= 0.5 {
+        0.5
+    } else {
+        (1.0 - tail).min(p)
+    }
+}
+
+/// A probability axis plan (#209): the range widened outward to the next
+/// tail decade on both ends (`0.003..0.997` becomes `0.001..0.999`), as a
+/// log plan widens to whole decades. The majors come from the range, so the
+/// spacing is 1 and the walk ignores it; one minor is a switch.
+fn compute_probability(data_min: f64, data_max: f64) -> Result<TickPlan, TickError> {
+    let nice_min = probability_floor(data_min);
+    let nice_max = 1.0 - probability_floor(1.0 - data_max);
+    let plan = checked_plan(nice_min, nice_max, 1.0, 1, data_min, data_max, false)?;
+    if plan.min > 0.0 && plan.max < 1.0 {
+        Ok(plan)
+    } else {
+        Err(TickError::InvalidRange)
+    }
+}
+
 fn compute_log(data_min: f64, data_max: f64, target_count: usize) -> Result<TickPlan, TickError> {
     let log_min = data_min.log10().floor();
     let log_max = data_max.log10().ceil();
@@ -253,9 +292,13 @@ impl AxisOptions {
         if scale == AxisScale::Logarithmic && data_min <= 0.0 {
             return Err(TickError::NonPositiveLog);
         }
+        if matches!(scale, AxisScale::Probability(_)) && !(data_min > 0.0 && data_max < 1.0) {
+            return Err(TickError::OutsideProbability);
+        }
         match scale {
             AxisScale::Linear => compute_linear(data_min, data_max, target_count),
             AxisScale::Logarithmic => compute_log(data_min, data_max, target_count),
+            AxisScale::Probability(_) => compute_probability(data_min, data_max),
         }
     }
 
@@ -880,7 +923,18 @@ impl Iterator for LogMinors {
 /// [`LogTickPolicy::Decades`]) and on a linear or categorical axis, whose
 /// labels are thinned by stride alone.
 pub fn log_label_ladders(axis: &AxisOptions) -> &'static [u16] {
-    if axis.scale != AxisScale::Logarithmic || axis.categories.is_some() {
+    if axis.categories.is_some() {
+        return &[];
+    }
+    if let AxisScale::Probability(_) = axis.scale {
+        // The tails' ladders (#209), demoted the same way; 0.5 is on all.
+        return match probability_ladder(axis) {
+            Some(LOG_ALL_MANTISSAS) => &[LOG_ALL_MANTISSAS, LOG_ONE_TWO_FIVE, LOG_DECADE],
+            Some(LOG_ONE_TWO_FIVE) => &[LOG_ONE_TWO_FIVE, LOG_DECADE],
+            _ => &[],
+        };
+    }
+    if axis.scale != AxisScale::Logarithmic {
         return &[];
     }
     match log_ladder(axis) {
@@ -912,6 +966,168 @@ pub fn log_multiple(value: f64) -> Option<u8> {
     })
 }
 
+/// The multiple `m` (1 to 9) a tick label is demoted by in the label
+/// pruning: [`log_multiple`] of the value on a logarithmic axis; on a
+/// probability axis (#209) that of its tail `min(p, 1 − p)`, matched to
+/// `m · 10^k` within 1e-9 of the tail because `1 − p` of an upper tick is
+/// not the walked tail exactly, and 1 for 0.5, which every ladder keeps.
+/// `None` on a linear axis.
+pub fn ladder_multiple(value: f64, scale: &AxisScale) -> Option<u8> {
+    match scale {
+        AxisScale::Linear => None,
+        AxisScale::Logarithmic => log_multiple(value),
+        AxisScale::Probability(_) => {
+            if !(value.is_finite() && value > 0.0 && value < 1.0) {
+                return None;
+            }
+            if value == 0.5 {
+                return Some(1);
+            }
+            let tail = if value < 0.5 { value } else { 1.0 - value };
+            let exponent = clamped_exponent(tail.log10().floor());
+            [
+                exponent,
+                exponent.saturating_sub(1),
+                exponent.saturating_add(1),
+            ]
+            .into_iter()
+            .find_map(|exponent| {
+                let base = 10f64.powf(f64::from(exponent));
+                let multiple = (tail / base).round();
+                ((1.0..=9.0).contains(&multiple) && (base * multiple - tail).abs() <= 1e-9 * tail)
+                    .then_some(multiple as u8)
+            })
+        }
+    }
+}
+
+/// The ladders a probability axis's majors take on its tails (#209),
+/// sparsest first: the decades, 1-2-5 and 1 to 9 × 10^k of the tail
+/// `min(p, 1 − p)`, each with 0.5.
+const PROBABILITY_LADDERS: [u16; 3] = [LOG_DECADE, LOG_ONE_TWO_FIVE, LOG_ALL_MANTISSAS];
+
+/// The tail mask a probability axis walks its majors on (#209): the first of
+/// [`PROBABILITY_LADDERS`] that puts at least [`LOG_LADDER_MIN_MAJORS`]
+/// majors inside the [`guarded_probability_range`] of the axis range, or
+/// `None` when even the densest does not, and the walk is a linear grid in
+/// `p`.
+fn probability_ladder(axis: &AxisOptions) -> Option<u16> {
+    let (min, max) = guarded_probability_range(axis.min, axis.max);
+    PROBABILITY_LADDERS.into_iter().find(|mask| {
+        ProbabilityTicks::new(min, max, *mask, true)
+            .take(LOG_LADDER_MIN_MAJORS)
+            .count()
+            == LOG_LADDER_MIN_MAJORS
+    })
+}
+
+/// The multiples `m · a` of every decade `a` of a probability axis's tails
+/// (#209), the decade powers walked downward: `max` to `min`, multiples 9 to
+/// 1, at most [`MAX_LOG_DECADES`] decades. The upper tail of
+/// [`ProbabilityTicks`], whose `1 − t` then rises.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TailDescent {
+    min: f64,
+    max: f64,
+    decade: Option<i32>,
+    last: i32,
+    decades_left: usize,
+    base: f64,
+    multiple: u8,
+    mask: u16,
+}
+
+impl TailDescent {
+    fn new(min: f64, max: f64, mask: u16) -> Self {
+        Self {
+            min,
+            max,
+            decade: Some(clamped_exponent(max.log10().floor())),
+            last: clamped_exponent(min.log10().floor()),
+            decades_left: MAX_LOG_DECADES,
+            base: 0.0,
+            // Below 1: the next call opens the first decade.
+            multiple: 0,
+            mask,
+        }
+    }
+}
+
+impl Iterator for TailDescent {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        loop {
+            if self.multiple < 1 {
+                let decade = self.decade.filter(|decade| *decade >= self.last)?;
+                if self.decades_left == 0 {
+                    self.decade = None;
+                    return None;
+                }
+                self.decades_left -= 1;
+                self.decade = decade.checked_sub(1);
+                self.base = 10f64.powf(f64::from(decade));
+                self.multiple = 9;
+            }
+            let multiple = self.multiple;
+            self.multiple -= 1;
+            if self.mask & (1 << multiple) == 0 {
+                continue;
+            }
+            let value = self.base * f64::from(multiple);
+            if value.is_finite() && value >= self.min && value <= self.max {
+                return Some(value);
+            }
+        }
+    }
+}
+
+/// The ticks of a probability axis over `min..max` (#209), in increasing
+/// order: the masked tail multiples of the lower half (`m · 10^k < 0.5`),
+/// then 0.5 when `with_half` and it is inside, then `1 − t` for the masked
+/// tail multiples `t < 0.5` of the upper half, the tail walked downward. A
+/// `Copy` state that allocates nothing, bounded by [`MAX_LOG_DECADES`]
+/// decades on each side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbabilityTicks {
+    lower: LogMultiples,
+    half: bool,
+    upper: TailDescent,
+}
+
+impl ProbabilityTicks {
+    /// The ticks of `mask` (a [`LogMultiples`] mask) over `min..max`, a
+    /// probability range strictly inside `(0, 1)` (a written one is guarded
+    /// by [`guarded_probability_range`]).
+    pub fn new(min: f64, max: f64, mask: u16, with_half: bool) -> Self {
+        // `1 − max` rounds a little above the walked tail of an upper range
+        // end (1 − 0.999 > 0.001): the relative slack keeps that tick.
+        Self {
+            lower: LogMultiples::new(min, max.min(0.5), mask),
+            half: with_half && min <= 0.5 && max >= 0.5,
+            upper: TailDescent::new((1.0 - max) * (1.0 - 1e-9), (1.0 - min).min(0.5), mask),
+        }
+    }
+}
+
+impl Iterator for ProbabilityTicks {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        if let Some(value) = self.lower.by_ref().find(|value| *value < 0.5) {
+            return Some(value);
+        }
+        if self.half {
+            self.half = false;
+            return Some(0.5);
+        }
+        self.upper
+            .by_ref()
+            .find(|tail| *tail < 0.5)
+            .map(|tail| 1.0 - tail)
+    }
+}
+
 #[derive(Debug, Clone)]
 enum MajorWalk {
     Empty,
@@ -927,6 +1143,7 @@ enum MajorWalk {
         left: usize,
     },
     LogMultiples(LogMultiples),
+    Probability(ProbabilityTicks),
 }
 
 /// One piece of a broken linear axis whose pieces have scales of their own
@@ -1038,6 +1255,7 @@ impl Iterator for MajorTicks {
                 }
             },
             MajorWalk::LogMultiples(multiples) => multiples.next(),
+            MajorWalk::Probability(ticks) => ticks.next(),
         }
     }
 }
@@ -1089,6 +1307,16 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
             let (min, max) = guarded_log_range(axis.min, axis.max);
             log_major_walk(log_ladder(axis), min, max)
         }
+        AxisScale::Probability(_) => {
+            let (min, max) = guarded_probability_range(axis.min, axis.max);
+            match probability_ladder(axis) {
+                Some(mask) => MajorWalk::Probability(ProbabilityTicks::new(min, max, mask, true)),
+                // Too narrow for the densest ladder: a linear grid in `p`.
+                None => nice_linear_step(max - min, AXIS_LINEAR_TARGET, LooseRange::Above)
+                    .and_then(|step| LinearGrid::new(min, max, step, MAX_MAJOR_INTERVALS))
+                    .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
+            }
+        }
     })
 }
 
@@ -1107,6 +1335,7 @@ enum MinorWalk {
     },
     Log(LogMinors),
     LogMultiples(LogMultiples),
+    Probability(ProbabilityTicks),
 }
 
 /// The minor tick values of an axis, from [`minor_ticks`].
@@ -1143,6 +1372,7 @@ impl Iterator for MinorTicks {
             },
             MinorWalk::Log(minors) => minors.next(),
             MinorWalk::LogMultiples(minors) => minors.next(),
+            MinorWalk::Probability(minors) => minors.next(),
         }
     }
 }
@@ -1211,6 +1441,20 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
                     0 => MinorWalk::Empty,
                     mask => MinorWalk::LogMultiples(LogMultiples::new(min, max, mask)),
                 },
+            }
+        }
+        AxisScale::Probability(_) => {
+            // The next denser tail ladder less the majors (#209); none on the
+            // densest ladder or the linear grid.
+            let (min, max) = guarded_probability_range(axis.min, axis.max);
+            let denser = match probability_ladder(axis) {
+                Some(LOG_DECADE) => LOG_ONE_TWO_FIVE & !LOG_DECADE,
+                Some(LOG_ONE_TWO_FIVE) => LOG_ALL_MANTISSAS & !LOG_ONE_TWO_FIVE,
+                _ => 0,
+            };
+            match denser {
+                0 => MinorWalk::Empty,
+                mask => MinorWalk::Probability(ProbabilityTicks::new(min, max, mask, false)),
             }
         }
     })

@@ -761,6 +761,7 @@ fn state_test_line(id: &str, x: &str, y: &str) -> SeriesConfig {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -784,6 +785,7 @@ fn state_test_scatter_line(id: &str, source: Option<&str>, x: &str, y: &str) -> 
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -800,6 +802,7 @@ fn state_test_scatter(id: &str, source: Option<&str>, x: &str, y: &str) -> Serie
             scatter: Some(test_scatter_style()),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -915,7 +918,10 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
                 && event.phase == crate::init::InitPhase::Started
                 && matches!(
                     event.stage,
-                    "pick_histogram_bin" | "pick_field_data" | "pick_vector_cell"
+                    "pick_histogram_bin"
+                        | "pick_field_contour"
+                        | "pick_field_cell"
+                        | "pick_vector_cell"
                 )
         })
         .count();
@@ -929,7 +935,7 @@ fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         .count();
     assert_eq!(pipeline_starts, 3);
     assert_eq!(setup_starts, 1);
-    assert_eq!(data_pipeline_starts, 3);
+    assert_eq!(data_pipeline_starts, 4);
     assert_eq!(data_setup_starts, 1);
     assert!(renderer.picker.active.is_none());
 }
@@ -1315,6 +1321,7 @@ fn active_picker_ignores_unrelated_mutations_and_reuses_source_only_changes() {
         scatter: Some(_),
         line: Some(line),
         errors: None,
+        ..
     }) = &mut inactive_series.render_type
     else {
         unreachable!();
@@ -1464,6 +1471,7 @@ fn colour_only_edits_reuse_the_pick_slot() {
                 scatter: Some(scatter),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         }
     };
@@ -1681,6 +1689,7 @@ fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut changed_series[0].render_type
     else {
         unreachable!();
@@ -2085,6 +2094,57 @@ fn renderer_owned_series_boundaries_reject_spacing_without_state_changes() {
         assert_eq!(renderer.chart_order(), before_order);
         assert_eq!(renderer.visual_revision(), before_visual);
     }
+}
+
+/// An explicit anchor list past `MAX_CONTOUR_LABEL_ANCHORS` is an error at
+/// every series boundary, and nothing changes; at the limit it registers.
+#[test]
+fn explicit_contour_label_anchors_past_the_limit_are_rejected_without_state_changes() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_contour_grid(&mut renderer);
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let chart = renderer.register_chart(config.clone(), Vec::new()).unwrap();
+    let with_anchors = |count: usize| {
+        let anchors = (0..count)
+            .map(|i| crate::data_config::ContourLabelAnchor {
+                level_index: 0,
+                x: 0.5,
+                y: 0.5 + i as f64 * 1e-4,
+                tx: 1.0,
+                ty: 0.0,
+            })
+            .collect();
+        state_test_labelled_contour(120.0, anchors)
+    };
+    let limit = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS;
+    fn assert_rejected<T>(result: Result<T>) {
+        let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+            panic!("an oversized anchor list was accepted or returned the wrong error")
+        };
+        assert_eq!(
+            reason,
+            crate::data_config::ContourLabelConfig::TOO_MANY_ANCHORS_REASON
+        );
+    }
+
+    renderer
+        .set_chart_series(chart, vec![with_anchors(limit)])
+        .unwrap();
+    let before_series = renderer.chart_series(chart).unwrap().to_vec();
+    let before_visual = renderer.visual_revision();
+    assert_rejected(renderer.set_chart_series(chart, vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+    assert_eq!(renderer.visual_revision(), before_visual);
+    assert_rejected(renderer.set_chart_state(chart, config.clone(), vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_series(chart).unwrap(), before_series);
+    assert_eq!(renderer.visual_revision(), before_visual);
+    let before_order = renderer.chart_order().to_vec();
+    assert_rejected(renderer.register_chart(config, vec![with_anchors(limit + 1)]));
+    assert_eq!(renderer.chart_order(), before_order);
+    assert_eq!(renderer.visual_revision(), before_visual);
 }
 
 #[test]
@@ -2820,7 +2880,8 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
                 fill_color: None,
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
-            errors: None
+            errors: None,
+            stem: None
         })),
         Some(GpuSeriesExtentMode::Line)
     );
@@ -2866,16 +2927,19 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
         scatter: None,
         line: Some(line.clone()),
         errors: None,
+        stem: None,
     });
     let scatter_rt = DataRenderType::Xy(crate::data_config::XySeries {
         scatter: Some(scatter.clone()),
         line: None,
         errors: None,
+        stem: None,
     });
     let marker_line_rt = DataRenderType::Xy(crate::data_config::XySeries {
         scatter: Some(scatter.clone()),
         line: Some(line.clone()),
         errors: None,
+        stem: None,
     });
     let precise_only = [
         DataRenderType::Histogram {
@@ -2928,6 +2992,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: None,
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2937,6 +3002,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2946,6 +3012,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2955,6 +3022,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: None,
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2964,6 +3032,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err.clone(),
             }),
+            stem: None,
         }),
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: Some(scatter.clone()),
@@ -2973,6 +3042,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
                 y: Some(sigma()),
                 style: err,
             }),
+            stem: None,
         }),
     ];
     let sketch = DrawStyle::Sketch(Default::default());
@@ -3256,6 +3326,7 @@ fn style_map_and_uniforms_are_admitted_and_charged_together() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!();
@@ -4191,6 +4262,7 @@ fn removing_errorbar_column_removes_active_scatter_picker_slot() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let chart = renderer
@@ -4612,6 +4684,7 @@ fn fit_token_tracks_normalized_series_extent_mode() {
         scatter: Some(test_scatter_style()),
         line: None,
         errors: None,
+        stem: None,
     });
     renderer.set_chart_series(chart, vec![scatter]).unwrap();
 
@@ -5223,6 +5296,7 @@ fn scatter_prepare_compiles_only_the_scatter_pipeline() {
             scatter: Some(test_scatter_style()),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -5283,6 +5357,7 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let style = renderer.create_style_for_series(&series_cfg).unwrap();
@@ -5397,6 +5472,7 @@ fn point_constellation_scatterline_exports() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -5483,6 +5559,7 @@ fn all_scatter_shapes_export_visible_markers() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         });
     }
@@ -5554,6 +5631,7 @@ fn xy_errorbar_does_not_require_zero_column() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -5615,6 +5693,7 @@ fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -5691,6 +5770,7 @@ fn errorbar_style_index_colors_points_independently() {
                     error_bar_style_overrides: None,
                 },
             }),
+            stem: None,
         }),
     }];
 
@@ -5971,6 +6051,7 @@ fn override_only_scatter_series(id: &str, x: &str, y: &str) -> SeriesConfig {
             scatter: Some(scatter),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -6111,6 +6192,7 @@ fn value_mapped_scatter_series(
             scatter: Some(scatter),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }
@@ -6303,6 +6385,7 @@ fn overrides_take_precedence_over_value_maps() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut series.render_type
     else {
         unreachable!()
@@ -6394,6 +6477,7 @@ fn value_maps_are_validated_at_registration() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut bad_domain.render_type
     else {
         unreachable!()
@@ -6481,9 +6565,43 @@ fn streamed_series_reject_value_maps() {
             scatter: Some(plain),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     assert!(PrepareContext::validate_stream_series(&config, &plain).is_ok());
+}
+
+/// Streaming is not extended to stems (rule 8, #206), although the
+/// error-bar path they reuse streams: a stem series is refused with its
+/// explicit reason.
+#[test]
+fn streamed_series_reject_stems() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stems".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(test_scatter_style()),
+            line: None,
+            errors: None,
+            stem: Some(crate::data_config::Stem {
+                baseline: 0.0,
+                direction: crate::data_config::CategoryBarDirection::Vertical,
+                color: Color::BLACK,
+                width: 1.0,
+                line_style: crate::line::LineStylePreset::Solid,
+            }),
+        }),
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason == streaming_runtime::STREAMED_STEM_REASON
+    ));
 }
 
 /// The group-3 state is rebuilt only when its inputs change: two prepares
@@ -6539,6 +6657,7 @@ fn vector_points_series(id: &str) -> SeriesConfig {
             components: crate::data_config::VectorComponents::Points {
                 u: "u".into(),
                 v: "v".into(),
+                w: None,
             },
             style: crate::data_config::VectorStyle {
                 color: Color::new(1.0, 0.0, 0.0, 1.0),
@@ -6949,10 +7068,39 @@ fn streamed_series_reject_polar_charts() {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("polar") && reason.contains("streamed sources are not supported")
+    ));
+    // A polar heatmap (#208) is held to the same rule: no new streaming.
+    let field = SeriesConfig {
+        series_id: "stream_field".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::Field(crate::data_config::FieldSeries {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Centers,
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            }),
+            contour: None,
+            surface: None,
+        }),
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &field),
         Err(FiggyError::InvalidSeriesConfig { reason, .. })
             if reason.contains("polar") && reason.contains("streamed sources are not supported")
     ));
@@ -6984,6 +7132,7 @@ fn streamed_series_reject_categorical_axes() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     assert!(PrepareContext::validate_stream_series(&base, &series).is_ok());
@@ -7134,6 +7283,7 @@ fn override_only_errorbar_paints_on_screen_and_export() {
                     ]),
                 },
             }),
+            stem: None,
         }),
     }];
     let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
@@ -7218,6 +7368,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
                 }),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         },
         SeriesConfig {
@@ -7254,6 +7405,7 @@ fn table_and_index_mapped_scatter_and_errorbar_paints_on_screen_and_export() {
                         error_bar_style_overrides: None,
                     },
                 }),
+                stem: None,
             }),
         },
     ];
@@ -7322,6 +7474,7 @@ fn style_table_without_index_still_ensures_mapped_scatter_pipeline() {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }];
     let rendered = render_mapped_style_case(&mut renderer, &chart, &series);
@@ -7377,6 +7530,7 @@ fn single_direction_errorbar_needs_no_internal_filler_column() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     }];
 
@@ -7471,6 +7625,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
                 }),
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let config_b = SeriesConfig {
@@ -7490,6 +7645,7 @@ fn differently_sized_single_direction_panels_keep_both_prepared_frames_valid() {
                 y: None,
                 style: test_errorbar_style(),
             }),
+            stem: None,
         }),
     };
     let style_a = renderer.create_style_for_series(&config_a).unwrap();
@@ -7592,6 +7748,7 @@ fn two_line_series_both_render() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let series = [
@@ -7693,6 +7850,7 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let mut star_ink = |id: &str, x: &str, y: &str| -> usize {
@@ -7796,6 +7954,7 @@ fn milkyway_stars_draw_past_two_million_arc_slots() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     // Ink in the right fifth of the image, where only the tail run reaches.
@@ -8489,6 +8648,7 @@ fn arc_results_reuse_only_exact_compute_keys() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = r.create_style_for_series(&series_cfg).unwrap();
@@ -9518,6 +9678,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let mut stream_series = resident_series.clone();
@@ -9607,6 +9768,7 @@ fn stream_chunk_uses_shared_preparation_and_retains_work_charge() {
             scatter: None,
             line: Some(line),
             errors: None,
+            ..
         }) = &mut dashed.render_type
         {
             line.line_style = LineStylePreset::Dash;
@@ -9764,6 +9926,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     // Equal configs, series ids and source columns cannot identify a chart.
@@ -9819,6 +9982,7 @@ fn registered_prepare_preserves_chart_identity_and_ssot_styles() {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = &mut changed.render_type
     {
         line.line_color = Color::new(0.0, 1.0, 0.0, 1.0);
@@ -10010,6 +10174,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let (cfg_a, cfg_b) = (mk_cfg("st_a"), mk_cfg("st_b"));
@@ -10123,6 +10288,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style_dash = r.create_style_for_series(&cfg_dash).unwrap();
@@ -10240,6 +10406,7 @@ fn recorded_arc_star_frame_survives_later_compute_before_submit() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let style = r.create_style_for_series(&series_cfg).unwrap();
@@ -10441,6 +10608,7 @@ fn auto_fit_margins_are_uniform_on_all_sides() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10545,6 +10713,7 @@ fn precise_zoom_keeps_connections_to_distant_endpoints() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     for vertical in [false, true] {
@@ -10665,6 +10834,7 @@ fn dense_line_has_no_gaps() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10769,6 +10939,7 @@ fn solid_line_exports_analytic_aa_fringe() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -10849,6 +11020,7 @@ fn caps_preserve_nan_breaks_and_nonmonotonic_paths() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let red_cols = |img: &crate::RasterImage| -> Vec<usize> {
@@ -11021,6 +11193,7 @@ fn dashed_curve_runs_match_pattern() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
 
@@ -11172,6 +11345,7 @@ fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -11785,6 +11959,7 @@ fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
                 interpolation: crate::data_config::LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     }];
     let img = r
@@ -14244,6 +14419,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                     }),
                     style: err_style,
                 }),
+                stem: None,
             }),
         }
     };
@@ -14265,6 +14441,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let lower = SeriesConfig {
@@ -14285,6 +14462,7 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
                 interpolation: LineInterpolation::Linear,
             }),
             errors: None,
+            stem: None,
         }),
     };
     let red = Color::new(1.0, 0.0, 0.0, 1.0);
@@ -14377,7 +14555,7 @@ fn composite_test_record(rows: usize) -> Vec<(&'static str, Column<f64>)> {
         .collect()
 }
 
-/// Streaming is not extended to records and ragged columns (rule 8): an
+/// Streaming is not extended to records, ragged and triangle columns (rule 8): an
 /// upsert onto a streamed id and a stream registered onto a record or ragged
 /// id both fail with `InvalidSeriesConfig` naming the limitation.
 #[test]
@@ -14410,23 +14588,32 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     let streamed = |result: Result<String>| match result {
         Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
             assert!(
-                reason.contains("streaming is not extended to records and ragged columns"),
+                reason
+                    .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             );
         }
         other => panic!("expected InvalidSeriesConfig, got {other:?}"),
     };
+    let indices = Column {
+        data: vec![0u32, 1, 2],
+    };
+    let triangles = TriangleSource { indices: &indices };
     streamed(renderer.upsert_record("s", &record));
     streamed(renderer.upsert_ragged("s", &ragged));
+    streamed(renderer.upsert_triangles("s", &triangles));
     assert!(renderer.pool().record("s").is_none());
     assert!(renderer.pool().ragged("s").is_none());
+    assert!(renderer.pool().triangles("s").is_none());
 
     renderer.upsert_record("box", &record).unwrap();
     renderer.upsert_ragged("outliers", &ragged).unwrap();
-    for id in ["box", "outliers"] {
+    renderer.upsert_triangles("mesh", &triangles).unwrap();
+    for id in ["box", "outliers", "mesh"] {
         match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
             Err(FiggyError::InvalidSeriesConfig { reason, .. }) => assert!(
-                reason.contains("streaming is not extended to records and ragged columns"),
+                reason
+                    .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             ),
             other => panic!("expected InvalidSeriesConfig for {id}, got {other:?}"),
@@ -14583,6 +14770,172 @@ fn member_columns_are_owned_by_their_record_or_ragged_column() {
         revision,
         "no chart reads a record yet"
     );
+}
+
+/// A triangle index column (#210) through the renderer: its member is no
+/// host column and its id is reserved, a replacement frees the old member
+/// and leaves maintenance, and removal frees it.
+#[test]
+fn triangle_columns_upsert_replace_and_remove_through_the_renderer() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let small = Column {
+        data: vec![0u32, 1, 2],
+    };
+    renderer
+        .upsert_triangles("mesh", &TriangleSource { indices: &small })
+        .unwrap();
+    let member = renderer
+        .pool()
+        .triangles("mesh")
+        .unwrap()
+        .slot()
+        .indices
+        .clone();
+    assert!(renderer.logical_column("mesh").is_none());
+    assert_eq!(
+        renderer.logical_column_ids().count(),
+        0,
+        "the member is no host column"
+    );
+    let replacement = Column { data: vec![1.0f32] };
+    assert!(matches!(
+        renderer.upsert_column(&member, &replacement),
+        Err(FiggyError::ReservedColumnId { .. })
+    ));
+    assert!(
+        renderer.upsert_column("mesh", &replacement).is_err(),
+        "a triangle column's id is not a column id"
+    );
+
+    let revision = renderer.visual_revision();
+    let large = Column {
+        data: (0..30u32).collect(),
+    };
+    renderer
+        .upsert_triangles("mesh", &TriangleSource { indices: &large })
+        .unwrap();
+    assert!(
+        renderer.pool().slot(&member).is_none(),
+        "the old member was freed"
+    );
+    assert_eq!(
+        renderer.pool().triangle_stats("mesh").unwrap().triangles,
+        10
+    );
+    assert!(
+        renderer.has_pending_maintenance(),
+        "the freed member leaves a hole"
+    );
+    assert!(renderer.remove_triangles("mesh").unwrap());
+    assert!(!renderer.remove_triangles("mesh").unwrap());
+    assert!(renderer.pool().triangles("mesh").is_none());
+    assert_eq!(
+        renderer.visual_revision(),
+        revision,
+        "no chart reads a triangle column yet"
+    );
+}
+
+// A triangle mesh series (#210) registers on a flat chart once its columns
+// are resident; the model's own rules answer first.
+#[test]
+fn a_triangle_mesh_series_registers_after_the_model_rules() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0, 0.0]);
+    renderer
+        .upsert_column(
+            "cp",
+            &Column {
+                data: vec![0.0f32, 0.5, 1.0],
+            },
+        )
+        .unwrap();
+    renderer
+        .upsert_triangles(
+            "tris",
+            &TriangleSource {
+                indices: &Column {
+                    data: vec![0u32, 1, 2],
+                },
+            },
+        )
+        .unwrap();
+    let mut series = state_test_scatter("mesh", None, "x", "y");
+    series.render_type = DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+        triangles: "tris".into(),
+        values: crate::tri_mesh::MeshValues {
+            column: "cp".into(),
+            at: crate::tri_mesh::MeshValueLocation::Vertices,
+        },
+        fill: Some(crate::data_config::FieldFillConfig {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Interpolated,
+            opacity: 1.0,
+        }),
+        contour: None,
+        surface: None,
+    });
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    renderer
+        .register_chart(config.clone(), vec![series.clone()])
+        .unwrap();
+
+    // The model's rule answers first: flat shading of vertex values.
+    if let DataRenderType::TriMesh(mesh) = &mut series.render_type {
+        mesh.fill.as_mut().unwrap().shading = crate::data_config::Shading::Flat;
+    }
+    let result = renderer.register_chart(config, vec![series]);
+    let Err(error) = result else {
+        panic!("an invalid mesh registered: {result:?}");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("vertex values are shaded Interpolated"),
+        "{error}"
+    );
+}
+
+// Rule 10: a frame of three hundred colour-mapped scatter series draws every
+// one, past the value map scratch cache's 256 entries: the cache is bounded
+// before the frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_colour_mapped_scatters_in_one_frame_all_draw() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.2, 0.5, 0.8]);
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = state_test_scatter(&format!("s{k}"), None, "x", "y");
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                ..
+            }) = &mut s.render_type
+            {
+                scatter.point_color_map =
+                    Some(crate::data_config::PointColorMap { column: "y".into() });
+            }
+            s
+        })
+        .collect();
+    let chart = crate::Chart::new(config);
+    for _ in 0..2 {
+        renderer
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+    }
 }
 
 // A series label is a rich text like any title: a math label registers, and
@@ -15304,6 +15657,7 @@ fn styled_errorbar_series(marker_rows: usize, bar_rows: usize) -> SeriesConfig {
                 }),
                 style: err_style,
             }),
+            stem: None,
         }),
     }
 }
@@ -15335,12 +15689,14 @@ fn pick_style_meta_counts_stay_within_the_style_rows() {
                         y: Some(_),
                         style: _,
                     }),
+                ..
             }) = &plain.render_type
             {
                 plain.render_type = DataRenderType::Xy(crate::data_config::XySeries {
                     scatter: Some(scatter.clone()),
                     line: None,
                     errors: None,
+                    stem: None,
                 });
             }
             let list = [series.clone(), plain];

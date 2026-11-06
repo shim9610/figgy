@@ -436,6 +436,8 @@ pub(super) struct PreparedFieldSelectionLayer {
     pub(super) field_bg: wgpu::BindGroup,
     pub(super) charge: crate::gpu_memory::SharedCharge,
     pub(super) drawable: bool,
+    pub(super) vertices: u32,
+    pub(super) instances: std::ops::Range<u32>,
 }
 
 pub(super) struct PreparedStarLayer {
@@ -457,6 +459,46 @@ pub(super) struct PreparedFieldLayer {
     pub(super) field_bg: wgpu::BindGroup,
     pub(super) charge: crate::gpu_memory::SharedCharge,
     pub(super) drawable: bool,
+}
+
+/// Owned triangle mesh layer (#210): a refcounted clone of the mesh's group
+/// 2, which owns every table the draw reads.
+pub(super) struct PreparedTriMeshLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) field_bg: wgpu::BindGroup,
+    pub(super) charge: crate::gpu_memory::SharedCharge,
+    pub(super) triangles: u32,
+}
+
+impl PreparedTriMeshLayer {
+    fn own(layer: data_render::tri_mesh::ColumnTriMeshLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg,
+            field_bg: layer.field_bg,
+            charge: layer.charge,
+            triangles: layer.triangles,
+        }
+    }
+
+    /// Borrowed for a draw, through `transform` when a panel piece of a
+    /// broken axis draws it.
+    fn borrow<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::tri_mesh::ColumnTriMeshLayer<'a> {
+        data_render::tri_mesh::ColumnTriMeshLayer {
+            pipeline: &self.pipeline,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
+            style_bg: self.style_bg.clone(),
+            field_bg: self.field_bg.clone(),
+            charge: Arc::clone(&self.charge),
+            triangles: self.triangles,
+        }
+    }
 }
 
 /// Owned surface layer (a heatmap on a 3D chart): refcounted clones of the
@@ -546,6 +588,48 @@ pub(super) struct PreparedVectorLayer {
     pub(super) count: u32,
     /// Streamline arrowheads: the indirect arguments and the arc slot group.
     pub(super) indirect: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// A 3D chart's arrows (#211): the camera group.
+    pub(super) view3d: Option<data_render::surface_mesh::View3dBinding>,
+}
+
+impl PreparedVectorLayer {
+    fn own(layer: data_render::vector::ColumnVectorLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg,
+            vector_bg: layer.vector_bg,
+            charge: layer.charge,
+            count: layer.count,
+            indirect: layer
+                .indirect
+                .map(|(buffer, slots)| (buffer.clone(), slots.clone())),
+            view3d: layer.view3d,
+        }
+    }
+
+    /// The borrowed layer, with `transform` in place of its own when given
+    /// (a `Panels` piece, #200); a 3D layer keeps its own.
+    fn borrow_with<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::vector::ColumnVectorLayer<'a> {
+        data_render::vector::ColumnVectorLayer {
+            pipeline: &self.pipeline,
+            transform_bg: transform
+                .filter(|_| self.view3d.is_none())
+                .unwrap_or(&self.transform_bg),
+            style_bg: self.style_bg.clone(),
+            vector_bg: self.vector_bg.clone(),
+            charge: Arc::clone(&self.charge),
+            count: self.count,
+            indirect: self
+                .indirect
+                .as_ref()
+                .map(|(buffer, slots)| (buffer, slots)),
+            view3d: self.view3d.clone(),
+        }
+    }
 }
 
 /// Owned contour layer. The group-2 tables, the lump charge and the label state
@@ -644,6 +728,42 @@ pub(super) struct PreparedErrorBarLayer {
     pub(super) style_index: Option<ColumnHandle>,
 }
 
+impl PreparedErrorBarLayer {
+    fn own(layer: ColumnErrorBarDraw<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            style_map_bg: layer.style_map_bg.cloned(),
+            pool_buffer: layer.pool_buffer.clone(),
+            x: layer.x,
+            y: layer.y,
+            err_y_lo: layer.err_y_lo,
+            err_y_hi: layer.err_y_hi,
+            err_x_lo: layer.err_x_lo,
+            err_x_hi: layer.err_x_hi,
+            style_index: layer.style_index,
+        }
+    }
+
+    fn borrow_with<'a>(&'a self, transform: Option<&'a wgpu::BindGroup>) -> ColumnErrorBarDraw<'a> {
+        ColumnErrorBarDraw {
+            pipeline: &self.pipeline,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
+            style_bg: &self.style_bg,
+            style_map_bg: self.style_map_bg.as_ref(),
+            pool_buffer: &self.pool_buffer,
+            x: self.x,
+            y: self.y,
+            err_y_lo: self.err_y_lo,
+            err_y_hi: self.err_y_hi,
+            err_x_lo: self.err_x_lo,
+            err_x_hi: self.err_x_hi,
+            style_index: self.style_index,
+        }
+    }
+}
+
 /// Complete owned draw packet for one series. Every pipeline, bind group,
 /// buffer, and column handle needed by paint is resolved during prepare.
 pub(super) struct PreparedSeries {
@@ -654,6 +774,8 @@ pub(super) struct PreparedSeries {
     pub(super) _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
+    pub(super) mesh: Option<PreparedTriMeshLayer>,
+    pub(super) mesh_contour: Option<PreparedTriMeshLayer>,
     pub(super) surface: Option<PreparedSurfaceLayer>,
     pub(super) floor: Option<PreparedSurfaceLayer>,
     pub(super) selected_surface: Option<PreparedSurfaceLayer>,
@@ -665,12 +787,15 @@ pub(super) struct PreparedSeries {
     pub(super) contour: Option<PreparedContourLayer>,
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
+    /// A stem series' stems (#206), the error-bar module's second draw.
+    pub(super) stem: Option<PreparedErrorBarLayer>,
     pub(super) line: Option<PreparedLineLayer>,
     pub(super) parallel: Option<PreparedParallelLayer>,
     pub(super) line_extra: Option<PreparedStarLayer>,
     pub(super) scatter: Option<PreparedScatterLayer>,
     pub(super) line_3d: Option<PreparedLineLayer>,
     pub(super) scatter_3d: Option<PreparedScatterLayer>,
+    pub(super) vector_3d: Option<PreparedVectorLayer>,
     pub(super) selected_bars: Vec<PreparedBarSelectionLayer>,
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
@@ -1087,6 +1212,8 @@ impl PreparedSeries {
                 verts_per_instance: layer.verts_per_instance,
                 closed: layer.closed,
             }),
+            mesh: layers.mesh.map(PreparedTriMeshLayer::own),
+            mesh_contour: layers.mesh_contour.map(PreparedTriMeshLayer::own),
             surface: layers.surface.map(PreparedSurfaceLayer::own),
             floor: layers.floor.map(PreparedSurfaceLayer::own),
             selected_surface: layers.selected_surface.map(PreparedSurfaceLayer::own),
@@ -1112,17 +1239,7 @@ impl PreparedSeries {
             violin: layers.violin.map(PreparedCategoryBarLayer::new),
             category_bars: layers.category_bars.map(PreparedCategoryBarLayer::new),
             box_points: layers.box_points.map(PreparedCategoryBarLayer::new),
-            vector: layers.vector.map(|layer| PreparedVectorLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg,
-                vector_bg: layer.vector_bg,
-                charge: layer.charge,
-                count: layer.count,
-                indirect: layer
-                    .indirect
-                    .map(|(buffer, slots)| (buffer.clone(), slots.clone())),
-            }),
+            vector: layers.vector.map(PreparedVectorLayer::own),
             contour: layers.contour.map(|layer| PreparedContourLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1135,24 +1252,13 @@ impl PreparedSeries {
                     snapshot: label.snapshot,
                 }),
             }),
-            errorbar: layers.errorbar.map(|layer| PreparedErrorBarLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg.clone(),
-                style_map_bg: layer.style_map_bg.cloned(),
-                pool_buffer: layer.pool_buffer.clone(),
-                x: layer.x,
-                y: layer.y,
-                err_y_lo: layer.err_y_lo,
-                err_y_hi: layer.err_y_hi,
-                err_x_lo: layer.err_x_lo,
-                err_x_hi: layer.err_x_hi,
-                style_index: layer.style_index,
-            }),
+            errorbar: layers.errorbar.map(PreparedErrorBarLayer::own),
+            stem: layers.stem.map(PreparedErrorBarLayer::own),
             line: layers.line.map(PreparedLineLayer::own),
             parallel: layers.parallel.map(PreparedParallelLayer::own),
             line_3d: layers.line_3d.map(PreparedLineLayer::own),
             scatter_3d: layers.scatter_3d.map(PreparedScatterLayer::own),
+            vector_3d: layers.vector_3d.map(PreparedVectorLayer::own),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1189,6 +1295,8 @@ impl PreparedSeries {
                     field_bg: layer.field_bg,
                     charge: layer.charge,
                     drawable: layer.drawable,
+                    vertices: layer.vertices,
+                    instances: layer.instances,
                 })
                 .collect(),
             picked: layers
@@ -1254,6 +1362,11 @@ impl PreparedSeries {
                     verts_per_instance: layer.verts_per_instance,
                     closed: layer.closed,
                 }),
+            mesh: self.mesh.as_ref().map(|layer| layer.borrow(transform)),
+            mesh_contour: self
+                .mesh_contour
+                .as_ref()
+                .map(|layer| layer.borrow(transform)),
             surface: self.surface.as_ref().map(PreparedSurfaceLayer::borrow),
             floor: self.floor.as_ref().map(PreparedSurfaceLayer::borrow),
             selected_surface: self
@@ -1297,18 +1410,7 @@ impl PreparedSeries {
             vector: self
                 .vector
                 .as_ref()
-                .map(|layer| data_render::vector::ColumnVectorLayer {
-                    pipeline: &layer.pipeline,
-                    transform_bg: transform.unwrap_or(&layer.transform_bg),
-                    style_bg: layer.style_bg.clone(),
-                    vector_bg: layer.vector_bg.clone(),
-                    charge: Arc::clone(&layer.charge),
-                    count: layer.count,
-                    indirect: layer
-                        .indirect
-                        .as_ref()
-                        .map(|(buffer, slots)| (buffer, slots)),
-                }),
+                .map(|layer| layer.borrow_with(transform)),
             contour: self
                 .contour
                 .as_ref()
@@ -1327,24 +1429,16 @@ impl PreparedSeries {
                             snapshot: label.snapshot.clone(),
                         }),
                 }),
-            errorbar: self.errorbar.as_ref().map(|layer| ColumnErrorBarDraw {
-                pipeline: &layer.pipeline,
-                transform_bg: transform.unwrap_or(&layer.transform_bg),
-                style_bg: &layer.style_bg,
-                style_map_bg: layer.style_map_bg.as_ref(),
-                pool_buffer: &layer.pool_buffer,
-                x: layer.x,
-                y: layer.y,
-                err_y_lo: layer.err_y_lo,
-                err_y_hi: layer.err_y_hi,
-                err_x_lo: layer.err_x_lo,
-                err_x_hi: layer.err_x_hi,
-                style_index: layer.style_index,
-            }),
+            errorbar: self
+                .errorbar
+                .as_ref()
+                .map(|layer| layer.borrow_with(transform)),
+            stem: self.stem.as_ref().map(|layer| layer.borrow_with(transform)),
             line: self.line.as_ref().map(|layer| layer.borrow_with(transform)),
             parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
             line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),
             scatter_3d: self.scatter_3d.as_ref().map(PreparedScatterLayer::borrow),
+            vector_3d: self.vector_3d.as_ref().map(|layer| layer.borrow_with(None)),
             line_extra: self
                 .line_extra
                 .as_ref()
@@ -1387,6 +1481,8 @@ impl PreparedSeries {
                     field_bg: layer.field_bg.clone(),
                     charge: Arc::clone(&layer.charge),
                     drawable: layer.drawable,
+                    vertices: layer.vertices,
+                    instances: layer.instances.clone(),
                 })
                 .collect(),
             picked: self
@@ -2626,6 +2722,7 @@ impl Renderer {
         (
             &self.chart_states,
             PrepareContext {
+                in_frame: false,
                 device: &self.device,
                 queue: &self.queue,
                 caps: &self.caps,

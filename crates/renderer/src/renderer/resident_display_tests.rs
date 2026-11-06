@@ -82,6 +82,7 @@ fn series(id: &str, y: &str) -> SeriesConfig {
         scatter: None,
         line: Some(line),
         errors: None,
+        ..
     }) = s.render_type.clone()
     else {
         unreachable!("the declaration is a line")
@@ -99,6 +100,7 @@ fn series(id: &str, y: &str) -> SeriesConfig {
         }),
         line: Some(line),
         errors: None,
+        stem: None,
     });
     s
 }
@@ -418,6 +420,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
                     scatter: Some(_),
                     line: Some(line),
                     errors: None,
+                    ..
                 }) = &mut s.render_type
                 {
                     line.line_width = 5.0;
@@ -537,6 +540,7 @@ fn each_layer_keeps_its_own_bodies() {
                     scatter: Some(_),
                     line: Some(line),
                     errors: None,
+                    ..
                 }) = &mut list[index].render_type
                 {
                     line.line_width += 2.0;
@@ -830,6 +834,7 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
                 scatter: Some(_),
                 line: Some(line),
                 errors: None,
+                ..
             }) = &mut scene.series[0].render_type
             {
                 line.line_width = if line.line_width > 3.0 { 1.5 } else { 4.0 };
@@ -841,6 +846,7 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
                 scatter: Some(scatter),
                 line: Some(_),
                 errors: None,
+                ..
             }) = &mut scene.series[1].render_type
             {
                 scatter.point_size = if scatter.point_size > 7.0 { 5.0 } else { 9.0 };

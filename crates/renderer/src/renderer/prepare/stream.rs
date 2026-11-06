@@ -47,6 +47,25 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
             });
         }
+        // Nor to stems (rule 8, #206), although the error-bar path they
+        // reuse streams.
+        if matches!(
+            &series.render_type,
+            DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
+        ) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_STEM_REASON.into(),
+            });
+        }
+        // Nor to triangle meshes (rule 8, #210): a triangle reads three
+        // vertices anywhere in the resident columns.
+        if series.tri_mesh().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
+            });
+        }
         // Nor to energy-level series (rule 8, #203): they are DataLess.
         if series.energy_levels().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -70,6 +89,17 @@ impl PrepareContext<'_> {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
                 reason: streaming_runtime::STREAMED_BREAK_REASON.into(),
+            });
+        }
+        // Nor to probability axes (rule 8, #209).
+        if [&config.bottom_x, &config.left_y]
+            .into_iter()
+            .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+            .any(|axis| matches!(axis.scale, crate::config::AxisScale::Probability(_)))
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_PROBABILITY_REASON.into(),
             });
         }
         // Streaming is not extended to polar charts.

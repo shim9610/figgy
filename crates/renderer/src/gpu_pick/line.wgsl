@@ -11,27 +11,10 @@ fn pick_line_mode() -> u32 {
     return (pick_query_params.line.x & LINE_STEP_MASK) | (arc << LINE_ARC_SHIFT);
 }
 
-// The arc distances from `dist_px`, which lies in an "off" span of the dash
-// pattern, back to the end of the previous "on" span (x) and forward to the
-// start of the next one (y). The span walk is `dash_pattern_on`'s.
+// The line's dash gap at `dist_px`: the shared `dash_gap`
+// (common/line_stroke.wgsl) over the line's pattern.
 fn pick_dash_gap(dist_px: f32) -> vec2<f32> {
-    var spans = pick_query_params.line_dash;
-    let n = min(pick_query_params.styled.w, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(spans[i / 4u][i % 4u], 0.0);
-    }
-    let phase = ((dist_px % period) + period) % period;
-    var acc = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let start = acc;
-        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
-        acc = end;
-        if phase <= end || i == n - 1u {
-            return vec2<f32>(phase - start, end - phase);
-        }
-    }
-    return vec2<f32>(0.0, 0.0);
+    return dash_gap(dist_px, pick_query_params.line_dash, pick_query_params.styled.w);
 }
 
 // The hit distance of one drawn piece of a stroke: the line shader's own
@@ -329,8 +312,8 @@ fn pick_path_arrow_candidate(
         // shader's y-up frame.
         let tail = pick_data_px(head.x, head.y);
         let direction = vec2<f32>(
-            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 0u), axis_data_t(head.x, tr.data_min.x, tr.data_max.x, tr.data_min_lo.x, tr.data_max_lo.x, tr.scale_log.x)), tr.scale_log.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
-            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 1u), axis_data_t(head.y, tr.data_min.y, tr.data_max.y, tr.data_min_lo.y, tr.data_max_lo.y, tr.scale_log.y)), tr.scale_log.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
+            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 0u), axis_data_t(head.x, tr.data_min.x, tr.data_max.x, tr.data_min_lo.x, tr.data_max_lo.x, tr.scale_log.x, tr.scale_prob.x)), tr.scale_log.x, tr.scale_prob.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
+            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y * cut_scale_at(cuts_of(tr.breaks, tr.break_info, 1u), axis_data_t(head.y, tr.data_min.y, tr.data_max.y, tr.data_min_lo.y, tr.data_max_lo.y, tr.scale_log.y, tr.scale_prob.y)), tr.scale_log.y, tr.scale_prob.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
         );
         let direction_len = length(direction);
         let len_px = px.x * length(head.tangent);

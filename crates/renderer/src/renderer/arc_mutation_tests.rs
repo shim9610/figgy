@@ -135,7 +135,7 @@ fn every_config_leaf_the_arc_key_leaves_out_keeps_the_arc_prefix() {
                     // The key changed: a new scan.
                     return Outcome::Held;
                 }
-                let words = |config: &Config| -> [u32; 72] {
+                let words = |config: &Config| -> [u32; 76] {
                     bytemuck::cast(data_render::scatter_transform_from_config(config))
                 };
                 if words(&next)[16..28] != words(&config)[16..28] {

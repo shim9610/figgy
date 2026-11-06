@@ -185,11 +185,13 @@ impl PrepareContext<'_> {
             },
         });
         // The contour scratch cache: one map, one eviction rule, one limit.
-        evict_if_full(
-            &mut self.contour_cache,
-            cfg.series_id.as_str(),
-            CONTOUR_SCRATCH_CACHE_LIMIT,
-        );
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.contour_cache,
+                cfg.series_id.as_str(),
+                CONTOUR_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.contour_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {

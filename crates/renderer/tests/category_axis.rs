@@ -181,6 +181,7 @@ fn markers(id: &str, x: &str, y: &str) -> SeriesConfig {
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     }
 }

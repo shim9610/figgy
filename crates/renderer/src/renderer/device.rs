@@ -371,7 +371,7 @@ fn create_ternary_pipeline(
 }
 
 /// The 3D point pipelines (`TargetPipelines::view3d`, #132).
-pub(super) const VIEW3D_PIPELINES: usize = 8;
+pub(super) const VIEW3D_PIPELINES: usize = 10;
 
 /// One of a 3D chart's scatter and line pipelines (`TargetPipelines::view3d`,
 /// #132): the markers (`vs_3d`, `vs_3d_mapped`) and the stroke (`vs_3d`)
@@ -389,11 +389,15 @@ pub(super) enum View3dPipeline {
     RingMapped = 5,
     Line = 6,
     LinePick = 7,
+    /// The arrows of a 3D vector series (#211).
+    Vector = 8,
+    /// Their ID pick.
+    VectorPick = 9,
 }
 
 // `TargetPipelines::view3d` is indexed by `kind as usize`: the last
 // discriminant is the last slot (#152).
-const _: () = assert!(View3dPipeline::LinePick as usize + 1 == VIEW3D_PIPELINES);
+const _: () = assert!(View3dPipeline::VectorPick as usize + 1 == VIEW3D_PIPELINES);
 
 impl View3dPipeline {
     pub(super) const ALL: [Self; VIEW3D_PIPELINES] = [
@@ -405,6 +409,8 @@ impl View3dPipeline {
         Self::RingMapped,
         Self::Line,
         Self::LinePick,
+        Self::Vector,
+        Self::VectorPick,
     ];
 
     fn stage(self) -> &'static str {
@@ -417,13 +423,17 @@ impl View3dPipeline {
             Self::RingMapped => "mapped 3D picked point ring",
             Self::Line => "3D line",
             Self::LinePick => "3D line pick",
+            Self::Vector => "3D vector",
+            Self::VectorPick => "3D vector pick",
         }
     }
 
     fn pass(self) -> data_render::View3dPass {
         match self {
-            Self::Scatter | Self::ScatterMapped | Self::Line => data_render::View3dPass::Draw,
-            Self::ScatterPick | Self::ScatterMappedPick | Self::LinePick => {
+            Self::Scatter | Self::ScatterMapped | Self::Line | Self::Vector => {
+                data_render::View3dPass::Draw
+            }
+            Self::ScatterPick | Self::ScatterMappedPick | Self::LinePick | Self::VectorPick => {
                 data_render::View3dPass::Pick
             }
             Self::Ring | Self::RingMapped => data_render::View3dPass::Live,
@@ -439,9 +449,10 @@ impl View3dPipeline {
 }
 
 /// The 3D point pipeline `kind` over the layouts `[transform, style, style
-/// map, camera, value map and camera]`: the precise entries bind the
-/// camera group (the surface layout) as group 3, the mapped ones the
-/// combined value map and camera group. The pick kinds render one sample
+/// map, camera, value map and camera, vector data]`: the precise entries
+/// bind the camera group (the surface layout) as group 3, the mapped ones
+/// the combined value map and camera group, the arrows (#211) their vector
+/// data as group 2 and the camera as group 3. The pick kinds render one sample
 /// into the ID target; the others `sample_count` into `surface_format`.
 fn create_view3d_pipeline(
     kind: View3dPipeline,
@@ -453,7 +464,8 @@ fn create_view3d_pipeline(
         style_map_bgl,
         surface_bgl,
         view3d_value_map_bgl,
-    ]: [&wgpu::BindGroupLayout; 5],
+        vector_bgl,
+    ]: [&wgpu::BindGroupLayout; 6],
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
@@ -464,6 +476,19 @@ fn create_view3d_pipeline(
         sample_count
     };
     match kind {
+        View3dPipeline::Vector | View3dPipeline::VectorPick => {
+            data_render::vector::create_vector_view3d_pipeline(
+                device,
+                &shaders.vector_points_3d,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                surface_bgl,
+                surface_format,
+                sample_count,
+                pass,
+            )
+        }
         View3dPipeline::Line | View3dPipeline::LinePick => {
             data_render::create_line_view3d_pipeline_with_sample_count(
                 device,
@@ -582,6 +607,12 @@ pub(super) struct TargetPipelines {
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
     pub(super) surface:
         [Option<wgpu::RenderPipeline>; data_render::surface_mesh::SurfacePass::ALL.len()],
+    /// A triangle mesh series' module and pipelines (#210), indexed by
+    /// [`data_render::tri_mesh::TriMeshPass`]: the fill and the contour
+    /// strokes over the field's group 2. Compiled only when a mesh is drawn.
+    pub(super) tri_mesh_shader: Option<wgpu::ShaderModule>,
+    pub(super) tri_mesh:
+        [Option<wgpu::RenderPipeline>; data_render::tri_mesh::TriMeshPass::ALL.len()],
     /// A ternary series' region fill: the module and its stencil and cover
     /// pipelines, indexed by
     /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
@@ -596,6 +627,8 @@ pub(super) struct TargetPipelines {
         Option<std::sync::Arc<data_render::ternary_region::RingScanPipelines>>,
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
+    /// The precise stem draw (#206): `vs_stem` into `fs_stem`.
+    pub(super) errorbar_stem: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
     pub(super) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
     pub(super) bar_mapped: Option<wgpu::RenderPipeline>,
@@ -821,12 +854,12 @@ impl TargetPipelines {
     }
 
     /// Compile the one 3D point pipeline `kind` when it is missing (#132);
-    /// `bgls` are the transform, style, style map, surface and combined
-    /// value map layouts.
+    /// `bgls` are the transform, style, style map, surface, combined value
+    /// map and vector data layouts.
     pub(super) fn ensure_view3d_pass(
         &mut self,
         device: &wgpu::Device,
-        bgls: [&wgpu::BindGroupLayout; 5],
+        bgls: [&wgpu::BindGroupLayout; 6],
         surface_format: wgpu::TextureFormat,
         kind: View3dPipeline,
     ) {
@@ -897,6 +930,33 @@ impl TargetPipelines {
         }
     }
 
+    /// Compile the triangle mesh pipeline of `pass` (#210), and the mesh
+    /// module first when no mesh has been drawn yet.
+    pub(super) fn ensure_tri_mesh_pass(
+        &mut self,
+        device: &wgpu::Device,
+        [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::tri_mesh::TriMeshPass,
+    ) {
+        if self.tri_mesh[pass as usize].is_some() {
+            return;
+        }
+        let shader = self
+            .tri_mesh_shader
+            .get_or_insert_with(|| data_render::tri_mesh::shader_module(device));
+        self.tri_mesh[pass as usize] = Some(data_render::tri_mesh::create_tri_mesh_pipeline(
+            device,
+            shader,
+            transform_bgl,
+            style_bgl,
+            field_bgl,
+            surface_format,
+            self.sample_count,
+            pass,
+        ));
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn ensure_precise_variants_for_items(
         &mut self,
@@ -923,12 +983,16 @@ impl TargetPipelines {
         let mut need_vector_path = false;
         let mut need_field = false;
         let mut need_contour = false;
+        let mut need_mesh = false;
+        let mut need_mesh_contour = false;
+        let mut need_mesh_selection = false;
         let mut need_contour_label = false;
         let mut need_line = false;
         let mut need_line_mapped = false;
         let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
+        let mut need_stem = false;
         let mut need_bar = false;
         let mut need_bar_mapped = false;
         let mut need_bar_selection = false;
@@ -998,6 +1062,20 @@ impl TargetPipelines {
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
+                need_mesh |= primitives.mesh;
+                need_mesh_contour |= primitives.mesh_contour;
+                // A picked triangle or level redraws through the mesh's
+                // selection entry (#210).
+                need_mesh_selection |= (primitives.mesh || primitives.mesh_contour)
+                    && typed_picks.is_some_and(|config| {
+                        config.refs.iter().any(|picked| {
+                            matches!(
+                                picked,
+                                PickedDataRef::MeshTriangle { .. }
+                                    | PickedDataRef::ContourLevel { .. }
+                            )
+                        })
+                    });
                 need_line |= primitives.line;
                 // Streamline arrowheads draw through the path vector pipeline.
                 need_vector_path |= primitives.line
@@ -1042,7 +1120,10 @@ impl TargetPipelines {
                                 if *series_id == series.config.series_id)
                         })
                     });
+                let vector_3d = item.chart_config.drawn_z_column(series.config).is_some()
+                    && extract_vector(&series.config.render_type).is_some();
                 if primitives.vector
+                    && !vector_3d
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
                     match components.grid() {
@@ -1064,6 +1145,7 @@ impl TargetPipelines {
                 need_bar_selection_mapped |=
                     primitives.bar && series.style.bar_map.is_some() && typed_bin;
                 need_errorbar |= has_errorbar(&series.config.render_type);
+                need_stem |= has_stem(&series.config.render_type);
                 // `has_index` only means a style-index column is bound.
                 // Sparse `*_style_overrides` still need the mapped shader.
                 if primitives.scatter && series.style.scatter_map.is_some() {
@@ -1102,6 +1184,12 @@ impl TargetPipelines {
                         primitives.scatter && !mapped && ring;
                     need_view3d[View3dPipeline::RingMapped as usize] |=
                         primitives.scatter && mapped && ring;
+                }
+                // A point vector on a 3D chart draws its arrows through the
+                // camera (#211); its picked anchor through the 3D ring.
+                if vector_3d {
+                    need_view3d[View3dPipeline::Vector as usize] |= primitives.vector;
+                    need_view3d[View3dPipeline::Ring as usize] |= primitives.vector && typed_point;
                 }
             }
         }
@@ -1184,6 +1272,30 @@ impl TargetPipelines {
                     surface_format,
                     self.sample_count,
                 ),
+            );
+        }
+        for (needed, pass) in [
+            (need_mesh, data_render::tri_mesh::TriMeshPass::Fill),
+            (
+                need_mesh_contour,
+                data_render::tri_mesh::TriMeshPass::Contour,
+            ),
+        ] {
+            if needed {
+                self.ensure_tri_mesh_pass(
+                    device,
+                    [transform_bgl, style_bgl, field_bgl],
+                    surface_format,
+                    pass,
+                );
+            }
+        }
+        if need_mesh_selection {
+            self.ensure_tri_mesh_pass(
+                device,
+                [transform_bgl, data_selection_bgl, field_bgl],
+                surface_format,
+                data_render::tri_mesh::TriMeshPass::Selection,
             );
         }
         if need_contour && self.contour.is_none() {
@@ -1409,6 +1521,8 @@ impl TargetPipelines {
                 data_render::vector::VectorInput::Points => &mut self.vector_points,
                 data_render::vector::VectorInput::Grid => &mut self.vector_grid,
                 data_render::vector::VectorInput::Path => &mut self.vector_path,
+                // A 3D chart's arrows compile with the 3D kinds (#211).
+                data_render::vector::VectorInput::Points3d => continue,
             };
             if need && slot.is_none() {
                 *slot = Some(
@@ -1467,6 +1581,17 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        if need_stem && self.errorbar_stem.is_none() {
+            self.errorbar_stem = Some(data_render::create_stem_pipeline(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_stem",
+            ));
         }
         if need_scatter_mapped && self.scatter_mapped.is_none() {
             self.scatter_mapped = Some(
@@ -1542,6 +1667,7 @@ impl TargetPipelines {
                         per_point_style_map_bgl,
                         surface_bgl,
                         view3d_value_map_bgl,
+                        vector_bgl,
                     ],
                     surface_format,
                     kind,
@@ -1736,6 +1862,19 @@ impl TargetPipelines {
                 style_bgl,
                 surface_format,
                 self.sample_count,
+            )
+        );
+        ensure!(
+            errorbar_stem,
+            "precise stem",
+            data_render::create_stem_pipeline(
+                device,
+                &self.shaders.errorbar,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                self.sample_count,
+                "vs_stem",
             )
         );
         ensure!(
@@ -2059,6 +2198,40 @@ impl TargetPipelines {
                 self.sample_count,
             )
         );
+        // A triangle mesh's fill and contours (#210), prepared with the
+        // fields: they read the field's group 2.
+        for pass in data_render::tri_mesh::TriMeshPass::ALL {
+            if self.tri_mesh[pass as usize].is_none()
+                && feature.is_none_or(|f| f.includes_field("field_tri_mesh"))
+            {
+                let shader = self
+                    .tri_mesh_shader
+                    .get_or_insert_with(|| data_render::tri_mesh::shader_module(device));
+                self.tri_mesh[pass as usize] = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    pass.label(),
+                    || {
+                        data_render::tri_mesh::create_tri_mesh_pipeline(
+                            device,
+                            shader,
+                            transform_bgl,
+                            // The selection entry binds the data selection
+                            // uniform as group 1.
+                            if pass == data_render::tri_mesh::TriMeshPass::Selection {
+                                data_selection_bgl
+                            } else {
+                                style_bgl
+                            },
+                            field_bgl,
+                            surface_format,
+                            self.sample_count,
+                            pass,
+                        )
+                    }
+                ));
+            }
+        }
         ensure!(
             vector_points,
             "vector points",
@@ -2351,11 +2524,14 @@ pub(super) fn create_target_pipelines_observed(
         view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        tri_mesh_shader: None,
+        tri_mesh: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
+        errorbar_stem: None,
         bar: None,
         bar_envelope: None,
         bar_mapped: None,
@@ -2448,11 +2624,14 @@ pub(super) async fn create_target_pipelines_observed_async(
         view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        tri_mesh_shader: None,
+        tri_mesh: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
+        errorbar_stem: None,
         bar: None,
         bar_envelope: None,
         bar_mapped: None,
@@ -3641,6 +3820,7 @@ impl Renderer {
         let had_ternary = self.pipelines.ternary.each_ref().map(Option::is_some);
         let had_view3d = self.pipelines.view3d.each_ref().map(Option::is_some);
         let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
+        let had_errorbar_stem = self.pipelines.errorbar_stem.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
         self.pipelines = create_target_pipelines(
@@ -3755,6 +3935,17 @@ impl Renderer {
                 ),
             );
         }
+        if had_errorbar_stem {
+            self.pipelines.errorbar_stem = Some(data_render::create_stem_pipeline(
+                &self.device,
+                &self.pipelines.shaders.errorbar,
+                &self.transform_bgl,
+                &self.style_bgl,
+                surface_format,
+                target_sample_count,
+                "vs_stem",
+            ));
+        }
         if had_scatter_mapped {
             self.pipelines.scatter_mapped = Some(
                 data_render::create_scatter_columnar_mapped_pipeline_with_entries(
@@ -3815,6 +4006,7 @@ impl Renderer {
                         &self.per_point_style_map_bgl,
                         &self.surface_bgl,
                         &self.view3d_value_map_bgl,
+                        &self.vector_bgl,
                     ],
                     surface_format,
                     target_sample_count,
@@ -4101,6 +4293,7 @@ impl Renderer {
                                 &self.per_point_style_map_bgl,
                                 &self.surface_bgl,
                                 &self.view3d_value_map_bgl,
+                                &self.vector_bgl,
                             ],
                             self.surface_format,
                             kind,

@@ -6,7 +6,8 @@
 //! they edit the document, so drags stay exact at any window size.
 
 use renderer::config::{
-    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, SketchOptions,
+    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, ProbabilityScale,
+    SketchOptions,
 };
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
@@ -72,6 +73,15 @@ const COLORMAPS: &[ColorMap] = &[
     ColorMap::RdBu,
 ];
 const SIZE_SCALES: &[SizeScale] = &[SizeScale::Area, SizeScale::Radius];
+/// The axis scales the "X scale" / "Y scale" combos offer (#209).
+const SCALES: &[AxisScale] = &[
+    AxisScale::Linear,
+    AxisScale::Logarithmic,
+    AxisScale::Probability(ProbabilityScale::Normal),
+    AxisScale::Probability(ProbabilityScale::Weibull),
+    AxisScale::Probability(ProbabilityScale::Logistic),
+];
+
 const CORNERS: &[LegendCorner] = &[
     LegendCorner::TopLeft,
     LegendCorner::TopRight,
@@ -915,14 +925,16 @@ impl CartesianHost {
                 ui.checkbox(&mut config.grid.show_minor_y, "minor Y");
             });
             ui.horizontal(|ui| {
-                let mut log_x = config.bottom_x.scale == AxisScale::Logarithmic;
-                let mut log_y = config.left_y.scale == AxisScale::Logarithmic;
-                if ui.checkbox(&mut log_x, "log X").changed() {
-                    set_log(&mut config, true, log_x);
+                let mut scale_x = config.bottom_x.scale.clone();
+                let mut scale_y = config.left_y.scale.clone();
+                if choice(ui, "X scale", &mut scale_x, SCALES) {
+                    set_scale(&mut config, true, scale_x);
                 }
-                if ui.checkbox(&mut log_y, "log Y").changed() {
-                    set_log(&mut config, false, log_y);
+                if choice(ui, "Y scale", &mut scale_y, SCALES) {
+                    set_scale(&mut config, false, scale_y);
                 }
+            });
+            ui.horizontal(|ui| {
                 let mut inv_x = config.bottom_x.inverted;
                 let mut inv_y = config.left_y.inverted;
                 if ui.checkbox(&mut inv_x, "invert X").changed() {
@@ -1431,6 +1443,8 @@ fn to_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => v.max(f64::MIN_POSITIVE).log10(),
         AxisScale::Linear => v,
+        // The model's scale map (#209); a value off the paper stays put.
+        AxisScale::Probability(_) => axis.scale.forward(v).unwrap_or(v),
     }
 }
 
@@ -1438,24 +1452,25 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => 10f64.powf(v),
         AxisScale::Linear => v,
+        AxisScale::Probability(_) => axis.scale.inverse(v).unwrap_or(v),
     }
 }
 
-fn set_log(config: &mut Config, x: bool, log: bool) {
-    let scale = if log {
-        AxisScale::Logarithmic
-    } else {
-        AxisScale::Linear
-    };
+/// Put the X or Y axis pair on `scale`, keeping the range where the scale
+/// can draw it: a logarithmic axis needs a positive minimum, a probability
+/// axis both bounds strictly inside `(0, 1)`.
+fn set_scale(config: &mut Config, x: bool, scale: AxisScale) {
     let (min, max) = {
         let axis = if x { &config.bottom_x } else { &config.left_y };
         (axis.min, axis.max)
     };
-    let (min, max) = if log && min <= 0.0 {
-        let max = if max > 0.0 { max } else { 1.0 };
-        (max / 1000.0, max)
-    } else {
-        (min, max)
+    let (min, max) = match scale {
+        AxisScale::Logarithmic if min <= 0.0 => {
+            let max = if max > 0.0 { max } else { 1.0 };
+            (max / 1000.0, max)
+        }
+        AxisScale::Probability(_) if !(min > 0.0 && max < 1.0 && min < max) => (0.001, 0.999),
+        _ => (min, max),
     };
     let mut chart = Chart::new(config.clone());
     chart.with_axis_range_change(|c| {
@@ -1540,6 +1555,11 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
         DataRenderType::EnergyLevels(_) => "energy levels",
+        DataRenderType::TriMesh(mesh) => match (mesh.fill.is_some(), mesh.contour.is_some()) {
+            (_, false) => "triangle mesh",
+            (false, true) => "triangle mesh contour",
+            (true, true) => "triangle mesh+contour",
+        },
     }
 }
 
@@ -1669,7 +1689,7 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
     let DataRenderType::Vector {
-        components: VectorComponents::Points { u, v },
+        components: VectorComponents::Points { u, v, .. },
         style,
     } = t
     else {
@@ -1802,6 +1822,41 @@ fn error_controls(ui: &mut egui::Ui, e: &mut renderer::DataErrorBarStyleConfig) 
     slider(ui, "cap size", &mut e.error_bar_cap_size, 0.0..=20.0);
 }
 
+/// A stem or lollipop plot's controls (#206): stems on or off, and their
+/// baseline, direction, colour, width and dash.
+fn stem_controls(ui: &mut egui::Ui, stem: &mut Option<renderer::data_config::Stem>) {
+    use renderer::data_config::{CategoryBarDirection, Stem};
+    let mut on = stem.is_some();
+    if ui.checkbox(&mut on, "stems").changed() {
+        *stem = on.then(|| Stem {
+            baseline: 0.0,
+            direction: CategoryBarDirection::Vertical,
+            color: renderer::Color::from_rgb8(90, 90, 90),
+            width: 1.5,
+            line_style: renderer::line::LineStylePreset::Solid,
+        });
+    }
+    let Some(stem) = stem else {
+        return;
+    };
+    ui.add(
+        egui::DragValue::new(&mut stem.baseline)
+            .speed(0.05)
+            .prefix("stem baseline "),
+    );
+    let mut horizontal = stem.direction == CategoryBarDirection::Horizontal;
+    if ui.checkbox(&mut horizontal, "horizontal stems").changed() {
+        stem.direction = if horizontal {
+            CategoryBarDirection::Horizontal
+        } else {
+            CategoryBarDirection::Vertical
+        };
+    }
+    color(ui, "stem colour", &mut stem.color);
+    slider(ui, "stem width", &mut stem.width, 0.0..=8.0);
+    choice(ui, "stem dash", &mut stem.line_style, widgets::LINE_STYLES);
+}
+
 fn series_controls(
     ui: &mut egui::Ui,
     s: &mut SeriesConfig,
@@ -1820,6 +1875,10 @@ fn series_controls(
             if let Some(errors) = &mut xy.errors {
                 error_controls(ui, &mut errors.style);
             }
+            // Stems need markers (#206).
+            if xy.scatter.is_some() {
+                stem_controls(ui, &mut xy.stem);
+            }
         }
         // A parallel series' rows: their line (its colour stands when no
         // colour column maps them).
@@ -1829,7 +1888,12 @@ fn series_controls(
             color(ui, "level colour", &mut levels.style.level.color);
             slider(ui, "level width", &mut levels.style.level.width, 0.5..=24.0);
             color(ui, "arrow colour", &mut levels.style.transition.color);
-            slider(ui, "arrow width", &mut levels.style.transition.width, 0.5..=24.0);
+            slider(
+                ui,
+                "arrow width",
+                &mut levels.style.transition.width,
+                0.5..=24.0,
+            );
         }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
@@ -1956,6 +2020,16 @@ fn series_controls(
                 );
             }
             if let Some(contour) = &mut field.contour {
+                contour_controls(ui, contour, config);
+            }
+        }
+        // A triangle mesh (#210): its shading follows where its values sit,
+        // so only the opacity and the contour lines are offered.
+        DataRenderType::TriMesh(mesh) => {
+            if let Some(fill) = &mut mesh.fill {
+                slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+            }
+            if let Some(contour) = &mut mesh.contour {
                 contour_controls(ui, contour, config);
             }
         }
@@ -2709,6 +2783,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             )),
             line: None,
             errors: None,
+            stem: None,
         });
         if r.set_chart_series(id, scatter).is_ok() {
             return Err("a line offset member without a line was accepted".into());

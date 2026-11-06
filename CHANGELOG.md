@@ -29,12 +29,23 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 `Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
 the ternary series' `region`, `view_3d`, the heatmaps' `surface`, the
 axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
-`part`, a category's `rich_label`, the axes' `category_groups` and the
-chart's `plot_background`) are additive.
+`part`, a category's `rich_label`, the axes' `category_groups`, the
+chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
+kind and the `mesh_triangle` selection) are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Too many explicit contour label anchors is an error** ([#107](https://github.com/shim9610/figgy/issues/107)).
+  `ContourLabelConfig::validate` rejects an `anchors` list longer than the new
+  `MAX_CONTOUR_LABEL_ANCHORS` (1024) with
+  `ContourLabelConfig::TOO_MANY_ANCHORS_REASON`. Registration, series edits,
+  prepare and export report it as `InvalidSeriesConfig`. Before, the renderer
+  kept the first 1024 valid anchors and dropped the rest silently. The limit
+  is unchanged; the renderer's label buffer (`MAX_CONTOUR_LABELS_TOTAL`) now
+  takes its value from this constant. Migration: a host that passed more than
+  1024 anchors keeps at most 1024 itself.
 
 - **A legend symbol names its series** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `RichSegment` gains `series_id: Option<String>`, and
@@ -142,7 +153,8 @@ chart's `plot_background`) are additive.
   (`Scatter`, `Line`, `ScatterLine`, `ScatterErrorbarX`, `ScatterErrorbarY`,
   `ScatterErrorbarXY`, `LineScatterErrorbarX`, `LineScatterErrorbarY`,
   `LineScatterErrorbarXY`) are one variant, `DataRenderType::Xy(XySeries {
-  scatter, line, errors })`, with `ErrorBars { x, y, style }`; the three
+  scatter, line, errors, stem })` (`stem`: #206, `None` for these), with
+  `ErrorBars { x, y, style }`; the three
   field combinations (`Heatmap`, `Contour`, `HeatmapContour`) are
   `DataRenderType::Field(FieldSeries { matrix, fill, contour, surface })`.
   `XySeries::validate` and `FieldSeries::validate` hold the combinations a
@@ -152,11 +164,11 @@ chart's `plot_background`) are additive.
   one-variant-per-combination form and parse and re-serialize byte for
   byte; serializing a combination with no written form fails. Migration:
   - `DataRenderType::Scatter { scatter }` →
-    `DataRenderType::Xy(XySeries { scatter: Some(scatter), line: None, errors: None })`;
+    `DataRenderType::Xy(XySeries { scatter: Some(scatter), line: None, errors: None, stem: None })`;
     `Line { line }` → `line: Some(line)`; `ScatterLine` → both;
   - `ScatterErrorbarX { scatter, err_x, err_style }` →
     `Xy(XySeries { scatter: Some(scatter), line: None, errors:
-    Some(ErrorBars { x: Some(err_x), y: None, style: err_style }) })`, and
+    Some(ErrorBars { x: Some(err_x), y: None, style: err_style }), stem: None })`, and
     likewise the `Y`, `XY` and `LineScatterErrorbar*` forms;
   - `Heatmap { matrix, fill, surface }` →
     `Field(FieldSeries { matrix, fill: Some(fill), contour: None, surface })`;
@@ -164,6 +176,89 @@ chart's `plot_background`) are additive.
     surface: None`; `HeatmapContour` → both;
   - a `match` reads the parts instead of listing combinations, for example
     `DataRenderType::Xy(xy) => xy.line.as_ref()`.
+- **Stem and lollipop plots** ([#206](https://github.com/shim9610/figgy/issues/206)).
+  `XySeries` gains `stem: Option<Stem>`: stems from a baseline to each
+  point, drawn with the series' markers. `Stem { baseline, direction,
+  color, width, line_style }`: the baseline in data units of the value
+  axis, `direction` (`CategoryBarDirection`, `Vertical` along y by
+  default, `Horizontal` along x for a lollipop), the stroke colour, width
+  in logical pixels and dash (`Solid` by default). The column roles never
+  swap. On the wire the eight marker variants (`Scatter`, `ScatterLine`,
+  `ScatterErrorbar*`, `LineScatterErrorbar*`) carry an optional `stem`
+  key, omitted when `None`, with `direction` and `line_style` omitted at
+  their defaults. `XySeries::validate` refuses stems without markers, a
+  non-finite baseline and a width that is negative or not finite; polar
+  charts refuse stems ("stems are not drawn on polar axes"), and so do 3D
+  charts ("stems draw flat: not on a 3D chart"). `ColorCycle` recolours a
+  stem with the rest of the series. Migration: an `XySeries { .. }`
+  literal adds `stem: None`, and a pattern that names every field adds
+  `stem` or `..`.
+- **Heatmaps and contours on polar charts** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  `Config::validate_series_on_polar` accepts a field series. It refuses a
+  hexagonal lattice ("a hexagonal grid is drawn on a rectangular chart")
+  and a field on a `GridShape::Polygon` grid ("a polar heatmap's cells
+  follow circular rings: not on a polygon grid"). An image keeps its
+  refusal under its own reason, "images are not drawn on polar axes"
+  (previously "field and contour series are not drawn on polar axes").
+  No type or serialized key is added: a polar heatmap document parses and
+  re-serializes byte-identically.
+- **Probability axis scales** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  `AxisScale::Probability(ProbabilityScale)` places a probability `p` in
+  `(0, 1)` at `F⁻¹(p)`: `Normal` (probit, Wichura's AS241 `PPND16`, its
+  inverse through Cody's `erfc`), `Weibull` and `Logistic`, in the new
+  module `probability`. `AxisScale::forward` / `inverse` are the one CPU
+  scale map, which the geometry (`axis_fraction`, `axis_cross`, the break
+  map), the annotation space (`AxisMap::Probability`), `shift_axis` (line
+  offsets in units of `F⁻¹(p)`) and the ticks read.
+  `guarded_probability_range` and `PROBABILITY_RANGE_FALLBACK` (0.001 to
+  0.999) guard an unvalidated range. Ticks come from the range: the tail
+  `min(p, 1 − p)` walks the log ladders (decades, 1-2-5, 1 to 9) mirrored at
+  0.5, with 0.5 on every ladder, the sparsest with four majors, then a linear
+  grid in `p` for a narrow window (`ProbabilityTicks`, a `Copy` walk bounded
+  by `MAX_LOG_DECADES`); minors are the next denser ladder; label pruning
+  demotes along the tails (`ladder_multiple`). `compute_nice_ticks` widens a
+  probability range to the next tail decade and returns the new
+  `TickError::OutsideProbability` for a range outside `(0, 1)`. The new
+  `LabelFormat::Percent` writes `25%`, and on a probability axis `0.1%`,
+  `50%`, `99.9%` with the decimals each tail needs. Validation: bounds and
+  cut ranges strictly inside `(0, 1)`; a categorical axis, a colourbar axis,
+  a parallel axis, the polar radius and the value axis of category bars and
+  box plots (the position axis of range bars, which tested
+  `== Logarithmic`) refuse the scale; polar angle, ternary, 3D and
+  hexagonal grids already accepted only linear axes. JSON:
+  `"scale": {"Probability": "Normal"}`; the unit variants stay strings, so
+  older documents parse and re-serialize byte-identically. Migration: a
+  `match` on `AxisScale`, `AxisMap`, `LabelFormat` or `TickError` adds the
+  new variant; `layout::span_fraction(value, min, max, logarithmic: bool)`
+  takes `&AxisScale` (`false` → `&AxisScale::Linear`, `true` →
+  `&AxisScale::Logarithmic`).
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  `VectorComponents::Points` gains `w: Option<ColumnId>`, the z component.
+  On a 3D chart a point vector draws when it names its anchor height in
+  `SeriesConfig.z_column` and its z component in `w`;
+  `Config::validate_view3d_series` refuses each missing one with its own
+  reason ("a vector series on a 3D chart names its anchor height column
+  (z_column)", "... names its z component (w)") and a grid vector ("a grid
+  vector draws flat: not on a 3D chart"). On a flat chart both are kept and
+  unused. `Config::drawn_z_column` names a 3D point vector's height, the
+  step count includes the height and `w` on a 3D chart, and
+  `SeriesConfig::visit_columns` visits `w`.
+  `VectorStyle::fit_scale_3d(u_bounds, v_bounds, w_bounds, target)` sizes the
+  longest vector the bounds allow, `hypot(max |u|, max |v|, max |w|)`. On the
+  wire `w` is omitted when `None`, so older documents parse and re-serialize
+  byte-identically. Migration: a `VectorComponents::Points { u, v }` literal
+  becomes `Points { u, v, w: None }`, and a pattern that names every field
+  adds `w` or `..`.
+- **A box axis title clears its widest tick label** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  The title of a 3D box axis sat a fixed band (about 1.4 label heights)
+  past its edge. On a near-vertical edge a wide label (`3.00` on the z
+  axis) reaches farther along the normal than that, and the title ran into
+  it. The band is now at least the widest drawn label's extent along the
+  edge's normal. `Config::box_title_placement(k, offset, extents,
+  label_reach)` takes that reach (`None` keeps the fixed band); the
+  decoration layout, which the draw and the hit map share, passes the
+  measured one. Migration: a direct caller adds
+  `None`, or the reach of its own labels.
 - **The columns a series reads are public** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `SeriesConfig::visit_columns` visits every plain column a series reads
   (coordinates, marker, error-bar, grid, component, colour and further axis
@@ -377,6 +472,14 @@ chart's `plot_background`) are additive.
   when `None` and kept and unused on a flat chart. Migration: a
   `SeriesConfig { .. }` literal adds `z_column: None`, and a pattern that
   names every field adds `z_column` or `..`.
+- **A 3D series' height column is one of its columns**
+  ([#207](https://github.com/shim9610/figgy/issues/207)).
+  `SeriesConfig::visit_columns` now visits `z_column` when it is set, so the
+  enumeration every column check reads names it. New
+  `Config::drawn_z_column(&series)` answers the height column that bounds a
+  series' draw: its `z_column` when it is a scatter or line series on the 3D
+  panel that owns it (the chart or its subplot), `None` on a flat one.
+  `step_selection` stops at the shortest of x, y and that column.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)).
   `DataRenderType::Ternary` gains `region: Option<TernaryRegionStyle>`
@@ -1090,9 +1193,250 @@ chart's `plot_background`) are additive.
   an `AxisOptions { .. }` literal adds `category_groups: None`; a
   `Config { .. }` literal adds `plot_background: None`.
 
+- **Triangle mesh series** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `DataRenderType::TriMesh(TriMeshSeries)` (new module `tri_mesh`) is a
+  field over host-given triangles: `triangles` names a triangle index
+  column, `values: MeshValues { column, at }` the value column and whether
+  its values sit at the `MeshValueLocation::Vertices` or `Faces`, and
+  `fill`, `contour` and `surface` are the heatmap's `FieldFillConfig`,
+  `ContourConfig` and `SurfaceStyle`; `x_column` / `y_column` are the
+  vertex coordinates and `z_column` the vertex height on a 3D chart.
+  `TriMeshSeries::validate` and `Config::validate_tri_mesh_series` (in
+  `validate_series`) hold the rules: vertex values shaded `Interpolated`,
+  face values `Flat`, contour lines only over vertex values and without
+  labels, no surface `color_matrix`, not on polar, ternary or parallel
+  charts, and on a 3D chart a `z_column` and a continuous fill. A picked
+  triangle is `PickedDataRef::MeshTriangle { source_id, series_id,
+  triangle_index }` (serde tag `mesh_triangle`); `step_selection` moves it
+  by `dx` over the triangles (the triangle index column's `column_len` over
+  three) and by `dy` across the mesh series. The legend mark and the colour
+  cycle treat a mesh as a field. Migration: an exhaustive `match` on
+  `DataRenderType` adds `TriMesh(_)`, one on `PickedDataRef` adds
+  `MeshTriangle { .. }`.
+
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  A fourth pool source kind, for the coming triangle mesh series:
+  `Renderer::upsert_triangles(id, &TriangleSource { indices })` and
+  `remove_triangles(id)` (also on `ColumnPool`, with `triangles(id)` and
+  `triangle_stats(id)`). Three vertex indices per triangle upload as one
+  member column of `u32` index lanes (SHADER_COMMON.md §5.14), exact up to
+  `u32::MAX`. The upload's write observer rejects an empty column, a length
+  that is not a multiple of 3, an index that is not an integer in
+  `0..=u32::MAX` and indices written out of order, before anything is
+  published, and records `TriangleStats { triangles, min_index, max_index }`;
+  no index is kept on the CPU. The id shares the one id space of columns,
+  records and ragged columns, the member is internal, and the kind is
+  resident only: a streamed id is refused both ways.
+  `Column<u32>` implements `ColumnSource`, writing each value's exact
+  `(hi, lo)` split. The streaming refusal for composite ids now reads
+  "streaming is not extended to records, ragged and triangle columns".
+
+- **Triangle mesh series: the flat draw** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  A `TriMesh` series draws its fill and its contours on a flat chart: one
+  instance per triangle through a new assembled module (`tri_mesh`, entries
+  `vs_tri`, `fs_tri`, `fs_tri_contour`) that reads the field's group 2
+  layout under `FIELD_FLAG_MESH` / `FIELD_FLAG_FACE_VALUES`
+  (SHADER_COMMON.md §5.25). The fill colours through the heatmap's new
+  `field_value_color`, the contours through its level search
+  (`contour_block_candidates`, `contour_level_over`, moved into
+  `field_paint.wgsl`; the heatmap's pixels are unchanged). Registration
+  checks the triangle column, the value column, the colourbar, the contour
+  level count and that every index names a vertex; the fit covers the
+  vertex columns; `series_draw_info` counts the triangles and reports a
+  column shortened after registration. A streamed display refuses the kind
+  ("triangle mesh series require GPU-resident columns; streamed sources are
+  not supported", rule 8), and a 3D chart refuses it until the trisurf
+  lands. The model's `TriMesh` series kind and `MeshTriangle` selection are
+  re-exported (`renderer::tri_mesh`); `PickedData::MeshTriangle { source_id,
+  series_id, triangle_index, vertex_index, distance_px }` is the pick result
+  to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
+  exhaustive `match` on `PickedData` adds `MeshTriangle { .. }`.
+
+- **Triangle mesh series: picking and the picked highlight** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The typed data pick answers a mesh's triangles through a new compute entry
+  of the mesh module (`pick_tri_mesh`, one 64-lane workgroup over every
+  triangle, SHADER_COMMON.md §5.25): `PickedData::MeshTriangle` with the
+  triangle and its vertex nearest the cursor, at distance 0 inside the
+  triangle and within one output pixel of its edge, only where the fill
+  paints, the later triangle on overlap. A contour stroke within the pick
+  distance answers first as `PickedData::ContourLevel` with the triangle in
+  `x_index`. The picked triangle is outlined inside its edges at
+  `outline_width_px`, and a picked level redrawn `contour_width_extra_px`
+  wider, through the mesh's selection entry (`fs_tri_selection`);
+  `ColumnFieldSelectionLayer` gains `vertices` and `instances` for it. A
+  million triangles pick in about 50 ms on lavapipe; nothing caps the count.
+  Migration: code that builds a `ColumnFieldSelectionLayer` sets `vertices:
+  FIELD_VERTICES, instances: 0..1` for a field.
+
+- **A frame of more series than a scratch cache holds draws them all.**
+  The per-series scratch caches (256 entries each) cleared themselves when
+  the 257th series of one frame was prepared, so that frame's layers lost
+  the earlier series' scratches and the frame failed with an internal
+  error: more than 256 heatmaps, images, vector series, colour-mapped
+  scatter, streamline or parallel series (or triangle meshes) in one frame
+  did not draw (rule 10). Each cache (`field`, `vector`, `value_map`,
+  `contour`, which also holds value label atlases and energy-level
+  rasters) is now bounded before a frame resolves, keeping the series that
+  frame draws, and evicts nothing while it runs; a lone preparation (a
+  pick) still evicts as before. The contour cache never failed (its frame
+  keeps snapshots), and now also stops rebuilding the frame's own entries.
+  Tests draw 300 heatmaps, vector series, colour-mapped scatter series,
+  contours and triangle meshes in one frame.
+
+- **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
+  A backend's shader compiler can need more stack than the calling thread
+  has: on Windows WARP the largest pipelines need 2 to 4 MiB, and a Windows
+  main thread has 1 MiB, so pipeline creation could overflow the host's
+  stack. Natively the renderer now creates every shader module and pipeline
+  on a scoped thread with a 16 MiB stack (reserved, not committed). Errors
+  still reach the caller's error scope: the compile thread captures them and
+  the creation is repeated on the calling thread. No API change; the browser
+  build is unchanged.
+
+- **A field picks in two compute dispatches** ([#222](https://github.com/shim9610/figgy/issues/222)).
+  On Windows WARP, picking a field overflowed the stack of a thread that WARP
+  creates with the 1 MiB default, past the compile thread above. The single
+  entry point held both the contour and the cell pick; each half alone fits.
+  The entry is split into
+  `pick_field_contour` and `pick_field_cell`. One pass dispatches both, in
+  that order, and the cell keeps the contour's candidate when there is one,
+  so the result is unchanged. A host that observes initialization
+  (`InitEvent::stage`) now sees these two stages in place of
+  `pick_field_data`.
+
+- **Probability axes are refused until drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  A chart with a probability axis on any axis or subplot is refused at
+  registration and at export with `InvalidConfig` ("probability axes are not
+  drawn yet"), rather than drawn as a linear axis, until the GPU transform
+  places them. The annotation space, the fit stamp (codes 2 to 4) and the
+  render warnings take the new scale.
+
+- **The partner axis takes the main axis's scale.** `Chart::set_x_range`,
+  `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
+  to a registered chart) and the subplot range setters write the range to
+  both axes of a pair. They kept each axis's `scale` and chose both axes'
+  major spacing, minor count, label format and precision from the main
+  axis's (`bottom_x`, `left_y`). Beside a logarithmic `left_y`, a linear
+  `right_y` over 1..1000 therefore got a one-unit spacing with eight
+  minors, about 8000 ticks drawn as a solid bar down the right edge, and a
+  logarithmic partner beside a linear main axis drew no decade inside the
+  range. The helpers now give `top_x` and `right_y` the main axis's scale
+  first, then each axis the ticks of its scale, so a logarithmic `left_y`
+  puts decades on both edges. A categorical partner keeps its scale, and a
+  3D or ternary chart's `top_x` and `right_y` (the z and c axes) keep their
+  own scales and get the ticks of them. View states apply each axis's scale
+  as they carry it. Migration: a chart that wants a second value axis with
+  a different scale on the right uses an overlay layer (`Config::overlays`);
+  a `right_y` or `top_x` scale that differs from its main axis's is
+  replaced by the next range helper call.
+
+- **Probability axes are drawn** ([#209](https://github.com/shim9610/figgy/issues/209)).
+  `ScatterTransform` gains `scale_prob: [f32; 4]` at offset 288 (288 B →
+  304 B): the probability code of x and y (0 none, 1 normal, 2 Weibull,
+  3 logistic). On a probability axis `scale_log` is 0 and `data_min` /
+  `data_max` hold `F⁻¹` of the bounds. The new fragment
+  `common/probability.wgsl` (spliced wherever `projection.wgsl` is) places a
+  sample at `F⁻¹(p)` from its `(hi, lo)` pair, so the upper tail's
+  `1 − p` survives: AS241 `PPND7`, the Weibull series below 0.01, the logit,
+  their slopes for the vector and line-head derivatives and their inverses
+  for the contour label anchors. `axis_pair_to_t` and
+  `axis_px_per_unit_at` take the code after `is_log`; `sample_valid` and the
+  pick omit a value at or past 0 or 1; an area or stem baseline there is
+  clamped to the axis end on its side. The range helpers
+  (`apply_axis_range`) write `LabelFormat::Percent` and `minor_count = 1` on
+  a probability axis; an auto fit keeps its ends in `(0, 1)` (an end at 0 or
+  1 takes the mirror of the other) and pads in `F⁻¹` units; line offsets
+  shift fit extents in `F⁻¹` units; a view state checks the bounds. A
+  streamed series on a probability axis is refused ("probability axes
+  require GPU-resident columns; streamed sources are not supported"). The
+  model PR's "not drawn yet" refusal is gone. The annotation space, the fit
+  stamp (codes 2 to 4) and the render warnings take the new scale.
+  Migration: a `ScatterTransform` literal adds
+  `scale_prob: renderer::data_render::NO_PROBABILITY` (`[0.0; 4]`).
+  The `probability_paper` example (`gallery-probability.png`) draws normal
+  paper and Weibull paper over a log time axis; the playground has the same
+  scene and an axis scale menu in place of its log checkboxes.
+
+- **Stems** ([#206](https://github.com/shim9610/figgy/issues/206)). A
+  series' stems are the error-bar module's second draw: one quad per point
+  (`vs_stem`, `vs_stem_sketch` into `fs_stem`; a Milkyway jet through
+  `vs_jet`'s stem branch), built by `stem_segment` in
+  `common/errorbar_segment.wgsl` from the baseline to the point. Its
+  `Style` carries `ERRORBAR_STEM` (bit 5 of `primitive_flags`) with the
+  direction bit, and the baseline as the pool's `(hi, lo)` pair in
+  `cap_half_px` / `cap_width_px`. Stems draw first of the series' parts,
+  under the error bars, the line and the markers, exactly where the
+  marker's sample is valid. Every stem's dash starts at its baseline, with
+  no arc scan. On a logarithmic value axis a baseline at or below zero is
+  drawn at the axis minimum: `axis_baseline_ndc` in `common/projection.wgsl`
+  now serves the area fill and the stems. A stem picks as its point
+  (`pick_stem_candidate` under the error-bar pick variant; a dash gap does
+  not pick), and the marker wins a tie. The baseline joins the value
+  axis' auto-fit, as a histogram's does (`FitExtentParams::Stem`), before
+  a line offset member's shift. Constellation drops a stem series, as it
+  drops an error-bar series. Streaming is not extended to stems
+  (`STREAMED_STEM_REASON`). Every row draws a stem: 1,000,001 rows draw in
+  about 1.2 s and pick their last row in about 4.7 s on lavapipe, measured
+  by `tests/stem_render.rs` and never capped.
+
+- **Polar heatmaps and contours** ([#208](https://github.com/shim9610/figgy/issues/208)).
+  A field on a polar chart draws each cell as the annular sector between
+  its angle and radius boundaries. The field draw stays one quad: each
+  fragment's pixel offset from the centre is inverted by `polar_unproject`
+  (`common/projection.wgsl`) and read by `field_lookup`
+  (`common/field_grid.wgsl`), which wraps the angle into the turn from the
+  grid's low boundary and carries the lookup's per-pixel Jacobian. The
+  fill, the cell pick, the picked cell's outline (the rose's
+  `radial_sector.wgsl` footprint, now spliced into the field module), the
+  contour stroke (the Euclidean pixel distance to the isoline, by
+  foot-point iteration on the field through the polar placement), the
+  contour pick and highlight, and the contour label
+  anchor pass (seeded and stepped in (angle, radius); the anchor module
+  now splices `sample_validity.wgsl`) all walk this one lookup. A
+  rectangular chart's lookup is the identity and its path is unchanged.
+  Edges and centres, both orientations, flat and interpolated shading, log
+  and inverted radius axes, a categorical angle axis, the hole and the
+  sector work; an interpolated full circle closes its seam when the host
+  names the first column again one turn on. Streaming stays refused for
+  every polar chart. No count limit: 65,537 angle cells by 64 rings draw
+  in about 0.4 s and a 2,048 by 2,048 grid in about 0.5 s on lavapipe,
+  measured by `tests/polar_heatmap_render.rs`. The `PolarHeatmap` scene is
+  a weather radar sweep and `polar_plot` writes a fifth image, an antenna
+  gain heatmap. The shader prewarm contract is regenerated.
+
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A point vector on a 3D chart draws one arrow per row from `(x, y, z)`
+  along `(u, v, w)`, depth tested against the surfaces, the 3D marks and
+  the other arrows. The new assembled module `VECTOR_POINTS_3D_SHADER`
+  (`VectorInput::Points3d`) is the point form with the flat projection
+  fragment replaced by `common/project_3d.wgsl` and the new
+  `vector/project_box3d.wgsl`, plus the ID pick entries of the new
+  `vector/vector_entry_3d.wgsl`; the glyph and the input are unchanged
+  (rule 9). Both projection fragments now define `arrow_clip(corner,
+  arrow)`, and `ArrowPx` carries the NDC depth at the tail and tip; the
+  entry's body is `vector_vertex`, and the 2D vector modules draw
+  byte-identical pixels. The glyph stays camera-facing in logical pixels.
+  `Data` tips are placed through the axes and the camera, and an arrow
+  whose anchor or tip leaves the box is not drawn; `Pixels` length is the
+  screen-plane length at the anchor. `VectorParamsGpu` grows from 128 to
+  144 bytes (`height_base`, `height_len`, `w_base`, `w_len`) and
+  `VECTOR_FLAG_THREE_D` (64) selects the height and `w` reads.
+  `View3dPipeline` gains `Vector` and `VectorPick` (`VIEW3D_PIPELINES` 10).
+  The 3D ID pick answers an arrow's row where its shaft or head covers at
+  least half the pixel, the picked ring sits at the anchor at half the head
+  width, and the z fit adds `[z_min + f·w_min, z_max + f·w_max]` for a
+  `Data` arrow from column statistics. `SeriesDrawInfo` counts the height
+  and `w`, and registration checks `w` on a 3D chart. A change of a
+  series' `z_column` is now a data declaration change (it moved no
+  revision before). Streamed sources are refused. No count limit:
+  `(1 << 20) + 1` arrows draw, pick their last row and step to it in
+  `tests/surface_render.rs`. The `Quiver3d` scene draws an
+  Arnold-Beltrami-Childress flow coloured by a host-computed speed. The
+  shader prewarm contract is regenerated.
 
 - **Flat radial charts shade most pixels once** ([#41](https://github.com/shim9610/figgy/issues/41)).
   A radial chart whose sectors are all Flat, level (no tilt or depth),
@@ -1781,6 +2125,15 @@ chart's `plot_background`) are additive.
   `right_y` to the height columns' statistics. Annotations place ratio
   anchors only, streamed sources are rejected, and the compile capture
   records `depthStencil`. A grid past `1 << 22` quads draws whole.
+- **A 3D series' height column is enumerated with its columns**
+  ([#207](https://github.com/shim9610/figgy/issues/207)). Removing a
+  series' `z_column` now removes the series, as removing any column it
+  reads does, instead of failing at the next prepare with
+  `UnknownColumn`. A streamed height column is refused with
+  `ColumnNotResident`. Pick invalidation, the derived-data stamps and the
+  browser's referenced columns read the same list. `series_draw_info`
+  counts the height column on a 3D panel, so it reports the rows the draw
+  clamps to.
 - **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
   A scatter, line or scatter-line series with a `z_column` draws on a 3D
   chart through new entries of the scatter, line and arc modules (`vs_3d`,
@@ -2552,6 +2905,29 @@ chart's `plot_background`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `register_triangles(id, Uint32Array)` registers or replaces a triangle
+  index column, borrowing the array for the upload, and
+  `remove_triangles(id)` removes one.
+- **Triangle mesh series JSON** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The `TriMesh` render_type and the `mesh_triangle` selection parse and
+  write through serde (SCHEMA.md); a `pick_data` hit on a mesh will report
+  `kind: "mesh_triangle"` with its `triangle_index` and `vertex_index`.
+  `set_series` draws a mesh series on a flat chart.
+- **Triangle mesh picks, details and steps** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `pick_data` answers a mesh's triangles (`kind: "mesh_triangle"`, with
+  `triangle_index` and `vertex_index`) and its contour strokes.
+  `selection_details()` reports a selected triangle's three vertex indices,
+  read from the triangle index column's `u32` lanes, and their coordinates
+  and values (or its face value), read back from the GPU columns.
+  `step_selection` counts a mesh's triangles from the index column's
+  statistics. `set_series` accepts a series that names a registered
+  triangle index column; it refused every mesh series before, because the
+  triangle id is not a column id.
+- **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
+  A picked arrow of a 3D point vector reports `z` and `w` in
+  `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON
+  carries `w` in `components.Points`, omitted when absent.
 - **Legend rows follow their series** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `set_series_label`, `remove_series`, `remove_column`, `add_line_series`,
   `set_series` and `load_demo` find a series' legend row by the series its
@@ -2912,6 +3288,64 @@ entries above describe the changes.
   gone (13b), and the radial scene has no exclusion.
 
 ### Tests and guards
+
+- **The field contour and violin picks compile in a browser's software
+  GPU.** Creating the `field contour data pick` and `violin data pick`
+  pipelines grew Chromium's SwiftShader GPU process past 12 GB, so a
+  browser without a GPU lost the device at its first pick (the field
+  pipeline also overflowed Windows WARP's stack, #226). The polar
+  foot-point iteration (#208) and the binary searches inside it were
+  nested in the contour pick's loop over the levels; the pick now runs
+  each level's steps in one flat loop, through
+  `contour_foot_begin` and the foot-point step the paint and the
+  highlight share (now the walk of the next entry). `locate` keeps the bracket's boundaries as it bisects
+  and returns them (`CellHit.lo_t`, `hi_t`), so `contour_sample` no longer
+  transforms four boundaries again for the cell's span. Distances and
+  picks are unchanged. The violin pick's segment search keeps the two
+  points it brackets instead of reading them again, and reads both
+  neighbouring points through one call. In SwiftShader the contour pick
+  now builds in about 60 s at 850 MB and the violin pick in about 90 s at
+  530 MB; the cell pick goes from 17 s to 9 s and the contour paint from
+  8 s to 4 s.
+
+- **Contours draw in a browser's software GPU.** SwiftShader compiles a
+  fragment entry when it first draws, not when its pipeline is created, so
+  measuring pipeline creation missed the contour paint: the first draw of
+  a contour (`fs_contour`, `fs_contour_labelled`, the 3D floor contour and
+  its ID pick) grew Chromium's GPU process past 12 GB and lost the device.
+  This is what a page creating several contour charts, and an export after
+  a full prewarm, ran into. The paint nested the polar foot-point loop in
+  its loops over the level blocks and candidates, and every foot-point
+  step held two binary cell searches. The paint now takes the blocks, the
+  candidates and the foot-point steps in one flat loop, like the pick. The
+  steps are a walk (`contour_foot_walk`, `contour_foot_advance`) that the
+  paint, the pick and the selected-level highlight advance one iteration
+  of their loop at a time. `locate` is split into `locate_begin`,
+  `locate_step` and `locate_end`, and `contour_sample` into the search and
+  `contour_sample_cells`, so the walk halves one cell search per
+  iteration, both axes through one call site. Pixels and picks are
+  unchanged: on Apple M4 (Metal) the exported images of polar and
+  rectangular contours at 8 and 64 levels, 1x and 2x, are byte-identical
+  before and after. A polar contour export takes 1 to 5 ms (3 to 8%)
+  longer there; a rectangular one is unchanged. In headless Chromium 151
+  (SwiftShader, Apple M4) the first use of each contour entry now takes 4
+  to 5.5 s at under 210 MB, the selected-level highlight 9 s instead of
+  30 s, and creating the contour pick 6.5 s at 200 MB instead of 27 s at
+  710 MB. Draws after the first take 2 to 3 ms either way.
+
+- **Shaders a browser refuses.** Chrome's WGSL compiler refused eight
+  modules that naga accepts (the line, bar and surface draw modules and
+  the five GPU pick modules), so their pipelines failed in the browser:
+  a constant that evaluates to NaN (`bitcast<f32>(0x7fc00000u)`, the
+  parallel-coordinate ends, the box-plot value label's missing top and a
+  ternary pick past its third column), a literal past `f32::MAX`
+  (`3.4028235e38`, the raincloud member check), and a `fwidth` after a
+  return that depends on the fragment (the surface's picked patch). Each
+  now carries validity by an explicit flag or a bit test, and the patch
+  colour is computed before the choice. `shader_assembly`'s
+  `no_assembled_module_holds_a_constant_a_browser_refuses` scans every
+  assembled module for the first two forms. None of these shaders was in
+  a release.
 
 - **Older documents are checked by what they draw** ([#160](https://github.com/shim9610/figgy/issues/160)).
   `tests/released_documents.rs` no longer requires the released bytes back:

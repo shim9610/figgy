@@ -207,6 +207,8 @@ NUMERIC_TESTS = (
     ("serde,cpu-twin", ["--test", "pick_draw_agreement"],
      "cpu_and_gpu_place_points_alike_at_every_magnitude"),
     ("serde,cpu-twin", ["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
+    ("serde,cpu-twin", ["--test", "pick_draw_agreement"],
+     "probability_axis_places_points_at_every_tail"),
     ("serde,cpu-twin", ["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
     ("serde,cpu-twin", ["--lib"],
      "gpu_pick::tests::split_linear_projection_preserves_independent_hi_lo_subtraction"),

@@ -104,6 +104,8 @@ impl ParallelAxis {
                 }
                 (value.log10() - self.min.log10()) / (self.max.log10() - self.min.log10())
             }
+            // Refused on a parallel axis (#209).
+            AxisScale::Probability(_) => return None,
         };
         f.is_finite()
             .then_some(if self.inverted { 1.0 - f } else { f })
@@ -133,6 +135,9 @@ impl ParallelAxis {
         }
         if self.scale == AxisScale::Logarithmic && self.min <= 0.0 {
             return Err("a logarithmic parallel axis's range is positive");
+        }
+        if matches!(self.scale, AxisScale::Probability(_)) {
+            return Err("a parallel axis is linear or logarithmic: not a probability axis");
         }
         if self.label_offset.iter().any(|v| !v.is_finite()) {
             return Err("a parallel axis's label offset is finite");
@@ -385,6 +390,15 @@ mod tests {
             "a logarithmic parallel axis's range is positive"
         );
         assert_eq!(
+            reject(&|c| {
+                let axis = &mut c.parallel_mut().unwrap().axes[0];
+                axis.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
+                axis.min = 0.1;
+                axis.max = 0.9;
+            }),
+            "a parallel axis is linear or logarithmic: not a probability axis"
+        );
+        assert_eq!(
             reject(&|c| c.bottom_x.categories = None),
             "a parallel chart's bottom_x is categorical: one category per axis"
         );
@@ -459,6 +473,7 @@ mod tests {
             scatter: None,
             line: Some(line()),
             errors: None,
+            stem: None,
         });
         assert_eq!(
             config.validate_parallel_series(&[scatter]),

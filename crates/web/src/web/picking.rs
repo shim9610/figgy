@@ -22,6 +22,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Parallel { .. }
         // An energy level is a stroke, never a marker (#203).
         | DataRenderType::EnergyLevels(_)
+        // A mesh is a field over triangles (#210): no markers.
+        | DataRenderType::TriMesh(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
@@ -94,6 +96,32 @@ impl FiggyChart {
         &self,
         samples: &[(String, usize)],
     ) -> Result<Vec<f64>, JsValue> {
+        self.read_selection_lanes(samples, |[h0, h1, h2, h3, l0, l1, l2, l3]| {
+            f32::from_le_bytes([h0, h1, h2, h3]) as f64
+                + f32::from_le_bytes([l0, l1, l2, l3]) as f64
+        })
+        .await
+    }
+
+    // The selected entries of a triangle index column (#210): each index is
+    // the first `u32` lane of its pair (SHADER_COMMON.md §5.14).
+    pub(super) async fn read_selection_indices(
+        &self,
+        samples: &[(String, usize)],
+    ) -> Result<Vec<u32>, JsValue> {
+        self.read_selection_lanes(samples, |[i0, i1, i2, i3, ..]| {
+            u32::from_le_bytes([i0, i1, i2, i3])
+        })
+        .await
+    }
+
+    // Copy the selected 8-byte pairs out of the resident GPU pool and decode
+    // each with `decode`.
+    async fn read_selection_lanes<T>(
+        &self,
+        samples: &[(String, usize)],
+        decode: fn([u8; 8]) -> T,
+    ) -> Result<Vec<T>, JsValue> {
         // Nothing to read (a violin without boxes names no record field): a
         // zero-sized buffer cannot be mapped, so no GPU work is submitted.
         if samples.is_empty() {
@@ -146,13 +174,7 @@ impl FiggyChart {
         receiver.await.map_err(js_err)?.map_err(js_err)?;
         let mapped = slice.get_mapped_range().map_err(js_err)?;
         let (pairs, _) = mapped.as_chunks::<8>();
-        let values = pairs
-            .iter()
-            .map(|&[h0, h1, h2, h3, l0, l1, l2, l3]| {
-                f32::from_le_bytes([h0, h1, h2, h3]) as f64
-                    + f32::from_le_bytes([l0, l1, l2, l3]) as f64
-            })
-            .collect();
+        let values = pairs.iter().map(|&pair| decode(pair)).collect();
         drop(mapped);
         buffer.unmap();
         Ok(values)
@@ -239,6 +261,7 @@ impl FiggyChart {
                 let size_column = scatter
                     .and_then(|scatter| scatter.point_size_map.as_ref())
                     .map(|map| map.column.clone());
+                let three_d = self.chart_config()?.drawn_z_column(&series).is_some();
                 let mut samples = vec![
                     (series.x_column, *point_index),
                     (series.y_column, *point_index),
@@ -249,16 +272,21 @@ impl FiggyChart {
                 if let Some(column) = size_column.clone() {
                     samples.push((column, *point_index));
                 }
-                // A point vector reports its components and, when colour
-                // mapped, the value its colour came from.
+                // A point vector reports its components (its z component
+                // where it is drawn in 3D, #211) and, when colour mapped,
+                // the value its colour came from.
                 let vector = match vector_columns(&series.render_type) {
-                    Some(VectorColumns::Points { u, v, color }) => {
+                    Some(VectorColumns::Points { u, v, w, color }) => {
                         samples.push((u.to_owned(), *point_index));
                         samples.push((v.to_owned(), *point_index));
+                        let w = w.filter(|_| three_d);
+                        if let Some(w) = w {
+                            samples.push((w.to_owned(), *point_index));
+                        }
                         if let Some(color) = color {
                             samples.push((color.to_owned(), *point_index));
                         }
-                        Some(color.is_some())
+                        Some((w.is_some(), color.is_some()))
                     }
                     _ => None,
                 };
@@ -316,11 +344,16 @@ impl FiggyChart {
                     result["size_value"] = serde_json::json!(values[next]);
                     next += 1;
                 }
-                if let Some(colour_mapped) = vector {
+                if let Some((has_w, colour_mapped)) = vector {
                     result["u"] = serde_json::json!(values[next]);
                     result["v"] = serde_json::json!(values[next + 1]);
+                    next += 2;
+                    if has_w {
+                        result["w"] = serde_json::json!(values[next]);
+                        next += 1;
+                    }
                     if colour_mapped {
-                        result["color_value"] = serde_json::json!(values[next + 2]);
+                        result["color_value"] = serde_json::json!(values[next]);
                     }
                 }
                 // A parallel row reports every axis's value (`values`, in
@@ -684,6 +717,64 @@ impl FiggyChart {
                     *category_index
                 ));
             }
+            // A mesh triangle reports its three vertex indices, read from
+            // its index column's `u32` lanes, then their coordinates and its
+            // values (one per vertex, or its face value), read back from
+            // the GPU columns the draw used (#210).
+            PickedDataRef::MeshTriangle { triangle_index, .. } => {
+                let mesh = series
+                    .tri_mesh()
+                    .ok_or_else(|| js_err("selected series is not a triangle mesh"))?;
+                let member = self
+                    .renderer
+                    .pool()
+                    .triangles(&mesh.triangles)
+                    .map(|triangles| triangles.slot().indices.clone())
+                    .ok_or_else(|| js_err("selected triangles no longer exist"))?;
+                let first = triangle_index
+                    .checked_mul(3)
+                    .ok_or_else(|| js_err("selected triangle is outside the mesh"))?;
+                let corners = self
+                    .read_selection_indices(&[
+                        (member.clone(), first),
+                        (member.clone(), first + 1),
+                        (member, first + 2),
+                    ])
+                    .await?;
+                let faces = mesh.values.at == renderer::tri_mesh::MeshValueLocation::Faces;
+                let mut samples: [(String, usize); 9] = Default::default();
+                for (corner, &vertex) in corners.iter().enumerate() {
+                    let vertex = vertex as usize;
+                    samples[corner] = (series.x_column.clone(), vertex);
+                    samples[3 + corner] = (series.y_column.clone(), vertex);
+                    samples[6 + corner] = (mesh.values.column.clone(), vertex);
+                }
+                let count = if faces {
+                    samples[6] = (mesh.values.column.clone(), *triangle_index);
+                    7
+                } else {
+                    9
+                };
+                let values = self.read_selection_samples(&samples[..count]).await?;
+                let finite = |v: f64| v.is_finite().then_some(v);
+                result["index"] = serde_json::json!(triangle_index);
+                result["vertices"] = serde_json::json!(corners);
+                let triple = |i: usize| {
+                    serde_json::json!([
+                        finite(values[i]),
+                        finite(values[i + 1]),
+                        finite(values[i + 2])
+                    ])
+                };
+                result["x"] = triple(0);
+                result["y"] = triple(3);
+                if faces {
+                    result["value"] = serde_json::json!(finite(values[6]));
+                } else {
+                    result["values"] = triple(6);
+                }
+                result["at"] = serde_json::json!(mesh.values.at);
+            }
             _ => return Ok("null".into()),
         }
         serde_json::to_string(&result).map_err(js_err)
@@ -696,9 +787,17 @@ impl FiggyChart {
         let mut cfg = self.chart_config()?.clone();
         if !cfg
             .step_selection(self.chart_series()?, dx, dy, |column| {
+                // A triangle index column's length is its index count, from
+                // its statistics (#210): the CPU never reads an index.
                 self.renderer
                     .logical_column(column)
                     .and_then(|column| usize::try_from(column.len()).ok())
+                    .or_else(|| {
+                        self.renderer
+                            .pool()
+                            .triangles(column)
+                            .map(|triangles| triangles.stats().triangles as usize * 3)
+                    })
             })
             .map_err(js_err)?
         {

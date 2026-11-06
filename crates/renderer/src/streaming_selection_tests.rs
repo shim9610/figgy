@@ -126,6 +126,7 @@ fn fixture_with_display(
             }),
             line: None,
             errors: None,
+            stem: None,
         }),
     };
     let bar = SeriesConfig {
@@ -794,6 +795,7 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
         scatter: Some(scatter),
         line: None,
         errors: None,
+        ..
     }) = &mut style_is_x.render_type
     {
         scatter.point_style_index_column = Some("x".into());

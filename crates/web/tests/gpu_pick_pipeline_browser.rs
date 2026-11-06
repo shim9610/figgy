@@ -285,6 +285,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
                 scatter: Some(scatter()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         },
         SeriesConfig {
@@ -298,6 +299,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
                 scatter: Some(scatter()),
                 line: None,
                 errors: None,
+                stem: None,
             }),
         },
     ];
