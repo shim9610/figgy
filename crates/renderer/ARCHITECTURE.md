@@ -529,13 +529,20 @@ area, while the panel export (`ExportScope::Panel`) keeps the parent's area.
 
 The pipeline is two functions: `prepare_export` (the checks, the scaled and
 placed document, its view, styles, pipelines and resolved panel draws, once
-per export) and `paint_export(frame, panels, chrome, clear)` (one render of a
-range of panels into the target, then the row-chunked readback). The PNG
-export paints every panel with the chrome.
+per export) and `paint_export(frame, panels, chrome, clear, steps)` (one
+render of a range of panels into the target, then the row-chunked readback).
+`steps` picks the steps of each panel's data slot (`DataSteps`): the GPU
+fills, bodies and picked highlights, the CPU rasters of the DataLess series,
+then the GPU value labels. The PNG export paints every panel with the chrome
+and every step.
 
 The SVG and PDF export ([#48](https://github.com/shim9610/figgy/issues/48),
 `vector_export.rs`) prepare the same frame and write the decorations as
-vector content from the same emit, over a raster data layer:
+vector content from the same emit, over a raster data layer. The DataLess
+series (the energy levels) are vector content too
+([#234](https://github.com/shim9610/figgy/issues/234)): their emit writes
+them between images of the GPU steps around them, so the file stacks as the
+PNG does:
 
 ```
 export_svg / export_pdf(chart, &[SeriesConfig], scale):
@@ -549,6 +556,10 @@ export_svg / export_pdf(chart, &[SeriesConfig], scale):
         Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
         Data(group) paint_export(frame, group, chrome = false) → crop to the
                     group's data areas (+1 px) → image
+                    with a DataLess series, one image per run of GPU steps
+                    between two panels' CPU steps (DataRun), and after each
+                    run the panel's DataLess emit → VectorSink, clipped to
+                    each data piece; a run with no GPU series writes no image
       Above(i)      emit_chart_chrome(panel i) → SlotFilter(Above) → VectorSink
       Overlay       after the topmost panel of the parent's area
         ↓
@@ -873,9 +884,9 @@ export_rgba(chart, &[SeriesConfig], scale).await:
     호출자가 std::fs::write / clipboard / 네트워크 등 자유 처리
 ```
 
-이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. PNG 출력은 모든 패널을 장식과 함께 그린다.
+이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear, steps)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. `steps`(`DataSteps`)는 패널마다 데이터 슬롯의 어느 단계를 그릴지 고른다. 단계는 GPU 채움·본체·선택 강조, DataLess 시리즈의 CPU 래스터, GPU 값 라벨 순서다. PNG 출력은 모든 패널을 장식과 함께 모든 단계로 그린다.
 
-SVG와 PDF 출력([#48](https://github.com/shim9610/figgy/issues/48), `vector_export.rs`)은 같은 프레임을 준비하고, 장식 요소는 같은 배치 함수에서 벡터로 기록하며, 데이터 층은 이미지로 넣는다.
+SVG와 PDF 출력([#48](https://github.com/shim9610/figgy/issues/48), `vector_export.rs`)은 같은 프레임을 준비하고, 장식 요소는 같은 배치 함수에서 벡터로 기록하며, 데이터 층은 이미지로 넣는다. DataLess 시리즈(에너지 준위)도 벡터로 기록한다([#234](https://github.com/shim9610/figgy/issues/234)). 같은 배치 함수의 결과를 앞뒤 GPU 단계 이미지 사이에 넣으므로, 파일의 쌓임 순서가 PNG와 같다.
 
 ```
 export_svg / export_pdf(chart, &[SeriesConfig], scale):
@@ -889,6 +900,9 @@ export_svg / export_pdf(chart, &[SeriesConfig], scale):
         Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
         Data(묶음)  paint_export(frame, 묶음, chrome = false) → 묶음의 데이터 영역(+1 px)으로
                     잘라 이미지로
+                    DataLess 시리즈가 있으면 두 패널의 CPU 단계 사이 GPU 단계마다
+                    이미지 한 장(DataRun), 그 뒤에 패널의 DataLess 배치 → VectorSink
+                    (데이터 조각마다 잘라 기록), GPU 시리즈가 없는 구간은 이미지 생략
       Above(i)      패널 i의 emit_chart_chrome → SlotFilter(Above) → VectorSink
       Overlay       부모 영역의 맨 위 패널 다음
         ↓

@@ -9,7 +9,9 @@
 //!   header, cross-reference table, trailer, object graph, ExtGStates and
 //!   image soft masks are checked, and its images are the SVG's pixels.
 //! - With every decoration hidden, each embedded data image is the PNG
-//!   export's crop, byte for byte; with decorations shown, the CPU composite
+//!   export's crop, byte for byte, the DataLess series aside: they are
+//!   vector parts between the images of the GPU data under them and the
+//!   value labels over them (#234); with decorations shown, the CPU composite
 //!   of the grid raster, the data image and the decoration raster is the
 //!   PNG export within 1/255 on all but 0.05 % of the channels (8-bit
 //!   blend rounding, at most 3/255).
@@ -193,7 +195,7 @@ fn check_document(
         .unwrap();
     let png = encode_png(&image).unwrap();
     let mut written = Vec::new();
-    written_document_parts(chart, scale, &mut |part| written.push(part)).unwrap();
+    written_document_parts(chart, series, scale, &mut |part| written.push(part)).unwrap();
 
     let logical = chart.config().document_area();
     let page = [logical.width as f32 * 0.75, logical.height as f32 * 0.75];
@@ -388,7 +390,9 @@ fn hide_decorations(config: &mut Config) {
 
 // With every decoration hidden, the PNG export draws the data only, and
 // each embedded data image is its crop at the image's place, byte for byte
-// as a PNG; nothing of the export lies outside the images.
+// as a PNG; nothing of the export lies outside the images. The DataLess
+// series are vector parts, not image pixels (#234): the images are the
+// export of the other series.
 #[test]
 fn the_data_images_are_the_png_exports_pixels() {
     let gpu = gpu();
@@ -398,11 +402,17 @@ fn the_data_images_are_the_png_exports_pixels() {
         let mut config = scene.config.clone();
         hide_decorations(&mut config);
         let chart = Chart::new(config);
+        let gpu_series: Vec<SeriesConfig> = scene
+            .series
+            .iter()
+            .filter(|series| series.energy_levels().is_none())
+            .cloned()
+            .collect();
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
             let export = r
                 .export_rgba(
-                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportSource::chart(&chart, &gpu_series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
@@ -415,7 +425,11 @@ fn the_data_images_are_the_png_exports_pixels() {
                 .block_on()
                 .unwrap(),
             );
-            assert!(!svg.images.is_empty(), "{context}: a data image");
+            assert_eq!(
+                svg.images.is_empty(),
+                gpu_series.is_empty(),
+                "{context}: a data image for the GPU series"
+            );
             let mut covered = vec![false; (export.width * export.height) as usize];
             let nested = svg
                 .images
@@ -449,6 +463,122 @@ fn the_data_images_are_the_png_exports_pixels() {
                 outside.map(|i| (i as u32 % export.width, i as u32 / export.width))
             );
         }
+    }
+}
+
+/// One energy level in the box plot scene's `Mid` column at 40, drawn
+/// 7 px wide: the only stroke of that width in its file.
+fn mid_level() -> SeriesConfig {
+    use renderer::energy_levels::{EnergyLevel, EnergyLevelSeries, LevelRole};
+    let mut levels = EnergyLevelSeries {
+        levels: vec![EnergyLevel {
+            id: "mid".into(),
+            column: "Mid".into(),
+            configuration: String::new(),
+            term: String::new(),
+            j: String::new(),
+            g: None,
+            prefix: String::new(),
+            energy: 40.0,
+            suffix: String::new(),
+            uncertainty: None,
+            reference: String::new(),
+            role: LevelRole::Level,
+            label: None,
+            label_offset: [0.0; 2],
+        }],
+        ..EnergyLevelSeries::default()
+    };
+    levels.style.level.color = Color::from_rgb8(255, 0, 255);
+    levels.style.level.width = LEVEL_WIDTH;
+    SeriesConfig {
+        series_id: "levels".into(),
+        source_id: None,
+        label: None,
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: renderer::DataRenderType::EnergyLevels(levels),
+    }
+}
+
+const LEVEL_WIDTH: f32 = 7.0;
+
+// Beside GPU value labels (#234, D11), a group's DataLess series is written
+// where the frame draws it: the box plots as one image, the energy level
+// as a vector stroke, then the median labels as a second image. The first
+// image is the export of the boxes without labels, byte for byte, and the
+// two images composite to the export of the labelled boxes.
+#[test]
+fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
+    let gpu = gpu();
+    let mut r = renderer(&gpu);
+    let scene = scenes::build(&mut r, SceneKind::BoxPlot, BIG_DATA_POINTS).unwrap();
+    let mut config = scene.config.clone();
+    hide_decorations(&mut config);
+    let chart = Chart::new(config);
+    let mut with_level = scene.series.clone();
+    with_level.push(mid_level());
+    let mut unlabelled = scene.series.clone();
+    for series in &mut unlabelled {
+        if let renderer::DataRenderType::BoxPlot { labels, .. } = &mut series.render_type {
+            labels.placement = renderer::BoxPlotLabels::None;
+        }
+    }
+    let export = |r: &mut Renderer, series: &[SeriesConfig], scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, series),
+            renderer::ExportOptions::document(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    for scale in SCALES {
+        let context = format!("box plots with a level at {scale}x");
+        let text = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &with_level),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(text.contains("stroke=\"#ff00ff\""), "{context}: the level");
+        let svg = svg_parts::read(&text);
+        let images: Vec<usize> = svg
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| matches!(part, ReadPart::Image(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(images.len(), 2, "{context}: the body and label images");
+        let level = svg
+            .parts
+            .iter()
+            .position(|part| {
+                matches!(part, ReadPart::Part(renderer::DrawnPart::Segment { .. }, Some(w))
+                    if (w - LEVEL_WIDTH * scale).abs() < TOLERANCE)
+            })
+            .expect("the level's stroke");
+        assert!(
+            images[0] < level && level < images[1],
+            "{context}: image {}, level {level}, image {}",
+            images[0],
+            images[1]
+        );
+        let body = export(&mut r, &unlabelled, scale);
+        let (rect, bytes) = &svg.images[0];
+        assert!(
+            *bytes == encode_png(&crop(&body, *rect)).unwrap(),
+            "{context}: the first image is the boxes without their labels"
+        );
+        let labels = decode_png(&svg.images[1].1);
+        assert!(
+            labels.rgba.chunks_exact(4).any(|px| px[3] != 0),
+            "{context}: the second image holds the labels"
+        );
+        let labelled = export(&mut r, &scene.series, scale);
+        assert_composite(&labelled, &svg.images, &context);
     }
 }
 

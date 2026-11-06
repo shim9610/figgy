@@ -605,9 +605,11 @@ fn a_document_with_the_series_round_trips_and_draws_the_same() {
 }
 
 #[test]
-fn svg_and_pdf_exports_carry_the_series_in_the_data_image() {
-    // The series is data: like every series, the vector export embeds it
-    // in the panel's data image (#48), here at 1x and 2x.
+fn svg_and_pdf_exports_carry_the_series_as_vector_parts() {
+    // The series is DataLess: the vector export writes it from the same
+    // emit as its raster, as vector parts in the data slot (#234). A panel
+    // with no other series writes no data image; the parts are clipped to
+    // the data area, at 1x and 2x.
     let mut r = renderer();
     let chart = chart();
     let list = [series("he", records())];
@@ -619,8 +621,34 @@ fn svg_and_pdf_exports_carry_the_series_in_the_data_image() {
             )
             .block_on()
             .unwrap();
-        let text = svg;
-        assert!(text.contains("<image"), "{scale}x svg data image");
+        assert!(!svg.contains("<image"), "{scale}x: no data image");
+        for (part, colour) in [
+            ("level", "#ff0000"),
+            ("limit", "#0000ff"),
+            ("transition", "#00c800"),
+        ] {
+            assert!(
+                svg.contains(&format!("stroke=\"{colour}\"")),
+                "{scale}x: the {part} is a vector stroke"
+            );
+        }
+        // The arrowheads are filled triangles of the transition colour.
+        assert!(svg.contains("fill=\"#00c800\""), "{scale}x: arrowheads");
+        // The export places the document as `place_document` does.
+        let size = |n: u32| (n as f32 * scale).round() as u32;
+        let target = Rect {
+            x: 0,
+            y: 0,
+            width: size(WIDTH),
+            height: size(HEIGHT),
+        };
+        let placed = renderer::place_document(chart.config(), scale, target);
+        let da = placed.data_area().expect("data area").0;
+        let clip = format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/>",
+            da.x, da.y, da.width, da.height
+        );
+        assert!(svg.contains(&clip), "{scale}x: clipped to {clip}");
         let pdf = r
             .export_pdf(
                 renderer::ExportSource::chart(&chart, &list),
@@ -629,6 +657,8 @@ fn svg_and_pdf_exports_carry_the_series_in_the_data_image() {
             .block_on()
             .unwrap();
         assert!(pdf.starts_with(b"%PDF"), "{scale}x pdf");
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(!text.contains("/Subtype /Image"), "{scale}x: no PDF image");
     }
 }
 

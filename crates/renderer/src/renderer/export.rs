@@ -356,6 +356,8 @@ pub(crate) struct ExportFrame {
     pub(crate) size: (u32, u32),
     /// The exported area's size in logical pixels.
     pub(crate) logical: (u32, u32),
+    /// The export's scale, clamped: physical pixels per logical pixel.
+    pub(crate) scale: f32,
     /// The scaled document, placed at the target's origin.
     pub(crate) chart: Chart,
     /// The expanded panels of a layered document; empty for a single-layer
@@ -381,6 +383,14 @@ impl ExportFrame {
         } else {
             &self.panel_configs
         }
+    }
+
+    /// The rects panel `index`'s data slot is drawn in (its data area, or
+    /// one rect per piece of a broken axis), as the frame scissors them.
+    pub(crate) fn data_pieces(&self, index: usize) -> &[Rect] {
+        self.items
+            .get(index)
+            .map_or(&[], |item| item.data_pieces.rects())
     }
 }
 
@@ -495,7 +505,9 @@ impl Renderer {
             || {
                 let mut frame = self.prepare_export(chart, series, options.scale, options.scope)?;
                 let panels = 0..frame.items.len();
-                self.paint_export_blocking(&mut frame, panels, true, options.clear)
+                self.paint_export_blocking(&mut frame, panels, true, options.clear, &|_| {
+                    super::composite::DataSteps::ALL
+                })
             },
             std::convert::identity,
         );
@@ -555,7 +567,12 @@ impl Renderer {
             || {
                 let mut frame =
                     self.prepare_export(chart, series, options.scale, ExportScope::Document)?;
-                crate::vector_export::document_file_blocking::<F>(self, &mut frame, options.clear)
+                crate::vector_export::document_file_blocking::<F>(
+                    self,
+                    &mut frame,
+                    series,
+                    options.clear,
+                )
             },
             std::convert::identity,
         );
@@ -649,7 +666,7 @@ impl Renderer {
         clear: crate::color::Color,
     ) -> Result<F::Output> {
         let mut frame = self.prepare_export(chart, series, scale, ExportScope::Document)?;
-        crate::vector_export::document_file::<F>(self, &mut frame, clear).await
+        crate::vector_export::document_file::<F>(self, &mut frame, series, clear).await
     }
 
     pub(super) async fn export_rgba_with_clear_scoped(
@@ -689,7 +706,10 @@ impl Renderer {
     ) -> Result<RasterImage> {
         let mut frame = self.prepare_export(chart, series, scale, scope)?;
         let panels = 0..frame.items.len();
-        self.paint_export(&mut frame, panels, true, clear).await
+        self.paint_export(&mut frame, panels, true, clear, &|_| {
+            super::composite::DataSteps::ALL
+        })
+        .await
     }
 
     /// The first half of an export: validate the series, scale and place
@@ -966,6 +986,7 @@ impl Renderer {
         Ok(ExportFrame {
             size: (w, h),
             logical: (orig.width, orig.height),
+            scale,
             chart: scaled_chart,
             panel_configs,
             items: prepared_items,
@@ -1104,16 +1125,20 @@ impl Renderer {
     /// cleared to `clear`, and read the target back as straight-alpha RGBA.
     /// With `chrome` false only the data slot of each panel is drawn: the
     /// fills, bodies, picked highlights and value labels, without the grid,
-    /// decoration and annotation textures. The PNG export paints every panel
-    /// with the chrome; the vector export paints each panel group's data.
+    /// decoration and annotation textures. `steps` picks the steps of each
+    /// panel's data slot, by its index in `panels`. The PNG export paints
+    /// every panel with the chrome and every step; the vector export paints
+    /// each panel group's data, its GPU steps around the CPU steps of the
+    /// DataLess series it writes as vector parts (#234).
     pub(crate) async fn paint_export(
         &self,
         frame: &mut ExportFrame,
         panels: std::ops::Range<usize>,
         chrome: bool,
         clear: crate::color::Color,
+        steps: &dyn Fn(usize) -> super::composite::DataSteps,
     ) -> Result<RasterImage> {
-        let mut job = self.paint_export_draw(frame, panels, chrome, clear)?;
+        let mut job = self.paint_export_draw(frame, panels, chrome, clear, steps)?;
         #[cfg(target_arch = "wasm32")]
         if let Some(scopes) = job.draw_scopes.take() {
             scopes.request_all().finish().await?;
@@ -1140,8 +1165,9 @@ impl Renderer {
         panels: std::ops::Range<usize>,
         chrome: bool,
         clear: crate::color::Color,
+        steps: &dyn Fn(usize) -> super::composite::DataSteps,
     ) -> Result<RasterImage> {
-        let mut job = self.paint_export_draw(frame, panels, chrome, clear)?;
+        let mut job = self.paint_export_draw(frame, panels, chrome, clear, steps)?;
         while let Some(mut chunk) = job.next_chunk(self)? {
             chunk
                 .readback
@@ -1162,6 +1188,7 @@ impl Renderer {
         panels: std::ops::Range<usize>,
         chrome: bool,
         clear: crate::color::Color,
+        steps: &dyn Fn(usize) -> super::composite::DataSteps,
     ) -> Result<ExportReadback> {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = match frame.browser_scopes.take() {
@@ -1250,7 +1277,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.paint_prepared_items(&mut pass, (w, h), prepared_items, chrome)?;
+            self.paint_prepared_items(&mut pass, (w, h), prepared_items, chrome, steps)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 

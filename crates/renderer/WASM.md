@@ -421,7 +421,7 @@ const png = await withKernelOperation((chart) => chart.export_png(2.0));
 
 #### SVG와 PDF 내보내기
 
-`FiggyChart::export_svg(scale)`는 SVG 문서를 `String`으로, `export_pdf(scale)`는 PDF를 `Uint8Array`로 비동기 반환한다. 둘 다 `export_png`와 같은 문서를 차트의 배경색 위에 그린다. 장식 요소와 주석은 벡터로, 글자는 글리프 윤곽선으로 기록하고, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 넣는다(자세한 내용은 [USAGE.md](USAGE.md)의 SVG와 PDF 내보내기). 빌림 규칙과 작업 게이트는 `export_png`와 같다.
+`FiggyChart::export_svg(scale)`는 SVG 문서를 `String`으로, `export_pdf(scale)`는 PDF를 `Uint8Array`로 비동기 반환한다. 둘 다 `export_png`와 같은 문서를 차트의 배경색 위에 그린다. 장식 요소와 주석은 벡터로, 글자는 글리프 윤곽선으로 기록하고, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 넣는다. 에너지 준위 같은 DataLess 시리즈는 벡터로 기록한다(자세한 내용은 [USAGE.md](USAGE.md)의 SVG와 PDF 내보내기). 빌림 규칙과 작업 게이트는 `export_png`와 같다.
 
 ```js
 const svg = await chart.export_svg(1.0);   // String

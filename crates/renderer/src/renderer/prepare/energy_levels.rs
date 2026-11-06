@@ -31,7 +31,7 @@ pub(crate) struct EnergyLevelRaster {
 
 /// The row of `cfg` the panel's typed selection picks, as the emit widens
 /// it: a histogram bin is a level row, a point a transition row.
-fn picked_row(config: &Config, cfg: &SeriesConfig) -> Option<PickedRow> {
+pub(crate) fn picked_row(config: &Config, cfg: &SeriesConfig) -> Option<PickedRow> {
     use crate::config::PickedDataRef;
     let selection = config.picked_data.as_ref().filter(|s| s.visible)?;
     match selection.refs.first()? {
@@ -56,44 +56,52 @@ pub(in crate::renderer) fn source_records<'s>(
     levels: &'s EnergyLevelSeries,
     items: &'s [ChartDrawItem<'s>],
 ) -> Option<&'s EnergyLevelSeries> {
+    find_records(
+        levels,
+        items
+            .iter()
+            .flat_map(|item| item.series.iter())
+            .map(|series| series.config),
+    )
+}
+
+/// [`source_records`] over a document's series list: the records `levels`
+/// draws, its own or its source's among `series`.
+pub(crate) fn energy_level_records<'s>(
+    levels: &'s EnergyLevelSeries,
+    series: &'s [SeriesConfig],
+) -> Option<&'s EnergyLevelSeries> {
+    find_records(levels, series.iter())
+}
+
+fn find_records<'s>(
+    levels: &'s EnergyLevelSeries,
+    mut series: impl Iterator<Item = &'s SeriesConfig>,
+) -> Option<&'s EnergyLevelSeries> {
     let Some(source) = &levels.source else {
         return Some(levels);
     };
-    items
-        .iter()
-        .flat_map(|item| item.series.iter())
-        .map(|series| series.config)
+    series
         .find(|cfg| cfg.series_id == *source)
         .and_then(SeriesConfig::energy_levels)
         .filter(|found| found.source.is_none())
 }
 
-/// Rasterize `records` in the look and view of `levels` over the panel
-/// `config`: one RGBA8 canvas the size of the chart area, the panel's
-/// origin at its top-left pixel. `config` is placed at `scale` render
-/// pixels per logical pixel (a display or export config is scaled
-/// already) while the series' look is in logical pixels, so the parts are
-/// placed in logical pixels (the anchor space divided by `scale`) and the
-/// canvas sink scales them, text included.
-pub(crate) fn rasterize(
+/// Place `records` in the look and view of `levels` over the panel
+/// `config` and hand the parts to `sink`: the one emit of the canvas
+/// raster ([`rasterize`]) and the vector export (#234). `config` is placed
+/// at `scale` render pixels per logical pixel while the series' look is in
+/// logical pixels, so the parts are placed in logical pixels (the anchor
+/// space divided by `scale`) and the sink scales them, text included.
+pub(crate) fn emit_energy_levels(
     config: &Config,
     levels: &EnergyLevelSeries,
     records: &EnergyLevelSeries,
     picked: Option<PickedRow>,
     scale: f32,
-) -> Result<Option<(Vec<u8>, (u32, u32))>> {
-    let area = config.chart_area.0;
-    let (w, h) = (area.width.max(1), area.height.max(1));
-    let Some(mut canvas) = crate::raster::Canvas::new(w, h) else {
-        return Err(FiggyError::RasterWrapFailed {
-            reason: format!("energy-level raster of {w}x{h} pixels"),
-        });
-    };
-    let scale = if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    };
+    sink: &mut dyn crate::sink::Sink,
+) {
+    let scale = valid_scale(scale);
     let logical = |r: crate::layout::RectF| crate::layout::RectF {
         x: r.x / scale,
         y: r.y / scale,
@@ -112,15 +120,46 @@ pub(crate) fn rasterize(
     };
     let policy = crate::text_render::FontPolicy::for_style(&config.draw_style);
     let measure = crate::text_render::CpuTextMeasure::with_policy(policy);
+    placement.emit(records, &levels.style, &measure, sink);
+}
+
+/// `scale`, or 1 when it is not a positive finite number.
+fn valid_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// Rasterize `records` in the look and view of `levels` over the panel
+/// `config`: one RGBA8 canvas the size of the chart area, the panel's
+/// origin at its top-left pixel, painted by [`emit_energy_levels`] (a
+/// display or export config is scaled already).
+pub(crate) fn rasterize(
+    config: &Config,
+    levels: &EnergyLevelSeries,
+    records: &EnergyLevelSeries,
+    picked: Option<PickedRow>,
+    scale: f32,
+) -> Result<Option<(Vec<u8>, (u32, u32))>> {
+    let area = config.chart_area.0;
+    let (w, h) = (area.width.max(1), area.height.max(1));
+    let Some(mut canvas) = crate::raster::Canvas::new(w, h) else {
+        return Err(FiggyError::RasterWrapFailed {
+            reason: format!("energy-level raster of {w}x{h} pixels"),
+        });
+    };
+    let scale = valid_scale(scale);
     let mut sink = crate::decoration_render::CanvasSink::placed(
         None,
         Some(&mut canvas),
         crate::sketch::DecoStroker::Precise,
-        policy,
+        crate::text_render::FontPolicy::for_style(&config.draw_style),
         [area.x as f32 / scale, area.y as f32 / scale],
         scale,
     );
-    placement.emit(records, &levels.style, &measure, &mut sink);
+    emit_energy_levels(config, levels, records, picked, scale, &mut sink);
     sink.finish()?;
     Ok(Some((canvas.into_rgba(), (w, h))))
 }

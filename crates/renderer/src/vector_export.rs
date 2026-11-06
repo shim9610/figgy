@@ -27,6 +27,12 @@
 //! colourbar ramp and the Milkyway backdrop are images too, painted by the
 //! raster's own functions; the Milkyway glow is raster-only and omitted.
 //!
+//! **DataLess series** (#234). An energy-level series is drawn on the CPU
+//! between its panel's GPU data and its value labels. The file writes it
+//! from the emit its raster uses, as vector parts clipped to each data
+//! piece, between one image of the GPU steps before it and one of those
+//! after it ([`DataLess`], [`DataRun`]), so the file stacks as the PNG does.
+//!
 //! One user unit is one physical pixel of the export; the page is the
 //! logical size at 1 px = 0.75 pt.
 
@@ -38,11 +44,13 @@ use crate::annotation::{RasterRequest, emit_annotation_layer, pixel_space_for_co
 use crate::axis_render::{draw_space_background, emit_chart_chrome};
 use crate::color::Color;
 use crate::config::{ColorBarOptions, Config, DrawStyle};
+use crate::data_config::SeriesConfig;
+use crate::data_render::clamp_rect_to_target;
 use crate::decoration_render::draw_colorbar_strip;
 use crate::error::{FiggyError, Result};
 use crate::layout::{Rect, RectF};
 use crate::raster::Canvas;
-use crate::renderer::{ExportFrame, RasterImage, Renderer};
+use crate::renderer::{DataSteps, ExportFrame, RasterImage, Renderer};
 use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::{DecoStroker, PathSegment};
 use crate::text_render::{FontPolicy, GlyphSink, place_plain_text, place_rich_text};
@@ -952,41 +960,246 @@ fn write_pass(
     result
 }
 
+// The DataLess series of a data pass (#234).
+
+/// The DataLess series of a document's panels: the series the data slot
+/// draws as a CPU layer between its GPU steps (`renderer::DataSteps`). The
+/// vector export writes them as vector parts from the same emit as their
+/// raster, between images of the GPU steps around them, so the file stacks
+/// as the PNG does: for each panel of a group its fills, bodies and picked
+/// highlights, its DataLess series, then its value labels.
+///
+/// The steps of a group are numbered in drawing order, three per panel:
+/// `3 * panel` the GPU data, `3 * panel + 1` the CPU layer and
+/// `3 * panel + 2` the value labels. A panel that draws a DataLess series
+/// cuts the group there; each [`DataRun`] between two cuts is one image.
+#[derive(Clone, Copy)]
+pub(crate) struct DataLess<'a> {
+    document: &'a Config,
+    panels: &'a [Config],
+    series: &'a [SeriesConfig],
+}
+
+/// A run of a panel group's data steps between two CPU steps, as step
+/// numbers (see [`DataLess`]), both bounds excluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DataRun {
+    after: i64,
+    before: i64,
+}
+
+impl DataRun {
+    /// Every GPU step of a group.
+    const WHOLE: Self = Self {
+        after: -1,
+        before: i64::MAX,
+    };
+
+    fn holds(&self, step: i64) -> bool {
+        self.after < step && step < self.before
+    }
+
+    /// The steps panel `panel` draws in this run. The CPU step is never
+    /// drawn: it is written as vector parts.
+    pub(crate) fn steps(&self, panel: usize) -> DataSteps {
+        let first = 3 * panel as i64;
+        DataSteps {
+            gpu: self.holds(first),
+            cpu: false,
+            labels: self.holds(first + 2),
+        }
+    }
+}
+
+impl<'a> DataLess<'a> {
+    pub(crate) fn new(
+        document: &'a Config,
+        panels: &'a [Config],
+        series: &'a [SeriesConfig],
+    ) -> Self {
+        Self {
+            document,
+            panels,
+            series,
+        }
+    }
+
+    /// The series panel `panel` draws, in series order.
+    fn of_panel(&self, panel: usize) -> impl Iterator<Item = &'a SeriesConfig> + 'a {
+        let (document, count) = (self.document, self.panels.len());
+        self.series.iter().filter(move |cfg| {
+            crate::renderer::series_panel_index(document, count, &cfg.series_id) == panel
+        })
+    }
+
+    /// Whether panel `panel` draws a DataLess series: a CPU step.
+    fn cuts(&self, panel: usize) -> bool {
+        self.of_panel(panel)
+            .any(|cfg| cfg.energy_levels().is_some())
+    }
+
+    /// Whether panel `panel` draws a series on the GPU.
+    fn paints(&self, panel: usize) -> bool {
+        self.of_panel(panel)
+            .any(|cfg| cfg.energy_levels().is_none())
+    }
+
+    /// Whether a panel of `range` draws a DataLess series.
+    fn cuts_any(&self, range: &Range<usize>) -> bool {
+        range.clone().any(|panel| self.cuts(panel))
+    }
+
+    /// The first panel of `range` whose CPU step comes after step `after`.
+    fn next_cut(&self, range: &Range<usize>, after: i64) -> Option<usize> {
+        range
+            .clone()
+            .find(|&panel| 3 * panel as i64 + 1 > after && self.cuts(panel))
+    }
+
+    /// Whether `run` of the group `range` draws anything on the GPU: a run
+    /// with no GPU series in its steps writes no image.
+    fn run_paints(&self, range: &Range<usize>, run: DataRun) -> bool {
+        range.clone().any(|panel| {
+            let steps = run.steps(panel);
+            (steps.gpu || steps.labels) && self.paints(panel)
+        })
+    }
+
+    /// Emit the DataLess series of panel `panel` (placed at `scale` export
+    /// pixels per logical pixel) into the sink `sink` makes for each of the
+    /// panel's data pieces, as the frame blits their rasters: piece by
+    /// piece, each piece's series in series order.
+    fn emit_panel(
+        &self,
+        panel: usize,
+        pieces: &[Rect],
+        scale: f32,
+        mut each_piece: impl FnMut(Rect, &mut dyn FnMut(&mut dyn Sink)) -> Result<()>,
+    ) -> Result<()> {
+        let config = &self.panels[panel];
+        for &piece in pieces {
+            each_piece(piece, &mut |sink: &mut dyn Sink| {
+                for cfg in self.of_panel(panel) {
+                    let Some(levels) = cfg.energy_levels() else {
+                        continue;
+                    };
+                    let Some(records) = crate::renderer::energy_level_records(levels, self.series)
+                    else {
+                        continue;
+                    };
+                    let picked = crate::renderer::picked_row(config, cfg);
+                    crate::renderer::emit_energy_levels(
+                        config, levels, records, picked, scale, sink,
+                    );
+                }
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// One image of a data pass: the panels `range` painted with the steps of
+/// `run`, cropped to `area`.
+pub(crate) struct DataImage {
+    pub(crate) range: Range<usize>,
+    pub(crate) area: Rect,
+    run: DataRun,
+}
+
+impl DataImage {
+    /// The steps the panel at `index` of `range` paints.
+    pub(crate) fn steps(&self, index: usize) -> DataSteps {
+        self.run.steps(self.range.start + index)
+    }
+}
+
+/// The group a data pass is writing: its panels, its image area and the
+/// step its next run starts after.
+struct GroupRuns {
+    range: Range<usize>,
+    area: Option<Rect>,
+    after: i64,
+}
+
 /// Writes a document's passes in order. A data pass is handed back to the
 /// driver, which paints that panel group on the GPU and waits for it
 /// ([`write_document`], or its `_blocking` twin); every other pass is
-/// written here.
+/// written here. A group with DataLess series is handed back as one image
+/// per run of GPU steps, with the series written between them (#234).
 pub(crate) struct DocumentWriter {
     passes: Passes,
+    group: Option<GroupRuns>,
+    /// The panel whose DataLess series are written before the next image.
+    cut: Option<usize>,
 }
 
 impl DocumentWriter {
     pub(crate) fn new() -> Self {
         Self {
             passes: Passes::new(),
+            group: None,
+            cut: None,
         }
     }
 
-    /// Write passes into `out` up to the next data pass with an image area,
-    /// and return its panel range and area; `None` once every pass is
-    /// written.
+    /// Write passes into `out` up to the next data image, and return it;
+    /// `None` once every pass is written.
     pub(crate) fn next_data(
         &mut self,
         frame: &ExportFrame,
+        series: &[SeriesConfig],
         out: &mut dyn VectorOut,
-    ) -> Result<Option<(std::ops::Range<usize>, Rect)>> {
-        while let Some(pass) = self.passes.next(frame.chart.config(), frame.panels()) {
+    ) -> Result<Option<DataImage>> {
+        let dataless = DataLess::new(frame.chart.config(), frame.panels(), series);
+        loop {
+            if let Some(panel) = self.cut.take() {
+                write_dataless(out, frame, dataless, panel)?;
+            }
+            if let Some(group) = self.group.as_mut() {
+                let after = group.after;
+                let cut = dataless.next_cut(&group.range, after);
+                let run = DataRun {
+                    after,
+                    before: cut.map_or(i64::MAX, |panel| 3 * panel as i64 + 1),
+                };
+                let (range, area) = (group.range.clone(), group.area);
+                match cut {
+                    Some(panel) => {
+                        group.after = run.before;
+                        self.cut = Some(panel);
+                    }
+                    None => self.group = None,
+                }
+                if let Some(area) = area
+                    && dataless.run_paints(&range, run)
+                {
+                    return Ok(Some(DataImage { range, area, run }));
+                }
+                continue;
+            }
+            let Some(pass) = self.passes.next(frame.chart.config(), frame.panels()) else {
+                return Ok(None);
+            };
             match pass {
                 Pass::Data(range) => {
-                    if let Some(area) = group_image_area(frame.panels(), range.clone(), frame.size)
-                    {
-                        return Ok(Some((range, area)));
+                    let area = group_image_area(frame.panels(), range.clone(), frame.size);
+                    if dataless.cuts_any(&range) {
+                        self.group = Some(GroupRuns {
+                            range,
+                            area,
+                            after: DataRun::WHOLE.after,
+                        });
+                    } else if let Some(area) = area {
+                        return Ok(Some(DataImage {
+                            range,
+                            area,
+                            run: DataRun::WHOLE,
+                        }));
                     }
                 }
                 pass => write_pass(out, frame.chart.config(), frame.panels(), &pass)?,
             }
         }
-        Ok(None)
     }
 
     /// Write a data pass's painted group image, cropped to its area.
@@ -1000,39 +1213,86 @@ impl DocumentWriter {
     }
 }
 
+/// Write the DataLess series of panel `panel` of `frame` as vector parts,
+/// clipped to each of the panel's data pieces as their raster is.
+fn write_dataless(
+    out: &mut dyn VectorOut,
+    frame: &ExportFrame,
+    dataless: DataLess<'_>,
+    panel: usize,
+) -> Result<()> {
+    let config = &frame.panels()[panel];
+    let policy = FontPolicy::for_style(&config.draw_style);
+    let pieces = frame.data_pieces(panel);
+    dataless.emit_panel(panel, pieces, frame.scale, |piece, emit| {
+        let Some(piece) = clamp_rect_to_target(piece, frame.size) else {
+            return Ok(());
+        };
+        out.push_clip(piece);
+        // The rasters are placed precisely in every style.
+        let mut sink = VectorSink::new(
+            out,
+            DecoStroker::Precise,
+            policy,
+            [0.0, 0.0],
+            frame.scale,
+            config.chart_area.0,
+        );
+        emit(&mut sink);
+        let error = sink.error.take();
+        out.pop_clip();
+        error.map_or(Ok(()), Err)
+    })
+}
+
 /// The clear colour of a data group's image: transparent, so the vector
 /// content under it shows.
 const DATA_IMAGE_CLEAR: Color = Color::new(0.0, 0.0, 0.0, 0.0);
 
 /// Write the document of `frame` into `out`: every pass in order, the data
-/// images painted by the GPU one panel group at a time.
+/// images painted by the GPU one run of a panel group at a time, and the
+/// DataLess series of `series` between them.
 pub(crate) async fn write_document(
     renderer: &Renderer,
     frame: &mut ExportFrame,
+    series: &[SeriesConfig],
     out: &mut dyn VectorOut,
 ) -> Result<()> {
     let mut writer = DocumentWriter::new();
-    while let Some((range, area)) = writer.next_data(frame, out)? {
+    while let Some(data) = writer.next_data(frame, series, out)? {
         let image = renderer
-            .paint_export(frame, range, false, DATA_IMAGE_CLEAR)
+            .paint_export(
+                frame,
+                data.range.clone(),
+                false,
+                DATA_IMAGE_CLEAR,
+                &|index| data.steps(index),
+            )
             .await?;
-        DocumentWriter::write_image(out, area, image)?;
+        DocumentWriter::write_image(out, data.area, image)?;
     }
     Ok(())
 }
 
 /// [`write_document`], polling the device on this thread for each data
-/// group's readback.
+/// image's readback.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn write_document_blocking(
     renderer: &Renderer,
     frame: &mut ExportFrame,
+    series: &[SeriesConfig],
     out: &mut dyn VectorOut,
 ) -> Result<()> {
     let mut writer = DocumentWriter::new();
-    while let Some((range, area)) = writer.next_data(frame, out)? {
-        let image = renderer.paint_export_blocking(frame, range, false, DATA_IMAGE_CLEAR)?;
-        DocumentWriter::write_image(out, area, image)?;
+    while let Some(data) = writer.next_data(frame, series, out)? {
+        let image = renderer.paint_export_blocking(
+            frame,
+            data.range.clone(),
+            false,
+            DATA_IMAGE_CLEAR,
+            &|index| data.steps(index),
+        )?;
+        DocumentWriter::write_image(out, data.area, image)?;
     }
     Ok(())
 }
@@ -1087,11 +1347,12 @@ impl VectorFile for PdfOut {
 pub(crate) async fn document_file<F: VectorFile>(
     renderer: &Renderer,
     frame: &mut ExportFrame,
+    series: &[SeriesConfig],
     clear: Color,
 ) -> Result<F::Output> {
     let mut out = F::create(frame.size, page_points(frame.logical));
     write_background(&mut out, frame.size, clear);
-    write_document(renderer, frame, &mut out).await?;
+    write_document(renderer, frame, series, &mut out).await?;
     out.finish_file()
 }
 
@@ -1100,11 +1361,12 @@ pub(crate) async fn document_file<F: VectorFile>(
 pub(crate) fn document_file_blocking<F: VectorFile>(
     renderer: &Renderer,
     frame: &mut ExportFrame,
+    series: &[SeriesConfig],
     clear: Color,
 ) -> Result<F::Output> {
     let mut out = F::create(frame.size, page_points(frame.logical));
     write_background(&mut out, frame.size, clear);
-    write_document_blocking(renderer, frame, &mut out)?;
+    write_document_blocking(renderer, frame, series, &mut out)?;
     out.finish_file()
 }
 
@@ -1328,14 +1590,17 @@ impl GlyphSink for PartsTwin<'_> {
 }
 
 /// Every part [`Renderer::export_svg`] and
-/// [`Renderer::export_pdf`] write for `chart` at `scale`
+/// [`Renderer::export_pdf`] write for `chart` and its `series` at `scale`
 /// (the clear colour's background aside), in writing order: the parts of
 /// the same passes over the same scaled, placed document, recorded through
-/// [`crate::sink::Parts`] instead of written. Test support (`cpu-twin`).
+/// [`crate::sink::Parts`] instead of written, with the DataLess series
+/// between the data images of their group (#234). Test support
+/// (`cpu-twin`).
 #[cfg(feature = "cpu-twin")]
 #[doc(hidden)]
 pub fn written_document_parts(
     chart: &crate::chart::Chart,
+    series: &[SeriesConfig],
     scale: f32,
     out: &mut dyn FnMut(WrittenPart),
 ) -> Result<()> {
@@ -1353,12 +1618,50 @@ pub fn written_document_parts(
     };
     let document = crate::renderer::place_document(chart.config(), scale, target);
     let panels = crate::renderer::expand_for_render(&document)?;
+    let dataless = DataLess::new(&document, &panels, series);
     let mut passes = Passes::new();
     while let Some(pass) = passes.next(&document, &panels) {
         match &pass {
             Pass::Data(range) => {
-                if let Some(area) = group_image_area(&panels, range.clone(), size) {
-                    out(WrittenPart::Image(area));
+                let area = group_image_area(&panels, range.clone(), size);
+                if !dataless.cuts_any(range) {
+                    if let Some(area) = area {
+                        out(WrittenPart::Image(area));
+                    }
+                    continue;
+                }
+                let mut after = DataRun::WHOLE.after;
+                loop {
+                    let cut = dataless.next_cut(range, after);
+                    let run = DataRun {
+                        after,
+                        before: cut.map_or(i64::MAX, |panel| 3 * panel as i64 + 1),
+                    };
+                    if let Some(area) = area
+                        && dataless.run_paints(range, run)
+                    {
+                        out(WrittenPart::Image(area));
+                    }
+                    let Some(panel) = cut else {
+                        break;
+                    };
+                    let config = &panels[panel];
+                    let pieces = crate::renderer::DataPieces::of(
+                        config,
+                        config
+                            .data_area()
+                            .map_or(config.chart_area.0, |area| area.0),
+                    );
+                    let policy = FontPolicy::for_style(&config.draw_style);
+                    dataless.emit_panel(panel, pieces.rects(), scale, |piece, emit| {
+                        if clamp_rect_to_target(piece, size).is_some() {
+                            let mut twin =
+                                PartsTwin::new(out, policy, [0.0, 0.0], scale, config.chart_area.0);
+                            emit(&mut twin);
+                        }
+                        Ok(())
+                    })?;
+                    after = run.before;
                 }
             }
             Pass::Below(i) if matches!(panels[*i].draw_style, DrawStyle::Milkyway(_)) => {
@@ -1707,9 +2010,13 @@ mod tests {
                     };
                     assert!(range.end <= n);
                     let area = group_image_area(frame.panels(), range.clone(), size);
-                    let mut image = crate::test_gpu::block_on(
-                        renderer.paint_export(&mut frame, range, false, clear),
-                    )
+                    let mut image = crate::test_gpu::block_on(renderer.paint_export(
+                        &mut frame,
+                        range,
+                        false,
+                        clear,
+                        &|_| DataSteps::ALL,
+                    ))
                     .unwrap();
                     assert_eq!(frame.panels().len(), n, "a paint changed the panels");
                     assert_eq!((image.width, image.height), size);
@@ -1727,12 +2034,18 @@ mod tests {
                     .prepare_export(&chart, &[], scale, crate::renderer::ExportScope::Document)
                     .unwrap();
                 let svg = crate::test_gpu::block_on(document_file::<SvgOut>(
-                    &renderer, &mut frame, clear,
+                    &renderer,
+                    &mut frame,
+                    &[],
+                    clear,
                 ));
                 assert!(svg.unwrap().ends_with("</svg>\n"));
                 assert_eq!(frame.panels().len(), n);
                 let pdf = crate::test_gpu::block_on(document_file::<PdfOut>(
-                    &renderer, &mut frame, clear,
+                    &renderer,
+                    &mut frame,
+                    &[],
+                    clear,
                 ));
                 assert!(pdf.unwrap().ends_with(b"%%EOF\n"));
                 assert_eq!(frame.panels().len(), n);

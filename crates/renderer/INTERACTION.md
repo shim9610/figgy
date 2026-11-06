@@ -932,7 +932,10 @@ selection box answer from, so every element a user can select or drag is in
 the file where it is drawn: titles, axes, tick labels, axis titles, legend,
 colourbar, polar chrome, annotations, and on the radial chart its title,
 labels and leader lines. Picked highlights and value labels are part of the
-data image of their panel group. Overlays and subplots export as on screen:
+data image of their panel group. A DataLess series (an energy-level diagram)
+is written as vector parts from its own emit, its picked row included,
+between the images of the GPU data under it and the value labels over it
+([#234](https://github.com/shim9610/figgy/issues/234)). Overlays and subplots export as on screen:
 the panels' `Below` parts and data first, then their `Above` parts, with the
 annotation overlay above the parent area's decorations.
 

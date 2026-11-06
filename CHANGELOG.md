@@ -1196,6 +1196,19 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **DataLess series are vector content in SVG and PDF** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  An energy-level series is written as vector parts from the emit its
+  raster uses (levels, limits, transitions, arrowheads, labels and the
+  picked row), clipped to each data piece of its panel, instead of inside
+  the data image. It sits where the frame draws it, between the panel's GPU
+  data and its value labels: a panel group with a DataLess series is
+  written as one image per run of GPU steps between two panels' DataLess
+  series, with the series between them, and a run with no GPU series
+  writes no image. `paint_export` takes the steps of each panel's data slot
+  it paints (`DataSteps`). The PNG export is unchanged. Migration: the SVG
+  and PDF of a document with an energy-level series hold vector parts where
+  they held its pixels; a reader of the file that expected one data image
+  per panel group finds one per run.
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
   A fourth pool source kind, for the coming triangle mesh series:
   `Renderer::upsert_triangles(id, &TriangleSource { indices })` and
@@ -2820,7 +2833,8 @@ chart's `plot_background` and the xy series' `stem`) are additive.
   parent's data area (an inset) is drawn after every other panel, all its
   slots, and a base-layer pick inside it answers for the inset. A
   streamed display refuses the series (`STREAMED_ENERGY_LEVELS_REASON`).
-  The vector export carries it in the data image like any series. New
+  The vector export carries it in the data image like any series (#234
+  makes it vector content). New
   `nist_grotrian` example: a std-only NIST ASD CSV parser over bundled He
   I exports. Migration: a `PickedData::ValueLabel { .. }` literal adds
   `part: None`; a `SeriesLayers` literal adds `energy_levels: None` (or

@@ -4,7 +4,7 @@
 
 mod arc;
 mod contour;
-mod energy_levels;
+pub(in crate::renderer) mod energy_levels;
 mod field;
 mod layers;
 mod stream;
