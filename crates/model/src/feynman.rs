@@ -1251,7 +1251,7 @@ pub struct FeynmanPlacement<'a> {
 }
 
 /// The gap between a part and its label, logical pixels.
-const LABEL_GAP: f32 = 4.0;
+const LABEL_GAP: f32 = 6.0;
 /// The gap between a line and its momentum arrow, logical pixels.
 const MOMENTUM_GAP: f32 = 6.0;
 /// The share of a line its momentum arrow spans, centred.

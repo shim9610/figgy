@@ -310,10 +310,11 @@ impl SceneKind {
                  either peak; drag the tick labels."
             }
             SceneKind::Feynman => {
-                "Bhabha scattering in its s channel, drawn where the host placed it, \
-                 beside a one-loop photon self-energy and a counterterm that the \
-                 layout places between their pinned legs. Pick a vertex, a line or a label; drag a \
-                 vertex, bend a line, move a label."
+                "Four processes: Higgs production by gluon fusion through a top loop, \
+                 the electron's one-loop vertex correction, beta decay through a W and \
+                 a three-jet event. The host places the legs; the layout places every \
+                 internal vertex. Pick a vertex, a line or a label; drag a vertex, bend \
+                 a line, move a label."
             }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \
@@ -4238,69 +4239,121 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// singlets beside triplets under group headers, the ground state below a
 /// Continuous break, the continuum above the limit and an inset of the
 /// resolved 2p ³P° multiplet. DataLess: nothing is registered.
-/// The Feynman scene (#234): Bhabha scattering's s channel with every vertex
-/// placed, and a photon self-energy whose two loop vertices the layout
-/// places between its pinned legs. TeX labels, a momentum arrow, a fanned
-/// fermion loop and a circled-cross counterterm.
+/// The Feynman scene (#234): four well-known processes, one per quadrant,
+/// each captioned by an annotation. Their legs are placed by the host and
+/// their internal vertices by the layout, which draws the top-quark
+/// triangle of Higgs production, the electron's one-loop vertex, the W of
+/// beta decay and the gluon of a three-jet event without a coordinate.
 fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use ParticleLine::{ChargedBoson, Fermion, Gluon, Photon, Scalar};
+    use VertexRole::{Incoming, Internal, Outgoing};
     use renderer::feynman::{
         FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
-        VertexMarker, VertexRole,
+        VertexRole,
     };
+    use renderer::{Anchor, Annotation, AnnotationKind};
     let ink = Color::from_rgb8(40, 44, 60);
-    let tex = |text: &str| Some(RichText::from_tex(text, ink, 14.0, "").expect("valid TeX"));
+    // Labels at the size of the text they sit beside in a paper: larger
+    // than tick labels.
+    let tex = |text: &str, size: f32| RichText::from_tex(text, ink, size, "").expect("valid TeX");
     let vertex = |id: &str, role: VertexRole, at: Option<[f64; 2]>, label: &str| FeynmanVertex {
         at,
-        label: if label.is_empty() { None } else { tex(label) },
+        label: (!label.is_empty()).then(|| tex(label, 22.0)),
         ..FeynmanVertex::new(id, role)
     };
     let line = |id: &str, from: &str, to: &str, particle: ParticleLine, label: &str| Propagator {
-        label: if label.is_empty() { None } else { tex(label) },
+        label: (!label.is_empty()).then(|| tex(label, 20.0)),
         ..Propagator::new(id, from, to, particle)
     };
-    let mut bhabha = FeynmanSeries {
+    // Higgs production by gluon fusion through a top-quark loop.
+    let higgs = FeynmanSeries {
         vertices: vec![
-            vertex("e-", VertexRole::Incoming, Some([0.1, 0.8]), "$e^-$"),
-            vertex("e+", VertexRole::Incoming, Some([0.1, 0.2]), "$e^+$"),
-            vertex("v1", VertexRole::Internal, Some([0.35, 0.5]), ""),
-            vertex("v2", VertexRole::Internal, Some([0.75, 0.5]), ""),
-            vertex("f-", VertexRole::Outgoing, Some([1.0, 0.8]), "$e^-$"),
-            vertex("f+", VertexRole::Outgoing, Some([1.0, 0.2]), "$e^+$"),
+            vertex("g1", Incoming, Some([0.08, 1.82]), "$g$"),
+            vertex("g2", Incoming, Some([0.08, 1.12]), "$g$"),
+            vertex("t1", Internal, None, ""),
+            vertex("t2", Internal, None, ""),
+            vertex("t3", Internal, None, ""),
+            vertex("H", Outgoing, Some([1.0, 1.47]), "$H$"),
         ],
         propagators: vec![
-            line("in-", "e-", "v1", ParticleLine::Fermion, ""),
-            line("in+", "v1", "e+", ParticleLine::Fermion, ""),
-            line("gamma", "v1", "v2", ParticleLine::Photon, r"$\gamma^*$"),
-            line("out-", "v2", "f-", ParticleLine::Fermion, ""),
-            line("out+", "f+", "v2", ParticleLine::Fermion, ""),
+            line("ga", "g1", "t1", Gluon, ""),
+            line("gb", "g2", "t2", Gluon, ""),
+            line("ta", "t1", "t2", Fermion, "$t$"),
+            line("tb", "t2", "t3", Fermion, ""),
+            line("tc", "t3", "t1", Fermion, ""),
+            line("h", "t3", "H", Scalar, ""),
         ],
         ..FeynmanSeries::default()
     };
-    bhabha.propagators[2].momentum = Some(MomentumArrow {
-        label: RichText::from_tex("$q$", ink, 13.0, "").expect("valid TeX"),
+    // The electron's one-loop vertex correction (Schwinger's g - 2).
+    let mut vertex_loop = FeynmanSeries {
+        vertices: vec![
+            vertex("in", Incoming, Some([1.22, 1.18]), "$e^-$"),
+            vertex("a", Internal, None, ""),
+            vertex("c", Internal, None, ""),
+            vertex("b", Internal, None, ""),
+            vertex("out", Outgoing, Some([2.12, 1.18]), "$e^-$"),
+            vertex("field", Incoming, Some([1.67, 1.9]), r"$\gamma$"),
+        ],
+        propagators: vec![
+            line("e1", "in", "a", Fermion, ""),
+            line("e2", "a", "c", Fermion, ""),
+            line("e3", "c", "b", Fermion, ""),
+            line("e4", "b", "out", Fermion, ""),
+            line("loop", "a", "b", Photon, ""),
+            line("ext", "field", "c", Photon, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    vertex_loop.propagators[4].bend = Some(-50.0);
+    vertex_loop.propagators[4].momentum = Some(MomentumArrow {
+        label: tex("$k$", 20.0),
         side: MomentumSide::Right,
         reversed: false,
         label_offset: [0.0; 2],
     });
-    let mut loop_ = FeynmanSeries {
+    // Beta decay at the quark level: d -> u W-, W- -> e- anti-nu.
+    let beta = FeynmanSeries {
         vertices: vec![
-            vertex("in", VertexRole::Incoming, Some([1.2, 0.5]), ""),
-            vertex("a", VertexRole::Internal, None, ""),
-            vertex("b", VertexRole::Internal, None, ""),
-            vertex("x", VertexRole::Internal, None, ""),
-            vertex("out", VertexRole::Outgoing, Some([2.1, 0.5]), ""),
+            vertex("d", Incoming, Some([0.08, 0.2]), "$d$"),
+            vertex("w1", Internal, None, ""),
+            vertex("w2", Internal, None, ""),
+            vertex("u", Outgoing, Some([1.0, 0.2]), "$u$"),
+            vertex("nu", Outgoing, Some([1.0, 0.52]), r"$\bar\nu_e$"),
+            vertex("e", Outgoing, Some([1.0, 0.86]), "$e^-$"),
         ],
         propagators: vec![
-            line("g1", "in", "a", ParticleLine::Photon, ""),
-            line("f1", "a", "b", ParticleLine::Fermion, "$f$"),
-            line("f2", "b", "a", ParticleLine::Fermion, r"$\bar f$"),
-            line("g2", "b", "x", ParticleLine::Photon, ""),
-            line("g3", "x", "out", ParticleLine::Photon, ""),
+            line("q1", "d", "w1", Fermion, ""),
+            line("q2", "w1", "u", Fermion, ""),
+            line("w", "w1", "w2", ChargedBoson, "$W^-$"),
+            line("l1", "w2", "e", Fermion, ""),
+            line("l2", "nu", "w2", Fermion, ""),
         ],
         ..FeynmanSeries::default()
     };
-    loop_.vertices[3].marker = Some(VertexMarker::CircledCross);
-    loop_.style.color = Color::from_rgb8(150, 60, 40);
+    // A three-jet event: e+ e- -> q qbar g, the gluon radiated by the quark.
+    let jets = FeynmanSeries {
+        vertices: vec![
+            vertex("e-", Incoming, Some([1.22, 0.8]), "$e^-$"),
+            vertex("e+", Incoming, Some([1.22, 0.24]), "$e^+$"),
+            vertex("v1", Internal, None, ""),
+            vertex("v2", Internal, None, ""),
+            vertex("v3", Internal, None, ""),
+            vertex("q", Outgoing, Some([2.12, 0.88]), "$q$"),
+            vertex("g", Outgoing, Some([2.12, 0.56]), "$g$"),
+            vertex("qb", Outgoing, Some([2.12, 0.16]), r"$\bar q$"),
+        ],
+        propagators: vec![
+            line("a", "e-", "v1", Fermion, ""),
+            line("b", "v1", "e+", Fermion, ""),
+            line("gamma", "v1", "v2", Photon, r"$\gamma^*$"),
+            line("c", "v2", "v3", Fermion, ""),
+            line("d", "v3", "q", Fermion, ""),
+            line("e", "qb", "v2", Fermion, ""),
+            line("glue", "v3", "g", Gluon, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
     let series = |id: &str, diagram: FeynmanSeries| SeriesConfig {
         series_id: id.into(),
         source_id: None,
@@ -4317,6 +4370,7 @@ fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         width: DOC_W,
         height: DOC_H,
     });
+    config.legend.visible = false;
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     for axis in [
@@ -4330,13 +4384,34 @@ fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         axis.label_style.visible = false;
         axis.title_option.visible = false;
     }
-    let config = with_math_title(config, r"Tree level and one loop: $e^+e^- \to e^+e^-$");
+    // One caption over each quadrant.
+    for (x, y, text) in [
+        (0.08, 2.08, r"Higgs production: $gg \to H$"),
+        (1.22, 2.08, r"Electron $g-2$ at one loop"),
+        (0.08, 1.0, r"Beta decay: $d \to u\, e^-\, \bar\nu_e$"),
+        (1.22, 1.0, r"Three jets: $e^+e^- \to q\bar q g$"),
+    ] {
+        config
+            .annotations
+            .items
+            .push(Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Data { x, y },
+                text: tex(text, 20.0),
+                box_style: None,
+            }));
+    }
+    let config = with_math_title(config, "Feynman diagrams");
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 2.2);
-    chart.set_y_range(0.0, 1.0);
+    chart.set_y_range(0.0, 2.1);
     Ok(CartesianScene {
         config: chart.config().clone(),
-        series: vec![series("Bhabha", bhabha), series("self-energy", loop_)],
+        series: vec![
+            series("Higgs", higgs),
+            series("g-2", vertex_loop),
+            series("beta", beta),
+            series("jets", jets),
+        ],
     })
 }
 
