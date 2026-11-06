@@ -401,6 +401,10 @@ mod tests {
                 "DATA_PICK_KIND_VALUE_LABEL",
                 data_pick::DATA_PICK_KIND_VALUE_LABEL,
             ),
+            (
+                "DATA_PICK_KIND_MESH_TRIANGLE",
+                data_pick::DATA_PICK_KIND_MESH_TRIANGLE,
+            ),
             ("VALUE_LABEL_KIND_BARS", dr::VALUE_LABEL_KIND_BARS),
             ("VALUE_LABEL_KIND_BOXES", dr::VALUE_LABEL_KIND_BOXES),
             ("VALUE_LABEL_KIND_RADAR", dr::VALUE_LABEL_KIND_RADAR),

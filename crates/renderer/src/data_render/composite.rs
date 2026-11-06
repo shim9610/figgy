@@ -420,7 +420,7 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         if let Some(label) = series.contour.as_ref().and_then(|c| c.label.as_ref()) {
             pass.set_bind_group(3, label.snapshot.label_gap_bind_group(), &[]);
         }
-        pass.draw(0..FIELD_VERTICES, 0..1);
+        pass.draw(0..selection.vertices, selection.instances.clone());
     }
 
     for p in &series.picked {

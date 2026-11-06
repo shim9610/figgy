@@ -35,6 +35,9 @@ pub(crate) const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
 /// A category bar, box plot or radar series' value label
 /// (`value_label.wgsl::pick_value_labels`): `index0` is its category.
 pub(crate) const DATA_PICK_KIND_VALUE_LABEL: u32 = 4;
+/// A triangle mesh series' triangle (`mesh_entry.wgsl::pick_tri_mesh`,
+/// #210): `index0` is the triangle, `index1` its vertex nearest the cursor.
+pub(crate) const DATA_PICK_KIND_MESH_TRIANGLE: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -153,6 +156,20 @@ pub(crate) enum GpuDataPickGeometry {
     /// whose index is the row.
     Parallel {
         data: crate::data_render::ParallelData,
+    },
+    /// A triangle mesh series' triangles and contour strokes (#210), picked
+    /// by the mesh module's entry (`pick_tri_mesh`) over the draw's group 2
+    /// at the pick's display scale: a triangle answers as
+    /// [`DATA_PICK_KIND_MESH_TRIANGLE`], a stroke as a contour level whose
+    /// `x_index` is the triangle.
+    TriMesh {
+        field_bg: wgpu::BindGroup,
+        charge: SharedCharge,
+        has_fill: bool,
+        has_contour: bool,
+        contour_width_px: f32,
+        /// The fill's premultiplied `nan_color`, as for a field.
+        nan_color_premul: [f32; 4],
     },
 }
 
@@ -639,6 +656,10 @@ pub(crate) struct DataPickPipelineBundle {
     violin: wgpu::ComputePipeline,
     /// The parallel row pick over the parallel data layout as group 3.
     parallel: wgpu::ComputePipeline,
+    /// The triangle mesh pick over the field's layout as group 2 (#210),
+    /// from the bundle's own mesh module: the draw compiles that module only
+    /// when a mesh is drawn.
+    tri_mesh: wgpu::ComputePipeline,
     /// Group 1 of the value label pick: the query (1, 2, 3), the series'
     /// label uniform (4) and its label cells (7).
     value_label_query_bgl: wgpu::BindGroupLayout,
@@ -746,6 +767,14 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        let tri_mesh_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy triangle mesh data pick layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
+                immediate_size: 0,
+            },
+        );
         let value_label_query_bgl = crate::gpu_compile::bind_group_layout(
             &device,
             &wgpu::BindGroupLayoutDescriptor {
@@ -834,6 +863,20 @@ impl DataPickPipelineBundle {
                     layout: Some(&parallel_layout),
                     module: line_shader,
                     entry_point: Some("pick_parallel"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let tri_mesh = observe_value(observer, INIT_SCOPE, "pick_tri_mesh", || {
+            let shader = crate::data_render::tri_mesh::shader_module(&device);
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy triangle mesh data pick pipeline"),
+                    layout: Some(&tri_mesh_layout),
+                    module: &shader,
+                    entry_point: Some("pick_tri_mesh"),
                     compilation_options: crate::gpu_compile::workgroup_options(&device),
                     cache: None,
                 },
@@ -968,6 +1011,7 @@ impl DataPickPipelineBundle {
             range_bar,
             violin,
             parallel,
+            tri_mesh,
             value_label_query_bgl,
             value_labels,
             empty_bar_style_map,
@@ -1001,6 +1045,15 @@ impl DataPickPipelineBundle {
                 "gpu.data_pick.line.async",
                 crate::data_render::LINE_SHADER.source,
                 &[("pick_parallel", "pick_parallel")],
+                observer,
+            )
+            .await
+            .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
+            crate::init::prewarm_compute_entries_js(
+                &device,
+                "gpu.data_pick.tri_mesh.async",
+                crate::data_render::tri_mesh::TRI_MESH_SHADER.source,
+                &[("pick_tri_mesh", "pick_tri_mesh")],
                 observer,
             )
             .await
@@ -1202,6 +1255,7 @@ impl DataPickPipelineBundle {
             Violin(crate::data_render::CategoryBarData),
             ValueLabels(crate::data_render::CategoryBarData),
             Parallel(crate::data_render::ParallelData),
+            TriMesh(wgpu::BindGroup),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -1350,6 +1404,36 @@ impl DataPickPipelineBundle {
                         PreparedKind::Parallel(data),
                     )
                 }
+                GpuDataPickGeometry::TriMesh {
+                    field_bg,
+                    charge,
+                    has_fill,
+                    has_contour,
+                    contour_width_px,
+                    nan_color_premul,
+                } => {
+                    let mut flags = 0;
+                    if has_fill {
+                        flags |= DATA_PICK_FLAG_FILL;
+                    }
+                    if has_contour {
+                        flags |= DATA_PICK_FLAG_CONTOUR;
+                    }
+                    field_charges.push(FieldPickHold {
+                        _charge: charge,
+                        _label: None,
+                    });
+                    (
+                        DataPickQueryGpu {
+                            cursor_ndc_t: cursor,
+                            limits: [query.max_distance_px, 0.0, contour_width_px, 0.0],
+                            data: [flags, item.paint_order, 0, 0],
+                            bases: [0; 4],
+                            baseline: nan_color_premul,
+                        },
+                        PreparedKind::TriMesh(field_bg),
+                    )
+                }
                 GpuDataPickGeometry::ValueLabels { data, labels } => {
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
@@ -1495,6 +1579,10 @@ impl DataPickPipelineBundle {
                     PreparedKind::Parallel(data) => {
                         pass.set_pipeline(&self.parallel);
                         pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::TriMesh(field_bg) => {
+                        pass.set_pipeline(&self.tri_mesh);
+                        pass.set_bind_group(2, field_bg, &[]);
                     }
                 }
                 pass.set_bind_group(1, &item.query_bg, &[]);
@@ -1714,6 +1802,13 @@ fn decode_candidate(
             level_index: candidate.index0 as usize,
             x_index: candidate.index1 as usize,
             y_index: candidate.index2 as usize,
+            distance_px,
+        },
+        DATA_PICK_KIND_MESH_TRIANGLE => PickedData::MeshTriangle {
+            source_id,
+            series_id,
+            triangle_index: candidate.index0 as usize,
+            vertex_index: candidate.index1 as usize,
             distance_px,
         },
         DATA_PICK_KIND_VALUE_LABEL => PickedData::ValueLabel {

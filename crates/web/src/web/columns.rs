@@ -48,7 +48,9 @@ pub(super) enum VectorColumns<'a> {
 /// Every column id a series' render type references (x/y + error refs).
 pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
     // The model's list (#160): records and ragged columns are resident
-    // composites outside the column registry, so they are not visited.
+    // composites outside the column registry, so they are not visited; a
+    // triangle mesh's index column is (#210), and `column_registered`
+    // answers for it.
     let mut ids = Vec::new();
     cfg.visit_columns(&mut |id| ids.push(id));
     ids
@@ -467,7 +469,7 @@ impl FiggyChart {
             for id in referenced_columns(item) {
                 // Every column a demo series reads is either one of the
                 // demo's own or already registered.
-                if !DEMO_COLUMN_IDS.contains(&id) && self.renderer.logical_column(id).is_none() {
+                if !DEMO_COLUMN_IDS.contains(&id) && !self.column_registered(id) {
                     return Err(js_err(format!(
                         "series '{}' references unregistered column '{id}'",
                         item.series_id

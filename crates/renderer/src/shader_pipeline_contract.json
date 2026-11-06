@@ -2761,6 +2761,113 @@
           "buffer": {
             "hasDynamicOffset": false,
             "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 6,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 2
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 3,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        }
+      ],
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 3,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
             "type": "uniform"
           },
           "visibility": 7
@@ -3918,7 +4025,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 47
+        "layout": 48
       },
       "kind": "compute",
       "source": "f95a2e6c23dd3d9e"
@@ -3930,7 +4037,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 50
+        "layout": 51
       },
       "kind": "compute",
       "source": "71ff5525f44eb84d"
@@ -3954,7 +4061,7 @@
           "entryPoint": "pick"
         },
         "label": "radial pick",
-        "layout": 43
+        "layout": 44
       },
       "kind": "compute",
       "source": "8c69f3b97241c6a1"
@@ -3966,7 +4073,7 @@
           "entryPoint": "pick_box_plot"
         },
         "label": "figgy box plot data pick pipeline",
-        "layout": 36
+        "layout": 37
       },
       "kind": "compute",
       "source": "b8e6e35a1496cf1c"
@@ -3978,7 +4085,7 @@
           "entryPoint": "pick_category_bar"
         },
         "label": "figgy category bar data pick pipeline",
-        "layout": 36
+        "layout": 37
       },
       "kind": "compute",
       "source": "b8e6e35a1496cf1c"
@@ -4038,7 +4145,7 @@
           "entryPoint": "pick_histogram_bin"
         },
         "label": "figgy histogram data pick pipeline",
-        "layout": 37
+        "layout": 38
       },
       "kind": "compute",
       "source": "b8e6e35a1496cf1c"
@@ -4050,7 +4157,7 @@
           "entryPoint": "pick_parallel"
         },
         "label": "figgy parallel data pick pipeline",
-        "layout": 38
+        "layout": 39
       },
       "kind": "compute",
       "source": "e6f1fdd654da8231"
@@ -4062,7 +4169,7 @@
           "entryPoint": "pick_range_bar"
         },
         "label": "figgy range bar data pick pipeline",
-        "layout": 36
+        "layout": 37
       },
       "kind": "compute",
       "source": "b8e6e35a1496cf1c"
@@ -4074,10 +4181,22 @@
           "entryPoint": "pick_reduce_candidates"
         },
         "label": "figgy GPU pick candidate reduction pipeline",
-        "layout": 53
+        "layout": 54
       },
       "kind": "compute",
       "source": "d2ce8c880db3a232"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "pick_tri_mesh"
+        },
+        "label": "figgy triangle mesh data pick pipeline",
+        "layout": 35
+      },
+      "kind": "compute",
+      "source": "f4098073ec610329"
     },
     {
       "descriptor": {
@@ -4098,7 +4217,7 @@
           "entryPoint": "pick_vector_cell"
         },
         "label": "figgy vector grid data pick pipeline",
-        "layout": 35
+        "layout": 36
       },
       "kind": "compute",
       "source": "701fcd65c3a30abc"
@@ -4110,7 +4229,7 @@
           "entryPoint": "pick_violin"
         },
         "label": "figgy violin data pick pipeline",
-        "layout": 36
+        "layout": 37
       },
       "kind": "compute",
       "source": "b8e6e35a1496cf1c"
@@ -4170,7 +4289,7 @@
           "entryPoint": "ring_apply"
         },
         "label": "figgy ternary ring scan pipeline",
-        "layout": 54
+        "layout": 55
       },
       "kind": "compute",
       "source": "a4b7a0a2ab28fa03"
@@ -4182,7 +4301,7 @@
           "entryPoint": "ring_init"
         },
         "label": "figgy ternary ring scan pipeline",
-        "layout": 54
+        "layout": 55
       },
       "kind": "compute",
       "source": "a4b7a0a2ab28fa03"
@@ -4194,7 +4313,7 @@
           "entryPoint": "ring_scan_block"
         },
         "label": "figgy ternary ring scan pipeline",
-        "layout": 54
+        "layout": 55
       },
       "kind": "compute",
       "source": "a4b7a0a2ab28fa03"
@@ -6002,7 +6121,7 @@
           ]
         },
         "label": "radial surfaces",
-        "layout": 42,
+        "layout": 43,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7580,7 +7699,7 @@
           ]
         },
         "label": "figgy selected field data pipeline",
-        "layout": 41,
+        "layout": 42,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7626,6 +7745,98 @@
           ]
         },
         "label": "figgy selected field data pipeline",
+        "layout": 42,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_main"
+        }
+      },
+      "kind": "render",
+      "source": "1321308e59e9159c"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_data_selection_labelled",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy selected labelled field data pipeline",
+        "layout": 41,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_main"
+        }
+      },
+      "kind": "render",
+      "source": "1321308e59e9159c"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_data_selection_labelled",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy selected labelled field data pipeline",
         "layout": 41,
         "multisample": {
           "alphaToCoverageEnabled": false,
@@ -7651,98 +7862,6 @@
       "descriptor": {
         "fragment": {
           "constants": {},
-          "entryPoint": "fs_data_selection_labelled",
-          "targets": [
-            {
-              "blend": {
-                "alpha": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                },
-                "color": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                }
-              },
-              "format": "rgba8unorm",
-              "writeMask": 15
-            }
-          ]
-        },
-        "label": "figgy selected labelled field data pipeline",
-        "layout": 40,
-        "multisample": {
-          "alphaToCoverageEnabled": false,
-          "count": 1,
-          "mask": 4294967295
-        },
-        "primitive": {
-          "cullMode": "none",
-          "frontFace": "ccw",
-          "topology": "triangle-list",
-          "unclippedDepth": false
-        },
-        "vertex": {
-          "buffers": [],
-          "constants": {},
-          "entryPoint": "vs_main"
-        }
-      },
-      "kind": "render",
-      "source": "1321308e59e9159c"
-    },
-    {
-      "descriptor": {
-        "fragment": {
-          "constants": {},
-          "entryPoint": "fs_data_selection_labelled",
-          "targets": [
-            {
-              "blend": {
-                "alpha": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                },
-                "color": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                }
-              },
-              "format": "rgba8unorm",
-              "writeMask": 15
-            }
-          ]
-        },
-        "label": "figgy selected labelled field data pipeline",
-        "layout": 40,
-        "multisample": {
-          "alphaToCoverageEnabled": false,
-          "count": 4,
-          "mask": 4294967295
-        },
-        "primitive": {
-          "cullMode": "none",
-          "frontFace": "ccw",
-          "topology": "triangle-list",
-          "unclippedDepth": false
-        },
-        "vertex": {
-          "buffers": [],
-          "constants": {},
-          "entryPoint": "vs_main"
-        }
-      },
-      "kind": "render",
-      "source": "1321308e59e9159c"
-    },
-    {
-      "descriptor": {
-        "fragment": {
-          "constants": {},
           "entryPoint": "fs_jet",
           "targets": [
             {
@@ -8930,7 +9049,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 44,
+        "layout": 45,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8976,7 +9095,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 44,
+        "layout": 45,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -14981,7 +15100,7 @@
         }
       },
       "kind": "render",
-      "source": "0790b306a9f7f717"
+      "source": "f4098073ec610329"
     },
     {
       "descriptor": {
@@ -15027,7 +15146,7 @@
         }
       },
       "kind": "render",
-      "source": "0790b306a9f7f717"
+      "source": "f4098073ec610329"
     },
     {
       "descriptor": {
@@ -15073,7 +15192,7 @@
         }
       },
       "kind": "render",
-      "source": "0790b306a9f7f717"
+      "source": "f4098073ec610329"
     },
     {
       "descriptor": {
@@ -15119,7 +15238,99 @@
         }
       },
       "kind": "render",
-      "source": "0790b306a9f7f717"
+      "source": "f4098073ec610329"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_tri_selection",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy selected triangle mesh pipeline",
+        "layout": 42,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_tri"
+        }
+      },
+      "kind": "render",
+      "source": "f4098073ec610329"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_tri_selection",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy selected triangle mesh pipeline",
+        "layout": 42,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_tri"
+        }
+      },
+      "kind": "render",
+      "source": "f4098073ec610329"
     },
     {
       "descriptor": {
@@ -15146,7 +15357,7 @@
           ]
         },
         "label": "figgy value label pipeline",
-        "layout": 39,
+        "layout": 40,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15192,7 +15403,7 @@
           ]
         },
         "label": "figgy value label pipeline",
-        "layout": 39,
+        "layout": 40,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -15238,7 +15449,7 @@
           ]
         },
         "label": "figgy value label selection pipeline",
-        "layout": 39,
+        "layout": 40,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15284,7 +15495,7 @@
           ]
         },
         "label": "figgy value label selection pipeline",
-        "layout": 39,
+        "layout": 40,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -15502,7 +15713,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 45,
+        "layout": 46,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15536,7 +15747,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 48,
+        "layout": 49,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -15570,7 +15781,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 51,
+        "layout": 52,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15604,7 +15815,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 52,
+        "layout": 53,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -15650,7 +15861,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 46,
+        "layout": 47,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15696,7 +15907,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 49,
+        "layout": 50,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -15730,7 +15941,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 46,
+        "layout": 47,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -15764,7 +15975,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 49,
+        "layout": 50,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,

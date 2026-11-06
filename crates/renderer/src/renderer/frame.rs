@@ -434,6 +434,8 @@ pub(super) struct PreparedFieldSelectionLayer {
     pub(super) field_bg: wgpu::BindGroup,
     pub(super) charge: crate::gpu_memory::SharedCharge,
     pub(super) drawable: bool,
+    pub(super) vertices: u32,
+    pub(super) instances: std::ops::Range<u32>,
 }
 
 pub(super) struct PreparedStarLayer {
@@ -1291,6 +1293,8 @@ impl PreparedSeries {
                     field_bg: layer.field_bg,
                     charge: layer.charge,
                     drawable: layer.drawable,
+                    vertices: layer.vertices,
+                    instances: layer.instances,
                 })
                 .collect(),
             picked: layers
@@ -1475,6 +1479,8 @@ impl PreparedSeries {
                     field_bg: layer.field_bg.clone(),
                     charge: Arc::clone(&layer.charge),
                     drawable: layer.drawable,
+                    vertices: layer.vertices,
+                    instances: layer.instances.clone(),
                 })
                 .collect(),
             picked: self

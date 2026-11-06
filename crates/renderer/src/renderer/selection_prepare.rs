@@ -677,6 +677,8 @@ impl PrepareContext<'_> {
                             field_bg: scratch.field_bg.clone(),
                             charge: Arc::clone(&scratch.charge),
                             drawable: scratch.drawable,
+                            vertices: data_render::FIELD_VERTICES,
+                            instances: 0..1,
                         });
                     }
                     // A grid vector's selected cell: the `u` grid is bound as a
@@ -722,6 +724,8 @@ impl PrepareContext<'_> {
                             field_bg: field_bg.clone(),
                             charge: Arc::clone(charge),
                             drawable: scratch.count != 0,
+                            vertices: data_render::FIELD_VERTICES,
+                            instances: 0..1,
                         });
                     }
                     PickedDataRef::ContourLevel {
@@ -786,6 +790,105 @@ impl PrepareContext<'_> {
                             field_bg: scratch.field_bg.clone(),
                             charge: Arc::clone(&scratch.charge),
                             drawable: scratch.drawable,
+                            vertices: data_render::FIELD_VERTICES,
+                            instances: 0..1,
+                        });
+                    }
+                    // A triangle mesh's picked triangle (#210): that one
+                    // instance redrawn through the mesh's selection entry,
+                    // outlined inside its edges.
+                    PickedDataRef::MeshTriangle { triangle_index, .. } if primitives.mesh => {
+                        let Ok(triangle) = u32::try_from(*triangle_index) else {
+                            continue;
+                        };
+                        let scratch = self.field_cache.get(cfg.series_id.as_str()).ok_or(
+                            FiggyError::internal("prepare ensured selected mesh scratch"),
+                        )?;
+                        if triangle >= scratch.signature.params.rows {
+                            continue;
+                        }
+                        let mut selection = data_render::DataSelectionGpu::from_color(
+                            selection_cfg.highlight_color,
+                        );
+                        selection.metrics[0] = selection_cfg.outline_width_px;
+                        selection.indices = [
+                            data_render::DATA_SELECTION_KIND_MESH_TRIANGLE,
+                            triangle,
+                            0,
+                            0,
+                        ];
+                        let (selection_bg, selection_charge) =
+                            data_render::create_data_selection_bind_group(
+                                &self.gpu_ledger,
+                                &self.device,
+                                &self.data_selection_bgl,
+                                &selection,
+                            )?;
+                        selected_fields.push(ColumnFieldSelectionLayer {
+                            pipeline: pipelines.tri_mesh
+                                [data_render::tri_mesh::TriMeshPass::Selection as usize]
+                                .as_ref()
+                                .ok_or(FiggyError::internal(
+                                    "prepare ensured mesh selection pipeline",
+                                ))?,
+                            transform_bg: &view.transform_bg,
+                            selection_bg,
+                            selection_charge,
+                            field_bg: scratch.field_bg.clone(),
+                            charge: Arc::clone(&scratch.charge),
+                            drawable: scratch.drawable,
+                            vertices: data_render::tri_mesh::TRI_MESH_VERTICES,
+                            instances: triangle..triangle + 1,
+                        });
+                    }
+                    // A triangle mesh's picked level: every triangle redrawn,
+                    // painting that level's stroke widened.
+                    PickedDataRef::ContourLevel { level_index, .. } if primitives.mesh_contour => {
+                        let Ok(level_index) = u32::try_from(*level_index) else {
+                            continue;
+                        };
+                        if cfg
+                            .tri_mesh()
+                            .and_then(|mesh| mesh.contour.as_ref())
+                            .is_none_or(|contour| level_index as usize >= contour.levels.len())
+                        {
+                            continue;
+                        }
+                        let scratch = self.field_cache.get(cfg.series_id.as_str()).ok_or(
+                            FiggyError::internal("prepare ensured selected mesh scratch"),
+                        )?;
+                        let mut selection = data_render::DataSelectionGpu::from_color(
+                            selection_cfg.highlight_color,
+                        );
+                        selection.metrics[1] = selection_cfg.contour_width_extra_px;
+                        selection.indices = [
+                            data_render::DATA_SELECTION_KIND_CONTOUR_LEVEL,
+                            level_index,
+                            0,
+                            0,
+                        ];
+                        let (selection_bg, selection_charge) =
+                            data_render::create_data_selection_bind_group(
+                                &self.gpu_ledger,
+                                &self.device,
+                                &self.data_selection_bgl,
+                                &selection,
+                            )?;
+                        selected_fields.push(ColumnFieldSelectionLayer {
+                            pipeline: pipelines.tri_mesh
+                                [data_render::tri_mesh::TriMeshPass::Selection as usize]
+                                .as_ref()
+                                .ok_or(FiggyError::internal(
+                                    "prepare ensured mesh selection pipeline",
+                                ))?,
+                            transform_bg: &view.transform_bg,
+                            selection_bg,
+                            selection_charge,
+                            field_bg: scratch.field_bg.clone(),
+                            charge: Arc::clone(&scratch.charge),
+                            drawable: scratch.drawable,
+                            vertices: data_render::tri_mesh::TRI_MESH_VERTICES,
+                            instances: 0..scratch.signature.params.rows,
                         });
                     }
                     _ => {}

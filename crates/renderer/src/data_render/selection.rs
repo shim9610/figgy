@@ -6,6 +6,9 @@ pub(crate) const DATA_SELECTION_KIND_MATRIX_CELL: u32 = 2;
 
 pub(crate) const DATA_SELECTION_KIND_CONTOUR_LEVEL: u32 = 3;
 
+/// A triangle mesh's picked triangle (#210): `indices.y` is the triangle.
+pub(crate) const DATA_SELECTION_KIND_MESH_TRIANGLE: u32 = 5;
+
 /// Small typed-selection uniform of the field overlay entries (a selected
 /// cell or contour level). A selected histogram bin uses its bar `Style`
 /// instead (`bar_columnar.wgsl`).

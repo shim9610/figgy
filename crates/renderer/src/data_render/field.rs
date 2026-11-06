@@ -797,4 +797,9 @@ pub struct ColumnFieldSelectionLayer<'a> {
     pub field_bg: wgpu::BindGroup,
     pub charge: crate::gpu_memory::SharedCharge,
     pub drawable: bool,
+    /// The vertices and instances to draw: one quad
+    /// ([`FIELD_VERTICES`], `0..1`) for a field, the picked triangle or
+    /// every triangle of a mesh (#210).
+    pub vertices: u32,
+    pub instances: std::ops::Range<u32>,
 }
