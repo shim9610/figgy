@@ -698,6 +698,52 @@ impl FiggyChart {
                     *category_index
                 ));
             }
+            // A Feynman part (#234) reports its row from the SSOT; nothing
+            // is read back. A vertex reports where it is drawn: its `at`, or
+            // the layout's place while it has none (`placed: false`).
+            PickedDataRef::FeynmanVertex { vertex_index, .. } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let vertex = diagram
+                    .vertices
+                    .get(*vertex_index)
+                    .ok_or_else(|| js_err("selected vertex no longer exists"))?;
+                let position = diagram.positions()[*vertex_index];
+                result["index"] = serde_json::json!(vertex_index);
+                result["id"] = serde_json::json!(vertex.id);
+                result["role"] = serde_json::to_value(vertex.role).map_err(js_err)?;
+                result["position"] = serde_json::json!(position);
+                result["placed"] = serde_json::json!(vertex.at.is_some());
+            }
+            PickedDataRef::FeynmanPropagator {
+                propagator_index, ..
+            } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let propagator = diagram
+                    .propagators
+                    .get(*propagator_index)
+                    .ok_or_else(|| js_err("selected propagator no longer exists"))?;
+                result["index"] = serde_json::json!(propagator_index);
+                result["id"] = serde_json::json!(propagator.id);
+                result["from"] = serde_json::json!(propagator.from);
+                result["to"] = serde_json::json!(propagator.to);
+                result["particle"] = serde_json::to_value(propagator.particle).map_err(js_err)?;
+                result["bend"] = serde_json::json!(propagator.bend);
+            }
+            PickedDataRef::FeynmanLabel { part, index, .. } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let offset = diagram
+                    .label_offset(*part, *index)
+                    .ok_or_else(|| js_err("selected label no longer exists"))?;
+                result["index"] = serde_json::json!(index);
+                result["part"] = serde_json::to_value(part).map_err(js_err)?;
+                result["offset"] = serde_json::json!(offset);
+            }
             _ => return Ok("null".into()),
         }
         serde_json::to_string(&result).map_err(js_err)

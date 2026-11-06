@@ -2941,7 +2941,9 @@ kind and the `mesh_triangle` selection) are additive.
   drag `on_move` applies (a vertex moves, a propagator bends, a label
   moves). The wrapper commits a diagram's layout as its series is
   registered, so `get_series` returns placed vertices; `auto_layout(series_id)`
-  commits it again after an edit in place.
+  commits it again after an edit in place. `selection_details` reports a
+  selected vertex (id, role, drawn position, whether it is placed), a
+  propagator (id, ends, particle, bend) or a label (part, offset).
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
   `register_triangles(id, Uint32Array)` registers or replaces a triangle
   index column, borrowing the array for the upload, and

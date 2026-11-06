@@ -775,3 +775,309 @@ fn a_diagram_draws_under_the_annotation_layer() {
         assert!(image.rgba[i + 2] > 200, "{scale}x annotation");
     }
 }
+
+// Checks of the paths the tests above reach only indirectly (#234).
+
+#[path = "support/pdf_structure.rs"]
+mod pdf_structure;
+#[path = "support/svg_parts.rs"]
+mod svg_parts;
+
+#[test]
+fn vertex_and_momentum_labels_pick_with_their_part() {
+    use renderer::AnnotationSpace as _;
+    let mut r = renderer();
+    let chart = chart();
+    let mut diagram = labelled();
+    diagram.vertices[0].label = Some(renderer::text::RichText::plain("e", Color::BLACK, 16.0, ""));
+    diagram.propagators[2].momentum = Some(renderer::feynman::MomentumArrow {
+        label: renderer::text::RichText::plain("q", Color::BLACK, 16.0, ""),
+        side: renderer::feynman::MomentumSide::Right,
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    let list = [series("d", diagram.clone())];
+    let config = chart.config();
+    let space = renderer::annotation::pixel_space_for_config(config);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let positions = diagram.positions();
+    let placement = renderer::feynman::FeynmanPlacement {
+        space: &space,
+        positions: &positions,
+        picked: None,
+    };
+    for (part, index) in [
+        (renderer::FeynmanLabelPart::Vertex, 0),
+        (renderer::FeynmanLabelPart::Momentum, 2),
+    ] {
+        let rect = placement
+            .label(&diagram, part, index, &measure)
+            .expect("a placed label")
+            .rect();
+        for scale in [1.0f32, 2.0] {
+            let centre = (
+                ((rect.x + rect.width / 2.0) * scale).round() as u32,
+                ((rect.y + rect.height / 2.0) * scale).round() as u32,
+            );
+            let hit = pick(&mut r, &chart, &list, scale, centre);
+            assert!(
+                matches!(
+                    hit,
+                    Some(renderer::PickedData::FeynmanLabel { part: p, index: i, .. })
+                        if p == part && i == index
+                ),
+                "{scale}x {part:?}: {hit:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
+    let mut r = renderer();
+    let mut chart = chart();
+    // The parent on the top half, a subplot on the bottom half; the
+    // overlay's y axis runs over 0..2.
+    chart.config_mut().chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let mut sub = chart.config().clone();
+    sub.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT / 2,
+        width: WIDTH,
+        height: HEIGHT / 2,
+    });
+    let mut overlay = renderer::OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 2.0;
+    overlay.series = vec!["over".into()];
+    let config = chart.config_mut();
+    config.overlays.push(overlay);
+    config.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["below".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let pair = |a: [f64; 2], b: [f64; 2]| FeynmanSeries {
+        vertices: vec![
+            vertex("a", VertexRole::Internal, Some(a)),
+            vertex("b", VertexRole::Internal, Some(b)),
+        ],
+        propagators: vec![Propagator::new("l", "a", "b", ParticleLine::Plain)],
+        ..FeynmanSeries::default()
+    };
+    let list = vec![
+        series("over", pair([0.2, 1.0], [0.4, 1.0])),
+        series("below", pair([0.6, 0.5], [0.8, 0.5])),
+    ];
+    let id = r
+        .register_chart(chart.config().clone(), list.clone())
+        .unwrap();
+    // Each series is placed in its own panel's space.
+    let over_space = r.series_panel_space(id, "over").unwrap();
+    let below_space = r.series_panel_space(id, "below").unwrap();
+    use renderer::AnnotationSpace as _;
+    let point = |space: &renderer::annotation::PixelSpace, p: [f64; 2]| {
+        (
+            space
+                .value_to_px(renderer::AnnotationAxis::X, p[0])
+                .unwrap(),
+            space
+                .value_to_px(renderer::AnnotationAxis::Y, p[1])
+                .unwrap(),
+        )
+    };
+    let over_mid = point(&over_space, [0.3, 1.0]);
+    let below_mid = point(&below_space, [0.7, 0.5]);
+    assert!(
+        below_mid.1 > (HEIGHT / 2) as f32,
+        "{below_mid:?} in the subplot"
+    );
+    for scale in [1.0f32, 2.0] {
+        let image = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        for (name, (x, y)) in [("overlay", over_mid), ("subplot", below_mid)] {
+            let at = ((x * scale).round() as u32, (y * scale).round() as u32);
+            assert!(near(&image, at, 2), "{scale}x {name} line at {at:?}");
+        }
+    }
+    // A drag converts its delta in the subplot's own space: 20 px up is
+    // 20 px of the subplot's y axis.
+    let plot = below_space.plot_rect();
+    assert_eq!(
+        r.drag_feynman(id, "below", renderer::FeynmanDrag::Vertex(0), 0.0, -20.0)
+            .unwrap(),
+        renderer::layout::NudgeResult::Moved
+    );
+    let moved = r
+        .chart_series(id)
+        .unwrap()
+        .iter()
+        .find(|s| s.series_id == "below")
+        .and_then(|s| s.feynman())
+        .unwrap()
+        .vertices[0]
+        .at
+        .unwrap();
+    let want = 0.5 + 20.0 / f64::from(plot.height);
+    assert!((moved[1] - want).abs() < 1e-3, "{moved:?} want {want}");
+    // In the overlay, 20 px is 20 px of its 0..2 axis.
+    let plot = over_space.plot_rect();
+    r.drag_feynman(id, "over", renderer::FeynmanDrag::Vertex(0), 0.0, -20.0)
+        .unwrap();
+    let moved = r
+        .chart_series(id)
+        .unwrap()
+        .iter()
+        .find(|s| s.series_id == "over")
+        .and_then(|s| s.feynman())
+        .unwrap()
+        .vertices[0]
+        .at
+        .unwrap();
+    let want = 1.0 + 2.0 * 20.0 / f64::from(plot.height);
+    assert!((moved[1] - want).abs() < 1e-3, "{moved:?} want {want}");
+}
+
+/// A scalar between two vertices, bent 60 degrees: a dashed arc.
+fn bent_scalar() -> FeynmanSeries {
+    let mut diagram = FeynmanSeries {
+        vertices: vec![
+            vertex("a", VertexRole::Internal, Some([0.2, 0.4])),
+            vertex("b", VertexRole::Internal, Some([0.8, 0.4])),
+        ],
+        propagators: vec![Propagator::new("s", "a", "b", ParticleLine::Scalar)],
+        ..FeynmanSeries::default()
+    };
+    diagram.propagators[0].bend = Some(60.0);
+    diagram.propagators[0].color = Some(Color::from_rgb8(255, 0, 0));
+    diagram
+}
+
+#[test]
+fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
+    let mut r = renderer();
+    let chart = chart();
+    let list = [series("d", bent_scalar())];
+    for scale in [1.0f32, 2.0] {
+        // SVG: one path, cubic segments, one dash pattern along it.
+        let svg = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let paths: Vec<&str> = svg
+            .lines()
+            .filter(|line| line.contains("stroke=\"#ff0000\""))
+            .collect();
+        assert_eq!(paths.len(), 1, "{scale}x one path: {paths:?}");
+        assert!(paths[0].contains("stroke-dasharray"), "{scale}x dashed");
+        assert_eq!(paths[0].matches('M').count(), 1, "{scale}x one subpath");
+        assert!(paths[0].matches('C').count() >= 2, "{scale}x cubics");
+        // PDF: the same curve, read back as one curved stroke.
+        let pdf = r
+            .export_pdf(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let file = pdf_structure::read(&pdf);
+        let size = (
+            (WIDTH as f32 * scale).round() as u32,
+            (HEIGHT as f32 * scale).round() as u32,
+        );
+        let curves = pdf_structure::content_parts(&file, size)
+            .into_iter()
+            .filter(|part| matches!(part, svg_parts::ReadPart::Curve { .. }))
+            .count();
+        assert!(curves >= 1, "{scale}x PDF curve");
+        // The raster: dashes along the arc, ink and gaps in turn, the gaps
+        // shorter than the dashes (6 px on, 4 px off).
+        let image = export(&mut r, &chart, &list, scale);
+        let positions = bent_scalar().positions();
+        let config = chart.config().scaled(scale);
+        let space = renderer::annotation::pixel_space_for_config(&config);
+        let placement = renderer::feynman::FeynmanPlacement {
+            space: &space,
+            positions: &positions,
+            picked: None,
+        };
+        let geometry = placement
+            .propagator_geometry(&bent_scalar(), 0)
+            .expect("the arc");
+        let samples = 400;
+        let inked: Vec<bool> = (0..=samples)
+            .map(|k| {
+                let p = geometry.base.point(k as f32 / samples as f32);
+                let (x, y) = (p[0].round() as u32, p[1].round() as u32);
+                let i = ((y * image.width + x) * 4) as usize;
+                image.rgba[i + 3] > 100
+            })
+            .collect();
+        let switches = inked.windows(2).filter(|w| w[0] != w[1]).count();
+        let ink = inked.iter().filter(|i| **i).count() as f32 / inked.len() as f32;
+        assert!(switches > 10, "{scale}x dashes along the arc: {switches}");
+        assert!((0.45..0.8).contains(&ink), "{scale}x ink share {ink}");
+    }
+}
+
+#[test]
+fn the_vector_parts_are_clipped_to_each_break_piece() {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark};
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().bottom_x.breaks = Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(0.45, 0.55)],
+        style: AxisBreakStyle::Continuous,
+        gap: 12.0,
+        mark: BreakMark::default(),
+        frame_each_panel: false,
+    });
+    let mut diagram = bent_scalar();
+    diagram.propagators[0].bend = None;
+    diagram.propagators[0].particle = ParticleLine::Photon;
+    let list = [series("d", diagram)];
+    for scale in [1.0f32, 2.0] {
+        let svg = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        // Once per piece, each inside its own clip.
+        assert_eq!(
+            svg.matches("stroke=\"#ff0000\"").count(),
+            2,
+            "{scale}x a photon per piece"
+        );
+        let mut clipped = 0;
+        let mut open: Vec<bool> = Vec::new();
+        for line in svg.lines() {
+            if line.starts_with("<g clip-path") {
+                open.push(true);
+            } else if line.starts_with("<g") {
+                open.push(false);
+            } else if line.starts_with("</g>") {
+                open.pop();
+            }
+            if line.contains("stroke=\"#ff0000\"") && open.contains(&true) {
+                clipped += 1;
+            }
+        }
+        assert_eq!(clipped, 2, "{scale}x both inside a clip");
+    }
+}
