@@ -190,7 +190,7 @@ on every raster and pick, as it does for an energy-level series.
 
 | Buffer | Holds | Size |
 |---|---|---|
-| Topology | One `Vec<u32>`: the vertex rows sorted by id, the CSR adjacency (each vertex's `(other end, propagator)` pairs sorted so that a fan and the loops at a vertex are runs), each propagator's resolved ends, and the layout's flags | `3V + 1 + 6E` words |
+| Topology | One `Vec<usize>`: the vertex rows sorted by id, the CSR adjacency (each vertex's `(other end, propagator)` pairs sorted so that a fan and the loops at a vertex are runs), each propagator's resolved ends, and the layout's flags | `3V + 1 + 6E` words |
 | Positions | Each vertex's position, converted in place to its screen point | `V` × 16 bytes |
 | Solver | The conjugate-gradient residual, direction and product, only while a vertex is solved for | `3V` × 16 bytes |
 | Path | One propagator's path segments, reused by every line of an emit and grown before it is written | the longest path |

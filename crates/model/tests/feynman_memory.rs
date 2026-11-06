@@ -309,7 +309,7 @@ fn benchmark() {
         // (topology words and screen points) taken, touched and dropped.
         let words = 3 * v + 1 + 6 * e;
         let alloc = median(runs, || {
-            let mut a: Vec<u32> = Vec::new();
+            let mut a: Vec<usize> = Vec::new();
             a.try_reserve_exact(words).unwrap();
             a.resize(words, 0);
             let mut b: Vec<[f64; 2]> = Vec::new();
@@ -319,7 +319,7 @@ fn benchmark() {
         });
         // Only the allocator calls, without the writes a pick makes anyway.
         let calls = median(runs, || {
-            let a: Vec<u32> = Vec::with_capacity(words);
+            let a: Vec<usize> = Vec::with_capacity(words);
             let b: Vec<[f64; 2]> = Vec::with_capacity(v);
             std::hint::black_box((&a, &b));
         });
