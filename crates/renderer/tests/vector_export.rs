@@ -405,7 +405,7 @@ fn the_data_images_are_the_png_exports_pixels() {
         let gpu_series: Vec<SeriesConfig> = scene
             .series
             .iter()
-            .filter(|series| series.energy_levels().is_none())
+            .filter(|series| !series.is_dataless())
             .cloned()
             .collect();
         for scale in SCALES {
@@ -595,6 +595,12 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
         let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS).unwrap();
         if !scene.config.overlays.is_empty() || !scene.config.subplots.is_empty() {
             // One panel: its two chrome rasters are the public layer rasters.
+            continue;
+        }
+        if scene.series.iter().any(SeriesConfig::is_dataless) {
+            // A DataLess series is vector parts, not data image pixels
+            // (#234); `the_data_images_are_the_png_exports_pixels` and the
+            // read-back cover it.
             continue;
         }
         let mut config = scene.config.clone();
