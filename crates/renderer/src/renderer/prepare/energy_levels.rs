@@ -1,8 +1,10 @@
-//! Energy-level preparation (#203): each energy-level series is drawn on the
-//! CPU through the model's emit ([`crate::energy_levels::LevelPlacement`])
-//! into one panel-sized raster, cached by everything the raster reads, and
-//! composited in the data slot after every GPU body and picked highlight of
-//! its panel (`renderer::composite`). The approved exception to "per-point
+//! DataLess preparation (#203, #234): each energy-level or Feynman series is
+//! drawn on the CPU through the model's emit
+//! ([`crate::energy_levels::LevelPlacement`],
+//! [`crate::feynman::FeynmanPlacement`]) into one panel-sized raster,
+//! cached by everything the raster reads, and composited in the data slot
+//! after every GPU body and picked highlight of its panel
+//! (`renderer::composite`). The approved exception to "per-point
 //! appearance is computed in the shader" (#203): the series is DataLess, its
 //! appearance is computed at raster time from the SSOT and never stored.
 
@@ -101,16 +103,7 @@ pub(crate) fn emit_energy_levels(
     scale: f32,
     sink: &mut dyn crate::sink::Sink,
 ) {
-    let scale = valid_scale(scale);
-    let logical = |r: crate::layout::RectF| crate::layout::RectF {
-        x: r.x / scale,
-        y: r.y / scale,
-        width: r.width / scale,
-        height: r.height / scale,
-    };
-    let mut space = crate::annotation::pixel_space_for_config(config);
-    space.panel = logical(space.panel);
-    space.plot = logical(space.plot);
+    let space = logical_space(config, valid_scale(scale));
     let placement = LevelPlacement {
         space: &space,
         categories: config.bottom_x.categories.as_deref().unwrap_or(&[]),
@@ -123,6 +116,97 @@ pub(crate) fn emit_energy_levels(
     placement.emit(records, &levels.style, &measure, sink);
 }
 
+/// The part of the Feynman series `cfg` the panel's typed selection picks.
+pub(crate) fn feynman_picked(
+    config: &Config,
+    cfg: &SeriesConfig,
+) -> Option<crate::feynman::FeynmanHit> {
+    use crate::config::PickedDataRef;
+    use crate::feynman::FeynmanHit;
+    let selection = config.picked_data.as_ref().filter(|s| s.visible)?;
+    let reference = selection.refs.first()?;
+    if reference.series_id() != cfg.series_id {
+        return None;
+    }
+    match *reference {
+        PickedDataRef::FeynmanVertex { vertex_index, .. } => Some(FeynmanHit::Vertex(vertex_index)),
+        PickedDataRef::FeynmanPropagator {
+            propagator_index, ..
+        } => Some(FeynmanHit::Propagator(propagator_index)),
+        PickedDataRef::FeynmanLabel { part, index, .. } => Some(FeynmanHit::Label(part, index)),
+        _ => None,
+    }
+}
+
+/// The anchor space of the panel `config` in logical pixels: the placed
+/// space divided by `scale`.
+fn logical_space(config: &Config, scale: f32) -> crate::annotation::PixelSpace {
+    let logical = |r: crate::layout::RectF| crate::layout::RectF {
+        x: r.x / scale,
+        y: r.y / scale,
+        width: r.width / scale,
+        height: r.height / scale,
+    };
+    let mut space = crate::annotation::pixel_space_for_config(config);
+    space.panel = logical(space.panel);
+    space.plot = logical(space.plot);
+    space
+}
+
+/// Place the Feynman series `diagram` over the panel `config` and hand the
+/// parts to `sink`, as [`emit_energy_levels`] does an energy-level series
+/// (#234): the vertices at their positions or the layout's, computed here
+/// and dropped.
+pub(crate) fn emit_feynman(
+    config: &Config,
+    diagram: &crate::feynman::FeynmanSeries,
+    picked: Option<crate::feynman::FeynmanHit>,
+    scale: f32,
+    sink: &mut dyn crate::sink::Sink,
+) {
+    let space = logical_space(config, valid_scale(scale));
+    let positions = diagram.positions();
+    let placement = crate::feynman::FeynmanPlacement {
+        space: &space,
+        positions: &positions,
+        picked,
+    };
+    let policy = crate::text_render::FontPolicy::for_style(&config.draw_style);
+    let measure = crate::text_render::CpuTextMeasure::with_policy(policy);
+    placement.emit(diagram, &measure, sink);
+}
+
+/// Emit the DataLess series `cfg` over the panel `config` into `sink`:
+/// an energy-level series' records (its own or its source's among
+/// `series`) or a Feynman diagram. `false` when `cfg` draws nothing.
+pub(crate) fn emit_dataless<'s>(
+    config: &Config,
+    cfg: &'s SeriesConfig,
+    records: impl FnOnce(&'s EnergyLevelSeries) -> Option<&'s EnergyLevelSeries>,
+    scale: f32,
+    sink: &mut dyn crate::sink::Sink,
+) -> bool {
+    if let Some(diagram) = cfg.feynman() {
+        emit_feynman(config, diagram, feynman_picked(config, cfg), scale, sink);
+        return true;
+    }
+    let Some(levels) = cfg.energy_levels() else {
+        return false;
+    };
+    let Some(records) = records(levels) else {
+        return false;
+    };
+    emit_energy_levels(
+        config,
+        levels,
+        records,
+        picked_row(config, cfg),
+        scale,
+        sink,
+    );
+    true
+}
+
 /// `scale`, or 1 when it is not a positive finite number.
 fn valid_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
@@ -132,22 +216,21 @@ fn valid_scale(scale: f32) -> f32 {
     }
 }
 
-/// Rasterize `records` in the look and view of `levels` over the panel
-/// `config`: one RGBA8 canvas the size of the chart area, the panel's
-/// origin at its top-left pixel, painted by [`emit_energy_levels`] (a
-/// display or export config is scaled already).
-pub(crate) fn rasterize(
+/// Rasterize the DataLess series `cfg` over the panel `config`: one RGBA8
+/// canvas the size of the chart area, the panel's origin at its top-left
+/// pixel, painted by [`emit_dataless`] (a display or export config is
+/// scaled already). `None` when the series draws nothing.
+pub(crate) fn rasterize<'s>(
     config: &Config,
-    levels: &EnergyLevelSeries,
-    records: &EnergyLevelSeries,
-    picked: Option<PickedRow>,
+    cfg: &'s SeriesConfig,
+    records: impl FnOnce(&'s EnergyLevelSeries) -> Option<&'s EnergyLevelSeries>,
     scale: f32,
 ) -> Result<Option<(Vec<u8>, (u32, u32))>> {
     let area = config.chart_area.0;
     let (w, h) = (area.width.max(1), area.height.max(1));
     let Some(mut canvas) = crate::raster::Canvas::new(w, h) else {
         return Err(FiggyError::RasterWrapFailed {
-            reason: format!("energy-level raster of {w}x{h} pixels"),
+            reason: format!("DataLess series raster of {w}x{h} pixels"),
         });
     };
     let scale = valid_scale(scale);
@@ -159,15 +242,15 @@ pub(crate) fn rasterize(
         [area.x as f32 / scale, area.y as f32 / scale],
         scale,
     );
-    emit_energy_levels(config, levels, records, picked, scale, &mut sink);
+    let drawn = emit_dataless(config, cfg, records, scale, &mut sink);
     sink.finish()?;
-    Ok(Some((canvas.into_rgba(), (w, h))))
+    Ok(drawn.then(|| (canvas.into_rgba(), (w, h))))
 }
 
 impl PrepareContext<'_> {
-    /// The raster energy-level series `cfg` draws in the panel `config`,
-    /// rastered or reused; `None` for every other series, and for a view
-    /// whose source holds no records.
+    /// The raster the DataLess series `cfg` (energy levels or a Feynman
+    /// diagram) draws in the panel `config`, rastered or reused; `None` for
+    /// every other series, and for a view whose source holds no records.
     pub(in crate::renderer) fn ensure_energy_level_scratch(
         &mut self,
         config: &Config,
@@ -175,13 +258,19 @@ impl PrepareContext<'_> {
         items: &[ChartDrawItem<'_>],
         scale: f32,
     ) -> Result<Option<Arc<EnergyLevelRaster>>> {
-        let Some(levels) = cfg.energy_levels() else {
+        if !cfg.is_dataless() {
             return Ok(None);
+        }
+        // An energy-level view keys on its source's records too.
+        let source_copy = match cfg.energy_levels() {
+            Some(levels) => {
+                let Some(records) = source_records(levels, items) else {
+                    return Ok(None);
+                };
+                levels.source.is_some().then_some(records)
+            }
+            None => None,
         };
-        let Some(records) = source_records(levels, items) else {
-            return Ok(None);
-        };
-        let source_copy = levels.source.is_some().then_some(records);
         let font_generation = crate::text_render::font_generation();
         if let Some(ScratchEntry::EnergyLevels(scratch)) =
             self.contour_cache.get(cfg.series_id.as_str())
@@ -194,7 +283,7 @@ impl PrepareContext<'_> {
             return Ok(Some(Arc::clone(&scratch.raster)));
         }
         let Some((rgba, (w, h))) =
-            rasterize(config, levels, records, picked_row(config, cfg), scale)?
+            rasterize(config, cfg, |levels| source_records(levels, items), scale)?
         else {
             return Ok(None);
         };

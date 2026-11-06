@@ -42,7 +42,7 @@ mod frame;
 pub(crate) use frame::series_panel_index;
 pub use frame::*;
 mod prepare;
-pub(crate) use prepare::energy_levels::{emit_energy_levels, energy_level_records, picked_row};
+pub(crate) use prepare::energy_levels::{emit_dataless, energy_level_records};
 use prepare::*;
 mod preparation;
 pub use preparation::{PipelinePreparation, PreparationFeature, PreparedPipelines};

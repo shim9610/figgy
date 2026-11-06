@@ -226,6 +226,15 @@ pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
     LevelView, Transition, TransitionDirection,
 };
+/// Feynman diagrams (#234): a DataLess series kind, re-exported from the
+/// model. See [`DataRenderType::Feynman`].
+pub mod feynman {
+    pub use model::feynman::*;
+}
+pub use model::feynman::{
+    FeynmanLabelPart, FeynmanLayout, FeynmanSeries, FeynmanStyle, FeynmanVertex, MomentumArrow,
+    MomentumSide, ParticleLine, Propagator, TimeDirection, VertexMarker, VertexRole, Wiggle,
+};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {

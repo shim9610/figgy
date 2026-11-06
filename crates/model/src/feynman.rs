@@ -1222,6 +1222,15 @@ const COIL_SAMPLES: usize = 12;
 /// The segments of a marker circle.
 const CIRCLE_SEGMENTS: usize = 24;
 
+/// The per-series values a placement works out once ([`FeynmanPlacement`]).
+struct Frame {
+    px: Vec<Option<[f32; 2]>>,
+    ends: Vec<Option<(usize, usize)>>,
+    bends: Vec<f32>,
+    loops: Vec<(usize, usize)>,
+    outward: Vec<[f32; 2]>,
+}
+
 impl FeynmanPlacement<'_> {
     /// The screen point of vertex `index`, or `None` where the axes do not
     /// place it.
@@ -1233,91 +1242,123 @@ impl FeynmanPlacement<'_> {
         ])
     }
 
-    /// The bend of propagator `index` in degrees: its own, or its place in
-    /// the fan of the lines that join the same two vertices (by row, an
-    /// order independent of their direction).
-    fn bend(&self, series: &FeynmanSeries, index: usize) -> f32 {
-        let propagator = &series.propagators[index];
-        if let Some(bend) = propagator.bend {
-            return bend;
-        }
-        fn key(p: &Propagator) -> (&str, &str) {
-            if p.from <= p.to {
-                (p.from.as_str(), p.to.as_str())
-            } else {
-                (p.to.as_str(), p.from.as_str())
+    /// What every propagator's geometry reads, worked out once per emit or
+    /// pick in O(E log E): each vertex's screen point, each propagator's
+    /// rows, its bend in its fan, its place among the loops at its vertex,
+    /// and each vertex's outward direction. Transient (rule 3).
+    fn frame(&self, series: &FeynmanSeries) -> Frame {
+        let px: Vec<Option<[f32; 2]>> = (0..series.vertices.len())
+            .map(|i| self.vertex_px(i))
+            .collect();
+        let index = VertexIndex::new(series);
+        let ends: Vec<Option<(usize, usize)>> = series
+            .propagators
+            .iter()
+            .map(|p| Some((index.row(&p.from)?, index.row(&p.to)?)))
+            .collect();
+        // The fans: the unbent lines between the same two vertices, in row
+        // order, grouped by their unordered ends.
+        let mut fan: Vec<(usize, usize, usize)> = ends
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                series.propagators[*i].bend.is_none() && e.is_some_and(|(a, b)| a != b)
+            })
+            .filter_map(|(i, e)| e.map(|(a, b)| (a.min(b), a.max(b), i)))
+            .collect();
+        fan.sort_unstable();
+        let mut bends = vec![0.0f32; ends.len()];
+        for (i, p) in series.propagators.iter().enumerate() {
+            if let Some(bend) = p.bend {
+                bends[i] = bend;
             }
         }
-        let own = key(propagator);
-        let fan = |p: &&Propagator| key(p) == own && p.bend.is_none();
-        let count = series.propagators.iter().filter(fan).count();
-        let rank = series.propagators[..index].iter().filter(fan).count();
         let step = series.style.fan_step;
-        let canonical = (count as f32 - 1.0) / 2.0 - rank as f32;
-        // The fan is laid out for the canonical direction; a line running
-        // the other way bends the other way to land on the same arc.
-        let sign = if propagator.from <= propagator.to {
-            1.0
-        } else {
-            -1.0
-        };
-        canonical * step * sign
-    }
-
-    /// The tadpoles at vertex `vertex` before propagator `index`, and their
-    /// count: loops at one vertex turn about it.
-    fn loop_rank(&self, series: &FeynmanSeries, index: usize) -> (usize, usize) {
-        let own = &series.propagators[index].from;
-        let is_loop = |p: &&Propagator| p.from == p.to && p.from == *own;
-        (
-            series.propagators[..index].iter().filter(is_loop).count(),
-            series.propagators.iter().filter(is_loop).count(),
-        )
-    }
-
-    /// The direction away from the neighbours of vertex `row` on screen,
-    /// or up when they balance.
-    fn outward(&self, series: &FeynmanSeries, row: usize) -> [f32; 2] {
-        let Some(p) = self.vertex_px(row) else {
-            return [0.0, -1.0];
-        };
-        let id = &series.vertices[row].id;
-        let mut sum = [0.0f32; 2];
-        let mut count = 0;
-        for propagator in &series.propagators {
-            let other = if propagator.from == *id && propagator.to != *id {
-                &propagator.to
-            } else if propagator.to == *id && propagator.from != *id {
-                &propagator.from
-            } else {
-                continue;
-            };
-            if let Some(q) = series.vertex_row(other).and_then(|r| self.vertex_px(r)) {
-                sum = add(sum, unit(sub(q, p)));
-                count += 1;
+        for group in fan.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
+            let count = group.len() as f32;
+            for (rank, &(low, _, i)) in group.iter().enumerate() {
+                let canonical = (count - 1.0) / 2.0 - rank as f32;
+                // The fan is laid out from the lower row; a line running
+                // the other way bends the other way to land on the same arc.
+                let sign = if ends[i].is_some_and(|(a, _)| a == low) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                bends[i] = canonical * step * sign;
             }
         }
-        if count == 0 || len(sum) < 1e-3 {
-            [0.0, -1.0]
-        } else {
-            unit(scale(sum, -1.0))
+        // The loops at each vertex, ranked in row order.
+        let mut loop_count = vec![0usize; px.len()];
+        let mut loops = vec![(0usize, 0usize); ends.len()];
+        for (i, e) in ends.iter().enumerate() {
+            if let Some((a, b)) = *e
+                && a == b
+            {
+                loops[i].0 = loop_count[a];
+                loop_count[a] += 1;
+            }
+        }
+        for (i, e) in ends.iter().enumerate() {
+            if let Some((a, b)) = *e
+                && a == b
+            {
+                loops[i].1 = loop_count[a];
+            }
+        }
+        // Each vertex's outward direction: away from its neighbours.
+        let mut sums = vec![[0.0f32; 2]; px.len()];
+        for &(a, b) in ends.iter().flatten() {
+            if a == b {
+                continue;
+            }
+            if let (Some(pa), Some(pb)) = (px[a], px[b]) {
+                let d = unit(sub(pb, pa));
+                sums[a] = add(sums[a], d);
+                sums[b] = sub(sums[b], d);
+            }
+        }
+        let outward = sums
+            .into_iter()
+            .map(|sum| {
+                if len(sum) < 1e-3 {
+                    [0.0, -1.0]
+                } else {
+                    unit(scale(sum, -1.0))
+                }
+            })
+            .collect();
+        Frame {
+            px,
+            ends,
+            bends,
+            loops,
+            outward,
         }
     }
 
     /// The geometry of propagator `index`, or `None` when an end is not
-    /// placed on screen.
+    /// placed on screen. One call works out the series' frame: the emit
+    /// and the pick share theirs.
     pub fn propagator_geometry(
         &self,
         series: &FeynmanSeries,
         index: usize,
     ) -> Option<PropagatorGeometry> {
-        let propagator = series.propagators.get(index)?;
-        let from = series.vertex_row(&propagator.from)?;
-        let to = series.vertex_row(&propagator.to)?;
-        let a = self.vertex_px(from)?;
+        self.geometry(series, &self.frame(series), index)
+    }
+
+    fn geometry(
+        &self,
+        series: &FeynmanSeries,
+        frame: &Frame,
+        index: usize,
+    ) -> Option<PropagatorGeometry> {
+        let (from, to) = (*frame.ends.get(index)?)?;
+        let a = frame.px[from]?;
         if from == to {
-            let (rank, count) = self.loop_rank(series, index);
-            let out = self.outward(series, from);
+            let (rank, count) = frame.loops[index];
+            let out = frame.outward[from];
             let base_angle = out[1].atan2(out[0]);
             let turn = if count > 1 {
                 (rank as f32 - (count as f32 - 1.0) / 2.0) * (PI / count as f32)
@@ -1340,10 +1381,10 @@ impl FeynmanPlacement<'_> {
                 label_side: -1.0,
             });
         }
-        let b = self.vertex_px(to)?;
+        let b = frame.px[to]?;
         let chord = sub(b, a);
         let c = len(chord);
-        let bend = self.bend(series, index).to_radians();
+        let bend = frame.bends[index].to_radians();
         if c <= 0.0 || bend.abs() < 1e-3 {
             return Some(PropagatorGeometry {
                 base: Base::Line { a, b },
@@ -1405,8 +1446,14 @@ impl FeynmanPlacement<'_> {
     }
 
     /// Emit propagator `index`'s strokes and arrows.
-    fn emit_propagator(&self, series: &FeynmanSeries, index: usize, sink: &mut dyn Sink) {
-        let Some(geometry) = self.propagator_geometry(series, index) else {
+    fn emit_propagator(
+        &self,
+        series: &FeynmanSeries,
+        frame: &Frame,
+        index: usize,
+        sink: &mut dyn Sink,
+    ) {
+        let Some(geometry) = self.geometry(series, frame, index) else {
             return;
         };
         let propagator = &series.propagators[index];
@@ -1600,19 +1647,30 @@ impl FeynmanPlacement<'_> {
         index: usize,
         measure: &dyn MeasureText,
     ) -> Option<PlacedText<'t>> {
+        self.label_in(series, &self.frame(series), part, index, measure)
+    }
+
+    fn label_in<'t>(
+        &self,
+        series: &'t FeynmanSeries,
+        frame: &Frame,
+        part: FeynmanLabelPart,
+        index: usize,
+        measure: &dyn MeasureText,
+    ) -> Option<PlacedText<'t>> {
         let (text, anchor, direction, offset) = match part {
             FeynmanLabelPart::Vertex => {
                 let vertex = series.vertices.get(index)?;
                 let text = vertex.label.as_ref()?;
                 let p = self.vertex_px(index)?;
-                let out = self.outward(series, index);
+                let out = frame.outward[index];
                 let reach = self.marker_radius(series, index) + LABEL_GAP;
                 (text, add(p, scale(out, reach)), out, vertex.label_offset)
             }
             FeynmanLabelPart::Propagator => {
                 let propagator = series.propagators.get(index)?;
                 let text = propagator.label.as_ref()?;
-                let geometry = self.propagator_geometry(series, index)?;
+                let geometry = self.geometry(series, frame, index)?;
                 let side = geometry.label_side;
                 let n = scale(left_normal(geometry.base.tangent(0.5)), side);
                 let reach = self.label_reach(series, index, side);
@@ -1626,7 +1684,7 @@ impl FeynmanPlacement<'_> {
             FeynmanLabelPart::Momentum => {
                 let propagator = series.propagators.get(index)?;
                 let momentum = propagator.momentum.as_ref()?;
-                let geometry = self.propagator_geometry(series, index)?;
+                let geometry = self.geometry(series, frame, index)?;
                 let side = match momentum.side {
                     MomentumSide::Left => 1.0,
                     MomentumSide::Right => -1.0,
@@ -1691,8 +1749,9 @@ impl FeynmanPlacement<'_> {
     /// `style.picked_width_scale` times as wide. Nothing is stored; the
     /// caller's sink paints, bounds or hit tests the parts.
     pub fn emit(&self, series: &FeynmanSeries, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+        let frame = self.frame(series);
         for index in 0..series.propagators.len() {
-            self.emit_propagator(series, index, sink);
+            self.emit_propagator(series, &frame, index, sink);
         }
         for index in 0..series.vertices.len() {
             self.emit_vertex(series, index, sink);
@@ -1703,7 +1762,7 @@ impl FeynmanPlacement<'_> {
             FeynmanLabelPart::Vertex,
         ] {
             for index in 0..series.part_len(part) {
-                if let Some(text) = self.label(series, part, index, measure) {
+                if let Some(text) = self.label_in(series, &frame, part, index, measure) {
                     sink.text(Slot::Above, &text);
                 }
             }
@@ -1722,6 +1781,7 @@ impl FeynmanPlacement<'_> {
         cursor: [f32; 2],
         max_distance: f32,
     ) -> Option<(FeynmanHit, f32)> {
+        let frame = self.frame(series);
         let mut best: Option<(FeynmanHit, f32)> = None;
         let mut offer = |hit: FeynmanHit, distance: f32| {
             if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
@@ -1729,13 +1789,13 @@ impl FeynmanPlacement<'_> {
             }
         };
         for index in 0..series.propagators.len() {
-            if let Some(geometry) = self.propagator_geometry(series, index) {
+            if let Some(geometry) = self.geometry(series, &frame, index) {
                 let edge = geometry.base.distance(cursor) - self.envelope(series, index);
                 offer(FeynmanHit::Propagator(index), edge.max(0.0));
             }
         }
         for index in 0..series.vertices.len() {
-            if let Some(p) = self.vertex_px(index) {
+            if let Some(p) = frame.px[index] {
                 let edge = len(sub(cursor, p)) - self.marker_radius(series, index);
                 offer(FeynmanHit::Vertex(index), edge.max(0.0));
             }
@@ -1746,7 +1806,7 @@ impl FeynmanPlacement<'_> {
             FeynmanLabelPart::Vertex,
         ] {
             for index in 0..series.part_len(part) {
-                if let Some(text) = self.label(series, part, index, measure) {
+                if let Some(text) = self.label_in(series, &frame, part, index, measure) {
                     offer(
                         FeynmanHit::Label(part, index),
                         rect_distance(cursor, text.rect()),

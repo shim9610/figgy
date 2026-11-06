@@ -1230,6 +1230,18 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Feynman diagrams are drawn** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A `DataRenderType::Feynman` series is drawn on the CPU through the
+  model's emit into the DataLess raster of its panel, as an energy-level
+  series is, at the layout's positions until they are committed, and is
+  written as vector parts in SVG and PDF. `Renderer::auto_layout(chart,
+  series_id)` commits the layout into the registered series, which the host
+  reads back through `chart_series`. `auto_fit_all` fits the diagram's
+  vertices. The auto-fit token no longer reads the empty columns of a
+  DataLess series, which also lets `auto_fit_all` run on a chart with an
+  energy-level series. A 5,000-rung ladder (10,004 vertices, 15,002
+  propagators) lays out in about 0.5 s and draws at 1x in about 0.8 s in
+  the debug test profile; nothing is capped.
 - **DataLess series are vector content in SVG and PDF** ([#234](https://github.com/shim9610/figgy/issues/234)).
   An energy-level series is written as vector parts from the emit its
   raster uses (levels, limits, transitions, arrowheads, labels and the

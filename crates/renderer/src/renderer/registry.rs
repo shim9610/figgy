@@ -1356,9 +1356,9 @@ pub(super) fn validate_renderer_series(
                 reason: format!("label: {e}"),
             });
         }
-        // A DataLess energy-level series registers no column (#203): its
-        // values are SSOT, held to the model's rule above.
-        if item.energy_levels().is_some() {
+        // A DataLess series registers no column (#203, #234): its values
+        // are SSOT, held to the model's rules above.
+        if item.is_dataless() {
             continue;
         }
         validate_registered_column(pool, &item.x_column)?;
@@ -2203,6 +2203,48 @@ impl Renderer {
             }
         }
         Ok(())
+    }
+
+    /// Commit the automatic layout of the Feynman series `series_id` of
+    /// chart `id` (#234): every vertex without a position gets the one it
+    /// is drawn at ([`crate::feynman::FeynmanSeries::auto_layout`]), so the
+    /// diagram stays where it is once drawn. The auto-fit pattern: the
+    /// renderer writes the display parameter into the registered SSOT and
+    /// the host reads it back through [`Self::chart_series`]. Returns
+    /// whether anything was written. Synchronous: the layout is CPU work.
+    pub fn auto_layout(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+        let result = self.auto_layout_unreported(id, series_id);
+        self.reported(result)
+    }
+
+    fn auto_layout_unreported(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(position) = state
+            .series
+            .iter()
+            .position(|s| s.series_id == series_id && s.feynman().is_some())
+        else {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason: "auto_layout names a Feynman series of the chart".into(),
+            });
+        };
+        if !state.series[position]
+            .feynman()
+            .is_some_and(|d| d.has_unplaced())
+        {
+            return Ok(false);
+        }
+        // Configuration only is copied (rule 2).
+        let mut series = state.series.clone();
+        let laid_out = series[position]
+            .feynman_mut()
+            .is_some_and(|d| d.auto_layout());
+        self.set_chart_series_unreported(id, series)?;
+        Ok(laid_out)
     }
 
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {

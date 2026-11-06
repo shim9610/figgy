@@ -219,20 +219,24 @@ pub(super) fn build_fit_token_from_state(
                 resource: "fit role-column stamps",
                 reason: error.to_string(),
             })?;
-        push_fit_column_stamp(
-            pool,
-            streaming_sources,
-            &mut columns,
-            FIT_ROLE_X,
-            &item.x_column,
-        )?;
-        push_fit_column_stamp(
-            pool,
-            streaming_sources,
-            &mut columns,
-            FIT_ROLE_Y,
-            &item.y_column,
-        )?;
+        // A DataLess series reads no column (#203, #234): it fits from its
+        // SSOT at commit, so it stamps none.
+        if !item.is_dataless() {
+            push_fit_column_stamp(
+                pool,
+                streaming_sources,
+                &mut columns,
+                FIT_ROLE_X,
+                &item.x_column,
+            )?;
+            push_fit_column_stamp(
+                pool,
+                streaming_sources,
+                &mut columns,
+                FIT_ROLE_Y,
+                &item.y_column,
+            )?;
+        }
         if let Some(error) = extract_err_x(&item.render_type) {
             push_fit_error_stamps(
                 pool,
@@ -1285,6 +1289,26 @@ impl Renderer {
                     }
                     if y {
                         y_extent.union(&y_part);
+                    }
+                }
+                // A Feynman diagram fits its vertices' positions, committed
+                // or laid out: a display parameter read from the SSOT
+                // (#234).
+                for item in &state.series {
+                    let Some(box_) = item.feynman().and_then(|d| d.extent()) else {
+                        continue;
+                    };
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    let part = |lo: f64, hi: f64| crate::chart::FitExtent {
+                        min: lo,
+                        max: hi,
+                        min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
+                    };
+                    if x {
+                        x_extent.union(&part(box_[0][0], box_[1][0]));
+                    }
+                    if y {
+                        y_extent.union(&part(box_[0][1], box_[1][1]));
                     }
                 }
                 chart.auto_fit_layer_extent(layer, &x_extent, &y_extent, padding);

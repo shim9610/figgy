@@ -425,10 +425,10 @@ impl PrepareContext<'_> {
             let rt = &cfg.render_type;
             let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
             let primitives = effective_series_primitives(&chart_config.draw_style, rt);
-            // A DataLess energy-level series reads no column: its only layer
-            // is the CPU raster this prepare resolved (#203). A streamed
-            // phase never draws one (rule 8).
-            if cfg.energy_levels().is_some() {
+            // A DataLess series (energy levels, a Feynman diagram) reads no
+            // column: its only layer is the CPU raster this prepare resolved
+            // (#203, #234). A streamed phase never draws one (rule 8).
+            if cfg.is_dataless() {
                 let energy_levels = products
                     .contours
                     .get(idx)

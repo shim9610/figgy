@@ -1076,14 +1076,12 @@ impl<'a> DataLess<'a> {
 
     /// Whether panel `panel` draws a DataLess series: a CPU step.
     fn cuts(&self, panel: usize) -> bool {
-        self.of_panel(panel)
-            .any(|cfg| cfg.energy_levels().is_some())
+        self.of_panel(panel).any(SeriesConfig::is_dataless)
     }
 
     /// Whether panel `panel` draws a series on the GPU.
     fn paints(&self, panel: usize) -> bool {
-        self.of_panel(panel)
-            .any(|cfg| cfg.energy_levels().is_none())
+        self.of_panel(panel).any(|cfg| !cfg.is_dataless())
     }
 
     /// Whether a panel of `range` draws a DataLess series.
@@ -1122,16 +1120,12 @@ impl<'a> DataLess<'a> {
         for &piece in pieces {
             each_piece(piece, &mut |sink: &mut dyn Sink| {
                 for cfg in self.of_panel(panel) {
-                    let Some(levels) = cfg.energy_levels() else {
-                        continue;
-                    };
-                    let Some(records) = crate::renderer::energy_level_records(levels, self.series)
-                    else {
-                        continue;
-                    };
-                    let picked = crate::renderer::picked_row(config, cfg);
-                    crate::renderer::emit_energy_levels(
-                        config, levels, records, picked, scale, sink,
+                    crate::renderer::emit_dataless(
+                        config,
+                        cfg,
+                        |levels| crate::renderer::energy_level_records(levels, self.series),
+                        scale,
+                        sink,
                     );
                 }
             })?;
