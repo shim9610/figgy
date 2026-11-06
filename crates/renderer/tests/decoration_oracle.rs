@@ -1098,6 +1098,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::PolarHeatmap => "PolarHeatmap",
         SceneKind::Quiver3d => "Quiver3d",
         SceneKind::ProbabilityPaper => "ProbabilityPaper",
+        SceneKind::Feynman => "Feynman",
     }
 }
 

@@ -344,7 +344,8 @@ pub struct FeynmanStyle {
     pub dot_radius: f32,
     /// A tadpole loop's radius, `2..=512`.
     pub loop_radius: f32,
-    /// The angle between two lines of a fan, degrees, `0..=80`.
+    /// The angle between two lines of a fan, degrees, `0..=120`: two lines
+    /// between the same vertices bend half of it each way, a bubble.
     pub fan_step: f32,
     /// How much a picked line or marker widens, `1..=4`.
     pub picked_width_scale: f32,
@@ -375,7 +376,7 @@ impl Default for FeynmanStyle {
             head_width: 7.0,
             dot_radius: 3.0,
             loop_radius: 18.0,
-            fan_step: 30.0,
+            fan_step: 90.0,
             picked_width_scale: 2.0,
         }
     }
@@ -401,7 +402,7 @@ impl FeynmanStyle {
             || !finite_in(self.head_width, 0.0, 64.0)
             || !finite_in(self.dot_radius, 0.0, 64.0)
             || !finite_in(self.loop_radius, 2.0, 512.0)
-            || !finite_in(self.fan_step, 0.0, 80.0)
+            || !finite_in(self.fan_step, 0.0, 120.0)
         {
             return Err("invalid Feynman marker, arrow, loop or fan size");
         }

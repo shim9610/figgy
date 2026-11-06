@@ -227,8 +227,9 @@ pub use model::energy_levels::{
     LevelView, Transition, TransitionDirection,
 };
 /// Feynman diagrams (#234): a DataLess series kind, re-exported from the
-/// model. See [`DataRenderType::Feynman`].
+/// model.
 pub mod feynman {
+    #![doc = include_str!("../FEYNMAN.md")]
     pub use model::feynman::*;
 }
 pub use model::feynman::{

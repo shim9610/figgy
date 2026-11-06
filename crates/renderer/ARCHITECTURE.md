@@ -65,8 +65,14 @@ ray-march from the frame's sector buffer. Inside the column-based
 records are placed by the model, rastered on the CPU through the canvas sink at
 prepare, cached in the scratch map and composited in the data slot after the GPU
 data (an approved exception to computing appearance in the shader); it is
-picked on the CPU over the same placement. A subplot nested in its parent's
-data area (an inset) is composited after every other panel. Screen display and
+picked on the CPU over the same placement. The Feynman series (#234) is
+another: its topology is SSOT, its unplaced vertices are placed by a
+deterministic layout at raster time and committed into the SSOT only by an
+explicit `auto_layout` or a first drag (the auto-fit pattern), and its arcs,
+waves and coils reach every sink as cubic paths (`Sink::path`). The vector
+export writes both DataLess kinds as vector parts between the GPU steps
+around them. A subplot nested in its parent's data area (an inset) is
+composited after every other panel. Screen display and
 image export are separate output paths; export renders at the requested size.
 The table summarizes contracts by topic, rather than numbered areas in the image.
 
@@ -585,7 +591,7 @@ lines, split connectors and annotation overlay through the same sink
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더에서 겉모양을 계산한다는 규칙의 승인된 예외). 픽도 같은 배치로 CPU에서 한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 모든 렌더러가 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓴다. 컬럼 풀·자동 범위 맞춤 작업·스트리밍은 사용하지 않는다. 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 0.12까지의 범주형 막대·박스플롯·레이더 문서는 사용 중단된 리더(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`)가 이 차트들로 읽으며, 리더는 다음 마일스톤에서 제거된다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 직교 좌표 `Renderer` 안에서는 에너지 준위 시리즈(#203)가 DataLess 시리즈 종류다. 모델이 SSOT 레코드를 배치하고, prepare 단계에서 캔버스 싱크로 CPU 래스터를 만들어 스크래치 캐시에 두며, 데이터 슬롯에서 GPU 데이터 위에 합성한다(셰이더에서 겉모양을 계산한다는 규칙의 승인된 예외). 픽도 같은 배치로 CPU에서 한다. 파인만 시리즈(#234)도 DataLess 시리즈다. 위상이 SSOT에 있고, 위치가 없는 꼭짓점은 래스터할 때 결정적인 자동 배치로 놓으며, 명시적인 `auto_layout` 호출이나 첫 드래그 때만 그 위치를 SSOT에 기록한다(자동 맞춤과 같은 방식). 호·물결선·코일은 3차 곡선 경로(`Sink::path`)로 모든 싱크에 전달된다. 벡터 출력은 두 DataLess 종류를 앞뒤 GPU 단계 사이에 벡터로 기록한다. 부모 데이터 영역 안에 놓인 서브플롯(인셋)은 다른 모든 패널 다음에 합성한다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고, 자신을 만든 `RendererDevice`의 GPU 장부에 기록하며 그 묶음의 예산을 쓴다. 같은 묶음에서 만든 모든 렌더러가 이 장부와 예산(`gpu_memory_usage()`, `set_memory_budget(Option<u64>)`)을 함께 쓴다. 컬럼 풀·자동 범위 맞춤 작업·스트리밍은 사용하지 않는다. 묶음의 어느 렌더러에서 읽어도 묶음 전체의 합계가 나온다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 

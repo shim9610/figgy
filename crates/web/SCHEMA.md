@@ -1396,6 +1396,44 @@ of a polygon edge the cursor's rightward ray crosses.
 - 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
 - 피킹은 준위를 `"histogram_bin"`, 전이를 `"point"`, 라벨을 `"part"`(`"level"`·`"transition"`·`"limit"`)가 붙은 `"value_label"`로 돌려준다. `press_energy_label(series_id, part, index)`로 라벨을 선택하고 드래그하면 그 행의 `label_offset`이 바뀐다.
 
+## `Feynman` render_type
+
+파인만 도표(#234)는 DataLess 시리즈다. 위상(꼭짓점, 전파자, 입자)을 시리즈 JSON에 담고, `x_column`·`y_column`은 빈 문자열로 두며 등록하는 컬럼이 없다.
+
+```json
+{
+  "series_id": "bhabha",
+  "label": null,
+  "x_column": "",
+  "y_column": "",
+  "render_type": { "Feynman": {
+    "vertices": [
+      { "id": "e-", "role": "Incoming", "label": <RichText> },
+      { "id": "e+", "role": "Incoming" },
+      { "id": "v1" },
+      { "id": "v2", "at": [0.75, 0.5] },
+      { "id": "f-", "role": "Outgoing" },
+      { "id": "f+", "role": "Outgoing" }
+    ],
+    "propagators": [
+      { "id": "a", "from": "e-", "to": "v1", "particle": "Fermion" },
+      { "id": "b", "from": "v1", "to": "e+", "particle": "Fermion" },
+      { "id": "g", "from": "v1", "to": "v2", "particle": "Photon", "bend": 20 },
+      { "id": "c", "from": "v2", "to": "f-", "particle": "Fermion" },
+      { "id": "d", "from": "f+", "to": "v2", "particle": "Fermion" }
+    ]
+  } }
+}
+```
+
+- 라벨은 `RichText` JSON이다. `rich_text_from_tex("$e^-$", ...)`로 TeX에서 만든다.
+- `role`을 생략하면 `"Internal"`이다. `at`을 생략한 꼭짓점은 자동 배치가 놓는다. 래퍼는 시리즈를 등록할 때 배치를 확정하므로 `get_series`는 모든 꼭짓점의 `at`을 돌려준다. 시리즈를 직접 고친 뒤에는 `auto_layout(series_id)`로 다시 확정한다.
+- `particle`은 `"Plain"`, `"Fermion"`, `"AntiFermion"`, `"Photon"`, `"ChargedBoson"`, `"Gluon"`, `"Scalar"`, `"ChargedScalar"`, `"Ghost"`, `"Majorana"`, `"Graviton"`, `"DoubleLine"` 중 하나다. `from`과 `to`가 같으면 고리를 그린다.
+- 생략한 `style`과 `layout`은 기본값을 쓰고, 기본값과 같으면 `get_series`가 쓰지 않는다.
+- 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+- `pick_point`는 꼭짓점을 `"feynman_vertex"`, 전파자를 `"feynman_propagator"`, 라벨을 `"part"`(`"vertex"`·`"propagator"`·`"momentum"`)가 붙은 `"feynman_label"`로 돌려준다. 행은 `index`다. `press_feynman(series_id, kind, index, part)`로 고르고 드래그하면 꼭짓점이 움직이고(첫 드래그가 배치를 확정한다), 전파자가 휘고, 라벨이 움직인다.
+- `picked_data`의 선택 종류는 `{"kind": "feynman_vertex", "series_id", "vertex_index"}`, `{"kind": "feynman_propagator", "series_id", "propagator_index"}`, `{"kind": "feynman_label", "series_id", "part", "index"}`다.
+
 ## `Parallel` render_type
 
 A parallel coordinates series ([#141](https://github.com/shim9610/figgy/issues/141))

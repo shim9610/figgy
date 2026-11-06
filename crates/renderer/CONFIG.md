@@ -747,6 +747,21 @@ An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/iss
 
 There is no count limit on any list. The chart needs a categorical `bottom_x` on a rectangular chart. The series is drawn through the CPU sink and composited after the GPU data; a pick answers a level as a `HistogramBin`, a transition as a `Point` and a label as a `ValueLabel` with its `part`; `step_selection` walks the rows the view draws. `write_continuum` writes the continuum spans above the limits into the annotation layer, `Config::inset_marker` an inset's window and connectors. An inset is a subplot inside the parent's data area, usually with `plot_background`: it is drawn over the parent and takes the pointer there. A streamed display refuses the series.
 
+<a id="feynman"></a>
+
+### Feynman diagrams (`DataRenderType::Feynman`)
+
+A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)) is a DataLess series whose data is the topology: which particles meet at which vertex. Every value is SSOT, serialized with the document; `x_column` and `y_column` stay empty and nothing is registered. A vertex position is optional: an unplaced vertex is drawn where the automatic layout puts it, and `auto_layout` writes that place into `at`. See [Feynman diagrams](FEYNMAN.md).
+
+| Field | Type | Description |
+|---|---|---|
+| `vertices` | `Vec<FeynmanVertex>` | `id`, `role` (`Internal`, `Incoming`, `Outgoing`: an external leg ends at an incoming or outgoing vertex), `at: Option<[f64; 2]>` in data units of `bottom_x` and `left_y`, a `marker` override (`Hidden`, `Dot`, `Blob { radius_px, fill }`, `Cross`, `CircledCross`; by default a dot at an internal vertex, none at a leg's end), a rich `label` and its drag `label_offset` |
+| `propagators` | `Vec<Propagator>` | `id`, `from` and `to` vertex ids (`from == to` is a loop), a `particle` (`Plain`, `Fermion`, `AntiFermion`, `Photon`, `ChargedBoson`, `Gluon`, `Scalar`, `ChargedScalar`, `Ghost`, `Majorana`, `Graviton`, `DoubleLine`), a `bend` in degrees (`-170..=170`, `None` fans parallel lines automatically), a rich `label`, a `momentum` arrow (`label`, `side: Left/Right`, `reversed`), and `color` and `width_px` overrides |
+| `style` | `FeynmanStyle` | `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step` (degrees, `0..=120`) and `picked_width_scale` (`1..=4`), in logical pixels |
+| `layout` | `FeynmanLayout` | `direction`: `LeftToRight` (default) or `BottomToTop`, where the layout puts the incoming and outgoing legs |
+
+There is no count limit. The chart is rectangular with a numeric `bottom_x`. The series is drawn through the CPU sink and composited after the GPU data, and the SVG and PDF export write it as vector curves. A pick answers `FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel`; `step_selection` walks the vertices or propagators and the Feynman series; `Renderer::drag_feynman` moves a vertex, bends a line or moves a label. A streamed display refuses the series.
+
 ### `data_config` — declarative series schema (the active API)
 
 Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which `Renderer::paint` calls) matches on `render_type` and builds the layers that variant draws (line, scatter, errorbar, bar, field, contour or vector); colors, widths, and shapes come from the matching sub-style.
@@ -788,6 +803,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
 | `Ternary { c_column, scatter?, line?, region? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern), `region` (`TernaryRegionStyle { color, opacity }`) fills the closed polygons the samples outline (a NaN row separates polygons; even-odd within a series, so a polygon inside another is a hole) under every series' markers and lines; at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
 | `EnergyLevels(EnergyLevelSeries)` | energy levels | An energy-level (Grotrian) diagram ([#203](https://github.com/shim9610/figgy/issues/203)), DataLess: every value is SSOT, `x_column` and `y_column` stay empty and nothing is registered. See [Energy levels](#energylevels) |
+| `Feynman(FeynmanSeries)` | Feynman diagram | A Feynman diagram ([#234](https://github.com/shim9610/figgy/issues/234)), DataLess: the topology is SSOT, vertex positions are optional, `x_column` and `y_column` stay empty and nothing is registered. See [Feynman diagrams](#feynman) |
 | `Parallel { columns, line, color_column }` | parallel | One polyline per row across the axes of a parallel chart (`Config.parallel`): `columns` names one column per axis in order (`x_column` and `y_column` are its first two), `line` the rows' colour and width (solid, linear, unfilled), `color_column` an optional column colouring each row through `Config.colorbar`. A row with a non-finite value breaks at that axis. See [Parallel coordinates](#parallel-coordinates) |
 | `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, drawn outside each vertex along its spoke; `labels.offsets` holds each label's drag offset. Needs `Config.polar` with `Chord` interpolation, any number of radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
@@ -1698,6 +1714,21 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 
 어떤 목록에도 개수 상한이 없다. 직교 차트이고 `bottom_x`가 범주형이어야 한다. 이 시리즈는 CPU 싱크로 그려 GPU 데이터 위에 합성한다. 픽은 준위를 `HistogramBin`, 전이를 `Point`, 라벨을 `part`가 붙은 `ValueLabel`로 돌려주고, `step_selection`은 뷰가 그리는 행을 따라 움직인다. `write_continuum`은 이온화 한계 위의 연속 영역을 주석 레이어에 쓰고, `Config::inset_marker`는 인셋의 확대 창과 연결선을 쓴다. 인셋은 부모 데이터 영역 안에 놓인 서브플롯이고 보통 `plot_background`를 지정한다. 인셋은 부모 위에 그려지고 그 안의 포인터를 받는다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
 
+<a id="feynman-ko"></a>
+
+### 파인만 도표(`DataRenderType::Feynman`)
+
+파인만 도표([#234](https://github.com/shim9610/figgy/issues/234))는 위상, 즉 어떤 입자가 어느 꼭짓점에서 만나는지가 데이터인 DataLess 시리즈다. 모든 값이 SSOT에 있어 문서와 함께 직렬화되고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 꼭짓점 위치는 선택 사항이다. 위치가 없는 꼭짓점은 자동 배치가 정한 자리에 그리고, `auto_layout`이 그 자리를 `at`에 기록한다. 자세한 내용은 [파인만 도표](FEYNMAN.md)를 참고한다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `vertices` | `Vec<FeynmanVertex>` | `id`, `role`(`Internal`, `Incoming`, `Outgoing`. 외부선은 들어오거나 나가는 꼭짓점에서 끝난다), `bottom_x`·`left_y`의 데이터 단위 위치 `at: Option<[f64; 2]>`, 표식 지정 `marker`(`Hidden`, `Dot`, `Blob { radius_px, fill }`, `Cross`, `CircledCross`. 기본값은 내부 꼭짓점에 점, 외부선 끝에는 없음), 서식 있는 `label`과 드래그 오프셋 `label_offset` |
+| `propagators` | `Vec<Propagator>` | `id`, 꼭짓점 id `from`·`to`(`from == to`이면 고리), 입자 `particle`(`Plain`, `Fermion`, `AntiFermion`, `Photon`, `ChargedBoson`, `Gluon`, `Scalar`, `ChargedScalar`, `Ghost`, `Majorana`, `Graviton`, `DoubleLine`), 도 단위 휘어짐 `bend`(`-170..=170`, `None`이면 나란한 선을 자동으로 부채꼴로 편다), 서식 있는 `label`, 운동량 화살표 `momentum`(`label`, `side: Left/Right`, `reversed`), 색과 두께 지정 `color`·`width_px` |
+| `style` | `FeynmanStyle` | 논리 픽셀 단위의 `color`, `width`, `wave { amplitude, wavelength }`, `coil { amplitude, wavelength }`, `head_length`, `head_width`, `dot_radius`, `loop_radius`, `fan_step`(도, `0..=120`), `picked_width_scale`(`1..=4`) |
+| `layout` | `FeynmanLayout` | `direction`: 들어오고 나가는 외부선을 놓는 방향. `LeftToRight`(기본값) 또는 `BottomToTop` |
+
+개수 상한은 없다. 직교 차트이고 `bottom_x`가 수치 축이어야 한다. 이 시리즈는 CPU 싱크로 그려 GPU 데이터 위에 합성하고, SVG와 PDF 출력은 벡터 곡선으로 기록한다. 픽은 `FeynmanVertex`, `FeynmanPropagator`, `FeynmanLabel`을 돌려주고, `step_selection`은 꼭짓점이나 전파자와 파인만 시리즈를 따라 움직인다. `Renderer::drag_feynman`은 꼭짓점을 옮기고 선을 휘고 라벨을 옮긴다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
+
 ### `data_config` 시리즈 선언 형식
 
 차트의 시리즈는 `data_config::SeriesConfig`로 선언한다. `Renderer::prepare`(`Renderer::paint`가 호출한다)는 `render_type`에 따라 그 종류가 그리는 레이어(선, 점, 오차 막대, 막대, 필드, 등고선, 벡터)를 만들고 각 스타일 설정에서 색·두께·모양을 읽는다.
@@ -1737,6 +1768,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 범주형 각도 축을 가진 극좌표 차트에서는 막대가 쐐기, 즉 로즈([POLAR.md](POLAR.md#로즈극좌표-막대))가 된다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
 | `EnergyLevels(EnergyLevelSeries)` | energy levels | 에너지 준위(그로트리안) 도표([#203](https://github.com/shim9610/figgy/issues/203)). DataLess 시리즈라 모든 값이 SSOT에 있고, `x_column`과 `y_column`은 비워 두며 등록하는 컬럼이 없다. 자세한 내용은 [에너지 준위](#energylevels-ko)를 참고한다 |
+| `Feynman(FeynmanSeries)` | Feynman diagram | 파인만 도표([#234](https://github.com/shim9610/figgy/issues/234)). DataLess 시리즈라 위상이 SSOT에 있고 꼭짓점 위치는 선택 사항이며, `x_column`과 `y_column`은 비워 두고 등록하는 컬럼이 없다. 자세한 내용은 [파인만 도표](#feynman-ko)를 참고한다 |
 | `Parallel { columns, line, color_column }` | parallel | 평행 좌표 차트(`Config.parallel`)의 축을 가로지르는 행마다 꺾은선 하나. `columns`는 축 순서대로 축마다 컬럼 하나(`x_column`·`y_column`은 그 첫 둘), `line`은 행의 색과 굵기(실선·직선·채움 없음), `color_column`은 `Config.colorbar`로 행마다 색을 입히는 선택 컬럼이다. 유한하지 않은 값이 있는 행은 그 축에서 끊긴다. [평행 좌표](#평행-좌표) 참고 |
 | `Radar { color, style, labels }` | radar | 극좌표 차트의 범주형 각도 축에서 범주마다 값 하나를 지나는 닫힌 외곽선. `x_column`은 위치 컬럼 `0..n`, `y_column`은 값이다(NaN이면 그 자리에서 외곽선과 채움이 끊긴다). 마지막 범주와 첫 범주를 닫는 세그먼트로 잇는다. `style`은 `RadarSeriesStyle`(선 굵기, 채움 색이나 `fill_opacity`, 꼭짓점 표식과 크기)이며, 전체 원에서는 안쪽 고리까지 채우고 표식은 산점도 경로로 그린다. `labels.text`는 `format_radar_labels`가 기록한 값 라벨 문자열이며 꼭짓점 바깥쪽 바큇살 방향에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. `Chord` 보간의 `Config.polar`가 필요하고 레이어마다 레이더 시리즈 수에는 상한이 없으며 스트리밍 소스는 거부한다. [레이더 차트](RADAR.md) 참고 |
 

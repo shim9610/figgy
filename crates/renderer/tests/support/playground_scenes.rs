@@ -76,10 +76,11 @@ pub enum SceneKind {
     PolarHeatmap,
     Quiver3d,
     ProbabilityPaper,
+    Feynman,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 39] = [
+    pub const ALL: [SceneKind; 40] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -119,6 +120,7 @@ impl SceneKind {
         SceneKind::PolarHeatmap,
         SceneKind::Quiver3d,
         SceneKind::ProbabilityPaper,
+        SceneKind::Feynman,
     ];
 
     pub fn label(self) -> &'static str {
@@ -162,6 +164,7 @@ impl SceneKind {
             SceneKind::PolarHeatmap => "Polar heatmap (radar)",
             SceneKind::Quiver3d => "3D vector field (ABC flow)",
             SceneKind::ProbabilityPaper => "Probability paper (normal, Weibull)",
+            SceneKind::Feynman => "Feynman diagrams",
         }
     }
 
@@ -305,6 +308,12 @@ impl SceneKind {
                  joins the pieces into one axis; below, Panels draws each piece at \
                  its own scale over a logarithmic Y cut between the two peaks. Pick \
                  either peak; drag the tick labels."
+            }
+            SceneKind::Feynman => {
+                "Bhabha scattering in its s channel, drawn where the host placed it, \
+                 beside a one-loop photon self-energy and a counterterm that the \
+                 layout places between their pinned legs. Pick a vertex, a line or a label; drag a \
+                 vertex, bend a line, move a label."
             }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \
@@ -537,6 +546,7 @@ pub fn build(
         SceneKind::Parallel => parallel(r),
         SceneKind::BrokenAxes => broken_axes(r),
         SceneKind::EnergyLevels => energy_levels(r),
+        SceneKind::Feynman => feynman(r),
         SceneKind::Stem => stem(r),
         SceneKind::Lollipop => lollipop(r),
         SceneKind::PolarHeatmap => polar_heatmap(r),
@@ -4228,6 +4238,108 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// singlets beside triplets under group headers, the ground state below a
 /// Continuous break, the continuum above the limit and an inset of the
 /// resolved 2p ³P° multiplet. DataLess: nothing is registered.
+/// The Feynman scene (#234): Bhabha scattering's s channel with every vertex
+/// placed, and a photon self-energy whose two loop vertices the layout
+/// places between its pinned legs. TeX labels, a momentum arrow, a fanned
+/// fermion loop and a circled-cross counterterm.
+fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::feynman::{
+        FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
+        VertexMarker, VertexRole,
+    };
+    let ink = Color::from_rgb8(40, 44, 60);
+    let tex = |text: &str| Some(RichText::from_tex(text, ink, 14.0, "").expect("valid TeX"));
+    let vertex = |id: &str, role: VertexRole, at: Option<[f64; 2]>, label: &str| FeynmanVertex {
+        at,
+        label: if label.is_empty() { None } else { tex(label) },
+        ..FeynmanVertex::new(id, role)
+    };
+    let line = |id: &str, from: &str, to: &str, particle: ParticleLine, label: &str| Propagator {
+        label: if label.is_empty() { None } else { tex(label) },
+        ..Propagator::new(id, from, to, particle)
+    };
+    let mut bhabha = FeynmanSeries {
+        vertices: vec![
+            vertex("e-", VertexRole::Incoming, Some([0.1, 0.8]), "$e^-$"),
+            vertex("e+", VertexRole::Incoming, Some([0.1, 0.2]), "$e^+$"),
+            vertex("v1", VertexRole::Internal, Some([0.35, 0.5]), ""),
+            vertex("v2", VertexRole::Internal, Some([0.75, 0.5]), ""),
+            vertex("f-", VertexRole::Outgoing, Some([1.0, 0.8]), "$e^-$"),
+            vertex("f+", VertexRole::Outgoing, Some([1.0, 0.2]), "$e^+$"),
+        ],
+        propagators: vec![
+            line("in-", "e-", "v1", ParticleLine::Fermion, ""),
+            line("in+", "v1", "e+", ParticleLine::Fermion, ""),
+            line("gamma", "v1", "v2", ParticleLine::Photon, r"$\gamma^*$"),
+            line("out-", "v2", "f-", ParticleLine::Fermion, ""),
+            line("out+", "f+", "v2", ParticleLine::Fermion, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    bhabha.propagators[2].momentum = Some(MomentumArrow {
+        label: RichText::from_tex("$q$", ink, 13.0, "").expect("valid TeX"),
+        side: MomentumSide::Right,
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    let mut loop_ = FeynmanSeries {
+        vertices: vec![
+            vertex("in", VertexRole::Incoming, Some([1.2, 0.5]), ""),
+            vertex("a", VertexRole::Internal, None, ""),
+            vertex("b", VertexRole::Internal, None, ""),
+            vertex("x", VertexRole::Internal, None, ""),
+            vertex("out", VertexRole::Outgoing, Some([2.1, 0.5]), ""),
+        ],
+        propagators: vec![
+            line("g1", "in", "a", ParticleLine::Photon, ""),
+            line("f1", "a", "b", ParticleLine::Fermion, "$f$"),
+            line("f2", "b", "a", ParticleLine::Fermion, r"$\bar f$"),
+            line("g2", "b", "x", ParticleLine::Photon, ""),
+            line("g3", "x", "out", ParticleLine::Photon, ""),
+        ],
+        ..FeynmanSeries::default()
+    };
+    loop_.vertices[3].marker = Some(VertexMarker::CircledCross);
+    loop_.style.color = Color::from_rgb8(150, 60, 40);
+    let series = |id: &str, diagram: FeynmanSeries| SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: Some(RichText::plain(id, ink, 12.0, "")),
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type: DataRenderType::Feynman(diagram),
+    };
+    let mut config = renderer::default::default_config();
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.line_visible = false;
+        axis.tick = renderer::config::TickVisibility::None;
+        axis.label_style.visible = false;
+        axis.title_option.visible = false;
+    }
+    let config = with_math_title(config, r"Tree level and one loop: $e^+e^- \to e^+e^-$");
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 2.2);
+    chart.set_y_range(0.0, 1.0);
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series: vec![series("Bhabha", bhabha), series("self-energy", loop_)],
+    })
+}
+
 fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category, CategoryGroup};
     use renderer::energy_levels::{

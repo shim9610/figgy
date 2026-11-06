@@ -1552,6 +1552,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Streamlines { .. } => "streamlines",
         DataRenderType::Parallel { .. } => "parallel",
         DataRenderType::EnergyLevels(_) => "energy levels",
+        DataRenderType::Feynman(_) => "Feynman diagram",
     }
 }
 
@@ -1882,6 +1883,13 @@ fn series_controls(
                 &mut levels.style.transition.width,
                 0.5..=24.0,
             );
+        }
+        // A Feynman diagram (#234): its lines, waves and coils.
+        DataRenderType::Feynman(diagram) => {
+            color(ui, "line colour", &mut diagram.style.color);
+            slider(ui, "line width", &mut diagram.style.width, 0.5..=24.0);
+            slider(ui, "wave amplitude", &mut diagram.style.wave.amplitude, 0.0..=64.0);
+            slider(ui, "coil size", &mut diagram.style.coil.amplitude, 0.0..=64.0);
         }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {

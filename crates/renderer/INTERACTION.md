@@ -987,3 +987,19 @@ Interaction contracts:
   field existed pairs by position, as before, and names its series once it
   is restyled.
 
+## Feynman diagrams
+
+A Feynman series ([#234](https://github.com/shim9610/figgy/issues/234)) is
+picked on the CPU through the placement its raster draws with, as an
+energy-level series is: a typed data pick answers
+`PickedData::FeynmanVertex`, `FeynmanPropagator` or
+`FeynmanLabel { part, index }`, labels over markers over lines, and nothing
+inside a break gap. The picked part is drawn wider. `step_selection` walks
+the vertices or the propagators by `dx` and the Feynman series by `dy`; a
+label does not step. `Renderer::drag_feynman(chart, series_id, drag, dx, dy)`
+applies a `FeynmanDrag` in the series' panel space
+(`Renderer::series_panel_space`): `Vertex(i)` moves a vertex through the
+axes, committing the whole layout on the first drag so no other vertex
+moves; `Bend(i)` sets a line's bend to the arc through its moved middle;
+`Label(part, i)` moves a label's offset. The web wrapper's `press_feynman`
+starts the same drags. See [Feynman diagrams](FEYNMAN.md).
