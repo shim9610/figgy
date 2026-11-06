@@ -14871,11 +14871,10 @@ fn triangle_columns_upsert_replace_and_remove_through_the_renderer() {
     );
 }
 
-// A triangle mesh series (#210) is modelled ahead of its draw path: the
-// model's own rules answer first, and a valid mesh is refused at
-// registration rather than drawn blank.
+// A triangle mesh series (#210) registers on a flat chart once its columns
+// are resident; the model's own rules answer first.
 #[test]
-fn a_triangle_mesh_series_is_refused_until_it_is_drawn() {
+fn a_triangle_mesh_series_registers_after_the_model_rules() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -14915,12 +14914,9 @@ fn a_triangle_mesh_series_is_refused_until_it_is_drawn() {
     });
     let mut config = crate::default::default_config();
     config.colorbar = Some(crate::default::default_colorbar_options());
-    let result = renderer.register_chart(config.clone(), vec![series.clone()]);
-    let Err(FiggyError::InvalidSeriesConfig { series_id, reason }) = result else {
-        panic!("a triangle mesh registered before its draw path: {result:?}");
-    };
-    assert_eq!(series_id, "mesh");
-    assert_eq!(reason, super::registry::TRI_MESH_NOT_DRAWN_REASON);
+    renderer
+        .register_chart(config.clone(), vec![series.clone()])
+        .unwrap();
 
     // The model's rule answers first: flat shading of vertex values.
     if let DataRenderType::TriMesh(mesh) = &mut series.render_type {
@@ -14936,6 +14932,43 @@ fn a_triangle_mesh_series_is_refused_until_it_is_drawn() {
             .contains("vertex values are shaded Interpolated"),
         "{error}"
     );
+}
+
+// Rule 10: a frame of three hundred colour-mapped scatter series draws every
+// one, past the value map scratch cache's 256 entries: the cache is bounded
+// before the frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_colour_mapped_scatters_in_one_frame_all_draw() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.2, 0.5, 0.8]);
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = state_test_scatter(&format!("s{k}"), None, "x", "y");
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                ..
+            }) = &mut s.render_type
+            {
+                scatter.point_color_map =
+                    Some(crate::data_config::PointColorMap { column: "y".into() });
+            }
+            s
+        })
+        .collect();
+    let chart = crate::Chart::new(config);
+    for _ in 0..2 {
+        renderer
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+    }
 }
 
 // A series label is a rich text like any title: a math label registers, and

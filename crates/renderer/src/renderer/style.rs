@@ -858,6 +858,11 @@ pub(super) struct EffectiveSeriesPrimitives {
     /// A parallel coordinates series' rows (#141). Precise mode only, like
     /// fields: its stroke has no stylized entry.
     pub(super) parallel: bool,
+    /// A triangle mesh series' fill (#210). Precise mode only, like fields:
+    /// a stylized mode has no mesh entry.
+    pub(super) mesh: bool,
+    /// A triangle mesh series' contour strokes, precise like the fill.
+    pub(super) mesh_contour: bool,
 }
 
 pub(super) fn effective_series_primitives(
@@ -878,6 +883,8 @@ pub(super) fn effective_series_primitives(
             box_points: false,
             vector: false,
             parallel: false,
+            mesh: false,
+            mesh_contour: false,
         };
     }
     EffectiveSeriesPrimitives {
@@ -922,6 +929,12 @@ pub(super) fn effective_series_primitives(
         vector: matches!(draw_style, DrawStyle::Precise) && has_vector(render_type),
         // A parallel series' rows are precise for the same reason.
         parallel: matches!(draw_style, DrawStyle::Precise) && render_type.parallel().is_some(),
+        // A triangle mesh is a field over triangles: precise for the
+        // field's reason (#210).
+        mesh: matches!(draw_style, DrawStyle::Precise)
+            && matches!(render_type, DataRenderType::TriMesh(mesh) if mesh.fill.is_some()),
+        mesh_contour: matches!(draw_style, DrawStyle::Precise)
+            && matches!(render_type, DataRenderType::TriMesh(mesh) if mesh.contour.is_some()),
     }
 }
 

@@ -114,7 +114,9 @@ impl PreparationFeature {
                 | DataRenderType::Vector { .. }
                 // Streamline lines draw through the line pipelines (always
                 // prepared) and their arrowheads through a vector pipeline.
-                | DataRenderType::Streamlines { .. } => Self::Fields,
+                | DataRenderType::Streamlines { .. }
+                // A triangle mesh reads the field's group 2 (#210).
+                | DataRenderType::TriMesh(_) => Self::Fields,
                 DataRenderType::Xy(_)
                 // A radar series draws through the line and scatter pipelines.
                 | DataRenderType::Radar { .. }
@@ -126,8 +128,6 @@ impl PreparationFeature {
                 // Drawn on the CPU and composited (#203, #234): no GPU
                 // pipeline.
                 DataRenderType::EnergyLevels(_) | DataRenderType::Feynman(_) => continue,
-                // Refused at registration until its draw path lands (#210).
-                DataRenderType::TriMesh(_) => continue,
             };
             if !result.contains(&group) {
                 result.push(group);
@@ -525,6 +525,8 @@ impl TargetPipelines {
             view3d: Default::default(),
             surface_shader: source.surface_shader.clone(),
             surface: Default::default(),
+            tri_mesh_shader: source.tri_mesh_shader.clone(),
+            tri_mesh: Default::default(),
             ternary_region_shader: source.ternary_region_shader.clone(),
             ternary_region: Default::default(),
             // Compute pipelines: the target's format does not enter them.
@@ -605,6 +607,14 @@ impl TargetPipelines {
             self.surface_shader = other.surface_shader;
         }
         for (slot, other) in self.surface.iter_mut().zip(other.surface) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.tri_mesh_shader.is_none() {
+            self.tri_mesh_shader = other.tri_mesh_shader;
+        }
+        for (slot, other) in self.tri_mesh.iter_mut().zip(other.tri_mesh) {
             if slot.is_none() {
                 *slot = other;
             }

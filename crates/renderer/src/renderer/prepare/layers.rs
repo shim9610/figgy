@@ -513,6 +513,49 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // A triangle mesh (#210): its fill and its contours draw the one
+            // group 2 `ensure_mesh_scratches` resolved, instancing the
+            // triangle count (the shader rechecks every index on every draw).
+            let mut mesh = None;
+            let mut mesh_contour = None;
+            if (primitives.mesh || primitives.mesh_contour) && phase.is_none() {
+                let scratch = self
+                    .field_cache
+                    .get(cfg.series_id.as_str())
+                    .ok_or(FiggyError::internal("prepare ensured this mesh's scratch"))?;
+                let triangles = if scratch.drawable {
+                    scratch.signature.params.rows
+                } else {
+                    0
+                };
+                for (wanted, pass, slot) in [
+                    (
+                        primitives.mesh,
+                        data_render::tri_mesh::TriMeshPass::Fill,
+                        &mut mesh,
+                    ),
+                    (
+                        primitives.mesh_contour,
+                        data_render::tri_mesh::TriMeshPass::Contour,
+                        &mut mesh_contour,
+                    ),
+                ] {
+                    if !wanted {
+                        continue;
+                    }
+                    *slot = Some(data_render::tri_mesh::ColumnTriMeshLayer {
+                        pipeline: pipelines.tri_mesh[pass as usize]
+                            .as_ref()
+                            .ok_or(FiggyError::internal("prepare ensured the mesh pipeline"))?,
+                        transform_bg: &view.transform_bg,
+                        style_bg: scratch.style_bg.clone(),
+                        field_bg: scratch.field_bg.clone(),
+                        charge: Arc::clone(&scratch.charge),
+                        triangles,
+                    });
+                }
+            }
+
             // A heatmap on a 3D chart draws as a surface into the panel
             // composite, not as the flat field: the same group 2, its own
             // camera and look as group 3.
@@ -1580,6 +1623,8 @@ impl PrepareContext<'_> {
             out.push(data_render::SeriesLayers {
                 area,
                 field,
+                mesh,
+                mesh_contour,
                 bar,
                 violin,
                 category_bars,
