@@ -943,9 +943,9 @@ fn a_feynman_label_moves_by_part_and_row_not_by_a_value_label_index() {
 // SPAN_SLOTS (#234, item 13): straight lines and arcs of every bend,
 // crossing, grazing, entering, leaving and missing a plot, at every
 // direction and every scale from a pixel to a billion pixels long. Each
-// path's spans fit the slots without the widening fallback (the
-// debug_assert in `Spans::push` fires otherwise), and no path has more than
-// the five visible pieces a circle can make in a rectangle.
+// path's spans fit the slots without the widening fallback
+// (`Spans::overflowed`), and no path has more than the five visible pieces
+// a circle can make in a rectangle.
 #[test]
 fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
     let plot = RectF {
@@ -981,6 +981,7 @@ fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
                             }
                         };
                         let spans = base.spans_within(plot);
+                        assert!(!spans.overflowed, "{base:?}");
                         most = most.max(spans.iter().count());
                         paths += 1;
                     }
@@ -997,6 +998,7 @@ fn spans_never_overflow_for_lines_and_arcs_crossing_a_plot() {
                 start: 0.3,
             }
             .spans_within(plot);
+            assert!(!spans.overflowed);
             most = most.max(spans.iter().count());
             paths += 1;
         }

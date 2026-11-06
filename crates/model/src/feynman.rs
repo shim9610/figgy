@@ -1830,24 +1830,27 @@ const SPAN_SLOTS: usize = 8;
 pub(crate) struct Spans {
     spans: [[f64; 2]; SPAN_SLOTS],
     len: usize,
+    /// Whether a span was merged into the last because the slots were full.
+    pub(crate) overflowed: bool,
 }
 
 impl Spans {
     const NONE: Self = Self {
         spans: [[0.0; 2]; SPAN_SLOTS],
         len: 0,
+        overflowed: false,
     };
 
     fn push(&mut self, t0: f64, t1: f64) {
         // A circle meets a rectangle at most 8 times, so a path within one
         // has at most 5 visible spans and the slots never fill: widening
-        // the last over hidden range would sample off-screen length.
-        // `spans_never_overflow_for_lines_and_arcs_crossing_a_plot`
-        // exercises this.
-        debug_assert!(
-            self.len < SPAN_SLOTS || self.spans[self.len - 1][1] >= t0,
-            "a path's visible spans overflowed SPAN_SLOTS"
-        );
+        // the last over hidden range would sample off-screen length. The
+        // widening is recorded, and
+        // `spans_never_overflow_for_lines_and_arcs_crossing_a_plot` checks
+        // that it never happens.
+        if self.len == SPAN_SLOTS && self.spans[SPAN_SLOTS - 1][1] < t0 {
+            self.overflowed = true;
+        }
         if let Some(last) = self.len.checked_sub(1)
             && (self.spans[last][1] >= t0 || self.len == SPAN_SLOTS)
         {
