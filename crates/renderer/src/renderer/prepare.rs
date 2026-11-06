@@ -4,11 +4,11 @@
 
 mod arc;
 mod contour;
-mod energy_levels;
+pub(in crate::renderer) mod energy_levels;
 mod field;
 mod layers;
 mod stream;
-mod value_label;
+pub(in crate::renderer) mod value_label;
 mod value_map;
 mod vector;
 use super::*;

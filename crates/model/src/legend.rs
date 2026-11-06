@@ -405,6 +405,10 @@ fn series_mark(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -> Vec<RichSegme
         DataRenderType::EnergyLevels(levels) => {
             line_symbol(levels.style.level.color, LineStylePreset::Solid, None)
         }
+        // A diagram reads as its line (#234).
+        DataRenderType::Feynman(diagram) => {
+            line_symbol(diagram.style.color, LineStylePreset::Solid, None)
+        }
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),

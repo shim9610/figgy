@@ -187,7 +187,9 @@ impl GpuSeriesFitMode {
             // A parallel chart's axes are the categorical positions and the
             // normalized band; each parallel axis fits from its column's
             // statistics (`Chart::auto_fit_parallel_axes`).
-            DataRenderType::Parallel { .. } | DataRenderType::EnergyLevels(_) => return None,
+            DataRenderType::Parallel { .. }
+            | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_) => return None,
             // A triangle mesh fits from its vertex columns' statistics at
             // commit, as a histogram does (#210).
             DataRenderType::TriMesh(_) => return None,
@@ -283,6 +285,7 @@ impl GpuSeriesExtentMode {
             | DataRenderType::EnergyLevels(_)
             // A triangle mesh fits from its vertex columns' statistics (#210).
             | DataRenderType::TriMesh(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Field(_)
             | DataRenderType::RgbImage { .. } => None,
         }

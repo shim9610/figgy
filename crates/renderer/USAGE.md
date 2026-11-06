@@ -604,7 +604,13 @@ and the text cannot be selected or searched. The data layer (fills, lines,
 markers, bars, fields, contours, vectors, picked highlights and value
 labels) is drawn by the GPU, so each panel group's data is one image at
 `scale ×` resolution, the PNG export's own pixels: one image for a chart and
-its overlays, one more for each subplot. The colourbar ramp and the
+its overlays, one more for each subplot. A DataLess series (an energy-level
+diagram) is drawn on the CPU, so it is vector content too, written from the
+emit its raster uses ([#234](https://github.com/shim9610/figgy/issues/234)).
+It sits between the GPU data under it and the value labels over it, so a
+panel group with one is written as an image of the data under it, the
+series, then an image of the labels; an image with no GPU series in it is
+left out. The colourbar ramp and the
 Milkyway backdrop are images too; the Milkyway glow is not drawn. Selection
 boxes are never drawn, as in the PNG export.
 
@@ -1107,7 +1113,7 @@ std::fs::write("/tmp/out.pdf", pdf)?;
 
 두 문서에는 같은 인자로 `export_png`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
 장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
-데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
+데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. DataLess 시리즈(에너지 준위 도표)는 CPU가 그리므로 래스터와 같은 배치 결과를 벡터로 기록한다([#234](https://github.com/shim9610/figgy/issues/234)). 이 시리즈는 아래쪽 GPU 데이터와 위쪽 값 라벨 사이에 놓이므로, 이런 시리즈가 있는 패널 묶음은 아래 데이터 이미지, 시리즈, 라벨 이미지 순으로 기록한다. GPU 시리즈가 하나도 없는 이미지는 넣지 않는다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
 
 SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `_blocking` 함수도 쓸 수 있다([GPU 결과](#gpu-결과-비동기-동기-확인)). `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
 

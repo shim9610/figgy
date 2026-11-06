@@ -1005,6 +1005,41 @@ pub enum PickedDataRef {
         series_id: String,
         triangle_index: usize,
     },
+    /// A vertex of a Feynman series (#234): its row in `vertices`. A drag
+    /// moves it (`FeynmanSeries::drag_vertex`).
+    FeynmanVertex {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        vertex_index: usize,
+    },
+    /// A propagator of a Feynman series (#234): its row in `propagators`.
+    /// A drag bends it (`FeynmanSeries::drag_bend`).
+    FeynmanPropagator {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        propagator_index: usize,
+    },
+    /// A label of a Feynman series (#234): the row `index` of the list
+    /// `part` names. A drag moves it (`FeynmanSeries::drag_label`);
+    /// `step_selection` does not step it.
+    FeynmanLabel {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        part: crate::feynman::FeynmanLabelPart,
+        index: usize,
+    },
 }
 
 impl PickedDataRef {
@@ -1015,7 +1050,10 @@ impl PickedDataRef {
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
             | Self::ValueLabel { source_id, .. }
-            | Self::MeshTriangle { source_id, .. } => source_id.as_deref(),
+            | Self::MeshTriangle { source_id, .. }
+            | Self::FeynmanVertex { source_id, .. }
+            | Self::FeynmanPropagator { source_id, .. }
+            | Self::FeynmanLabel { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -1026,7 +1064,10 @@ impl PickedDataRef {
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
             | Self::ValueLabel { series_id, .. }
-            | Self::MeshTriangle { series_id, .. } => series_id,
+            | Self::MeshTriangle { series_id, .. }
+            | Self::FeynmanVertex { series_id, .. }
+            | Self::FeynmanPropagator { series_id, .. }
+            | Self::FeynmanLabel { series_id, .. } => series_id,
         }
     }
 }

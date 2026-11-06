@@ -480,6 +480,54 @@ fn tri_mesh_series() -> Vec<SeriesConfig> {
     )]
 }
 
+/// A line under a Feynman diagram (#234): every leaf of the diagram (its
+/// topology, positions, one unplaced vertex the layout places, labels, a
+/// momentum arrow, its style and layout) is walked; the line keeps the
+/// panel's bodies cached.
+fn feynman_series() -> Vec<SeriesConfig> {
+    use crate::feynman::{
+        FeynmanSeries, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator,
+        VertexRole,
+    };
+    let text = |s: &str| crate::text::RichText::plain(s, Color::BLACK, 10.0, "");
+    let vertex = |id: &str, role, at: Option<[f64; 2]>| {
+        let mut v = FeynmanVertex::new(id, role);
+        v.at = at;
+        v
+    };
+    let mut diagram = FeynmanSeries {
+        vertices: vec![
+            vertex("in", VertexRole::Incoming, Some([0.1, 0.5])),
+            vertex("v1", VertexRole::Internal, None),
+            vertex("v2", VertexRole::Internal, Some([0.7, 0.4])),
+            vertex("out", VertexRole::Outgoing, Some([0.95, 0.5])),
+        ],
+        propagators: vec![
+            Propagator::new("p", "in", "v1", ParticleLine::Fermion),
+            Propagator::new("g", "v1", "v2", ParticleLine::Photon),
+            Propagator::new("q", "v2", "out", ParticleLine::Gluon),
+        ],
+        ..FeynmanSeries::default()
+    };
+    diagram.vertices[1].label = Some(text("v"));
+    diagram.propagators[1].label = Some(text("γ"));
+    diagram.propagators[1].momentum = Some(MomentumArrow {
+        label: text("k"),
+        side: MomentumSide::Right,
+        reversed: false,
+        label_offset: [1.0, 1.0],
+    });
+    let mut feynman = declared("d", "", "", DataRenderType::Feynman(diagram));
+    feynman.x_column = String::new();
+    feynman.y_column = String::new();
+    let mut list: Vec<SeriesConfig> = chart_series()
+        .into_iter()
+        .filter(|s| s.series_id == "line")
+        .collect();
+    list.push(feynman);
+    list
+}
+
 /// A polar panel holding the panel's heatmap and its contours (#208).
 fn polar_field_config() -> Config {
     let mut c = chart_config();
@@ -870,6 +918,7 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
         tri_mesh_series(),
         SIZE,
     ));
+    tally.absorb(run_suite("feynman", chart_config(), feynman_series(), SIZE));
     tally.absorb(run_suite(
         "polar_field",
         polar_field_config(),

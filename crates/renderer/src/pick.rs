@@ -86,6 +86,31 @@ pub enum PickedData {
         vertex_index: usize,
         distance_px: f32,
     },
+    /// A vertex of a Feynman series (#234): its row in `vertices`.
+    /// `distance_px` is the distance to its marker, 0 on it.
+    FeynmanVertex {
+        source_id: Option<String>,
+        series_id: String,
+        vertex_index: usize,
+        distance_px: f32,
+    },
+    /// A propagator of a Feynman series (#234): its row in `propagators`.
+    /// `distance_px` is the distance to its ink, 0 on it.
+    FeynmanPropagator {
+        source_id: Option<String>,
+        series_id: String,
+        propagator_index: usize,
+        distance_px: f32,
+    },
+    /// A label of a Feynman series (#234): row `index` of the list `part`
+    /// names. `distance_px` is the distance to its box, 0 inside it.
+    FeynmanLabel {
+        source_id: Option<String>,
+        series_id: String,
+        part: crate::feynman::FeynmanLabelPart,
+        index: usize,
+        distance_px: f32,
+    },
 }
 
 impl PickedData {
@@ -96,7 +121,10 @@ impl PickedData {
             | Self::MatrixCell { source_id, .. }
             | Self::ContourLevel { source_id, .. }
             | Self::ValueLabel { source_id, .. }
-            | Self::MeshTriangle { source_id, .. } => source_id.as_deref(),
+            | Self::MeshTriangle { source_id, .. }
+            | Self::FeynmanVertex { source_id, .. }
+            | Self::FeynmanPropagator { source_id, .. }
+            | Self::FeynmanLabel { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -107,7 +135,10 @@ impl PickedData {
             | Self::MatrixCell { series_id, .. }
             | Self::ContourLevel { series_id, .. }
             | Self::ValueLabel { series_id, .. }
-            | Self::MeshTriangle { series_id, .. } => series_id,
+            | Self::MeshTriangle { series_id, .. }
+            | Self::FeynmanVertex { series_id, .. }
+            | Self::FeynmanPropagator { series_id, .. }
+            | Self::FeynmanLabel { series_id, .. } => series_id,
         }
     }
 
@@ -118,7 +149,10 @@ impl PickedData {
             | Self::MatrixCell { distance_px, .. }
             | Self::ContourLevel { distance_px, .. }
             | Self::ValueLabel { distance_px, .. }
-            | Self::MeshTriangle { distance_px, .. } => *distance_px,
+            | Self::MeshTriangle { distance_px, .. }
+            | Self::FeynmanVertex { distance_px, .. }
+            | Self::FeynmanPropagator { distance_px, .. }
+            | Self::FeynmanLabel { distance_px, .. } => *distance_px,
         }
     }
 
@@ -193,6 +227,38 @@ impl PickedData {
                 source_id: source_id.clone(),
                 series_id: series_id.clone(),
                 triangle_index: *triangle_index,
+            },
+            Self::FeynmanVertex {
+                source_id,
+                series_id,
+                vertex_index,
+                ..
+            } => crate::config::PickedDataRef::FeynmanVertex {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                vertex_index: *vertex_index,
+            },
+            Self::FeynmanPropagator {
+                source_id,
+                series_id,
+                propagator_index,
+                ..
+            } => crate::config::PickedDataRef::FeynmanPropagator {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                propagator_index: *propagator_index,
+            },
+            Self::FeynmanLabel {
+                source_id,
+                series_id,
+                part,
+                index,
+                ..
+            } => crate::config::PickedDataRef::FeynmanLabel {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                part: *part,
+                index: *index,
             },
         }
     }

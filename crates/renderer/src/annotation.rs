@@ -530,6 +530,16 @@ impl Sink for LayerSink {
         self.canvas_sink().triangle(slot, points, color);
     }
 
+    fn path(
+        &mut self,
+        slot: Slot,
+        segments: &[model::sink::PathSegment],
+        style: &model::sink::StrokeStyle<'_>,
+    ) {
+        self.ensure(slot);
+        self.canvas_sink().path(slot, segments, style);
+    }
+
     fn polygon(
         &mut self,
         slot: Slot,

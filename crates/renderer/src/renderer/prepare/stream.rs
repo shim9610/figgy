@@ -73,6 +73,13 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
             });
         }
+        // Nor to Feynman series (rule 8, #234): they are DataLess.
+        if series.feynman().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_FEYNMAN_REASON.into(),
+            });
+        }
         // Streaming is not extended to streamlines (rule 8).
         if series.render_type.streamlines().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

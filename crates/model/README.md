@@ -91,6 +91,10 @@ class.
   transitions are SSOT records following the NIST ASD exports, drawn on
   the chart's categorical axis and value axis through the CPU sink, with
   no column, no streaming and no count limit.
+  The Feynman series (`DataRenderType::Feynman`, #234) is another: its
+  vertices, propagators and particles are SSOT, vertex positions optional
+  (a deterministic layout places the rest, committed into the SSOT by
+  `auto_layout`), drawn through the CPU sink and written as vector curves.
 - **Column-backed charts** are the series kinds of `Config`, every other
   chart: per-point data enters only through the renderer's `ColumnSource`
   and lives in its column pool. Category bars (`CategoryBars`, one series

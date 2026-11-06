@@ -24,6 +24,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::EnergyLevels(_)
         // A mesh is a field over triangles (#210): no markers.
         | DataRenderType::TriMesh(_)
+        | DataRenderType::Feynman(_)
         | DataRenderType::Field(_)
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Vector { .. } => None,
@@ -717,6 +718,58 @@ impl FiggyChart {
                     *category_index
                 ));
             }
+            // A Feynman part (#234) reports its row from the SSOT; nothing
+            // is read back. A vertex reports where it is drawn: its `at`, or
+            // the layout's place while it has none (`placed: false`).
+            PickedDataRef::FeynmanVertex { vertex_index, .. } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let vertex = diagram
+                    .vertices
+                    .get(*vertex_index)
+                    .ok_or_else(|| js_err("selected vertex no longer exists"))?;
+                // The wrapper commits every layout on registration, so this
+                // reads `at` without allocating; a host-built document
+                // without it lays the diagram out once.
+                let position = match vertex.at {
+                    Some(at) => at,
+                    None => diagram.positions().map_err(js_err)?[*vertex_index],
+                };
+                result["index"] = serde_json::json!(vertex_index);
+                result["id"] = serde_json::json!(vertex.id);
+                result["role"] = serde_json::to_value(vertex.role).map_err(js_err)?;
+                result["position"] = serde_json::json!(position);
+                result["placed"] = serde_json::json!(vertex.at.is_some());
+            }
+            PickedDataRef::FeynmanPropagator {
+                propagator_index, ..
+            } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let propagator = diagram
+                    .propagators
+                    .get(*propagator_index)
+                    .ok_or_else(|| js_err("selected propagator no longer exists"))?;
+                result["index"] = serde_json::json!(propagator_index);
+                result["id"] = serde_json::json!(propagator.id);
+                result["from"] = serde_json::json!(propagator.from);
+                result["to"] = serde_json::json!(propagator.to);
+                result["particle"] = serde_json::to_value(propagator.particle).map_err(js_err)?;
+                result["bend"] = serde_json::json!(propagator.bend);
+            }
+            PickedDataRef::FeynmanLabel { part, index, .. } => {
+                let diagram = series
+                    .feynman()
+                    .ok_or_else(|| js_err("selected series is not a Feynman diagram"))?;
+                let offset = diagram
+                    .label_offset(*part, *index)
+                    .ok_or_else(|| js_err("selected label no longer exists"))?;
+                result["index"] = serde_json::json!(index);
+                result["part"] = serde_json::to_value(part).map_err(js_err)?;
+                result["offset"] = serde_json::json!(offset);
+            }
             // A mesh triangle reports its three vertex indices, read from
             // its index column's `u32` lanes, then their coordinates and its
             // values (one per vertex, or its face value), read back from
@@ -873,8 +926,9 @@ impl FiggyChart {
         // not see it.
         // An energy-level series (#203) is picked on the CPU through the
         // same typed query: its levels, arrows and labels.
+        // So is a Feynman diagram (#234): its vertices, lines and labels.
         let labelled = self.chart_series()?.iter().any(|series| {
-            series.energy_levels().is_some()
+            series.is_dataless()
                 || series
                     .value_label_text()
                     .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
@@ -903,7 +957,7 @@ impl FiggyChart {
                 }
                 // An energy-level hit is answered whole: its kind, row and
                 // (for a label) part, for `press_energy_label`.
-                Some(picked) if self.is_energy_series(picked.series_id())? => {
+                Some(picked) if self.is_dataless_series(picked.series_id())? => {
                     let json = crate::picked_data_json_string(&picked).map_err(js_err)?;
                     return Ok(JsValue::from_str(&json));
                 }
@@ -972,12 +1026,124 @@ impl FiggyChart {
         Ok(true)
     }
 
-    /// Whether `series_id` names an energy-level series of the chart.
-    fn is_energy_series(&self, series_id: &str) -> Result<bool, JsValue> {
+    /// Whether `series_id` names a DataLess series of the chart: an
+    /// energy-level series or a Feynman diagram.
+    fn is_dataless_series(&self, series_id: &str) -> Result<bool, JsValue> {
         Ok(self
             .chart_series()?
             .iter()
-            .any(|s| s.series_id == series_id && s.energy_levels().is_some()))
+            .any(|s| s.series_id == series_id && s.is_dataless()))
+    }
+
+    /// Press on a part of a Feynman series (#234), as a `pick_point` hit
+    /// names it: `kind` is `"feynman_vertex"`, `"feynman_propagator"` or
+    /// `"feynman_label"` (with `part` `"vertex"`, `"propagator"` or
+    /// `"momentum"`), `index` its row. The part becomes the typed selection
+    /// and the drag starts: `on_move` moves a vertex (the first drag commits
+    /// the layout) or bends a propagator through `Renderer::drag_feynman`,
+    /// and moves a label through the value-label drag, as
+    /// `press_value_label` does. Returns `false` and changes nothing for a
+    /// row that does not exist.
+    /// JS: `if (hit?.kind?.startsWith("feynman_")) chart.press_feynman(hit.series_id, hit.kind, hit.index, hit.part);`
+    pub fn press_feynman(
+        &mut self,
+        series_id: &str,
+        kind: &str,
+        index: usize,
+        part: Option<String>,
+    ) -> Result<bool, JsValue> {
+        use renderer::config::PickedDataRef;
+        use renderer::{FeynmanHit, FeynmanLabelPart};
+        let Some(series) = self
+            .chart_series()?
+            .iter()
+            .find(|series| series.series_id == series_id)
+        else {
+            return Ok(false);
+        };
+        let Some(diagram) = series.feynman() else {
+            return Ok(false);
+        };
+        let (source_id, series_id) = (series.source_id.clone(), series.series_id.clone());
+        let (drag, reference) = match kind {
+            "feynman_vertex" if index < diagram.vertices.len() => (
+                FeynmanHit::Vertex(index),
+                PickedDataRef::FeynmanVertex {
+                    source_id,
+                    series_id: series_id.clone(),
+                    vertex_index: index,
+                },
+            ),
+            "feynman_propagator" if index < diagram.propagators.len() => (
+                FeynmanHit::Propagator(index),
+                PickedDataRef::FeynmanPropagator {
+                    source_id,
+                    series_id: series_id.clone(),
+                    propagator_index: index,
+                },
+            ),
+            "feynman_label" => {
+                let part = match part.as_deref() {
+                    Some("vertex") => FeynmanLabelPart::Vertex,
+                    Some("propagator") => FeynmanLabelPart::Propagator,
+                    Some("momentum") => FeynmanLabelPart::Momentum,
+                    _ => return Ok(false),
+                };
+                if diagram.label_offset(part, index).is_none() {
+                    return Ok(false);
+                }
+                (
+                    FeynmanHit::Label(part, index),
+                    PickedDataRef::FeynmanLabel {
+                        source_id,
+                        series_id: series_id.clone(),
+                        part,
+                        index,
+                    },
+                )
+            }
+            _ => return Ok(false),
+        };
+        if self.chart_selection()?.is_some() {
+            self.renderer
+                .set_chart_selection(self.chart_id, None)
+                .map_err(js_err)?;
+        }
+        self.set_selected_annotation(None);
+        let mut config = self.chart_config()?.clone();
+        let mut picked = config.picked_data.take().unwrap_or_default();
+        picked.refs = vec![reference];
+        config.picked_data = Some(picked);
+        self.replace_chart_config(config)?;
+        self.annotation_pointer = false;
+        self.resizing = None;
+        self.dragging = true;
+        // A label moves through the value-label drag (`move_value_label`);
+        // a vertex or a line through the panel's axes.
+        if let FeynmanHit::Label(..) = drag {
+            self.value_label_pointer = true;
+            self.feynman_pointer = None;
+        } else {
+            self.value_label_pointer = false;
+            self.feynman_pointer = Some((series_id, drag));
+        }
+        Ok(true)
+    }
+
+    /// Commit the automatic layout of the Feynman series `series_id`
+    /// (#234): every unplaced vertex gets the place it is drawn at.
+    /// Returns whether anything was written. The wrapper commits it on
+    /// registration already; a host that edits the series in place calls
+    /// this to fix the new vertices.
+    pub fn auto_layout(&mut self, series_id: &str) -> Result<bool, JsValue> {
+        let laid_out = self
+            .renderer
+            .auto_layout(self.chart_id, series_id)
+            .map_err(js_err)?;
+        if laid_out {
+            self.request_host_redraw();
+        }
+        Ok(laid_out)
     }
 
     /// Press on an energy-level label (#203): row `index` of the list `part`
@@ -1041,6 +1207,34 @@ impl FiggyChart {
     /// `on_move` of a drag `press_value_label` or `press_energy_label`
     /// started: the selected label moves by the delta in document pixels.
     fn move_value_label(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        // A Feynman label moves its row's own offset (#234).
+        if let Some(renderer::config::PickedDataRef::FeynmanLabel {
+            series_id,
+            part,
+            index,
+            ..
+        }) = self
+            .chart_config()?
+            .picked_data
+            .as_ref()
+            .and_then(|picked| picked.refs.first())
+            .cloned()
+        {
+            let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+            let mut series = self.chart_series()?.to_vec();
+            let Some(diagram) = series
+                .iter_mut()
+                .find(|s| s.series_id == series_id)
+                .and_then(SeriesConfig::feynman_mut)
+            else {
+                return Ok(());
+            };
+            if diagram.drag_label(part, index, dx, dy) == NudgeResult::Moved {
+                let config = self.chart_config()?.clone();
+                self.replace_chart_state(config, series)?;
+            }
+            return Ok(());
+        }
         let Some(renderer::config::PickedDataRef::ValueLabel {
             series_id,
             category_index,
@@ -1257,6 +1451,19 @@ impl FiggyChart {
     /// After a press on an annotation the delta moves that item (or the
     /// pressed handle) through the frame's anchor space.
     pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        if let Some((series_id, drag)) = self.feynman_pointer.clone() {
+            if self.dragging && dx.is_finite() && dy.is_finite() {
+                let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+                let moved = self
+                    .renderer
+                    .drag_feynman(self.chart_id, &series_id, drag, dx, dy)
+                    .map_err(js_err)?;
+                if moved == NudgeResult::Moved {
+                    self.request_host_redraw();
+                }
+            }
+            return Ok(());
+        }
         if self.value_label_pointer {
             if self.dragging && dx.is_finite() && dy.is_finite() {
                 self.move_value_label(dx, dy)?;
@@ -1311,6 +1518,7 @@ impl FiggyChart {
         self.resizing = None;
         self.annotation_pointer = false;
         self.value_label_pointer = false;
+        self.feynman_pointer = None;
         if self.display_held {
             self.display_held = false;
             self.renderer

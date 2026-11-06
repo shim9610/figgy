@@ -137,6 +137,7 @@ pub(super) async fn create_chart_kernel(
         annotation_pointer: false,
         value_label_pointer: false,
         display_held: false,
+        feynman_pointer: None,
     };
 
     emit_init_progress(
@@ -262,6 +263,9 @@ pub struct FiggyChart {
     /// A subplot frame drag holds the display placement
     /// (`Renderer::hold_chart_display`, #205) until the pointer's release.
     pub(super) display_held: bool,
+    /// The current drag started on a part of a Feynman series
+    /// (`press_feynman`, #234): the series and what `on_move` moves.
+    pub(super) feynman_pointer: Option<(String, renderer::FeynmanHit)>,
 }
 
 impl FiggyChart {
@@ -288,8 +292,16 @@ impl FiggyChart {
     pub(super) fn replace_chart_state(
         &mut self,
         config: renderer::Config,
-        series: Vec<SeriesConfig>,
+        mut series: Vec<SeriesConfig>,
     ) -> Result<(), JsValue> {
+        // A Feynman diagram is fixed where it is first drawn (#234): the
+        // wrapper commits the layout of every unplaced vertex as the series
+        // is registered, so `get_series` returns placed coordinates.
+        for item in &mut series {
+            if let Some(diagram) = item.feynman_mut() {
+                diagram.auto_layout().map_err(js_err)?;
+            }
+        }
         self.renderer
             .set_chart_state(self.chart_id, config, series)
             .map_err(js_err)?;
@@ -331,6 +343,7 @@ impl FiggyChart {
             self.resizing = None;
             self.annotation_pointer = false;
             self.value_label_pointer = false;
+            self.feynman_pointer = None;
             if layer_changed {
                 self.set_selected_annotation(None);
             }

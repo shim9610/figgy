@@ -2974,3 +2974,126 @@ mod source_cache_invalidation;
 #[cfg(feature = "serde")]
 #[path = "ssot_mutation_tests.rs"]
 mod mutation;
+
+/// SSOT invalidation of a Feynman diagram (#234): topology, position,
+/// label, bend, style and picked-part edits of the series, and axis, area
+/// and selection edits of the chart, are drawn on the first frame exactly
+/// as a fresh renderer draws them and are visible; the canvas re-rasters
+/// through its signature and the column pool is untouched.
+#[test]
+fn feynman_edits_refresh_first_frame_without_reupload() {
+    use crate::feynman::{FeynmanSeries, FeynmanVertex, ParticleLine, Propagator, VertexRole};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline();
+    config.legend.visible = false;
+    let vertex = |id: &str, role, at: [f64; 2]| {
+        let mut v = FeynmanVertex::new(id, role);
+        v.at = Some(at);
+        v
+    };
+    let mut series = declaration("d", "", "");
+    series.x_column = String::new();
+    series.y_column = String::new();
+    series.render_type = DataRenderType::Feynman(FeynmanSeries {
+        vertices: vec![
+            vertex("in", VertexRole::Incoming, [0.15, 0.6]),
+            vertex("a", VertexRole::Internal, [0.4, 0.55]),
+            vertex("b", VertexRole::Internal, [0.7, 0.55]),
+            vertex("out", VertexRole::Outgoing, [0.95, 0.6]),
+        ],
+        propagators: vec![
+            Propagator::new("p", "in", "a", ParticleLine::Fermion),
+            Propagator::new("g", "a", "b", ParticleLine::Photon),
+            Propagator::new("q", "b", "out", ParticleLine::Fermion),
+        ],
+        ..FeynmanSeries::default()
+    });
+    let fixture_with = |c: &Config, s: &SeriesConfig| {
+        let (mut r, id) = fixture(c, true, false);
+        r.set_chart_series(id, vec![s.clone()]).unwrap();
+        (r, id)
+    };
+    let (mut r, id) = fixture_with(&config, &series);
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    fn diagram(s: &mut SeriesConfig) -> &mut FeynmanSeries {
+        s.feynman_mut().unwrap()
+    }
+    let series_edits: [(&str, fn(&mut FeynmanSeries)); 7] = [
+        ("a gluon joins", |d| {
+            d.propagators
+                .push(Propagator::new("glue", "a", "b", ParticleLine::Gluon))
+        }),
+        ("a vertex moves", |d| d.vertices[1].at = Some([0.35, 0.3])),
+        ("a label", |d| {
+            d.propagators[1].label = Some(RichText::plain("γ", Color::BLACK, 14.0, ""))
+        }),
+        ("a label moves", |d| {
+            d.propagators[1].label_offset = [6.0, -4.0]
+        }),
+        ("a bend", |d| d.propagators[0].bend = Some(60.0)),
+        ("the line colour", |d| {
+            d.style.color = Color::from_rgb8(200, 30, 30)
+        }),
+        ("the line width", |d| d.style.width = 3.0),
+    ];
+    for (name, apply) in series_edits {
+        apply(diagram(&mut series));
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+    let config_edits: [(&str, fn(&mut Config)); 5] = [
+        ("x range", |c| c.bottom_x.max = 1.4),
+        ("y range", |c| c.left_y.min = -0.2),
+        ("a picked vertex", |c| {
+            c.picked_data = Some(crate::config::DataSelectionsConfig {
+                refs: vec![crate::config::PickedDataRef::FeynmanVertex {
+                    source_id: None,
+                    series_id: "d".into(),
+                    vertex_index: 1,
+                }],
+                ..Default::default()
+            })
+        }),
+        ("a picked label", |c| {
+            c.picked_data = Some(crate::config::DataSelectionsConfig {
+                refs: vec![crate::config::PickedDataRef::FeynmanLabel {
+                    source_id: None,
+                    series_id: "d".into(),
+                    part: crate::feynman::FeynmanLabelPart::Propagator,
+                    index: 1,
+                }],
+                ..Default::default()
+            })
+        }),
+        ("a narrower plot", |c| c.left_y.out_margin = 60.0),
+    ];
+    for (name, apply) in config_edits {
+        apply(&mut config);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+}

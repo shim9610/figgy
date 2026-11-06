@@ -6604,6 +6604,39 @@ fn streamed_series_reject_stems() {
     ));
 }
 
+/// Streaming is not extended to DataLess series (rule 8, #203, #234): an
+/// energy-level or Feynman series in a streamed display is refused with its
+/// explicit reason.
+#[test]
+fn streamed_series_reject_dataless_series() {
+    let config = basic_errorbar_chart().config().clone();
+    let dataless = |render_type| SeriesConfig {
+        series_id: "dataless".into(),
+        source_id: None,
+        label: None,
+        x_column: String::new(),
+        y_column: String::new(),
+        z_column: None,
+        render_type,
+    };
+    for (render_type, want) in [
+        (
+            DataRenderType::Feynman(crate::feynman::FeynmanSeries::default()),
+            streaming_runtime::STREAMED_FEYNMAN_REASON,
+        ),
+        (
+            DataRenderType::EnergyLevels(crate::energy_levels::EnergyLevelSeries::default()),
+            streaming_runtime::STREAMED_ENERGY_LEVELS_REASON,
+        ),
+    ] {
+        let series = dataless(render_type);
+        assert!(matches!(
+            PrepareContext::validate_stream_series(&config, &series),
+            Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason == want
+        ));
+    }
+}
+
 /// The group-3 state is rebuilt only when its inputs change: two prepares
 /// of the same chart share one entry, and editing the colourbar's range
 /// (SSOT config) replaces it.

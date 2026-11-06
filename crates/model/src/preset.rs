@@ -25,12 +25,13 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// Whole-chart axis frame styles, applied to all four axes at once via
 /// [`Config::apply_axis_preset`].
 ///
-/// Every preset keeps labels and titles on the bottom/left axes only and
-/// leaves data ranges, margins, tick lengths, colors, and title text
-/// untouched — it only switches which axis lines are drawn, the tick
-/// direction, and which sides show tick-value labels.
-/// [`AxisPreset::Grotrian`] also switches the grid off and gives a
-/// continuous `left_y` break a thin lowest piece (#205).
+/// Every preset leaves data ranges, margins, tick lengths, colors and title
+/// text untouched. It switches which axis lines are drawn, the tick
+/// direction and which sides show tick-value labels; every preset but
+/// [`AxisPreset::Hidden`] keeps labels on the bottom/left axes only.
+/// `Hidden`, which shows none, and [`AxisPreset::Grotrian`] also switch the
+/// grid off, and `Grotrian` gives a continuous `left_y` break a thin lowest
+/// piece (#205).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisPreset {
     /// Closed box frame with ticks pointing **inward** on all four sides —
@@ -48,6 +49,10 @@ pub enum AxisPreset {
     /// No axis lines and no ticks; tick-value labels only. Pair with a grid
     /// for a minimal, web-dashboard look.
     Minimal,
+    /// No axis lines, ticks, tick-value labels or grid: the frame of a figure
+    /// whose data is its own picture, such as a Feynman diagram (#234). The
+    /// one preset that also switches the grid off; titles stay as set.
+    Hidden,
     /// A Grotrian (energy-level) diagram
     /// ([#205](https://github.com/shim9610/figgy/issues/205)): the boxed
     /// frame with outward ticks and labels on the bottom and left only, no
@@ -140,6 +145,18 @@ impl Config {
                     labels: false,
                 },
             ),
+            AxisPreset::Hidden => {
+                let bare = SideStyle {
+                    line: false,
+                    tick: NoTick,
+                    labels: false,
+                };
+                self.grid.show_major_x = false;
+                self.grid.show_major_y = false;
+                self.grid.show_minor_x = false;
+                self.grid.show_minor_y = false;
+                (bare.clone(), bare)
+            }
             AxisPreset::Grotrian => {
                 self.grid.show_major_x = false;
                 self.grid.show_major_y = false;
@@ -315,6 +332,11 @@ impl ColorCycle {
             DataRenderType::EnergyLevels(levels) => {
                 levels.style.level.color = c;
             }
+            // The lines take the cycle colour; per-line overrides stay
+            // (#234).
+            DataRenderType::Feynman(diagram) => {
+                diagram.style.color = c;
+            }
             // The contour line joins the cycle like any other line. The fill
             // does not: its colours come from the colormap, and overwriting one
             // of them with a cycle entry would make the colourbar lie.
@@ -476,6 +498,25 @@ mod tests {
         let mut plain = default_config();
         plain.apply_axis_preset(AxisPreset::Grotrian);
         assert!(plain.left_y.breaks.is_none());
+    }
+
+    #[test]
+    fn hidden_drops_lines_ticks_labels_and_the_grid_and_keeps_the_layout() {
+        let mut cfg = default_config();
+        cfg.grid.show_major_x = true;
+        cfg.grid.show_minor_y = true;
+        let before = cfg.clone();
+        cfg.apply_axis_preset(AxisPreset::Hidden);
+        for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
+            assert!(!axis.line_visible);
+            assert_eq!(axis.tick, TickVisibility::None);
+            assert!(!axis.label_style.label_visible);
+        }
+        assert!(!cfg.grid.show_major_x && !cfg.grid.show_major_y);
+        assert!(!cfg.grid.show_minor_x && !cfg.grid.show_minor_y);
+        assert_eq!(cfg.chart_title, before.chart_title);
+        assert_eq!(cfg.bottom_x.title_option, before.bottom_x.title_option);
+        assert_eq!(cfg.data_area().unwrap(), before.data_area().unwrap());
     }
 
     // A preset must not disturb anything outside frame/tick/label visibility.
