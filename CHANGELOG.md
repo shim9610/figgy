@@ -1345,6 +1345,22 @@ kind and the `mesh_triangle` selection) are additive.
   to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
   exhaustive `match` on `PickedData` adds `MeshTriangle { .. }`.
 
+- **Triangle mesh series: picking and the picked highlight** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The typed data pick answers a mesh's triangles through a new compute entry
+  of the mesh module (`pick_tri_mesh`, one 64-lane workgroup over every
+  triangle, SHADER_COMMON.md §5.25): `PickedData::MeshTriangle` with the
+  triangle and its vertex nearest the cursor, at distance 0 inside the
+  triangle and within one output pixel of its edge, only where the fill
+  paints, the later triangle on overlap. A contour stroke within the pick
+  distance answers first as `PickedData::ContourLevel` with the triangle in
+  `x_index`. The picked triangle is outlined inside its edges at
+  `outline_width_px`, and a picked level redrawn `contour_width_extra_px`
+  wider, through the mesh's selection entry (`fs_tri_selection`);
+  `ColumnFieldSelectionLayer` gains `vertices` and `instances` for it. A
+  million triangles pick in about 50 ms on lavapipe; nothing caps the count.
+  Migration: code that builds a `ColumnFieldSelectionLayer` sets `vertices:
+  FIELD_VERTICES, instances: 0..1` for a field.
+
 - **A frame of more series than a scratch cache holds draws them all.**
   The per-series scratch caches (256 entries each) cleared themselves when
   the 257th series of one frame was prepared, so that frame's layers lost
@@ -1387,6 +1403,7 @@ kind and the `mesh_triangle` selection) are additive.
   drawn yet"), rather than drawn as a linear axis, until the GPU transform
   places them. The annotation space, the fit stamp (codes 2 to 4) and the
   render warnings take the new scale.
+
 - **The partner axis takes the main axis's scale.** `Chart::set_x_range`,
   `set_y_range`, the `auto_fit_*` helpers (and the renderer's fit applied
   to a registered chart) and the subplot range setters write the range to
@@ -2998,6 +3015,16 @@ kind and the `mesh_triangle` selection) are additive.
   write through serde (SCHEMA.md); a `pick_data` hit on a mesh will report
   `kind: "mesh_triangle"` with its `triangle_index` and `vertex_index`.
   `set_series` draws a mesh series on a flat chart.
+- **Triangle mesh picks, details and steps** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `pick_data` answers a mesh's triangles (`kind: "mesh_triangle"`, with
+  `triangle_index` and `vertex_index`) and its contour strokes.
+  `selection_details()` reports a selected triangle's three vertex indices,
+  read from the triangle index column's `u32` lanes, and their coordinates
+  and values (or its face value), read back from the GPU columns.
+  `step_selection` counts a mesh's triangles from the index column's
+  statistics. `set_series` accepts a series that names a registered
+  triangle index column; it refused every mesh series before, because the
+  triangle id is not a column id.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
   `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON

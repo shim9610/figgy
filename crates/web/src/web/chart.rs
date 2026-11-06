@@ -433,9 +433,15 @@ impl FiggyChart {
     pub(super) fn request_host_redraw(&mut self) {
         self.redraw_pending = true;
     }
+    /// Whether `id` is a registered column or triangle index column: a
+    /// triangle mesh names its triangles among its columns (#210).
+    pub(super) fn column_registered(&self, id: &str) -> bool {
+        self.renderer.logical_column(id).is_some() || self.renderer.pool().triangles(id).is_some()
+    }
+
     pub(super) fn ensure_columns_exist(&self, cfg: &SeriesConfig) -> Result<(), JsValue> {
         for id in referenced_columns(cfg) {
-            if self.renderer.logical_column(id).is_none() {
+            if !self.column_registered(id) {
                 return Err(js_err(format!(
                     "series '{}' references unregistered column '{id}'",
                     cfg.series_id

@@ -2473,6 +2473,41 @@ impl Renderer {
                 }
                 continue;
             }
+            if primitives.mesh || primitives.mesh_contour {
+                // A triangle mesh picks the triangles and strokes it draws
+                // (#210): the mesh entry walks them over the draw's group 2
+                // at the pick's display scale.
+                self.ensure_mesh_scratch(&config, cfg, request.display_scale)?;
+                let scratch = self
+                    .field_cache
+                    .get(cfg.series_id.as_str())
+                    .ok_or(FiggyError::internal("mesh scratch was just ensured"))?;
+                if !scratch.drawable {
+                    continue;
+                }
+                let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
+                let nan_color_premul =
+                    PrimitiveStyle::from_color(Color { r, g, b, a }).color_premul;
+                let contour_width_px = cfg
+                    .tri_mesh()
+                    .and_then(|mesh| mesh.contour.as_ref())
+                    .map_or(0.0, |contour| contour.line.line_width.max(0.0))
+                    * request.display_scale;
+                data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    paint_order,
+                    geometry: crate::gpu_data_pick::GpuDataPickGeometry::TriMesh {
+                        field_bg: scratch.field_bg.clone(),
+                        charge: Arc::clone(&scratch.charge),
+                        has_fill: primitives.mesh,
+                        has_contour: primitives.mesh_contour,
+                        contour_width_px,
+                        nan_color_premul,
+                    },
+                });
+                continue;
+            }
             if !(primitives.field || primitives.contour) {
                 continue;
             }

@@ -21,6 +21,7 @@ pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/field_grid.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
+    "data_render/common/data_pick.wgsl",
     "data_render/tri_mesh/mesh_input.wgsl",
     "data_render/tri_mesh/mesh_entry.wgsl",
 );
@@ -42,19 +43,28 @@ pub enum TriMeshPass {
     /// The contour strokes over the same triangles (`vs_tri` /
     /// `fs_tri_contour`).
     Contour,
+    /// The picked triangle's outline or the picked level's widened stroke
+    /// (`vs_tri` / `fs_tri_selection`), with the data selection uniform as
+    /// group 1 in place of the style.
+    Selection,
 }
 
 // `TargetPipelines::tri_mesh` has `ALL.len()` slots indexed by
 // `pass as usize`: the last discriminant is the last slot.
-const _: () = assert!(TriMeshPass::Contour as usize + 1 == TriMeshPass::ALL.len());
+const _: () = assert!(TriMeshPass::Selection as usize + 1 == TriMeshPass::ALL.len());
 
 impl TriMeshPass {
-    pub const ALL: [TriMeshPass; 2] = [TriMeshPass::Fill, TriMeshPass::Contour];
+    pub const ALL: [TriMeshPass; 3] = [
+        TriMeshPass::Fill,
+        TriMeshPass::Contour,
+        TriMeshPass::Selection,
+    ];
 
     fn entries(self) -> (&'static str, &'static str) {
         match self {
             TriMeshPass::Fill => ("vs_tri", "fs_tri"),
             TriMeshPass::Contour => ("vs_tri", "fs_tri_contour"),
+            TriMeshPass::Selection => ("vs_tri", "fs_tri_selection"),
         }
     }
 
@@ -62,6 +72,7 @@ impl TriMeshPass {
         match self {
             TriMeshPass::Fill => "figgy triangle mesh field pipeline",
             TriMeshPass::Contour => "figgy triangle mesh contour pipeline",
+            TriMeshPass::Selection => "figgy selected triangle mesh pipeline",
         }
     }
 }
@@ -77,8 +88,9 @@ pub(crate) fn shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     )
 }
 
-/// One triangle mesh pipeline: groups transform, style and the field's group
-/// 2, premultiplied blending into `target_format` at `sample_count`.
+/// One triangle mesh pipeline: groups transform, style (the data selection
+/// uniform for [`TriMeshPass::Selection`]) and the field's group 2,
+/// premultiplied blending into `target_format` at `sample_count`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_tri_mesh_pipeline(
     device: &wgpu::Device,

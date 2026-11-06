@@ -900,4 +900,18 @@ impl Renderer {
             .1
             .ensure_field_scratch(chart_config, cfg)
     }
+
+    /// Build or reuse one triangle mesh series' group 2 at `scale` (#210),
+    /// as [`Self::ensure_field_scratch`] does a field's: the pick reads the
+    /// group the draw does.
+    pub(in crate::renderer) fn ensure_mesh_scratch(
+        &mut self,
+        chart_config: &Config,
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Arc<GridSources>> {
+        self.preparation_parts()
+            .1
+            .ensure_mesh_scratch(chart_config, cfg, scale)
+    }
 }
