@@ -110,9 +110,9 @@ pub use energy_levels::{
     LevelRole, LevelStrokeStyle, LevelView, Transition, TransitionArrowStyle, TransitionDirection,
 };
 pub use feynman::{
-    FeynmanDrag, FeynmanLabelPart, FeynmanLayout, FeynmanSeries, FeynmanStyle, FeynmanVertex,
-    MomentumArrow, MomentumSide, ParticleLine, Propagator, TimeDirection, VertexMarker, VertexRole,
-    Wiggle,
+    FeynmanHit, FeynmanLabelPart, FeynmanLayout, FeynmanPicked, FeynmanSeries, FeynmanStyle,
+    FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine, Propagator, TimeDirection,
+    VertexMarker, VertexRole, Wiggle,
 };
 pub use parallel::{ParallelAxis, ParallelOptions};
 pub use polar::{

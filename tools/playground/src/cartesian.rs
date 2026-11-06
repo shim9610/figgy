@@ -31,12 +31,13 @@ use crate::big_data::{self, BigData, FrameTime};
 use crate::scenes::{self, SceneKind};
 use crate::widgets::{self, choice, color, rich_text, section, slider};
 
-const AXIS_PRESETS: [AxisPreset; 5] = [
+const AXIS_PRESETS: [AxisPreset; 6] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
+    AxisPreset::Hidden,
 ];
 const COLOR_CYCLES: [ColorCycle; 5] = [
     ColorCycle::Classic,
@@ -500,7 +501,10 @@ impl CartesianHost {
             }
             self.selected_annotation = None;
             // A value label is selected alone and dragged by the move.
-            let label = matches!(picked, PickedData::ValueLabel { .. });
+            let label = matches!(
+                picked,
+                PickedData::ValueLabel { .. } | PickedData::FeynmanLabel { .. }
+            );
             self.drag = if label { Drag::ValueLabel } else { Drag::None };
             self.select_pick(r, Some(picked), add && !label);
             return;
@@ -524,6 +528,34 @@ impl CartesianHost {
         let mut config = self.config(r);
         let moved = match self.drag {
             Drag::None => return false,
+            // A Feynman label moves its row's own offset (#234).
+            Drag::ValueLabel
+                if matches!(self.picks.last(), Some(PickedData::FeynmanLabel { .. })) =>
+            {
+                let Some(PickedData::FeynmanLabel {
+                    series_id,
+                    part,
+                    index,
+                    ..
+                }) = self.picks.last().cloned()
+                else {
+                    return false;
+                };
+                let mut series = self.series(r);
+                let Some(diagram) = series
+                    .iter_mut()
+                    .find(|s| s.series_id == series_id)
+                    .and_then(|s| s.feynman_mut())
+                else {
+                    return false;
+                };
+                let (dx, dy) = (dx / d.scale, dy / d.scale);
+                if diagram.drag_label(part, index, dx, dy) != NudgeResult::Moved {
+                    return false;
+                }
+                self.commit_series(r, series);
+                return true;
+            }
             Drag::ValueLabel => {
                 let Some(PickedData::ValueLabel {
                     series_id,

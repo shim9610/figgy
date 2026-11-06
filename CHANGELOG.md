@@ -47,17 +47,30 @@ kind and the `mesh_triangle` selection) are additive.
   `FeynmanSeries::positions` places every unplaced vertex by a deterministic
   layout (legs on the early and late edges of the frame, the rest at the
   mean of their neighbours, solved by conjugate gradients; bubbles on a
-  circle), and `auto_layout` commits it into `at`, the auto-fit pattern.
-  `FeynmanPlacement` places, emits (through `Sink::path` for arcs, waves and
-  coils) and picks a diagram from one placement; `drag_vertex` (which
-  commits the layout on the first drag), `drag_bend` and `drag_label` edit
-  it; `Config::validate_feynman` holds a series to a rectangular chart with
-  a numeric `bottom_x`. `PickedDataRef` gains `FeynmanVertex`,
+  circle), and `auto_layout` commits it into `at`, the auto-fit pattern; a
+  layout whose solver stops converging is an error, and so is working
+  memory that cannot be allocated. `FeynmanSeries::emit` and `pick` place,
+  draw (through `Sink::path` for arcs, waves and coils) and pick a diagram
+  from one placement, in at most four transient buffers each taken once
+  (two for a pick of a committed diagram); a pick outside the plot answers
+  nothing, and within six pixels of a vertex the vertex wins over its
+  lines, so a leg end picks. Parallel lines fan within 170 degrees,
+  however many. The picked part is drawn in `style.picked` (`color`,
+  `width_extra_px`), a picked label boxed. `drag_vertex` (which commits the
+  layout on the first drag), `drag_bend` and `drag_label` edit it;
+  `Config::validate_feynman` holds a series to a rectangular chart with a
+  numeric `bottom_x`. Vertex and propagator ids are held to be unique. `PickedDataRef` gains `FeynmanVertex`,
   `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,
   `feynman_propagator`, `feynman_label`), stepped by `step_selection` over
   the rows and the Feynman series. `SeriesConfig::is_dataless` names the
   energy-level and Feynman kinds. No count limit. Migration: an exhaustive
   match on `DataRenderType` or `PickedDataRef` adds the new arms.
+- **A hidden axis preset** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `AxisPreset::Hidden` switches off every axis line, tick and tick label
+  and the grid, keeping titles, ranges and margins: the frame of a figure
+  that is its own picture, such as a Feynman diagram. The web wrapper's
+  `AxisPreset` mirror gains it. Migration: an exhaustive match on
+  `AxisPreset` adds the arm.
 - **Stroked paths in the sink** ([#234](https://github.com/shim9610/figgy/issues/234)).
   `Sink::path(slot, &[PathSegment], &StrokeStyle)` places a stroked path of
   straight and cubic segments, stroked as one path so a dash runs along it
@@ -1256,11 +1269,13 @@ kind and the `mesh_triangle` selection) are additive.
   A typed data pick answers for a Feynman series on the CPU over the drawn
   placement: `PickedData::FeynmanVertex`, `FeynmanPropagator` and
   `FeynmanLabel` (and `to_ref` into the `PickedDataRef` variants). The
-  picked part is drawn wider. `Renderer::drag_feynman(chart, series_id,
-  FeynmanDrag, dx, dy)` moves a vertex (the first drag commits the
-  layout), bends a propagator or moves a label in the series' panel space
-  (`Renderer::series_panel_space`). Migration: an exhaustive match on
-  `PickedData` adds the three arms.
+  picked part is drawn in the series' picked style.
+  `Renderer::drag_feynman(chart, series_id, FeynmanHit, dx, dy)` moves a
+  vertex (the first drag commits the layout) or bends a propagator in the
+  series' panel space; a label moves in logical pixels through
+  `FeynmanSeries::drag_label`, the value-label drag, and the panel drag
+  refuses it. Migration: an exhaustive match on `PickedData` adds the three
+  arms.
 - **Feynman diagrams are drawn** ([#234](https://github.com/shim9610/figgy/issues/234)).
   A `DataRenderType::Feynman` series is drawn on the CPU through the
   model's emit into the DataLess raster of its panel, as an energy-level
@@ -2961,8 +2976,9 @@ kind and the `mesh_triangle` selection) are additive.
   `pick_point` answers a Feynman part as `{kind: "feynman_vertex" |
   "feynman_propagator" | "feynman_label", series_id, index, part?}`;
   `press_feynman(series_id, kind, index, part)` selects it and starts the
-  drag `on_move` applies (a vertex moves, a propagator bends, a label
-  moves). The wrapper commits a diagram's layout as its series is
+  drag `on_move` applies: a vertex moves and a propagator bends through the
+  panel's axes, and a label moves through the value-label drag, as an
+  energy-level label does. The wrapper commits a diagram's layout as its series is
   registered, so `get_series` returns placed vertices; `auto_layout(series_id)`
   commits it again after an edit in place. `selection_details` reports a
   selected vertex (id, role, drawn position, whether it is placed), a

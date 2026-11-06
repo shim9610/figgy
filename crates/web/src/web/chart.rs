@@ -260,7 +260,7 @@ pub struct FiggyChart {
     pub(super) value_label_pointer: bool,
     /// The current drag started on a part of a Feynman series
     /// (`press_feynman`, #234): the series and what `on_move` moves.
-    pub(super) feynman_pointer: Option<(String, renderer::FeynmanDrag)>,
+    pub(super) feynman_pointer: Option<(String, renderer::FeynmanHit)>,
 }
 
 impl FiggyChart {

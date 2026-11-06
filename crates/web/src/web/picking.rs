@@ -954,8 +954,10 @@ impl FiggyChart {
     /// `"feynman_label"` (with `part` `"vertex"`, `"propagator"` or
     /// `"momentum"`), `index` its row. The part becomes the typed selection
     /// and the drag starts: `on_move` moves a vertex (the first drag commits
-    /// the layout), bends a propagator or moves a label. Returns `false`
-    /// and changes nothing for a row that does not exist.
+    /// the layout) or bends a propagator through `Renderer::drag_feynman`,
+    /// and moves a label through the value-label drag, as
+    /// `press_value_label` does. Returns `false` and changes nothing for a
+    /// row that does not exist.
     /// JS: `if (hit?.kind?.startsWith("feynman_")) chart.press_feynman(hit.series_id, hit.kind, hit.index, hit.part);`
     pub fn press_feynman(
         &mut self,
@@ -965,7 +967,7 @@ impl FiggyChart {
         part: Option<String>,
     ) -> Result<bool, JsValue> {
         use renderer::config::PickedDataRef;
-        use renderer::{FeynmanDrag, FeynmanLabelPart};
+        use renderer::{FeynmanHit, FeynmanLabelPart};
         let Some(series) = self
             .chart_series()?
             .iter()
@@ -979,7 +981,7 @@ impl FiggyChart {
         let (source_id, series_id) = (series.source_id.clone(), series.series_id.clone());
         let (drag, reference) = match kind {
             "feynman_vertex" if index < diagram.vertices.len() => (
-                FeynmanDrag::Vertex(index),
+                FeynmanHit::Vertex(index),
                 PickedDataRef::FeynmanVertex {
                     source_id,
                     series_id: series_id.clone(),
@@ -987,7 +989,7 @@ impl FiggyChart {
                 },
             ),
             "feynman_propagator" if index < diagram.propagators.len() => (
-                FeynmanDrag::Bend(index),
+                FeynmanHit::Propagator(index),
                 PickedDataRef::FeynmanPropagator {
                     source_id,
                     series_id: series_id.clone(),
@@ -1005,7 +1007,7 @@ impl FiggyChart {
                     return Ok(false);
                 }
                 (
-                    FeynmanDrag::Label(part, index),
+                    FeynmanHit::Label(part, index),
                     PickedDataRef::FeynmanLabel {
                         source_id,
                         series_id: series_id.clone(),
@@ -1028,10 +1030,17 @@ impl FiggyChart {
         config.picked_data = Some(picked);
         self.replace_chart_config(config)?;
         self.annotation_pointer = false;
-        self.value_label_pointer = false;
         self.resizing = None;
         self.dragging = true;
-        self.feynman_pointer = Some((series_id, drag));
+        // A label moves through the value-label drag (`move_value_label`);
+        // a vertex or a line through the panel's axes.
+        if let FeynmanHit::Label(..) = drag {
+            self.value_label_pointer = true;
+            self.feynman_pointer = None;
+        } else {
+            self.value_label_pointer = false;
+            self.feynman_pointer = Some((series_id, drag));
+        }
         Ok(true)
     }
 
@@ -1111,6 +1120,34 @@ impl FiggyChart {
     /// `on_move` of a drag `press_value_label` or `press_energy_label`
     /// started: the selected label moves by the delta in document pixels.
     fn move_value_label(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        // A Feynman label moves its row's own offset (#234).
+        if let Some(renderer::config::PickedDataRef::FeynmanLabel {
+            series_id,
+            part,
+            index,
+            ..
+        }) = self
+            .chart_config()?
+            .picked_data
+            .as_ref()
+            .and_then(|picked| picked.refs.first())
+            .cloned()
+        {
+            let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+            let mut series = self.chart_series()?.to_vec();
+            let Some(diagram) = series
+                .iter_mut()
+                .find(|s| s.series_id == series_id)
+                .and_then(SeriesConfig::feynman_mut)
+            else {
+                return Ok(());
+            };
+            if diagram.drag_label(part, index, dx, dy) == NudgeResult::Moved {
+                let config = self.chart_config()?.clone();
+                self.replace_chart_state(config, series)?;
+            }
+            return Ok(());
+        }
         let Some(renderer::config::PickedDataRef::ValueLabel {
             series_id,
             category_index,

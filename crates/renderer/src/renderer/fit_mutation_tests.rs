@@ -50,6 +50,17 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
             (count, edge)
         });
     }
+    // A Feynman diagram fits its vertices' positions, committed or laid
+    // out (#234): read from the SSOT on the CPU.
+    if let Some(diagram) = series.feynman() {
+        let [lo, hi] = diagram.extent().ok()??;
+        let part = |lo: f64, hi: f64| FitExtent {
+            min: lo,
+            max: hi,
+            min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
+        };
+        return Some((part(lo[0], hi[0]), part(lo[1], hi[1])));
+    }
     // A triangle mesh fits from its vertex columns' statistics (#210).
     if series.tri_mesh().is_some() {
         return Some((
@@ -223,6 +234,12 @@ fn every_leaf_that_changes_a_fit_changes_the_fit_token() {
         LayerRef::Base,
         super::chart_config(),
         super::tri_mesh_series(),
+    ));
+    tally.absorb(run_fit_suite_over(
+        "feynman",
+        LayerRef::Base,
+        super::chart_config(),
+        super::feynman_series(),
     ));
     eprintln!("{}", tally.summary("fit (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));

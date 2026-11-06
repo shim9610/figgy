@@ -1101,8 +1101,16 @@ impl<'a> DataLess<'a> {
     fn run_paints(&self, range: &Range<usize>, run: DataRun) -> bool {
         range.clone().any(|panel| {
             let steps = run.steps(panel);
-            (steps.gpu || steps.labels) && self.paints(panel)
+            (steps.gpu && self.paints(panel)) || (steps.labels && self.labels(panel))
         })
+    }
+
+    /// Whether panel `panel` draws GPU value labels: a run that holds only
+    /// its label step writes an image only then.
+    fn labels(&self, panel: usize) -> bool {
+        let config = &self.panels[panel];
+        self.of_panel(panel)
+            .any(|cfg| crate::renderer::draws_value_labels(config, cfg))
     }
 
     /// Emit the DataLess series of panel `panel` (placed at `scale` export

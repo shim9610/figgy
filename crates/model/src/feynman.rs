@@ -298,7 +298,7 @@ impl ParticleLine {
 pub struct MomentumArrow {
     pub label: RichText,
     /// Which side of the line, facing along it from `from` to `to`.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_left"))]
     pub side: MomentumSide,
     /// Point the arrow from `to` to `from`.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
@@ -344,8 +344,32 @@ pub struct FeynmanStyle {
     /// The angle between two lines of a fan, degrees, `0..=120`: two lines
     /// between the same vertices bend half of it each way, a bubble.
     pub fan_step: f32,
-    /// How much a picked line or marker widens, `1..=4`.
-    pub picked_width_scale: f32,
+    /// How the picked part is drawn.
+    pub picked: FeynmanPicked,
+}
+
+/// How the picked vertex, propagator or label of a Feynman series is drawn:
+/// a line or marker in `color`, `width_extra_px` wider; a label boxed in
+/// `color` at that width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct FeynmanPicked {
+    /// The colour, channels in `0..=1`.
+    pub color: Color,
+    /// The extra width, logical pixels, `0..=16`.
+    pub width_extra_px: f32,
+}
+
+impl Default for FeynmanPicked {
+    /// The selection highlight colour of the document's default picked
+    /// data, two pixels wider.
+    fn default() -> Self {
+        Self {
+            color: Color::from_rgb8(255, 215, 0),
+            width_extra_px: 2.0,
+        }
+    }
 }
 
 /// The amplitude and wavelength of a wave or a coil, logical pixels.
@@ -374,7 +398,7 @@ impl Default for FeynmanStyle {
             dot_radius: 3.0,
             loop_radius: 18.0,
             fan_step: 90.0,
-            picked_width_scale: 2.0,
+            picked: FeynmanPicked::default(),
         }
     }
 }
@@ -403,8 +427,8 @@ impl FeynmanStyle {
         {
             return Err("invalid Feynman marker, arrow, loop or fan size");
         }
-        if !finite_in(self.picked_width_scale, 1.0, 4.0) {
-            return Err("picked_width_scale must be in 1..=4");
+        if !color_ok(self.picked.color) || !finite_in(self.picked.width_extra_px, 0.0, 16.0) {
+            return Err("invalid Feynman picked style: a colour and an extra width in 0..=16");
         }
         Ok(())
     }
@@ -454,6 +478,11 @@ fn is_zero_offset(offset: &[f32; 2]) -> bool {
 #[cfg(feature = "serde")]
 fn is_false(v: &bool) -> bool {
     !*v
+}
+
+#[cfg(feature = "serde")]
+fn is_left(side: &MomentumSide) -> bool {
+    *side == MomentumSide::Left
 }
 
 fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
@@ -1397,8 +1426,8 @@ impl FeynmanSeries {
     /// Emit every drawn part into `sink` in the [`Slot::Above`] slot, in
     /// `space` (the panel's anchor space, logical pixels): the propagators
     /// in row order, the vertex markers over them, then every label. The
-    /// part `picked` is drawn `style.picked_width_scale` times as wide, a
-    /// picked label boxed. Nothing is stored; the sink paints, bounds or
+    /// part `picked` is drawn in `style.picked`: its colour, that much
+    /// wider, a picked label boxed. Nothing is stored; the sink paints, bounds or
     /// hit tests the parts. Works in the placement's two buffers and one
     /// path buffer reused by every line.
     pub fn emit(
@@ -1436,7 +1465,8 @@ impl FeynmanSeries {
     /// the pick is the drawn geometry; nothing is registered per row (rule
     /// 3). Within six pixels of a vertex the vertex wins over its
     /// lines; on a tie a part drawn later wins: labels over markers over
-    /// lines.
+    /// lines. The series is drawn clipped to the plot, so a cursor outside
+    /// `space`'s plot rectangle picks nothing.
     pub fn pick(
         &self,
         space: &dyn AnnotationSpace,
@@ -1444,6 +1474,12 @@ impl FeynmanSeries {
         cursor: [f32; 2],
         max_distance: f32,
     ) -> Result<Option<(FeynmanHit, f32)>, &'static str> {
+        let plot = space.plot_rect();
+        if !(plot.x..=plot.x + plot.width).contains(&cursor[0])
+            || !(plot.y..=plot.y + plot.height).contains(&cursor[1])
+        {
+            return Ok(None);
+        }
         let placed = self.placed(space, None)?;
         let mut best: Option<(FeynmanHit, f32)> = None;
         let mut offer = |hit: FeynmanHit, distance: f32| {
@@ -1486,45 +1522,6 @@ const LABEL_PARTS: [FeynmanLabelPart; 3] = [
     FeynmanLabelPart::Momentum,
     FeynmanLabelPart::Vertex,
 ];
-
-/// What a drag on a Feynman series moves (#234): a vertex, a propagator's
-/// bend, or a label.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FeynmanDrag {
-    Vertex(usize),
-    Bend(usize),
-    Label(FeynmanLabelPart, usize),
-}
-
-impl FeynmanDrag {
-    /// The drag a press on `hit` starts.
-    pub fn of_hit(hit: FeynmanHit) -> Self {
-        match hit {
-            FeynmanHit::Vertex(index) => Self::Vertex(index),
-            FeynmanHit::Propagator(index) => Self::Bend(index),
-            FeynmanHit::Label(part, index) => Self::Label(part, index),
-        }
-    }
-}
-
-impl FeynmanSeries {
-    /// Apply `drag` by `(dx, dy)` logical pixels in the panel's anchor space
-    /// `space`: [`Self::drag_vertex`], [`Self::drag_bend`] or
-    /// [`Self::drag_label`].
-    pub fn drag(
-        &mut self,
-        drag: FeynmanDrag,
-        dx: f32,
-        dy: f32,
-        space: &dyn AnnotationSpace,
-    ) -> NudgeResult {
-        match drag {
-            FeynmanDrag::Vertex(index) => self.drag_vertex(index, dx, dy, space),
-            FeynmanDrag::Bend(index) => self.drag_bend(index, dx, dy, space),
-            FeynmanDrag::Label(part, index) => self.drag_label(part, index, dx, dy),
-        }
-    }
-}
 
 // Screen geometry: points are `[x, y]` logical pixels, y down.
 
@@ -1847,11 +1844,14 @@ impl Placed<'_> {
         reach + width / 2.0
     }
 
-    fn picked_scale(&self, hit: FeynmanHit) -> f32 {
+    /// The extra width and the colour of part `hit`: the picked style's
+    /// when it is the picked part, else none and `color`.
+    fn picked_look(&self, hit: FeynmanHit, color: Color) -> (f32, Color) {
         if self.picked == Some(hit) {
-            self.series.style.picked_width_scale
+            let picked = self.series.style.picked;
+            (picked.width_extra_px, picked.color)
         } else {
-            1.0
+            (0.0, color)
         }
     }
 
@@ -1869,9 +1869,11 @@ impl Placed<'_> {
         let series = self.series;
         let propagator = &series.propagators[index];
         let style = &series.style;
-        let widen = self.picked_scale(FeynmanHit::Propagator(index));
-        let width = propagator.width_px.unwrap_or(style.width) * widen;
-        let color = propagator.color.unwrap_or(style.color);
+        let (extra, color) = self.picked_look(
+            FeynmanHit::Propagator(index),
+            propagator.color.unwrap_or(style.color),
+        );
+        let width = propagator.width_px.unwrap_or(style.width) + extra;
         let base = geometry.base;
         let closed = geometry.is_loop;
         let stroke = StrokeStyle {
@@ -1914,8 +1916,8 @@ impl Placed<'_> {
             if reversed {
                 dir = scale(dir, -1.0);
             }
-            let length = style.head_length * widen;
-            let half = style.head_width * widen / 2.0;
+            let length = style.head_length + extra;
+            let half = (style.head_width + extra) / 2.0;
             let centre = base.point(t);
             let tip = add(centre, scale(dir, length / 2.0));
             let back = sub(centre, scale(dir, length / 2.0));
@@ -1975,10 +1977,10 @@ impl Placed<'_> {
         };
         let style = &self.series.style;
         let picked = self.picked == Some(FeynmanHit::Vertex(index));
-        let widen = self.picked_scale(FeynmanHit::Vertex(index));
+        let (extra, color) = self.picked_look(FeynmanHit::Vertex(index), style.color);
         let line = StrokeStyle {
-            width: style.width * widen,
-            color: style.color,
+            width: style.width + extra,
+            color,
             dash: &[],
             tag: "feynman_vertex",
         };
@@ -1988,8 +1990,8 @@ impl Placed<'_> {
             VertexMarker::Hidden if picked => {
                 sink.polygon(
                     Slot::Above,
-                    &circle(p, style.dot_radius * widen),
-                    Some(style.color),
+                    &circle(p, style.dot_radius + extra / 2.0),
+                    Some(color),
                     None,
                 );
             }
@@ -1997,21 +1999,21 @@ impl Placed<'_> {
             VertexMarker::Dot => {
                 sink.polygon(
                     Slot::Above,
-                    &circle(p, style.dot_radius * widen),
-                    Some(style.color),
+                    &circle(p, style.dot_radius + extra / 2.0),
+                    Some(color),
                     None,
                 );
             }
             VertexMarker::Blob { radius_px, fill } => {
                 sink.polygon(
                     Slot::Above,
-                    &circle(p, radius_px * widen),
+                    &circle(p, radius_px),
                     Some(fill.unwrap_or(style.color)),
                     Some(&line),
                 );
             }
             VertexMarker::Cross | VertexMarker::CircledCross => {
-                let r = (style.dot_radius * 2.0).max(4.0) * widen;
+                let r = (style.dot_radius * 2.0).max(4.0);
                 let d = r * std::f32::consts::FRAC_1_SQRT_2;
                 sink.stroke(
                     Slot::Above,
@@ -2041,7 +2043,7 @@ impl Placed<'_> {
     }
 
     /// The box drawn around a picked label: its rect, a little apart, in
-    /// the series colour at the picked width.
+    /// the picked colour, one pixel plus the picked extra width across.
     fn emit_label_box(&self, text: &PlacedText<'_>, sink: &mut dyn Sink) {
         let style = &self.series.style;
         let r = text.rect();
@@ -2051,8 +2053,8 @@ impl Placed<'_> {
             r.y + r.height + LABEL_BOX_GAP,
         );
         let line = StrokeStyle {
-            width: style.width.min(1.5) * style.picked_width_scale,
-            color: style.color,
+            width: 1.0 + style.picked.width_extra_px,
+            color: style.picked.color,
             dash: &[],
             tag: "feynman_label",
         };

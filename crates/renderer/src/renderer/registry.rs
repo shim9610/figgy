@@ -2355,7 +2355,7 @@ impl Renderer {
     /// `id`, in document logical pixels: where a Feynman drag (#234)
     /// converts its delta, as an annotation drag does. A layered document
     /// answers the series' own panel.
-    pub fn series_panel_space(
+    pub(crate) fn series_panel_space(
         &self,
         id: ChartId,
         series_id: &str,
@@ -2370,16 +2370,20 @@ impl Renderer {
     }
 
     /// Drag a part of the Feynman series `series_id` of chart `id` by
-    /// `(dx, dy)` document logical pixels (#234): a vertex (the first drag
-    /// commits the layout), a propagator's bend or a label, through
-    /// [`crate::feynman::FeynmanSeries::drag`] in the series' panel space.
-    /// The registered series is replaced on a move; the host reads it back
-    /// through [`Self::chart_series`].
+    /// `(dx, dy)` document logical pixels (#234), in the series' panel
+    /// space: a vertex moves through the axes
+    /// ([`crate::feynman::FeynmanSeries::drag_vertex`]; the first drag
+    /// commits the layout) and a propagator bends
+    /// ([`crate::feynman::FeynmanSeries::drag_bend`]). A label moves in
+    /// logical pixels through the value-label drag
+    /// ([`crate::feynman::FeynmanSeries::drag_label`]), which needs no
+    /// panel space, and is refused here. The registered series is replaced
+    /// on a move; the host reads it back through [`Self::chart_series`].
     pub fn drag_feynman(
         &mut self,
         id: ChartId,
         series_id: &str,
-        drag: crate::feynman::FeynmanDrag,
+        drag: crate::feynman::FeynmanHit,
         dx: f32,
         dy: f32,
     ) -> Result<crate::layout::NudgeResult> {
@@ -2391,10 +2395,19 @@ impl Renderer {
         &mut self,
         id: ChartId,
         series_id: &str,
-        drag: crate::feynman::FeynmanDrag,
+        drag: crate::feynman::FeynmanHit,
         dx: f32,
         dy: f32,
     ) -> Result<crate::layout::NudgeResult> {
+        use crate::feynman::FeynmanHit;
+        if let FeynmanHit::Label(..) = drag {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason:
+                    "a Feynman label moves through FeynmanSeries::drag_label, the value-label drag"
+                        .into(),
+            });
+        }
         let space = self.series_panel_space(id, series_id)?;
         let state = self
             .chart_states
@@ -2415,7 +2428,13 @@ impl Renderer {
         let Some(diagram) = series[position].feynman_mut() else {
             return Err(FiggyError::internal("the found series is a Feynman series"));
         };
-        let moved = diagram.drag(drag, dx, dy, &space);
+        let moved = match drag {
+            FeynmanHit::Vertex(index) => diagram.drag_vertex(index, dx, dy, &space),
+            FeynmanHit::Propagator(index) => diagram.drag_bend(index, dx, dy, &space),
+            FeynmanHit::Label(..) => {
+                crate::layout::NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds)
+            }
+        };
         if moved == crate::layout::NudgeResult::Moved {
             self.set_chart_series_unreported(id, series)?;
         }

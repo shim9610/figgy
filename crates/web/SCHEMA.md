@@ -1433,7 +1433,7 @@ of a polygon edge the cursor's rightward ray crosses.
 - `particle`은 `"Plain"`, `"Fermion"`, `"AntiFermion"`, `"Photon"`, `"ChargedBoson"`, `"Gluon"`, `"Scalar"`, `"ChargedScalar"`, `"Ghost"`, `"Majorana"`, `"Graviton"`, `"DoubleLine"` 중 하나다. `from`과 `to`가 같으면 고리를 그린다.
 - 생략한 `style`과 `layout`은 기본값을 쓰고, 기본값과 같으면 `get_series`가 쓰지 않는다.
 - 어떤 목록에도 개수 상한이 없다. 스트리밍 디스플레이는 이 시리즈를 거부한다.
-- `pick_point`는 꼭짓점을 `"feynman_vertex"`, 전파자를 `"feynman_propagator"`, 라벨을 `"part"`(`"vertex"`·`"propagator"`·`"momentum"`)가 붙은 `"feynman_label"`로 돌려준다. 행은 `index`다. `press_feynman(series_id, kind, index, part)`로 고르고 드래그하면 꼭짓점이 움직이고(첫 드래그가 배치를 확정한다), 전파자가 휘고, 라벨이 움직인다.
+- `pick_point`는 꼭짓점을 `"feynman_vertex"`, 전파자를 `"feynman_propagator"`, 라벨을 `"part"`(`"vertex"`·`"propagator"`·`"momentum"`)가 붙은 `"feynman_label"`로 돌려준다. 행은 `index`다. `press_feynman(series_id, kind, index, part)`로 고르고 드래그하면 꼭짓점이 움직이고(첫 드래그가 배치를 확정한다), 전파자가 휜다. 라벨은 값 라벨 드래그와 같은 경로로 움직인다. 플롯 밖의 커서는 아무것도 고르지 않는다.
 - `picked_data`의 선택 종류는 `{"kind": "feynman_vertex", "series_id", "vertex_index"}`, `{"kind": "feynman_propagator", "series_id", "propagator_index"}`, `{"kind": "feynman_label", "series_id", "part", "index"}`다.
 
 ## `Parallel` render_type

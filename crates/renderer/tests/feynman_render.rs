@@ -584,39 +584,230 @@ fn vertices_propagators_and_labels_pick_with_their_rows() {
     }
 }
 
+/// Whether the picked colour (the default gold) lies in `rect`, export
+/// pixels.
+fn gold_in(img: &RasterImage, rect: (u32, u32, u32, u32)) -> bool {
+    let (x0, y0, x1, y1) = rect;
+    (y0..=y1.min(img.height - 1)).any(|y| {
+        (x0..=x1.min(img.width - 1)).any(|x| {
+            let i = ((y * img.width + x) * 4) as usize;
+            let p = &img.rgba[i..i + 4];
+            p[3] > 100 && p[0] > 200 && p[1] > 150 && p[2] < 90
+        })
+    })
+}
+
+/// The square of half side `r` about `(x, y)`.
+fn around((x, y): (u32, u32), r: u32) -> (u32, u32, u32, u32) {
+    (x.saturating_sub(r), y.saturating_sub(r), x + r, y + r)
+}
+
+/// The diagram the highlight tests pick from: the s channel committed,
+/// a label on the photon, a momentum arrow under it and a label on v1.
+fn every_label() -> FeynmanSeries {
+    let mut diagram = labelled();
+    diagram.vertices[2].label = Some(renderer::text::RichText::plain("v", Color::BLACK, 16.0, ""));
+    diagram.propagators[2].momentum = Some(renderer::feynman::MomentumArrow {
+        label: renderer::text::RichText::plain("q", Color::BLACK, 16.0, ""),
+        side: renderer::feynman::MomentumSide::Right,
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    diagram
+}
+
 #[test]
-fn the_picked_vertex_is_drawn_wider() {
+fn every_picked_part_is_drawn_in_the_picked_style() {
+    use renderer::PickedDataRef as Ref;
     let mut r = renderer();
     let mut chart = chart();
-    let list = [series("d", labelled())];
-    // The dot's radius is 3 px; picked, 6.
-    let ring = |img: &RasterImage, scale: f32| {
-        let (x, y) = at(&chart_plain(), 0.25, 0.5, scale);
-        let i = ((y * img.width + x + (5.0 * scale) as u32) * 4) as usize;
-        // Off the fermion lines: straight right of the vertex lies the
-        // photon, so look below it.
-        let j = (((y + (5.0 * scale) as u32) * img.width + x) * 4) as usize;
-        (img.rgba[i + 3], img.rgba[j + 3])
+    let diagram = every_label();
+    let list = [series("d", diagram.clone())];
+    // The label blocks in drawing order: the photon's, its momentum's,
+    // then v1's, in logical pixels.
+    let config = chart.config().clone();
+    let space = renderer::annotation::pixel_space_for_config(&config);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let mut texts = Vec::new();
+    diagram
+        .emit(
+            &space,
+            None,
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let renderer::DrawnPart::Text(rect) = part {
+                    texts.push(rect);
+                }
+            }),
+        )
+        .unwrap();
+    assert_eq!(texts.len(), 3);
+    let label = |k: usize, scale: f32| {
+        let t: renderer::layout::RectF = texts[k];
+        let pad = 5.0;
+        (
+            ((t.x - pad) * scale).max(0.0) as u32,
+            ((t.y - pad) * scale).max(0.0) as u32,
+            ((t.x + t.width + pad) * scale) as u32,
+            ((t.y + t.height + pad) * scale) as u32,
+        )
+    };
+    let label_ref = |part, index| Ref::FeynmanLabel {
+        source_id: None,
+        series_id: "d".into(),
+        part,
+        index,
     };
     for scale in [1.0f32, 2.0] {
-        let plain = export(&mut r, &chart, &list, scale);
-        assert_eq!(ring(&plain, scale).1, 0, "{scale}x unpicked dot");
-        chart.config_mut().picked_data = Some(renderer::DataSelectionsConfig {
-            refs: vec![renderer::PickedDataRef::FeynmanVertex {
-                source_id: None,
-                series_id: "d".into(),
-                vertex_index: 2,
-            }],
-            ..Default::default()
-        });
-        let picked = export(&mut r, &chart, &list, scale);
-        assert!(ring(&picked, scale).1 > 100, "{scale}x picked dot");
+        let r6 = (6.0 * scale) as u32;
+        let cases: Vec<(&str, Ref, (u32, u32, u32, u32))> = vec![
+            (
+                "an internal vertex",
+                Ref::FeynmanVertex {
+                    source_id: None,
+                    series_id: "d".into(),
+                    vertex_index: 2,
+                },
+                around(at(&chart, 0.25, 0.5, scale), r6),
+            ),
+            (
+                "a leg end",
+                Ref::FeynmanVertex {
+                    source_id: None,
+                    series_id: "d".into(),
+                    vertex_index: 4,
+                },
+                around(at(&chart, 1.0, 2.0 / 3.0, scale), r6),
+            ),
+            (
+                "a propagator",
+                Ref::FeynmanPropagator {
+                    source_id: None,
+                    series_id: "d".into(),
+                    propagator_index: 0,
+                },
+                around(at(&chart, 0.125, (2.0 / 3.0 + 0.5) / 2.0, scale), r6),
+            ),
+            (
+                "the propagator label",
+                label_ref(renderer::FeynmanLabelPart::Propagator, 2),
+                label(0, scale),
+            ),
+            (
+                "the momentum label",
+                label_ref(renderer::FeynmanLabelPart::Momentum, 2),
+                label(1, scale),
+            ),
+            (
+                "the vertex label",
+                label_ref(renderer::FeynmanLabelPart::Vertex, 2),
+                label(2, scale),
+            ),
+        ];
         chart.config_mut().picked_data = None;
+        let plain = export(&mut r, &chart, &list, scale);
+        for (name, reference, place) in cases {
+            assert!(!gold_in(&plain, place), "{scale}x {name}: unpicked");
+            chart.config_mut().picked_data = Some(renderer::DataSelectionsConfig {
+                refs: vec![reference],
+                ..Default::default()
+            });
+            let picked = export(&mut r, &chart, &list, scale);
+            assert!(gold_in(&picked, place), "{scale}x {name}: picked");
+            chart.config_mut().picked_data = None;
+        }
     }
 }
 
-fn chart_plain() -> Chart {
-    chart()
+#[test]
+fn plot_area_and_decoration_drags_keep_the_diagram_on_its_data() {
+    use renderer::layout::{Element, NudgeResult, Side};
+    let mut r = renderer();
+    let mut base = chart();
+    {
+        // Decorations to drag: a title, a legend and labelled axes.
+        let text = |s: &str| renderer::text::RichText::plain(s, Color::BLACK, 12.0, "");
+        let config = base.config_mut();
+        config.chart_title.visible = true;
+        config.chart_title.text = text("Bhabha scattering");
+        config.legend.visible = true;
+        config.legend.content = text("s channel");
+        for axis in [&mut config.bottom_x, &mut config.left_y] {
+            axis.line_visible = true;
+            axis.title_option.visible = true;
+            axis.title_option.text = text("axis");
+            axis.label_style.label_visible = true;
+        }
+    }
+    let list = [series("d", labelled())];
+    let measure = renderer::CpuTextMeasure::for_style(&base.config().draw_style);
+    let edits: [(&str, Element, f32, f32); 8] = [
+        ("plot-area drag", Element::DataArea, 24.0, 12.0),
+        (
+            "plot-area resize",
+            Element::DataAreaEdge(Side::Right),
+            -40.0,
+            0.0,
+        ),
+        (
+            "plot-area resize, top",
+            Element::DataAreaEdge(Side::Top),
+            0.0,
+            20.0,
+        ),
+        ("title drag", Element::ChartTitle, 10.0, 4.0),
+        ("legend drag", Element::Legend, -30.0, 10.0),
+        ("axis drag", Element::Axis(Side::Bottom), 0.0, 6.0),
+        ("axis title drag", Element::AxisTitle(Side::Left), -4.0, 8.0),
+        (
+            "tick label drag",
+            Element::AxisLabel(Side::Bottom),
+            0.0,
+            3.0,
+        ),
+    ];
+    for (name, element, dx, dy) in edits {
+        let moves_plot = matches!(element, Element::DataArea | Element::DataAreaEdge(_));
+        let mut config = base.config().clone();
+        assert_eq!(
+            config.nudge(element, &measure, dx, dy),
+            NudgeResult::Moved,
+            "{name}"
+        );
+        let chart = Chart::new(config);
+        for scale in [1.0f32, 2.0] {
+            // The diagram is drawn on its data where the edited layout puts
+            // it: the vertex v1 at (0.25, 0.5), the photon's middle.
+            let image = export(&mut r, &chart, &list, scale);
+            assert!(
+                near(&image, at(&chart, 0.25, 0.5, scale), 1),
+                "{scale}x {name}: the vertex"
+            );
+            assert!(
+                near(&image, at(&chart, 0.5, 0.5, scale), (5.0 * scale) as u32),
+                "{scale}x {name}: the photon"
+            );
+            // It picks where it is drawn.
+            let hit = pick(&mut r, &chart, &list, scale, at(&chart, 0.25, 0.5, scale));
+            assert!(
+                matches!(
+                    hit,
+                    Some(renderer::PickedData::FeynmanVertex {
+                        vertex_index: 2,
+                        ..
+                    })
+                ),
+                "{scale}x {name}: {hit:?}"
+            );
+        }
+        if moves_plot {
+            assert_ne!(
+                chart.config().data_area(),
+                base.config().data_area(),
+                "{name} moves the plot"
+            );
+        }
+    }
 }
 
 #[test]
@@ -630,7 +821,7 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
     // Up a fifth of the plot.
     let dy = -(da.height as f32) * 0.2;
     let moved = r
-        .drag_feynman(id, "d", renderer::FeynmanDrag::Vertex(2), 0.0, dy)
+        .drag_feynman(id, "d", renderer::FeynmanHit::Vertex(2), 0.0, dy)
         .unwrap();
     assert_eq!(moved, renderer::layout::NudgeResult::Moved);
     let diagram = r.chart_series(id).unwrap()[0].feynman().unwrap().clone();
@@ -664,7 +855,7 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
     }
     // A bend and a label drag.
     assert_eq!(
-        r.drag_feynman(id, "d", renderer::FeynmanDrag::Bend(2), 0.0, -30.0)
+        r.drag_feynman(id, "d", renderer::FeynmanHit::Propagator(2), 0.0, -30.0)
             .unwrap(),
         renderer::layout::NudgeResult::Moved
     );
@@ -676,19 +867,34 @@ fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
             .bend
             .is_some()
     );
-    assert_eq!(
+    // A label moves through the value-label drag, in logical pixels: the
+    // host edits its series and registers it again. The panel drag
+    // refuses it.
+    assert!(
         r.drag_feynman(
             id,
             "d",
-            renderer::FeynmanDrag::Label(renderer::FeynmanLabelPart::Vertex, 0),
+            renderer::FeynmanHit::Label(renderer::FeynmanLabelPart::Vertex, 0),
             3.0,
             4.0
         )
-        .unwrap(),
+        .is_err()
+    );
+    let mut list = r.chart_series(id).unwrap().to_vec();
+    assert_eq!(
+        list[0]
+            .feynman_mut()
+            .unwrap()
+            .drag_label(renderer::FeynmanLabelPart::Vertex, 0, 3.0, 4.0),
         renderer::layout::NudgeResult::Moved
     );
+    r.set_chart_series(id, list).unwrap();
+    assert_eq!(
+        r.chart_series(id).unwrap()[0].feynman().unwrap().vertices[0].label_offset,
+        [3.0, 4.0]
+    );
     assert!(
-        r.drag_feynman(id, "missing", renderer::FeynmanDrag::Vertex(0), 1.0, 1.0)
+        r.drag_feynman(id, "missing", renderer::FeynmanHit::Vertex(0), 1.0, 1.0)
             .is_err()
     );
 }
@@ -788,7 +994,7 @@ fn vertex_and_momentum_labels_pick_with_their_part() {
     let mut r = renderer();
     let chart = chart();
     let mut diagram = labelled();
-    diagram.vertices[0].label = Some(renderer::text::RichText::plain("e", Color::BLACK, 16.0, ""));
+    diagram.vertices[2].label = Some(renderer::text::RichText::plain("v", Color::BLACK, 16.0, ""));
     diagram.propagators[2].momentum = Some(renderer::feynman::MomentumArrow {
         label: renderer::text::RichText::plain("q", Color::BLACK, 16.0, ""),
         side: renderer::feynman::MomentumSide::Right,
@@ -816,7 +1022,7 @@ fn vertex_and_momentum_labels_pick_with_their_part() {
         .unwrap();
     assert_eq!(texts.len(), 3);
     for (part, index, rect) in [
-        (renderer::FeynmanLabelPart::Vertex, 0, texts[2]),
+        (renderer::FeynmanLabelPart::Vertex, 2, texts[2]),
         (renderer::FeynmanLabelPart::Momentum, 2, texts[1]),
     ] {
         for scale in [1.0f32, 2.0] {
@@ -884,8 +1090,11 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
         .register_chart(chart.config().clone(), list.clone())
         .unwrap();
     // Each series is placed in its own panel's space.
-    let over_space = r.series_panel_space(id, "over").unwrap();
-    let below_space = r.series_panel_space(id, "below").unwrap();
+    let document = chart.config();
+    let over_space =
+        renderer::annotation::pixel_space_for_config(&document.overlay_panel(0).unwrap());
+    let below_space =
+        renderer::annotation::pixel_space_for_config(&document.subplot_config(0).unwrap());
     use renderer::AnnotationSpace as _;
     let point = |space: &renderer::annotation::PixelSpace, p: [f64; 2]| {
         (
@@ -920,7 +1129,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
     // 20 px of the subplot's y axis.
     let plot = below_space.plot_rect();
     assert_eq!(
-        r.drag_feynman(id, "below", renderer::FeynmanDrag::Vertex(0), 0.0, -20.0)
+        r.drag_feynman(id, "below", renderer::FeynmanHit::Vertex(0), 0.0, -20.0)
             .unwrap(),
         renderer::layout::NudgeResult::Moved
     );
@@ -938,7 +1147,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
     assert!((moved[1] - want).abs() < 1e-3, "{moved:?} want {want}");
     // In the overlay, 20 px is 20 px of its 0..2 axis.
     let plot = over_space.plot_rect();
-    r.drag_feynman(id, "over", renderer::FeynmanDrag::Vertex(0), 0.0, -20.0)
+    r.drag_feynman(id, "over", renderer::FeynmanHit::Vertex(0), 0.0, -20.0)
         .unwrap();
     let moved = r
         .chart_series(id)

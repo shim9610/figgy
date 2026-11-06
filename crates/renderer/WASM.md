@@ -435,7 +435,7 @@ const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
 
 ### 3.7 축·색상 프리셋
 
-`model::AxisPreset`의 축 모양 5종과 `model::ColorCycle`의 색상 순서 5종은 추가 필드가 없는 열거형이다. wasm-bindgen이 이를 정수 열거형으로 내보내며, 웹 래퍼는 같은 이름의 열거형과 `From` 변환을 제공한다.
+`model::AxisPreset`의 축 모양 6종(축선·눈금·눈금 라벨·격자를 모두 숨기는 `Hidden` 포함)과 `model::ColorCycle`의 색상 순서 5종은 추가 필드가 없는 열거형이다. wasm-bindgen이 이를 정수 열거형으로 내보내며, 웹 래퍼는 같은 이름의 열거형과 `From` 변환을 제공한다.
 
 ```js
 chart.apply_axis_preset(AxisPreset.OpenOutward);   // 4축 일괄
@@ -578,7 +578,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 피킹 기준 | 최종 장식 픽셀 대신 원본 점·선분을 기준으로 한다. 산점도는 지정한 기호 반지름을, 선은 인접 원본 점 사이의 직선을 사용한다. 점선의 공백, 사각 끝 모양, 스케치의 흔들림은 판정 경로에 영향을 주지 않는다. |
 | 설정 읽기·쓰기 | `get_config()` / `set_config(json)`, `get_series()` / `set_series(json)`. `set_colorbar_axis(json)`은 색상 막대의 전체 `AxisOptions`를 교체한다. |
 | 프리셋 | `apply_axis_preset(AxisPreset)`, `apply_color_cycle(ColorCycle)`, `color_cycle_css(cycle)`. |
-| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. 값 라벨은 CPU 히트 맵에 없으므로, 피킹이 돌려준 `label_id`로 `press_value_label(label_id)`를 호출해 선택하고 끌기를 시작한다. 이후 `on_move`가 그 시리즈의 `labels.offsets`를 바꾸고 `on_release`가 끝낸다. 파인만 도표(#234)의 꼭짓점·전파자·라벨은 `pick_point`가 `kind`(`"feynman_vertex"`·`"feynman_propagator"`·`"feynman_label"`)와 `index`, 라벨이면 `part`로 돌려준다. 이 값으로 `press_feynman(series_id, kind, index, part)`를 호출하면 선택과 끌기가 시작되고, `on_move`가 꼭짓점을 옮기거나(첫 끌기가 배치를 확정한다) 전파자를 휘거나 라벨을 옮긴다. 래퍼는 시리즈를 등록할 때 도표의 자동 배치를 확정하며, 시리즈를 직접 고친 뒤에는 `auto_layout(series_id)`로 다시 확정한다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. |
+| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. 값 라벨은 CPU 히트 맵에 없으므로, 피킹이 돌려준 `label_id`로 `press_value_label(label_id)`를 호출해 선택하고 끌기를 시작한다. 이후 `on_move`가 그 시리즈의 `labels.offsets`를 바꾸고 `on_release`가 끝낸다. 파인만 도표(#234)의 꼭짓점·전파자·라벨은 `pick_point`가 `kind`(`"feynman_vertex"`·`"feynman_propagator"`·`"feynman_label"`)와 `index`, 라벨이면 `part`로 돌려준다. 이 값으로 `press_feynman(series_id, kind, index, part)`를 호출하면 선택과 끌기가 시작되고, `on_move`가 꼭짓점을 옮기거나(첫 끌기가 배치를 확정한다) 전파자를 휜다. 라벨은 값 라벨 끌기와 같은 경로로 오프셋을 옮긴다. 래퍼는 시리즈를 등록할 때 도표의 자동 배치를 확정하며, 시리즈를 직접 고친 뒤에는 `auto_layout(series_id)`로 다시 확정한다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. |
 | 선택 표시 | `set_picked_data(json)`는 `DataSelectionsConfig` 또는 `null` JSON 문자열로 `Config.picked_data`만 교체한다. 점·막대·셀·등고선·값 라벨 선택이 모두 여기에 들어간다. `null`은 표시를 지운다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |

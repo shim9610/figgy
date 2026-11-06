@@ -16,6 +16,7 @@ pub enum AxisPreset {
     OpenOutward,
     OpenInward,
     Minimal,
+    Hidden,
 }
 
 impl From<AxisPreset> for renderer::AxisPreset {
@@ -26,6 +27,7 @@ impl From<AxisPreset> for renderer::AxisPreset {
             AxisPreset::OpenOutward => Self::OpenOutward,
             AxisPreset::OpenInward => Self::OpenInward,
             AxisPreset::Minimal => Self::Minimal,
+            AxisPreset::Hidden => Self::Hidden,
         }
     }
 }

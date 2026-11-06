@@ -122,6 +122,12 @@ pub(in crate::renderer) fn selected_value_label(
     })
 }
 
+/// Whether series `cfg` draws value labels under the panel `config`: the
+/// value-label step of its panel paints only then.
+pub(crate) fn draws_value_labels(config: &Config, cfg: &SeriesConfig) -> bool {
+    data_render::value_label_kind(&cfg.render_type, series_selected(config, cfg)).is_some()
+}
+
 /// What series `cfg`'s labels bake from under the panel `config`, or
 /// `None` when the series draws no value labels.
 pub(in crate::renderer) fn value_label_atlas_input(

@@ -994,12 +994,17 @@ picked on the CPU through the placement its raster draws with, as an
 energy-level series is: a typed data pick answers
 `PickedData::FeynmanVertex`, `FeynmanPropagator` or
 `FeynmanLabel { part, index }`, labels over markers over lines, and nothing
-inside a break gap. The picked part is drawn wider. `step_selection` walks
-the vertices or the propagators by `dx` and the Feynman series by `dy`; a
-label does not step. `Renderer::drag_feynman(chart, series_id, drag, dx, dy)`
-applies a `FeynmanDrag` in the series' panel space
-(`Renderer::series_panel_space`): `Vertex(i)` moves a vertex through the
-axes, committing the whole layout on the first drag so no other vertex
-moves; `Bend(i)` sets a line's bend to the arc through its moved middle;
-`Label(part, i)` moves a label's offset. The web wrapper's `press_feynman`
-starts the same drags. See [Feynman diagrams](FEYNMAN.md).
+inside a break gap or outside the plot. Within six pixels of a vertex the
+vertex wins over its lines, so a leg end without a marker picks. The picked
+part is drawn in the series' `style.picked` colour, `width_extra_px` wider;
+a picked label is boxed. `step_selection` walks the vertices or the
+propagators by `dx` and the Feynman series by `dy`; a label does not step.
+`Renderer::drag_feynman(chart, series_id, hit, dx, dy)` drags a
+`FeynmanHit` in the series' panel space: `Vertex(i)` moves a vertex through
+the axes, committing the whole layout on the first drag so no other vertex
+moves; `Propagator(i)` sets a line's bend to the arc through its moved
+middle. A label moves in logical pixels through the value-label drag,
+`FeynmanSeries::drag_label` on the host's series, and `drag_feynman`
+refuses it. The web wrapper's `press_feynman` starts these drags, a label's
+through the same pointer as `press_value_label`. See
+[Feynman diagrams](FEYNMAN.md).

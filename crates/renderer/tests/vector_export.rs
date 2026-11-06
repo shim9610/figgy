@@ -462,6 +462,51 @@ fn the_data_images_are_the_png_exports_pixels() {
                 "{context}: the export paints pixel {:?} outside the data images",
                 outside.map(|i| (i as u32 % export.width, i as u32 / export.width))
             );
+            // The images leave the CPU layer out; with the DataLess series
+            // rasterized (their own export, the emit their vector parts
+            // come from) in the place their parts take, the file composites
+            // to the PNG export of the whole document.
+            let dataless: Vec<SeriesConfig> = scene
+                .series
+                .iter()
+                .filter(|series| series.is_dataless())
+                .cloned()
+                .collect();
+            if !dataless.is_empty() {
+                let full = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &scene.series),
+                        renderer::ExportOptions::document(scale),
+                    )
+                    .block_on()
+                    .unwrap();
+                let cpu = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &dataless),
+                        renderer::ExportOptions::document(scale),
+                    )
+                    .block_on()
+                    .unwrap();
+                let whole = Rect {
+                    x: 0,
+                    y: 0,
+                    width: cpu.width,
+                    height: cpu.height,
+                };
+                let first_part = svg
+                    .parts
+                    .iter()
+                    .position(|part| !matches!(part, ReadPart::Image(_)))
+                    .unwrap_or(svg.parts.len());
+                let under = svg.parts[..first_part].len();
+                let mut stack = svg.images.clone();
+                stack.insert(under, (whole, encode_png(&cpu).unwrap()));
+                assert_composite(
+                    &full,
+                    &stack,
+                    &format!("{context}: with its DataLess series"),
+                );
+            }
         }
     }
 }
@@ -579,6 +624,56 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
         );
         let labelled = export(&mut r, &scene.series, scale);
         assert_composite(&labelled, &svg.images, &context);
+        // The file stacks as the PNG does: the body image, the level's
+        // vector parts (rasterized here as the level alone exports), then
+        // the label image composite to the export of the whole document.
+        let level = export(&mut r, &[mid_level()], scale);
+        let full = export(&mut r, &with_level, scale);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: level.width,
+            height: level.height,
+        };
+        let stack = [
+            svg.images[0].clone(),
+            (whole, encode_png(&level).unwrap()),
+            svg.images[1].clone(),
+        ];
+        assert_composite(&full, &stack, &format!("{context}: body, level, labels"));
+
+        // Without value labels the group writes one image, under the level:
+        // no image of an empty label step (§3.4 of the #238 audit).
+        let mut unlabelled_level = unlabelled.clone();
+        unlabelled_level.push(mid_level());
+        let svg = svg_parts::read(
+            &r.export_svg(
+                renderer::ExportSource::chart(&chart, &unlabelled_level),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap(),
+        );
+        let images: Vec<usize> = svg
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| matches!(part, ReadPart::Image(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(images.len(), 1, "{context} unlabelled: one image");
+        let level_part = svg
+            .parts
+            .iter()
+            .position(|part| {
+                matches!(part, ReadPart::Part(renderer::DrawnPart::Segment { .. }, Some(w))
+                    if (w - LEVEL_WIDTH * scale).abs() < TOLERANCE)
+            })
+            .expect("the level's stroke");
+        assert!(
+            images[0] < level_part,
+            "{context} unlabelled: the image under the level"
+        );
     }
 }
 
@@ -595,12 +690,6 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
         let scene = scenes::build(&mut r, kind, BIG_DATA_POINTS).unwrap();
         if !scene.config.overlays.is_empty() || !scene.config.subplots.is_empty() {
             // One panel: its two chrome rasters are the public layer rasters.
-            continue;
-        }
-        if scene.series.iter().any(SeriesConfig::is_dataless) {
-            // A DataLess series is vector parts, not data image pixels
-            // (#234); `the_data_images_are_the_png_exports_pixels` and the
-            // read-back cover it.
             continue;
         }
         let mut config = scene.config.clone();
@@ -655,8 +744,35 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                 })
                 .map(|(rect, (_, bytes))| (rect, decode_png(bytes)))
                 .collect();
-            assert_eq!(data.len(), 1, "{context}: one data image");
-            let (rect, image) = &data[0];
+            // A DataLess series is vector parts between the body image and
+            // the value-label image (D11); here it is rasterized as it
+            // exports alone, chrome hidden on the same layout.
+            let dataless: Vec<SeriesConfig> = scene
+                .series
+                .iter()
+                .filter(|series| series.is_dataless())
+                .cloned()
+                .collect();
+            let mut layers = data;
+            if dataless.is_empty() {
+                assert_eq!(layers.len(), 1, "{context}: one data image");
+            } else {
+                let mut bare = config.clone();
+                hide_decorations(&mut bare);
+                assert_eq!(
+                    place_document(&bare, scale, target).data_area(),
+                    placed.data_area(),
+                    "{context}: hiding the chrome keeps the data area"
+                );
+                let cpu = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&Chart::new(bare), &dataless),
+                        renderer::ExportOptions::document(scale),
+                    )
+                    .block_on()
+                    .unwrap();
+                layers.insert(layers.len().min(1), (target, cpu));
+            }
             // In premultiplied units of 1/255, without rounding between the
             // layers: the GPU rounds each blend to its 8-bit target.
             let straight = |px: &[u8]| {
@@ -680,13 +796,15 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                     let i = ((y * export.width + x) * 4) as usize;
                     let b = &below[i..i + 4];
                     let mut px = [b[0], b[1], b[2], b[3]].map(f32::from);
-                    if x >= rect.x
-                        && y >= rect.y
-                        && x < rect.x + rect.width
-                        && y < rect.y + rect.height
-                    {
-                        let j = (((y - rect.y) * rect.width + x - rect.x) * 4) as usize;
-                        over(&mut px, straight(&image.rgba[j..j + 4]));
+                    for (rect, image) in &layers {
+                        if x >= rect.x
+                            && y >= rect.y
+                            && x < rect.x + rect.width
+                            && y < rect.y + rect.height
+                        {
+                            let j = (((y - rect.y) * rect.width + x - rect.x) * 4) as usize;
+                            over(&mut px, straight(&image.rgba[j..j + 4]));
+                        }
                     }
                     let a = &above[i..i + 4];
                     over(&mut px, [a[0], a[1], a[2], a[3]].map(f32::from));
