@@ -1469,9 +1469,9 @@ contour lines need vertex values and take no `labels`; `surface` takes no
 3D chart needs `z_column` and a continuous fill. A picked triangle is the
 `"mesh_triangle"` selection ([above](#데이터-종류별-선택-표시picked_data)).
 
-Status: the JSON form, its rules and the selection kind are in place;
-`set_series` with a `TriMesh` series fails ("triangle mesh series are not
-drawn by this renderer yet") until the draw path lands under #210.
+Status: a flat chart draws the fill and the contours; picking, the picked
+highlight, `selection_details()` and 3D charts follow under #210, and until
+then `set_series` refuses a `TriMesh` series on a 3D chart.
 
 <a id="radar-render_type"></a>
 

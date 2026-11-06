@@ -14,6 +14,11 @@ pub struct SeriesLayers<'a> {
     /// The field covers the whole grid, so it goes under everything else —
     /// see `issue_series_data` for the full order.
     pub field: Option<ColumnFieldLayer<'a>>,
+    /// A triangle mesh's fill (#210), the backdrop a field is: issued
+    /// right after `field`.
+    pub mesh: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
+    /// A triangle mesh's contour strokes, issued where `contour` is.
+    pub mesh_contour: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
     /// A heatmap on a 3D chart, drawn as a surface into the panel
     /// composite with the depth test (`issue_series_surfaces`), never by
     /// `issue_series_data`.
@@ -83,6 +88,8 @@ impl SeriesLayers<'_> {
         Self {
             area: None,
             field: None,
+            mesh: None,
+            mesh_contour: None,
             surface: None,
             floor: None,
             selected_surface: None,
@@ -182,6 +189,10 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
         pass.set_bind_group(2, &f.field_bg, &[]);
         pass.draw(0..FIELD_VERTICES, 0..1);
     }
+    // A triangle mesh's fill is a field over triangles: a backdrop too.
+    if let Some(m) = series.mesh.as_ref() {
+        super::tri_mesh::issue_tri_mesh_layer(pass, m);
+    }
 
     // Bars next: they are filled areas, and the stroked primitives below must
     // land on top of them rather than under.
@@ -248,6 +259,11 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
             pass.set_vertex_buffer(0, l.snapshot.anchors().slice(..));
             pass.draw_indirect(l.snapshot.indirect(), 0);
         }
+    }
+    // A triangle mesh's contours: the same triangles through
+    // `fs_tri_contour`, over its fill.
+    if let Some(m) = series.mesh_contour.as_ref() {
+        super::tri_mesh::issue_tri_mesh_layer(pass, m);
     }
 
     // Arrows: over the field and contours, under errorbars, lines and markers.

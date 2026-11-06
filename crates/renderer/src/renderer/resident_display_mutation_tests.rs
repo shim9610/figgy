@@ -132,6 +132,22 @@ fn add_columns(r: &mut Renderer) {
         .unwrap();
     r.add_column("rvb", &column(vec![0.3, 0.6, 0.2, 0.5]))
         .unwrap();
+    // A triangle mesh (#210): four vertices, two triangles, a value each.
+    r.add_column("tmx", &column(vec![0.1, 0.9, 0.9, 0.1]))
+        .unwrap();
+    r.add_column("tmy", &column(vec![0.1, 0.1, 0.9, 0.9]))
+        .unwrap();
+    r.add_column("tmv", &column(vec![0.1, 0.5, 0.9, 0.4]))
+        .unwrap();
+    r.upsert_triangles(
+        "tmt",
+        &crate::TriangleSource {
+            indices: &crate::data::Column {
+                data: vec![0u32, 1, 2, 0, 2, 3],
+            },
+        },
+    )
+    .unwrap();
     r.upsert_ragged(
         "out_a",
         &crate::RaggedSource {
@@ -433,6 +449,34 @@ fn radar_series() -> Vec<SeriesConfig> {
         },
     );
     vec![first, second]
+}
+
+/// A triangle mesh with a fill and contours (#210).
+fn tri_mesh_series() -> Vec<SeriesConfig> {
+    vec![declared(
+        "mesh",
+        "tmx",
+        "tmy",
+        DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            triangles: "tmt".into(),
+            values: crate::tri_mesh::MeshValues {
+                column: "tmv".into(),
+                at: crate::tri_mesh::MeshValueLocation::Vertices,
+            },
+            fill: Some(crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Interpolated,
+                opacity: 0.9,
+            }),
+            contour: Some(ContourConfig {
+                levels: vec![0.3, 0.6],
+                line: line_style(Color::BLACK),
+                per_level_color: None,
+                labels: None,
+            }),
+            surface: None,
+        }),
+    )]
 }
 
 /// A polar panel holding the panel's heatmap and its contours (#208).
@@ -819,6 +863,12 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     ));
     tally.absorb(run_suite("box", box_config(), box_series(), SIZE));
     tally.absorb(run_suite("radar", radar_config(), radar_series(), SIZE));
+    tally.absorb(run_suite(
+        "tri_mesh",
+        chart_config(),
+        tri_mesh_series(),
+        SIZE,
+    ));
     tally.absorb(run_suite(
         "polar_field",
         polar_field_config(),

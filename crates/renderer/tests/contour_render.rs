@@ -2441,3 +2441,32 @@ fn save_probe(name: &str, img: &RasterImage) {
     let png = encode_png(img).expect("encode png");
     std::fs::write(format!("{}/probe_contour_{name}.png", probe_dir()), png).expect("write png");
 }
+
+/// Rule 10: a frame of three hundred contour series draws every one, past
+/// the contour scratch cache's 256 entries. The cache is bounded before the
+/// frame begins and evicts nothing while it resolves.
+#[test]
+fn three_hundred_contours_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    plane_fixture(&mut renderer);
+    let chart = bare_chart(colorbar(0.0, 4.0));
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = contour_only(&["p0", "p1", "p2"], vec![2.0], None);
+            s.series_id = format!("contour{k}");
+            s
+        })
+        .collect();
+    for _ in 0..2 {
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        assert!(near(&img, data_to_px(&chart, 1.0, 1.0), 3, is_blue));
+    }
+}

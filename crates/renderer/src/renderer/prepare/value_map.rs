@@ -55,6 +55,19 @@ impl PrepareContext<'_> {
         items: &[ChartDrawItem<'_>],
         scale: f32,
     ) -> Result<()> {
+        self.frame_batch(|ctx| ctx.ensure_value_map_scratches_in_frame(items, scale))
+    }
+
+    fn ensure_value_map_scratches_in_frame(
+        &mut self,
+        items: &[ChartDrawItem<'_>],
+        scale: f32,
+    ) -> Result<()> {
+        retain_frame_series(
+            &mut self.value_map_cache,
+            items,
+            VALUE_MAP_SCRATCH_CACHE_LIMIT,
+        );
         for item in items {
             if !item.chart_config.draw_style.is_precise() {
                 // Stylized draw styles ignore per-point style mappings, value
@@ -154,11 +167,13 @@ impl PrepareContext<'_> {
             return Ok(());
         }
         let scratch = self.build_value_map_scratch(signature)?;
-        evict_if_full(
-            &mut self.value_map_cache,
-            cfg.series_id.as_str(),
-            VALUE_MAP_SCRATCH_CACHE_LIMIT,
-        );
+        if !self.in_frame {
+            evict_if_full(
+                &mut self.value_map_cache,
+                cfg.series_id.as_str(),
+                VALUE_MAP_SCRATCH_CACHE_LIMIT,
+            );
+        }
         self.value_map_cache
             .try_reserve(1)
             .map_err(|error| FiggyError::StateAllocationFailed {

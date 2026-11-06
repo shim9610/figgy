@@ -59,6 +59,7 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("errorbar", crate::data_render::ERRORBAR_SHADER),
     ("bar", crate::data_render::BAR_SHADER),
     ("field", crate::data_render::FIELD_SHADER),
+    ("tri_mesh", crate::data_render::tri_mesh::TRI_MESH_SHADER),
     ("surface", crate::data_render::surface_mesh::SURFACE_SHADER),
     ("line_arc", crate::data_render::line_arc::LINE_ARC_SHADER),
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
@@ -229,6 +230,10 @@ mod tests {
             ("FIELD_LOG_Z", dr::FIELD_FLAG_LOG_Z),
             ("FIELD_HEXAGONAL", dr::FIELD_FLAG_HEXAGONAL),
             ("FIELD_RGB", dr::FIELD_FLAG_RGB),
+            ("FIELD_MESH", dr::FIELD_FLAG_MESH),
+            ("FIELD_FACE_VALUES", dr::FIELD_FLAG_FACE_VALUES),
+            ("MESH_VALUES", dr::tri_mesh::MESH_TABLE_VALUES as u32),
+            ("MESH_INDICES", dr::tri_mesh::MESH_TABLE_INDICES as u32),
             ("VECTOR_FLAG_GRID", vector::VECTOR_FLAG_GRID),
             (
                 "VECTOR_FLAG_COLUMNS_ARE_Y",

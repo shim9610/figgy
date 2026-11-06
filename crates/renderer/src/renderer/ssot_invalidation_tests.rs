@@ -2350,6 +2350,149 @@ fn polar_heatmap_edits_refresh_first_frame_without_reupload() {
     }
 }
 
+/// SSOT invalidation of a triangle mesh (#210): every fill, contour, value
+/// and colourbar edit is drawn on the first frame exactly as a fresh
+/// renderer draws it, is visible, and re-uploads nothing; the mesh's group 2
+/// is rebuilt from its signature, the pool untouched.
+#[test]
+fn tri_mesh_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{
+        ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, Shading,
+    };
+    use crate::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline_with_colorbar();
+    config.legend.visible = false;
+    let mut series = declaration("mesh", "mx", "my");
+    series.render_type = DataRenderType::TriMesh(TriMeshSeries {
+        triangles: "tris".into(),
+        values: MeshValues {
+            column: "mv".into(),
+            at: MeshValueLocation::Vertices,
+        },
+        fill: Some(FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading: Shading::Interpolated,
+            opacity: 1.0,
+        }),
+        contour: None,
+        surface: None,
+    });
+    let add_mesh = |r: &mut Renderer| {
+        let column = |v: Vec<f64>| crate::data::Column { data: v };
+        r.add_column("mx", &column(vec![0.15, 0.95, 0.95, 0.15, 0.55]))
+            .unwrap();
+        r.add_column("my", &column(vec![0.15, 0.15, 0.95, 0.95, 0.55]))
+            .unwrap();
+        r.add_column("mv", &column(vec![0.1, 0.4, 0.9, 0.3, 0.6]))
+            .unwrap();
+        r.add_column("faces", &column(vec![0.2, 0.4, 0.6, 0.8]))
+            .unwrap();
+        r.upsert_triangles(
+            "tris",
+            &crate::TriangleSource {
+                indices: &crate::data::Column {
+                    data: vec![0u32, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4],
+                },
+            },
+        )
+        .unwrap();
+    };
+    let fixture_with_mesh = |c: &Config, s: &SeriesConfig| {
+        let (mut r, id) = fixture(c, true, false);
+        add_mesh(&mut r);
+        r.set_chart_series(id, vec![s.clone()]).unwrap();
+        (r, id)
+    };
+    let (mut r, id) = fixture_with_mesh(&config, &series);
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    fn mesh(s: &mut SeriesConfig) -> &mut TriMeshSeries {
+        match &mut s.render_type {
+            DataRenderType::TriMesh(mesh) => mesh,
+            _ => unreachable!(),
+        }
+    }
+    let series_edits: [(&str, fn(&mut TriMeshSeries)); 6] = [
+        ("opacity", |m| m.fill.as_mut().unwrap().opacity = 0.5),
+        ("contours", |m| {
+            m.contour = Some(ContourConfig {
+                levels: vec![0.25, 0.5, 0.75],
+                line: DataLineStyleConfig {
+                    line_width: 2.0,
+                    ..DataLineStyleConfig::default()
+                },
+                per_level_color: None,
+                labels: None,
+            })
+        }),
+        ("contour width", |m| {
+            m.contour.as_mut().unwrap().line.line_width = 4.0
+        }),
+        ("bands", |m| m.fill.as_mut().unwrap().mode = FillMode::Bands),
+        ("contours only", |m| m.fill = None),
+        ("face values", |m| {
+            m.contour = None;
+            m.fill = Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            });
+            m.values = MeshValues {
+                column: "faces".into(),
+                at: MeshValueLocation::Faces,
+            };
+        }),
+    ];
+    for (name, apply) in series_edits {
+        apply(mesh(&mut series));
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with_mesh(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+    let config_edits: [(&str, fn(&mut Config)); 3] = [
+        ("colormap", |c| {
+            c.colorbar.as_mut().unwrap().colormap = crate::ColorMap::Custom {
+                stops: vec![
+                    Color::new(0.0, 0.0, 1.0, 1.0),
+                    Color::new(1.0, 1.0, 0.0, 1.0),
+                ],
+            };
+        }),
+        ("colorbar range", |c| {
+            c.colorbar.as_mut().unwrap().axis.max = 2.0
+        }),
+        ("x range", |c| c.bottom_x.max = 2.0),
+    ];
+    for (name, apply) in config_edits {
+        apply(&mut config);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture_with_mesh(&config, &series);
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+    }
+}
+
 /// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
 /// edit is a data declaration change whose first frame matches a fresh
 /// renderer's, is visible, re-uploads nothing, and an identical

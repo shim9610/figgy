@@ -1026,6 +1026,10 @@ pub(super) trait ColumnRegistration {
     /// The uniform step of resident column `id`'s values
     /// (`ColumnSlot::uniform_step`, #134); `None` for a streamed column.
     fn uniform_step(&self, id: &str) -> Option<f64>;
+
+    /// The statistics of resident triangle index column `id` (#210); `None`
+    /// when `id` is not one. Triangle columns are resident only.
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats>;
 }
 
 impl ColumnRegistration for ColumnPool {
@@ -1047,6 +1051,10 @@ impl ColumnRegistration for ColumnPool {
             .filter(|_| !self.is_member_column(id))
             .and_then(|slot| slot.uniform_step)
     }
+
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats> {
+        ColumnPool::triangle_stats(self, id)
+    }
 }
 
 impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
@@ -1066,6 +1074,10 @@ impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamCol
             return None;
         }
         self.0.uniform_step(id)
+    }
+
+    fn triangle_stats(&self, id: &str) -> Option<crate::data_render::TriangleStats> {
+        self.0.triangle_stats(id)
     }
 }
 
@@ -1320,10 +1332,11 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
 ///
 /// The config is needed because a field series is only fully declared with it:
 /// `Config.colorbar` owns the z range and colormap.
-/// Why a triangle mesh series is refused at registration while the renderer
-/// does not draw it yet (#210).
-pub(crate) const TRI_MESH_NOT_DRAWN_REASON: &str =
-    "triangle mesh series are not drawn by this renderer yet";
+/// Why a triangle mesh series on a 3D chart is refused at registration while
+/// the renderer draws meshes flat only (#210; the trisurf is step 5 of its
+/// plan).
+pub(crate) const TRI_MESH_3D_NOT_DRAWN_REASON: &str =
+    "triangle mesh series are drawn on flat charts: this renderer does not draw them in 3D yet";
 
 pub(super) fn validate_renderer_series(
     pool: &impl ColumnRegistration,
@@ -1366,14 +1379,9 @@ pub(super) fn validate_renderer_series(
         if item.energy_levels().is_some() {
             continue;
         }
-        // A triangle mesh (#210) is modelled ahead of its draw path; until
-        // the renderer draws it, registering one is refused rather than
-        // drawn blank.
-        if item.tri_mesh().is_some() {
-            return Err(FiggyError::InvalidSeriesConfig {
-                series_id: item.series_id.clone(),
-                reason: TRI_MESH_NOT_DRAWN_REASON.into(),
-            });
+        if let Some(mesh) = item.tri_mesh() {
+            validate_tri_mesh_series(pool, config, item, mesh)?;
+            continue;
         }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {
@@ -1490,6 +1498,85 @@ pub(super) fn validate_renderer_series(
             validate_vector_series(pool, config, item, components, style)?;
         }
         validate_streamline_series(pool, config, item)?;
+    }
+    Ok(())
+}
+
+/// A triangle mesh series' renderer rules (#210), after the model's: its
+/// coordinate and value columns are registered, its triangles are a resident
+/// triangle index column, a colourbar colours it, its contour level count is
+/// in range, and every index names a vertex the mesh has.
+///
+/// The vertex count is the shortest of `x_column`, `y_column` and, for vertex
+/// values, the value column; only the index column's statistics and the
+/// column lengths are read, never an index. A later upload that shortens a
+/// column is not re-checked: the draw drops the triangles that name a vertex
+/// past the end and `series_draw_info` reports the truncation.
+pub(super) fn validate_tri_mesh_series(
+    pool: &impl ColumnRegistration,
+    config: &Config,
+    item: &SeriesConfig,
+    mesh: &crate::tri_mesh::TriMeshSeries,
+) -> Result<()> {
+    let fail = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason,
+    };
+    if config.view_3d().is_some() {
+        return Err(fail(TRI_MESH_3D_NOT_DRAWN_REASON.into()));
+    }
+    validate_registered_column(pool, &item.x_column)?;
+    validate_registered_column(pool, &item.y_column)?;
+    validate_registered_column(pool, &mesh.values.column)?;
+    let stats = pool.triangle_stats(&mesh.triangles).ok_or_else(|| {
+        fail(format!(
+            "triangle mesh {:?} is not a resident triangle index column: upload it with \
+             `upsert_triangles`",
+            mesh.triangles
+        ))
+    })?;
+    if config.colorbar.is_none() {
+        return Err(fail(
+            "a triangle mesh series needs Config.colorbar: it owns the z range and colormap, \
+             so without it there is no value to draw"
+                .into(),
+        ));
+    }
+    if let Some(contour) = &mesh.contour
+        && contour.levels.len() > crate::data_config::MAX_CONTOUR_LEVELS
+    {
+        return Err(fail(format!(
+            "contour level count {} exceeds the supported maximum {}",
+            contour.levels.len(),
+            crate::data_config::MAX_CONTOUR_LEVELS
+        )));
+    }
+    let len = |id: &str| pool.column_len(id).unwrap_or(0);
+    let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
+    let mut shortest = (len(&item.x_column), item.x_column.as_str());
+    let values = (!faces).then(|| (len(&mesh.values.column), mesh.values.column.as_str()));
+    for candidate in [Some((len(&item.y_column), item.y_column.as_str())), values]
+        .into_iter()
+        .flatten()
+    {
+        if candidate.0 < shortest.0 {
+            shortest = candidate;
+        }
+    }
+    let (vertices, column) = shortest;
+    if u64::from(stats.max_index) >= vertices {
+        return Err(fail(format!(
+            "triangle index {} names a vertex past the {vertices} vertices of column {column:?}",
+            stats.max_index
+        )));
+    }
+    if faces && len(&mesh.values.column) < u64::from(stats.triangles) {
+        return Err(fail(format!(
+            "face value column {:?} has {} values for {} triangles",
+            mesh.values.column,
+            len(&mesh.values.column),
+            stats.triangles
+        )));
     }
     Ok(())
 }

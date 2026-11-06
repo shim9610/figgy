@@ -250,7 +250,9 @@ fn field_derived_nonfinite_arithmetic_fails_closed() {
     assert!(field.contains("!ramp_finite(normalized)"));
     assert!(field.contains("!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)"));
     assert!(field.contains("!f32_is_finite(coverage_unclamped)"));
-    assert!(field.contains("if (!f32_is_finite(cov) || cov <= 0.0)"));
+    // The stroke coverage is checked in the shared `contour_level_over`
+    // (SHADER_COMMON.md), which the field and the triangle mesh both call.
+    assert!(field.contains("if (!f32_is_finite(coverage) || !f32_is_finite(cov) || cov <= 0.0)"));
     assert!(field.contains("!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)"));
 
     assert!(anchor.contains("if (!f32_is_finite(g2) || g2 <= 0.0"));

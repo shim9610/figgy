@@ -1059,6 +1059,44 @@ fn a_short_grid_draws_less_and_reports_it() {
     assert!(info.truncated, "the fourth column is surplus");
 }
 
+/// Rule 10: a frame of three hundred heatmaps draws every one, past the
+/// field scratch cache's 256 entries. The bound evicts series a frame does
+/// not draw before it begins, never one the frame is drawing.
+#[test]
+fn three_hundred_heatmaps_in_one_frame_all_draw() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    edges_fixture(&mut renderer);
+    let bar = colorbar(0.0, 5.0, AxisScale::Linear);
+    let chart = ranged_chart(bar.clone());
+    let series: Vec<SeriesConfig> = (0..300)
+        .map(|k| {
+            let mut s = heatmap(
+                &["z0", "z1", "z2"],
+                MatrixOrientation::ColumnsAreX,
+                GridLayout::Edges,
+                Shading::Flat,
+                FillMode::Continuous,
+                Vec::new(),
+            );
+            s.series_id = format!("field{k}");
+            s
+        })
+        .collect();
+    for _ in 0..2 {
+        let img = renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let px = data_to_px(&chart, 2.5, 1.5);
+        assert_colour_at(&img, px, bar.color_for_z(Z[2][1]), "cell (2,1)");
+    }
+}
+
 /// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
 /// points it at the CI image directory), otherwise Cargo's per-target scratch
 /// directory under `target/`, so a plain test run never writes into the

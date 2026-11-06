@@ -457,6 +457,46 @@ pub(super) struct PreparedFieldLayer {
     pub(super) drawable: bool,
 }
 
+/// Owned triangle mesh layer (#210): a refcounted clone of the mesh's group
+/// 2, which owns every table the draw reads.
+pub(super) struct PreparedTriMeshLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) field_bg: wgpu::BindGroup,
+    pub(super) charge: crate::gpu_memory::SharedCharge,
+    pub(super) triangles: u32,
+}
+
+impl PreparedTriMeshLayer {
+    fn own(layer: data_render::tri_mesh::ColumnTriMeshLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg,
+            field_bg: layer.field_bg,
+            charge: layer.charge,
+            triangles: layer.triangles,
+        }
+    }
+
+    /// Borrowed for a draw, through `transform` when a panel piece of a
+    /// broken axis draws it.
+    fn borrow<'a>(
+        &'a self,
+        transform: Option<&'a wgpu::BindGroup>,
+    ) -> data_render::tri_mesh::ColumnTriMeshLayer<'a> {
+        data_render::tri_mesh::ColumnTriMeshLayer {
+            pipeline: &self.pipeline,
+            transform_bg: transform.unwrap_or(&self.transform_bg),
+            style_bg: self.style_bg.clone(),
+            field_bg: self.field_bg.clone(),
+            charge: Arc::clone(&self.charge),
+            triangles: self.triangles,
+        }
+    }
+}
+
 /// Owned surface layer (a heatmap on a 3D chart): refcounted clones of the
 /// field's group 2 and the surface's group 3.
 pub(super) struct PreparedSurfaceLayer {
@@ -730,6 +770,8 @@ pub(super) struct PreparedSeries {
     pub(super) _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
+    pub(super) mesh: Option<PreparedTriMeshLayer>,
+    pub(super) mesh_contour: Option<PreparedTriMeshLayer>,
     pub(super) surface: Option<PreparedSurfaceLayer>,
     pub(super) floor: Option<PreparedSurfaceLayer>,
     pub(super) selected_surface: Option<PreparedSurfaceLayer>,
@@ -1166,6 +1208,8 @@ impl PreparedSeries {
                 verts_per_instance: layer.verts_per_instance,
                 closed: layer.closed,
             }),
+            mesh: layers.mesh.map(PreparedTriMeshLayer::own),
+            mesh_contour: layers.mesh_contour.map(PreparedTriMeshLayer::own),
             surface: layers.surface.map(PreparedSurfaceLayer::own),
             floor: layers.floor.map(PreparedSurfaceLayer::own),
             selected_surface: layers.selected_surface.map(PreparedSurfaceLayer::own),
@@ -1312,6 +1356,11 @@ impl PreparedSeries {
                     verts_per_instance: layer.verts_per_instance,
                     closed: layer.closed,
                 }),
+            mesh: self.mesh.as_ref().map(|layer| layer.borrow(transform)),
+            mesh_contour: self
+                .mesh_contour
+                .as_ref()
+                .map(|layer| layer.borrow(transform)),
             surface: self.surface.as_ref().map(PreparedSurfaceLayer::borrow),
             floor: self.floor.as_ref().map(PreparedSurfaceLayer::borrow),
             selected_surface: self
@@ -2655,6 +2704,7 @@ impl Renderer {
         (
             &self.chart_states,
             PrepareContext {
+                in_frame: false,
                 device: &self.device,
                 queue: &self.queue,
                 caps: &self.caps,
