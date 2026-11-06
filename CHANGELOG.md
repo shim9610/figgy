@@ -49,15 +49,21 @@ kind and the `mesh_triangle` selection) are additive.
   mean of their neighbours, solved by conjugate gradients; bubbles on a
   circle), and `auto_layout` commits it into `at`, the auto-fit pattern; a
   layout whose solver stops converging is an error, and so is working
-  memory that cannot be allocated. `FeynmanSeries::emit` and `pick` place,
-  draw (through `Sink::path` for arcs, waves and coils) and pick a diagram
-  from one placement, in at most four transient buffers each taken once
-  (two for a pick of a committed diagram); a pick outside the plot answers
-  nothing, and within six pixels of a vertex the vertex wins over its
-  lines, so a leg end picks. Parallel lines fan within 170 degrees,
-  however many. The picked part is drawn in `style.picked` (`color`,
-  `width_extra_px`), a picked label boxed. `drag_vertex` (which commits the
-  layout on the first drag), `drag_bend` and `drag_label` edit it;
+  memory that cannot be allocated; `positions`, `extent`, `auto_layout`,
+  `emit`, `pick`, `drag_vertex` and `drag_bend` return it. `FeynmanSeries::emit`
+  and `pick` place, draw (through `Sink::path` for arcs, waves and coils)
+  and pick a diagram from one placement, in at most four transient buffers
+  (two for a pick of a committed diagram; text measuring allocates in the
+  measure the caller passes). Every line is sampled and measured within the
+  plot only, so a diagram zoomed in any amount draws and picks with the
+  work of an ordinary view. A pick outside the plot answers nothing; a
+  vertex answers within the pick distance of its marker and there wins over
+  its own lines, so a leg end picks. Parallel lines fan within 170
+  degrees, each on its own arc, however many. The picked part is drawn in
+  `style.picked` (`color`, `width_extra_px`), a picked label boxed.
+  `drag_vertex` (which commits the layout on the first drag), `drag_bend`
+  and `drag_label` edit it, and `SeriesConfig::drag_value_label` moves a
+  Feynman label by its value-label row;
   `Config::validate_feynman` holds a series to a rectangular chart with a
   numeric `bottom_x`. Vertex and propagator ids are held to be unique. `PickedDataRef` gains `FeynmanVertex`,
   `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,

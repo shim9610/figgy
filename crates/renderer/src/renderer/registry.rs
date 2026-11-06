@@ -2431,10 +2431,11 @@ impl Renderer {
         let moved = match drag {
             FeynmanHit::Vertex(index) => diagram.drag_vertex(index, dx, dy, &space),
             FeynmanHit::Propagator(index) => diagram.drag_bend(index, dx, dy, &space),
-            FeynmanHit::Label(..) => {
-                crate::layout::NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds)
-            }
-        };
+            FeynmanHit::Label(..) => Ok(crate::layout::NudgeResult::Rejected(
+                crate::layout::NudgeReject::OutOfBounds,
+            )),
+        }
+        .map_err(|error| crate::renderer::feynman_error(series_id, error))?;
         if moved == crate::layout::NudgeResult::Moved {
             self.set_chart_series_unreported(id, series)?;
         }

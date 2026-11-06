@@ -59,6 +59,11 @@ pub(super) enum FitExtentParams {
         baseline_bits: u64,
         horizontal: bool,
     },
+    /// A Feynman diagram (#234): its extent is read from the SSOT, its
+    /// vertices' positions, committed or laid out; the stamp holds that box
+    /// (`[x0, y0, x1, y1]`'s bits, `None` without vertices), so moving a
+    /// vertex retires the token as a column edit does.
+    Diagram { extent_bits: Option<[u64; 4]> },
 }
 
 impl FitExtentParams {
@@ -305,6 +310,12 @@ pub(super) fn build_fit_token_from_state(
             }) => FitExtentParams::Stem {
                 baseline_bits: stem.baseline.to_bits(),
                 horizontal: stem.direction == crate::data_config::CategoryBarDirection::Horizontal,
+            },
+            DataRenderType::Feynman(diagram) => FitExtentParams::Diagram {
+                extent_bits: diagram
+                    .extent()
+                    .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
+                    .map(|[lo, hi]| [lo[0], lo[1], hi[0], hi[1]].map(f64::to_bits)),
             },
             _ => FitExtentParams::Columns,
         };

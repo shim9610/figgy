@@ -1319,3 +1319,119 @@ fn the_vector_parts_are_clipped_to_each_break_piece() {
         assert_eq!(clipped, 2, "{scale}x both inside a clip");
     }
 }
+
+#[test]
+fn a_leg_end_picks_through_the_renderer_and_drags() {
+    let mut r = renderer();
+    let chart = chart();
+    let list = [series("d", labelled())];
+    let diagram = labelled();
+    // mu- (row 4) ends the line from v2 (0.25, 0.5)… at (1, 2/3): 2 px
+    // back along that line from the leg end, inside the plot.
+    let leg = diagram.vertices[4].at.unwrap();
+    let v2 = diagram.vertices[3].at.unwrap();
+    for scale in [1.0f32, 2.0] {
+        let da = chart.config().data_area().unwrap().0;
+        let px = |p: [f64; 2]| {
+            [
+                da.x as f64 + p[0] * da.width as f64,
+                da.y as f64 + (1.0 - p[1]) * da.height as f64,
+            ]
+        };
+        let (a, b) = (px(leg), px(v2));
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let l = d[0].hypot(d[1]);
+        let near_leg = (
+            ((a[0] + d[0] / l * 2.0) * scale as f64).round() as u32,
+            ((a[1] + d[1] / l * 2.0) * scale as f64).round() as u32,
+        );
+        let hit = pick(&mut r, &chart, &list, scale, near_leg);
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanVertex {
+                    vertex_index: 4,
+                    ..
+                })
+            ),
+            "{scale}x: {hit:?}"
+        );
+    }
+    let id = r
+        .register_chart(chart.config().clone(), list.to_vec())
+        .unwrap();
+    let height = chart.config().data_area().unwrap().0.height as f64;
+    assert_eq!(
+        r.drag_feynman(id, "d", renderer::FeynmanHit::Vertex(4), 0.0, -10.0)
+            .unwrap(),
+        renderer::layout::NudgeResult::Moved
+    );
+    let moved = r.chart_series(id).unwrap()[0].feynman().unwrap().vertices[4]
+        .at
+        .unwrap();
+    assert!(
+        (moved[1] - (leg[1] + 10.0 / height)).abs() < 1e-3 && (moved[0] - leg[0]).abs() < 1e-6,
+        "{moved:?}"
+    );
+}
+
+#[test]
+fn a_diagram_zoomed_a_million_times_draws_and_picks_at_1x_and_2x() {
+    // One straight line of each kind, each crossing the view: a photon, a
+    // gluon, a dashed scalar and a fermion, 0.2..0.8 in x, 1e-7 apart in y.
+    let particles = [
+        ParticleLine::Photon,
+        ParticleLine::Gluon,
+        ParticleLine::Scalar,
+        ParticleLine::Fermion,
+    ];
+    let mut diagram = FeynmanSeries::default();
+    for (k, particle) in particles.into_iter().enumerate() {
+        let y = 0.5 - 1.5e-7 + 1e-7 * k as f64;
+        diagram.vertices.push(vertex(
+            &format!("a{k}"),
+            VertexRole::Internal,
+            Some([0.2, y]),
+        ));
+        diagram.vertices.push(vertex(
+            &format!("b{k}"),
+            VertexRole::Internal,
+            Some([0.8, y]),
+        ));
+        diagram.propagators.push(Propagator::new(
+            format!("p{k}"),
+            format!("a{k}"),
+            format!("b{k}"),
+            particle,
+        ));
+    }
+    let list = [series("d", diagram)];
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.set_x_range(0.5 - 5e-7, 0.5 + 5e-7);
+    chart.set_y_range(0.5 - 5e-7, 0.5 + 5e-7);
+    for scale in [1.0f32, 2.0] {
+        let started = std::time::Instant::now();
+        let image = export(&mut r, &chart, &list, scale);
+        let drawn = started.elapsed();
+        assert!(drawn.as_secs_f64() < 30.0, "{scale}x drew in {drawn:?}");
+        for k in 0..particles.len() {
+            let y = 0.5 - 1.5e-7 + 1e-7 * k as f64;
+            let (x, py) = at(&chart, 0.5, (y - (0.5 - 5e-7)) / 1e-6, scale);
+            // The data-unit helper maps 0..1: rescale to the zoomed axis.
+            assert!(
+                near(&image, (x, py), (6.0 * scale) as u32),
+                "{scale}x line {k} at the middle"
+            );
+            let hit = pick(&mut r, &chart, &list, scale, (x, py));
+            assert!(
+                matches!(
+                    hit,
+                    Some(renderer::PickedData::FeynmanPropagator { propagator_index, .. })
+                        if propagator_index == k
+                ),
+                "{scale}x line {k}: {hit:?}"
+            );
+        }
+    }
+}

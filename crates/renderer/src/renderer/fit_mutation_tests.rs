@@ -51,9 +51,26 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
         });
     }
     // A Feynman diagram fits its vertices' positions, committed or laid
-    // out (#234): read from the SSOT on the CPU.
+    // out (#234). The twin takes the box itself, over `at` where a vertex
+    // has one; only the places of unplaced vertices come from the
+    // product's layout (`positions`, which the model's layout tests cover).
     if let Some(diagram) = series.feynman() {
-        let [lo, hi] = diagram.extent().ok()??;
+        let layout = diagram
+            .has_unplaced()
+            .then(|| diagram.positions().ok())
+            .flatten();
+        let mut points = diagram
+            .vertices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.at.or_else(|| layout.as_ref().map(|p| p[i])));
+        let first = points.next()?;
+        let [lo, hi] = points.fold([first, first], |[lo, hi], p| {
+            [
+                [lo[0].min(p[0]), lo[1].min(p[1])],
+                [hi[0].max(p[0]), hi[1].max(p[1])],
+            ]
+        });
         let part = |lo: f64, hi: f64| FitExtent {
             min: lo,
             max: hi,

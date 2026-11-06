@@ -25,10 +25,11 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// Whole-chart axis frame styles, applied to all four axes at once via
 /// [`Config::apply_axis_preset`].
 ///
-/// Every preset keeps labels and titles on the bottom/left axes only and
-/// leaves data ranges, margins, tick lengths, colors, and title text
-/// untouched — it only switches which axis lines are drawn, the tick
-/// direction, and which sides show tick-value labels.
+/// Every preset leaves data ranges, margins, tick lengths, colors and title
+/// text untouched. It switches which axis lines are drawn, the tick
+/// direction and which sides show tick-value labels; every preset but
+/// [`AxisPreset::Hidden`] keeps labels on the bottom/left axes only, and
+/// `Hidden`, which shows none, also switches the grid off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisPreset {
     /// Closed box frame with ticks pointing **inward** on all four sides —

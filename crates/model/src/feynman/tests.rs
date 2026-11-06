@@ -68,6 +68,13 @@ fn s_channel() -> FeynmanSeries {
     }
 }
 
+/// The span of a whole path.
+fn whole() -> Spans {
+    let mut spans = Spans::NONE;
+    spans.push(0.0, 1.0);
+    spans
+}
+
 fn near(a: [f64; 2], b: [f64; 2]) -> bool {
     (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
 }
@@ -285,6 +292,7 @@ fn a_wave_spans_whole_half_periods_from_end_to_end() {
             wavelength: 12.0,
         },
         0.0,
+        &whole(),
         false,
         &mut path,
     )
@@ -414,11 +422,11 @@ fn a_pick_answers_the_part_under_the_cursor() {
         Some(FeynmanHit::Label(FeynmanLabelPart::Propagator, 2))
     );
     assert_eq!(pick([199.0, 1.0], 2.0), None);
-    // A leg end has no marker: within the grab it wins over its line, on
-    // the line and a few pixels along it.
+    // A leg end has no marker: within the pick distance it wins over its
+    // own line, on the line and up to that far along it.
     let leg = placement.px(0).unwrap();
     let along = placement.geometry(0).unwrap().base.tangent(0.0);
-    for step in [0.0, 3.0, 5.0] {
+    for step in [0.0, 2.0, 4.0] {
         let at = add(leg, scale(along, step));
         assert_eq!(
             pick(at, 4.0).map(|(hit, _)| hit),
@@ -426,7 +434,7 @@ fn a_pick_answers_the_part_under_the_cursor() {
             "{step} px along"
         );
     }
-    // Past the grab the line answers.
+    // Past the pick distance the line answers.
     let at = add(leg, scale(along, 12.0));
     assert_eq!(
         pick(at, 4.0).map(|(hit, _)| hit),
@@ -440,7 +448,7 @@ fn the_first_vertex_drag_commits_the_layout_then_moves_the_vertex() {
     let before = diagram.positions().unwrap();
     let space = space();
     assert_eq!(
-        diagram.drag_vertex(2, 20.0, -10.0, &space),
+        diagram.drag_vertex(2, 20.0, -10.0, &space).unwrap(),
         NudgeResult::Moved
     );
     for (i, vertex) in diagram.vertices.iter().enumerate() {
@@ -457,8 +465,11 @@ fn the_first_vertex_drag_commits_the_layout_then_moves_the_vertex() {
         }
     }
     let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    assert_eq!(diagram.drag_vertex(9, 1.0, 1.0, &space), reject);
-    assert_eq!(diagram.drag_vertex(0, f32::NAN, 1.0, &space), reject);
+    assert_eq!(diagram.drag_vertex(9, 1.0, 1.0, &space).unwrap(), reject);
+    assert_eq!(
+        diagram.drag_vertex(0, f32::NAN, 1.0, &space).unwrap(),
+        reject
+    );
 }
 
 #[test]
@@ -467,7 +478,10 @@ fn a_bend_drag_sets_the_arc_through_the_moved_middle() {
     diagram.auto_layout().unwrap();
     let space = space();
     // v1 (50, 50) to v2 (150, 50): drag the middle up 50 px, a half circle.
-    assert_eq!(diagram.drag_bend(2, 0.0, -50.0, &space), NudgeResult::Moved);
+    assert_eq!(
+        diagram.drag_bend(2, 0.0, -50.0, &space).unwrap(),
+        NudgeResult::Moved
+    );
     let bend = diagram.propagators[2].bend.unwrap();
     assert!((bend - 90.0).abs() < 1e-3, "{bend}");
     let mut looped = s_channel();
@@ -475,7 +489,7 @@ fn a_bend_drag_sets_the_arc_through_the_moved_middle() {
         .propagators
         .push(line("l", "v1", "v1", ParticleLine::Photon));
     assert_eq!(
-        looped.drag_bend(5, 0.0, -5.0, &space),
+        looped.drag_bend(5, 0.0, -5.0, &space).unwrap(),
         NudgeResult::Rejected(NudgeReject::OutOfBounds)
     );
 }
@@ -609,4 +623,326 @@ fn a_document_round_trips_with_its_defaults_omitted() {
         serde_json::from_str::<PickedDataRef>(&json).unwrap(),
         selection
     );
+}
+
+/// x and y over `min..min + span` on a 200 × 100 px plot at (0, 0).
+fn zoomed(min: [f64; 2], span: f64) -> PixelSpace {
+    let axis = |min: f64| AxisSpace {
+        map: AxisMap::Linear {
+            min,
+            max: min + span,
+        },
+        inverted: false,
+        breaks: BreakMap::IDENTITY,
+    };
+    let rect = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 100.0,
+    };
+    PixelSpace {
+        panel: rect,
+        plot: rect,
+        x: axis(min[0]),
+        y: axis(min[1]),
+    }
+}
+
+/// One line of each kind, each between its own two vertices from `x0` to
+/// `x1`, `dy` apart in y from `y`; the gluon and the scalar slightly bent,
+/// so they still cross the middle of a zoomed view.
+fn every_particle_between(x0: f64, x1: f64, y: f64, dy: f64) -> FeynmanSeries {
+    let particles = [
+        ParticleLine::Photon,
+        ParticleLine::Gluon,
+        ParticleLine::Scalar,
+        ParticleLine::Graviton,
+        ParticleLine::DoubleLine,
+        ParticleLine::Fermion,
+    ];
+    let mut diagram = FeynmanSeries::default();
+    for (k, particle) in particles.into_iter().enumerate() {
+        let (a, b) = (format!("a{k}"), format!("b{k}"));
+        let y = y + dy * k as f64;
+        diagram.vertices.push(FeynmanVertex {
+            at: Some([x0, y]),
+            ..vertex(&a, VertexRole::Internal)
+        });
+        diagram.vertices.push(FeynmanVertex {
+            at: Some([x1, y]),
+            ..vertex(&b, VertexRole::Internal)
+        });
+        diagram
+            .propagators
+            .push(line(&format!("p{k}"), &a, &b, particle));
+    }
+    diagram.propagators[1].bend = Some(1e-5);
+    diagram.propagators[2].bend = Some(-1e-5);
+    diagram
+}
+
+/// The path segments and parts an emit writes.
+fn emitted(diagram: &FeynmanSeries, space: &PixelSpace) -> (usize, usize) {
+    let (mut segments, mut parts) = (0usize, 0usize);
+    diagram
+        .emit(
+            space,
+            None,
+            &Fixed,
+            &mut Parts(&mut |part| {
+                parts += 1;
+                if let DrawnPart::Path { points, .. } = part {
+                    segments += points.len();
+                }
+            }),
+        )
+        .unwrap();
+    (segments, parts)
+}
+
+// The class "work that grows with a line's length on screen": a wave, a
+// coil, a dashed line and an arc sampled or measured along their whole
+// length. Each is now clipped to the plot first, so zooming in a million
+// times draws and picks with the work of an ordinary view.
+#[test]
+fn zooming_in_a_million_times_draws_and_picks_with_bounded_work() {
+    let (ordinary, _) = emitted(&every_particle_between(0.2, 0.8, 0.2, 0.1), &space());
+    // A millionth of the axis about the middle: the lines run about 1.2e8
+    // px across a 200 px plot, 10 px apart.
+    let diagram = every_particle_between(0.2, 0.8, 0.5 - 2.5e-7, 1e-7);
+    let space = zoomed([0.5 - 5e-7, 0.5 - 5e-7], 1e-6);
+    let (segments, parts) = emitted(&diagram, &space);
+    assert!(parts > 0, "something is drawn");
+    assert!(
+        segments <= 4 * ordinary.max(1000),
+        "{segments} path points zoomed in, {ordinary} in the ordinary view"
+    );
+    let started = std::time::Instant::now();
+    // Each line picks where it crosses the plot: the photon 25 px below the
+    // middle, the fermion 25 px above it (y up, 10 px apart).
+    for (k, y) in [(0usize, 75.0f32), (5, 25.0)] {
+        let hit = diagram.pick(&space, &Fixed, [100.0, y], 4.0).unwrap();
+        assert_eq!(
+            hit.map(|(hit, _)| hit),
+            Some(FeynmanHit::Propagator(k)),
+            "line {k}"
+        );
+    }
+    assert!(
+        started.elapsed().as_secs_f64() < 1.0,
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_line_of_no_finite_length_draws_nothing_and_does_not_panic() {
+    // The far end lies past f32's range on screen: its length is infinite.
+    let diagram = every_particle_between(0.5, 1e37, 0.5, 0.1);
+    let (segments, _) = emitted(&diagram, &space());
+    assert!(segments < 100_000, "{segments}");
+    assert!(diagram.pick(&space(), &Fixed, [100.0, 50.0], 4.0).is_ok());
+}
+
+#[test]
+fn thousands_of_parallel_lines_each_take_their_own_arc() {
+    // An even count puts the two middle lines at the smallest bends: they
+    // must still part, however small.
+    for count in [2_970usize, 5_000] {
+        let mut diagram = FeynmanSeries {
+            vertices: vec![
+                vertex("a", VertexRole::Internal),
+                vertex("b", VertexRole::Internal),
+            ],
+            propagators: (0..count)
+                .map(|k| line(&format!("p{k}"), "a", "b", ParticleLine::Plain))
+                .collect(),
+            ..FeynmanSeries::default()
+        };
+        diagram.vertices[0].at = Some([0.25, 0.5]);
+        diagram.vertices[1].at = Some([0.75, 0.5]);
+        let space = space();
+        let placed = diagram.placed(&space, None).unwrap();
+        let mut bulges: Vec<f64> = (0..count)
+            .map(|index| {
+                let geometry = placed.geometry(index).unwrap();
+                assert!(
+                    matches!(geometry.base, Base::Bow { .. }),
+                    "{count}: {index} bends"
+                );
+                // The bulge in the chord frame, in f64: y is down on screen.
+                let Base::Bow { a, b, half } = geometry.base else {
+                    unreachable!()
+                };
+                let c = f64::from(len(sub(b, a)));
+                let (_, y) = Base::bow_xy(f64::from(half), 0.5);
+                c * y
+            })
+            .collect();
+        bulges.sort_by(f64::total_cmp);
+        assert!(
+            bulges.windows(2).all(|w| w[1] > w[0]),
+            "{count} lines: two share an arc"
+        );
+    }
+}
+
+// The class "a vertex's pick reach beating lines": the reach is the
+// request's pick distance, and it beats only the vertex's own lines.
+#[test]
+fn a_short_line_and_a_line_near_another_vertex_still_pick() {
+    let mut diagram = FeynmanSeries {
+        vertices: vec![
+            vertex("a", VertexRole::Internal),
+            vertex("b", VertexRole::Internal),
+            vertex("c", VertexRole::Internal),
+            vertex("d", VertexRole::Internal),
+        ],
+        propagators: vec![
+            // 12 px between dots of radius 3.
+            line("short", "a", "b", ParticleLine::Plain),
+            // Passes 5 px under the unrelated vertex c, 2 px past its dot.
+            line("long", "d", "c", ParticleLine::Plain),
+        ],
+        ..FeynmanSeries::default()
+    };
+    diagram.vertices[0].at = Some([0.5, 0.8]);
+    diagram.vertices[1].at = Some([0.56, 0.8]);
+    diagram.vertices[2].at = Some([0.5, 0.35]);
+    diagram.vertices[3].at = Some([0.1, 0.3]);
+    diagram.propagators[1].to = "c".into();
+    // Re-aim the long line past c: from d to a point beyond c, 3 px low.
+    diagram.vertices.push(vertex("e", VertexRole::Internal));
+    diagram.vertices[4].at = Some([0.9, 0.3]);
+    diagram.propagators[1].to = "e".into();
+    let space = space();
+    let placed = diagram.placed(&space, None).unwrap();
+    let pick = |at: [f32; 2]| {
+        diagram
+            .pick(&space, &Fixed, at, 4.0)
+            .unwrap()
+            .map(|(hit, _)| hit)
+    };
+    let middle = placed.geometry(0).unwrap().base.point(0.5);
+    assert_eq!(
+        pick(middle),
+        Some(FeynmanHit::Propagator(0)),
+        "the short line's middle"
+    );
+    let under_c = add(placed.px(2).unwrap(), [0.0, 5.0]);
+    assert_eq!(
+        pick(under_c),
+        Some(FeynmanHit::Propagator(1)),
+        "the line under c"
+    );
+    assert_eq!(
+        pick(placed.px(2).unwrap()),
+        Some(FeynmanHit::Vertex(2)),
+        "c itself"
+    );
+}
+
+// The class "a numerical setting that depends on the data's magnitude":
+// the solver works in frame units.
+#[test]
+fn the_layout_solves_at_any_magnitude_and_on_long_ladders() {
+    for magnitude in [1e-200, 1e-6, 1.0, 1e6, 1e200] {
+        let mut diagram = s_channel();
+        diagram.vertices[0].at = Some([0.0, magnitude]);
+        diagram.vertices[4].at = Some([4.0 * magnitude, magnitude]);
+        let p = diagram.positions().unwrap();
+        assert!(
+            p.iter().all(|q| q[0].is_finite() && q[1].is_finite()),
+            "{magnitude}: {p:?}"
+        );
+        // v1 sits at the mean of its neighbours e-, e+ and v2.
+        let mean = [
+            (p[0][0] + p[1][0] + p[3][0]) / 3.0,
+            (p[0][1] + p[1][1] + p[3][1]) / 3.0,
+        ];
+        let scale = magnitude * 4.0;
+        assert!(
+            ((p[2][0] - mean[0]) / scale).abs() < 1e-9
+                && ((p[2][1] - mean[1]) / scale).abs() < 1e-9,
+            "{magnitude}: {:?} vs {mean:?}",
+            p[2]
+        );
+    }
+    // Long ladders: the stall rule does not stop a valid solve.
+    for rungs in [10usize, 100, 1_000, 3_000] {
+        let mut diagram = FeynmanSeries::default();
+        for (id, role) in [
+            ("ia", VertexRole::Incoming),
+            ("ib", VertexRole::Incoming),
+            ("oa", VertexRole::Outgoing),
+            ("ob", VertexRole::Outgoing),
+        ] {
+            diagram.vertices.push(vertex(id, role));
+        }
+        for k in 0..rungs {
+            diagram
+                .vertices
+                .push(vertex(&format!("a{k}"), VertexRole::Internal));
+            diagram
+                .vertices
+                .push(vertex(&format!("b{k}"), VertexRole::Internal));
+            diagram.propagators.push(line(
+                &format!("r{k}"),
+                &format!("a{k}"),
+                &format!("b{k}"),
+                ParticleLine::Plain,
+            ));
+            if k > 0 {
+                for rail in ["a", "b"] {
+                    diagram.propagators.push(line(
+                        &format!("{rail}{k}-"),
+                        &format!("{rail}{}", k - 1),
+                        &format!("{rail}{k}"),
+                        ParticleLine::Plain,
+                    ));
+                }
+            }
+        }
+        let last = rungs - 1;
+        for (id, from, to) in [
+            ("la", "ia".to_string(), "a0".to_string()),
+            ("lb", "ib".to_string(), "b0".to_string()),
+            ("ra", format!("a{last}"), "oa".to_string()),
+            ("rb", format!("b{last}"), "ob".to_string()),
+        ] {
+            diagram
+                .propagators
+                .push(line(id, &from, &to, ParticleLine::Plain));
+        }
+        assert!(diagram.positions().is_ok(), "{rungs} rungs");
+    }
+}
+
+#[test]
+fn the_value_label_drag_moves_each_feynman_label_row() {
+    let mut diagram = s_channel();
+    diagram.propagators[2].momentum = Some(MomentumArrow {
+        label: RichText::plain("k", Color::BLACK, 12.0, ""),
+        side: MomentumSide::Left,
+        reversed: false,
+        label_offset: [0.0; 2],
+    });
+    let mut s = series("d", diagram);
+    let (v, e) = (6, 5);
+    let moved = NudgeResult::Moved;
+    assert_eq!(s.drag_value_label(2, 0, 1.0, 2.0), moved);
+    assert_eq!(s.drag_value_label(v + 2, 0, 3.0, 4.0), moved);
+    assert_eq!(s.drag_value_label(v + e + 2, 0, 5.0, 6.0), moved);
+    let d = s.feynman().unwrap();
+    assert_eq!(d.vertices[2].label_offset, [1.0, 2.0]);
+    assert_eq!(d.propagators[2].label_offset, [3.0, 4.0]);
+    assert_eq!(
+        d.propagators[2].momentum.as_ref().unwrap().label_offset,
+        [5.0, 6.0]
+    );
+    let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+    // Past the momentum rows, and a momentum row without an arrow.
+    assert_eq!(s.drag_value_label(v + 2 * e, 0, 1.0, 1.0), reject);
+    assert_eq!(s.drag_value_label(v + e, 0, 1.0, 1.0), reject);
 }

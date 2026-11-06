@@ -1,7 +1,7 @@
 //! DataLess preparation (#203, #234): each energy-level or Feynman series is
 //! drawn on the CPU through the model's emit
 //! ([`crate::energy_levels::LevelPlacement`],
-//! [`crate::feynman::FeynmanPlacement`]) into one panel-sized raster,
+//! [`crate::feynman::FeynmanSeries::emit`]) into one panel-sized raster,
 //! cached by everything the raster reads, and composited in the data slot
 //! after every GPU body and picked highlight of its panel
 //! (`renderer::composite`). The approved exception to "per-point

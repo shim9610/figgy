@@ -2140,7 +2140,7 @@ impl Renderer {
                 .chart_states
                 .get(&id)
                 .ok_or(FiggyError::UnknownChart { id })?;
-            pick_energy_levels(&display_config, &series, &state.series, &request)
+            pick_energy_levels(&display_config, &series, &state.series, &request)?
         };
 
         // A 3D chart's surfaces, markers and strokes are picked by their ID
@@ -2639,7 +2639,7 @@ pub(super) fn pick_energy_levels(
     series: &[SeriesConfig],
     document: &[SeriesConfig],
     request: &GpuPickRequest,
-) -> Option<crate::gpu_data_pick::RankedPickedData> {
+) -> Result<Option<crate::gpu_data_pick::RankedPickedData>> {
     use crate::energy_levels::{LevelHit, LevelPlacement, drawn_records};
     use crate::pick::PickedData;
     let scale = if request.display_scale.is_finite() && request.display_scale > 0.0 {
@@ -2667,10 +2667,11 @@ pub(super) fn pick_energy_levels(
         // through the placement its raster draws with (#234).
         if let Some(diagram) = cfg.feynman() {
             use crate::feynman::FeynmanHit;
-            // A layout that fails or memory that cannot be allocated picks
-            // nothing here; the raster of the same series reports it.
-            let Ok(Some((hit, distance))) =
-                diagram.pick(&space, &measure, cursor, request.max_distance_px / scale)
+            // A layout that fails or memory that cannot be allocated is the
+            // pick's error, as it is the raster's.
+            let Some((hit, distance)) = diagram
+                .pick(&space, &measure, cursor, request.max_distance_px / scale)
+                .map_err(|error| super::feynman_error(&cfg.series_id, error))?
             else {
                 continue;
             };
@@ -2768,5 +2769,5 @@ pub(super) fn pick_energy_levels(
             best = Some(candidate);
         }
     }
-    best
+    Ok(best)
 }

@@ -994,8 +994,11 @@ picked on the CPU through the placement its raster draws with, as an
 energy-level series is: a typed data pick answers
 `PickedData::FeynmanVertex`, `FeynmanPropagator` or
 `FeynmanLabel { part, index }`, labels over markers over lines, and nothing
-inside a break gap or outside the plot. Within six pixels of a vertex the
-vertex wins over its lines, so a leg end without a marker picks. The picked
+inside a break gap or outside the plot. A vertex answers within the pick
+distance of its marker, and there it wins over the lines that meet at it,
+within a third of a line between the markers, so a leg end without a
+marker picks and a short line still picks in its middle; every other part
+competes by distance. A layout that fails is the pick's error. The picked
 part is drawn in the series' `style.picked` colour, `width_extra_px` wider;
 a picked label is boxed. `step_selection` walks the vertices or the
 propagators by `dx` and the Feynman series by `dy`; a label does not step.

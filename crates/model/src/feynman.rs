@@ -526,10 +526,6 @@ pub const LAYOUT_DID_NOT_CONVERGE: &str = "the Feynman layout did not converge";
 /// The widest bend of a line, degrees: a propagator's `bend` and the outer
 /// lines of a fan stay within it, so every arc has a finite radius.
 const MAX_BEND: f32 = 170.0;
-/// The reach of a vertex's grab, logical pixels: within it the vertex wins
-/// the pick over the lines that meet it, so a leg end without a marker can
-/// be picked and dragged.
-const VERTEX_GRAB: f32 = 6.0;
 /// An id that names no vertex.
 const NONE: u32 = u32::MAX;
 /// The conjugate-gradient tolerance: the relative residual it solves to.
@@ -848,7 +844,15 @@ fn lay_out(
     }
     // The barycentric embedding of the anchored free vertices.
     if flags.contains(&ANCHORED) {
-        solve_barycentric(&nbrs, flags, positions)?;
+        // Solved in the frame's units, so the residual neither overflows
+        // nor underflows whatever the data's magnitude.
+        let span = (frame[1][0] - frame[0][0]).max(frame[1][1] - frame[0][1]);
+        let unit = if span.is_finite() && span > 0.0 {
+            span
+        } else {
+            1.0
+        };
+        solve_barycentric(&nbrs, flags, positions, frame[0], unit)?;
     }
     // The bubbles: each connected group on a circle about the frame's
     // centre, in row order, collected in `order`.
@@ -891,15 +895,39 @@ fn lay_out(
 
 /// Solve `L_ff x = L_fp p` for the free vertices (flag exactly
 /// [`ANCHORED`]) by conjugate gradients, both axes in one pass over the
-/// adjacency, into `positions`. One work buffer of `3 V` entries holds the
-/// residual, the direction and the product (`r | p | Ap`); `positions` is
-/// the iterate. Ends at a relative residual of 1e-12 on both axes; an
-/// iteration count of [`CG_STALL`] without a new best residual, or a
-/// non-finite value, is [`LAYOUT_DID_NOT_CONVERGE`].
+/// adjacency, into `positions`, in units of `unit` from `origin` (the
+/// frame), so the residual stays finite for any finite data. One work
+/// buffer of `3 V` entries holds the residual, the direction and the
+/// product (`r | p | Ap`); `positions` is the iterate. Ends at a relative
+/// residual of 1e-12 on both axes; [`CG_STALL`] iterations without a new
+/// best residual, or a non-finite value, is [`LAYOUT_DID_NOT_CONVERGE`].
 fn solve_barycentric<'a>(
     nbrs: &dyn Fn(usize) -> &'a [[u32; 2]],
     flags: &[u32],
     positions: &mut [[f64; 2]],
+    origin: [f64; 2],
+    unit: f64,
+) -> Result<(), &'static str> {
+    // The free vertices are solved in frame units and converted back on
+    // success; a pinned position is read, never rewritten, so it stays
+    // bit-exact.
+    solve_in_frame(nbrs, flags, positions, origin, unit)?;
+    for (i, p) in positions.iter_mut().enumerate() {
+        if flags[i] == ANCHORED {
+            *p = [origin[0] + p[0] * unit, origin[1] + p[1] * unit];
+        }
+    }
+    Ok(())
+}
+
+/// [`solve_barycentric`] in frame units: the free vertices' positions are
+/// the iterate, in those units; the pinned ones are read through them.
+fn solve_in_frame<'a>(
+    nbrs: &dyn Fn(usize) -> &'a [[u32; 2]],
+    flags: &[u32],
+    positions: &mut [[f64; 2]],
+    origin: [f64; 2],
+    unit: f64,
 ) -> Result<(), &'static str> {
     let n = flags.len();
     let free = |i: usize| flags[i] == ANCHORED;
@@ -916,14 +944,17 @@ fn solve_barycentric<'a>(
         for &[j, _] in nbrs(i) {
             let j = j as usize;
             if j != i && !free(j) {
-                b[0] += positions[j][0];
-                b[1] += positions[j][1];
+                b[0] += (positions[j][0] - origin[0]) / unit;
+                b[1] += (positions[j][1] - origin[1]) / unit;
             }
         }
         r[i] = b;
         p[i] = b;
         rr[0] += b[0] * b[0];
         rr[1] += b[1] * b[1];
+    }
+    if !(rr[0].is_finite() && rr[1].is_finite()) {
+        return Err(LAYOUT_DID_NOT_CONVERGE);
     }
     let target = [rr[0] * CG_TOLERANCE_SQUARED, rr[1] * CG_TOLERANCE_SQUARED];
     let mut best = rr;
@@ -1218,6 +1249,22 @@ impl FeynmanSeries {
         NudgeResult::Moved
     }
 
+    /// The label of value-label row `row` ([`SeriesConfig::drag_value_label`]):
+    /// the vertex labels, then the propagator labels, then the momentum
+    /// labels, as `(part, row of that list)`; `None` past the end.
+    pub(crate) fn label_of_row(&self, row: usize) -> Option<(FeynmanLabelPart, usize)> {
+        let (v, e) = (self.vertices.len(), self.propagators.len());
+        if row < v {
+            Some((FeynmanLabelPart::Vertex, row))
+        } else if row - v < e {
+            Some((FeynmanLabelPart::Propagator, row - v))
+        } else if row - v - e < e {
+            Some((FeynmanLabelPart::Momentum, row - v - e))
+        } else {
+            None
+        }
+    }
+
     /// Whether some vertex has no position: the layout places it.
     pub fn has_unplaced(&self) -> bool {
         self.vertices.iter().any(|v| v.at.is_none())
@@ -1299,25 +1346,23 @@ impl FeynmanSeries {
     /// back through the axes and written into `at`. The first drag of a
     /// diagram with unplaced vertices commits the whole layout first, so
     /// no other vertex moves. Rejected for a row past the end, a non-finite
-    /// delta, a layout that fails or a place the axes cannot convert
-    /// (outside a logarithmic domain, in a break gap); nothing changes
-    /// then. Allocates nothing when every vertex is placed.
+    /// delta or a place the axes cannot convert (outside a logarithmic
+    /// domain, in a break gap); nothing changes then. A layout that fails or
+    /// cannot be allocated is the error, and nothing changes either.
+    /// Allocates nothing when every vertex is placed.
     pub fn drag_vertex(
         &mut self,
         index: usize,
         dx: f32,
         dy: f32,
         space: &dyn AnnotationSpace,
-    ) -> NudgeResult {
-        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+    ) -> Result<NudgeResult, &'static str> {
+        let reject = Ok(NudgeResult::Rejected(NudgeReject::OutOfBounds));
         if !dx.is_finite() || !dy.is_finite() || index >= self.vertices.len() {
             return reject;
         }
         let layout = if self.has_unplaced() {
-            match self.positions() {
-                Ok(positions) => Some(positions),
-                Err(_) => return reject,
-            }
+            Some(self.positions()?)
         } else {
             None
         };
@@ -1348,29 +1393,27 @@ impl FeynmanSeries {
             }
         }
         self.vertices[index].at = Some([vx, vy]);
-        NudgeResult::Moved
+        Ok(NudgeResult::Moved)
     }
 
     /// Bend propagator `index` by dragging its middle `(dx, dy)` screen
     /// pixels in `space`: the drag across the chord sets `bend` to the arc
     /// through both ends and the moved middle. Rejected for a row past the
     /// end, a loop, a non-finite delta, a line whose ends are not placed on
-    /// screen, a layout that fails or a bend past 170 degrees; nothing
-    /// changes then.
+    /// screen or a bend past 170 degrees; nothing changes then. A layout
+    /// that fails or cannot be allocated is the error.
     pub fn drag_bend(
         &mut self,
         index: usize,
         dx: f32,
         dy: f32,
         space: &dyn AnnotationSpace,
-    ) -> NudgeResult {
-        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+    ) -> Result<NudgeResult, &'static str> {
+        let reject = Ok(NudgeResult::Rejected(NudgeReject::OutOfBounds));
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
         }
-        let Ok(placed) = self.placed(space, None) else {
-            return reject;
-        };
+        let placed = self.placed(space, None)?;
         let Some(geometry) = placed.geometry(index) else {
             return reject;
         };
@@ -1392,7 +1435,7 @@ impl FeynmanSeries {
             return reject;
         }
         self.propagators[index].bend = Some(bend);
-        NudgeResult::Moved
+        Ok(NudgeResult::Moved)
     }
 
     /// Place the series in `space` with `picked` drawn picked: the
@@ -1420,6 +1463,7 @@ impl FeynmanSeries {
             topology,
             px,
             picked,
+            clip: space.plot_rect(),
         })
     }
 
@@ -1463,10 +1507,13 @@ impl FeynmanSeries {
     /// `max_distance` of its ink, and that distance (zero on the part).
     /// Walks the SSOT through the same placement the emit draws with, so
     /// the pick is the drawn geometry; nothing is registered per row (rule
-    /// 3). Within six pixels of a vertex the vertex wins over its
-    /// lines; on a tie a part drawn later wins: labels over markers over
-    /// lines. The series is drawn clipped to the plot, so a cursor outside
-    /// `space`'s plot rectangle picks nothing.
+    /// 3). A vertex, a marker or a bare leg end, answers within
+    /// `max_distance` of its marker, and there it wins over the lines that
+    /// meet at it (within a third of a line's length, so a short line still
+    /// picks in its middle); every other part competes by distance, a tie
+    /// going to the part drawn later: labels over markers over lines. Lines
+    /// are measured within the plot only, as they are drawn, so a cursor
+    /// outside `space`'s plot rectangle picks nothing.
     pub fn pick(
         &self,
         space: &dyn AnnotationSpace,
@@ -1488,18 +1535,36 @@ impl FeynmanSeries {
             }
         };
         for index in 0..self.propagators.len() {
-            if let Some(geometry) = placed.geometry(index) {
-                let edge = geometry.base.distance(cursor) - placed.envelope(index);
-                offer(FeynmanHit::Propagator(index), edge.max(0.0));
+            let Some(geometry) = placed.geometry(index) else {
+                continue;
+            };
+            let envelope = placed.envelope(index);
+            // A vertex the cursor is at wins over the lines that meet it:
+            // past its marker, within the pick distance or a third of the
+            // line between the markers, whichever is less.
+            let at_end = placed.topology.ends_of(index).is_some_and(|(a, b)| {
+                let bare = (geometry.base.length() as f32
+                    - placed.marker_radius(a)
+                    - placed.marker_radius(b))
+                .max(0.0);
+                [a, b].into_iter().any(|end| {
+                    placed.px(end).is_some_and(|p| {
+                        len(sub(cursor, p))
+                            <= placed.marker_radius(end) + max_distance.min(bare / 3.0)
+                    })
+                })
+            });
+            if at_end {
+                continue;
             }
+            let reach = widened(placed.clip, max_distance + envelope + 1.0);
+            let edge = geometry.base.distance(cursor, reach) - envelope;
+            offer(FeynmanHit::Propagator(index), edge.max(0.0));
         }
         for index in 0..self.vertices.len() {
             if let Some(p) = placed.px(index) {
-                let reach = placed.marker_radius(index).max(VERTEX_GRAB);
-                offer(
-                    FeynmanHit::Vertex(index),
-                    (len(sub(cursor, p)) - reach).max(0.0),
-                );
+                let edge = len(sub(cursor, p)) - placed.marker_radius(index);
+                offer(FeynmanHit::Vertex(index), edge.max(0.0));
             }
         }
         for part in LABEL_PARTS {
@@ -1564,79 +1629,353 @@ fn left_normal(d: [f32; 2]) -> [f32; 2] {
     [d[1], -d[0]]
 }
 
-/// The path a propagator's stroke follows: a straight line or a circular
-/// arc, parametrized by `t` in `0..=1` at a constant speed.
+/// The path a propagator's stroke follows, parametrized by `t` in `0..=1`
+/// at a constant speed. Points are evaluated in `f64` and returned as
+/// logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Base {
-    Line {
-        a: [f32; 2],
-        b: [f32; 2],
-    },
-    Arc {
+    /// A straight line from `a` to `b`.
+    Line { a: [f32; 2], b: [f32; 2] },
+    /// A circular arc from `a` to `b` that turns by `2 * half` radians,
+    /// bulging to the left of the chord for a positive `half`. It is
+    /// evaluated from the chord and the angle, never from a centre and a
+    /// radius, so a nearly straight arc stays exact however small `half`.
+    Bow { a: [f32; 2], b: [f32; 2], half: f32 },
+    /// A whole circle about `centre`, starting at angle `start`: a loop.
+    Ring {
         centre: [f32; 2],
         radius: f32,
         start: f32,
-        sweep: f32,
     },
 }
 
+/// `[x, y]` as `f64`.
+fn wide(p: [f32; 2]) -> [f64; 2] {
+    [f64::from(p[0]), f64::from(p[1])]
+}
+
+/// `[x, y]` as `f32`.
+fn narrow(p: [f64; 2]) -> [f32; 2] {
+    [p[0] as f32, p[1] as f32]
+}
+
+/// Below this half angle a bow is evaluated by its series: the exact
+/// quotients lose their digits there.
+const BOW_SERIES: f64 = 1e-3;
+
 impl Base {
+    /// The chord frame of a line or a bow: its start, its unit direction,
+    /// its left normal and its length.
+    fn chord(a: [f32; 2], b: [f32; 2]) -> ([f64; 2], [f64; 2], [f64; 2], f64) {
+        let (a, b) = (wide(a), wide(b));
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let c = d[0].hypot(d[1]);
+        let u = if c > 0.0 {
+            [d[0] / c, d[1] / c]
+        } else {
+            [1.0, 0.0]
+        };
+        (a, u, [u[1], -u[0]], c)
+    }
+
+    /// A bow's point at `t` in its chord frame, in units of the chord: `x`
+    /// along it, `y` to its left.
+    fn bow_xy(half: f64, t: f64) -> (f64, f64) {
+        let s = 1.0 - 2.0 * t;
+        if half.abs() < BOW_SERIES {
+            let h2 = half * half;
+            let ratio = s * (1.0 + h2 * (1.0 - s * s) / 6.0);
+            (0.5 - 0.5 * ratio, half * (1.0 - s * s) / 4.0)
+        } else {
+            let ratio = (half * s).sin() / half.sin();
+            let y = (half * (1.0 + s) / 2.0).sin() * (half * (1.0 - s) / 2.0).sin() / half.sin();
+            (0.5 - 0.5 * ratio, y)
+        }
+    }
+
     /// The point at `t`.
-    pub(crate) fn point(&self, t: f32) -> [f32; 2] {
+    pub(crate) fn point(&self, t: f64) -> [f32; 2] {
         match *self {
-            Base::Line { a, b } => lerp(a, b, t),
-            Base::Arc {
+            Base::Line { a, b } => {
+                let (a, b) = (wide(a), wide(b));
+                narrow([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t])
+            }
+            Base::Bow { a, b, half } => {
+                let (a, u, n, c) = Self::chord(a, b);
+                let (x, y) = Self::bow_xy(f64::from(half), t);
+                narrow([
+                    a[0] + c * (u[0] * x + n[0] * y),
+                    a[1] + c * (u[1] * x + n[1] * y),
+                ])
+            }
+            Base::Ring {
                 centre,
                 radius,
                 start,
-                sweep,
             } => {
-                let angle = start + sweep * t;
-                [
-                    centre[0] + radius * angle.cos(),
-                    centre[1] + radius * angle.sin(),
-                ]
+                let angle = f64::from(start) + std::f64::consts::TAU * t;
+                let (c, r) = (wide(centre), f64::from(radius));
+                narrow([c[0] + r * angle.cos(), c[1] + r * angle.sin()])
             }
         }
     }
 
     /// The unit direction of travel at `t`.
-    pub(crate) fn tangent(&self, t: f32) -> [f32; 2] {
+    pub(crate) fn tangent(&self, t: f64) -> [f32; 2] {
         match *self {
             Base::Line { a, b } => unit(sub(b, a)),
-            Base::Arc { start, sweep, .. } => {
-                let angle = start + sweep * t;
-                let s = sweep.signum();
-                [-angle.sin() * s, angle.cos() * s]
+            Base::Bow { a, b, half } => {
+                let (_, u, n, _) = Self::chord(a, b);
+                let theta = f64::from(half) * (1.0 - 2.0 * t);
+                let (cos, sin) = (theta.cos(), theta.sin());
+                narrow([u[0] * cos + n[0] * sin, u[1] * cos + n[1] * sin])
+            }
+            Base::Ring { start, .. } => {
+                let angle = f64::from(start) + std::f64::consts::TAU * t;
+                narrow([-angle.sin(), angle.cos()])
             }
         }
     }
 
-    /// The length of the path.
-    pub(crate) fn length(&self) -> f32 {
+    /// The length of the path, logical pixels; infinite or NaN when its
+    /// ends are.
+    pub(crate) fn length(&self) -> f64 {
         match *self {
-            Base::Line { a, b } => len(sub(b, a)),
-            Base::Arc { radius, sweep, .. } => radius * sweep.abs(),
-        }
-    }
-
-    /// The distance from `p` to the path, sampled a few pixels apart.
-    fn distance(&self, p: [f32; 2]) -> f32 {
-        match *self {
-            Base::Line { a, b } => segment_distance(p, a, b),
-            Base::Arc { .. } => {
-                let steps = ((self.length() / 3.0).ceil() as usize).max(8);
-                let mut best = f32::INFINITY;
-                let mut prev = self.point(0.0);
-                for k in 1..=steps {
-                    let next = self.point(k as f32 / steps as f32);
-                    best = best.min(segment_distance(p, prev, next));
-                    prev = next;
+            Base::Line { a, b } => Self::chord(a, b).3,
+            Base::Bow { a, b, half } => {
+                let c = Self::chord(a, b).3;
+                let half = f64::from(half);
+                if half.abs() < BOW_SERIES {
+                    c * (1.0 + half * half / 6.0)
+                } else {
+                    c * half / half.sin()
                 }
-                best
+            }
+            Base::Ring { radius, .. } => std::f64::consts::TAU * f64::from(radius),
+        }
+    }
+
+    /// The parts of the path within `rect`, as parameter intervals in
+    /// order (`Spans`). The work is bounded by the rectangle, never by the
+    /// length: a line is clipped exactly, a bow is bisected to within half
+    /// a pixel of the rectangle's edges, at most `SPAN_DEPTH` times, and a
+    /// loop, whose radius the style bounds, is kept or dropped whole.
+    pub(crate) fn spans_within(&self, rect: RectF) -> Spans {
+        let mut spans = Spans::NONE;
+        match *self {
+            Base::Line { a, b } => {
+                if let Some([t0, t1]) = clip_line(a, b, rect) {
+                    spans.push(t0, t1);
+                }
+            }
+            Base::Ring { centre, radius, .. } => {
+                let r = radius.abs();
+                let ring = RectF {
+                    x: centre[0] - r,
+                    y: centre[1] - r,
+                    width: 2.0 * r,
+                    height: 2.0 * r,
+                };
+                if overlaps(ring, rect) {
+                    spans.push(0.0, 1.0);
+                }
+            }
+            Base::Bow { half, .. } => {
+                // Pieces that turn by at most a quarter turn, so each one
+                // lies within its chord's box widened by its sagitta.
+                let turn = 2.0 * f64::from(half).abs();
+                let pieces = (turn / std::f64::consts::FRAC_PI_4).ceil().max(1.0) as usize;
+                for k in 0..pieces {
+                    let (t0, t1) = (k as f64 / pieces as f64, (k + 1) as f64 / pieces as f64);
+                    self.bisect(t0, t1, rect, &mut spans);
+                }
+            }
+        }
+        spans
+    }
+
+    /// Add the parts of the bow between `t0` and `t1` that lie within
+    /// `rect` to `spans`, left to right, bisecting on a fixed stack.
+    fn bisect(&self, t0: f64, t1: f64, rect: RectF, spans: &mut Spans) {
+        let Base::Bow { half, .. } = *self else {
+            return;
+        };
+        let mut stack = [(0.0f64, 0.0f64, 0u32); SPAN_DEPTH as usize + 2];
+        let mut top = 1usize;
+        stack[0] = (t0, t1, 0);
+        while top > 0 {
+            top -= 1;
+            let (s0, s1, depth) = stack[top];
+            let (p0, p1) = (self.point(s0), self.point(s1));
+            let chord = len(sub(p1, p0));
+            let turn = 2.0 * f64::from(half).abs() * (s1 - s0);
+            let sagitta = (f64::from(chord) / 2.0 * (turn / 4.0).tan()) as f32;
+            let reach = RectF {
+                x: p0[0].min(p1[0]) - sagitta,
+                y: p0[1].min(p1[1]) - sagitta,
+                width: (p0[0] - p1[0]).abs() + 2.0 * sagitta,
+                height: (p0[1] - p1[1]).abs() + 2.0 * sagitta,
+            };
+            if !(reach.width.is_finite() && reach.height.is_finite()) || !overlaps(reach, rect) {
+                continue;
+            }
+            if inside(reach, rect) || chord <= 0.5 || depth >= SPAN_DEPTH {
+                spans.push(s0, s1);
+                continue;
+            }
+            let mid = 0.5 * (s0 + s1);
+            // The right half under the left, so the left is taken first.
+            stack[top] = (mid, s1, depth + 1);
+            stack[top + 1] = (s0, mid, depth + 1);
+            top += 2;
+        }
+    }
+
+    /// The distance from `p` to the parts of the path within `rect`,
+    /// sampled at most three pixels apart over those parts only.
+    fn distance(&self, p: [f32; 2], rect: RectF) -> f32 {
+        let spans = self.spans_within(rect);
+        let mut best = f32::INFINITY;
+        if let Base::Line { .. } = self {
+            for [t0, t1] in spans.iter() {
+                best = best.min(segment_distance(p, self.point(t0), self.point(t1)));
+            }
+            return best;
+        }
+        let length = self.length();
+        for [t0, t1] in spans.iter() {
+            let steps = ((length * (t1 - t0) / 3.0).ceil()).clamp(1.0, f64::from(u32::MAX)) as u64;
+            let mut prev = self.point(t0);
+            for k in 1..=steps {
+                let next = self.point(t0 + (t1 - t0) * k as f64 / steps as f64);
+                best = best.min(segment_distance(p, prev, next));
+                prev = next;
+            }
+        }
+        best
+    }
+}
+
+/// The most times a bow is bisected towards a rectangle's edge: a numerical
+/// setting (each step halves the parameter), not a count of data.
+const SPAN_DEPTH: u32 = 60;
+/// The most spans kept per path; more are merged into the last.
+const SPAN_SLOTS: usize = 8;
+
+/// The parameter intervals of a path that lie within a rectangle, in order,
+/// on the stack. When more than `SPAN_SLOTS` would be kept, the last one is
+/// widened instead: a superset that draws the same inside the rectangle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Spans {
+    spans: [[f64; 2]; SPAN_SLOTS],
+    len: usize,
+}
+
+impl Spans {
+    const NONE: Self = Self {
+        spans: [[0.0; 2]; SPAN_SLOTS],
+        len: 0,
+    };
+
+    fn push(&mut self, t0: f64, t1: f64) {
+        if let Some(last) = self.len.checked_sub(1)
+            && (self.spans[last][1] >= t0 || self.len == SPAN_SLOTS)
+        {
+            self.spans[last][1] = self.spans[last][1].max(t1);
+            return;
+        }
+        self.spans[self.len] = [t0, t1];
+        self.len += 1;
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = [f64; 2]> + '_ {
+        self.spans[..self.len].iter().copied()
+    }
+
+    /// Whether the spans cover the whole path.
+    fn whole(&self) -> bool {
+        self.len == 1 && self.spans[0] == [0.0, 1.0]
+    }
+
+    /// The spans within `[t0, t1]`.
+    fn within(&self, t0: f64, t1: f64) -> Self {
+        let mut out = Self::NONE;
+        for [a, b] in self.iter() {
+            let (a, b) = (a.max(t0), b.min(t1));
+            if a < b {
+                out.push(a, b);
+            }
+        }
+        out
+    }
+
+    /// The spans with each start moved back to a whole period of a dash
+    /// `period` pixels long on a path `length` pixels long, so the dashes
+    /// keep their place along the path where it is clipped.
+    fn dash_aligned(&self, length: f64, period: f64) -> Self {
+        if !(period > 0.0 && length.is_finite() && length > 0.0) {
+            return *self;
+        }
+        let mut out = Self::NONE;
+        for [t0, t1] in self.iter() {
+            let at = (t0 * length / period).floor() * period / length;
+            out.push(at.max(0.0), t1);
+        }
+        out
+    }
+}
+
+/// Whether two rectangles overlap (touching counts).
+fn overlaps(a: RectF, b: RectF) -> bool {
+    a.x <= b.x + b.width && b.x <= a.x + a.width && a.y <= b.y + b.height && b.y <= a.y + a.height
+}
+
+/// Whether `a` lies within `b`.
+fn inside(a: RectF, b: RectF) -> bool {
+    a.x >= b.x && a.y >= b.y && a.x + a.width <= b.x + b.width && a.y + a.height <= b.y + b.height
+}
+
+/// `rect` widened by `by` on every side.
+fn widened(rect: RectF, by: f32) -> RectF {
+    RectF {
+        x: rect.x - by,
+        y: rect.y - by,
+        width: rect.width + 2.0 * by,
+        height: rect.height + 2.0 * by,
+    }
+}
+
+/// The part of the segment `a`–`b` within `rect` as a parameter interval
+/// (Liang–Barsky), `None` when it misses.
+fn clip_line(a: [f32; 2], b: [f32; 2], rect: RectF) -> Option<[f64; 2]> {
+    let (a, b) = (wide(a), wide(b));
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let (x0, y0) = (f64::from(rect.x), f64::from(rect.y));
+    let (x1, y1) = (x0 + f64::from(rect.width), y0 + f64::from(rect.height));
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-d[0], a[0] - x0),
+        (d[0], x1 - a[0]),
+        (-d[1], a[1] - y0),
+        (d[1], y1 - a[1]),
+    ] {
+        if !(p.is_finite() && q.is_finite()) {
+            return None;
+        }
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                t0 = t0.max(r);
+            } else {
+                t1 = t1.min(r);
             }
         }
     }
+    (t0 <= t1).then_some([t0, t1])
 }
 
 /// The distance from `p` to the segment `a`–`b`.
@@ -1685,6 +2024,9 @@ pub(crate) struct Placed<'s> {
     topology: Topology,
     px: Vec<[f64; 2]>,
     picked: Option<FeynmanHit>,
+    /// The plot rectangle the series is drawn clipped to: every path is
+    /// sampled within it only (`Base::spans_within`).
+    clip: RectF,
 }
 
 /// The gap between a part and its label, logical pixels.
@@ -1692,7 +2034,7 @@ const LABEL_GAP: f32 = 6.0;
 /// The gap between a line and its momentum arrow, logical pixels.
 const MOMENTUM_GAP: f32 = 6.0;
 /// The share of a line its momentum arrow spans, centred.
-const MOMENTUM_SPAN: f32 = 0.4;
+const MOMENTUM_SPAN: f64 = 0.4;
 /// Samples per half period of a wave and per loop of a coil.
 const WAVE_SAMPLES: usize = 6;
 const COIL_SAMPLES: usize = 12;
@@ -1776,11 +2118,10 @@ impl Placed<'_> {
             let centre = add(a, [radius * angle.cos(), radius * angle.sin()]);
             let start = (a[1] - centre[1]).atan2(a[0] - centre[0]);
             return Some(Geometry {
-                base: Base::Arc {
+                base: Base::Ring {
                     centre,
                     radius,
                     start,
-                    sweep: 2.0 * PI,
                 },
                 ends: (a, a),
                 is_loop: true,
@@ -1788,40 +2129,16 @@ impl Placed<'_> {
             });
         }
         let b = self.px(to)?;
-        let chord = sub(b, a);
-        let c = len(chord);
         let bend = self.bend(index).to_radians();
-        if c <= 0.0 || bend.abs() < 1e-3 {
-            return Some(Geometry {
-                base: Base::Line { a, b },
-                ends: (a, b),
-                is_loop: false,
-                label_side: 1.0,
-            });
-        }
-        let normal = left_normal(scale(chord, 1.0 / c));
-        let middle = lerp(a, b, 0.5);
-        let radius = (c / 2.0) / bend.sin().abs();
-        let offset = (c / 2.0) / bend.tan();
-        // The centre lies across the chord from the bulge.
-        let centre = sub(middle, scale(normal, offset));
-        let start = (a[1] - centre[1]).atan2(a[0] - centre[0]);
-        let bulge = add(middle, scale(normal, (c / 2.0) * (bend / 2.0).tan()));
-        let mid_angle = (bulge[1] - centre[1]).atan2(bulge[0] - centre[0]);
-        let mut half = mid_angle - start;
-        while half > PI {
-            half -= 2.0 * PI;
-        }
-        while half < -PI {
-            half += 2.0 * PI;
-        }
+        // Only an exactly zero bend is straight: a bow of any other angle
+        // is evaluated from its chord, exact however small the angle.
+        let base = if bend == 0.0 || a == b {
+            Base::Line { a, b }
+        } else {
+            Base::Bow { a, b, half: bend }
+        };
         Some(Geometry {
-            base: Base::Arc {
-                centre,
-                radius,
-                start,
-                sweep: 2.0 * half,
-            },
+            base,
             ends: (a, b),
             is_loop: false,
             label_side: if bend >= 0.0 { 1.0 } else { -1.0 },
@@ -1875,43 +2192,65 @@ impl Placed<'_> {
         );
         let width = propagator.width_px.unwrap_or(style.width) + extra;
         let base = geometry.base;
-        let closed = geometry.is_loop;
         let stroke = StrokeStyle {
             width,
             color,
             dash: propagator.particle.dash(),
             tag: "feynman_propagator",
         };
+        // Only the parts within the plot (and the ink's reach past it) are
+        // sampled: the work is bounded by the plot, never by the line's
+        // length on screen.
+        let spans = base.spans_within(widened(
+            self.clip,
+            2.0 * self.envelope(index) + width + LABEL_GAP,
+        ));
+        let closed = geometry.is_loop && spans.whole();
+        let draw = |path: &[PathSegment], sink: &mut dyn Sink| {
+            if !path.is_empty() {
+                sink.path(Slot::Above, path, &stroke);
+            }
+        };
         match propagator.particle {
             ParticleLine::Photon | ParticleLine::ChargedBoson => {
-                wave_path(&base, style.wave, 0.0, closed, path)?;
-                sink.path(Slot::Above, path, &stroke);
+                wave_path(&base, style.wave, 0.0, &spans, closed, path)?;
+                draw(path, sink);
             }
             ParticleLine::Graviton => {
                 for shift in [-width, width] {
-                    wave_path(&base, style.wave, shift, closed, path)?;
-                    sink.path(Slot::Above, path, &stroke);
+                    wave_path(&base, style.wave, shift, &spans, closed, path)?;
+                    draw(path, sink);
                 }
             }
             ParticleLine::Gluon => {
-                coil_path(&base, style.coil, closed, path)?;
-                sink.path(Slot::Above, path, &stroke);
+                coil_path(&base, style.coil, &spans, closed, path)?;
+                draw(path, sink);
             }
             ParticleLine::DoubleLine => {
                 for shift in [-width, width] {
-                    offset_path(&base, shift, 0.0, 1.0, closed, path)?;
-                    sink.path(Slot::Above, path, &stroke);
+                    offset_path(&base, shift, &spans, closed, path)?;
+                    draw(path, sink);
                 }
             }
-            _ => match base {
-                Base::Line { a, b } => sink.stroke(Slot::Above, a, b, &stroke),
-                Base::Arc { .. } => {
-                    offset_path(&base, 0.0, 0.0, 1.0, closed, path)?;
-                    sink.path(Slot::Above, path, &stroke);
+            particle => {
+                // A clipped dash starts on a whole period, so it keeps its
+                // place along the line.
+                let period: f32 = particle.dash().iter().sum();
+                let spans = spans.dash_aligned(base.length(), f64::from(period));
+                match base {
+                    Base::Line { .. } => {
+                        for [t0, t1] in spans.iter() {
+                            sink.stroke(Slot::Above, base.point(t0), base.point(t1), &stroke);
+                        }
+                    }
+                    Base::Bow { .. } | Base::Ring { .. } => {
+                        offset_path(&base, 0.0, &spans, closed, path)?;
+                        draw(path, sink);
+                    }
                 }
-            },
+            }
         }
-        let head = |sink: &mut dyn Sink, t: f32, reversed: bool| {
+        let head = |sink: &mut dyn Sink, t: f64, reversed: bool| {
             let mut dir = base.tangent(t);
             if reversed {
                 dir = scale(dir, -1.0);
@@ -1938,14 +2277,16 @@ impl Placed<'_> {
             };
             let shift = side * (self.envelope(index) + MOMENTUM_GAP);
             let (t0, t1) = (0.5 - MOMENTUM_SPAN / 2.0, 0.5 + MOMENTUM_SPAN / 2.0);
-            offset_path(&base, shift, t0, t1, false, path)?;
+            offset_path(&base, shift, &spans.within(t0, t1), false, path)?;
             let thin = StrokeStyle {
                 width: style.width.min(1.5),
                 color,
                 dash: &[],
                 tag: "feynman_momentum",
             };
-            sink.path(Slot::Above, path, &thin);
+            if !path.is_empty() {
+                sink.path(Slot::Above, path, &thin);
+            }
             let (end, before) = if momentum.reversed {
                 (t0, t1)
             } else {
@@ -2028,13 +2369,14 @@ impl Placed<'_> {
                     &line,
                 );
                 if marker == VertexMarker::CircledCross {
-                    let base = Base::Arc {
+                    let base = Base::Ring {
                         centre: p,
                         radius: r,
                         start: 0.0,
-                        sweep: 2.0 * PI,
                     };
-                    offset_path(&base, 0.0, 0.0, 1.0, true, path)?;
+                    let mut whole = Spans::NONE;
+                    whole.push(0.0, 1.0);
+                    offset_path(&base, 0.0, &whole, true, path)?;
                     sink.path(Slot::Above, path, &line);
                 }
             }
@@ -2175,12 +2517,12 @@ impl Placed<'_> {
     }
 }
 
-fn lerp_f(a: f32, b: f32, t: f32) -> f32 {
+fn lerp_f(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
 /// The point of `base` at `t`, `shift` pixels to its left.
-fn offset_point(base: &Base, shift: f32, t: f32) -> [f32; 2] {
+fn offset_point(base: &Base, shift: f32, t: f64) -> [f32; 2] {
     add(base.point(t), scale(left_normal(base.tangent(t)), shift))
 }
 
@@ -2195,107 +2537,141 @@ fn circle(centre: [f32; 2], radius: f32) -> [[f32; 2]; CIRCLE_SEGMENTS] {
     })
 }
 
-/// Replace `out` with the smooth path through `f(t)` for `t` from `t0` to
-/// `t1` in `samples` steps: cubic Hermite segments with the curve's own
-/// derivatives (taken numerically), as Bézier segments. `closed` closes
-/// the path. The segment count is known first, so `out` grows (doubling)
-/// before it is written, never while it is.
+/// The cubic segments a span of `dt` takes at `density` segments per unit
+/// of `t`: at least one.
+fn span_segments(density: f64, dt: f64) -> usize {
+    (density * dt).ceil().clamp(1.0, usize::MAX as f64) as usize
+}
+
+/// Replace `out` with one subpath per span of `spans`: the smooth path
+/// through `f(t)`, `density` cubic segments per unit of `t`, as cubic
+/// Hermite segments with the curve's own derivatives (taken numerically)
+/// written as Bézier segments. `closed` closes the subpath of a span that
+/// covers the whole path. The segment count is known first, so `out` grows
+/// before it is written, never while it is; a count past what can be
+/// allocated is [`ALLOCATION_FAILED`].
 fn sampled_path(
-    f: &dyn Fn(f32) -> [f32; 2],
-    t0: f32,
-    t1: f32,
-    samples: usize,
+    f: &dyn Fn(f64) -> [f32; 2],
+    spans: &Spans,
+    density: f64,
     closed: bool,
     out: &mut Vec<PathSegment>,
 ) -> Result<(), &'static str> {
-    let samples = samples.max(1);
     out.clear();
-    out.try_reserve(samples + 2)
-        .map_err(|_| ALLOCATION_FAILED)?;
-    let h = (t1 - t0) / samples as f32;
-    let eps = (h * 1e-2).abs().max(1e-6);
-    let derivative = |t: f32| scale(sub(f(t + eps), f(t - eps)), 1.0 / (2.0 * eps));
-    let tuple = |p: [f32; 2]| (p[0], p[1]);
-    out.push(PathSegment::Move(tuple(f(t0))));
-    for k in 0..samples {
-        let (ta, tb) = (t0 + h * k as f32, t0 + h * (k + 1) as f32);
-        let (pa, pb) = (f(ta), f(tb));
-        let (da, db) = (derivative(ta), derivative(tb));
-        out.push(PathSegment::Cubic(
-            tuple(add(pa, scale(da, h / 3.0))),
-            tuple(sub(pb, scale(db, h / 3.0))),
-            tuple(pb),
-        ));
+    let mut total = 0usize;
+    for [t0, t1] in spans.iter() {
+        total = total
+            .checked_add(span_segments(density, t1 - t0))
+            .and_then(|n| n.checked_add(2))
+            .ok_or(ALLOCATION_FAILED)?;
     }
-    if closed {
-        out.push(PathSegment::Close);
+    out.try_reserve(total).map_err(|_| ALLOCATION_FAILED)?;
+    let tuple = |p: [f32; 2]| (p[0], p[1]);
+    for [t0, t1] in spans.iter() {
+        let samples = span_segments(density, t1 - t0);
+        let h = (t1 - t0) / samples as f64;
+        let eps = (h * 1e-2).abs().max(1e-12);
+        // The derivative times h / 3: a Bézier handle.
+        let handle = |t: f64| {
+            let d = sub(f(t + eps), f(t - eps));
+            scale(d, (h / (6.0 * eps)) as f32)
+        };
+        out.push(PathSegment::Move(tuple(f(t0))));
+        for k in 0..samples {
+            let (ta, tb) = (t0 + h * k as f64, t0 + h * (k + 1) as f64);
+            let (pa, pb) = (f(ta), f(tb));
+            out.push(PathSegment::Cubic(
+                tuple(add(pa, handle(ta))),
+                tuple(sub(pb, handle(tb))),
+                tuple(pb),
+            ));
+        }
+        if closed && t0 == 0.0 && t1 == 1.0 {
+            out.push(PathSegment::Close);
+        }
     }
     Ok(())
 }
 
-/// The base path from `t0` to `t1`, `shift` pixels to its left, into `out`.
+/// The base path over `spans`, `shift` pixels to its left, into `out`: a
+/// line in one segment per span, a bow or a loop in a cubic per sixteenth
+/// of a turn.
 fn offset_path(
     base: &Base,
     shift: f32,
-    t0: f32,
-    t1: f32,
+    spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
 ) -> Result<(), &'static str> {
-    let samples = match base {
-        Base::Line { .. } => 1,
-        Base::Arc { sweep, .. } => ((sweep.abs() * (t1 - t0) / (PI / 8.0)).ceil() as usize).max(1),
+    let density = match *base {
+        Base::Line { .. } => 0.0,
+        Base::Bow { half, .. } => 2.0 * f64::from(half).abs() / (std::f64::consts::PI / 8.0),
+        Base::Ring { .. } => 16.0,
     };
     sampled_path(
         &|t| offset_point(base, shift, t),
-        t0,
-        t1,
-        samples,
+        spans,
+        density,
         closed,
         out,
     )
 }
 
-/// A wave along `base` into `out`: a sine of the wiggle's amplitude, its
-/// wavelength fitted so that whole half periods span the path, `shift`
-/// pixels to the left. A loop's wave closes on itself with whole periods.
+/// A wave along `base` over `spans` into `out`: a sine of the wiggle's
+/// amplitude, its wavelength fitted so that whole half periods span the
+/// whole path, `shift` pixels to the left; the phase is the whole path's,
+/// the samples only the spans'. A loop's wave closes on itself with whole
+/// periods. A path of no finite length draws nothing.
 fn wave_path(
     base: &Base,
     wave: Wiggle,
     shift: f32,
+    spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
 ) -> Result<(), &'static str> {
+    out.clear();
     let length = base.length();
-    let mut halves = ((length / (wave.wavelength / 2.0)).round() as usize).max(1);
-    if closed && halves % 2 == 1 {
-        halves += 1;
+    if !(length.is_finite() && length > 0.0) {
+        return Ok(());
     }
-    let amplitude = wave.amplitude;
-    let f = |t: f32| {
-        let a = amplitude * (PI * halves as f32 * t).sin() + shift;
-        offset_point(base, a, t)
+    let mut halves = (length / (f64::from(wave.wavelength) / 2.0))
+        .round()
+        .max(1.0);
+    if closed && halves % 2.0 == 1.0 {
+        halves += 1.0;
+    }
+    let amplitude = f64::from(wave.amplitude);
+    let f = |t: f64| {
+        let a = amplitude * (std::f64::consts::PI * halves * t).sin() + f64::from(shift);
+        offset_point(base, a as f32, t)
     };
-    sampled_path(&f, 0.0, 1.0, halves * WAVE_SAMPLES, closed, out)
+    sampled_path(&f, spans, halves * WAVE_SAMPLES as f64, closed, out)
 }
 
-/// A coil along `base` into `out`: whole loops (a prolate cycloid) on the
-/// left of travel, of the wiggle's size, its wavelength fitted to the path.
+/// A coil along `base` over `spans` into `out`: whole loops (a prolate
+/// cycloid) on the left of travel, of the wiggle's size, its wavelength
+/// fitted to the whole path. A path of no finite length draws nothing.
 fn coil_path(
     base: &Base,
     coil: Wiggle,
+    spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
 ) -> Result<(), &'static str> {
-    let length = base.length().max(1e-3);
-    let loops = ((length / coil.wavelength).round() as usize).max(1);
-    let a = coil.amplitude;
-    let f = |t: f32| {
-        let phase = 2.0 * PI * loops as f32 * t;
+    out.clear();
+    let length = base.length();
+    if !(length.is_finite() && length > 0.0) {
+        return Ok(());
+    }
+    let loops = (length / f64::from(coil.wavelength)).round().max(1.0);
+    let a = f64::from(coil.amplitude);
+    let f = |t: f64| {
+        let phase = std::f64::consts::TAU * loops * t;
         let along = t - a * phase.sin() / length;
-        offset_point(base, a * (1.0 - phase.cos()), along)
+        offset_point(base, (a * (1.0 - phase.cos())) as f32, along)
     };
-    sampled_path(&f, 0.0, 1.0, loops * COIL_SAMPLES, closed, out)
+    sampled_path(&f, spans, loops * COIL_SAMPLES as f64, closed, out)
 }
 
 impl SeriesConfig {
@@ -2373,7 +2749,8 @@ pub(crate) fn stepped_selection(
         _ => return None,
     };
     let members = || series.iter().filter(|s| s.feynman().is_some());
-    let at = members().position(|s| s.series_id == series[position].series_id)?;
+    let own = &series.get(position)?.series_id;
+    let at = members().position(|s| s.series_id == *own)?;
     let target = at
         .saturating_add_signed(dy as isize)
         .min(members().count().saturating_sub(1));

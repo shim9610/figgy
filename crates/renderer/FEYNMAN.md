@@ -146,7 +146,7 @@ propagator label on the side its arc bulges to, and a momentum arrow
 
 | Interaction | Behaviour |
 |---|---|
-| Hover, click | A typed data pick answers `PickedData::FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel { part, index }` on the CPU, through the placement the raster draws with. Labels win over markers, markers over lines; within six pixels of a vertex the vertex wins over its lines, so a leg end without a marker picks |
+| Hover, click | A typed data pick answers `PickedData::FeynmanVertex`, `FeynmanPropagator` or `FeynmanLabel { part, index }` on the CPU, through the placement the raster draws with. A vertex answers within the pick distance of its marker and there wins over its own lines (within a third of a line between the markers), so a leg end without a marker picks and a short line still picks in its middle; other parts compete by distance, a tie going to labels over markers over lines. A layout that fails is the pick's error |
 | Picked highlight | The picked vertex or line is drawn in `style.picked.color`, `style.picked.width_extra_px` wider; a picked leg end shows a dot; a picked label is boxed in that colour |
 | `step_selection` | `dx` steps the vertices or the propagators, `dy` the Feynman series of the chart; a label does not step |
 | Drag | `Renderer::drag_feynman(chart, series_id, FeynmanHit, dx, dy)`: `Vertex(i)` moves a vertex through the axes, `Propagator(i)` sets a line's bend to the arc through its moved middle. A label moves in logical pixels through the value-label drag: `FeynmanSeries::drag_label` on the host's series, which `drag_feynman` refuses. The web wrapper's `press_feynman` starts the vertex and bend drags, and a label's through the value-label pointer |
@@ -160,12 +160,33 @@ There is no count limit on vertices, propagators or labels. A 5,000-rung
 ladder (10,004 vertices, 15,002 propagators) lays out in about 0.5 s and
 draws at 1x in about 0.8 s in the debug test profile.
 
+## Drawn within the plot
+
+Every line is clipped to the plot, widened by its ink, before it is
+sampled: a straight line exactly, an arc by bisecting its parameter
+towards the plot's edges (at most 60 times, a numerical setting), a loop
+whole. A wave's or a coil's phase is the whole line's; only the visible
+spans are sampled, and a dashed line's span starts on a whole period so
+its dashes keep their place. The work of an emit or a pick is therefore
+bounded by the plot, not by how long the lines are on screen: a diagram
+zoomed in a million times draws and picks as an ordinary view does, and a
+line whose length on screen is not finite draws nothing. Arcs are
+evaluated from their chord and their angle, so a nearly straight arc
+stays exact. Positions on screen are `f32` (`AnnotationSpace`): a vertex
+about 10⁹ pixels off screen lies on f32's 64-pixel spacing there, so the
+visible part of its lines can shift by up to that much.
+
 ## Working memory
 
-Every operation works in at most four transient buffers, each taken from
-the allocator once at its exact size and dropped when the operation
-returns; no loop over vertices, propagators, solver iterations or path
-samples allocates (rule 3).
+Every operation works in at most four transient buffers, dropped when the
+operation returns (rule 3). The topology, the positions and the solver
+buffer are each taken once at their exact size. The path buffer starts
+empty and grows, by doubling and before it is written, to the longest
+visible path of the emit. No loop over vertices, propagators, solver
+iterations or path samples allocates in the model. Text is the exception:
+each label is measured through the caller's `MeasureText`, and the
+renderer's `CpuTextMeasure` lays the text out, allocating, for every label
+on every raster and pick, as it does for an energy-level series.
 
 | Buffer | Holds | Size |
 |---|---|---|
