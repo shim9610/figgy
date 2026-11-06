@@ -1968,7 +1968,7 @@ mod tests {
                 {
                     let chart = crate::chart::Chart::new(document.clone());
                     let mut parts = 0usize;
-                    written_document_parts(&chart, scale, &mut |_| parts += 1).unwrap();
+                    written_document_parts(&chart, &[], scale, &mut |_| parts += 1).unwrap();
                     assert!(parts > 0);
                 }
             }
