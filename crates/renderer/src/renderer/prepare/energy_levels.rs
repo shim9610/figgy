@@ -172,19 +172,13 @@ pub(crate) fn emit_feynman(
         .map_err(|error| feynman_error(&cfg.series_id, error))
 }
 
-/// The renderer error of a Feynman series' model error: its working memory
-/// failing to allocate, or its layout failing to converge.
+/// The renderer error of a Feynman series' model error (its working memory
+/// failing to allocate, or its layout failing to converge): the series'
+/// error, the model's message as the reason, as for a `validate` error.
 pub(crate) fn feynman_error(series_id: &str, error: &'static str) -> FiggyError {
-    if error == crate::feynman::ALLOCATION_FAILED {
-        FiggyError::StateAllocationFailed {
-            resource: "Feynman series working memory",
-            reason: format!("series `{series_id}`"),
-        }
-    } else {
-        FiggyError::InvalidSeriesConfig {
-            series_id: series_id.into(),
-            reason: error.into(),
-        }
+    FiggyError::InvalidSeriesConfig {
+        series_id: series_id.into(),
+        reason: error.into(),
     }
 }
 

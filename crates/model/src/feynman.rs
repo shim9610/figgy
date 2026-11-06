@@ -508,26 +508,26 @@ fn offset_ok(offset: [f32; 2]) -> bool {
 // Working memory (#234, rule 3).
 //
 // Every operation on a series (validate, layout, emit, pick, drag) works in
-// at most four transient buffers, each taken from the allocator once at its
-// exact size by `exact` and dropped when the operation returns: the
+// at most four transient buffers, dropped when the operation returns: the
 // topology arena (`Topology`), the position buffer (`Placed::px`, or the
-// list `positions` returns), the layout's conjugate-gradient work buffer
-// (`lay_out`) and the emit's path buffer. No loop over vertices,
-// propagators, solver iterations or path samples allocates. Rows are 32-bit
-// indices: the width wasm32's `usize` has, so a series whose rows do not
-// fit cannot be allocated on any target, and the conversion failing is
-// reported as the allocation failing.
+// list `positions` returns) and the layout's conjugate-gradient work
+// buffer (`lay_out`), each taken once at its exact size by `exact`, and the
+// emit's path buffer, which grows (doubling, before it is written) to the
+// longest visible path. No loop over vertices, propagators, solver
+// iterations or path samples allocates. Rows are `usize`, so a series has
+// no count limit (rule 10): the only failure is an allocation that fails.
 
 /// The error of an operation whose working memory cannot be allocated.
-pub const ALLOCATION_FAILED: &str = "the Feynman series' working memory could not be allocated";
+pub(crate) const ALLOCATION_FAILED: &str =
+    "the Feynman series' working memory could not be allocated";
 /// The error of a layout whose solver stops converging.
-pub const LAYOUT_DID_NOT_CONVERGE: &str = "the Feynman layout did not converge";
+pub(crate) const LAYOUT_DID_NOT_CONVERGE: &str = "the Feynman layout did not converge";
 
 /// The widest bend of a line, degrees: a propagator's `bend` and the outer
 /// lines of a fan stay within it, so every arc has a finite radius.
 const MAX_BEND: f32 = 170.0;
 /// An id that names no vertex.
-const NONE: u32 = u32::MAX;
+const NONE: usize = usize::MAX;
 /// The conjugate-gradient tolerance: the relative residual it solves to.
 const CG_TOLERANCE_SQUARED: f64 = 1e-24;
 /// Solver iterations without a new best residual after which the layout
@@ -543,24 +543,16 @@ fn exact<T: Copy>(len: usize, fill: T) -> Result<Vec<T>, &'static str> {
     Ok(v)
 }
 
-/// A row as a 32-bit index ([`NONE`] excluded).
-fn row32(n: usize) -> Result<u32, &'static str> {
-    u32::try_from(n)
-        .ok()
-        .filter(|&r| r != NONE)
-        .ok_or(ALLOCATION_FAILED)
-}
-
 /// The vertex row `order` (rows sorted by id) names for `id`, or [`NONE`].
-fn lookup(series: &FeynmanSeries, order: &[u32], id: &str) -> u32 {
+fn lookup(series: &FeynmanSeries, order: &[usize], id: &str) -> usize {
     order
-        .binary_search_by(|&r| series.vertices[r as usize].id.as_str().cmp(id))
+        .binary_search_by(|&r| series.vertices[r].id.as_str().cmp(id))
         .map_or(NONE, |k| order[k])
 }
 
 /// The topology of a series, worked out once per operation in
 /// O(V log V + E log D) (D the largest degree): one exact-size allocation
-/// of 32-bit words, `[order | offsets | incident | ends | flags]`.
+/// of `usize` words, `[order | offsets | incident | ends | flags]`.
 ///
 /// - `order` (V): the vertex rows sorted by id, the id index. Once the
 ///   ends are resolved the layout reuses it as its stack and its sort
@@ -574,47 +566,41 @@ fn lookup(series: &FeynmanSeries, order: &[u32], id: &str) -> u32 {
 ///   names no vertex.
 /// - `flags` (V): the layout's state of each vertex.
 pub(crate) struct Topology {
-    words: Vec<u32>,
+    words: Vec<usize>,
     v: usize,
     e: usize,
 }
 
 /// The regions of a topology arena: `(order, offsets, incident, ends, flags)`.
 type Regions<'a> = (
-    &'a mut [u32],
-    &'a mut [u32],
-    &'a mut [u32],
-    &'a mut [u32],
-    &'a mut [u32],
+    &'a mut [usize],
+    &'a mut [usize],
+    &'a mut [usize],
+    &'a mut [usize],
+    &'a mut [usize],
 );
 
-const FIXED: u32 = 1;
-const ANCHORED: u32 = 2;
+const FIXED: usize = 1;
+const ANCHORED: usize = 2;
 
 impl Topology {
     fn new(series: &FeynmanSeries) -> Result<Self, &'static str> {
         let (v, e) = (series.vertices.len(), series.propagators.len());
-        row32(v)?;
-        row32(e)?;
         let len = v
             .checked_mul(3)
             .and_then(|n| n.checked_add(1))
             .and_then(|n| n.checked_add(e.checked_mul(6)?))
             .ok_or(ALLOCATION_FAILED)?;
         let mut topology = Self {
-            words: exact(len, 0u32)?,
+            words: exact(len, 0usize)?,
             v,
             e,
         };
         let (order, offsets, incident, ends, _) = topology.parts_mut();
         for (i, slot) in order.iter_mut().enumerate() {
-            *slot = i as u32;
+            *slot = i;
         }
-        order.sort_unstable_by(|&a, &b| {
-            series.vertices[a as usize]
-                .id
-                .cmp(&series.vertices[b as usize].id)
-        });
+        order.sort_unstable_by(|&a, &b| series.vertices[a].id.cmp(&series.vertices[b].id));
         for (p, propagator) in series.propagators.iter().enumerate() {
             ends[2 * p] = lookup(series, order, &propagator.from);
             ends[2 * p + 1] = lookup(series, order, &propagator.to);
@@ -627,9 +613,9 @@ impl Topology {
             if a == NONE || b == NONE {
                 continue;
             }
-            offsets[a as usize] += 1;
+            offsets[a] += 1;
             if a != b {
-                offsets[b as usize] += 1;
+                offsets[b] += 1;
             }
         }
         for i in 1..v {
@@ -641,20 +627,20 @@ impl Topology {
             if a == NONE || b == NONE {
                 continue;
             }
-            offsets[a as usize] -= 1;
-            let k = offsets[a as usize] as usize;
+            offsets[a] -= 1;
+            let k = offsets[a];
             incident[2 * k] = b;
-            incident[2 * k + 1] = p as u32;
+            incident[2 * k + 1] = p;
             if a != b {
-                offsets[b as usize] -= 1;
-                let k = offsets[b as usize] as usize;
+                offsets[b] -= 1;
+                let k = offsets[b];
                 incident[2 * k] = a;
-                incident[2 * k + 1] = p as u32;
+                incident[2 * k + 1] = p;
             }
         }
         for i in 0..v {
-            let run = &mut incident[2 * offsets[i] as usize..2 * offsets[i + 1] as usize];
-            pairs_mut(run).sort_unstable_by_key(|&[other, p]| pair_key(series, i as u32, other, p));
+            let run = &mut incident[2 * offsets[i]..2 * offsets[i + 1]];
+            pairs_mut(run).sort_unstable_by_key(|&[other, p]| pair_key(series, i, other, p));
         }
         Ok(topology)
     }
@@ -667,22 +653,22 @@ impl Topology {
         (order, offsets, incident, ends, flags)
     }
 
-    fn offsets(&self) -> &[u32] {
+    fn offsets(&self) -> &[usize] {
         &self.words[self.v..2 * self.v + 1]
     }
 
-    fn incident(&self) -> &[u32] {
+    fn incident(&self) -> &[usize] {
         let start = 2 * self.v + 1;
         &self.words[start..start + 4 * self.e]
     }
 
-    fn ends(&self) -> &[u32] {
+    fn ends(&self) -> &[usize] {
         let start = 2 * self.v + 1 + 4 * self.e;
         &self.words[start..start + 2 * self.e]
     }
 
     /// The `(other end, propagator)` pairs of vertex `i`.
-    fn around(&self, i: usize) -> &[[u32; 2]] {
+    fn around(&self, i: usize) -> &[[usize; 2]] {
         around(self.offsets(), self.incident(), i)
     }
 
@@ -690,16 +676,16 @@ impl Topology {
     fn ends_of(&self, p: usize) -> Option<(usize, usize)> {
         let ends = self.ends();
         let (a, b) = (*ends.get(2 * p)?, *ends.get(2 * p + 1)?);
-        (a != NONE && b != NONE).then_some((a as usize, b as usize))
+        (a != NONE && b != NONE).then_some((a, b))
     }
 
     /// The run of vertex `i`'s pairs whose other end is `other` and whose
     /// bent flag is `bent`, sorted by propagator.
-    fn run(&self, series: &FeynmanSeries, i: usize, other: u32, bent: bool) -> &[[u32; 2]] {
+    fn run(&self, series: &FeynmanSeries, i: usize, other: usize, bent: bool) -> &[[usize; 2]] {
         let pairs = self.around(i);
-        let key = |&[o, p]: &[u32; 2]| pair_key(series, i as u32, o, p);
+        let key = |&[o, p]: &[usize; 2]| pair_key(series, i, o, p);
         let start = pairs.partition_point(|pair| key(pair) < (other, bent, 0));
-        let end = pairs.partition_point(|pair| key(pair) <= (other, bent, u32::MAX));
+        let end = pairs.partition_point(|pair| key(pair) <= (other, bent, usize::MAX));
         &pairs[start..end]
     }
 
@@ -711,8 +697,8 @@ impl Topology {
             return None;
         }
         let (low, high) = (a.min(b), a.max(b));
-        let run = self.run(series, low, high as u32, false);
-        let rank = run.binary_search_by_key(&(p as u32), |pair| pair[1]).ok()?;
+        let run = self.run(series, low, high, false);
+        let rank = run.binary_search_by_key(&(p), |pair| pair[1]).ok()?;
         Some((rank, run.len(), a == low))
     }
 
@@ -720,28 +706,28 @@ impl Topology {
     /// number.
     fn loop_rank(&self, series: &FeynmanSeries, p: usize) -> Option<(usize, usize)> {
         let (a, _) = self.ends_of(p)?;
-        let run = self.run(series, a, a as u32, false);
-        let rank = run.binary_search_by_key(&(p as u32), |pair| pair[1]).ok()?;
+        let run = self.run(series, a, a, false);
+        let rank = run.binary_search_by_key(&(p), |pair| pair[1]).ok()?;
         Some((rank, run.len()))
     }
 }
 
 /// The `(other end, propagator)` pairs of vertex `i` in a CSR adjacency.
-fn around<'a>(offsets: &[u32], incident: &'a [u32], i: usize) -> &'a [[u32; 2]] {
-    let words = &incident[2 * offsets[i] as usize..2 * offsets[i + 1] as usize];
+fn around<'a>(offsets: &[usize], incident: &'a [usize], i: usize) -> &'a [[usize; 2]] {
+    let words = &incident[2 * offsets[i]..2 * offsets[i + 1]];
     let (pairs, _) = words.as_chunks::<2>();
     pairs
 }
 
-fn pairs_mut(words: &mut [u32]) -> &mut [[u32; 2]] {
+fn pairs_mut(words: &mut [usize]) -> &mut [[usize; 2]] {
     let (pairs, _) = words.as_chunks_mut::<2>();
     pairs
 }
 
 /// The sort key of the pair `(other, p)` at vertex `i`: the other end, then
 /// unbent lines before bent ones (a loop counts as unbent), then the row.
-fn pair_key(series: &FeynmanSeries, i: u32, other: u32, p: u32) -> (u32, bool, u32) {
-    let bent = other != i && series.propagators[p as usize].bend.is_some();
+fn pair_key(series: &FeynmanSeries, i: usize, other: usize, p: usize) -> (usize, bool, usize) {
+    let bent = other != i && series.propagators[p].bend.is_some();
     (other, bent, p)
 }
 
@@ -826,18 +812,18 @@ fn lay_out(
     for i in 0..n {
         if flags[i] & FIXED != 0 {
             flags[i] |= ANCHORED;
-            order[top] = i as u32;
+            order[top] = i;
             top += 1;
         }
     }
     while top > 0 {
         top -= 1;
-        let i = order[top] as usize;
+        let i = order[top];
         for &[j, _] in nbrs(i) {
-            let j = j as usize;
+            let j = j;
             if flags[j] & ANCHORED == 0 {
                 flags[j] |= ANCHORED;
-                order[top] = j as u32;
+                order[top] = j;
                 top += 1;
             }
         }
@@ -864,14 +850,14 @@ fn lay_out(
             continue;
         }
         flags[start] |= ANCHORED;
-        order[0] = start as u32;
+        order[0] = start;
         let (mut m, mut k) = (1usize, 0usize);
         while k < m {
-            for &[j, _] in nbrs(order[k] as usize) {
-                let j = j as usize;
+            for &[j, _] in nbrs(order[k]) {
+                let j = j;
                 if flags[j] & ANCHORED == 0 {
                     flags[j] |= ANCHORED;
-                    order[m] = j as u32;
+                    order[m] = j;
                     m += 1;
                 }
             }
@@ -882,7 +868,7 @@ fn lay_out(
         let shift = 0.1 * group as f64 * (frame[1][0] - frame[0][0]);
         for (k, &i) in members.iter().enumerate() {
             let angle = std::f64::consts::TAU * k as f64 / m as f64;
-            positions[i as usize] = [
+            positions[i] = [
                 centre[0] + shift + radius * angle.cos(),
                 centre[1] + radius * angle.sin(),
             ];
@@ -902,8 +888,8 @@ fn lay_out(
 /// residual of 1e-12 on both axes; [`CG_STALL`] iterations without a new
 /// best residual, or a non-finite value, is [`LAYOUT_DID_NOT_CONVERGE`].
 fn solve_barycentric<'a>(
-    nbrs: &dyn Fn(usize) -> &'a [[u32; 2]],
-    flags: &[u32],
+    nbrs: &dyn Fn(usize) -> &'a [[usize; 2]],
+    flags: &[usize],
     positions: &mut [[f64; 2]],
     origin: [f64; 2],
     unit: f64,
@@ -923,8 +909,8 @@ fn solve_barycentric<'a>(
 /// [`solve_barycentric`] in frame units: the free vertices' positions are
 /// the iterate, in those units; the pinned ones are read through them.
 fn solve_in_frame<'a>(
-    nbrs: &dyn Fn(usize) -> &'a [[u32; 2]],
-    flags: &[u32],
+    nbrs: &dyn Fn(usize) -> &'a [[usize; 2]],
+    flags: &[usize],
     positions: &mut [[f64; 2]],
     origin: [f64; 2],
     unit: f64,
@@ -942,7 +928,7 @@ fn solve_in_frame<'a>(
         positions[i] = [0.0; 2];
         let mut b = [0.0f64; 2];
         for &[j, _] in nbrs(i) {
-            let j = j as usize;
+            let j = j;
             if j != i && !free(j) {
                 b[0] += (positions[j][0] - origin[0]) / unit;
                 b[1] += (positions[j][1] - origin[1]) / unit;
@@ -972,7 +958,7 @@ fn solve_in_frame<'a>(
             let mut degree = 0.0f64;
             let mut sum = [0.0f64; 2];
             for &[j, _] in nbrs(i) {
-                let j = j as usize;
+                let j = j;
                 if j == i {
                     continue;
                 }
@@ -1051,18 +1037,18 @@ fn solve_in_frame<'a>(
 /// `order` (rows tie-broken by row, so each run is in row order).
 fn spread_coincident(
     positions: &mut [[f64; 2]],
-    flags: &[u32],
-    order: &mut [u32],
+    flags: &[usize],
+    order: &mut [usize],
     direction: TimeDirection,
     frame: [[f64; 2]; 2],
 ) {
     let size = [frame[1][0] - frame[0][0], frame[1][1] - frame[0][1]];
     let tolerance = 1e-9 * size[0].max(size[1]);
     for (i, slot) in order.iter_mut().enumerate() {
-        *slot = i as u32;
+        *slot = i;
     }
     order.sort_unstable_by(|&a, &b| {
-        let (pa, pb) = (positions[a as usize], positions[b as usize]);
+        let (pa, pb) = (positions[a], positions[b]);
         pa[0]
             .total_cmp(&pb[0])
             .then(pa[1].total_cmp(&pb[1]))
@@ -1070,17 +1056,17 @@ fn spread_coincident(
     });
     let mut k = 0;
     while k < order.len() {
-        let first = positions[order[k] as usize];
+        let first = positions[order[k]];
         let mut end = k + 1;
         while end < order.len()
-            && (positions[order[end] as usize][0] - first[0]).abs() <= tolerance
-            && (positions[order[end] as usize][1] - first[1]).abs() <= tolerance
+            && (positions[order[end]][0] - first[0]).abs() <= tolerance
+            && (positions[order[end]][1] - first[1]).abs() <= tolerance
         {
             end += 1;
         }
         let mut moved = 0;
         for &i in &order[k..end] {
-            let i = i as usize;
+            let i = i;
             if flags[i] & FIXED != 0 {
                 continue;
             }
@@ -1109,35 +1095,26 @@ impl FeynmanSeries {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.style.validate()?;
         let (v, e) = (self.vertices.len(), self.propagators.len());
-        row32(v)?;
-        row32(e)?;
-        let mut rows = exact(v.checked_add(e).ok_or(ALLOCATION_FAILED)?, 0u32)?;
+        let mut rows = exact(v.checked_add(e).ok_or(ALLOCATION_FAILED)?, 0usize)?;
         let (order, propagator_order) = rows.split_at_mut(v);
         for (i, slot) in order.iter_mut().enumerate() {
-            *slot = i as u32;
+            *slot = i;
         }
-        order.sort_unstable_by(|&a, &b| {
-            self.vertices[a as usize]
-                .id
-                .cmp(&self.vertices[b as usize].id)
-        });
+        order.sort_unstable_by(|&a, &b| self.vertices[a].id.cmp(&self.vertices[b].id));
         if order
             .windows(2)
-            .any(|w| self.vertices[w[0] as usize].id == self.vertices[w[1] as usize].id)
+            .any(|w| self.vertices[w[0]].id == self.vertices[w[1]].id)
         {
             return Err("Feynman vertex ids must be unique");
         }
         for (i, slot) in propagator_order.iter_mut().enumerate() {
-            *slot = i as u32;
+            *slot = i;
         }
-        propagator_order.sort_unstable_by(|&a, &b| {
-            self.propagators[a as usize]
-                .id
-                .cmp(&self.propagators[b as usize].id)
-        });
+        propagator_order
+            .sort_unstable_by(|&a, &b| self.propagators[a].id.cmp(&self.propagators[b].id));
         if propagator_order
             .windows(2)
-            .any(|w| self.propagators[w[0] as usize].id == self.propagators[w[1] as usize].id)
+            .any(|w| self.propagators[w[0]].id == self.propagators[w[1]].id)
         {
             return Err("Feynman propagator ids must be unique");
         }
@@ -1247,22 +1224,6 @@ impl FeynmanSeries {
         }
         *offset = moved;
         NudgeResult::Moved
-    }
-
-    /// The label of value-label row `row` ([`SeriesConfig::drag_value_label`]):
-    /// the vertex labels, then the propagator labels, then the momentum
-    /// labels, as `(part, row of that list)`; `None` past the end.
-    pub(crate) fn label_of_row(&self, row: usize) -> Option<(FeynmanLabelPart, usize)> {
-        let (v, e) = (self.vertices.len(), self.propagators.len());
-        if row < v {
-            Some((FeynmanLabelPart::Vertex, row))
-        } else if row - v < e {
-            Some((FeynmanLabelPart::Propagator, row - v))
-        } else if row - v - e < e {
-            Some((FeynmanLabelPart::Momentum, row - v - e))
-        } else {
-            None
-        }
     }
 
     /// Whether some vertex has no position: the layout places it.

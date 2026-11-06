@@ -88,7 +88,7 @@ the same SSOT gives bit-identical positions.
   barycentric, or Tutte, embedding), solved by conjugate gradients to a
   relative residual of 1e-12, both axes in one pass. There is no iteration
   bound: a residual that stops improving, or turns non-finite, is an error
-  (`LAYOUT_DID_NOT_CONVERGE`) that the renderer reports. A planar diagram
+  that the renderer reports as the series' `InvalidSeriesConfig`. A planar diagram
   with its legs on the boundary is drawn without crossings.
 - A group that no placed vertex or leg reaches (a vacuum bubble) is placed
   on a circle. Vertices that land on one point are spread across the time

@@ -62,8 +62,7 @@ kind and the `mesh_triangle` selection) are additive.
   degrees, each on its own arc, however many. The picked part is drawn in
   `style.picked` (`color`, `width_extra_px`), a picked label boxed.
   `drag_vertex` (which commits the layout on the first drag), `drag_bend`
-  and `drag_label` edit it, and `SeriesConfig::drag_value_label` moves a
-  Feynman label by its value-label row;
+  and `drag_label` (by list and row, D7) edit it;
   `Config::validate_feynman` holds a series to a rectangular chart with a
   numeric `bottom_x`. Vertex and propagator ids are held to be unique. `PickedDataRef` gains `FeynmanVertex`,
   `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,

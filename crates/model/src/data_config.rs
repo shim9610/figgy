@@ -3014,11 +3014,10 @@ impl SeriesConfig {
     /// renderer's, from the pool, so there is no containment test beyond
     /// that bound.
     ///
-    /// A Feynman series (#234) moves its own label's `label_offset`; its
-    /// rows run over the vertex labels, then the propagator labels, then
-    /// the momentum labels (`index` is a vertex row, the vertex count plus
-    /// a propagator row, or the vertex count plus the propagator count plus
-    /// a propagator row), and `categories` is not read.
+    /// A Feynman series (#234) is rejected here: its label is named by
+    /// `part` and row (D7), so it moves through
+    /// [`FeynmanSeries::drag_label`](crate::feynman::FeynmanSeries::drag_label),
+    /// from the selection's `PickedDataRef::FeynmanLabel { part, index }`.
     pub fn drag_value_label(
         &mut self,
         index: usize,
@@ -3028,12 +3027,6 @@ impl SeriesConfig {
     ) -> crate::layout::NudgeResult {
         use crate::layout::{NudgeReject, NudgeResult};
         let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
-        if let DataRenderType::Feynman(diagram) = &mut self.render_type {
-            return match diagram.label_of_row(index) {
-                Some((part, row)) => diagram.drag_label(part, row, dx, dy),
-                None => reject,
-            };
-        }
         let offsets = match &mut self.render_type {
             DataRenderType::CategoryBars { labels, .. } => &mut labels.offsets,
             DataRenderType::BoxPlot { labels, .. } => &mut labels.offsets,

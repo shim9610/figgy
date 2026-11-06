@@ -920,29 +920,22 @@ fn the_layout_solves_at_any_magnitude_and_on_long_ladders() {
 }
 
 #[test]
-fn the_value_label_drag_moves_each_feynman_label_row() {
-    let mut diagram = s_channel();
-    diagram.propagators[2].momentum = Some(MomentumArrow {
-        label: RichText::plain("k", Color::BLACK, 12.0, ""),
-        side: MomentumSide::Left,
-        reversed: false,
-        label_offset: [0.0; 2],
-    });
-    let mut s = series("d", diagram);
-    let (v, e) = (6, 5);
-    let moved = NudgeResult::Moved;
-    assert_eq!(s.drag_value_label(2, 0, 1.0, 2.0), moved);
-    assert_eq!(s.drag_value_label(v + 2, 0, 3.0, 4.0), moved);
-    assert_eq!(s.drag_value_label(v + e + 2, 0, 5.0, 6.0), moved);
-    let d = s.feynman().unwrap();
-    assert_eq!(d.vertices[2].label_offset, [1.0, 2.0]);
-    assert_eq!(d.propagators[2].label_offset, [3.0, 4.0]);
-    assert_eq!(
-        d.propagators[2].momentum.as_ref().unwrap().label_offset,
-        [5.0, 6.0]
-    );
+fn a_feynman_label_moves_by_part_and_row_not_by_a_value_label_index() {
+    // D7: a label is named by its list and its row, so adding a vertex
+    // never renames a propagator's label. The value-label drag, which
+    // takes one index, refuses the series; the native drag is drag_label.
+    let mut s = series("d", s_channel());
     let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
-    // Past the momentum rows, and a momentum row without an arrow.
-    assert_eq!(s.drag_value_label(v + 2 * e, 0, 1.0, 1.0), reject);
-    assert_eq!(s.drag_value_label(v + e, 0, 1.0, 1.0), reject);
+    assert_eq!(s.drag_value_label(0, 6, 1.0, 1.0), reject);
+    let diagram = s.feynman_mut().unwrap();
+    assert_eq!(
+        diagram.drag_label(FeynmanLabelPart::Propagator, 2, 3.0, 4.0),
+        NudgeResult::Moved
+    );
+    diagram.vertices.push(vertex("extra", VertexRole::Internal));
+    assert_eq!(
+        diagram.label_offset(FeynmanLabelPart::Propagator, 2),
+        Some([3.0, 4.0]),
+        "a new vertex leaves the propagator label's identity"
+    );
 }

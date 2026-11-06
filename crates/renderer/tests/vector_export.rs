@@ -11,10 +11,15 @@
 //! - With every decoration hidden, each embedded data image is the PNG
 //!   export's crop, byte for byte, the DataLess series aside: they are
 //!   vector parts between the images of the GPU data under them and the
-//!   value labels over them (#234); with decorations shown, the CPU composite
+//!   value labels over them (#234). With decorations shown, the CPU composite
 //!   of the grid raster, the data image and the decoration raster is the
 //!   PNG export within 1/255 on all but 0.05 % of the channels (8-bit
 //!   blend rounding, at most 3/255).
+//! - A document with a DataLess series is checked through its file's own
+//!   picture: `support/svg_raster.rs` paints the SVG's images, paths and
+//!   glyphs in order, independently of the renderer, and that picture is
+//!   the PNG export within a pixel or two at edges (antialiasing, unhinted
+//!   glyph outlines, SVG's butt caps) and within 8/255 inside each paint.
 //! - Size budgets, determinism, the clear colour, a streamed source's
 //!   rejection, the sketch and Milkyway styles and the radial chart.
 #![cfg(not(target_arch = "wasm32"))]
@@ -26,6 +31,8 @@ mod pdf_structure;
 mod scenes;
 #[path = "support/svg_parts.rs"]
 mod svg_parts;
+#[path = "support/svg_raster.rs"]
+mod svg_raster;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -417,14 +424,14 @@ fn the_data_images_are_the_png_exports_pixels() {
                 )
                 .block_on()
                 .unwrap();
-            let svg = svg_parts::read(
-                &r.export_svg(
+            let text = r
+                .export_svg(
                     renderer::ExportSource::chart(&chart, &scene.series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
-                .unwrap(),
-            );
+                .unwrap();
+            let svg = svg_parts::read(&text);
             assert_eq!(
                 svg.images.is_empty(),
                 gpu_series.is_empty(),
@@ -462,17 +469,10 @@ fn the_data_images_are_the_png_exports_pixels() {
                 "{context}: the export paints pixel {:?} outside the data images",
                 outside.map(|i| (i as u32 % export.width, i as u32 / export.width))
             );
-            // The images leave the CPU layer out; with the DataLess series
-            // rasterized (their own export, the emit their vector parts
-            // come from) in the place their parts take, the file composites
-            // to the PNG export of the whole document.
-            let dataless: Vec<SeriesConfig> = scene
-                .series
-                .iter()
-                .filter(|series| series.is_dataless())
-                .cloned()
-                .collect();
-            if !dataless.is_empty() {
+            // The images leave the CPU layer out; the file's own picture,
+            // its images and its DataLess vector parts rasterized in order
+            // (`svg_raster`), is the PNG export of the whole document.
+            if scene.series.iter().any(SeriesConfig::is_dataless) {
                 let full = r
                     .export_rgba(
                         renderer::ExportSource::chart(&chart, &scene.series),
@@ -480,35 +480,23 @@ fn the_data_images_are_the_png_exports_pixels() {
                     )
                     .block_on()
                     .unwrap();
-                let cpu = r
-                    .export_rgba(
-                        renderer::ExportSource::chart(&chart, &dataless),
-                        renderer::ExportOptions::document(scale),
-                    )
-                    .block_on()
-                    .unwrap();
-                let whole = Rect {
-                    x: 0,
-                    y: 0,
-                    width: cpu.width,
-                    height: cpu.height,
-                };
-                let first_part = svg
-                    .parts
-                    .iter()
-                    .position(|part| !matches!(part, ReadPart::Image(_)))
-                    .unwrap_or(svg.parts.len());
-                let under = svg.parts[..first_part].len();
-                let mut stack = svg.images.clone();
-                stack.insert(under, (whole, encode_png(&cpu).unwrap()));
-                assert_composite(
+                svg_raster::assert_same_picture(
                     &full,
-                    &stack,
-                    &format!("{context}: with its DataLess series"),
+                    &svg_raster::rasterize(&text),
+                    reach(scale),
+                    8,
+                    &format!("{context}: the file's own picture"),
                 );
             }
         }
     }
+}
+
+/// How far an independent rasterizer's edges may lie from the PNG's:
+/// antialiasing, glyph outlines against glyph rasters and SVG's butt caps
+/// move an edge by about a pixel at 1x.
+fn reach(scale: f32) -> u32 {
+    scale.ceil() as u32 + 1
 }
 
 /// One energy level in the box plot scene's `Mid` column at 40, drawn
@@ -625,22 +613,16 @@ fn a_dataless_series_is_written_between_the_gpu_data_and_the_value_labels() {
         let labelled = export(&mut r, &scene.series, scale);
         assert_composite(&labelled, &svg.images, &context);
         // The file stacks as the PNG does: the body image, the level's
-        // vector parts (rasterized here as the level alone exports), then
-        // the label image composite to the export of the whole document.
-        let level = export(&mut r, &[mid_level()], scale);
+        // vector parts, then the label image, rasterized in that order
+        // (`svg_raster`), are the export of the whole document.
         let full = export(&mut r, &with_level, scale);
-        let whole = Rect {
-            x: 0,
-            y: 0,
-            width: level.width,
-            height: level.height,
-        };
-        let stack = [
-            svg.images[0].clone(),
-            (whole, encode_png(&level).unwrap()),
-            svg.images[1].clone(),
-        ];
-        assert_composite(&full, &stack, &format!("{context}: body, level, labels"));
+        svg_raster::assert_same_picture(
+            &full,
+            &svg_raster::rasterize(&text),
+            reach(scale),
+            8,
+            &format!("{context}: body, level, labels"),
+        );
 
         // Without value labels the group writes one image, under the level:
         // no image of an empty label step (§3.4 of the #238 audit).
@@ -717,14 +699,29 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
             );
             let below = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Grid).unwrap();
             let above = try_raster_chart_layer_to_rgba(&placed, AxisLayerKind::Decoration).unwrap();
-            let svg = svg_parts::read(
-                &r.export_svg(
+            let text = r
+                .export_svg(
                     renderer::ExportSource::chart(&chart, &scene.series),
                     renderer::ExportOptions::document(scale),
                 )
                 .block_on()
-                .unwrap(),
-            );
+                .unwrap();
+            // A DataLess series is vector parts between the body image and
+            // the value-label image (D11), so its file is checked as a
+            // whole: rasterized element by element (`svg_raster`), chrome
+            // and data, it is the PNG export.
+            if scene.series.iter().any(SeriesConfig::is_dataless) {
+                svg_raster::assert_same_picture(
+                    &export,
+                    &svg_raster::rasterize(&text),
+                    reach(scale),
+                    8,
+                    &format!("{context}: the file's own picture"),
+                );
+                checked += 1;
+                continue;
+            }
+            let svg = svg_parts::read(&text);
             let data: Vec<(Rect, RasterImage)> = svg
                 .parts
                 .iter()
@@ -744,35 +741,8 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                 })
                 .map(|(rect, (_, bytes))| (rect, decode_png(bytes)))
                 .collect();
-            // A DataLess series is vector parts between the body image and
-            // the value-label image (D11); here it is rasterized as it
-            // exports alone, chrome hidden on the same layout.
-            let dataless: Vec<SeriesConfig> = scene
-                .series
-                .iter()
-                .filter(|series| series.is_dataless())
-                .cloned()
-                .collect();
-            let mut layers = data;
-            if dataless.is_empty() {
-                assert_eq!(layers.len(), 1, "{context}: one data image");
-            } else {
-                let mut bare = config.clone();
-                hide_decorations(&mut bare);
-                assert_eq!(
-                    place_document(&bare, scale, target).data_area(),
-                    placed.data_area(),
-                    "{context}: hiding the chrome keeps the data area"
-                );
-                let cpu = r
-                    .export_rgba(
-                        renderer::ExportSource::chart(&Chart::new(bare), &dataless),
-                        renderer::ExportOptions::document(scale),
-                    )
-                    .block_on()
-                    .unwrap();
-                layers.insert(layers.len().min(1), (target, cpu));
-            }
+            assert_eq!(data.len(), 1, "{context}: one data image");
+            let layers = data;
             // In premultiplied units of 1/255, without rounding between the
             // layers: the GPU rounds each blend to its 8-bit target.
             let straight = |px: &[u8]| {
