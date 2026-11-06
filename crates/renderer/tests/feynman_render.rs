@@ -785,7 +785,6 @@ mod svg_parts;
 
 #[test]
 fn vertex_and_momentum_labels_pick_with_their_part() {
-    use renderer::AnnotationSpace as _;
     let mut r = renderer();
     let chart = chart();
     let mut diagram = labelled();
