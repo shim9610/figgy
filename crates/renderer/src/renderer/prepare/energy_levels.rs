@@ -153,27 +153,39 @@ fn logical_space(config: &Config, scale: f32) -> crate::annotation::PixelSpace {
     space
 }
 
-/// Place the Feynman series `diagram` over the panel `config` and hand the
+/// Place the Feynman series `cfg` over the panel `config` and hand the
 /// parts to `sink`, as [`emit_energy_levels`] does an energy-level series
-/// (#234): the vertices at their positions or the layout's, computed here
-/// and dropped.
+/// (#234): the vertices at their positions or the layout's, computed in the
+/// model's transient buffers and dropped.
 pub(crate) fn emit_feynman(
     config: &Config,
+    cfg: &SeriesConfig,
     diagram: &crate::feynman::FeynmanSeries,
-    picked: Option<crate::feynman::FeynmanHit>,
     scale: f32,
     sink: &mut dyn crate::sink::Sink,
-) {
+) -> Result<()> {
     let space = logical_space(config, valid_scale(scale));
-    let positions = diagram.positions();
-    let placement = crate::feynman::FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked,
-    };
     let policy = crate::text_render::FontPolicy::for_style(&config.draw_style);
     let measure = crate::text_render::CpuTextMeasure::with_policy(policy);
-    placement.emit(diagram, &measure, sink);
+    diagram
+        .emit(&space, feynman_picked(config, cfg), &measure, sink)
+        .map_err(|error| feynman_error(&cfg.series_id, error))
+}
+
+/// The renderer error of a Feynman series' model error: its working memory
+/// failing to allocate, or its layout failing to converge.
+pub(crate) fn feynman_error(series_id: &str, error: &'static str) -> FiggyError {
+    if error == crate::feynman::ALLOCATION_FAILED {
+        FiggyError::StateAllocationFailed {
+            resource: "Feynman series working memory",
+            reason: format!("series `{series_id}`"),
+        }
+    } else {
+        FiggyError::InvalidSeriesConfig {
+            series_id: series_id.into(),
+            reason: error.into(),
+        }
+    }
 }
 
 /// Emit the DataLess series `cfg` over the panel `config` into `sink`:
@@ -185,16 +197,16 @@ pub(crate) fn emit_dataless<'s>(
     records: impl FnOnce(&'s EnergyLevelSeries) -> Option<&'s EnergyLevelSeries>,
     scale: f32,
     sink: &mut dyn crate::sink::Sink,
-) -> bool {
+) -> Result<bool> {
     if let Some(diagram) = cfg.feynman() {
-        emit_feynman(config, diagram, feynman_picked(config, cfg), scale, sink);
-        return true;
+        emit_feynman(config, cfg, diagram, scale, sink)?;
+        return Ok(true);
     }
     let Some(levels) = cfg.energy_levels() else {
-        return false;
+        return Ok(false);
     };
     let Some(records) = records(levels) else {
-        return false;
+        return Ok(false);
     };
     emit_energy_levels(
         config,
@@ -204,7 +216,7 @@ pub(crate) fn emit_dataless<'s>(
         scale,
         sink,
     );
-    true
+    Ok(true)
 }
 
 /// `scale`, or 1 when it is not a positive finite number.
@@ -242,7 +254,7 @@ pub(crate) fn rasterize<'s>(
         [area.x as f32 / scale, area.y as f32 / scale],
         scale,
     );
-    let drawn = emit_dataless(config, cfg, records, scale, &mut sink);
+    let drawn = emit_dataless(config, cfg, records, scale, &mut sink)?;
     sink.finish()?;
     Ok(drawn.then(|| (canvas.into_rgba(), (w, h))))
 }

@@ -74,7 +74,7 @@ fn near(a: [f64; 2], b: [f64; 2]) -> bool {
 
 #[test]
 fn the_s_channel_places_its_legs_on_the_edges_and_its_vertices_at_quarters() {
-    let positions = s_channel().positions();
+    let positions = s_channel().positions().unwrap();
     assert!(near(positions[0], [0.0, 2.0 / 3.0]), "{:?}", positions[0]);
     assert!(near(positions[1], [0.0, 1.0 / 3.0]), "{:?}", positions[1]);
     assert!(near(positions[2], [0.25, 0.5]), "{:?}", positions[2]);
@@ -87,26 +87,26 @@ fn the_s_channel_places_its_legs_on_the_edges_and_its_vertices_at_quarters() {
 fn the_layout_is_deterministic_and_a_commit_writes_only_the_unplaced() {
     let mut diagram = s_channel();
     diagram.vertices[2].at = Some([0.3, 0.9]);
-    let first = diagram.positions();
-    assert_eq!(first, diagram.positions(), "bit-identical");
+    let first = diagram.positions().unwrap();
+    assert_eq!(first, diagram.positions().unwrap(), "bit-identical");
     assert_eq!(first[2], [0.3, 0.9], "a pinned vertex stays");
-    assert!(diagram.auto_layout());
+    assert!(diagram.auto_layout().unwrap());
     for (vertex, p) in diagram.vertices.iter().zip(&first) {
         assert_eq!(vertex.at, Some(*p));
     }
     assert_eq!(
-        diagram.positions(),
+        diagram.positions().unwrap(),
         first,
         "the committed layout draws the same"
     );
-    assert!(!diagram.auto_layout(), "nothing left to place");
+    assert!(!diagram.auto_layout().unwrap(), "nothing left to place");
 }
 
 #[test]
 fn bottom_to_top_puts_the_legs_at_the_bottom_and_the_top() {
     let mut diagram = s_channel();
     diagram.layout.direction = TimeDirection::BottomToTop;
-    let positions = diagram.positions();
+    let positions = diagram.positions().unwrap();
     assert_eq!(positions[0][1], 0.0);
     assert_eq!(positions[4][1], 1.0);
     assert!(near(positions[2], [0.5, 0.25]), "{:?}", positions[2]);
@@ -147,7 +147,7 @@ fn a_planar_box_diagram_is_drawn_without_crossings() {
         ],
         ..FeynmanSeries::default()
     };
-    let p = diagram.positions();
+    let p = diagram.positions().unwrap();
     let row = |id: &str| diagram.vertex_row(id).unwrap();
     let segments: Vec<([f64; 2], [f64; 2])> = diagram
         .propagators
@@ -174,7 +174,7 @@ fn a_vacuum_bubble_is_placed_on_a_circle() {
         ],
         ..FeynmanSeries::default()
     };
-    let p = diagram.positions();
+    let p = diagram.positions().unwrap();
     let distance = ((p[0][0] - p[1][0]).powi(2) + (p[0][1] - p[1][1]).powi(2)).sqrt();
     assert!((distance - 0.5).abs() < 1e-9, "{p:?}");
 }
@@ -196,7 +196,7 @@ fn vertices_that_land_on_one_point_are_spread() {
         ],
         ..FeynmanSeries::default()
     };
-    let p = diagram.positions();
+    let p = diagram.positions().unwrap();
     assert_eq!(p[1], [0.5, 0.5]);
     assert!(near(p[2], [0.5, 0.6]), "{:?}", p[2]);
 }
@@ -252,15 +252,15 @@ fn the_emit_draws_every_particle_and_marker() {
         .propagators
         .push(line("loop", "v2", "v2", ParticleLine::Scalar));
     diagram.vertices[2].marker = Some(VertexMarker::CircledCross);
-    let positions = diagram.positions();
-    let space = space();
-    let placement = FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked: None,
-    };
     let mut parts = Vec::new();
-    placement.emit(&diagram, &Fixed, &mut Parts(&mut |part| parts.push(part)));
+    diagram
+        .emit(
+            &space(),
+            None,
+            &Fixed,
+            &mut Parts(&mut |part| parts.push(part)),
+        )
+        .unwrap();
     let count = |f: fn(&DrawnPart) -> bool| parts.iter().filter(|p| f(p)).count();
     // Four fermions (straight segments) with an arrowhead each, the
     // photon, the gluon, the loop and the circled cross's ring as paths.
@@ -287,7 +287,8 @@ fn a_wave_spans_whole_half_periods_from_end_to_end() {
         0.0,
         false,
         &mut path,
-    );
+    )
+    .unwrap();
     // 100 px / 6 px half periods: 17 half periods, sampled six times each.
     assert_eq!(path.len(), 1 + 17 * WAVE_SAMPLES);
     assert_eq!(path[0], PathSegment::Move((0.0, 50.0)));
@@ -315,33 +316,20 @@ fn parallel_lines_fan_and_an_explicit_bend_arcs() {
     };
     diagram.vertices[0].at = Some([0.25, 0.5]);
     diagram.vertices[1].at = Some([0.75, 0.5]);
-    let positions = diagram.positions();
     let space = space();
-    let placement = FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked: None,
-    };
-    let middle = |index: usize| {
-        placement
-            .propagator_geometry(&diagram, index)
-            .unwrap()
-            .base
-            .point(0.5)
-    };
+    let placement = diagram.placed(&space, None).unwrap();
+    let middle = |index: usize| placement.geometry(index).unwrap().base.point(0.5);
     // The two lines bulge to opposite sides of the chord at y 50 px.
     let (m0, m1) = (middle(0), middle(1));
     assert!((m0[1] - 50.0) * (m1[1] - 50.0) < 0.0, "{m0:?} {m1:?}");
     // A 90-degree bend from left to right bulges up by half the chord.
+    drop(placement);
     diagram.propagators.truncate(1);
     diagram.propagators[0].bend = Some(90.0);
-    let placement = FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked: None,
-    };
-    let m = placement
-        .propagator_geometry(&diagram, 0)
+    let m = diagram
+        .placed(&space, None)
+        .unwrap()
+        .geometry(0)
         .unwrap()
         .base
         .point(0.5);
@@ -352,48 +340,104 @@ fn parallel_lines_fan_and_an_explicit_bend_arcs() {
 }
 
 #[test]
+fn any_number_of_parallel_lines_fan_apart_within_the_widest_bend() {
+    for count in [2usize, 5, 6, 12, 40] {
+        let mut diagram = FeynmanSeries {
+            vertices: vec![
+                vertex("a", VertexRole::Internal),
+                vertex("b", VertexRole::Internal),
+            ],
+            propagators: (0..count)
+                .map(|k| line(&format!("p{k}"), "a", "b", ParticleLine::Photon))
+                .collect(),
+            ..FeynmanSeries::default()
+        };
+        diagram.vertices[0].at = Some([0.25, 0.5]);
+        diagram.vertices[1].at = Some([0.75, 0.5]);
+        let space = space();
+        let placement = diagram.placed(&space, None).unwrap();
+        let mut bulges: Vec<f32> = (0..count)
+            .map(|index| {
+                let bend = placement.bend(index);
+                assert!(bend.abs() <= MAX_BEND, "{count} lines: bend {bend}");
+                placement.geometry(index).unwrap().base.point(0.5)[1]
+            })
+            .collect();
+        bulges.sort_by(f32::total_cmp);
+        assert!(
+            bulges.windows(2).all(|w| w[1] - w[0] > 1e-3),
+            "{count} lines overlap: {bulges:?}"
+        );
+        // Every line draws one bounded path.
+        let mut paths = 0usize;
+        drop(placement);
+        diagram
+            .emit(
+                &space,
+                None,
+                &Fixed,
+                &mut Parts(&mut |part| {
+                    if let DrawnPart::Path { points, .. } = part {
+                        // At 170 degrees an arc is about 17 chords long
+                        // (100 px here): 6 cubics per 6 px half period.
+                        assert!(points.len() < 3 * 17 * 100 + 64, "{} points", points.len());
+                        paths += 1;
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(paths, count);
+    }
+}
+
+#[test]
 fn a_pick_answers_the_part_under_the_cursor() {
     let mut diagram = s_channel();
     diagram.propagators[2].label = Some(RichText::plain("γ", Color::BLACK, 12.0, ""));
-    let positions = diagram.positions();
     let space = space();
-    let placement = FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked: None,
-    };
-    let v1 = placement.vertex_px(2).unwrap();
+    let placement = diagram.placed(&space, None).unwrap();
+    let pick = |at: [f32; 2], reach: f32| diagram.pick(&space, &Fixed, at, reach).unwrap();
+    let v1 = placement.px(2).unwrap();
+    assert_eq!(pick(v1, 4.0), Some((FeynmanHit::Vertex(2), 0.0)));
+    let g = placement.geometry(2).unwrap().base.point(0.3);
     assert_eq!(
-        placement.pick(&diagram, &Fixed, v1, 4.0),
-        Some((FeynmanHit::Vertex(2), 0.0))
-    );
-    let g = placement
-        .propagator_geometry(&diagram, 2)
-        .unwrap()
-        .base
-        .point(0.3);
-    assert_eq!(
-        placement.pick(&diagram, &Fixed, g, 4.0).map(|(hit, _)| hit),
+        pick(g, 4.0).map(|(hit, _)| hit),
         Some(FeynmanHit::Propagator(2))
     );
     let label = placement
-        .label(&diagram, FeynmanLabelPart::Propagator, 2, &Fixed)
+        .label(FeynmanLabelPart::Propagator, 2, &Fixed)
         .unwrap()
         .rect();
     let centre = [label.x + label.width / 2.0, label.y + label.height / 2.0];
     assert_eq!(
-        placement
-            .pick(&diagram, &Fixed, centre, 4.0)
-            .map(|(hit, _)| hit),
+        pick(centre, 4.0).map(|(hit, _)| hit),
         Some(FeynmanHit::Label(FeynmanLabelPart::Propagator, 2))
     );
-    assert_eq!(placement.pick(&diagram, &Fixed, [199.0, 1.0], 2.0), None);
+    assert_eq!(pick([199.0, 1.0], 2.0), None);
+    // A leg end has no marker: within the grab it wins over its line, on
+    // the line and a few pixels along it.
+    let leg = placement.px(0).unwrap();
+    let along = placement.geometry(0).unwrap().base.tangent(0.0);
+    for step in [0.0, 3.0, 5.0] {
+        let at = add(leg, scale(along, step));
+        assert_eq!(
+            pick(at, 4.0).map(|(hit, _)| hit),
+            Some(FeynmanHit::Vertex(0)),
+            "{step} px along"
+        );
+    }
+    // Past the grab the line answers.
+    let at = add(leg, scale(along, 12.0));
+    assert_eq!(
+        pick(at, 4.0).map(|(hit, _)| hit),
+        Some(FeynmanHit::Propagator(0))
+    );
 }
 
 #[test]
 fn the_first_vertex_drag_commits_the_layout_then_moves_the_vertex() {
     let mut diagram = s_channel();
-    let before = diagram.positions();
+    let before = diagram.positions().unwrap();
     let space = space();
     assert_eq!(
         diagram.drag_vertex(2, 20.0, -10.0, &space),
@@ -420,7 +464,7 @@ fn the_first_vertex_drag_commits_the_layout_then_moves_the_vertex() {
 #[test]
 fn a_bend_drag_sets_the_arc_through_the_moved_middle() {
     let mut diagram = s_channel();
-    diagram.auto_layout();
+    diagram.auto_layout().unwrap();
     let space = space();
     // v1 (50, 50) to v2 (150, 50): drag the middle up 50 px, a half circle.
     assert_eq!(diagram.drag_bend(2, 0.0, -50.0, &space), NudgeResult::Moved);

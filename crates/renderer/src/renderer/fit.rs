@@ -1295,7 +1295,13 @@ impl Renderer {
                 // or laid out: a display parameter read from the SSOT
                 // (#234).
                 for item in &state.series {
-                    let Some(box_) = item.feynman().and_then(|d| d.extent()) else {
+                    let Some(diagram) = item.feynman() else {
+                        continue;
+                    };
+                    let Some(box_) = diagram
+                        .extent()
+                        .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
+                    else {
                         continue;
                     };
                     let (x, y) = state.config.series_fit_roles(layer, &item.series_id);

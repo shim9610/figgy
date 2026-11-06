@@ -2666,15 +2666,11 @@ pub(super) fn pick_energy_levels(
         // A Feynman diagram picks its vertices, propagators and labels
         // through the placement its raster draws with (#234).
         if let Some(diagram) = cfg.feynman() {
-            use crate::feynman::{FeynmanHit, FeynmanPlacement};
-            let positions = diagram.positions();
-            let placement = FeynmanPlacement {
-                space: &space,
-                positions: &positions,
-                picked: None,
-            };
-            let Some((hit, distance)) =
-                placement.pick(diagram, &measure, cursor, request.max_distance_px / scale)
+            use crate::feynman::FeynmanHit;
+            // A layout that fails or memory that cannot be allocated picks
+            // nothing here; the raster of the same series reports it.
+            let Ok(Some((hit, distance))) =
+                diagram.pick(&space, &measure, cursor, request.max_distance_px / scale)
             else {
                 continue;
             };

@@ -709,7 +709,13 @@ impl FiggyChart {
                     .vertices
                     .get(*vertex_index)
                     .ok_or_else(|| js_err("selected vertex no longer exists"))?;
-                let position = diagram.positions()[*vertex_index];
+                // The wrapper commits every layout on registration, so this
+                // reads `at` without allocating; a host-built document
+                // without it lays the diagram out once.
+                let position = match vertex.at {
+                    Some(at) => at,
+                    None => diagram.positions().map_err(js_err)?[*vertex_index],
+                };
                 result["index"] = serde_json::json!(vertex_index);
                 result["id"] = serde_json::json!(vertex.id);
                 result["role"] = serde_json::to_value(vertex.role).map_err(js_err)?;

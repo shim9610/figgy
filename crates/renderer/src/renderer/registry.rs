@@ -2341,9 +2341,12 @@ impl Renderer {
         }
         // Configuration only is copied (rule 2).
         let mut series = state.series.clone();
-        let laid_out = series[position]
-            .feynman_mut()
-            .is_some_and(|d| d.auto_layout());
+        let laid_out = match series[position].feynman_mut() {
+            Some(diagram) => diagram
+                .auto_layout()
+                .map_err(|error| crate::renderer::feynman_error(series_id, error))?,
+            None => false,
+        };
         self.set_chart_series_unreported(id, series)?;
         Ok(laid_out)
     }

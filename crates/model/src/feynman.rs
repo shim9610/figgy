@@ -26,14 +26,11 @@
 
 use crate::annotation::{AnnotationAxis, AnnotationSpace};
 use crate::color::Color;
-use crate::data_config::{MAX_CATEGORY_BAR_LABEL_CHARS, MAX_VALUE_LABEL_OFFSET, SeriesConfig};
+use crate::data_config::{MAX_VALUE_LABEL_OFFSET, SeriesConfig};
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::sink::{PathSegment, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::text::{MeasureText, RichText};
 use std::f32::consts::PI;
-
-/// The most characters of an id: a text-length limit, not a count.
-pub const MAX_FEYNMAN_ID_CHARS: usize = MAX_CATEGORY_BAR_LABEL_CHARS;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
 /// [module documentation](self).
@@ -469,12 +466,6 @@ fn color_ok(color: Color) -> bool {
         .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
 }
 
-fn id_ok(id: &str) -> bool {
-    !id.is_empty()
-        && id.chars().count() <= MAX_FEYNMAN_ID_CHARS
-        && !id.chars().any(char::is_control)
-}
-
 fn rich_ok(text: Option<&RichText>) -> bool {
     text.is_none_or(|t| t.validate_math().is_ok() && t.within_limits())
 }
@@ -485,35 +476,564 @@ fn offset_ok(offset: [f32; 2]) -> bool {
         .all(|v| v.is_finite() && v.abs() <= MAX_VALUE_LABEL_OFFSET)
 }
 
-/// Whether every id of `ids` is unique. Sorts a transient list of borrowed
-/// ids (rule 3: dropped on return).
-fn ids_unique<'a>(ids: impl Iterator<Item = &'a str>) -> bool {
-    let mut sorted: Vec<&str> = ids.collect();
-    sorted.sort_unstable();
-    sorted.windows(2).all(|w| w[0] != w[1])
+// Working memory (#234, rule 3).
+//
+// Every operation on a series (validate, layout, emit, pick, drag) works in
+// at most four transient buffers, each taken from the allocator once at its
+// exact size by `exact` and dropped when the operation returns: the
+// topology arena (`Topology`), the position buffer (`Placed::px`, or the
+// list `positions` returns), the layout's conjugate-gradient work buffer
+// (`lay_out`) and the emit's path buffer. No loop over vertices,
+// propagators, solver iterations or path samples allocates. Rows are 32-bit
+// indices: the width wasm32's `usize` has, so a series whose rows do not
+// fit cannot be allocated on any target, and the conversion failing is
+// reported as the allocation failing.
+
+/// The error of an operation whose working memory cannot be allocated.
+pub const ALLOCATION_FAILED: &str = "the Feynman series' working memory could not be allocated";
+/// The error of a layout whose solver stops converging.
+pub const LAYOUT_DID_NOT_CONVERGE: &str = "the Feynman layout did not converge";
+
+/// The widest bend of a line, degrees: a propagator's `bend` and the outer
+/// lines of a fan stay within it, so every arc has a finite radius.
+const MAX_BEND: f32 = 170.0;
+/// The reach of a vertex's grab, logical pixels: within it the vertex wins
+/// the pick over the lines that meet it, so a leg end without a marker can
+/// be picked and dragged.
+const VERTEX_GRAB: f32 = 6.0;
+/// An id that names no vertex.
+const NONE: u32 = u32::MAX;
+/// The conjugate-gradient tolerance: the relative residual it solves to.
+const CG_TOLERANCE_SQUARED: f64 = 1e-24;
+/// Solver iterations without a new best residual after which the layout
+/// reports that it did not converge: a numerical setting, not a count of
+/// data (rule 10).
+const CG_STALL: u32 = 64;
+
+/// `len` copies of `fill` in one allocation of exactly that size.
+fn exact<T: Copy>(len: usize, fill: T) -> Result<Vec<T>, &'static str> {
+    let mut v: Vec<T> = Vec::new();
+    v.try_reserve_exact(len).map_err(|_| ALLOCATION_FAILED)?;
+    v.resize(len, fill);
+    Ok(v)
 }
 
-/// The vertex ids of a series sorted with their rows, for lookups by id: a
-/// transient index (rule 3: dropped with the borrow).
-struct VertexIndex<'a>(Vec<(&'a str, usize)>);
+/// A row as a 32-bit index ([`NONE`] excluded).
+fn row32(n: usize) -> Result<u32, &'static str> {
+    u32::try_from(n)
+        .ok()
+        .filter(|&r| r != NONE)
+        .ok_or(ALLOCATION_FAILED)
+}
 
-impl<'a> VertexIndex<'a> {
-    fn new(series: &'a FeynmanSeries) -> Self {
-        let mut ids: Vec<(&str, usize)> = series
-            .vertices
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (v.id.as_str(), i))
-            .collect();
-        ids.sort_unstable();
-        Self(ids)
+/// The vertex row `order` (rows sorted by id) names for `id`, or [`NONE`].
+fn lookup(series: &FeynmanSeries, order: &[u32], id: &str) -> u32 {
+    order
+        .binary_search_by(|&r| series.vertices[r as usize].id.as_str().cmp(id))
+        .map_or(NONE, |k| order[k])
+}
+
+/// The topology of a series, worked out once per operation in
+/// O(V log V + E log D) (D the largest degree): one exact-size allocation
+/// of 32-bit words, `[order | offsets | incident | ends | flags]`.
+///
+/// - `order` (V): the vertex rows sorted by id, the id index. Once the
+///   ends are resolved the layout reuses it as its stack and its sort
+///   scratch.
+/// - `offsets` (V + 1) and `incident` (4E, `(other end, propagator)`
+///   pairs): the CSR adjacency. Each vertex's pairs are sorted by
+///   `(other end, bent, propagator)`, so the unbent lines between two
+///   vertices (a fan) and the loops at a vertex are runs found by binary
+///   search.
+/// - `ends` (2E): each propagator's vertex rows, [`NONE`] for an id that
+///   names no vertex.
+/// - `flags` (V): the layout's state of each vertex.
+pub(crate) struct Topology {
+    words: Vec<u32>,
+    v: usize,
+    e: usize,
+}
+
+/// The regions of a topology arena: `(order, offsets, incident, ends, flags)`.
+type Regions<'a> = (
+    &'a mut [u32],
+    &'a mut [u32],
+    &'a mut [u32],
+    &'a mut [u32],
+    &'a mut [u32],
+);
+
+const FIXED: u32 = 1;
+const ANCHORED: u32 = 2;
+
+impl Topology {
+    fn new(series: &FeynmanSeries) -> Result<Self, &'static str> {
+        let (v, e) = (series.vertices.len(), series.propagators.len());
+        row32(v)?;
+        row32(e)?;
+        let len = v
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_add(e.checked_mul(6)?))
+            .ok_or(ALLOCATION_FAILED)?;
+        let mut topology = Self {
+            words: exact(len, 0u32)?,
+            v,
+            e,
+        };
+        let (order, offsets, incident, ends, _) = topology.parts_mut();
+        for (i, slot) in order.iter_mut().enumerate() {
+            *slot = i as u32;
+        }
+        order.sort_unstable_by(|&a, &b| {
+            series.vertices[a as usize]
+                .id
+                .cmp(&series.vertices[b as usize].id)
+        });
+        for (p, propagator) in series.propagators.iter().enumerate() {
+            ends[2 * p] = lookup(series, order, &propagator.from);
+            ends[2 * p + 1] = lookup(series, order, &propagator.to);
+        }
+        // Degrees into offsets[0..v], an inclusive prefix sum (each entry
+        // the end of its vertex's run), then a fill that decrements each
+        // entry to the start of its run: no fill cursor is allocated.
+        for p in 0..e {
+            let (a, b) = (ends[2 * p], ends[2 * p + 1]);
+            if a == NONE || b == NONE {
+                continue;
+            }
+            offsets[a as usize] += 1;
+            if a != b {
+                offsets[b as usize] += 1;
+            }
+        }
+        for i in 1..v {
+            offsets[i] += offsets[i - 1];
+        }
+        offsets[v] = if v > 0 { offsets[v - 1] } else { 0 };
+        for p in (0..e).rev() {
+            let (a, b) = (ends[2 * p], ends[2 * p + 1]);
+            if a == NONE || b == NONE {
+                continue;
+            }
+            offsets[a as usize] -= 1;
+            let k = offsets[a as usize] as usize;
+            incident[2 * k] = b;
+            incident[2 * k + 1] = p as u32;
+            if a != b {
+                offsets[b as usize] -= 1;
+                let k = offsets[b as usize] as usize;
+                incident[2 * k] = a;
+                incident[2 * k + 1] = p as u32;
+            }
+        }
+        for i in 0..v {
+            let run = &mut incident[2 * offsets[i] as usize..2 * offsets[i + 1] as usize];
+            pairs_mut(run).sort_unstable_by_key(|&[other, p]| pair_key(series, i as u32, other, p));
+        }
+        Ok(topology)
     }
 
-    fn row(&self, id: &str) -> Option<usize> {
-        self.0
-            .binary_search_by(|(k, _)| (*k).cmp(id))
-            .ok()
-            .map(|i| self.0[i].1)
+    fn parts_mut(&mut self) -> Regions<'_> {
+        let (order, rest) = self.words.split_at_mut(self.v);
+        let (offsets, rest) = rest.split_at_mut(self.v + 1);
+        let (incident, rest) = rest.split_at_mut(4 * self.e);
+        let (ends, flags) = rest.split_at_mut(2 * self.e);
+        (order, offsets, incident, ends, flags)
+    }
+
+    fn offsets(&self) -> &[u32] {
+        &self.words[self.v..2 * self.v + 1]
+    }
+
+    fn incident(&self) -> &[u32] {
+        let start = 2 * self.v + 1;
+        &self.words[start..start + 4 * self.e]
+    }
+
+    fn ends(&self) -> &[u32] {
+        let start = 2 * self.v + 1 + 4 * self.e;
+        &self.words[start..start + 2 * self.e]
+    }
+
+    /// The `(other end, propagator)` pairs of vertex `i`.
+    fn around(&self, i: usize) -> &[[u32; 2]] {
+        around(self.offsets(), self.incident(), i)
+    }
+
+    /// Propagator `p`'s vertex rows, `None` when an id names no vertex.
+    fn ends_of(&self, p: usize) -> Option<(usize, usize)> {
+        let ends = self.ends();
+        let (a, b) = (*ends.get(2 * p)?, *ends.get(2 * p + 1)?);
+        (a != NONE && b != NONE).then_some((a as usize, b as usize))
+    }
+
+    /// The run of vertex `i`'s pairs whose other end is `other` and whose
+    /// bent flag is `bent`, sorted by propagator.
+    fn run(&self, series: &FeynmanSeries, i: usize, other: u32, bent: bool) -> &[[u32; 2]] {
+        let pairs = self.around(i);
+        let key = |&[o, p]: &[u32; 2]| pair_key(series, i as u32, o, p);
+        let start = pairs.partition_point(|pair| key(pair) < (other, bent, 0));
+        let end = pairs.partition_point(|pair| key(pair) <= (other, bent, u32::MAX));
+        &pairs[start..end]
+    }
+
+    /// The rank of the unbent line `p` in its fan, the fan's size, and
+    /// whether `p` runs from the fan's lower row.
+    fn fan(&self, series: &FeynmanSeries, p: usize) -> Option<(usize, usize, bool)> {
+        let (a, b) = self.ends_of(p)?;
+        if a == b {
+            return None;
+        }
+        let (low, high) = (a.min(b), a.max(b));
+        let run = self.run(series, low, high as u32, false);
+        let rank = run.binary_search_by_key(&(p as u32), |pair| pair[1]).ok()?;
+        Some((rank, run.len(), a == low))
+    }
+
+    /// The rank of the loop `p` among the loops at its vertex, and their
+    /// number.
+    fn loop_rank(&self, series: &FeynmanSeries, p: usize) -> Option<(usize, usize)> {
+        let (a, _) = self.ends_of(p)?;
+        let run = self.run(series, a, a as u32, false);
+        let rank = run.binary_search_by_key(&(p as u32), |pair| pair[1]).ok()?;
+        Some((rank, run.len()))
+    }
+}
+
+/// The `(other end, propagator)` pairs of vertex `i` in a CSR adjacency.
+fn around<'a>(offsets: &[u32], incident: &'a [u32], i: usize) -> &'a [[u32; 2]] {
+    let words = &incident[2 * offsets[i] as usize..2 * offsets[i + 1] as usize];
+    let (pairs, _) = words.as_chunks::<2>();
+    pairs
+}
+
+fn pairs_mut(words: &mut [u32]) -> &mut [[u32; 2]] {
+    let (pairs, _) = words.as_chunks_mut::<2>();
+    pairs
+}
+
+/// The sort key of the pair `(other, p)` at vertex `i`: the other end, then
+/// unbent lines before bent ones (a loop counts as unbent), then the row.
+fn pair_key(series: &FeynmanSeries, i: u32, other: u32, p: u32) -> (u32, bool, u32) {
+    let bent = other != i && series.propagators[p as usize].bend.is_some();
+    (other, bent, p)
+}
+
+/// The box of `points`, `None` for none.
+fn bounding_box(points: impl Iterator<Item = [f64; 2]>) -> Option<[[f64; 2]; 2]> {
+    points.fold(None, |acc, p| {
+        Some(match acc {
+            None => [p, p],
+            Some([lo, hi]) => [
+                [lo[0].min(p[0]), lo[1].min(p[1])],
+                [hi[0].max(p[0]), hi[1].max(p[1])],
+            ],
+        })
+    })
+}
+
+/// Fill `positions` (one per vertex) with every vertex's `at` and the
+/// automatic layout's place for every vertex without one
+/// ([`FeynmanSeries::positions`]). Works in `topology`'s `order` and
+/// `flags` and, when some vertex is solved for, in one conjugate-gradient
+/// work buffer of `3 V` entries, dropped on return.
+fn lay_out(
+    series: &FeynmanSeries,
+    topology: &mut Topology,
+    positions: &mut [[f64; 2]],
+) -> Result<(), &'static str> {
+    let n = series.vertices.len();
+    let (order, offsets, incident, _, flags) = topology.parts_mut();
+    let (offsets, incident) = (&*offsets, &*incident);
+    let nbrs = |i: usize| around(offsets, incident, i);
+    for ((vertex, p), flag) in series
+        .vertices
+        .iter()
+        .zip(positions.iter_mut())
+        .zip(&mut *flags)
+    {
+        *p = vertex.at.unwrap_or([0.0; 2]);
+        *flag = if vertex.at.is_some() { FIXED } else { 0 };
+    }
+    // The frame: the placed vertices' box, or the unit square.
+    let frame = match bounding_box(series.vertices.iter().filter_map(|v| v.at)) {
+        Some([lo, hi]) if hi[0] > lo[0] && hi[1] > lo[1] => [lo, hi],
+        Some([lo, hi]) if hi[0] > lo[0] || hi[1] > lo[1] => {
+            let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+            let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+            [
+                [c[0] - size / 2.0, c[1] - size / 2.0],
+                [c[0] + size / 2.0, c[1] + size / 2.0],
+            ]
+        }
+        Some([lo, _]) => [lo, [lo[0] + 1.0, lo[1] + 1.0]],
+        None => [[0.0, 0.0], [1.0, 1.0]],
+    };
+    let at = |time: f64, across: f64| -> [f64; 2] {
+        let (x, y) = match series.layout.direction {
+            TimeDirection::LeftToRight => (time, across),
+            TimeDirection::BottomToTop => (across, time),
+        };
+        [
+            frame[0][0] + x * (frame[1][0] - frame[0][0]),
+            frame[0][1] + y * (frame[1][1] - frame[0][1]),
+        ]
+    };
+    // The legs on the frame's early and late edges, in row order.
+    for (role, time) in [(VertexRole::Incoming, 0.0), (VertexRole::Outgoing, 1.0)] {
+        let is_leg = |v: &FeynmanVertex| v.role == role && v.at.is_none();
+        let count = series.vertices.iter().filter(|v| is_leg(v)).count();
+        let mut k = 0usize;
+        for (i, vertex) in series.vertices.iter().enumerate() {
+            if is_leg(vertex) {
+                // Top to bottom on screen: the first leg is at the top.
+                let across = 1.0 - (k as f64 + 1.0) / (count as f64 + 1.0);
+                positions[i] = at(time, across);
+                flags[i] = FIXED;
+                k += 1;
+            }
+        }
+    }
+    // The vertices a fixed one reaches, with `order` as the stack: each
+    // vertex is pushed once, when it is marked.
+    let mut top = 0usize;
+    for i in 0..n {
+        if flags[i] & FIXED != 0 {
+            flags[i] |= ANCHORED;
+            order[top] = i as u32;
+            top += 1;
+        }
+    }
+    while top > 0 {
+        top -= 1;
+        let i = order[top] as usize;
+        for &[j, _] in nbrs(i) {
+            let j = j as usize;
+            if flags[j] & ANCHORED == 0 {
+                flags[j] |= ANCHORED;
+                order[top] = j as u32;
+                top += 1;
+            }
+        }
+    }
+    // The barycentric embedding of the anchored free vertices.
+    if flags.contains(&ANCHORED) {
+        solve_barycentric(&nbrs, flags, positions)?;
+    }
+    // The bubbles: each connected group on a circle about the frame's
+    // centre, in row order, collected in `order`.
+    let centre = at(0.5, 0.5);
+    let radius = 0.25 * (frame[1][0] - frame[0][0]).min(frame[1][1] - frame[0][1]);
+    let mut group = 0usize;
+    for start in 0..n {
+        if flags[start] & ANCHORED != 0 {
+            continue;
+        }
+        flags[start] |= ANCHORED;
+        order[0] = start as u32;
+        let (mut m, mut k) = (1usize, 0usize);
+        while k < m {
+            for &[j, _] in nbrs(order[k] as usize) {
+                let j = j as usize;
+                if flags[j] & ANCHORED == 0 {
+                    flags[j] |= ANCHORED;
+                    order[m] = j as u32;
+                    m += 1;
+                }
+            }
+            k += 1;
+        }
+        let members = &mut order[..m];
+        members.sort_unstable();
+        let shift = 0.1 * group as f64 * (frame[1][0] - frame[0][0]);
+        for (k, &i) in members.iter().enumerate() {
+            let angle = std::f64::consts::TAU * k as f64 / m as f64;
+            positions[i as usize] = [
+                centre[0] + shift + radius * angle.cos(),
+                centre[1] + radius * angle.sin(),
+            ];
+        }
+        group += 1;
+    }
+    spread_coincident(positions, flags, order, series.layout.direction, frame);
+    Ok(())
+}
+
+/// Solve `L_ff x = L_fp p` for the free vertices (flag exactly
+/// [`ANCHORED`]) by conjugate gradients, both axes in one pass over the
+/// adjacency, into `positions`. One work buffer of `3 V` entries holds the
+/// residual, the direction and the product (`r | p | Ap`); `positions` is
+/// the iterate. Ends at a relative residual of 1e-12 on both axes; an
+/// iteration count of [`CG_STALL`] without a new best residual, or a
+/// non-finite value, is [`LAYOUT_DID_NOT_CONVERGE`].
+fn solve_barycentric<'a>(
+    nbrs: &dyn Fn(usize) -> &'a [[u32; 2]],
+    flags: &[u32],
+    positions: &mut [[f64; 2]],
+) -> Result<(), &'static str> {
+    let n = flags.len();
+    let free = |i: usize| flags[i] == ANCHORED;
+    let mut work = exact(3 * n, [0.0f64; 2])?;
+    let (r, rest) = work.split_at_mut(n);
+    let (p, ap) = rest.split_at_mut(n);
+    let mut rr = [0.0f64; 2];
+    for i in 0..n {
+        if !free(i) {
+            continue;
+        }
+        positions[i] = [0.0; 2];
+        let mut b = [0.0f64; 2];
+        for &[j, _] in nbrs(i) {
+            let j = j as usize;
+            if j != i && !free(j) {
+                b[0] += positions[j][0];
+                b[1] += positions[j][1];
+            }
+        }
+        r[i] = b;
+        p[i] = b;
+        rr[0] += b[0] * b[0];
+        rr[1] += b[1] * b[1];
+    }
+    let target = [rr[0] * CG_TOLERANCE_SQUARED, rr[1] * CG_TOLERANCE_SQUARED];
+    let mut best = rr;
+    let mut stalled = [0u32; 2];
+    loop {
+        let active = [rr[0] > target[0], rr[1] > target[1]];
+        if !active[0] && !active[1] {
+            return Ok(());
+        }
+        let mut pap = [0.0f64; 2];
+        for i in 0..n {
+            if !free(i) {
+                continue;
+            }
+            let mut degree = 0.0f64;
+            let mut sum = [0.0f64; 2];
+            for &[j, _] in nbrs(i) {
+                let j = j as usize;
+                if j == i {
+                    continue;
+                }
+                degree += 1.0;
+                if free(j) {
+                    sum[0] += p[j][0];
+                    sum[1] += p[j][1];
+                }
+            }
+            ap[i] = [degree * p[i][0] - sum[0], degree * p[i][1] - sum[1]];
+            pap[0] += p[i][0] * ap[i][0];
+            pap[1] += p[i][1] * ap[i][1];
+        }
+        let mut alpha = [0.0f64; 2];
+        for axis in 0..2 {
+            if active[axis] {
+                if !(pap[axis] > 0.0 && pap[axis].is_finite()) {
+                    return Err(LAYOUT_DID_NOT_CONVERGE);
+                }
+                alpha[axis] = rr[axis] / pap[axis];
+            }
+        }
+        let mut next = rr;
+        for (axis, on) in active.iter().enumerate() {
+            if *on {
+                next[axis] = 0.0;
+            }
+        }
+        for i in 0..n {
+            if !free(i) {
+                continue;
+            }
+            for axis in 0..2 {
+                if active[axis] {
+                    positions[i][axis] += alpha[axis] * p[i][axis];
+                    r[i][axis] -= alpha[axis] * ap[i][axis];
+                    next[axis] += r[i][axis] * r[i][axis];
+                }
+            }
+        }
+        let mut beta = [0.0f64; 2];
+        for axis in 0..2 {
+            if !active[axis] {
+                continue;
+            }
+            if !next[axis].is_finite() {
+                return Err(LAYOUT_DID_NOT_CONVERGE);
+            }
+            beta[axis] = next[axis] / rr[axis];
+            rr[axis] = next[axis];
+            if next[axis] < best[axis] {
+                best[axis] = next[axis];
+                stalled[axis] = 0;
+            } else {
+                stalled[axis] += 1;
+                if stalled[axis] >= CG_STALL {
+                    return Err(LAYOUT_DID_NOT_CONVERGE);
+                }
+            }
+        }
+        for i in 0..n {
+            if !free(i) {
+                continue;
+            }
+            for axis in 0..2 {
+                if active[axis] {
+                    p[i][axis] = r[i][axis] + beta[axis] * p[i][axis];
+                }
+            }
+        }
+    }
+}
+
+/// Spread the unpinned vertices that share a point across the time
+/// direction, in row order, a tenth of the frame apart. Sorts the rows in
+/// `order` (rows tie-broken by row, so each run is in row order).
+fn spread_coincident(
+    positions: &mut [[f64; 2]],
+    flags: &[u32],
+    order: &mut [u32],
+    direction: TimeDirection,
+    frame: [[f64; 2]; 2],
+) {
+    let size = [frame[1][0] - frame[0][0], frame[1][1] - frame[0][1]];
+    let tolerance = 1e-9 * size[0].max(size[1]);
+    for (i, slot) in order.iter_mut().enumerate() {
+        *slot = i as u32;
+    }
+    order.sort_unstable_by(|&a, &b| {
+        let (pa, pb) = (positions[a as usize], positions[b as usize]);
+        pa[0]
+            .total_cmp(&pb[0])
+            .then(pa[1].total_cmp(&pb[1]))
+            .then(a.cmp(&b))
+    });
+    let mut k = 0;
+    while k < order.len() {
+        let first = positions[order[k] as usize];
+        let mut end = k + 1;
+        while end < order.len()
+            && (positions[order[end] as usize][0] - first[0]).abs() <= tolerance
+            && (positions[order[end] as usize][1] - first[1]).abs() <= tolerance
+        {
+            end += 1;
+        }
+        let mut moved = 0;
+        for &i in &order[k..end] {
+            let i = i as usize;
+            if flags[i] & FIXED != 0 {
+                continue;
+            }
+            if moved > 0 {
+                let step = 0.1 * moved as f64;
+                match direction {
+                    TimeDirection::LeftToRight => positions[i][1] += step * size[1],
+                    TimeDirection::BottomToTop => positions[i][0] += step * size[0],
+                }
+            }
+            moved += 1;
+        }
+        k = end;
     }
 }
 
@@ -521,22 +1041,45 @@ impl FeynmanSeries {
     /// The rules a series is held to on its own; the chart's rules are
     /// [`Config::validate_feynman`](crate::config::Config::validate_feynman)'s.
     ///
-    /// Ids are non-empty, one line of at most [`MAX_FEYNMAN_ID_CHARS`]
-    /// characters and unique per list; every propagator names vertices of
-    /// the series; positions are finite; bends lie in `-170..=170` degrees;
-    /// labels are valid rich text; offsets and the style are in range. No
-    /// list has a count limit (rule 10).
+    /// Ids are unique per list; every propagator names vertices of the
+    /// series; positions are finite; bends lie in `-170..=170` degrees;
+    /// labels are valid rich text within the per-string limit; offsets and
+    /// the style are in range. No list has a count limit (rule 10). Works
+    /// in one transient list of `V + E` rows.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.style.validate()?;
-        if !self.vertices.iter().all(|v| id_ok(&v.id))
-            || !ids_unique(self.vertices.iter().map(|v| v.id.as_str()))
-        {
-            return Err("Feynman vertex ids must be non-empty, one short line and unique");
+        let (v, e) = (self.vertices.len(), self.propagators.len());
+        row32(v)?;
+        row32(e)?;
+        let mut rows = exact(v.checked_add(e).ok_or(ALLOCATION_FAILED)?, 0u32)?;
+        let (order, propagator_order) = rows.split_at_mut(v);
+        for (i, slot) in order.iter_mut().enumerate() {
+            *slot = i as u32;
         }
-        if !self.propagators.iter().all(|p| id_ok(&p.id))
-            || !ids_unique(self.propagators.iter().map(|p| p.id.as_str()))
+        order.sort_unstable_by(|&a, &b| {
+            self.vertices[a as usize]
+                .id
+                .cmp(&self.vertices[b as usize].id)
+        });
+        if order
+            .windows(2)
+            .any(|w| self.vertices[w[0] as usize].id == self.vertices[w[1] as usize].id)
         {
-            return Err("Feynman propagator ids must be non-empty, one short line and unique");
+            return Err("Feynman vertex ids must be unique");
+        }
+        for (i, slot) in propagator_order.iter_mut().enumerate() {
+            *slot = i as u32;
+        }
+        propagator_order.sort_unstable_by(|&a, &b| {
+            self.propagators[a as usize]
+                .id
+                .cmp(&self.propagators[b as usize].id)
+        });
+        if propagator_order
+            .windows(2)
+            .any(|w| self.propagators[w[0] as usize].id == self.propagators[w[1] as usize].id)
+        {
+            return Err("Feynman propagator ids must be unique");
         }
         for vertex in &self.vertices {
             if vertex
@@ -554,14 +1097,15 @@ impl FeynmanSeries {
                 return Err("invalid Feynman vertex label");
             }
         }
-        let index = VertexIndex::new(self);
         for propagator in &self.propagators {
-            if index.row(&propagator.from).is_none() || index.row(&propagator.to).is_none() {
+            if lookup(self, order, &propagator.from) == NONE
+                || lookup(self, order, &propagator.to) == NONE
+            {
                 return Err("a propagator must name two vertices of its series");
             }
             if propagator
                 .bend
-                .is_some_and(|b| !finite_in(b, -170.0, 170.0))
+                .is_some_and(|b| !finite_in(b, -MAX_BEND, MAX_BEND))
             {
                 return Err("a propagator's bend must be in -170..=170 degrees");
             }
@@ -597,7 +1141,6 @@ impl FeynmanSeries {
             FeynmanLabelPart::Propagator | FeynmanLabelPart::Momentum => self.propagators.len(),
         }
     }
-
     /// The drag offset of the label of row `index` of `part`, or `None`
     /// past the end or for a propagator without a momentum arrow.
     pub fn label_offset(&self, part: FeynmanLabelPart, index: usize) -> Option<[f32; 2]> {
@@ -655,24 +1198,26 @@ impl FeynmanSeries {
     /// without one into its `at` ([`Self::positions`]). Placed vertices are
     /// untouched. Returns whether anything was written. The auto-fit
     /// pattern: a display parameter written into the SSOT on an explicit
-    /// call, which the host reads back.
-    pub fn auto_layout(&mut self) -> bool {
+    /// call, which the host reads back. Allocates nothing when every
+    /// vertex is placed.
+    pub fn auto_layout(&mut self) -> Result<bool, &'static str> {
         if !self.has_unplaced() {
-            return false;
+            return Ok(false);
         }
-        let positions = self.positions();
+        let positions = self.positions()?;
         for (vertex, p) in self.vertices.iter_mut().zip(positions) {
             if vertex.at.is_none() {
                 vertex.at = Some(p);
             }
         }
-        true
+        Ok(true)
     }
 
     /// The position of every vertex, in row order: its `at`, or the
     /// automatic layout's place for it. Deterministic: identical SSOT gives
-    /// bit-identical positions. The list is the caller's (rule 3: a
-    /// transient of the raster, the pick and the layout commit).
+    /// bit-identical positions. The list is the caller's; it is the one
+    /// allocation when every vertex is placed, and the layout adds its
+    /// topology and solver buffers, dropped on return.
     ///
     /// The layout pins every placed vertex. It spaces the unplaced incoming
     /// legs evenly on the early edge of the frame and the outgoing legs on
@@ -684,15 +1229,40 @@ impl FeynmanSeries {
     /// circle. Vertices that land on one point are spread across the time
     /// direction. The frame is the bounding box of the placed vertices, or
     /// the unit square when fewer than two span one.
-    pub fn positions(&self) -> Vec<[f64; 2]> {
-        layout_positions(self)
+    pub fn positions(&self) -> Result<Vec<[f64; 2]>, &'static str> {
+        let mut positions = exact(self.vertices.len(), [0.0f64; 2])?;
+        self.fill_positions(None, &mut positions)?;
+        Ok(positions)
+    }
+
+    /// Fill `positions` with [`Self::positions`]: the `at` of each vertex,
+    /// or the layout, in `topology` or in one built for it.
+    fn fill_positions(
+        &self,
+        topology: Option<&mut Topology>,
+        positions: &mut [[f64; 2]],
+    ) -> Result<(), &'static str> {
+        if !self.has_unplaced() {
+            for (p, vertex) in positions.iter_mut().zip(&self.vertices) {
+                *p = vertex.at.unwrap_or_default();
+            }
+            return Ok(());
+        }
+        match topology {
+            Some(topology) => lay_out(self, topology, positions),
+            None => lay_out(self, &mut Topology::new(self)?, positions),
+        }
     }
 
     /// The bounding box of every vertex position, `[[x0, y0], [x1, y1]]`,
     /// or `None` without vertices: what an axis fit reads (a display
-    /// parameter, rule 1).
-    pub fn extent(&self) -> Option<[[f64; 2]; 2]> {
-        bounding_box(&self.positions())
+    /// parameter, rule 1). Allocates nothing when every vertex is placed.
+    pub fn extent(&self) -> Result<Option<[[f64; 2]; 2]>, &'static str> {
+        if self.has_unplaced() {
+            Ok(bounding_box(self.positions()?.into_iter()))
+        } else {
+            Ok(bounding_box(self.vertices.iter().filter_map(|v| v.at)))
+        }
     }
 
     /// Move vertex `index` by `(dx, dy)` screen pixels in `space` (the
@@ -700,8 +1270,9 @@ impl FeynmanSeries {
     /// back through the axes and written into `at`. The first drag of a
     /// diagram with unplaced vertices commits the whole layout first, so
     /// no other vertex moves. Rejected for a row past the end, a non-finite
-    /// delta or a place the axes cannot convert (outside a logarithmic
-    /// domain, in a break gap); nothing changes then.
+    /// delta, a layout that fails or a place the axes cannot convert
+    /// (outside a logarithmic domain, in a break gap); nothing changes
+    /// then. Allocates nothing when every vertex is placed.
     pub fn drag_vertex(
         &mut self,
         index: usize,
@@ -713,8 +1284,18 @@ impl FeynmanSeries {
         if !dx.is_finite() || !dy.is_finite() || index >= self.vertices.len() {
             return reject;
         }
-        let positions = self.positions();
-        let p = positions[index];
+        let layout = if self.has_unplaced() {
+            match self.positions() {
+                Ok(positions) => Some(positions),
+                Err(_) => return reject,
+            }
+        } else {
+            None
+        };
+        let p = match &layout {
+            Some(positions) => positions[index],
+            None => self.vertices[index].at.unwrap_or_default(),
+        };
         let (Some(x), Some(y)) = (
             space.value_to_px(AnnotationAxis::X, p[0]),
             space.value_to_px(AnnotationAxis::Y, p[1]),
@@ -730,9 +1311,11 @@ impl FeynmanSeries {
         if !vx.is_finite() || !vy.is_finite() {
             return reject;
         }
-        for (vertex, p) in self.vertices.iter_mut().zip(positions) {
-            if vertex.at.is_none() {
-                vertex.at = Some(p);
+        if let Some(positions) = layout {
+            for (vertex, p) in self.vertices.iter_mut().zip(positions) {
+                if vertex.at.is_none() {
+                    vertex.at = Some(p);
+                }
             }
         }
         self.vertices[index].at = Some([vx, vy]);
@@ -743,7 +1326,8 @@ impl FeynmanSeries {
     /// pixels in `space`: the drag across the chord sets `bend` to the arc
     /// through both ends and the moved middle. Rejected for a row past the
     /// end, a loop, a non-finite delta, a line whose ends are not placed on
-    /// screen or a bend past 170 degrees; nothing changes then.
+    /// screen, a layout that fails or a bend past 170 degrees; nothing
+    /// changes then.
     pub fn drag_bend(
         &mut self,
         index: usize,
@@ -755,15 +1339,13 @@ impl FeynmanSeries {
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
         }
-        let positions = self.positions();
-        let placement = FeynmanPlacement {
-            space,
-            positions: &positions,
-            picked: None,
-        };
-        let Some(geometry) = placement.propagator_geometry(self, index) else {
+        let Ok(placed) = self.placed(space, None) else {
             return reject;
         };
+        let Some(geometry) = placed.geometry(index) else {
+            return reject;
+        };
+        drop(placed);
         let (a, b) = geometry.ends;
         if geometry.is_loop {
             return reject;
@@ -777,13 +1359,133 @@ impl FeynmanSeries {
         let middle = geometry.base.point(0.5);
         let sagitta = dot(sub(add(middle, [dx, dy]), lerp(a, b, 0.5)), normal);
         let bend = (2.0 * (2.0 * sagitta / c).atan()).to_degrees();
-        if !finite_in(bend, -170.0, 170.0) {
+        if !finite_in(bend, -MAX_BEND, MAX_BEND) {
             return reject;
         }
         self.propagators[index].bend = Some(bend);
         NudgeResult::Moved
     }
+
+    /// Place the series in `space` with `picked` drawn picked: the
+    /// topology and every vertex's screen point, the two buffers an emit,
+    /// a pick and a bend drag work in (plus the layout's, while it runs).
+    pub(crate) fn placed<'s>(
+        &'s self,
+        space: &dyn AnnotationSpace,
+        picked: Option<FeynmanHit>,
+    ) -> Result<Placed<'s>, &'static str> {
+        let mut topology = Topology::new(self)?;
+        let mut px = exact(self.vertices.len(), [f64::NAN; 2])?;
+        self.fill_positions(Some(&mut topology), &mut px)?;
+        for p in &mut px {
+            *p = match (
+                space.value_to_px(AnnotationAxis::X, p[0]),
+                space.value_to_px(AnnotationAxis::Y, p[1]),
+            ) {
+                (Some(x), Some(y)) => [f64::from(x), f64::from(y)],
+                _ => [f64::NAN; 2],
+            };
+        }
+        Ok(Placed {
+            series: self,
+            topology,
+            px,
+            picked,
+        })
+    }
+
+    /// Emit every drawn part into `sink` in the [`Slot::Above`] slot, in
+    /// `space` (the panel's anchor space, logical pixels): the propagators
+    /// in row order, the vertex markers over them, then every label. The
+    /// part `picked` is drawn `style.picked_width_scale` times as wide, a
+    /// picked label boxed. Nothing is stored; the sink paints, bounds or
+    /// hit tests the parts. Works in the placement's two buffers and one
+    /// path buffer reused by every line.
+    pub fn emit(
+        &self,
+        space: &dyn AnnotationSpace,
+        picked: Option<FeynmanHit>,
+        measure: &dyn MeasureText,
+        sink: &mut dyn Sink,
+    ) -> Result<(), &'static str> {
+        let placed = self.placed(space, picked)?;
+        let mut path: Vec<PathSegment> = Vec::new();
+        for index in 0..self.propagators.len() {
+            placed.emit_propagator(index, &mut path, sink)?;
+        }
+        for index in 0..self.vertices.len() {
+            placed.emit_vertex(index, &mut path, sink)?;
+        }
+        for part in LABEL_PARTS {
+            for index in 0..self.part_len(part) {
+                let Some(text) = placed.label(part, index, measure) else {
+                    continue;
+                };
+                if picked == Some(FeynmanHit::Label(part, index)) {
+                    placed.emit_label_box(&text, sink);
+                }
+                sink.text(Slot::Above, &text);
+            }
+        }
+        Ok(())
+    }
+
+    /// The drawn part nearest `cursor` (logical pixels in `space`), within
+    /// `max_distance` of its ink, and that distance (zero on the part).
+    /// Walks the SSOT through the same placement the emit draws with, so
+    /// the pick is the drawn geometry; nothing is registered per row (rule
+    /// 3). Within six pixels of a vertex the vertex wins over its
+    /// lines; on a tie a part drawn later wins: labels over markers over
+    /// lines.
+    pub fn pick(
+        &self,
+        space: &dyn AnnotationSpace,
+        measure: &dyn MeasureText,
+        cursor: [f32; 2],
+        max_distance: f32,
+    ) -> Result<Option<(FeynmanHit, f32)>, &'static str> {
+        let placed = self.placed(space, None)?;
+        let mut best: Option<(FeynmanHit, f32)> = None;
+        let mut offer = |hit: FeynmanHit, distance: f32| {
+            if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
+                best = Some((hit, distance));
+            }
+        };
+        for index in 0..self.propagators.len() {
+            if let Some(geometry) = placed.geometry(index) {
+                let edge = geometry.base.distance(cursor) - placed.envelope(index);
+                offer(FeynmanHit::Propagator(index), edge.max(0.0));
+            }
+        }
+        for index in 0..self.vertices.len() {
+            if let Some(p) = placed.px(index) {
+                let reach = placed.marker_radius(index).max(VERTEX_GRAB);
+                offer(
+                    FeynmanHit::Vertex(index),
+                    (len(sub(cursor, p)) - reach).max(0.0),
+                );
+            }
+        }
+        for part in LABEL_PARTS {
+            for index in 0..self.part_len(part) {
+                if let Some(text) = placed.label(part, index, measure) {
+                    offer(
+                        FeynmanHit::Label(part, index),
+                        rect_distance(cursor, text.rect()),
+                    );
+                }
+            }
+        }
+        Ok(best)
+    }
 }
+
+/// The label lists in drawing order.
+const LABEL_PARTS: [FeynmanLabelPart; 3] = [
+    FeynmanLabelPart::Propagator,
+    FeynmanLabelPart::Momentum,
+    FeynmanLabelPart::Vertex,
+];
 
 /// What a drag on a Feynman series moves (#234): a vertex, a propagator's
 /// bend, or a label.
@@ -821,269 +1523,6 @@ impl FeynmanSeries {
             FeynmanDrag::Bend(index) => self.drag_bend(index, dx, dy, space),
             FeynmanDrag::Label(part, index) => self.drag_label(part, index, dx, dy),
         }
-    }
-}
-
-/// The bounding box of `points`, `None` for none.
-fn bounding_box(points: &[[f64; 2]]) -> Option<[[f64; 2]; 2]> {
-    points.iter().fold(None, |acc, p| {
-        Some(match acc {
-            None => [*p, *p],
-            Some([lo, hi]) => [
-                [lo[0].min(p[0]), lo[1].min(p[1])],
-                [hi[0].max(p[0]), hi[1].max(p[1])],
-            ],
-        })
-    })
-}
-
-/// The automatic layout ([`FeynmanSeries::positions`]).
-fn layout_positions(series: &FeynmanSeries) -> Vec<[f64; 2]> {
-    let n = series.vertices.len();
-    let mut positions: Vec<[f64; 2]> = vec![[0.0; 2]; n];
-    let mut fixed = vec![false; n];
-    for (i, vertex) in series.vertices.iter().enumerate() {
-        if let Some(at) = vertex.at {
-            positions[i] = at;
-            fixed[i] = true;
-        }
-    }
-    // The frame: the placed vertices' box, or the unit square.
-    let placed: Vec<[f64; 2]> = series.vertices.iter().filter_map(|v| v.at).collect();
-    let frame = match bounding_box(&placed) {
-        Some([lo, hi]) if hi[0] > lo[0] && hi[1] > lo[1] => [lo, hi],
-        Some([lo, hi]) if hi[0] > lo[0] || hi[1] > lo[1] => {
-            let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
-            let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
-            [
-                [c[0] - size / 2.0, c[1] - size / 2.0],
-                [c[0] + size / 2.0, c[1] + size / 2.0],
-            ]
-        }
-        Some([lo, _]) => [lo, [lo[0] + 1.0, lo[1] + 1.0]],
-        None => [[0.0, 0.0], [1.0, 1.0]],
-    };
-    let at = |time: f64, across: f64| -> [f64; 2] {
-        let t = [
-            frame[0][0] + time * (frame[1][0] - frame[0][0]),
-            frame[0][1] + across * (frame[1][1] - frame[0][1]),
-        ];
-        match series.layout.direction {
-            TimeDirection::LeftToRight => t,
-            TimeDirection::BottomToTop => [
-                frame[0][0] + across * (frame[1][0] - frame[0][0]),
-                frame[0][1] + time * (frame[1][1] - frame[0][1]),
-            ],
-        }
-    };
-    // The legs on the frame's early and late edges, in row order.
-    for (role, time) in [(VertexRole::Incoming, 0.0), (VertexRole::Outgoing, 1.0)] {
-        let legs = || {
-            series
-                .vertices
-                .iter()
-                .enumerate()
-                .filter(|(i, v)| v.role == role && !fixed[*i])
-        };
-        let count = legs().count();
-        let rows: Vec<usize> = legs().map(|(i, _)| i).collect();
-        for (k, i) in rows.into_iter().enumerate() {
-            // Top to bottom on screen: the first leg is at the top.
-            let across = 1.0 - (k as f64 + 1.0) / (count as f64 + 1.0);
-            positions[i] = at(time, across);
-            fixed[i] = true;
-        }
-    }
-    // The neighbours of each vertex (a propagator per occurrence), as
-    // offsets into one list: the CSR adjacency, transient.
-    let index = VertexIndex::new(series);
-    let ends: Vec<(usize, usize)> = series
-        .propagators
-        .iter()
-        .filter_map(|p| Some((index.row(&p.from)?, index.row(&p.to)?)))
-        .filter(|(a, b)| a != b)
-        .collect();
-    let mut offsets = vec![0usize; n + 1];
-    for &(a, b) in &ends {
-        offsets[a + 1] += 1;
-        offsets[b + 1] += 1;
-    }
-    for i in 0..n {
-        offsets[i + 1] += offsets[i];
-    }
-    let mut fill = offsets.clone();
-    let mut neighbours = vec![0usize; offsets[n]];
-    for &(a, b) in &ends {
-        neighbours[fill[a]] = b;
-        fill[a] += 1;
-        neighbours[fill[b]] = a;
-        fill[b] += 1;
-    }
-    let around = |i: usize| &neighbours[offsets[i]..offsets[i + 1]];
-    // The free vertices a fixed one reaches; the rest are bubbles.
-    let mut anchored = fixed.clone();
-    let mut queue: Vec<usize> = (0..n).filter(|&i| fixed[i]).collect();
-    while let Some(i) = queue.pop() {
-        for &j in around(i) {
-            if !anchored[j] {
-                anchored[j] = true;
-                queue.push(j);
-            }
-        }
-    }
-    // The barycentric embedding of the anchored free vertices: solve
-    // L_ff x = L_fp p for each coordinate by conjugate gradients.
-    let free: Vec<usize> = (0..n).filter(|&i| !fixed[i] && anchored[i]).collect();
-    if !free.is_empty() {
-        let mut slot = vec![usize::MAX; n];
-        for (k, &i) in free.iter().enumerate() {
-            slot[i] = k;
-        }
-        let multiply = |x: &[f64], out: &mut [f64]| {
-            for (k, &i) in free.iter().enumerate() {
-                let mut v = around(i).len() as f64 * x[k];
-                for &j in around(i) {
-                    if slot[j] != usize::MAX {
-                        v -= x[slot[j]];
-                    }
-                }
-                out[k] = v;
-            }
-        };
-        for axis in 0..2 {
-            let rhs: Vec<f64> = free
-                .iter()
-                .map(|&i| {
-                    around(i)
-                        .iter()
-                        .filter(|&&j| slot[j] == usize::MAX)
-                        .map(|&j| positions[j][axis])
-                        .sum()
-                })
-                .collect();
-            let solution = conjugate_gradient(&multiply, &rhs, free.len());
-            for (k, &i) in free.iter().enumerate() {
-                positions[i][axis] = solution[k];
-            }
-        }
-    }
-    // The bubbles: each connected group on a circle about the frame's
-    // centre, in row order.
-    let mut placed_bubble = anchored;
-    let centre = at(0.5, 0.5);
-    let radius = 0.25 * (frame[1][0] - frame[0][0]).min(frame[1][1] - frame[0][1]);
-    let mut group = 0usize;
-    for start in 0..n {
-        if placed_bubble[start] {
-            continue;
-        }
-        let mut members = vec![start];
-        placed_bubble[start] = true;
-        let mut k = 0;
-        while k < members.len() {
-            for &j in around(members[k]) {
-                if !placed_bubble[j] {
-                    placed_bubble[j] = true;
-                    members.push(j);
-                }
-            }
-            k += 1;
-        }
-        members.sort_unstable();
-        let shift = 0.1 * group as f64 * (frame[1][0] - frame[0][0]);
-        for (k, &i) in members.iter().enumerate() {
-            let angle = std::f64::consts::TAU * k as f64 / members.len() as f64;
-            positions[i] = [
-                centre[0] + shift + radius * angle.cos(),
-                centre[1] + radius * angle.sin(),
-            ];
-        }
-        group += 1;
-    }
-    spread_coincident(&mut positions, &fixed, series.layout.direction, frame);
-    positions
-}
-
-/// Solve `A x = b` for the symmetric positive definite `A` that `multiply`
-/// applies, from zero: conjugate gradients to a relative residual of
-/// 1e-12. In exact arithmetic it ends within `n` steps; the bound below is
-/// that guarantee with a margin for rounding, a numerical setting rather
-/// than a cap on the data.
-fn conjugate_gradient(multiply: &dyn Fn(&[f64], &mut [f64]), b: &[f64], n: usize) -> Vec<f64> {
-    let mut x = vec![0.0; n];
-    let mut r = b.to_vec();
-    let mut p = r.clone();
-    let mut ap = vec![0.0; n];
-    let norm = |v: &[f64]| v.iter().map(|a| a * a).sum::<f64>();
-    let mut rr = norm(&r);
-    let target = rr * 1e-24;
-    for _ in 0..2 * n + 16 {
-        if rr <= target || rr == 0.0 {
-            break;
-        }
-        multiply(&p, &mut ap);
-        let pap: f64 = p.iter().zip(&ap).map(|(a, b)| a * b).sum();
-        if pap <= 0.0 || !pap.is_finite() {
-            break;
-        }
-        let alpha = rr / pap;
-        for k in 0..n {
-            x[k] += alpha * p[k];
-            r[k] -= alpha * ap[k];
-        }
-        let next = norm(&r);
-        let beta = next / rr;
-        for k in 0..n {
-            p[k] = r[k] + beta * p[k];
-        }
-        rr = next;
-    }
-    x
-}
-
-/// Spread the unpinned vertices that share a point across the time
-/// direction, in row order, a tenth of the frame apart.
-fn spread_coincident(
-    positions: &mut [[f64; 2]],
-    fixed_legs: &[bool],
-    direction: TimeDirection,
-    frame: [[f64; 2]; 2],
-) {
-    let size = [frame[1][0] - frame[0][0], frame[1][1] - frame[0][1]];
-    let tolerance = 1e-9 * size[0].max(size[1]);
-    let mut order: Vec<usize> = (0..positions.len()).collect();
-    order.sort_by(|&a, &b| {
-        positions[a][0]
-            .total_cmp(&positions[b][0])
-            .then(positions[a][1].total_cmp(&positions[b][1]))
-            .then(a.cmp(&b))
-    });
-    let mut k = 0;
-    while k < order.len() {
-        let mut end = k + 1;
-        while end < order.len()
-            && (positions[order[end]][0] - positions[order[k]][0]).abs() <= tolerance
-            && (positions[order[end]][1] - positions[order[k]][1]).abs() <= tolerance
-        {
-            end += 1;
-        }
-        let mut run: Vec<usize> = order[k..end].to_vec();
-        run.sort_unstable();
-        let mut moved = 0;
-        for &i in &run {
-            if fixed_legs[i] {
-                continue;
-            }
-            if moved > 0 {
-                let step = 0.1 * moved as f64;
-                match direction {
-                    TimeDirection::LeftToRight => positions[i][1] += step * size[1],
-                    TimeDirection::BottomToTop => positions[i][0] += step * size[0],
-                }
-            }
-            moved += 1;
-        }
-        k = end;
     }
 }
 
@@ -1131,7 +1570,7 @@ fn left_normal(d: [f32; 2]) -> [f32; 2] {
 /// The path a propagator's stroke follows: a straight line or a circular
 /// arc, parametrized by `t` in `0..=1` at a constant speed.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Base {
+pub(crate) enum Base {
     Line {
         a: [f32; 2],
         b: [f32; 2],
@@ -1146,7 +1585,7 @@ pub enum Base {
 
 impl Base {
     /// The point at `t`.
-    pub fn point(&self, t: f32) -> [f32; 2] {
+    pub(crate) fn point(&self, t: f32) -> [f32; 2] {
         match *self {
             Base::Line { a, b } => lerp(a, b, t),
             Base::Arc {
@@ -1165,7 +1604,7 @@ impl Base {
     }
 
     /// The unit direction of travel at `t`.
-    pub fn tangent(&self, t: f32) -> [f32; 2] {
+    pub(crate) fn tangent(&self, t: f32) -> [f32; 2] {
         match *self {
             Base::Line { a, b } => unit(sub(b, a)),
             Base::Arc { start, sweep, .. } => {
@@ -1177,7 +1616,7 @@ impl Base {
     }
 
     /// The length of the path.
-    pub fn length(&self) -> f32 {
+    pub(crate) fn length(&self) -> f32 {
         match *self {
             Base::Line { a, b } => len(sub(b, a)),
             Base::Arc { radius, sweep, .. } => radius * sweep.abs(),
@@ -1225,11 +1664,11 @@ fn rect_distance(p: [f32; 2], rect: RectF) -> f32 {
 /// A placed propagator: its base path, its ends, whether it is a loop and
 /// the side its label sits on (`1` left of travel, `-1` right).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PropagatorGeometry {
-    pub base: Base,
-    pub ends: ([f32; 2], [f32; 2]),
-    pub is_loop: bool,
-    pub label_side: f32,
+pub(crate) struct Geometry {
+    pub(crate) base: Base,
+    pub(crate) ends: ([f32; 2], [f32; 2]),
+    pub(crate) is_loop: bool,
+    pub(crate) label_side: f32,
 }
 
 /// What a pick of a Feynman series hit, by row.
@@ -1240,14 +1679,15 @@ pub enum FeynmanHit {
     Label(FeynmanLabelPart, usize),
 }
 
-/// Where a Feynman series is placed: the panel's anchor space (logical
-/// pixels), every vertex's position in data units ([`FeynmanSeries::positions`])
-/// and the part drawn picked. Everything here is a display parameter
-/// (rule 1).
-pub struct FeynmanPlacement<'a> {
-    pub space: &'a dyn AnnotationSpace,
-    pub positions: &'a [[f64; 2]],
-    pub picked: Option<FeynmanHit>,
+/// A series placed in a panel ([`FeynmanSeries::placed`]): the topology,
+/// every vertex's screen point (logical pixels, NaN where the axes do not
+/// place it) and the part drawn picked. Everything here is a display
+/// parameter (rule 1), dropped with the operation.
+pub(crate) struct Placed<'s> {
+    series: &'s FeynmanSeries,
+    topology: Topology,
+    px: Vec<[f64; 2]>,
+    picked: Option<FeynmanHit>,
 }
 
 /// The gap between a part and its label, logical pixels.
@@ -1261,144 +1701,73 @@ const WAVE_SAMPLES: usize = 6;
 const COIL_SAMPLES: usize = 12;
 /// The segments of a marker circle.
 const CIRCLE_SEGMENTS: usize = 24;
+/// The gap between a picked label and its box, logical pixels.
+const LABEL_BOX_GAP: f32 = 2.0;
 
-/// The per-series values a placement works out once ([`FeynmanPlacement`]).
-struct Frame {
-    px: Vec<Option<[f32; 2]>>,
-    ends: Vec<Option<(usize, usize)>>,
-    bends: Vec<f32>,
-    loops: Vec<(usize, usize)>,
-    outward: Vec<[f32; 2]>,
-}
-
-impl FeynmanPlacement<'_> {
+impl Placed<'_> {
     /// The screen point of vertex `index`, or `None` where the axes do not
     /// place it.
-    pub fn vertex_px(&self, index: usize) -> Option<[f32; 2]> {
-        let p = self.positions.get(index)?;
-        Some([
-            self.space.value_to_px(AnnotationAxis::X, p[0])?,
-            self.space.value_to_px(AnnotationAxis::Y, p[1])?,
-        ])
+    pub(crate) fn px(&self, index: usize) -> Option<[f32; 2]> {
+        let p = self.px.get(index)?;
+        (p[0].is_finite() && p[1].is_finite()).then(|| [p[0] as f32, p[1] as f32])
     }
 
-    /// What every propagator's geometry reads, worked out once per emit or
-    /// pick in O(E log E): each vertex's screen point, each propagator's
-    /// rows, its bend in its fan, its place among the loops at its vertex,
-    /// and each vertex's outward direction. Transient (rule 3).
-    fn frame(&self, series: &FeynmanSeries) -> Frame {
-        let px: Vec<Option<[f32; 2]>> = (0..series.vertices.len())
-            .map(|i| self.vertex_px(i))
-            .collect();
-        let index = VertexIndex::new(series);
-        let ends: Vec<Option<(usize, usize)>> = series
-            .propagators
-            .iter()
-            .map(|p| Some((index.row(&p.from)?, index.row(&p.to)?)))
-            .collect();
-        // The fans: the unbent lines between the same two vertices, in row
-        // order, grouped by their unordered ends.
-        let mut fan: Vec<(usize, usize, usize)> = ends
-            .iter()
-            .enumerate()
-            .filter(|(i, e)| {
-                series.propagators[*i].bend.is_none() && e.is_some_and(|(a, b)| a != b)
-            })
-            .filter_map(|(i, e)| e.map(|(a, b)| (a.min(b), a.max(b), i)))
-            .collect();
-        fan.sort_unstable();
-        let mut bends = vec![0.0f32; ends.len()];
-        for (i, p) in series.propagators.iter().enumerate() {
-            if let Some(bend) = p.bend {
-                bends[i] = bend;
-            }
-        }
-        let step = series.style.fan_step;
-        for group in fan.chunk_by(|a, b| (a.0, a.1) == (b.0, b.1)) {
-            let count = group.len() as f32;
-            for (rank, &(low, _, i)) in group.iter().enumerate() {
-                let canonical = (count - 1.0) / 2.0 - rank as f32;
-                // The fan is laid out from the lower row; a line running
-                // the other way bends the other way to land on the same arc.
-                let sign = if ends[i].is_some_and(|(a, _)| a == low) {
-                    1.0
-                } else {
-                    -1.0
-                };
-                bends[i] = canonical * step * sign;
-            }
-        }
-        // The loops at each vertex, ranked in row order.
-        let mut loop_count = vec![0usize; px.len()];
-        let mut loops = vec![(0usize, 0usize); ends.len()];
-        for (i, e) in ends.iter().enumerate() {
-            if let Some((a, b)) = *e
-                && a == b
-            {
-                loops[i].0 = loop_count[a];
-                loop_count[a] += 1;
-            }
-        }
-        for (i, e) in ends.iter().enumerate() {
-            if let Some((a, b)) = *e
-                && a == b
-            {
-                loops[i].1 = loop_count[a];
-            }
-        }
-        // Each vertex's outward direction: away from its neighbours.
-        let mut sums = vec![[0.0f32; 2]; px.len()];
-        for &(a, b) in ends.iter().flatten() {
-            if a == b {
+    /// Vertex `index`'s outward direction: away from its neighbours, up
+    /// when they cancel.
+    fn outward(&self, index: usize) -> [f32; 2] {
+        let Some(p) = self.px(index) else {
+            return [0.0, -1.0];
+        };
+        let mut sum = [0.0f32; 2];
+        for &[j, _] in self.topology.around(index) {
+            let j = j as usize;
+            if j == index {
                 continue;
             }
-            if let (Some(pa), Some(pb)) = (px[a], px[b]) {
-                let d = unit(sub(pb, pa));
-                sums[a] = add(sums[a], d);
-                sums[b] = sub(sums[b], d);
+            if let Some(q) = self.px(j) {
+                sum = add(sum, unit(sub(q, p)));
             }
         }
-        let outward = sums
-            .into_iter()
-            .map(|sum| {
-                if len(sum) < 1e-3 {
-                    [0.0, -1.0]
-                } else {
-                    unit(scale(sum, -1.0))
-                }
-            })
-            .collect();
-        Frame {
-            px,
-            ends,
-            bends,
-            loops,
-            outward,
+        if len(sum) < 1e-3 {
+            [0.0, -1.0]
+        } else {
+            unit(scale(sum, -1.0))
         }
+    }
+
+    /// Propagator `index`'s bend, degrees: its own, or its place in its
+    /// fan. The fan's step narrows so that its outer lines stay within
+    /// [`MAX_BEND`], so any number of parallel lines draws, each apart.
+    fn bend(&self, index: usize) -> f32 {
+        let series = self.series;
+        if let Some(bend) = series.propagators[index].bend {
+            return bend.clamp(-MAX_BEND, MAX_BEND);
+        }
+        let Some((rank, count, from_low)) = self.topology.fan(series, index) else {
+            return 0.0;
+        };
+        let step = if count > 1 {
+            series
+                .style
+                .fan_step
+                .min(2.0 * MAX_BEND / (count - 1) as f32)
+        } else {
+            series.style.fan_step
+        };
+        let canonical = (count as f32 - 1.0) / 2.0 - rank as f32;
+        // The fan is laid out from the lower row; a line running the other
+        // way bends the other way to land on the same arc.
+        canonical * step * if from_low { 1.0 } else { -1.0 }
     }
 
     /// The geometry of propagator `index`, or `None` when an end is not
-    /// placed on screen. One call works out the series' frame: the emit
-    /// and the pick share theirs.
-    pub fn propagator_geometry(
-        &self,
-        series: &FeynmanSeries,
-        index: usize,
-    ) -> Option<PropagatorGeometry> {
-        self.geometry(series, &self.frame(series), index)
-    }
-
-    fn geometry(
-        &self,
-        series: &FeynmanSeries,
-        frame: &Frame,
-        index: usize,
-    ) -> Option<PropagatorGeometry> {
-        let (from, to) = (*frame.ends.get(index)?)?;
-        let a = frame.px[from]?;
+    /// placed on screen.
+    pub(crate) fn geometry(&self, index: usize) -> Option<Geometry> {
+        let (from, to) = self.topology.ends_of(index)?;
+        let a = self.px(from)?;
         if from == to {
-            let (rank, count) = frame.loops[index];
-            let out = frame.outward[from];
+            let (rank, count) = self.topology.loop_rank(self.series, index)?;
+            let out = self.outward(from);
             let base_angle = out[1].atan2(out[0]);
             let turn = if count > 1 {
                 (rank as f32 - (count as f32 - 1.0) / 2.0) * (PI / count as f32)
@@ -1406,10 +1775,10 @@ impl FeynmanPlacement<'_> {
                 0.0
             };
             let angle = base_angle + turn;
-            let radius = series.style.loop_radius;
+            let radius = self.series.style.loop_radius;
             let centre = add(a, [radius * angle.cos(), radius * angle.sin()]);
             let start = (a[1] - centre[1]).atan2(a[0] - centre[0]);
-            return Some(PropagatorGeometry {
+            return Some(Geometry {
                 base: Base::Arc {
                     centre,
                     radius,
@@ -1421,12 +1790,12 @@ impl FeynmanPlacement<'_> {
                 label_side: -1.0,
             });
         }
-        let b = frame.px[to]?;
+        let b = self.px(to)?;
         let chord = sub(b, a);
         let c = len(chord);
-        let bend = frame.bends[index].to_radians();
+        let bend = self.bend(index).to_radians();
         if c <= 0.0 || bend.abs() < 1e-3 {
-            return Some(PropagatorGeometry {
+            return Some(Geometry {
                 base: Base::Line { a, b },
                 ends: (a, b),
                 is_loop: false,
@@ -1449,7 +1818,7 @@ impl FeynmanPlacement<'_> {
         while half < -PI {
             half += 2.0 * PI;
         }
-        Some(PropagatorGeometry {
+        Some(Geometry {
             base: Base::Arc {
                 centre,
                 radius,
@@ -1464,7 +1833,8 @@ impl FeynmanPlacement<'_> {
 
     /// How far propagator `index`'s ink reaches from its base path: half
     /// its width, plus its wave, coil or double line.
-    fn envelope(&self, series: &FeynmanSeries, index: usize) -> f32 {
+    fn envelope(&self, index: usize) -> f32 {
+        let series = self.series;
         let propagator = &series.propagators[index];
         let width = propagator.width_px.unwrap_or(series.style.width);
         let reach = match propagator.particle {
@@ -1477,66 +1847,65 @@ impl FeynmanPlacement<'_> {
         reach + width / 2.0
     }
 
-    fn picked_scale(&self, series: &FeynmanSeries, hit: FeynmanHit) -> f32 {
+    fn picked_scale(&self, hit: FeynmanHit) -> f32 {
         if self.picked == Some(hit) {
-            series.style.picked_width_scale
+            self.series.style.picked_width_scale
         } else {
             1.0
         }
     }
 
-    /// Emit propagator `index`'s strokes and arrows.
+    /// Emit propagator `index`'s strokes and arrows, its paths built in
+    /// `path`.
     fn emit_propagator(
         &self,
-        series: &FeynmanSeries,
-        frame: &Frame,
         index: usize,
+        path: &mut Vec<PathSegment>,
         sink: &mut dyn Sink,
-    ) {
-        let Some(geometry) = self.geometry(series, frame, index) else {
-            return;
+    ) -> Result<(), &'static str> {
+        let Some(geometry) = self.geometry(index) else {
+            return Ok(());
         };
+        let series = self.series;
         let propagator = &series.propagators[index];
         let style = &series.style;
-        let widen = self.picked_scale(series, FeynmanHit::Propagator(index));
+        let widen = self.picked_scale(FeynmanHit::Propagator(index));
         let width = propagator.width_px.unwrap_or(style.width) * widen;
         let color = propagator.color.unwrap_or(style.color);
         let base = geometry.base;
+        let closed = geometry.is_loop;
         let stroke = StrokeStyle {
             width,
             color,
             dash: propagator.particle.dash(),
             tag: "feynman_propagator",
         };
-        let mut path = Vec::new();
         match propagator.particle {
             ParticleLine::Photon | ParticleLine::ChargedBoson => {
-                wave_path(&base, style.wave, 0.0, geometry.is_loop, &mut path);
-                sink.path(Slot::Above, &path, &stroke);
+                wave_path(&base, style.wave, 0.0, closed, path)?;
+                sink.path(Slot::Above, path, &stroke);
             }
             ParticleLine::Graviton => {
                 for shift in [-width, width] {
-                    path.clear();
-                    wave_path(&base, style.wave, shift, geometry.is_loop, &mut path);
-                    sink.path(Slot::Above, &path, &stroke);
+                    wave_path(&base, style.wave, shift, closed, path)?;
+                    sink.path(Slot::Above, path, &stroke);
                 }
             }
             ParticleLine::Gluon => {
-                coil_path(&base, style.coil, geometry.is_loop, &mut path);
-                sink.path(Slot::Above, &path, &stroke);
+                coil_path(&base, style.coil, closed, path)?;
+                sink.path(Slot::Above, path, &stroke);
             }
             ParticleLine::DoubleLine => {
                 for shift in [-width, width] {
-                    path.clear();
-                    offset_path(&base, shift, 0.0, 1.0, geometry.is_loop, &mut path);
-                    sink.path(Slot::Above, &path, &stroke);
+                    offset_path(&base, shift, 0.0, 1.0, closed, path)?;
+                    sink.path(Slot::Above, path, &stroke);
                 }
             }
             _ => match base {
                 Base::Line { a, b } => sink.stroke(Slot::Above, a, b, &stroke),
                 Base::Arc { .. } => {
-                    offset_path(&base, 0.0, 0.0, 1.0, geometry.is_loop, &mut path);
-                    sink.path(Slot::Above, &path, &stroke);
+                    offset_path(&base, 0.0, 0.0, 1.0, closed, path)?;
+                    sink.path(Slot::Above, path, &stroke);
                 }
             },
         }
@@ -1565,17 +1934,16 @@ impl FeynmanPlacement<'_> {
                 MomentumSide::Left => 1.0,
                 MomentumSide::Right => -1.0,
             };
-            let shift = side * (self.envelope(series, index) + MOMENTUM_GAP);
+            let shift = side * (self.envelope(index) + MOMENTUM_GAP);
             let (t0, t1) = (0.5 - MOMENTUM_SPAN / 2.0, 0.5 + MOMENTUM_SPAN / 2.0);
-            path.clear();
-            offset_path(&base, shift, t0, t1, false, &mut path);
+            offset_path(&base, shift, t0, t1, false, path)?;
             let thin = StrokeStyle {
                 width: style.width.min(1.5),
                 color,
                 dash: &[],
                 tag: "feynman_momentum",
             };
-            sink.path(Slot::Above, &path, &thin);
+            sink.path(Slot::Above, path, &thin);
             let (end, before) = if momentum.reversed {
                 (t0, t1)
             } else {
@@ -1591,34 +1959,41 @@ impl FeynmanPlacement<'_> {
             let n = scale(left_normal(dir), style.head_width * 0.4);
             sink.triangle(Slot::Above, [tip, add(back, n), sub(back, n)], color);
         }
+        Ok(())
     }
 
-    /// Emit vertex `index`'s marker.
-    fn emit_vertex(&self, series: &FeynmanSeries, index: usize, sink: &mut dyn Sink) {
-        let Some(p) = self.vertex_px(index) else {
-            return;
+    /// Emit vertex `index`'s marker; a circled cross builds its circle in
+    /// `path`.
+    fn emit_vertex(
+        &self,
+        index: usize,
+        path: &mut Vec<PathSegment>,
+        sink: &mut dyn Sink,
+    ) -> Result<(), &'static str> {
+        let Some(p) = self.px(index) else {
+            return Ok(());
         };
-        let style = &series.style;
-        let widen = self.picked_scale(series, FeynmanHit::Vertex(index));
+        let style = &self.series.style;
+        let picked = self.picked == Some(FeynmanHit::Vertex(index));
+        let widen = self.picked_scale(FeynmanHit::Vertex(index));
         let line = StrokeStyle {
             width: style.width * widen,
             color: style.color,
             dash: &[],
             tag: "feynman_vertex",
         };
-        let marker = series.vertices[index].drawn_marker();
+        let marker = self.series.vertices[index].drawn_marker();
         match marker {
-            VertexMarker::Hidden => {
-                // A picked leg end shows where it is.
-                if self.picked == Some(FeynmanHit::Vertex(index)) {
-                    sink.polygon(
-                        Slot::Above,
-                        &circle(p, style.dot_radius * widen),
-                        Some(style.color),
-                        None,
-                    );
-                }
+            // A picked leg end shows where it is.
+            VertexMarker::Hidden if picked => {
+                sink.polygon(
+                    Slot::Above,
+                    &circle(p, style.dot_radius * widen),
+                    Some(style.color),
+                    None,
+                );
             }
+            VertexMarker::Hidden => {}
             VertexMarker::Dot => {
                 sink.polygon(
                     Slot::Above,
@@ -1651,24 +2026,48 @@ impl FeynmanPlacement<'_> {
                     &line,
                 );
                 if marker == VertexMarker::CircledCross {
-                    let mut path = Vec::new();
                     let base = Base::Arc {
                         centre: p,
                         radius: r,
                         start: 0.0,
                         sweep: 2.0 * PI,
                     };
-                    offset_path(&base, 0.0, 0.0, 1.0, true, &mut path);
-                    sink.path(Slot::Above, &path, &line);
+                    offset_path(&base, 0.0, 0.0, 1.0, true, path)?;
+                    sink.path(Slot::Above, path, &line);
                 }
             }
         }
+        Ok(())
+    }
+
+    /// The box drawn around a picked label: its rect, a little apart, in
+    /// the series colour at the picked width.
+    fn emit_label_box(&self, text: &PlacedText<'_>, sink: &mut dyn Sink) {
+        let style = &self.series.style;
+        let r = text.rect();
+        let (x0, y0) = (r.x - LABEL_BOX_GAP, r.y - LABEL_BOX_GAP);
+        let (x1, y1) = (
+            r.x + r.width + LABEL_BOX_GAP,
+            r.y + r.height + LABEL_BOX_GAP,
+        );
+        let line = StrokeStyle {
+            width: style.width.min(1.5) * style.picked_width_scale,
+            color: style.color,
+            dash: &[],
+            tag: "feynman_label",
+        };
+        sink.polygon(
+            Slot::Above,
+            &[[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+            None,
+            Some(&line),
+        );
     }
 
     /// The radius a vertex's marker covers, for its label and its pick.
-    fn marker_radius(&self, series: &FeynmanSeries, index: usize) -> f32 {
-        let style = &series.style;
-        match series.vertices[index].drawn_marker() {
+    fn marker_radius(&self, index: usize) -> f32 {
+        let style = &self.series.style;
+        match self.series.vertices[index].drawn_marker() {
             VertexMarker::Hidden => 0.0,
             VertexMarker::Dot => style.dot_radius,
             VertexMarker::Blob { radius_px, .. } => radius_px + style.width / 2.0,
@@ -1680,40 +2079,29 @@ impl FeynmanPlacement<'_> {
 
     /// The placed label of row `index` of `part`, or `None` when the row
     /// has no label or is not drawn.
-    pub fn label<'t>(
+    pub(crate) fn label(
         &self,
-        series: &'t FeynmanSeries,
         part: FeynmanLabelPart,
         index: usize,
         measure: &dyn MeasureText,
-    ) -> Option<PlacedText<'t>> {
-        self.label_in(series, &self.frame(series), part, index, measure)
-    }
-
-    fn label_in<'t>(
-        &self,
-        series: &'t FeynmanSeries,
-        frame: &Frame,
-        part: FeynmanLabelPart,
-        index: usize,
-        measure: &dyn MeasureText,
-    ) -> Option<PlacedText<'t>> {
+    ) -> Option<PlacedText<'_>> {
+        let series = self.series;
         let (text, anchor, direction, offset) = match part {
             FeynmanLabelPart::Vertex => {
                 let vertex = series.vertices.get(index)?;
                 let text = vertex.label.as_ref()?;
-                let p = self.vertex_px(index)?;
-                let out = frame.outward[index];
-                let reach = self.marker_radius(series, index) + LABEL_GAP;
+                let p = self.px(index)?;
+                let out = self.outward(index);
+                let reach = self.marker_radius(index) + LABEL_GAP;
                 (text, add(p, scale(out, reach)), out, vertex.label_offset)
             }
             FeynmanLabelPart::Propagator => {
                 let propagator = series.propagators.get(index)?;
                 let text = propagator.label.as_ref()?;
-                let geometry = self.geometry(series, frame, index)?;
+                let geometry = self.geometry(index)?;
                 let side = geometry.label_side;
                 let n = scale(left_normal(geometry.base.tangent(0.5)), side);
-                let reach = self.label_reach(series, index, side);
+                let reach = self.label_reach(index, side);
                 (
                     text,
                     add(geometry.base.point(0.5), scale(n, reach)),
@@ -1724,13 +2112,13 @@ impl FeynmanPlacement<'_> {
             FeynmanLabelPart::Momentum => {
                 let propagator = series.propagators.get(index)?;
                 let momentum = propagator.momentum.as_ref()?;
-                let geometry = self.geometry(series, frame, index)?;
+                let geometry = self.geometry(index)?;
                 let side = match momentum.side {
                     MomentumSide::Left => 1.0,
                     MomentumSide::Right => -1.0,
                 };
                 let shift = side
-                    * (self.envelope(series, index)
+                    * (self.envelope(index)
                         + MOMENTUM_GAP
                         + series.style.head_width * 0.4
                         + LABEL_GAP);
@@ -1764,9 +2152,10 @@ impl FeynmanPlacement<'_> {
     /// How far a propagator's label sits from its base path on `side`: past
     /// its ink there, and past its momentum arrow when that is on the same
     /// side.
-    fn label_reach(&self, series: &FeynmanSeries, index: usize, side: f32) -> f32 {
+    fn label_reach(&self, index: usize, side: f32) -> f32 {
+        let series = self.series;
         let propagator = &series.propagators[index];
-        let mut reach = self.envelope(series, index);
+        let mut reach = self.envelope(index);
         // A coil lies on the left of travel.
         if propagator.particle == ParticleLine::Gluon && side < 0.0 {
             reach = propagator.width_px.unwrap_or(series.style.width) / 2.0;
@@ -1782,80 +2171,6 @@ impl FeynmanPlacement<'_> {
         }
         reach + LABEL_GAP
     }
-
-    /// Emit every drawn part of `series` into `sink`, in the
-    /// [`Slot::Above`] slot: the propagators in row order, the vertex
-    /// markers over them, then every label. The picked part is drawn
-    /// `style.picked_width_scale` times as wide. Nothing is stored; the
-    /// caller's sink paints, bounds or hit tests the parts.
-    pub fn emit(&self, series: &FeynmanSeries, measure: &dyn MeasureText, sink: &mut dyn Sink) {
-        let frame = self.frame(series);
-        for index in 0..series.propagators.len() {
-            self.emit_propagator(series, &frame, index, sink);
-        }
-        for index in 0..series.vertices.len() {
-            self.emit_vertex(series, index, sink);
-        }
-        for part in [
-            FeynmanLabelPart::Propagator,
-            FeynmanLabelPart::Momentum,
-            FeynmanLabelPart::Vertex,
-        ] {
-            for index in 0..series.part_len(part) {
-                if let Some(text) = self.label_in(series, &frame, part, index, measure) {
-                    sink.text(Slot::Above, &text);
-                }
-            }
-        }
-    }
-
-    /// The drawn part of `series` nearest `cursor`, within `max_distance`
-    /// of its ink, and that distance (zero on the part). Walks the SSOT
-    /// through the same placement the emit draws with, so the pick is the
-    /// drawn geometry; nothing is registered per row (rule 3). On a tie a
-    /// part drawn later wins: labels over markers over lines.
-    pub fn pick(
-        &self,
-        series: &FeynmanSeries,
-        measure: &dyn MeasureText,
-        cursor: [f32; 2],
-        max_distance: f32,
-    ) -> Option<(FeynmanHit, f32)> {
-        let frame = self.frame(series);
-        let mut best: Option<(FeynmanHit, f32)> = None;
-        let mut offer = |hit: FeynmanHit, distance: f32| {
-            if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
-                best = Some((hit, distance));
-            }
-        };
-        for index in 0..series.propagators.len() {
-            if let Some(geometry) = self.geometry(series, &frame, index) {
-                let edge = geometry.base.distance(cursor) - self.envelope(series, index);
-                offer(FeynmanHit::Propagator(index), edge.max(0.0));
-            }
-        }
-        for index in 0..series.vertices.len() {
-            if let Some(p) = frame.px[index] {
-                let edge = len(sub(cursor, p)) - self.marker_radius(series, index);
-                offer(FeynmanHit::Vertex(index), edge.max(0.0));
-            }
-        }
-        for part in [
-            FeynmanLabelPart::Propagator,
-            FeynmanLabelPart::Momentum,
-            FeynmanLabelPart::Vertex,
-        ] {
-            for index in 0..series.part_len(part) {
-                if let Some(text) = self.label_in(series, &frame, part, index, measure) {
-                    offer(
-                        FeynmanHit::Label(part, index),
-                        rect_distance(cursor, text.rect()),
-                    );
-                }
-            }
-        }
-        best
-    }
 }
 
 fn lerp_f(a: f32, b: f32, t: f32) -> f32 {
@@ -1867,23 +2182,22 @@ fn offset_point(base: &Base, shift: f32, t: f32) -> [f32; 2] {
     add(base.point(t), scale(left_normal(base.tangent(t)), shift))
 }
 
-/// The polygon of a circle of `radius` about `centre`.
-fn circle(centre: [f32; 2], radius: f32) -> Vec<[f32; 2]> {
-    (0..CIRCLE_SEGMENTS)
-        .map(|k| {
-            let angle = 2.0 * PI * k as f32 / CIRCLE_SEGMENTS as f32;
-            [
-                centre[0] + radius * angle.cos(),
-                centre[1] + radius * angle.sin(),
-            ]
-        })
-        .collect()
+/// The polygon of a circle of `radius` about `centre`, on the stack.
+fn circle(centre: [f32; 2], radius: f32) -> [[f32; 2]; CIRCLE_SEGMENTS] {
+    std::array::from_fn(|k| {
+        let angle = 2.0 * PI * k as f32 / CIRCLE_SEGMENTS as f32;
+        [
+            centre[0] + radius * angle.cos(),
+            centre[1] + radius * angle.sin(),
+        ]
+    })
 }
 
-/// Append to `out` the smooth path through `f(t)` for `t` from `t0` to
+/// Replace `out` with the smooth path through `f(t)` for `t` from `t0` to
 /// `t1` in `samples` steps: cubic Hermite segments with the curve's own
 /// derivatives (taken numerically), as Bézier segments. `closed` closes
-/// the path.
+/// the path. The segment count is known first, so `out` grows (doubling)
+/// before it is written, never while it is.
 fn sampled_path(
     f: &dyn Fn(f32) -> [f32; 2],
     t0: f32,
@@ -1891,8 +2205,11 @@ fn sampled_path(
     samples: usize,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) {
+) -> Result<(), &'static str> {
     let samples = samples.max(1);
+    out.clear();
+    out.try_reserve(samples + 2)
+        .map_err(|_| ALLOCATION_FAILED)?;
     let h = (t1 - t0) / samples as f32;
     let eps = (h * 1e-2).abs().max(1e-6);
     let derivative = |t: f32| scale(sub(f(t + eps), f(t - eps)), 1.0 / (2.0 * eps));
@@ -1911,9 +2228,10 @@ fn sampled_path(
     if closed {
         out.push(PathSegment::Close);
     }
+    Ok(())
 }
 
-/// The base path from `t0` to `t1`, `shift` pixels to its left.
+/// The base path from `t0` to `t1`, `shift` pixels to its left, into `out`.
 fn offset_path(
     base: &Base,
     shift: f32,
@@ -1921,7 +2239,7 @@ fn offset_path(
     t1: f32,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) {
+) -> Result<(), &'static str> {
     let samples = match base {
         Base::Line { .. } => 1,
         Base::Arc { sweep, .. } => ((sweep.abs() * (t1 - t0) / (PI / 8.0)).ceil() as usize).max(1),
@@ -1933,13 +2251,19 @@ fn offset_path(
         samples,
         closed,
         out,
-    );
+    )
 }
 
-/// A wave along `base`: a sine of the wiggle's amplitude, its wavelength
-/// fitted so that whole half periods span the path, `shift` pixels to the
-/// left. A loop's wave closes on itself with whole periods.
-fn wave_path(base: &Base, wave: Wiggle, shift: f32, closed: bool, out: &mut Vec<PathSegment>) {
+/// A wave along `base` into `out`: a sine of the wiggle's amplitude, its
+/// wavelength fitted so that whole half periods span the path, `shift`
+/// pixels to the left. A loop's wave closes on itself with whole periods.
+fn wave_path(
+    base: &Base,
+    wave: Wiggle,
+    shift: f32,
+    closed: bool,
+    out: &mut Vec<PathSegment>,
+) -> Result<(), &'static str> {
     let length = base.length();
     let mut halves = ((length / (wave.wavelength / 2.0)).round() as usize).max(1);
     if closed && halves % 2 == 1 {
@@ -1950,12 +2274,17 @@ fn wave_path(base: &Base, wave: Wiggle, shift: f32, closed: bool, out: &mut Vec<
         let a = amplitude * (PI * halves as f32 * t).sin() + shift;
         offset_point(base, a, t)
     };
-    sampled_path(&f, 0.0, 1.0, halves * WAVE_SAMPLES, closed, out);
+    sampled_path(&f, 0.0, 1.0, halves * WAVE_SAMPLES, closed, out)
 }
 
-/// A coil along `base`: whole loops (a prolate cycloid) on the left of
-/// travel, of the wiggle's size, its wavelength fitted to the path.
-fn coil_path(base: &Base, coil: Wiggle, closed: bool, out: &mut Vec<PathSegment>) {
+/// A coil along `base` into `out`: whole loops (a prolate cycloid) on the
+/// left of travel, of the wiggle's size, its wavelength fitted to the path.
+fn coil_path(
+    base: &Base,
+    coil: Wiggle,
+    closed: bool,
+    out: &mut Vec<PathSegment>,
+) -> Result<(), &'static str> {
     let length = base.length().max(1e-3);
     let loops = ((length / coil.wavelength).round() as usize).max(1);
     let a = coil.amplitude;
@@ -1964,7 +2293,7 @@ fn coil_path(base: &Base, coil: Wiggle, closed: bool, out: &mut Vec<PathSegment>
         let along = t - a * phase.sin() / length;
         offset_point(base, a * (1.0 - phase.cos()), along)
     };
-    sampled_path(&f, 0.0, 1.0, loops * COIL_SAMPLES, closed, out);
+    sampled_path(&f, 0.0, 1.0, loops * COIL_SAMPLES, closed, out)
 }
 
 impl SeriesConfig {

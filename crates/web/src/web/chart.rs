@@ -294,7 +294,7 @@ impl FiggyChart {
         // is registered, so `get_series` returns placed coordinates.
         for item in &mut series {
             if let Some(diagram) = item.feynman_mut() {
-                diagram.auto_layout();
+                diagram.auto_layout().map_err(js_err)?;
             }
         }
         self.renderer

@@ -1114,7 +1114,7 @@ impl<'a> DataLess<'a> {
         panel: usize,
         pieces: &[Rect],
         scale: f32,
-        mut each_piece: impl FnMut(Rect, &mut dyn FnMut(&mut dyn Sink)) -> Result<()>,
+        mut each_piece: impl FnMut(Rect, &mut dyn FnMut(&mut dyn Sink) -> Result<()>) -> Result<()>,
     ) -> Result<()> {
         let config = &self.panels[panel];
         for &piece in pieces {
@@ -1126,8 +1126,9 @@ impl<'a> DataLess<'a> {
                         |levels| crate::renderer::energy_level_records(levels, self.series),
                         scale,
                         sink,
-                    );
+                    )?;
                 }
+                Ok(())
             })?;
         }
         Ok(())
@@ -1274,9 +1275,10 @@ fn write_dataless(
             frame.scale,
             config.chart_area.0,
         );
-        emit(&mut sink);
+        let emitted = emit(&mut sink);
         let error = sink.error.take();
         out.pop_clip();
+        emitted?;
         error.map_or(Ok(()), Err)
     })
 }
@@ -1715,7 +1717,7 @@ pub fn written_document_parts(
                         if clamp_rect_to_target(piece, size).is_some() {
                             let mut twin =
                                 PartsTwin::new(out, policy, [0.0, 0.0], scale, config.chart_area.0);
-                            emit(&mut twin);
+                            emit(&mut twin)?;
                         }
                         Ok(())
                     })?;

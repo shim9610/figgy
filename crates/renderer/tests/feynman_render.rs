@@ -251,7 +251,7 @@ fn an_ssot_edit_of_the_diagram_redraws_it() {
     let mut r = renderer();
     let chart = chart();
     let mut diagram = s_channel();
-    diagram.auto_layout();
+    diagram.auto_layout().unwrap();
     let id = r
         .register_chart(chart.config().clone(), vec![series("d", diagram.clone())])
         .unwrap();
@@ -436,7 +436,7 @@ fn thousands_of_rungs_lay_out_and_draw_with_no_count_limit() {
     assert_eq!(diagram.vertices.len(), 10_004);
     assert_eq!(diagram.propagators.len(), 15_002);
     let start = std::time::Instant::now();
-    let positions = diagram.positions();
+    let positions = diagram.positions().expect("the layout");
     let layout = start.elapsed();
     assert!(
         positions
@@ -526,7 +526,7 @@ fn pick(
 /// The s channel committed, with a label on the photon.
 fn labelled() -> FeynmanSeries {
     let mut diagram = s_channel();
-    diagram.auto_layout();
+    diagram.auto_layout().unwrap();
     diagram.propagators[2].label = Some(renderer::text::RichText::plain(
         "γ*",
         Color::BLACK,
@@ -799,20 +799,26 @@ fn vertex_and_momentum_labels_pick_with_their_part() {
     let config = chart.config();
     let space = renderer::annotation::pixel_space_for_config(config);
     let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
-    let positions = diagram.positions();
-    let placement = renderer::feynman::FeynmanPlacement {
-        space: &space,
-        positions: &positions,
-        picked: None,
-    };
-    for (part, index) in [
-        (renderer::FeynmanLabelPart::Vertex, 0),
-        (renderer::FeynmanLabelPart::Momentum, 2),
+    // The emit's text blocks in drawing order: the propagator label (row
+    // 2), the momentum label (row 2), then the vertex label (row 0).
+    let mut texts = Vec::new();
+    diagram
+        .emit(
+            &space,
+            None,
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let renderer::DrawnPart::Text(rect) = part {
+                    texts.push(rect);
+                }
+            }),
+        )
+        .unwrap();
+    assert_eq!(texts.len(), 3);
+    for (part, index, rect) in [
+        (renderer::FeynmanLabelPart::Vertex, 0, texts[2]),
+        (renderer::FeynmanLabelPart::Momentum, 2, texts[1]),
     ] {
-        let rect = placement
-            .label(&diagram, part, index, &measure)
-            .expect("a placed label")
-            .rect();
         for scale in [1.0f32, 2.0] {
             let centre = (
                 ((rect.x + rect.width / 2.0) * scale).round() as u32,
@@ -1006,21 +1012,45 @@ fn a_bent_scalar_is_one_dashed_curve_in_every_output() {
         // The raster: dashes along the arc, ink and gaps in turn, the gaps
         // shorter than the dashes (6 px on, 4 px off).
         let image = export(&mut r, &chart, &list, scale);
-        let positions = bent_scalar().positions();
+        // The arc as the emit draws it, in export pixels: a move, then
+        // cubics of (control, control, end) each.
         let config = chart.config().scaled(scale);
         let space = renderer::annotation::pixel_space_for_config(&config);
-        let placement = renderer::feynman::FeynmanPlacement {
-            space: &space,
-            positions: &positions,
-            picked: None,
+        let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+        let mut arc = Vec::new();
+        bent_scalar()
+            .emit(
+                &space,
+                None,
+                &measure,
+                &mut renderer::sink::Parts(&mut |part| {
+                    if let renderer::DrawnPart::Path { points, .. } = part {
+                        arc = points;
+                    }
+                }),
+            )
+            .unwrap();
+        let cubics = (arc.len() - 1) / 3;
+        assert!(cubics >= 2, "{scale}x arc: {} points", arc.len());
+        let point = |t: f32| {
+            let k = ((t * cubics as f32) as usize).min(cubics - 1);
+            let u = t * cubics as f32 - k as f32;
+            let [p0, c1, c2, p1] = [arc[3 * k], arc[3 * k + 1], arc[3 * k + 2], arc[3 * k + 3]];
+            let w = [
+                (1.0 - u).powi(3),
+                3.0 * u * (1.0 - u).powi(2),
+                3.0 * u * u * (1.0 - u),
+                u.powi(3),
+            ];
+            [
+                w[0] * p0[0] + w[1] * c1[0] + w[2] * c2[0] + w[3] * p1[0],
+                w[0] * p0[1] + w[1] * c1[1] + w[2] * c2[1] + w[3] * p1[1],
+            ]
         };
-        let geometry = placement
-            .propagator_geometry(&bent_scalar(), 0)
-            .expect("the arc");
         let samples = 400;
         let inked: Vec<bool> = (0..=samples)
             .map(|k| {
-                let p = geometry.base.point(k as f32 / samples as f32);
+                let p = point(k as f32 / samples as f32);
                 let (x, y) = (p[0].round() as u32, p[1].round() as u32);
                 let i = ((y * image.width + x) * 4) as usize;
                 image.rgba[i + 3] > 100
