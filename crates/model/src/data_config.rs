@@ -422,6 +422,14 @@ pub enum DataRenderType {
     /// reader reads as data. See [`crate::tri_mesh`] and
     /// [`Config::validate_tri_mesh_series`](crate::config::Config::validate_tri_mesh_series).
     TriMesh(crate::tri_mesh::TriMeshSeries),
+    /// A Feynman diagram (#234): vertices, the propagators that join them
+    /// and their particles. DataLess: every value is SSOT configuration
+    /// ([`FeynmanSeries`](crate::feynman::FeynmanSeries)), so `x_column` and
+    /// `y_column` stay empty and nothing is registered. A vertex position
+    /// is optional; the automatic layout places the rest. Drawn through the
+    /// CPU sink and composited after the GPU data. See [`crate::feynman`]
+    /// and [`Config::validate_feynman`](crate::config::Config::validate_feynman).
+    Feynman(crate::feynman::FeynmanSeries),
 }
 
 /// Markers, a line and error bars over a series' x and y columns: the
@@ -790,6 +798,7 @@ impl From<WireRenderType> for DataRenderType {
             },
             WireRenderType::EnergyLevels(levels) => DataRenderType::EnergyLevels(levels),
             WireRenderType::TriMesh(mesh) => DataRenderType::TriMesh(mesh),
+            WireRenderType::Feynman(diagram) => DataRenderType::Feynman(diagram),
         }
     }
 }
@@ -1003,6 +1012,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
             },
             DataRenderType::EnergyLevels(levels) => WireRenderType::EnergyLevels(levels),
             DataRenderType::TriMesh(mesh) => WireRenderType::TriMesh(mesh),
+            DataRenderType::Feynman(diagram) => WireRenderType::Feynman(diagram),
         })
     }
 }
@@ -1563,6 +1573,7 @@ pub(crate) enum WireRenderType {
     },
     EnergyLevels(crate::energy_levels::EnergyLevelSeries),
     TriMesh(crate::tri_mesh::TriMeshSeries),
+    Feynman(crate::feynman::FeynmanSeries),
 }
 
 /// A [`DataRenderType::Parallel`] series' fields, borrowed.
@@ -3002,6 +3013,11 @@ impl SeriesConfig {
     /// offset past [`MAX_VALUE_LABEL_OFFSET`]. The label's placement is the
     /// renderer's, from the pool, so there is no containment test beyond
     /// that bound.
+    ///
+    /// A Feynman series (#234) is rejected here: its label is named by
+    /// `part` and row (D7), so it moves through
+    /// [`FeynmanSeries::drag_label`](crate::feynman::FeynmanSeries::drag_label),
+    /// from the selection's `PickedDataRef::FeynmanLabel { part, index }`.
     pub fn drag_value_label(
         &mut self,
         index: usize,
@@ -3294,6 +3310,7 @@ impl DataRenderType {
             | DataRenderType::RangeBars { .. }
             | DataRenderType::EnergyLevels(_)
             | DataRenderType::TriMesh(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
@@ -5481,7 +5498,9 @@ impl DataRenderType {
             // Its transitions step as points by their own rule (#203).
             | DataRenderType::EnergyLevels(_)
             // Its triangles step by their own rule (#210).
-            | DataRenderType::TriMesh(_) => false,
+            | DataRenderType::TriMesh(_)
+            // Its vertices and propagators step by their own rule (#234).
+            | DataRenderType::Feynman(_) => false,
         }
     }
 }
@@ -5565,6 +5584,12 @@ impl crate::config::Config {
         // An energy-level series steps over the rows of its SSOT (#203).
         if series[position].energy_levels().is_some() {
             return Ok(crate::energy_levels::stepped_selection(
+                series, position, reference, dx, dy,
+            ));
+        }
+        // A Feynman series steps over the rows of its SSOT (#234).
+        if series[position].feynman().is_some() {
+            return Ok(crate::feynman::stepped_selection(
                 series, position, reference, dx, dy,
             ));
         }
@@ -5788,7 +5813,13 @@ impl crate::config::Config {
                     triangle_index: shift(*triangle_index, dx, count),
                 })
             }
-            PickedDataRef::ContourLevel { .. } | PickedDataRef::ValueLabel { .. } => None,
+            PickedDataRef::ContourLevel { .. }
+            | PickedDataRef::ValueLabel { .. }
+            // A Feynman part on another kind of series names nothing to
+            // step (#234).
+            | PickedDataRef::FeynmanVertex { .. }
+            | PickedDataRef::FeynmanPropagator { .. }
+            | PickedDataRef::FeynmanLabel { .. } => None,
         })
     }
 }
@@ -9839,8 +9870,8 @@ impl SeriesConfig {
     /// columns, and a vector field's components and colour. Records and
     /// ragged columns are visited by [`Self::visit_composite_columns`].
     pub fn visit_columns<'a>(&'a self, visit: &mut impl FnMut(&'a str)) {
-        // A DataLess energy-level series reads no column (#203).
-        if self.energy_levels().is_some() {
+        // A DataLess series reads no column (#203, #234).
+        if self.is_dataless() {
             return;
         }
         visit(&self.x_column);
@@ -9892,6 +9923,7 @@ impl SeriesConfig {
             // Nothing beyond what is visited above.
             DataRenderType::Xy(_)
             | DataRenderType::EnergyLevels(_)
+            | DataRenderType::Feynman(_)
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::Radar { .. } => {}

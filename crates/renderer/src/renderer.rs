@@ -34,10 +34,16 @@ pub use series::*;
 mod window;
 pub use window::*;
 mod composite;
+#[cfg(feature = "cpu-twin")]
+pub(crate) use composite::DataPieces;
+pub(crate) use composite::DataSteps;
 pub use composite::draw_chart_panel_columnar;
 mod frame;
+pub(crate) use frame::series_panel_index;
 pub use frame::*;
 mod prepare;
+pub(crate) use prepare::energy_levels::{emit_dataless, energy_level_records};
+pub(crate) use prepare::value_label::draws_value_labels;
 use prepare::*;
 mod preparation;
 pub use preparation::{PipelinePreparation, PreparationFeature, PreparedPipelines};

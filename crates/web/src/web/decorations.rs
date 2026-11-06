@@ -16,6 +16,7 @@ pub enum AxisPreset {
     OpenOutward,
     OpenInward,
     Minimal,
+    Hidden,
 }
 
 impl From<AxisPreset> for renderer::AxisPreset {
@@ -26,6 +27,7 @@ impl From<AxisPreset> for renderer::AxisPreset {
             AxisPreset::OpenOutward => Self::OpenOutward,
             AxisPreset::OpenInward => Self::OpenInward,
             AxisPreset::Minimal => Self::Minimal,
+            AxisPreset::Hidden => Self::Hidden,
         }
     }
 }
@@ -245,6 +247,8 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
+                // A Feynman series maps no value (#234).
+                DataRenderType::Feynman(_) => {}
                 // An energy-level series' mapped transition values are SSOT
                 // (#203): each finite one widens the extent.
                 DataRenderType::EnergyLevels(levels) => {

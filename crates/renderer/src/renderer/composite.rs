@@ -208,6 +208,28 @@ impl<'s, 'a> PieceSeries<'s, 'a> {
 /// [`Slot::Below`] with its data, then every panel's [`Slot::Above`].
 pub(crate) const FRAME_SLOTS: [Slot; 2] = [Slot::Below, Slot::Above];
 
+/// The steps of one panel's data slot a draw issues, in their order: the
+/// GPU fills, bodies and picked highlights (`gpu`), the CPU rasters of the
+/// DataLess series (`cpu`), then the GPU value labels (`labels`). A frame
+/// and the PNG export draw every step; the vector export draws the GPU
+/// steps around each panel's CPU step into separate images and writes the
+/// DataLess series between them as vector parts (#234).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DataSteps {
+    pub(crate) gpu: bool,
+    pub(crate) cpu: bool,
+    pub(crate) labels: bool,
+}
+
+impl DataSteps {
+    /// Every step: the data slot as a frame draws it.
+    pub(crate) const ALL: Self = Self {
+        gpu: true,
+        cpu: true,
+        labels: true,
+    };
+}
+
 /// A full-screen textured layer of one slot: the pipeline that blits a
 /// panel-sized texture and the texture's bind group.
 pub(crate) struct PanelChrome<'a> {
@@ -238,7 +260,7 @@ pub(crate) struct PanelChrome<'a> {
 /// of exactly what `issue_series_bodies` draws. The picked highlights
 /// always come from `series_list`, so a selection never needs the bodies
 /// drawn again. `series_list` and `cached_bodies` are read by the `Below`
-/// slot only.
+/// slot only, and `steps` picks which steps of the data slot it issues.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_chart_panel(
     pass: &mut wgpu::RenderPass<'_>,
@@ -249,6 +271,7 @@ pub(crate) fn draw_chart_panel(
     series: PieceSeries<'_, '_>,
     cached_bodies: Option<AxisLayer<'_>>,
     slot: Slot,
+    steps: DataSteps,
 ) {
     let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
         return;
@@ -299,39 +322,47 @@ pub(crate) fn draw_chart_panel(
             // The data slot, scissored to the data area (to each of its
             // pieces on a broken axis): every fill, then every body, then
             // every picked highlight, each in SSOT series order.
-            match cached_bodies {
-                Some(layer) => {
-                    // The composite was clipped to the data area when it was
-                    // drawn; clipping its blit again would apply the data
-                    // scissor twice at the edge samples, which a direct draw
-                    // applies once.
-                    panel_scissor(pass);
-                    blit(pass, &layer);
-                }
-                None => {
-                    for (piece, series_list) in pieces() {
-                        data_scissor(pass, piece);
-                        crate::data_render::issue_series_bodies(pass, series_list);
+            if steps.gpu {
+                match cached_bodies {
+                    Some(layer) => {
+                        // The composite was clipped to the data area when it
+                        // was drawn; clipping its blit again would apply the
+                        // data scissor twice at the edge samples, which a
+                        // direct draw applies once.
+                        panel_scissor(pass);
+                        blit(pass, &layer);
+                    }
+                    None => {
+                        for (piece, series_list) in pieces() {
+                            data_scissor(pass, piece);
+                            crate::data_render::issue_series_bodies(pass, series_list);
+                        }
                     }
                 }
             }
             for (piece, series_list) in pieces() {
                 data_scissor(pass, piece);
-                for s in series_list {
-                    crate::data_render::issue_series_picked(pass, s);
+                if steps.gpu {
+                    for s in series_list {
+                        crate::data_render::issue_series_picked(pass, s);
+                    }
                 }
                 // The CPU rasters of energy-level series (#203), over the
                 // panel's GPU data and under its value labels.
-                for s in series_list {
-                    if let Some(layer) = &s.energy_levels {
-                        blit(pass, layer);
+                if steps.cpu {
+                    for s in series_list {
+                        if let Some(layer) = &s.energy_levels {
+                            blit(pass, layer);
+                        }
                     }
                 }
                 // The value labels over all of the panel's data and its
                 // picked highlights, never in the cached bodies: a label
                 // drag or a selected label redraws only them.
-                for s in series_list {
-                    crate::data_render::issue_series_value_labels(pass, s);
+                if steps.labels {
+                    for s in series_list {
+                        crate::data_render::issue_series_value_labels(pass, s);
+                    }
                 }
             }
         }
@@ -380,6 +411,7 @@ pub fn draw_chart_panel_columnar(
             PieceSeries::shared(series_list),
             None,
             slot,
+            DataSteps::ALL,
         );
     }
 }

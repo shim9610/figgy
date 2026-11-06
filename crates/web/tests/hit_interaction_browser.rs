@@ -294,6 +294,13 @@ impl renderer::sink::Sink for FindLabel {
     ) {
     }
     fn triangle(&mut self, _: renderer::sink::Slot, _: [[f32; 2]; 3], _: renderer::Color) {}
+    fn path(
+        &mut self,
+        _: renderer::sink::Slot,
+        _: &[renderer::sink::PathSegment],
+        _: &renderer::sink::StrokeStyle<'_>,
+    ) {
+    }
     fn polygon(
         &mut self,
         _: renderer::sink::Slot,

@@ -270,6 +270,44 @@ impl Canvas {
         );
     }
 
+    /// Stroke `segments` as **one** path (straight and cubic segments, a
+    /// subpath per `Move`), mapping each point through `map`: a dash
+    /// pattern runs continuously along the whole path (#234).
+    pub(crate) fn draw_path(
+        &mut self,
+        segments: &[crate::sink::PathSegment],
+        map: impl Fn((f32, f32)) -> (f32, f32),
+        paint: &Paint,
+    ) {
+        use crate::sink::PathSegment;
+        let mut pb = PathBuilder::new();
+        for segment in segments {
+            match *segment {
+                PathSegment::Move(p) => {
+                    let p = map(p);
+                    pb.move_to(p.0, p.1);
+                }
+                PathSegment::Line(p) => {
+                    let p = map(p);
+                    pb.line_to(p.0, p.1);
+                }
+                PathSegment::Cubic(c1, c2, p) => {
+                    let (c1, c2, p) = (map(c1), map(c2), map(p));
+                    pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1);
+                }
+                PathSegment::Close => pb.close(),
+            }
+        }
+        let Some(path) = pb.finish() else { return };
+        self.pix.stroke_path(
+            &path,
+            &paint.shader_paint(),
+            &paint.stroke_params(),
+            self.ts,
+            None,
+        );
+    }
+
     pub fn draw_rect(&mut self, x: f32, y: f32, w: f32, h: f32, paint: &Paint) {
         match paint.style {
             PaintStyle::Fill => {

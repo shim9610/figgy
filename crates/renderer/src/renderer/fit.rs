@@ -59,6 +59,11 @@ pub(super) enum FitExtentParams {
         baseline_bits: u64,
         horizontal: bool,
     },
+    /// A Feynman diagram (#234): its extent is read from the SSOT, its
+    /// vertices' positions, committed or laid out; the stamp holds that box
+    /// (`[x0, y0, x1, y1]`'s bits, `None` without vertices), so moving a
+    /// vertex retires the token as a column edit does.
+    Diagram { extent_bits: Option<[u64; 4]> },
 }
 
 impl FitExtentParams {
@@ -219,20 +224,24 @@ pub(super) fn build_fit_token_from_state(
                 resource: "fit role-column stamps",
                 reason: error.to_string(),
             })?;
-        push_fit_column_stamp(
-            pool,
-            streaming_sources,
-            &mut columns,
-            FIT_ROLE_X,
-            &item.x_column,
-        )?;
-        push_fit_column_stamp(
-            pool,
-            streaming_sources,
-            &mut columns,
-            FIT_ROLE_Y,
-            &item.y_column,
-        )?;
+        // A DataLess series reads no column (#203, #234): it fits from its
+        // SSOT at commit, so it stamps none.
+        if !item.is_dataless() {
+            push_fit_column_stamp(
+                pool,
+                streaming_sources,
+                &mut columns,
+                FIT_ROLE_X,
+                &item.x_column,
+            )?;
+            push_fit_column_stamp(
+                pool,
+                streaming_sources,
+                &mut columns,
+                FIT_ROLE_Y,
+                &item.y_column,
+            )?;
+        }
         if let Some(error) = extract_err_x(&item.render_type) {
             push_fit_error_stamps(
                 pool,
@@ -301,6 +310,12 @@ pub(super) fn build_fit_token_from_state(
             }) => FitExtentParams::Stem {
                 baseline_bits: stem.baseline.to_bits(),
                 horizontal: stem.direction == crate::data_config::CategoryBarDirection::Horizontal,
+            },
+            DataRenderType::Feynman(diagram) => FitExtentParams::Diagram {
+                extent_bits: diagram
+                    .extent()
+                    .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
+                    .map(|[lo, hi]| [lo[0], lo[1], hi[0], hi[1]].map(f64::to_bits)),
             },
             _ => FitExtentParams::Columns,
         };
@@ -1285,6 +1300,32 @@ impl Renderer {
                     }
                     if y {
                         y_extent.union(&y_part);
+                    }
+                }
+                // A Feynman diagram fits its vertices' positions, committed
+                // or laid out: a display parameter read from the SSOT
+                // (#234).
+                for item in &state.series {
+                    let Some(diagram) = item.feynman() else {
+                        continue;
+                    };
+                    let Some(box_) = diagram
+                        .extent()
+                        .map_err(|error| crate::renderer::feynman_error(&item.series_id, error))?
+                    else {
+                        continue;
+                    };
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    let part = |lo: f64, hi: f64| crate::chart::FitExtent {
+                        min: lo,
+                        max: hi,
+                        min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
+                    };
+                    if x {
+                        x_extent.union(&part(box_[0][0], box_[1][0]));
+                    }
+                    if y {
+                        y_extent.union(&part(box_[0][1], box_[1][1]));
                     }
                 }
                 // A triangle mesh fits from its vertex columns' statistics

@@ -945,7 +945,10 @@ selection box answer from, so every element a user can select or drag is in
 the file where it is drawn: titles, axes, tick labels, axis titles, legend,
 colourbar, polar chrome, annotations, and on the radial chart its title,
 labels and leader lines. Picked highlights and value labels are part of the
-data image of their panel group. Overlays and subplots export as on screen:
+data image of their panel group. A DataLess series (an energy-level diagram)
+is written as vector parts from its own emit, its picked row included,
+between the images of the GPU data under it and the value labels over it
+([#234](https://github.com/shim9610/figgy/issues/234)). Overlays and subplots export as on screen:
 the panels' `Below` parts and data first, then their `Above` parts, with the
 annotation overlay above the parent area's decorations.
 
@@ -997,3 +1000,27 @@ Interaction contracts:
   field existed pairs by position, as before, and names its series once it
   is restyled.
 
+## Feynman diagrams
+
+A Feynman series ([#234](https://github.com/shim9610/figgy/issues/234)) is
+picked on the CPU through the placement its raster draws with, as an
+energy-level series is: a typed data pick answers
+`PickedData::FeynmanVertex`, `FeynmanPropagator` or
+`FeynmanLabel { part, index }`, labels over markers over lines, and nothing
+inside a break gap or outside the plot. A vertex answers within the pick
+distance of its marker, and there it wins over the lines that meet at it,
+within a third of a line between the markers, so a leg end without a
+marker picks and a short line still picks in its middle; every other part
+competes by distance. A layout that fails is the pick's error. The picked
+part is drawn in the series' `style.picked` colour, `width_extra_px` wider;
+a picked label is boxed. `step_selection` walks the vertices or the
+propagators by `dx` and the Feynman series by `dy`; a label does not step.
+`Renderer::drag_feynman(chart, series_id, hit, dx, dy)` drags a
+`FeynmanHit` in the series' panel space: `Vertex(i)` moves a vertex through
+the axes, committing the whole layout on the first drag so no other vertex
+moves; `Propagator(i)` sets a line's bend to the arc through its moved
+middle. A label moves in logical pixels through the value-label drag,
+`FeynmanSeries::drag_label` on the host's series, and `drag_feynman`
+refuses it. The web wrapper's `press_feynman` starts these drags, a label's
+through the same pointer as `press_value_label`. See
+[Feynman diagrams](FEYNMAN.md).

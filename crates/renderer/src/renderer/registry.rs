@@ -1374,9 +1374,9 @@ pub(super) fn validate_renderer_series(
                 reason: format!("label: {e}"),
             });
         }
-        // A DataLess energy-level series registers no column (#203): its
-        // values are SSOT, held to the model's rule above.
-        if item.energy_levels().is_some() {
+        // A DataLess series registers no column (#203, #234): its values
+        // are SSOT, held to the model's rules above.
+        if item.is_dataless() {
             continue;
         }
         if let Some(mesh) = item.tri_mesh() {
@@ -2304,6 +2304,142 @@ impl Renderer {
             }
         }
         Ok(())
+    }
+
+    /// Commit the automatic layout of the Feynman series `series_id` of
+    /// chart `id` (#234): every vertex without a position gets the one it
+    /// is drawn at ([`crate::feynman::FeynmanSeries::auto_layout`]), so the
+    /// diagram stays where it is once drawn. The auto-fit pattern: the
+    /// renderer writes the display parameter into the registered SSOT and
+    /// the host reads it back through [`Self::chart_series`]. Returns
+    /// whether anything was written. Synchronous: the layout is CPU work.
+    pub fn auto_layout(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+        let result = self.auto_layout_unreported(id, series_id);
+        self.reported(result)
+    }
+
+    fn auto_layout_unreported(&mut self, id: ChartId, series_id: &str) -> Result<bool> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(position) = state
+            .series
+            .iter()
+            .position(|s| s.series_id == series_id && s.feynman().is_some())
+        else {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason: "auto_layout names a Feynman series of the chart".into(),
+            });
+        };
+        if !state.series[position]
+            .feynman()
+            .is_some_and(|d| d.has_unplaced())
+        {
+            return Ok(false);
+        }
+        // Configuration only is copied (rule 2).
+        let mut series = state.series.clone();
+        let laid_out = match series[position].feynman_mut() {
+            Some(diagram) => diagram
+                .auto_layout()
+                .map_err(|error| crate::renderer::feynman_error(series_id, error))?,
+            None => false,
+        };
+        self.set_chart_series_unreported(id, series)?;
+        Ok(laid_out)
+    }
+
+    /// The anchor space of the panel that draws series `series_id` of chart
+    /// `id`, in document logical pixels: where a Feynman drag (#234)
+    /// converts its delta, as an annotation drag does. A layered document
+    /// answers the series' own panel.
+    pub(crate) fn series_panel_space(
+        &self,
+        id: ChartId,
+        series_id: &str,
+    ) -> Result<crate::annotation::PixelSpace> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let panels = super::expand_for_render(&state.config)?;
+        let index = super::series_panel_index(&state.config, panels.len(), series_id);
+        Ok(crate::annotation::pixel_space_for_config(&panels[index]))
+    }
+
+    /// Drag a part of the Feynman series `series_id` of chart `id` by
+    /// `(dx, dy)` document logical pixels (#234), in the series' panel
+    /// space: a vertex moves through the axes
+    /// ([`crate::feynman::FeynmanSeries::drag_vertex`]; the first drag
+    /// commits the layout) and a propagator bends
+    /// ([`crate::feynman::FeynmanSeries::drag_bend`]). A label moves in
+    /// logical pixels through the value-label drag
+    /// ([`crate::feynman::FeynmanSeries::drag_label`]), which needs no
+    /// panel space, and is refused here. The registered series is replaced
+    /// on a move; the host reads it back through [`Self::chart_series`].
+    pub fn drag_feynman(
+        &mut self,
+        id: ChartId,
+        series_id: &str,
+        drag: crate::feynman::FeynmanHit,
+        dx: f32,
+        dy: f32,
+    ) -> Result<crate::layout::NudgeResult> {
+        let result = self.drag_feynman_unreported(id, series_id, drag, dx, dy);
+        self.reported(result)
+    }
+
+    fn drag_feynman_unreported(
+        &mut self,
+        id: ChartId,
+        series_id: &str,
+        drag: crate::feynman::FeynmanHit,
+        dx: f32,
+        dy: f32,
+    ) -> Result<crate::layout::NudgeResult> {
+        use crate::feynman::FeynmanHit;
+        if let FeynmanHit::Label(..) = drag {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason:
+                    "a Feynman label moves through FeynmanSeries::drag_label, the value-label drag"
+                        .into(),
+            });
+        }
+        let space = self.series_panel_space(id, series_id)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(position) = state
+            .series
+            .iter()
+            .position(|s| s.series_id == series_id && s.feynman().is_some())
+        else {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason: "drag_feynman names a Feynman series of the chart".into(),
+            });
+        };
+        // Configuration only is copied (rule 2).
+        let mut series = state.series.clone();
+        let Some(diagram) = series[position].feynman_mut() else {
+            return Err(FiggyError::internal("the found series is a Feynman series"));
+        };
+        let moved = match drag {
+            FeynmanHit::Vertex(index) => diagram.drag_vertex(index, dx, dy, &space),
+            FeynmanHit::Propagator(index) => diagram.drag_bend(index, dx, dy, &space),
+            FeynmanHit::Label(..) => Ok(crate::layout::NudgeResult::Rejected(
+                crate::layout::NudgeReject::OutOfBounds,
+            )),
+        }
+        .map_err(|error| crate::renderer::feynman_error(series_id, error))?;
+        if moved == crate::layout::NudgeResult::Moved {
+            self.set_chart_series_unreported(id, series)?;
+        }
+        Ok(moved)
     }
 
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {

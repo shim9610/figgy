@@ -37,6 +37,58 @@ kind and the `mesh_triangle` selection) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A DataLess series kind, `DataRenderType::Feynman(FeynmanSeries)`: the
+  topology is the data (vertices with an incoming, outgoing or internal
+  role, propagators naming two vertices and a `ParticleLine`: plain,
+  fermion, antifermion, photon, charged boson, gluon, scalar, charged
+  scalar, ghost, Majorana, graviton, double line), with optional vertex
+  positions, markers, bends, labels and momentum arrows.
+  `FeynmanSeries::positions` places every unplaced vertex by a deterministic
+  layout (legs on the early and late edges of the frame, the rest at the
+  mean of their neighbours, solved by conjugate gradients; bubbles on a
+  circle), and `auto_layout` commits it into `at`, the auto-fit pattern; a
+  layout whose solver stops converging is an error, and so is working
+  memory that cannot be allocated; `positions`, `extent`, `auto_layout`,
+  `emit`, `pick`, `drag_vertex` and `drag_bend` return it. `FeynmanSeries::emit`
+  and `pick` place, draw (through `Sink::path` for arcs, waves and coils)
+  and pick a diagram from one placement, in at most four transient buffers
+  (two for a pick of a committed diagram; text measuring allocates in the
+  measure the caller passes). Every line is sampled and measured within the
+  plot only, so a diagram zoomed in any amount draws and picks with the
+  work of an ordinary view. A pick outside the plot answers nothing; a
+  vertex answers within the pick distance of its marker and there wins over
+  its own lines, so a leg end picks. Parallel lines fan within 170
+  degrees, each on its own arc, however many. The picked part is drawn in
+  `style.picked` (`color`, `width_extra_px`), a picked label boxed.
+  `drag_vertex` (which commits the layout on the first drag), `drag_bend`
+  and `drag_label` (by list and row, D7) edit it;
+  `Config::validate_feynman` holds a series to a rectangular chart with a
+  numeric `bottom_x`. Vertex and propagator ids are held to be unique. `PickedDataRef` gains `FeynmanVertex`,
+  `FeynmanPropagator` and `FeynmanLabel` (serde kinds `feynman_vertex`,
+  `feynman_propagator`, `feynman_label`), stepped by `step_selection` over
+  the rows and the Feynman series. `SeriesConfig::is_dataless` names the
+  energy-level and Feynman kinds. No count limit. Migration: an exhaustive
+  match on `DataRenderType` or `PickedDataRef` adds the new arms.
+- **A hidden axis preset** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `AxisPreset::Hidden` switches off every axis line, tick and tick label
+  and the grid, keeping titles, ranges and margins: the frame of a figure
+  that is its own picture, such as a Feynman diagram. The web wrapper's
+  `AxisPreset` mirror gains it. Migration: an exhaustive match on
+  `AxisPreset` adds the arm.
+- **Stroked paths in the sink** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `Sink::path(slot, &[PathSegment], &StrokeStyle)` places a stroked path of
+  straight and cubic segments, stroked as one path so a dash runs along it
+  without restarting: the coming Feynman propagators' arcs, waves and coils.
+  `PathSegment` (`Move`, `Line`, `Cubic`, `Close`) moves from the renderer's
+  sketch stroker into `model::sink`, and `DrawnPart::Path { points, width }`
+  records every point a path names, control points included, so its
+  extent bounds the curve. The canvas sink strokes it with tiny-skia, the
+  vector export writes it as one SVG `<path>` or PDF path with its cubics
+  kept, and the geometry sinks bound it. Migration: an implementation of
+  `Sink` adds `path` (a sink that ignores strokes adds an empty one, or
+  forwards each segment to `stroke`); an exhaustive match on `DrawnPart`
+  adds the `Path` arm.
 - **Too many explicit contour label anchors is an error** ([#107](https://github.com/shim9610/figgy/issues/107)).
   `ContourLabelConfig::validate` rejects an `anchors` list longer than the new
   `MAX_CONTOUR_LABEL_ANCHORS` (1024) with
@@ -1218,6 +1270,42 @@ kind and the `mesh_triangle` selection) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Feynman diagrams are picked and dragged** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A typed data pick answers for a Feynman series on the CPU over the drawn
+  placement: `PickedData::FeynmanVertex`, `FeynmanPropagator` and
+  `FeynmanLabel` (and `to_ref` into the `PickedDataRef` variants). The
+  picked part is drawn in the series' picked style.
+  `Renderer::drag_feynman(chart, series_id, FeynmanHit, dx, dy)` moves a
+  vertex (the first drag commits the layout) or bends a propagator in the
+  series' panel space; a label moves in logical pixels through
+  `FeynmanSeries::drag_label`, the value-label drag, and the panel drag
+  refuses it. Migration: an exhaustive match on `PickedData` adds the three
+  arms.
+- **Feynman diagrams are drawn** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A `DataRenderType::Feynman` series is drawn on the CPU through the
+  model's emit into the DataLess raster of its panel, as an energy-level
+  series is, at the layout's positions until they are committed, and is
+  written as vector parts in SVG and PDF. `Renderer::auto_layout(chart,
+  series_id)` commits the layout into the registered series, which the host
+  reads back through `chart_series`. `auto_fit_all` fits the diagram's
+  vertices. The auto-fit token no longer reads the empty columns of a
+  DataLess series, which also lets `auto_fit_all` run on a chart with an
+  energy-level series. A 5,000-rung ladder (10,004 vertices, 15,002
+  propagators) lays out in about 0.5 s and draws at 1x in about 0.8 s in
+  the debug test profile; nothing is capped.
+- **DataLess series are vector content in SVG and PDF** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  An energy-level series is written as vector parts from the emit its
+  raster uses (levels, limits, transitions, arrowheads, labels and the
+  picked row), clipped to each data piece of its panel, instead of inside
+  the data image. It sits where the frame draws it, between the panel's GPU
+  data and its value labels: a panel group with a DataLess series is
+  written as one image per run of GPU steps between two panels' DataLess
+  series, with the series between them, and a run with no GPU series
+  writes no image. `paint_export` takes the steps of each panel's data slot
+  it paints (`DataSteps`). The PNG export is unchanged. Migration: the SVG
+  and PDF of a document with an energy-level series hold vector parts where
+  they held its pixels; a reader of the file that expected one data image
+  per panel group finds one per run.
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
   A fourth pool source kind, for the coming triangle mesh series:
   `Renderer::upsert_triangles(id, &TriangleSource { indices })` and
@@ -2895,7 +2983,8 @@ kind and the `mesh_triangle` selection) are additive.
   parent's data area (an inset) is drawn after every other panel, all its
   slots, and a base-layer pick inside it answers for the inset. A
   streamed display refuses the series (`STREAMED_ENERGY_LEVELS_REASON`).
-  The vector export carries it in the data image like any series. New
+  The vector export carries it in the data image like any series (#234
+  makes it vector content). New
   `nist_grotrian` example: a std-only NIST ASD CSV parser over bundled He
   I exports. Migration: a `PickedData::ValueLabel { .. }` literal adds
   `part: None`; a `SeriesLayers` literal adds `energy_levels: None` (or
@@ -2905,6 +2994,17 @@ kind and the `mesh_triangle` selection) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `pick_point` answers a Feynman part as `{kind: "feynman_vertex" |
+  "feynman_propagator" | "feynman_label", series_id, index, part?}`;
+  `press_feynman(series_id, kind, index, part)` selects it and starts the
+  drag `on_move` applies: a vertex moves and a propagator bends through the
+  panel's axes, and a label moves through the value-label drag, as an
+  energy-level label does. The wrapper commits a diagram's layout as its series is
+  registered, so `get_series` returns placed vertices; `auto_layout(series_id)`
+  commits it again after an edit in place. `selection_details` reports a
+  selected vertex (id, role, drawn position, whether it is placed), a
+  propagator (id, ends, particle, bend) or a label (part, offset).
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
   `register_triangles(id, Uint32Array)` registers or replaces a triangle
   index column, borrowing the array for the upload, and

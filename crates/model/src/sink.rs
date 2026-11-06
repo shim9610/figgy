@@ -79,6 +79,32 @@ pub struct StrokeStyle<'a> {
     pub tag: &'a str,
 }
 
+/// One segment of a stroked path ([`Sink::path`]), in placement
+/// coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PathSegment {
+    /// Start a subpath.
+    Move((f32, f32)),
+    /// A straight segment to the point.
+    Line((f32, f32)),
+    /// A cubic Bézier segment: two control points, then the end point.
+    Cubic((f32, f32), (f32, f32), (f32, f32)),
+    /// Close the subpath.
+    Close,
+}
+
+impl PathSegment {
+    /// The points the segment names, control points included, in order.
+    pub fn points(&self) -> impl Iterator<Item = [f32; 2]> {
+        let (n, pts) = match *self {
+            PathSegment::Move(p) | PathSegment::Line(p) => (1, [p, p, p]),
+            PathSegment::Cubic(c1, c2, p) => (3, [c1, c2, p]),
+            PathSegment::Close => (0, [(0.0, 0.0); 3]),
+        };
+        pts.into_iter().take(n).map(|p| [p.0, p.1])
+    }
+}
+
 /// A rectangle's border, stroked centred on its edge.
 #[derive(Clone, Copy, Debug)]
 pub struct Border<'a> {
@@ -96,6 +122,11 @@ pub trait Sink {
     /// places a rectangle that paints nothing, such as the data area.
     fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>);
     fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color);
+    /// A stroked path of straight and cubic segments, each subpath starting
+    /// with a [`PathSegment::Move`]: stroked as one path, so a dash pattern
+    /// runs along it without restarting at a segment. A Feynman
+    /// propagator's arc, wave or coil (#234).
+    fn path(&mut self, slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>);
     /// A closed polygon through `points` (at least three, in drawing
     /// order) with an optional fill and an optional border stroked along
     /// its edges: a shape annotation.
@@ -132,6 +163,10 @@ pub enum DrawnPart {
     /// A closed polygon, filled (`width` 0) or bordered by a stroke `width`
     /// across: a shape annotation's clipped outline, in drawing order.
     Polygon { points: Vec<[f32; 2]>, width: f32 },
+    /// A stroked path `width` across ([`Sink::path`]): every point it
+    /// names, control points included, in order. A Bézier lies inside its
+    /// control points' hull, so their extent bounds the drawn curve.
+    Path { points: Vec<[f32; 2]>, width: f32 },
 }
 
 impl DrawnPart {
@@ -141,7 +176,9 @@ impl DrawnPart {
     pub fn extent(&self) -> RectF {
         match self {
             DrawnPart::Text(r) | DrawnPart::Rect(r) => *r,
-            DrawnPart::Polygon { points, width } => points_extent(points).expanded(width * 0.5),
+            DrawnPart::Polygon { points, width } | DrawnPart::Path { points, width } => {
+                points_extent(points).expanded(width * 0.5)
+            }
             &DrawnPart::Segment { a, b, width } => {
                 let half = width * 0.5;
                 RectF {
@@ -209,6 +246,13 @@ impl Sink for Parts<'_> {
 
     fn triangle(&mut self, _slot: Slot, points: [[f32; 2]; 3], _color: Color) {
         (self.0)(DrawnPart::Triangle(points));
+    }
+
+    fn path(&mut self, _slot: Slot, segments: &[PathSegment], style: &StrokeStyle<'_>) {
+        (self.0)(DrawnPart::Path {
+            points: segments.iter().flat_map(PathSegment::points).collect(),
+            width: style.width,
+        });
     }
 
     fn polygon(

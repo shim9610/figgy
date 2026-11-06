@@ -24,8 +24,9 @@
 //! time, never stored.
 //!
 //! The series is drawn through the CPU sink, as annotations and chrome are,
-//! and the GPU only composites the raster (approved on #203). It has no
-//! count limit: every list is drawn to its end (rule 10).
+//! and the GPU only composites the raster (approved on #203). The SVG and
+//! PDF export write the same emit as vector parts (#234). It has no count
+//! limit: every list is drawn to its end (rule 10).
 //!
 //! [`DataRenderType::EnergyLevels`]: crate::data_config::DataRenderType::EnergyLevels
 

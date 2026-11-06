@@ -1098,6 +1098,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::PolarHeatmap => "PolarHeatmap",
         SceneKind::Quiver3d => "Quiver3d",
         SceneKind::ProbabilityPaper => "ProbabilityPaper",
+        SceneKind::Feynman => "Feynman",
     }
 }
 
@@ -2471,10 +2472,13 @@ fn check_parts_near_ink(
             // A shape annotation's polygon is grabbed anywhere inside it:
             // every point of it is near its fill or border ink (the scene's
             // shapes are filled).
-            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) | DrawnPart::Polygon { .. } => {
+            DrawnPart::Segment { .. }
+            | DrawnPart::Triangle(_)
+            | DrawnPart::Polygon { .. }
+            | DrawnPart::Path { .. } => {
                 let reach = match *part {
                     DrawnPart::Segment { width, .. } => segment_grab_half_width(width) + STROKE_FIT,
-                    DrawnPart::Polygon { width, .. } => {
+                    DrawnPart::Polygon { width, .. } | DrawnPart::Path { width, .. } => {
                         width * 0.5 + SELECTION_PADDING + STROKE_FIT
                     }
                     _ => SELECTION_PADDING + STROKE_FIT,

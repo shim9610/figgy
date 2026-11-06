@@ -460,6 +460,18 @@ pub fn assert_parts_match(
                         fail();
                     }
                 }
+                // A straight stroked path (#234) reads back as a segment.
+                (DrawnPart::Segment { a, b, .. }, DrawnPart::Path { points, width: ew }) => {
+                    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+                        panic!("{context}: part {i}: an empty written path");
+                    };
+                    if far(*a, *first) > tolerance
+                        || far(*b, *last) > tolerance
+                        || !width.is_some_and(|w| near(w, ew.max(1.0)))
+                    {
+                        fail();
+                    }
+                }
                 (DrawnPart::Polygon { points: a, .. }, DrawnPart::Polygon { points: b, .. }) => {
                     if a.len() != b.len() || a.iter().zip(b).any(|(p, q)| far(*p, *q) > tolerance) {
                         fail();
@@ -475,6 +487,22 @@ pub fn assert_parts_match(
                 if far(*first, *a) > reach
                     || far(*last, *b) > reach
                     || *width < ew.max(1.4) - tolerance
+                {
+                    fail();
+                }
+            }
+            // A stroked path (#234) reads back as a curve or, straight, a
+            // segment, from its first point to its last.
+            (
+                ReadPart::Curve { first, last, width },
+                WrittenPart::Part(DrawnPart::Path { points, width: ew }),
+            ) => {
+                let (Some(a), Some(b)) = (points.first(), points.last()) else {
+                    panic!("{context}: part {i}: an empty written path");
+                };
+                if far(*first, *a) > tolerance
+                    || far(*last, *b) > tolerance
+                    || !near(*width, ew.max(1.0))
                 {
                     fail();
                 }

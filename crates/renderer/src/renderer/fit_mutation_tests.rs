@@ -50,6 +50,34 @@ fn series_extent(r: &mut Renderer, series: &SeriesConfig) -> SeriesExtent {
             (count, edge)
         });
     }
+    // A Feynman diagram fits its vertices' positions, committed or laid
+    // out (#234). The twin takes the box itself, over `at` where a vertex
+    // has one; only the places of unplaced vertices come from the
+    // product's layout (`positions`, which the model's layout tests cover).
+    if let Some(diagram) = series.feynman() {
+        let layout = diagram
+            .has_unplaced()
+            .then(|| diagram.positions().ok())
+            .flatten();
+        let mut points = diagram
+            .vertices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.at.or_else(|| layout.as_ref().map(|p| p[i])));
+        let first = points.next()?;
+        let [lo, hi] = points.fold([first, first], |[lo, hi], p| {
+            [
+                [lo[0].min(p[0]), lo[1].min(p[1])],
+                [hi[0].max(p[0]), hi[1].max(p[1])],
+            ]
+        });
+        let part = |lo: f64, hi: f64| FitExtent {
+            min: lo,
+            max: hi,
+            min_positive: [lo, hi].into_iter().filter(|v| *v > 0.0).reduce(f64::min),
+        };
+        return Some((part(lo[0], hi[0]), part(lo[1], hi[1])));
+    }
     // A triangle mesh fits from its vertex columns' statistics (#210).
     if series.tri_mesh().is_some() {
         return Some((
@@ -223,6 +251,12 @@ fn every_leaf_that_changes_a_fit_changes_the_fit_token() {
         LayerRef::Base,
         super::chart_config(),
         super::tri_mesh_series(),
+    ));
+    tally.absorb(run_fit_suite_over(
+        "feynman",
+        LayerRef::Base,
+        super::chart_config(),
+        super::feynman_series(),
     ));
     eprintln!("{}", tally.summary("fit (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));

@@ -183,6 +183,19 @@ impl Sink for CanvasSink<'_> {
         }
     }
 
+    fn path(&mut self, slot: Slot, segments: &[crate::sink::PathSegment], style: &StrokeStyle<'_>) {
+        if style.color.a <= 0.0 {
+            return;
+        }
+        // A path is drawn as placed in every style: its shape is the part.
+        let paint = self.stroke_paint(&style.color, style.width, style.dash);
+        let (origin, scale) = (self.origin, self.scale);
+        let map = |p: (f32, f32)| ((p.0 - origin[0]) * scale, (p.1 - origin[1]) * scale);
+        if let Some(canvas) = self.canvas(slot) {
+            canvas.draw_path(segments, map, &paint);
+        }
+    }
+
     fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>) {
         let r = self.place_rect(rect);
         let border_paint = border.map(|b| (self.stroke_paint(&b.color, b.width, &[]), b.tag));

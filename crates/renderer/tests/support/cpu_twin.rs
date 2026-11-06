@@ -575,7 +575,8 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
 
         | DataRenderType::EnergyLevels(_)
 
-        | DataRenderType::TriMesh(_) => None,
+        | DataRenderType::TriMesh(_)
+        | DataRenderType::Feynman(_) => None,
     }
 }
 
@@ -598,7 +599,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
 
         | DataRenderType::EnergyLevels(_)
 
-        | DataRenderType::TriMesh(_) => None,
+        | DataRenderType::TriMesh(_)
+        | DataRenderType::Feynman(_) => None,
     }
 }
 

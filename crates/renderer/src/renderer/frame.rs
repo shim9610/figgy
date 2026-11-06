@@ -1767,7 +1767,7 @@ pub(super) fn is_layered(config: &Config) -> bool {
 /// The panel that draws series `series_id` among the `count` panels
 /// `config` drew as (`Config::panel_of_series`). A panel past them — a
 /// document that drew as its base panel alone — is the base panel.
-pub(super) fn series_panel_index(config: &Config, count: usize, series_id: &str) -> usize {
+pub(crate) fn series_panel_index(config: &Config, count: usize, series_id: &str) -> usize {
     let index = config.panel_of_series(series_id);
     if index < count { index } else { 0 }
 }
@@ -3102,7 +3102,9 @@ impl Renderer {
     ) -> Result<()> {
         self.health.check()?;
         self.validate_prepared(prepared)?;
-        self.paint_prepared_items(pass, target_size, &prepared.items, true)
+        self.paint_prepared_items(pass, target_size, &prepared.items, true, &|_| {
+            super::composite::DataSteps::ALL
+        })
     }
 
     /// Serial of the cached series bodies of `view`'s panel, `None` while it
@@ -3319,6 +3321,7 @@ impl Renderer {
         target_size: (u32, u32),
         prepared: &'a [PreparedItem],
         chrome: bool,
+        steps: &dyn Fn(usize) -> super::composite::DataSteps,
     ) -> Result<()> {
         for item in prepared {
             if let Some(display) = &item.stream_display
@@ -3344,8 +3347,10 @@ impl Renderer {
                     }
                     if let Some(display) = &item.stream_display {
                         // The stream display is the whole panel in one texture;
-                        // it is drawn once, in the first slot.
+                        // it is drawn once, in the first slot, as the panel's
+                        // GPU data.
                         if slot == crate::sink::Slot::Below
+                            && steps(index).gpu
                             && let Some(panel) =
                                 data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
                         {
@@ -3424,6 +3429,7 @@ impl Renderer {
                         series_layers,
                         cached,
                         slot,
+                        steps(index),
                     );
                 }
             }
