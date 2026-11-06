@@ -940,6 +940,7 @@ impl Renderer {
         let _ = self.ensure_vector_scratches(items, scale)?;
         let (prepared_contours, _) =
             self.ensure_contour_scratches(items, scale, &contour_spacings)?;
+        let _ = self.ensure_mesh_scratches(items, scale)?;
         let prepared_arcs = self.prepare_arc_items(items)?;
         let (mut prepared_items, _) = self.resolve_prepared_items(
             items,

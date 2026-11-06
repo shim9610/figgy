@@ -1225,10 +1225,27 @@ triangle_index }` (serde tag `mesh_triangle`). `step_selection` moves it by
 `dx` over the triangles of its series and by `dy` across the mesh series, in
 series order; a contour level does not step.
 
-Status: the series kind, its rules, its serialized form and its selection are
-in place, and registering a `TriMesh` series fails with `InvalidSeriesConfig`
-("triangle mesh series are not drawn by this renderer yet") until the draw
-path lands under #210.
+Drawing. One instance per triangle: the vertex stage places the three
+vertices through the axes (log, probability and broken axes included) and
+drops a triangle that names a vertex past the shortest vertex column or has
+a vertex the axes cannot place. Vertex values blend barycentrically in
+screen space (so in axis `t` on a log axis, as a heatmap's interpolation);
+a non-finite vertex value paints the triangle `nan_color`. `Bands` paints
+the band of the levels the value reaches. Contour lines are the level set of
+each triangle's linear interpolant, `|f − L| / |∇f|` from the stroke, with
+the heatmap's level search; a plateau draws nothing. The fit covers every
+registered vertex's coordinates. Registration refuses an index past the
+vertex count (the shortest of `x_column`, `y_column` and, for vertex values,
+the value column), a face value column shorter than the triangles, a
+triangle id that is not a resident triangle index column, and a missing
+colourbar; a column shortened later is drawn to what remains and
+`series_draw_info` reports `truncated`. Streamed displays refuse the kind
+(rule 8). Nothing caps the triangle count: a million triangles draw (about
+0.9 s for a 1x export on lavapipe).
+
+Status: flat charts draw the fill and the contours. Picking, the picked
+highlight and the 3D surface (trisurf) follow under #210; until then a
+`TriMesh` series on a 3D chart is refused with `InvalidSeriesConfig`.
 
 <a id="parallel-coordinates"></a>
 
@@ -1980,7 +1997,9 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 선택된 삼각형은 `PickedDataRef::MeshTriangle { source_id, series_id, triangle_index }`(serde 태그 `mesh_triangle`)다. `step_selection`은 `dx`로 같은 시리즈의 삼각형 사이를, `dy`로 메시 시리즈 사이를 시리즈 순서대로 옮긴다. 등고선 레벨은 옮기지 않는다.
 
-현재 상태: 시리즈 종류, 규칙, 직렬화 형식과 선택 타입이 들어가 있다. 그리기 경로가 #210으로 들어오기 전까지 `TriMesh` 시리즈를 등록하면 `InvalidSeriesConfig`("triangle mesh series are not drawn by this renderer yet")로 실패한다.
+그리기. 삼각형 하나가 인스턴스 하나다. 정점 단계는 꼭짓점 세 개를 축(로그·확률·끊김 축 포함)을 거쳐 배치하고, 가장 짧은 꼭짓점 열을 넘는 꼭짓점을 가리키거나 축이 배치할 수 없는 꼭짓점이 있는 삼각형은 그리지 않는다. 꼭짓점 값은 화면 공간에서 무게중심 좌표로 섞는다. 그래서 로그 축에서는 히트맵 보간처럼 축 `t` 공간에서 섞인다. 유한하지 않은 꼭짓점 값이 있으면 그 삼각형을 `nan_color`로 칠한다. `Bands`는 값이 닿은 레벨의 띠 색으로 칠한다. 등고선은 삼각형마다 선형 보간 함수의 등값선이며, 선까지의 거리는 `|f − L| / |∇f|`이고 레벨 검색은 히트맵과 같다. 기울기가 0인 평탄한 삼각형에는 선을 그리지 않는다. 자동 범위 맞춤은 등록된 모든 꼭짓점의 좌표를 포함한다. 등록할 때 꼭짓점 수(`x_column`, `y_column`, 꼭짓점 값이면 값 열 중 가장 짧은 길이)를 넘는 인덱스, 삼각형 수보다 짧은 삼각형 값 열, 상주 삼각형 인덱스 열이 아닌 ID, 색상 막대가 없는 경우를 거부한다. 나중에 열이 짧아지면 남은 만큼 그리고 `series_draw_info`가 `truncated`로 알린다. 스트리밍 표시는 이 종류를 거부한다(규칙 8). 삼각형 수에는 상한이 없으며 삼각형 백만 개를 그린다(lavapipe에서 1x 내보내기 약 0.9초).
+
+현재 상태: 평면 차트에서 채우기와 등고선을 그린다. 피킹, 선택 강조, 3D 표면(trisurf)은 #210에서 이어진다. 그 전까지 3D 차트의 `TriMesh` 시리즈는 `InvalidSeriesConfig`로 거부한다.
 
 <a id="그리기-정보-범위-맞춤과-시리즈-스타일"></a>
 

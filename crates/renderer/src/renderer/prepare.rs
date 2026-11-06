@@ -41,6 +41,27 @@ pub(super) fn evict_if_full<V>(cache: &mut HashMap<String, V>, series_id: &str, 
     }
 }
 
+/// Bound a per-series scratch cache before a frame resolves `items`: when
+/// it is full, keep only the entries the frame's series use. Inside the
+/// frame nothing is evicted, so a frame of more series than `limit` keeps
+/// every scratch its layers read (rule 10: the bound evicts, it never caps
+/// what one frame draws); the cache then holds the frame's series and no
+/// more.
+pub(super) fn retain_frame_series<V>(
+    cache: &mut HashMap<String, V>,
+    items: &[ChartDrawItem<'_>],
+    limit: usize,
+) {
+    if cache.len() < limit {
+        return;
+    }
+    cache.retain(|id, _| {
+        items
+            .iter()
+            .any(|item| item.series.iter().any(|s| s.config.series_id == *id))
+    });
+}
+
 // Disjoint GPU borrows let registered preparation read the registry in place.
 // This context never owns chart Config or SeriesConfig values.
 pub(super) struct PrepareContext<'a> {
@@ -202,6 +223,7 @@ impl PrepareContext<'_> {
         let (prepared_contours, mut contour_sources) =
             self.ensure_contour_scratches(items, 1.0, &contour_spacings)?;
         grid_sources.append(&mut contour_sources);
+        grid_sources.append(&mut self.ensure_mesh_scratches(items, 1.0)?);
         let prepared_arcs = self.prepare_arc_items(items)?;
         let (mut prepared, column_sources) = self.resolve_prepared_items(
             items,

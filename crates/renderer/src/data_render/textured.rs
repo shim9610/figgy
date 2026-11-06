@@ -349,6 +349,16 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
+            super::tri_mesh::TRI_MESH_SHADER.source,
+            &[
+                ("triangle mesh", "figgy triangle mesh field pipeline"),
+                (
+                    "triangle mesh contours",
+                    "figgy triangle mesh contour pipeline",
+                ),
+            ],
+        ),
+        (
             crate::gpu_contour::CONTOUR_LABEL_SHADER.source,
             &[("contour labels", "figgy contour label pipeline")],
         ),

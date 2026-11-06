@@ -1287,6 +1287,26 @@ impl Renderer {
                         y_extent.union(&y_part);
                     }
                 }
+                // A triangle mesh fits from its vertex columns' statistics
+                // (#210): every registered vertex, referenced or not.
+                for item in &state.series {
+                    if item.tri_mesh().is_none() {
+                        continue;
+                    }
+                    let (x, y) = state.config.series_fit_roles(layer, &item.series_id);
+                    if x {
+                        x_extent.union(&crate::chart::Chart::slot_extent(
+                            &self.pool,
+                            &item.x_column,
+                        )?);
+                    }
+                    if y {
+                        y_extent.union(&crate::chart::Chart::slot_extent(
+                            &self.pool,
+                            &item.y_column,
+                        )?);
+                    }
+                }
                 chart.auto_fit_layer_extent(layer, &x_extent, &y_extent, padding);
                 if layer_config(chart.config(), layer).is_some_and(|c| c.view_3d().is_some()) {
                     chart.auto_fit_view_3d_z(&self.pool, layer, &state.series, padding)?;

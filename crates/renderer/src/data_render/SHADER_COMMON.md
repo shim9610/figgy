@@ -32,15 +32,15 @@ To change shared shader code:
 
 | Fragment | Modules |
 |---|---|
-| `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
-| `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
+| `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, triangle mesh, line_arc, contour anchor and label, vector |
+| `style.wgsl` (§2) | scatter, line, errorbar, bar, field, triangle mesh, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
-| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
+| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, triangle mesh, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
 | `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, scatter, line, line_arc, the 3D point vector module (§5.3) |
-| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
+| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor, surface mesh, triangle mesh (§5.25); `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
-| `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
+| `ramp.wgsl` (§5.4) | field, triangle mesh, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
 | `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
@@ -58,6 +58,7 @@ To change shared shader code:
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
+| `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh |
 | `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
 | `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
 | `value_label.wgsl` (§5.17) | bar |
@@ -1787,10 +1788,14 @@ This is the projection layer the 3D vector glyph reuses (rule 9, §5.3 3D
 form).
 
 [`common/field_paint.wgsl`](common/field_paint.wgsl) holds the colour a
-field paints: `z_ramp_t`, `field_fill_color` (continuous or banded),
-`contour_paint` and the lookup metadata at group 2 binding 6. The heatmap
-fill (`field_columnar.wgsl`) and the surface splice it, so a surface is
-coloured exactly as the heatmap of its grid.
+field paints: `z_ramp_t`, `field_fill_color` (continuous or banded) over
+`field_value_color` (a placed value's colour, shared with the triangle
+mesh, §5.25), the contour level search (`contour_block_candidates`), the
+stroke compositing (`contour_level_over`, `ContourPaint`) and the lookup
+metadata at group 2 binding 6. The heatmap fill (`field_columnar.wgsl`),
+the surface and the triangle mesh splice it, so a surface is coloured
+exactly as the heatmap of its grid and a mesh's contours are searched and
+composited as the heatmap's.
 
 The surface module (`surface_mesh/`, assembled by `wgsl_module!` with the
 field grid, the field paint, the ramp, the material and the projection)
@@ -2004,6 +2009,67 @@ low tail reaches the floor (`z ≈ −11.4`); the high tail ends at the f64
 input, `q ≥ 2⁻⁵³` (`z ≤ 8.2`). A window like `0.4999..0.5001` shows the
 f32 error, as a log axis does. CPU twin (test support):
 `cpu_twin::prob_forward`.
+
+### 5.25 Triangle meshes (group 2 under `FIELD_MESH`)
+
+The triangle mesh module (`tri_mesh.rs::TRI_MESH_SHADER`, #210) splices
+transform, style, projection, probability, sample validity, `grid_pair`,
+`field_grid`, the ramp and `field_paint`, then
+[`tri_mesh/mesh_input.wgsl`](tri_mesh/mesh_input.wgsl) and
+[`tri_mesh/mesh_entry.wgsl`](tri_mesh/mesh_entry.wgsl). It binds the field's
+group 2 layout unchanged (`create_field_data_bind_group_layout`) and reads it
+under the `FIELD_MESH` flag (128):
+
+| Member | Meaning for a mesh |
+|---|---|
+| `x_base`, `x_len`, `y_base`, `y_len` | the vertex coordinate columns (lane base and length) |
+| `cols` | the grid table's entries: 2 |
+| `rows` | the triangle count (`TriangleStats::triangles`) |
+| `flags` | `FIELD_MESH`; `FIELD_FACE_VALUES` (256) for one value per triangle; `FIELD_INTERPOLATED`, `FIELD_BANDS` and `FIELD_LOG_Z` as for a heatmap fill |
+| `level_count`, `stop_count`, `z_min`, `z_max`, `opacity` | as for a heatmap fill: the colourbar's ramp and bands |
+| `line_width_px`, `level_color_count` | the contour stroke, as a contour group's: one group serves the fill and the contours |
+| grid table entry 0 (`MESH_VALUES`) | the value column, read with `grid_value(0, i)` and its bound check |
+| grid table entry 1 (`MESH_INDICES`) | the triangle index column, three `u32` lanes per triangle (§5.14) |
+
+CPU writer: `renderer/prepare/field.rs::ensure_mesh_scratch`, cached in
+`field_cache` under the series id and compared by `FieldSignature` (which
+carries the level colours a mesh's one group holds).
+
+**Draw.** One instance per triangle, three vertices, no vertex buffers:
+`draw(0..3, 0..rows)`. `vs_tri` reads the triangle's three indices and
+places all three vertices (`mesh_triangle`), so the three invocations agree
+on whether it draws and on its flat varyings. A triangle is not drawn (every
+vertex outside the clip volume) when it is past `mesh_triangle_count()`
+(`rows`, the index column's whole triangles, and for face values the value
+column's length), names a vertex at or past `mesh_vertex_count()` (the
+shortest coordinate column and, for vertex values, the value column), or
+has a vertex `sample_valid` refuses. The vertex check runs on every draw: a
+later upload can shorten a column, and it also keeps every read inside its
+own column.
+
+**Fill.** `fs_tri` shades `field_value_color(mesh_fragment_value(..))`:
+the triangle's own value under `FIELD_FACE_VALUES`, else the barycentric
+blend of its corners' value pairs. The barycentrics are interpolated
+`perspective, centroid` (an orthographic flat chart has `w = 1`, so this is
+linear in screen space, and an edge sample never extrapolates). A
+non-finite corner value paints the whole triangle `nan_color`. The fill is
+opaque per sample without coverage antialiasing: under MSAA each sample of a
+shared edge is covered by exactly one triangle, so adjacent triangles do not
+seam.
+
+**Contours.** `fs_tri_contour` draws the same instances after the fill. The
+vertex stage computes the length of the triangle's gradient in output pixels
+from its three placed vertices (`mesh_gradient_px`, analytic, never
+`dpdx`); the fragment's distance to level `L` is `|f − L| / |∇f|`, exact for
+a linear function. The level search (`contour_block_candidates`) and the
+compositing (`contour_level_over`) are the heatmap's. A zero gradient is a
+plateau and draws nothing; face values draw no contours. The interpolant is
+continuous across a shared edge, so a stroke continues into the neighbour;
+at the mesh boundary half the stroke is clipped.
+
+The gradient only sets stroke coverage, and the blend only shades given
+values: nothing the reader reads as data is computed (rule 1), and nothing
+per vertex is stored (rule 2).
 
 ## Checklist
 

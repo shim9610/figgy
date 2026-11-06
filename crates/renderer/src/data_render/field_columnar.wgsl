@@ -68,22 +68,6 @@ struct LabelGapParams {
 @group(3) @binding(1) var<storage, read> label_gap_draw_args: array<u32>;
 @group(3) @binding(3) var<uniform> label_gap_params: LabelGapParams;
 
-fn vec4_f32_is_finite(v: vec4<f32>) -> bool {
-    return vec2_f32_is_finite(v.xy) && vec2_f32_is_finite(v.zw);
-}
-
-/// The stroke colour of contour level `i`, premultiplied.
-///
-/// A level past the end of the table takes the last entry rather than nothing:
-/// the host writes one entry per level, and a short table is a mismatch to draw
-/// through with the last declared colour, not a reason to drop the contour.
-fn level_color(i: u32) -> vec4<f32> {
-    if (field.level_color_count == 0u) {
-        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    }
-    return level_colors[min(i, field.level_color_count - 1u)];
-}
-
 struct FieldOut {
     @builtin(position) pos: vec4<f32>,
     /// Axis `t` of this fragment, i.e. its position in the chart area — the
@@ -469,24 +453,12 @@ fn contour_level_distance_at(
 /// Cost is the data area's pixel count, not the cell count: a 5000 x 5000 grid
 /// costs what a 100 x 100 one does. Per fragment, each 32-level block is searched
 /// by z range and only reachable candidates run the coverage math.
-/// What the contour strokes paint at a fragment: the composited colour and
-/// the declaration index of the topmost level painted there, or
-/// `0xffffffff` where none is. The draw takes the colour; a 3D chart's
-/// floor ID pick (`fs_floor_contour_pick`) the level, so the two agree.
-struct ContourPaint {
-    color: vec4<f32>,
-    level: u32,
-};
-
 fn contour_color(in: FieldOut) -> vec4<f32> {
     return contour_paint(in).color;
 }
 
 fn contour_paint(in: FieldOut) -> ContourPaint {
-    var out: ContourPaint;
-    out.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    out.level = 0xffffffffu;
-    var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var out = contour_paint_none();
     let lookup = field_lookup(in.axis_t, LATTICE_SAMPLES);
     if (!lookup.hit) {
         return out;
@@ -515,18 +487,7 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
     }
     for (var block = 0u; block < contour_level_block_count(); block = block + 1u) {
         let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
-        let count = contour_lookup_metadata[block].finite_count;
-        let first = contour_lower_bound(start, count, search_lo);
-        let last = contour_upper_bound(start, count, search_hi);
-        var candidates = 0u;
-        for (var sorted = first; sorted < last; sorted = sorted + 1u) {
-            let record = contour_search_record(start + sorted);
-            let original = u32(record.y) - start;
-            candidates = candidates | (1u << original);
-        }
-        // A single mask restores the block's declaration order. That preserves
-        // duplicate-level colour and source-over behavior without walking all 32
-        // levels when only a few can reach this cell.
+        var candidates = contour_block_candidates(block, search_lo, search_hi);
         while (candidates != 0u) {
             let original = firstTrailingBit(candidates);
             candidates = candidates & ~(1u << original);
@@ -540,22 +501,10 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
             if (distance_to_level < 0.0 || !f32_is_finite(coverage_unclamped)) {
                 continue;
             }
-            let cov = clamp(coverage_unclamped, 0.0, 1.0);
-            if (!f32_is_finite(cov) || cov <= 0.0) {
-                continue;
-            }
-            let c = level_color(i) * cov;
-            let composited = c + acc * (1.0 - c.a);
-            if (!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)) {
-                continue;
-            }
-            acc = composited;
-            if (cov >= 0.5) {
-                out.level = i;
-            }
+            let painted = contour_level_over(out, i, coverage_unclamped);
+            out = painted;
         }
     }
-    out.color = acc;
     return out;
 }
 

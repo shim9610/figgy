@@ -78,6 +78,8 @@ impl<'a> SelectionLayers<'a> {
         data_render::SeriesLayers {
             area: None,
             field: None,
+            mesh: None,
+            mesh_contour: None,
             bar: None,
             violin: None,
             category_bars: None,

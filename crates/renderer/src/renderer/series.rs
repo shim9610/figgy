@@ -338,14 +338,34 @@ pub(super) fn series_draw_info_from_pool(
             rows: None,
             truncated: false,
         },
-        // A triangle mesh counts its whole triangles (#210); the vertex
-        // bound that can drop some is checked where it is drawn.
-        DataRenderType::TriMesh(mesh) => SeriesDrawInfo {
-            drawn_count: len(&mesh.triangles) / 3,
-            cols: None,
-            rows: None,
-            truncated: false,
-        },
+        // A triangle mesh counts its triangles (#210), face values bounding
+        // them. It is truncated when the shortest vertex column no longer
+        // reaches the largest index: the draw then drops every triangle
+        // that names a vertex past the end, which this does not count
+        // (no index is read on the CPU).
+        DataRenderType::TriMesh(mesh) => {
+            let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
+            let stats = pool.triangle_stats(&mesh.triangles);
+            let triangles = stats.map_or(0, |stats| u64::from(stats.triangles));
+            let values = len(&mesh.values.column);
+            let vertices = if faces {
+                x.min(y)
+            } else {
+                x.min(y).min(values)
+            };
+            let drawn = if faces {
+                triangles.min(values)
+            } else {
+                triangles
+            };
+            SeriesDrawInfo {
+                drawn_count: drawn,
+                cols: None,
+                rows: None,
+                truncated: drawn < triangles
+                    || stats.is_some_and(|stats| u64::from(stats.max_index) >= vertices),
+            }
+        }
         // A polyline draws one segment between adjacent points.
         DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
             let (count, truncated) = paired(xyz);

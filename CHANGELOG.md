@@ -1235,18 +1235,35 @@ kind and the `mesh_triangle` selection) are additive.
   `(hi, lo)` split. The streaming refusal for composite ids now reads
   "streaming is not extended to records, ragged and triangle columns".
 
-- **Triangle mesh series: the kind ahead of its draw path** ([#210](https://github.com/shim9610/figgy/issues/210)).
-  The model's `TriMesh` series kind and `MeshTriangle` selection are
-  re-exported (`renderer::tri_mesh`). Until the mesh draw path lands,
-  registering a `TriMesh` series fails with `InvalidSeriesConfig` ("triangle
-  mesh series are not drawn by this renderer yet") after the model's rules,
-  and a streamed display refuses one ("triangle mesh series require
-  GPU-resident columns; streamed sources are not supported", rule 8).
-  `PickedData::MeshTriangle { source_id, series_id, triangle_index,
-  vertex_index, distance_px }` is the pick result to come; `to_ref` drops
-  the hover-only `vertex_index`. `series_draw_info` counts a mesh's whole
-  triangles. Migration: an exhaustive `match` on `PickedData` adds
-  `MeshTriangle { .. }`.
+- **Triangle mesh series: the flat draw** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  A `TriMesh` series draws its fill and its contours on a flat chart: one
+  instance per triangle through a new assembled module (`tri_mesh`, entries
+  `vs_tri`, `fs_tri`, `fs_tri_contour`) that reads the field's group 2
+  layout under `FIELD_FLAG_MESH` / `FIELD_FLAG_FACE_VALUES`
+  (SHADER_COMMON.md §5.25). The fill colours through the heatmap's new
+  `field_value_color`, the contours through its level search
+  (`contour_block_candidates`, `contour_level_over`, moved into
+  `field_paint.wgsl`; the heatmap's pixels are unchanged). Registration
+  checks the triangle column, the value column, the colourbar, the contour
+  level count and that every index names a vertex; the fit covers the
+  vertex columns; `series_draw_info` counts the triangles and reports a
+  column shortened after registration. A streamed display refuses the kind
+  ("triangle mesh series require GPU-resident columns; streamed sources are
+  not supported", rule 8), and a 3D chart refuses it until the trisurf
+  lands. The model's `TriMesh` series kind and `MeshTriangle` selection are
+  re-exported (`renderer::tri_mesh`); `PickedData::MeshTriangle { source_id,
+  series_id, triangle_index, vertex_index, distance_px }` is the pick result
+  to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
+  exhaustive `match` on `PickedData` adds `MeshTriangle { .. }`.
+
+- **A frame of more field series than the scratch cache holds draws them all.**
+  The field scratch cache (`FIELD_SCRATCH_CACHE_LIMIT`, 256 entries) cleared
+  itself when the 257th series of one frame was prepared, so the frame's
+  layers lost the earlier series' scratches and failed with an internal
+  error: a frame of more than 256 heatmaps (or triangle meshes) did not
+  draw (rule 10). The cache is now bounded before a frame resolves, keeping
+  the series that frame draws, and evicts nothing while it runs; a lone
+  preparation (a pick) still evicts as before.
 
 - **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
   A backend's shader compiler can need more stack than the calling thread
@@ -2873,7 +2890,7 @@ kind and the `mesh_triangle` selection) are additive.
   The `TriMesh` render_type and the `mesh_triangle` selection parse and
   write through serde (SCHEMA.md); a `pick_data` hit on a mesh will report
   `kind: "mesh_triangle"` with its `triangle_index` and `vertex_index`.
-  `set_series` refuses a mesh series until the draw path lands.
+  `set_series` draws a mesh series on a flat chart.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
   `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON

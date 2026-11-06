@@ -607,6 +607,12 @@ pub(super) struct TargetPipelines {
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
     pub(super) surface:
         [Option<wgpu::RenderPipeline>; data_render::surface_mesh::SurfacePass::ALL.len()],
+    /// A triangle mesh series' module and pipelines (#210), indexed by
+    /// [`data_render::tri_mesh::TriMeshPass`]: the fill and the contour
+    /// strokes over the field's group 2. Compiled only when a mesh is drawn.
+    pub(super) tri_mesh_shader: Option<wgpu::ShaderModule>,
+    pub(super) tri_mesh:
+        [Option<wgpu::RenderPipeline>; data_render::tri_mesh::TriMeshPass::ALL.len()],
     /// A ternary series' region fill: the module and its stencil and cover
     /// pipelines, indexed by
     /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
@@ -924,6 +930,33 @@ impl TargetPipelines {
         }
     }
 
+    /// Compile the triangle mesh pipeline of `pass` (#210), and the mesh
+    /// module first when no mesh has been drawn yet.
+    pub(super) fn ensure_tri_mesh_pass(
+        &mut self,
+        device: &wgpu::Device,
+        [transform_bgl, style_bgl, field_bgl]: [&wgpu::BindGroupLayout; 3],
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::tri_mesh::TriMeshPass,
+    ) {
+        if self.tri_mesh[pass as usize].is_some() {
+            return;
+        }
+        let shader = self
+            .tri_mesh_shader
+            .get_or_insert_with(|| data_render::tri_mesh::shader_module(device));
+        self.tri_mesh[pass as usize] = Some(data_render::tri_mesh::create_tri_mesh_pipeline(
+            device,
+            shader,
+            transform_bgl,
+            style_bgl,
+            field_bgl,
+            surface_format,
+            self.sample_count,
+            pass,
+        ));
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn ensure_precise_variants_for_items(
         &mut self,
@@ -950,6 +983,8 @@ impl TargetPipelines {
         let mut need_vector_path = false;
         let mut need_field = false;
         let mut need_contour = false;
+        let mut need_mesh = false;
+        let mut need_mesh_contour = false;
         let mut need_contour_label = false;
         let mut need_line = false;
         let mut need_line_mapped = false;
@@ -1026,6 +1061,8 @@ impl TargetPipelines {
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
+                need_mesh |= primitives.mesh;
+                need_mesh_contour |= primitives.mesh_contour;
                 need_line |= primitives.line;
                 // Streamline arrowheads draw through the path vector pipeline.
                 need_vector_path |= primitives.line
@@ -1223,6 +1260,22 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        for (needed, pass) in [
+            (need_mesh, data_render::tri_mesh::TriMeshPass::Fill),
+            (
+                need_mesh_contour,
+                data_render::tri_mesh::TriMeshPass::Contour,
+            ),
+        ] {
+            if needed {
+                self.ensure_tri_mesh_pass(
+                    device,
+                    [transform_bgl, style_bgl, field_bgl],
+                    surface_format,
+                    pass,
+                );
+            }
         }
         if need_contour && self.contour.is_none() {
             self.contour = Some(data_render::create_field_columnar_pipeline_with_entry(
@@ -2124,6 +2177,34 @@ impl TargetPipelines {
                 self.sample_count,
             )
         );
+        // A triangle mesh's fill and contours (#210), prepared with the
+        // fields: they read the field's group 2.
+        for pass in data_render::tri_mesh::TriMeshPass::ALL {
+            if self.tri_mesh[pass as usize].is_none()
+                && feature.is_none_or(|f| f.includes_field("field_tri_mesh"))
+            {
+                let shader = self
+                    .tri_mesh_shader
+                    .get_or_insert_with(|| data_render::tri_mesh::shader_module(device));
+                self.tri_mesh[pass as usize] = Some(prewarm_step!(
+                    observer,
+                    "renderer.prewarm",
+                    pass.label(),
+                    || {
+                        data_render::tri_mesh::create_tri_mesh_pipeline(
+                            device,
+                            shader,
+                            transform_bgl,
+                            style_bgl,
+                            field_bgl,
+                            surface_format,
+                            self.sample_count,
+                            pass,
+                        )
+                    }
+                ));
+            }
+        }
         ensure!(
             vector_points,
             "vector points",
@@ -2416,6 +2497,8 @@ pub(super) fn create_target_pipelines_observed(
         view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        tri_mesh_shader: None,
+        tri_mesh: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
@@ -2514,6 +2597,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        tri_mesh_shader: None,
+        tri_mesh: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
