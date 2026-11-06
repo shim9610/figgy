@@ -174,15 +174,49 @@ struct CellHit {
 /// `O(log count)` — it stops as soon as the bracket is one wide. The
 /// bracket's two boundaries are kept as it shrinks, so each boundary is
 /// transformed once: a software GPU compiler pays for every inlined
-/// `boundary_t`, and `contour_sample` runs inside the polar foot-point
-/// iteration.
+/// `boundary_t`.
+///
+/// The search is `locate_begin`, `locate_step` and `locate_end`. A caller
+/// that already loops (the polar foot-point walk, `contour_foot_advance`)
+/// takes one `locate_step` per iteration of its own loop instead of calling
+/// this: a loop nested in a loop made Chromium's SwiftShader compile the
+/// contour entries for seconds to minutes.
 fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> CellHit {
-    var out: CellHit;
-    out.index = 0u;
-    out.frac = 0.0;
-    out.hit = false;
-    out.lo_t = 0.0;
-    out.hi_t = 0.0;
+    var search = locate_begin(base, n, count, axis, t, lattice);
+    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
+    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
+    // can make software GPU compilers expand contour projection excessively.
+    while (locate_searching(search)) {
+        search = locate_step(base, n, axis, lattice, search);
+    }
+    return locate_end(search);
+}
+
+/// A binary search for `t` along one axis, between `locate_begin` and
+/// `locate_end`.
+struct CellSearch {
+    lo: u32,
+    hi: u32,
+    /// `boundary_t` at `lo` and at `hi`.
+    a: f32,
+    b: f32,
+    t: f32,
+    ascending: bool,
+    /// False once the search has missed: `t` outside the axis, or a
+    /// boundary that is not finite. `locate_end` then reports no hit.
+    valid: bool,
+};
+
+/// The whole axis as the bracket, or a miss.
+fn locate_begin(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> CellSearch {
+    var out: CellSearch;
+    out.lo = 0u;
+    out.hi = 0u;
+    out.a = 0.0;
+    out.b = 0.0;
+    out.t = t;
+    out.ascending = true;
+    out.valid = false;
     if (count == 0u || n == 0u || !f32_is_finite(t)) {
         return out;
     }
@@ -194,42 +228,64 @@ fn locate(base: u32, n: u32, count: u32, axis: u32, t: f32, lattice: u32) -> Cel
     if (t < min(first, last) || t > max(first, last)) {
         return out;
     }
-    let ascending = last >= first;
-    var lo = 0u;
-    var hi = count;
-    // `boundary_t` at `lo` and at `hi`.
-    var a = first;
-    var b = last;
-    // Each step strictly shrinks the unsigned bracket, so a u32 count takes
-    // at most 32 halvings. Keep the loop dynamic: nested fixed-trip searches
-    // can make software GPU compilers expand contour projection excessively.
-    while (hi - lo > 1u) {
-        let mid = lo + (hi - lo) / 2u;
-        let tm = boundary_t(base, n, mid, axis, lattice);
-        if (!f32_is_finite(tm)) {
-            return out;
-        }
-        let before = select(tm > t, tm <= t, ascending);
-        if (before) {
-            lo = mid;
-            a = tm;
-        } else {
-            hi = mid;
-            b = tm;
-        }
+    out.ascending = last >= first;
+    out.hi = count;
+    out.a = first;
+    out.b = last;
+    out.valid = true;
+    return out;
+}
+
+/// Whether `locate_step` has a halving left to take.
+fn locate_searching(search: CellSearch) -> bool {
+    return search.valid && search.hi - search.lo > 1u;
+}
+
+/// One halving of the bracket.
+fn locate_step(base: u32, n: u32, axis: u32, lattice: u32, search: CellSearch) -> CellSearch {
+    var out = search;
+    let mid = search.lo + (search.hi - search.lo) / 2u;
+    let tm = boundary_t(base, n, mid, axis, lattice);
+    if (!f32_is_finite(tm)) {
+        out.valid = false;
+        return out;
+    }
+    let before = select(tm > search.t, tm <= search.t, search.ascending);
+    if (before) {
+        out.lo = mid;
+        out.a = tm;
+    } else {
+        out.hi = mid;
+        out.b = tm;
+    }
+    return out;
+}
+
+/// The quad a finished search found, and where inside it `t` is.
+fn locate_end(search: CellSearch) -> CellHit {
+    var out: CellHit;
+    out.index = 0u;
+    out.frac = 0.0;
+    out.hit = false;
+    out.lo_t = 0.0;
+    out.hi_t = 0.0;
+    if (!search.valid) {
+        return out;
     }
     // The bracket is one wide: `hi` is `lo + 1`.
+    let a = search.a;
+    let b = search.b;
     let span = grid_rounded_subtract(b, a);
     if (!f32_is_finite(a) || !f32_is_finite(b) || !f32_is_finite(span)) {
         return out;
     }
-    out.index = lo;
+    out.index = search.lo;
     out.lo_t = a;
     out.hi_t = b;
     // A zero-width quad (a lone centre) has no inside; treat it as its start.
     var frac = 0.0;
     if (span != 0.0) {
-        frac = grid_rounded_subtract(t, a) / span;
+        frac = grid_rounded_subtract(search.t, a) / span;
         if (!f32_is_finite(frac)) {
             return out;
         }
@@ -441,6 +497,17 @@ struct ContourSample {
 };
 
 fn contour_sample(t: vec2<f32>) -> ContourSample {
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let across_cells = select(field.rows, field.cols, columns_are_y);
+    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u, t.x, LATTICE_SAMPLES);
+    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u, t.y, LATTICE_SAMPLES);
+    return contour_sample_cells(x, y);
+}
+
+/// `contour_sample` at the sample-lattice cells `x` and `y` already
+/// located: the polar foot-point walk locates them one halving at a time.
+fn contour_sample_cells(x: CellHit, y: CellHit) -> ContourSample {
     var out: ContourSample;
     out.hit = false;
     out.z = 0.0;
@@ -449,10 +516,6 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
     out.z_lo = 0.0;
     out.z_hi = 0.0;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let along_cells = select(field.cols, field.rows, columns_are_y);
-    let across_cells = select(field.rows, field.cols, columns_are_y);
-    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u, t.x, LATTICE_SAMPLES);
-    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u, t.y, LATTICE_SAMPLES);
     if (!x.hit || !y.hit) {
         return out;
     }
