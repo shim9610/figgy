@@ -299,7 +299,17 @@ chart.register_ragged("outliers", values, offsets);
 
 - `register_record`의 필드는 `median`, `q1`, `q3`, `whisker_low`, `whisker_high`(필수)와 `mean`, `sample_count`, `ci_low`, `ci_high`(선택)이다. 없는 선택 필드는 NaN으로 읽고, 모든 필드가 NaN인 행은 빠진 박스다. 알 수 없는 필드, 빠진 필수 필드, 길이가 다른 필드는 오류다. 배열은 복사하지 않고 스테이징 버퍼에 바로 기록한다.
 - `register_ragged`는 `Float64Array` 두 개를 `(hi, lo)` 쌍으로 업로드한다. offsets가 줄어들거나 0에서 시작하지 않거나 정수가 아니거나 values.length로 끝나지 않으면 업로드를 버리고 오류를 낸다.
-- 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
+- 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼, 삼각형 인덱스 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
+
+삼각형 메시(#210)의 삼각형은 인덱스 컬럼 하나로 등록한다. 삼각형 `t`는 꼭짓점 `indices[3t]`, `indices[3t + 1]`, `indices[3t + 2]`이다.
+
+```js
+// Uint32Array. 길이는 3의 배수이고 0보다 커야 한다.
+chart.register_triangles("mesh", new Uint32Array([0, 1, 2, 2, 1, 3]));
+chart.remove_triangles("mesh"); // 있었으면 true
+```
+
+- `register_triangles`는 `Uint32Array`를 복사하지 않고 스테이징 버퍼에 바로 기록하며, `u32::MAX`까지 모든 인덱스가 GPU에 정확히 올라간다. 빈 배열이나 길이가 3의 배수가 아닌 배열은 오류이고 아무것도 등록하지 않는다. 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
 - `RangeBars` 시리즈는 `x_column`(위치), `y_column`(끝값), `start`와 선택 컬럼(`whiskers`의 `low`·`high`, `color_by`의 합계 표시 또는 상태 컬럼, `progress`)을 일반 컬럼으로 읽는다. 모든 컬럼은 위치 컬럼과 길이가 같아야 한다. [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#rangebars-render_type)를 참고한다.
 - `BoxPlot` 시리즈는 `y_column`으로 레코드를, `outliers`로 ragged 컬럼을, `x_column`으로 범주 위치 컬럼(`0..n-1`)을 가리킨다. [박스플롯 문서](#box-plot-documents)를 참고한다.
 - 박스플롯의 `violin`은 반쪽마다 곡선 ragged 컬럼과 밀도 컬럼을, `points`는 원시 점의 범주 위치 컬럼과 값 컬럼을 가리킨다. 밀도는 호스트가 계산해 올리고, 점의 흔들림(jitter)은 셰이더가 점 번호로 계산하므로 별도 컬럼이 없다. 상자 없이 바이올린만 그리려면 `y_column`을 비운다.
@@ -555,7 +565,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. 수식은 내장 수식 글꼴로 그리므로 등록이 필요 없고, `rich_text_from_tex(tex, font_size, font, r, g, b, a)`가 TeX에서 `RichText` JSON을 만든다. |
 | 자동 배치 | `pkg/figgy.js`의 독립 함수 `autoLayout(configJson)`은 `layout::auto_layout`(#44)을 적용한 설정 JSON을 반환한다. 라벨·제목·범례·색상 막대가 겹치지 않도록 여백, 축 제목 오프셋, 라벨 형식을 정하며 차트는 바꾸지 않는다. `chart.set_config(autoLayout(chart.get_config()))`로 적용하고, 자동 맞춤이나 확대·축소 뒤에 다시 호출한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 같다. |
-| 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. `register_record(id, fields)`와 `register_ragged(id, values, offsets)`는 레코드와 ragged 컬럼을 등록하거나 교체한다. |
+| 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. `register_record(id, fields)`와 `register_ragged(id, values, offsets)`는 레코드와 ragged 컬럼을, `register_triangles(id, Uint32Array)`는 삼각형 인덱스 컬럼을 등록하거나 교체한다. `remove_triangles(id)`는 삼각형 인덱스 컬럼을 제거한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
 | 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
 | 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. 저수준 `FiggyChart.decoration_bounds(id)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. 서브플롯(`{ "Subplot": i }`)이나 그 오버레이(`{ "SubplotOverlay": [i, j] }`)가 활성이면 그 서브플롯 차트의 요소가 `subplot_<i>:` 접두사를 붙인 id(`subplot_0:data_area`, `subplot_0:axis_left`, `subplot_0:overlay_0:axis_right` 등)로 답하고 부모 요소는 답하지 않는다. 드래그·리사이즈는 그 서브플롯의 `config`에 기록된다. |

@@ -92,6 +92,33 @@ impl ColumnSource for BorrowedCastF32Column<'_> {
     }
 }
 
+/// Borrowed `u32` column: a triangle index array (#210), passed from
+/// JavaScript as a `Uint32Array`. Every value is written as the f64
+/// `(hi, lo)` split, which holds every `u32` exactly, so the pool's `u32`
+/// index lanes receive every index up to `u32::MAX` unchanged.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BorrowedU32Column<'a> {
+    data: &'a [u32],
+}
+
+impl<'a> BorrowedU32Column<'a> {
+    pub(crate) fn new(data: &'a [u32]) -> Self {
+        Self { data }
+    }
+}
+
+impl ColumnSource for BorrowedU32Column<'_> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
+            dst.write_value(index, f64::from(value));
+        }
+    }
+}
+
 /// Borrowed f64 column. Both traits write the `(hi, lo)` split (#107), so a
 /// batch upload, which takes `&dyn ColumnSource`, keeps the same precision as
 /// a single `HiLoColumnSource` upload.
@@ -580,6 +607,55 @@ mod tests {
             pairs(f64_values.iter().map(|&value| split_f64_to_f32_pair(value)))
         );
         assert_eq!(split.min_positive, Some(min_subnormal as f64));
+    }
+
+    /// A `Uint32Array` of triangle indices (#210) reaches the pool's `u32`
+    /// index lanes exactly, past 2^24 and up to `u32::MAX`, and the pool
+    /// records the triangle count and the index range.
+    #[test]
+    fn borrowed_u32_indices_land_exactly_in_index_lanes() {
+        let indices: [u32; 9] = [
+            0,
+            1,
+            2,
+            16_777_216,
+            16_777_217,
+            16_777_219,
+            4_000_000_001,
+            u32::MAX - 1,
+            u32::MAX,
+        ];
+        let source = BorrowedU32Column::new(&indices);
+        assert_eq!(source.data.as_ptr(), indices.as_ptr());
+        let Some((device, queue)) = shared_device() else {
+            eprintln!("no GPU adapter; skipping borrowed upload assertions");
+            return;
+        };
+        let ledger = std::sync::Arc::new(renderer::gpu_memory::GpuLedger::new());
+        let mut pool =
+            ColumnPool::new(renderer::GpuAllocCtx::new(&device, &queue, &ledger), ALIGN).unwrap();
+        pool.upsert_triangles(
+            "mesh",
+            &renderer::TriangleSource { indices: &source },
+            renderer::GpuAllocCtx::new(&device, &queue, &ledger),
+        )
+        .unwrap();
+        let triangles = pool.triangles("mesh").unwrap();
+        assert_eq!(
+            triangles.stats(),
+            renderer::TriangleStats {
+                triangles: 3,
+                min_index: 0,
+                max_index: u32::MAX,
+            }
+        );
+        let handle = triangles.indices().unwrap();
+        let bytes = read_uploaded_bytes(&device, &queue, &pool, handle);
+        let expected: Vec<u8> = indices
+            .iter()
+            .flat_map(|index| [index.to_le_bytes(), [0; 4]].concat())
+            .collect();
+        assert_eq!(bytes, expected);
     }
 
     /// PAIR_CHUNK_8 (#152): every adapter writes one `(hi, lo)` pair per value

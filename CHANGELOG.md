@@ -1196,6 +1196,23 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  A fourth pool source kind, for the coming triangle mesh series:
+  `Renderer::upsert_triangles(id, &TriangleSource { indices })` and
+  `remove_triangles(id)` (also on `ColumnPool`, with `triangles(id)` and
+  `triangle_stats(id)`). Three vertex indices per triangle upload as one
+  member column of `u32` index lanes (SHADER_COMMON.md §5.14), exact up to
+  `u32::MAX`. The upload's write observer rejects an empty column, a length
+  that is not a multiple of 3, an index that is not an integer in
+  `0..=u32::MAX` and indices written out of order, before anything is
+  published, and records `TriangleStats { triangles, min_index, max_index }`;
+  no index is kept on the CPU. The id shares the one id space of columns,
+  records and ragged columns, the member is internal, and the kind is
+  resident only: a streamed id is refused both ways.
+  `Column<u32>` implements `ColumnSource`, writing each value's exact
+  `(hi, lo)` split. The streaming refusal for composite ids now reads
+  "streaming is not extended to records, ragged and triangle columns".
+
 - **Shaders compile on the renderer's own thread** ([#222](https://github.com/shim9610/figgy/issues/222)).
   A backend's shader compiler can need more stack than the calling thread
   has: on Windows WARP the largest pipelines need 2 to 4 MiB, and a Windows
@@ -2813,6 +2830,10 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  `register_triangles(id, Uint32Array)` registers or replaces a triangle
+  index column, borrowing the array for the upload, and
+  `remove_triangles(id)` removes one.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
   `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON

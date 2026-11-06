@@ -117,7 +117,8 @@ pub use data_config::{
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
     GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats,
-    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats,
+    RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats, TriangleId,
+    TriangleRef, TriangleSlot, TriangleSource, TriangleStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};

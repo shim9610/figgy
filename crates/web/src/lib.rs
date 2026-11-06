@@ -1280,7 +1280,8 @@ mod web {
     use renderer::{InitEvent, InitPhase};
 
     use crate::borrowed_column::{
-        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, JsStreamColumn,
+        BorrowedCastF32Column, BorrowedF32Column, BorrowedF64Column, BorrowedU32Column,
+        JsStreamColumn,
     };
     use crate::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, FrameDecision, PreparedDemoDeclarations,
