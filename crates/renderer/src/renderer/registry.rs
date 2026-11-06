@@ -2247,6 +2247,77 @@ impl Renderer {
         Ok(laid_out)
     }
 
+    /// The anchor space of the panel that draws series `series_id` of chart
+    /// `id`, in document logical pixels: where a Feynman drag (#234)
+    /// converts its delta, as an annotation drag does. A layered document
+    /// answers the series' own panel.
+    pub fn series_panel_space(
+        &self,
+        id: ChartId,
+        series_id: &str,
+    ) -> Result<crate::annotation::PixelSpace> {
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let panels = super::expand_for_render(&state.config)?;
+        let index = super::series_panel_index(&state.config, panels.len(), series_id);
+        Ok(crate::annotation::pixel_space_for_config(&panels[index]))
+    }
+
+    /// Drag a part of the Feynman series `series_id` of chart `id` by
+    /// `(dx, dy)` document logical pixels (#234): a vertex (the first drag
+    /// commits the layout), a propagator's bend or a label, through
+    /// [`crate::feynman::FeynmanSeries::drag`] in the series' panel space.
+    /// The registered series is replaced on a move; the host reads it back
+    /// through [`Self::chart_series`].
+    pub fn drag_feynman(
+        &mut self,
+        id: ChartId,
+        series_id: &str,
+        drag: crate::feynman::FeynmanDrag,
+        dx: f32,
+        dy: f32,
+    ) -> Result<crate::layout::NudgeResult> {
+        let result = self.drag_feynman_unreported(id, series_id, drag, dx, dy);
+        self.reported(result)
+    }
+
+    fn drag_feynman_unreported(
+        &mut self,
+        id: ChartId,
+        series_id: &str,
+        drag: crate::feynman::FeynmanDrag,
+        dx: f32,
+        dy: f32,
+    ) -> Result<crate::layout::NudgeResult> {
+        let space = self.series_panel_space(id, series_id)?;
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(position) = state
+            .series
+            .iter()
+            .position(|s| s.series_id == series_id && s.feynman().is_some())
+        else {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series_id.into(),
+                reason: "drag_feynman names a Feynman series of the chart".into(),
+            });
+        };
+        // Configuration only is copied (rule 2).
+        let mut series = state.series.clone();
+        let Some(diagram) = series[position].feynman_mut() else {
+            return Err(FiggyError::internal("the found series is a Feynman series"));
+        };
+        let moved = diagram.drag(drag, dx, dy, &space);
+        if moved == crate::layout::NudgeResult::Moved {
+            self.set_chart_series_unreported(id, series)?;
+        }
+        Ok(moved)
+    }
+
     pub fn set_chart_series(&mut self, id: ChartId, series: Vec<SeriesConfig>) -> Result<()> {
         let result = self.set_chart_series_unreported(id, series);
         self.reported(result)

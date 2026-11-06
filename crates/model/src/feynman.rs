@@ -784,6 +784,45 @@ impl FeynmanSeries {
     }
 }
 
+/// What a drag on a Feynman series moves (#234): a vertex, a propagator's
+/// bend, or a label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeynmanDrag {
+    Vertex(usize),
+    Bend(usize),
+    Label(FeynmanLabelPart, usize),
+}
+
+impl FeynmanDrag {
+    /// The drag a press on `hit` starts.
+    pub fn of_hit(hit: FeynmanHit) -> Self {
+        match hit {
+            FeynmanHit::Vertex(index) => Self::Vertex(index),
+            FeynmanHit::Propagator(index) => Self::Bend(index),
+            FeynmanHit::Label(part, index) => Self::Label(part, index),
+        }
+    }
+}
+
+impl FeynmanSeries {
+    /// Apply `drag` by `(dx, dy)` logical pixels in the panel's anchor space
+    /// `space`: [`Self::drag_vertex`], [`Self::drag_bend`] or
+    /// [`Self::drag_label`].
+    pub fn drag(
+        &mut self,
+        drag: FeynmanDrag,
+        dx: f32,
+        dy: f32,
+        space: &dyn AnnotationSpace,
+    ) -> NudgeResult {
+        match drag {
+            FeynmanDrag::Vertex(index) => self.drag_vertex(index, dx, dy, space),
+            FeynmanDrag::Bend(index) => self.drag_bend(index, dx, dy, space),
+            FeynmanDrag::Label(part, index) => self.drag_label(part, index, dx, dy),
+        }
+    }
+}
+
 /// The bounding box of `points`, `None` for none.
 fn bounding_box(points: &[[f64; 2]]) -> Option<[[f64; 2]; 2]> {
     points.iter().fold(None, |acc, p| {

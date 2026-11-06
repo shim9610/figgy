@@ -203,6 +203,45 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             }
             value
         }
+        // A Feynman part names its row (#234), for `press_feynman`.
+        renderer::PickedData::FeynmanVertex {
+            source_id,
+            series_id,
+            vertex_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "feynman_vertex",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "index": vertex_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::FeynmanPropagator {
+            source_id,
+            series_id,
+            propagator_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "feynman_propagator",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "index": propagator_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::FeynmanLabel {
+            source_id,
+            series_id,
+            part,
+            index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "feynman_label",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "part": serde_json::to_value(part)?,
+            "index": index,
+            "distance_px": distance_px,
+        }),
     };
     serde_json::to_string(&value)
 }
@@ -839,6 +878,40 @@ mod tests {
                 "distance_px": 4.0,
             })
         );
+    }
+
+    #[test]
+    fn a_feynman_hit_names_its_kind_row_and_part() {
+        let picked = renderer::PickedData::FeynmanLabel {
+            source_id: None,
+            series_id: "diagram".into(),
+            part: renderer::FeynmanLabelPart::Momentum,
+            index: 3,
+            distance_px: 0.0,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_data_json_string(&picked).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "feynman_label",
+                "source_id": null,
+                "series_id": "diagram",
+                "part": "momentum",
+                "index": 3,
+                "distance_px": 0.0,
+            })
+        );
+        let vertex = renderer::PickedData::FeynmanVertex {
+            source_id: None,
+            series_id: "diagram".into(),
+            vertex_index: 1,
+            distance_px: 2.0,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_data_json_string(&vertex).unwrap()).unwrap();
+        assert_eq!(json["kind"], "feynman_vertex");
+        assert_eq!(json["index"], 1);
     }
 
     #[test]

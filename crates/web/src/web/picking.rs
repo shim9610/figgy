@@ -786,8 +786,9 @@ impl FiggyChart {
         // not see it.
         // An energy-level series (#203) is picked on the CPU through the
         // same typed query: its levels, arrows and labels.
+        // So is a Feynman diagram (#234): its vertices, lines and labels.
         let labelled = self.chart_series()?.iter().any(|series| {
-            series.energy_levels().is_some()
+            series.is_dataless()
                 || series
                     .value_label_text()
                     .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
@@ -816,7 +817,7 @@ impl FiggyChart {
                 }
                 // An energy-level hit is answered whole: its kind, row and
                 // (for a label) part, for `press_energy_label`.
-                Some(picked) if self.is_energy_series(picked.series_id())? => {
+                Some(picked) if self.is_dataless_series(picked.series_id())? => {
                     let json = crate::picked_data_json_string(&picked).map_err(js_err)?;
                     return Ok(JsValue::from_str(&json));
                 }
@@ -885,12 +886,115 @@ impl FiggyChart {
         Ok(true)
     }
 
-    /// Whether `series_id` names an energy-level series of the chart.
-    fn is_energy_series(&self, series_id: &str) -> Result<bool, JsValue> {
+    /// Whether `series_id` names a DataLess series of the chart: an
+    /// energy-level series or a Feynman diagram.
+    fn is_dataless_series(&self, series_id: &str) -> Result<bool, JsValue> {
         Ok(self
             .chart_series()?
             .iter()
-            .any(|s| s.series_id == series_id && s.energy_levels().is_some()))
+            .any(|s| s.series_id == series_id && s.is_dataless()))
+    }
+
+    /// Press on a part of a Feynman series (#234), as a `pick_point` hit
+    /// names it: `kind` is `"feynman_vertex"`, `"feynman_propagator"` or
+    /// `"feynman_label"` (with `part` `"vertex"`, `"propagator"` or
+    /// `"momentum"`), `index` its row. The part becomes the typed selection
+    /// and the drag starts: `on_move` moves a vertex (the first drag commits
+    /// the layout), bends a propagator or moves a label. Returns `false`
+    /// and changes nothing for a row that does not exist.
+    /// JS: `if (hit?.kind?.startsWith("feynman_")) chart.press_feynman(hit.series_id, hit.kind, hit.index, hit.part);`
+    pub fn press_feynman(
+        &mut self,
+        series_id: &str,
+        kind: &str,
+        index: usize,
+        part: Option<String>,
+    ) -> Result<bool, JsValue> {
+        use renderer::config::PickedDataRef;
+        use renderer::{FeynmanDrag, FeynmanLabelPart};
+        let Some(series) = self
+            .chart_series()?
+            .iter()
+            .find(|series| series.series_id == series_id)
+        else {
+            return Ok(false);
+        };
+        let Some(diagram) = series.feynman() else {
+            return Ok(false);
+        };
+        let (source_id, series_id) = (series.source_id.clone(), series.series_id.clone());
+        let (drag, reference) = match kind {
+            "feynman_vertex" if index < diagram.vertices.len() => (
+                FeynmanDrag::Vertex(index),
+                PickedDataRef::FeynmanVertex {
+                    source_id,
+                    series_id: series_id.clone(),
+                    vertex_index: index,
+                },
+            ),
+            "feynman_propagator" if index < diagram.propagators.len() => (
+                FeynmanDrag::Bend(index),
+                PickedDataRef::FeynmanPropagator {
+                    source_id,
+                    series_id: series_id.clone(),
+                    propagator_index: index,
+                },
+            ),
+            "feynman_label" => {
+                let part = match part.as_deref() {
+                    Some("vertex") => FeynmanLabelPart::Vertex,
+                    Some("propagator") => FeynmanLabelPart::Propagator,
+                    Some("momentum") => FeynmanLabelPart::Momentum,
+                    _ => return Ok(false),
+                };
+                if diagram.label_offset(part, index).is_none() {
+                    return Ok(false);
+                }
+                (
+                    FeynmanDrag::Label(part, index),
+                    PickedDataRef::FeynmanLabel {
+                        source_id,
+                        series_id: series_id.clone(),
+                        part,
+                        index,
+                    },
+                )
+            }
+            _ => return Ok(false),
+        };
+        if self.chart_selection()?.is_some() {
+            self.renderer
+                .set_chart_selection(self.chart_id, None)
+                .map_err(js_err)?;
+        }
+        self.set_selected_annotation(None);
+        let mut config = self.chart_config()?.clone();
+        let mut picked = config.picked_data.take().unwrap_or_default();
+        picked.refs = vec![reference];
+        config.picked_data = Some(picked);
+        self.replace_chart_config(config)?;
+        self.annotation_pointer = false;
+        self.value_label_pointer = false;
+        self.resizing = None;
+        self.dragging = true;
+        self.feynman_pointer = Some((series_id, drag));
+        Ok(true)
+    }
+
+    /// Commit the automatic layout of the Feynman series `series_id`
+    /// (#234): every unplaced vertex gets the place it is drawn at.
+    /// Returns whether anything was written. The wrapper commits it on
+    /// registration already; a host that edits the series in place calls
+    /// this to fix the new vertices.
+    pub fn auto_layout(&mut self, series_id: &str) -> Result<bool, JsValue> {
+        let laid_out = self
+            .renderer
+            .auto_layout(self.chart_id, series_id)
+            .map_err(js_err)?;
+        if laid_out {
+            self.request_host_redraw();
+        }
+        Ok(laid_out)
     }
 
     /// Press on an energy-level label (#203): row `index` of the list `part`
@@ -1157,6 +1261,19 @@ impl FiggyChart {
     /// After a press on an annotation the delta moves that item (or the
     /// pressed handle) through the frame's anchor space.
     pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        if let Some((series_id, drag)) = self.feynman_pointer.clone() {
+            if self.dragging && dx.is_finite() && dy.is_finite() {
+                let (dx, dy) = self.display_delta_to_document(dx, dy)?;
+                let moved = self
+                    .renderer
+                    .drag_feynman(self.chart_id, &series_id, drag, dx, dy)
+                    .map_err(js_err)?;
+                if moved == NudgeResult::Moved {
+                    self.request_host_redraw();
+                }
+            }
+            return Ok(());
+        }
         if self.value_label_pointer {
             if self.dragging && dx.is_finite() && dy.is_finite() {
                 self.move_value_label(dx, dy)?;
@@ -1206,6 +1323,7 @@ impl FiggyChart {
         self.resizing = None;
         self.annotation_pointer = false;
         self.value_label_pointer = false;
+        self.feynman_pointer = None;
     }
 
     /// `true` while a chart element or an annotation is selected.

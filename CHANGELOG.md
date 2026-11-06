@@ -1230,6 +1230,15 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Feynman diagrams are picked and dragged** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  A typed data pick answers for a Feynman series on the CPU over the drawn
+  placement: `PickedData::FeynmanVertex`, `FeynmanPropagator` and
+  `FeynmanLabel` (and `to_ref` into the `PickedDataRef` variants). The
+  picked part is drawn wider. `Renderer::drag_feynman(chart, series_id,
+  FeynmanDrag, dx, dy)` moves a vertex (the first drag commits the
+  layout), bends a propagator or moves a label in the series' panel space
+  (`Renderer::series_panel_space`). Migration: an exhaustive match on
+  `PickedData` adds the three arms.
 - **Feynman diagrams are drawn** ([#234](https://github.com/shim9610/figgy/issues/234)).
   A `DataRenderType::Feynman` series is drawn on the CPU through the
   model's emit into the DataLess raster of its panel, as an energy-level
@@ -2890,6 +2899,14 @@ chart's `plot_background` and the xy series' `stem`) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
+  `pick_point` answers a Feynman part as `{kind: "feynman_vertex" |
+  "feynman_propagator" | "feynman_label", series_id, index, part?}`;
+  `press_feynman(series_id, kind, index, part)` selects it and starts the
+  drag `on_move` applies (a vertex moves, a propagator bends, a label
+  moves). The wrapper commits a diagram's layout as its series is
+  registered, so `get_series` returns placed vertices; `auto_layout(series_id)`
+  commits it again after an edit in place.
 - **Triangle index columns** ([#210](https://github.com/shim9610/figgy/issues/210)).
   `register_triangles(id, Uint32Array)` registers or replaces a triangle
   index column, borrowing the array for the upload, and

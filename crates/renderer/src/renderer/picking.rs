@@ -2133,8 +2133,8 @@ impl Renderer {
         // given; everything else here reads it moved.
         let given = request;
         let (request, moved) = pick_request_outside_gaps(&display_config, request);
-        // The layer's DataLess energy-level series pick on the CPU (#203); a
-        // gap moved the request out of reach, so none answers there.
+        // The layer's DataLess series pick on the CPU (#203, #234); a gap
+        // moved the request out of reach, so none answers there.
         let cpu = {
             let state = self
                 .chart_states
@@ -2628,9 +2628,10 @@ impl Renderer {
     }
 }
 
-/// The best hit of the energy-level series of `series` (the active layer's,
-/// in paint order) under `request` on the displayed panel `display`, picked
-/// on the CPU through the placement the raster draws with (#203). The
+/// The best hit of the DataLess series of `series` (the active layer's, in
+/// paint order: energy levels, #203, and Feynman diagrams, #234) under
+/// `request` on the displayed panel `display`, picked on the CPU through the
+/// placement the raster draws with. The
 /// geometry is placed in logical pixels, as the raster is, and the distance
 /// reported in display pixels. `document` resolves a view's source.
 pub(super) fn pick_energy_levels(
@@ -2662,6 +2663,57 @@ pub(super) fn pick_energy_levels(
     ];
     let mut best: Option<crate::gpu_data_pick::RankedPickedData> = None;
     for (order, cfg) in series.iter().enumerate() {
+        // A Feynman diagram picks its vertices, propagators and labels
+        // through the placement its raster draws with (#234).
+        if let Some(diagram) = cfg.feynman() {
+            use crate::feynman::{FeynmanHit, FeynmanPlacement};
+            let positions = diagram.positions();
+            let placement = FeynmanPlacement {
+                space: &space,
+                positions: &positions,
+                picked: None,
+            };
+            let Some((hit, distance)) =
+                placement.pick(diagram, &measure, cursor, request.max_distance_px / scale)
+            else {
+                continue;
+            };
+            let source_id = cfg.source_id.clone();
+            let series_id = cfg.series_id.clone();
+            let distance_px = distance * scale;
+            let picked = match hit {
+                FeynmanHit::Vertex(vertex_index) => PickedData::FeynmanVertex {
+                    source_id,
+                    series_id,
+                    vertex_index,
+                    distance_px,
+                },
+                FeynmanHit::Propagator(propagator_index) => PickedData::FeynmanPropagator {
+                    source_id,
+                    series_id,
+                    propagator_index,
+                    distance_px,
+                },
+                FeynmanHit::Label(part, index) => PickedData::FeynmanLabel {
+                    source_id,
+                    series_id,
+                    part,
+                    index,
+                    distance_px,
+                },
+            };
+            let candidate = crate::gpu_data_pick::RankedPickedData {
+                picked,
+                paint_order: u32::try_from(order).unwrap_or(u32::MAX),
+            };
+            if best
+                .as_ref()
+                .is_none_or(|b| candidate.picked.distance_px() <= b.picked.distance_px())
+            {
+                best = Some(candidate);
+            }
+            continue;
+        }
         let Some(levels) = cfg.energy_levels() else {
             continue;
         };

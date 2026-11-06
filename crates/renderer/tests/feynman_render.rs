@@ -493,3 +493,285 @@ fn line_colours_and_widths_follow_their_overrides() {
         );
     }
 }
+
+// Interactions (rule 6).
+
+fn pick(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    scale: f32,
+    at: (u32, u32),
+) -> Option<renderer::PickedData> {
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0 as f32, at.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: (WIDTH as f32 * scale) as u32,
+            height: (HEIGHT as f32 * scale) as u32,
+        },
+        display_scale: scale,
+        max_distance_px: 4.0 * scale,
+    };
+    let hit = test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    r.remove_chart(id).unwrap();
+    hit
+}
+
+/// The s channel committed, with a label on the photon.
+fn labelled() -> FeynmanSeries {
+    let mut diagram = s_channel();
+    diagram.auto_layout();
+    diagram.propagators[2].label = Some(renderer::text::RichText::plain(
+        "γ*",
+        Color::BLACK,
+        14.0,
+        "",
+    ));
+    diagram
+}
+
+#[test]
+fn vertices_propagators_and_labels_pick_with_their_rows() {
+    let mut r = renderer();
+    let chart = chart();
+    let list = [series("d", labelled())];
+    for scale in [1.0f32, 2.0] {
+        let hit = pick(&mut r, &chart, &list, scale, at(&chart, 0.25, 0.5, scale));
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanVertex {
+                    vertex_index: 2,
+                    ..
+                })
+            ),
+            "{scale}x vertex: {hit:?}"
+        );
+        // On the photon's axis, between its wiggles' crests.
+        let hit = pick(&mut r, &chart, &list, scale, at(&chart, 0.4, 0.5, scale));
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanPropagator {
+                    propagator_index: 2,
+                    ..
+                })
+            ),
+            "{scale}x photon: {hit:?}"
+        );
+        // The photon's label sits above its middle.
+        let (x, y) = at(&chart, 0.5, 0.5, scale);
+        let hit = pick(&mut r, &chart, &list, scale, (x, y - (16.0 * scale) as u32));
+        assert!(
+            matches!(
+                hit,
+                Some(renderer::PickedData::FeynmanLabel {
+                    part: renderer::FeynmanLabelPart::Propagator,
+                    index: 2,
+                    ..
+                })
+            ),
+            "{scale}x label: {hit:?}"
+        );
+        let hit = pick(&mut r, &chart, &list, scale, at(&chart, 0.5, 0.95, scale));
+        assert_eq!(hit, None, "{scale}x empty");
+    }
+}
+
+#[test]
+fn the_picked_vertex_is_drawn_wider() {
+    let mut r = renderer();
+    let mut chart = chart();
+    let list = [series("d", labelled())];
+    // The dot's radius is 3 px; picked, 6.
+    let ring = |img: &RasterImage, scale: f32| {
+        let (x, y) = at(&chart_plain(), 0.25, 0.5, scale);
+        let i = ((y * img.width + x + (5.0 * scale) as u32) * 4) as usize;
+        // Off the fermion lines: straight right of the vertex lies the
+        // photon, so look below it.
+        let j = (((y + (5.0 * scale) as u32) * img.width + x) * 4) as usize;
+        (img.rgba[i + 3], img.rgba[j + 3])
+    };
+    for scale in [1.0f32, 2.0] {
+        let plain = export(&mut r, &chart, &list, scale);
+        assert_eq!(ring(&plain, scale).1, 0, "{scale}x unpicked dot");
+        chart.config_mut().picked_data = Some(renderer::DataSelectionsConfig {
+            refs: vec![renderer::PickedDataRef::FeynmanVertex {
+                source_id: None,
+                series_id: "d".into(),
+                vertex_index: 2,
+            }],
+            ..Default::default()
+        });
+        let picked = export(&mut r, &chart, &list, scale);
+        assert!(ring(&picked, scale).1 > 100, "{scale}x picked dot");
+        chart.config_mut().picked_data = None;
+    }
+}
+
+fn chart_plain() -> Chart {
+    chart()
+}
+
+#[test]
+fn a_vertex_drag_moves_its_lines_and_the_first_drag_commits() {
+    let mut r = renderer();
+    let chart = chart();
+    let id = r
+        .register_chart(chart.config().clone(), vec![series("d", s_channel())])
+        .unwrap();
+    let da = chart.config().data_area().unwrap().0;
+    // Up a fifth of the plot.
+    let dy = -(da.height as f32) * 0.2;
+    let moved = r
+        .drag_feynman(id, "d", renderer::FeynmanDrag::Vertex(2), 0.0, dy)
+        .unwrap();
+    assert_eq!(moved, renderer::layout::NudgeResult::Moved);
+    let diagram = r.chart_series(id).unwrap()[0].feynman().unwrap().clone();
+    assert!(diagram.vertices.iter().all(|v| v.at.is_some()), "committed");
+    let v1 = diagram.vertices[2].at.unwrap();
+    assert!(
+        (v1[0] - 0.25).abs() < 1e-6 && (v1[1] - 0.7).abs() < 1e-3,
+        "{v1:?}"
+    );
+    for scale in [1.0f32, 2.0] {
+        let image = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            near(&image, at(&chart, 0.25, 0.7, scale), 1),
+            "{scale}x vertex"
+        );
+        assert!(
+            !near(&image, at(&chart, 0.25, 0.5, scale), 1),
+            "{scale}x old"
+        );
+        // The fermion from e⁻ (0, 2/3) follows it.
+        assert!(
+            near(&image, at(&chart, 0.125, (2.0 / 3.0 + 0.7) / 2.0, scale), 2),
+            "{scale}x line"
+        );
+    }
+    // A bend and a label drag.
+    assert_eq!(
+        r.drag_feynman(id, "d", renderer::FeynmanDrag::Bend(2), 0.0, -30.0)
+            .unwrap(),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert!(
+        r.chart_series(id).unwrap()[0]
+            .feynman()
+            .unwrap()
+            .propagators[2]
+            .bend
+            .is_some()
+    );
+    assert_eq!(
+        r.drag_feynman(
+            id,
+            "d",
+            renderer::FeynmanDrag::Label(renderer::FeynmanLabelPart::Vertex, 0),
+            3.0,
+            4.0
+        )
+        .unwrap(),
+        renderer::layout::NudgeResult::Moved
+    );
+    assert!(
+        r.drag_feynman(id, "missing", renderer::FeynmanDrag::Vertex(0), 1.0, 1.0)
+            .is_err()
+    );
+}
+
+#[test]
+fn a_pick_inside_a_break_gap_answers_nothing() {
+    use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark};
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.config_mut().left_y.breaks = Some(AxisBreaks {
+        ranges: vec![AxisBreak::new(0.55, 0.62)],
+        style: AxisBreakStyle::Continuous,
+        gap: 0.2,
+        mark: BreakMark::default(),
+        frame_each_panel: false,
+    });
+    // A vertical photon from (0.5, 0.2) to (0.5, 0.9) crosses the cut.
+    let diagram = FeynmanSeries {
+        vertices: vec![
+            vertex("a", VertexRole::Internal, Some([0.5, 0.2])),
+            vertex("b", VertexRole::Internal, Some([0.5, 0.9])),
+        ],
+        propagators: vec![Propagator::new("g", "a", "b", ParticleLine::Plain)],
+        ..FeynmanSeries::default()
+    };
+    let list = [series("d", diagram)];
+    for scale in [1.0f32, 2.0] {
+        let space = renderer::annotation::pixel_space_for_config(&chart.config().scaled(scale));
+        use renderer::AnnotationSpace as _;
+        let below = space
+            .value_to_px(renderer::AnnotationAxis::Y, 0.5499)
+            .unwrap();
+        let above = space
+            .value_to_px(renderer::AnnotationAxis::Y, 0.6201)
+            .unwrap();
+        let x = space.value_to_px(renderer::AnnotationAxis::X, 0.5).unwrap();
+        let mid = ((below + above) / 2.0).round() as u32;
+        let hit = pick(&mut r, &chart, &list, scale, (x.round() as u32, mid));
+        assert_eq!(hit, None, "{scale}x gap");
+        let hit = pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            (x.round() as u32, below.round() as u32 + 8),
+        );
+        assert!(
+            matches!(hit, Some(renderer::PickedData::FeynmanPropagator { .. })),
+            "{scale}x below the gap: {hit:?}"
+        );
+    }
+}
+
+#[test]
+fn a_diagram_draws_under_the_annotation_layer() {
+    let mut r = renderer();
+    let mut chart = chart();
+    // An annotation line across the middle, over the diagram.
+    chart
+        .config_mut()
+        .annotations
+        .items
+        .push(renderer::Annotation::new(
+            renderer::AnnotationKind::ReferenceLine {
+                axis: renderer::AnnotationAxis::Y,
+                value: 0.2,
+                style: renderer::AnnotationLineStyle {
+                    color: Color::from_rgb8(0, 0, 255),
+                    width: 3.0,
+                    style: renderer::line::LineStylePreset::Solid,
+                },
+                label: None,
+            },
+        ));
+    let list = [series("d", labelled())];
+    for scale in [1.0f32, 2.0] {
+        let image = export(&mut r, &chart, &list, scale);
+        assert!(
+            near(&image, at(&chart, 0.25, 0.5, scale), 1),
+            "{scale}x vertex"
+        );
+        let (x, y) = at(&chart, 0.9, 0.2, scale);
+        let i = ((y * image.width + x) * 4) as usize;
+        assert!(image.rgba[i + 2] > 200, "{scale}x annotation");
+    }
+}
