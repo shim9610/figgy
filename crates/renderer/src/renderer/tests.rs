@@ -14555,7 +14555,7 @@ fn composite_test_record(rows: usize) -> Vec<(&'static str, Column<f64>)> {
         .collect()
 }
 
-/// Streaming is not extended to records and ragged columns (rule 8): an
+/// Streaming is not extended to records, ragged and triangle columns (rule 8): an
 /// upsert onto a streamed id and a stream registered onto a record or ragged
 /// id both fail with `InvalidSeriesConfig` naming the limitation.
 #[test]
@@ -14588,23 +14588,32 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     let streamed = |result: Result<String>| match result {
         Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
             assert!(
-                reason.contains("streaming is not extended to records and ragged columns"),
+                reason
+                    .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             );
         }
         other => panic!("expected InvalidSeriesConfig, got {other:?}"),
     };
+    let indices = Column {
+        data: vec![0u32, 1, 2],
+    };
+    let triangles = TriangleSource { indices: &indices };
     streamed(renderer.upsert_record("s", &record));
     streamed(renderer.upsert_ragged("s", &ragged));
+    streamed(renderer.upsert_triangles("s", &triangles));
     assert!(renderer.pool().record("s").is_none());
     assert!(renderer.pool().ragged("s").is_none());
+    assert!(renderer.pool().triangles("s").is_none());
 
     renderer.upsert_record("box", &record).unwrap();
     renderer.upsert_ragged("outliers", &ragged).unwrap();
-    for id in ["box", "outliers"] {
+    renderer.upsert_triangles("mesh", &triangles).unwrap();
+    for id in ["box", "outliers", "mesh"] {
         match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
             Err(FiggyError::InvalidSeriesConfig { reason, .. }) => assert!(
-                reason.contains("streaming is not extended to records and ragged columns"),
+                reason
+                    .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             ),
             other => panic!("expected InvalidSeriesConfig for {id}, got {other:?}"),
@@ -14760,6 +14769,72 @@ fn member_columns_are_owned_by_their_record_or_ragged_column() {
         renderer.visual_revision(),
         revision,
         "no chart reads a record yet"
+    );
+}
+
+/// A triangle index column (#210) through the renderer: its member is no
+/// host column and its id is reserved, a replacement frees the old member
+/// and leaves maintenance, and removal frees it.
+#[test]
+fn triangle_columns_upsert_replace_and_remove_through_the_renderer() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let small = Column {
+        data: vec![0u32, 1, 2],
+    };
+    renderer
+        .upsert_triangles("mesh", &TriangleSource { indices: &small })
+        .unwrap();
+    let member = renderer
+        .pool()
+        .triangles("mesh")
+        .unwrap()
+        .slot()
+        .indices
+        .clone();
+    assert!(renderer.logical_column("mesh").is_none());
+    assert_eq!(
+        renderer.logical_column_ids().count(),
+        0,
+        "the member is no host column"
+    );
+    let replacement = Column { data: vec![1.0f32] };
+    assert!(matches!(
+        renderer.upsert_column(&member, &replacement),
+        Err(FiggyError::ReservedColumnId { .. })
+    ));
+    assert!(
+        renderer.upsert_column("mesh", &replacement).is_err(),
+        "a triangle column's id is not a column id"
+    );
+
+    let revision = renderer.visual_revision();
+    let large = Column {
+        data: (0..30u32).collect(),
+    };
+    renderer
+        .upsert_triangles("mesh", &TriangleSource { indices: &large })
+        .unwrap();
+    assert!(
+        renderer.pool().slot(&member).is_none(),
+        "the old member was freed"
+    );
+    assert_eq!(
+        renderer.pool().triangle_stats("mesh").unwrap().triangles,
+        10
+    );
+    assert!(
+        renderer.has_pending_maintenance(),
+        "the freed member leaves a hole"
+    );
+    assert!(renderer.remove_triangles("mesh").unwrap());
+    assert!(!renderer.remove_triangles("mesh").unwrap());
+    assert!(renderer.pool().triangles("mesh").is_none());
+    assert_eq!(
+        renderer.visual_revision(),
+        revision,
+        "no chart reads a triangle column yet"
     );
 }
 

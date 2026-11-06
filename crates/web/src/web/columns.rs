@@ -335,6 +335,37 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Register or replace the triangle index column `id` (#210): three
+    /// vertex indices per triangle, triangle `t` being the vertices
+    /// `indices[3t]`, `indices[3t + 1]` and `indices[3t + 2]`.
+    ///
+    /// `indices` is a `Uint32Array` whose length is a non-zero multiple of 3;
+    /// anything else is an error and nothing is registered. The array is
+    /// borrowed for the upload, not copied, and every index up to
+    /// `u32::MAX` reaches the GPU exactly. Resident only, as
+    /// `register_record`.
+    pub fn register_triangles(&mut self, id: &str, indices: &[u32]) -> Result<(), JsValue> {
+        if self.renderer.logical_column(id).is_some() {
+            return Err(js_err(format!(
+                "triangle index column '{id}': the id is a registered column"
+            )));
+        }
+        let indices = BorrowedU32Column::new(indices);
+        let source = renderer::TriangleSource { indices: &indices };
+        self.renderer
+            .upsert_triangles(id, &source)
+            .map_err(column_registration_error)?;
+        Ok(())
+    }
+
+    /// Unregister the triangle index column `id` and free its GPU memory.
+    /// Returns `true` when it existed.
+    pub fn remove_triangles(&mut self, id: &str) -> Result<bool, JsValue> {
+        self.renderer
+            .remove_triangles(id)
+            .map_err(column_registration_error)
+    }
+
     /// Unregister a column. Series referencing it are removed too so the
     /// chart can never point at freed data. Auto-managed legends remove
     /// the corresponding rows; freely edited legends preserve their text

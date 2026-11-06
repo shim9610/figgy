@@ -13,7 +13,7 @@
 //!
 //! # Source kinds
 //!
-//! Per-point data enters the pool in one of three kinds, all through
+//! Per-point data enters the pool in one of four kinds, all through
 //! [`ColumnSource`]:
 //!
 //! - **Columns**: one `ColumnSource` per id ([`ColumnPool::add_column`],
@@ -31,21 +31,31 @@
 //!   columns of the pool uploaded in one batch; a [`RaggedSlot`] names them
 //!   and keeps the [`RaggedStats`], measured while the offsets are written
 //!   (a non-monotone offsets column is rejected).
+//! - **Triangle index columns** ([`TriangleSource`],
+//!   [`ColumnPool::upsert_triangles`], #210): three vertex indices per
+//!   triangle, in triangle order, for a triangle mesh series. One member
+//!   column of the pool; a [`TriangleSlot`] names it and keeps the
+//!   [`TriangleStats`] (the triangle count and the smallest and largest
+//!   index), measured while the indices are written. An index column that
+//!   is empty, whose length is not a multiple of 3, or that holds a value
+//!   other than an integer in `0..=u32::MAX` is rejected.
 //!
-//! A ragged column's offsets are indices, so the pool stores them as `u32`
+//! A ragged column's offsets and a triangle column's indices are indices, so
+//! the pool stores them as `u32`
 //! lanes: the source writes `(hi, lo)` pairs like every column, and the pool
 //! writes each offset's integer `hi + lo` (summed in f64) as `u32` bits in
 //! the pair's first lane, read with `bitcast<u32>`. Every offset up to
-//! `u32::MAX` is exact, so a ragged column has no value cap below the `u32`
-//! index space. A shader reads a record field or a ragged column by its pool
+//! `u32::MAX` is exact, so neither has a value cap below the `u32` index
+//! space. A shader reads a record field, a ragged or a triangle column by its pool
 //! lane base (`handle.offset / 4`), as every column (`SHADER_COMMON.md`
 //! §5.14).
 //!
-//! The member columns of a record or ragged column are owned by it: their ids
-//! are internal, the host cannot replace, remove or stream them, and deleting
-//! the record ([`ColumnPool::remove_record`], [`ColumnPool::remove_ragged`])
-//! frees them. Records and ragged columns are resident only: streaming is not
-//! extended to them, and the renderer rejects a streamed id on either side.
+//! The member columns of a record, ragged or triangle column are owned by it:
+//! their ids are internal, the host cannot replace, remove or stream them, and
+//! deleting the owner ([`ColumnPool::remove_record`],
+//! [`ColumnPool::remove_ragged`], [`ColumnPool::remove_triangles`]) frees
+//! them. All three are resident only: streaming is not extended to them, and
+//! the renderer rejects a streamed id on either side.
 //!
 //! `ColumnHandle` carries a public `generation` value. Mutations that can
 //! invalidate positional handles, including removal, replacement, relocation,
@@ -128,8 +138,8 @@ pub struct ColumnSlot {
 /// uniform.
 pub const MAX_RECORD_FIELDS: usize = 12;
 
-/// Separates a record or ragged column id from its member column ids. Record
-/// and ragged ids may not contain it.
+/// Separates a record, ragged or triangle column id from its member column
+/// ids. Their ids may not contain it.
 const MEMBER_SEPARATOR: char = '\u{1f}';
 
 /// The id of a record source in the pool. Records, ragged columns and
@@ -139,6 +149,10 @@ pub type RecordId = ColumnId;
 /// The id of a ragged column in the pool. Records, ragged columns and
 /// columns share one id space.
 pub type RaggedId = ColumnId;
+
+/// The id of a triangle index column in the pool (#210). It shares the one id
+/// space of columns, records and ragged columns.
+pub type TriangleId = ColumnId;
 
 /// A record schema: the field names in slot order, each with whether the
 /// field is required. Static per consumer; a record's fields are checked by
@@ -198,6 +212,24 @@ pub struct RaggedSource<'a> {
     pub offsets: &'a dyn ColumnSource,
 }
 
+/// A triangle index column (#210): `indices.len() / 3` triangles, triangle
+/// `t` being the vertices `indices[3t]`, `indices[3t + 1]` and
+/// `indices[3t + 2]` of its mesh's vertex columns.
+///
+/// The source writes every index once, in row order; its length is a non-zero
+/// multiple of 3 and every index an integer in `0..=u32::MAX`.
+/// [`ColumnPool::upsert_triangles`] checks this while it writes the indices
+/// and rejects anything else with an explicit error. Whether an index names a
+/// vertex the mesh has is a series question, checked against the vertex
+/// columns when the series registers. The pool stores the indices as `u32`
+/// lanes; an index is the integer its source writes as `hi + lo`, so a
+/// source writes indices past 2^24 as the `(hi, lo)` split, as
+/// `Column<u32>` and the WASM wrapper do.
+#[derive(Clone, Copy)]
+pub struct TriangleSource<'a> {
+    pub indices: &'a dyn ColumnSource,
+}
+
 /// The scalar statistics of a record, measured from the encoded `(hi, lo)`
 /// values while the fields were written. Index `k` is schema field `k`;
 /// a field that is not present has `present[k] == false`, no counts and an
@@ -237,6 +269,19 @@ pub struct RaggedStats {
     pub max_group: u32,
 }
 
+/// The scalar statistics of a triangle index column, measured while its
+/// indices were written: no index is kept, only these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangleStats {
+    /// The triangle count: the index count divided by 3.
+    pub triangles: u32,
+    /// The smallest index.
+    pub min_index: u32,
+    /// The largest index. A series' vertex columns need `max_index + 1`
+    /// values for every triangle to have its vertices.
+    pub max_index: u32,
+}
+
 /// A resident record: its member columns in schema order, a fixed array with
 /// no `Vec`. `epoch` is the allocation epoch of its first member column; a
 /// replacement always has a larger one.
@@ -259,6 +304,15 @@ pub struct RaggedSlot {
     pub total: u32,
     pub epoch: u64,
     pub stats: RaggedStats,
+}
+
+/// A resident triangle index column: its one member column.
+#[derive(Debug, Clone)]
+pub struct TriangleSlot {
+    pub indices: ColumnId,
+    pub triangles: u32,
+    pub epoch: u64,
+    pub stats: TriangleStats,
 }
 
 /// A record looked up in the pool ([`ColumnPool::record`]).
@@ -323,6 +377,30 @@ impl<'a> RaggedRef<'a> {
     }
 }
 
+/// A triangle index column looked up in the pool ([`ColumnPool::triangles`]).
+#[derive(Clone, Copy)]
+pub struct TriangleRef<'a> {
+    pool: &'a ColumnPool,
+    slot: &'a TriangleSlot,
+}
+
+impl<'a> TriangleRef<'a> {
+    pub fn slot(&self) -> &'a TriangleSlot {
+        self.slot
+    }
+
+    pub fn stats(&self) -> TriangleStats {
+        self.slot.stats
+    }
+
+    /// The index column, three `u32` lanes per triangle. `None` only if the
+    /// member was removed from under its triangle column, which the pool's
+    /// own remove and upsert reject.
+    pub fn indices(&self) -> Option<ColumnHandle> {
+        self.pool.handle_for(&self.slot.indices)
+    }
+}
+
 /// Lightweight handle handed out to the chart layer. `generation` lets
 /// callers detect a stale handle after any invalidating pool mutation.
 #[derive(Debug, Clone, Copy)]
@@ -380,8 +458,8 @@ pub enum AllocError {
         resource: &'static str,
         reason: String,
     },
-    /// The id names a member column of a resident record or ragged column.
-    /// A member is replaced or removed only through its owner (#152).
+    /// The id names a member column of a resident record, ragged or triangle
+    /// column. A member is replaced or removed only through its owner (#152).
     MemberColumn(ColumnId),
 }
 
@@ -429,8 +507,8 @@ impl std::fmt::Display for AllocError {
             }
             AllocError::MemberColumn(id) => write!(
                 f,
-                "ColumnPool: {id:?} is a member column of a record or ragged column; \
-                 replace or remove it through its owner"
+                "ColumnPool: {id:?} is a member column of a record, ragged or triangle \
+                 column; replace or remove it through its owner"
             ),
         }
     }
@@ -448,6 +526,8 @@ pub struct ColumnPool {
     records: HashMap<RecordId, RecordSlot>,
     /// Resident ragged columns; their member columns are in `slots`.
     raggeds: HashMap<RaggedId, RaggedSlot>,
+    /// Resident triangle index columns; their member columns are in `slots`.
+    triangles: HashMap<TriangleId, TriangleSlot>,
     /// Kept sorted by offset (coalesce and first-fit both rely on this).
     free: Vec<FreeRegion>,
     generation: u32,
@@ -503,6 +583,7 @@ impl ColumnPool {
             slots: HashMap::new(),
             records: HashMap::new(),
             raggeds: HashMap::new(),
+            triangles: HashMap::new(),
             free: vec![FreeRegion {
                 offset: 0,
                 size: capacity,
@@ -537,8 +618,8 @@ impl ColumnPool {
         self.allocation_epochs.get(id).copied()
     }
 
-    /// The ids of every resident column a host registered: record and ragged
-    /// member columns are part of their owner and are left out.
+    /// The ids of every resident column a host registered: record, ragged and
+    /// triangle member columns are part of their owner and are left out.
     pub(crate) fn column_ids(&self) -> impl Iterator<Item = &str> + '_ {
         self.slots
             .keys()
@@ -574,7 +655,8 @@ impl ColumnPool {
         self.slots.get(id)
     }
 
-    /// Drop all columns, records and ragged columns. The primary buffer is reused (capacity unchanged).
+    /// Drop all columns, records, ragged and triangle columns. The primary
+    /// buffer is reused (capacity unchanged).
     /// Bumps public and layout generations; allocation epochs are removed
     /// without resetting their monotonic issuer.
     pub fn clear(&mut self) -> Result<(), AllocError> {
@@ -583,6 +665,7 @@ impl ColumnPool {
         self.slots.clear();
         self.records.clear();
         self.raggeds.clear();
+        self.triangles.clear();
         self.allocation_epochs.clear();
         self.free.clear();
         self.free.push(FreeRegion {

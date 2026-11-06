@@ -491,6 +491,26 @@ impl HiLoColumnSource for Column<f64> {
     }
 }
 
+// Indices (a triangle index column, #210) and other unsigned integers: each
+// value is written as the f64 `(hi, lo)` split, which holds every `u32`
+// exactly, so an index column stores every index up to `u32::MAX` in its
+// `u32` lane (SHADER_COMMON.md §5.14).
+impl ColumnSource for Column<u32> {
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_values(&self.data, dst, f64::from);
+    }
+    fn write_pair_range(
+        &self,
+        start: u64,
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_value_range(&self.data, start, dst, f64::from)
+    }
+}
+
 impl ColumnSource for Column<f32> {
     fn len(&self) -> usize {
         self.data.len()

@@ -1378,23 +1378,28 @@ the group layout. The value axis fit reads only the value columns' own
 statistics (`ColumnSlot::min` / `max`); the per-category totals exist only
 in this shader, on every draw.
 
-### 5.14 Records and ragged columns in the pool
+### 5.14 Records, ragged and triangle columns in the pool
 
-A record (`ColumnPool::upsert_record`) and a ragged column
-(`ColumnPool::upsert_ragged`) are ordinary pool columns, so a shader reads
-them as every column: through the pool bound as `array<f32>` storage, at a
-lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
-lanes `base + 2i` and `base + 2i + 1`. A ragged column's offsets are the one
-exception: they are indices, stored as `u32` lanes (below).
+A record (`ColumnPool::upsert_record`), a ragged column
+(`ColumnPool::upsert_ragged`) and a triangle index column
+(`ColumnPool::upsert_triangles`, #210) are ordinary pool columns, so a shader
+reads them as every column: through the pool bound as `array<f32>` storage,
+at a lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
+lanes `base + 2i` and `base + 2i + 1`. A ragged column's offsets and a
+triangle column's indices are the exception: they are indices, stored as
+`u32` lanes (below).
 
 | Source | Lane bases | Convention |
 |---|---|---|
 | Record | one per present schema field (`RecordRef::field_at(k)`), at most `MAX_RECORD_FIELDS` (12, three `vec4<u32>`) | row `r` of field `k` is value `r` of that field's column; an absent optional field has no column and reads as NaN; how a consumer marks it in its uniform is that consumer's contract |
 | Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `offsets[g]..offsets[g + 1]`. Offset `i` is a `u32` index: lane `base + 2i` holds its bits, read as `bitcast<u32>(pool[base + 2i])`, and lane `base + 2i + 1` holds 0. The pool writes the lanes from the source's `(hi, lo)` pair, the integer `hi + lo` summed in f64, so every offset up to `u32::MAX` is exact and a ragged column has no value cap below the `u32` index space; `offsets[0] = 0`, `offsets[groups] = total` and the integer, non-decreasing offsets are checked at upload. CPU writer: `ColumnPairWriter` in index lane mode (`data.rs`) |
 
+| Triangle index column | the indices (`TriangleRef::indices`) | triangle `t` is the vertices at indices `3t`, `3t + 1` and `3t + 2`; index `i` is a `u32` lane as a ragged offset is, read as `bitcast<u32>(pool[base + 2i])`, exact up to `u32::MAX`. The pool checks at upload that the count is a non-zero multiple of 3 and that every index is an integer in `0..=u32::MAX`, and records `TriangleStats { triangles, min_index, max_index }`; whether an index names a vertex the mesh has is checked against the vertex columns when a series registers. CPU writer: `ColumnPairWriter` in index lane mode |
+
 The box plot entries (§5.15) read them; the convention is also held by
-the pool test
-`a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset`.
+the pool tests
+`a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset` and
+`a_shader_reads_a_triangle_by_pool_offset`.
 
 ### 5.15 Box plots (group 3, bindings 8 to 10)
 

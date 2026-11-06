@@ -3557,22 +3557,109 @@ impl Renderer {
         Ok(true)
     }
 
-    /// Records and ragged columns are resident only: streaming is not
-    /// extended to them (CLAUDE.md rule 8).
+    /// Insert or replace the triangle index column `id` (#210): three vertex
+    /// indices per triangle, uploaded as one member column whose write
+    /// observer rejects a length that is not a non-zero multiple of 3 or an
+    /// index that is not an integer in `0..=u32::MAX`
+    /// ([`ColumnPool::upsert_triangles`]). Resident only, as
+    /// [`Self::upsert_record`].
+    pub fn upsert_triangles(
+        &mut self,
+        id: impl Into<TriangleId>,
+        source: &TriangleSource<'_>,
+    ) -> Result<TriangleId> {
+        let result = self.upsert_triangles_unreported(id, source);
+        self.reported(result)
+    }
+
+    fn upsert_triangles_unreported(
+        &mut self,
+        id: impl Into<TriangleId>,
+        source: &TriangleSource<'_>,
+    ) -> Result<TriangleId> {
+        self.health.check()?;
+        let id = id.into();
+        self.reject_streamed_composite(&id, "a triangle index column")?;
+        let old = self
+            .pool
+            .triangles(&id)
+            .map(|triangles| triangles.slot().indices.clone());
+        let changed_ids = match old.as_deref() {
+            Some(indices) => [id.as_str(), indices],
+            None => [id.as_str(), ""],
+        };
+        let replaced = old.is_some();
+        let changed = &changed_ids[..if replaced { 2 } else { 1 }];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let ctx = pool_alloc_ctx(&self.device, &self.queue, &self.gpu_ledger);
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let (relocated, picker) =
+            self.pool
+                .upsert_triangles_with(id.clone(), source, ctx, move |pool, relocated| {
+                    let picker = prepare_picker_for_pool_mutation(
+                        picker_state,
+                        pool,
+                        chart_states,
+                        relocated,
+                        changed,
+                    )?;
+                    Ok((relocated, picker))
+                })?;
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.settle_composite_defrag(relocated, replaced);
+        Ok(id)
+    }
+
+    /// Delete the triangle index column `id` and free its member column.
+    /// `false` when no such column is resident.
+    pub fn remove_triangles(&mut self, id: &str) -> Result<bool> {
+        let result = self.remove_triangles_unreported(id);
+        self.reported(result)
+    }
+
+    fn remove_triangles_unreported(&mut self, id: &str) -> Result<bool> {
+        self.health.check()?;
+        let Some(triangles) = self.pool.triangles(id) else {
+            return Ok(false);
+        };
+        let indices = triangles.slot().indices.clone();
+        let changed_ids = [id, indices.as_str()];
+        let changed = &changed_ids[..];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let picker = self.pool.remove_triangles_with(id, move |pool| {
+            prepare_picker_for_pool_mutation(picker_state, pool, chart_states, false, changed)
+        })?;
+        let Some(picker) = picker else {
+            return Ok(false);
+        };
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.pending_defrag = true;
+        Ok(true)
+    }
+
+    /// Records, ragged and triangle columns are resident only: streaming is
+    /// not extended to them (CLAUDE.md rule 8).
     fn reject_streamed_composite(&self, id: &str, kind: &str) -> Result<()> {
         if self.streaming_sources.contains_key(id) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: id.to_owned(),
                 reason: format!(
-                    "the id is a streamed column; streaming is not extended to records and \
-                     ragged columns, so {kind} needs a resident id"
+                    "the id is a streamed column; streaming is not extended to records, \
+                     ragged and triangle columns, so {kind} needs a resident id"
                 ),
             });
         }
         Ok(())
     }
 
-    /// Maintenance after a record or ragged upsert: freed old members leave
+    /// Maintenance after a record, ragged or triangle upsert: freed old members leave
     /// holes worth compacting; a relayout without them already compacted.
     fn settle_composite_defrag(&mut self, relocated: bool, replaced: bool) {
         if replaced {
