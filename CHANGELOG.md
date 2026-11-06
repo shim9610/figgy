@@ -3324,8 +3324,8 @@ entries above describe the changes.
   foot-point iteration (#208) and the binary searches inside it were
   nested in the contour pick's loop over the levels; the pick now runs
   each level's steps in one flat loop, through
-  `contour_foot_begin` and `contour_foot_step`, which the paint and the
-  highlight share. `locate` keeps the bracket's boundaries as it bisects
+  `contour_foot_begin` and the foot-point step the paint and the
+  highlight share (now the walk of the next entry). `locate` keeps the bracket's boundaries as it bisects
   and returns them (`CellHit.lo_t`, `hi_t`), so `contour_sample` no longer
   transforms four boundaries again for the cell's span. Distances and
   picks are unchanged. The violin pick's segment search keeps the two
@@ -3334,6 +3334,31 @@ entries above describe the changes.
   now builds in about 60 s at 850 MB and the violin pick in about 90 s at
   530 MB; the cell pick goes from 17 s to 9 s and the contour paint from
   8 s to 4 s.
+
+- **Contours draw in a browser's software GPU.** SwiftShader compiles a
+  fragment entry when it first draws, not when its pipeline is created, so
+  measuring pipeline creation missed the contour paint: the first draw of
+  a contour (`fs_contour`, `fs_contour_labelled`, the 3D floor contour and
+  its ID pick) grew Chromium's GPU process past 12 GB and lost the device.
+  This is what a page creating several contour charts, and an export after
+  a full prewarm, ran into. The paint nested the polar foot-point loop in
+  its loops over the level blocks and candidates, and every foot-point
+  step held two binary cell searches. The paint now takes the blocks, the
+  candidates and the foot-point steps in one flat loop, like the pick. The
+  steps are a walk (`contour_foot_walk`, `contour_foot_advance`) that the
+  paint, the pick and the selected-level highlight advance one iteration
+  of their loop at a time. `locate` is split into `locate_begin`,
+  `locate_step` and `locate_end`, and `contour_sample` into the search and
+  `contour_sample_cells`, so the walk halves one cell search per
+  iteration, both axes through one call site. Pixels and picks are
+  unchanged: on Apple M4 (Metal) the exported images of polar and
+  rectangular contours at 8 and 64 levels, 1x and 2x, are byte-identical
+  before and after. A polar contour export takes 1 to 5 ms (3 to 8%)
+  longer there; a rectangular one is unchanged. In headless Chromium 151
+  (SwiftShader, Apple M4) the first use of each contour entry now takes 4
+  to 5.5 s at under 210 MB, the selected-level highlight 9 s instead of
+  30 s, and creating the contour pick 6.5 s at 200 MB instead of 27 s at
+  710 MB. Draws after the first take 2 to 3 ms either way.
 
 - **Shaders a browser refuses.** Chrome's WGSL compiler refused eight
   modules that naga accepts (the line, bar and surface draw modules and
