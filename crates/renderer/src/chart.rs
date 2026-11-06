@@ -328,7 +328,10 @@ pub(crate) fn apply_auto_fit_all(
 /// separate axis (the z axis of a 3D chart, the c axis of a ternary one) it
 /// keeps its scale and gets the ticks of it. A categorical axis keeps its
 /// scale and range under a fit ([`apply_axis_range`]); a view moves its
-/// window ([`apply_view_range`]). `apply` is the one of the two.
+/// window ([`apply_view_range`]). `apply` is the one of the two. A
+/// categorical partner of a numeric main axis is a separate axis whose
+/// range is not in the main axis's units, so it keeps its window under a
+/// view too.
 fn apply_pair_range(
     pair: [&mut AxisOptions; 2],
     mirror: bool,
@@ -340,9 +343,12 @@ fn apply_pair_range(
     if mirror && main.categories.is_none() && partner.categories.is_none() {
         partner.scale = main.scale.clone();
     }
-    for axis in [main, partner] {
-        let scale = axis.scale.clone();
-        apply(axis, min, max, &scale);
+    let partner_follows = main.categories.is_some() || partner.categories.is_none();
+    let main_scale = main.scale.clone();
+    apply(main, min, max, &main_scale);
+    if partner_follows {
+        let scale = partner.scale.clone();
+        apply(partner, min, max, &scale);
     }
 }
 
@@ -1779,6 +1785,19 @@ mod tests {
         let mut c = Chart::new(cfg);
         c.set_y_range(1.0, 1000.0);
         assert_eq!(c.config().right_y, before);
+    }
+
+    /// A view moves the window of a categorical partner of a categorical
+    /// main axis: both edges show the same categories (#205).
+    #[test]
+    fn a_view_moves_both_windows_of_a_categorical_pair() {
+        let mut cfg = dummy_config();
+        cfg.bottom_x.categories = categories(3);
+        cfg.top_x.categories = categories(3);
+        let mut c = Chart::new(cfg);
+        c.set_x_range(0.5, 2.5);
+        assert_eq!(c.config().bottom_x.category_window, Some([0.5, 2.5]));
+        assert_eq!(c.config().top_x.category_window, Some([0.5, 2.5]));
     }
 
     #[test]
