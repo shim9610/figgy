@@ -7,6 +7,29 @@
 
 pub(super) const EXPLICIT_ZERO: &str = "FIGGY_EXPLICIT_WORKGROUP_ZERO";
 
+/// Every compute entry compiled with [`compilation_options`]: the shader
+/// benchmark refuses explicit zeroing for any other entry, and
+/// `every_workgroup_entry_initializes_before_computation` fails for a
+/// workgroup-memory entry missing from it, so a new one is listed here on
+/// every backend, not only where DX12 takes the explicit path.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(super) const EXPLICIT_ZERO_ENTRIES: &[&str] = &[
+    "reduce_values",
+    "reduce_states",
+    "pick_exact_candidates",
+    "pick_reduce_candidates",
+    "pick_histogram_bin",
+    "pick_category_bar",
+    "pick_box_plot",
+    "pick_range_bar",
+    "pick_violin",
+    "pick_value_labels",
+    "pick_parallel",
+    "pick_tri_mesh",
+    "scan_block",
+    "ring_scan_block",
+];
+
 fn explicit_options() -> wgpu::PipelineCompilationOptions<'static> {
     wgpu::PipelineCompilationOptions {
         constants: &[(EXPLICIT_ZERO, 1.0)],
@@ -130,6 +153,11 @@ mod tests {
                     entry.name
                 );
                 assert_eq!(entry.workgroup_size, [case.width, 1, 1]);
+                assert!(
+                    EXPLICIT_ZERO_ENTRIES.contains(&entry.name.as_str()),
+                    "{} is missing from EXPLICIT_ZERO_ENTRIES",
+                    entry.name
+                );
             }
         }
     }

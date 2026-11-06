@@ -167,23 +167,8 @@ impl Capture {
                 || (options
                     .constants
                     .contains(&(super::workgroup_init::EXPLICIT_ZERO, 1.0))
-                    && matches!(
-                        entry,
-                        Some(
-                            "reduce_values"
-                                | "reduce_states"
-                                | "pick_exact_candidates"
-                                | "pick_reduce_candidates"
-                                | "pick_histogram_bin"
-                                | "pick_category_bar"
-                                | "pick_box_plot"
-                                | "pick_range_bar"
-                                | "pick_violin"
-                                | "pick_value_labels"
-                                | "pick_parallel"
-                                | "scan_block"
-                                | "ring_scan_block"
-                        )
+                    && entry.is_some_and(
+                        |name| super::workgroup_init::EXPLICIT_ZERO_ENTRIES.contains(&name)
                     )),
             "Benchmark must retain workgroup initialization"
         );
