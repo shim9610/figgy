@@ -469,6 +469,8 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `locate`의 `lattice` 인자는 검색할 격자를 정한다. 채움은 `Shading`에 따른 사각형 격자를, 등고선은 실제 Z값이 있는 표본 격자를 사용한다. 두 경우 모두 같은 이진 탐색을 수행한다.
 
+The binary search is three functions, `locate_begin` (the bracket, or a miss), `locate_step` (one halving) and `locate_end` (the cell and its fraction); `locate` runs them with its own loop. `contour_sample` is `locate` on each axis followed by `contour_sample_cells`, which evaluates the located cell. A caller that already loops, the polar foot-point walk below, takes the same three functions one halving per iteration of its own loop, so the search is not a loop inside it.
+
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
 대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(80바이트), `create_field_data_bind_group_layout`이다.
@@ -496,15 +498,25 @@ axis-`t` gradient to pixels, `g = dz.x · jac_x + dz.y · jac_y`, and the
 bilinear Hessian `Jᵀ H J`. That only starts the distance: along a pixel line
 the polar field is not a quadratic, so `contour_level_distance_at` finds the
 closest point on the level set by foot-point iteration
-(`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then
-`contour_foot_step`): at the current point the level set is linearized from
-the field read through `field_lookup` and `contour_sample`, and the point
-moves to the foot of the perpendicular from the fragment. The distance is
-the Euclidean pixel distance to the isoline; the paint, the pick and the
-selected-level highlight read it. The pick (`field_pick_contour`) takes the
-same two functions in one flat loop over its levels and steps: nested in
-its loop over the levels, the foot-point loop and the binary searches
-inside it made Chromium's SwiftShader compute compiler pass 12 GB. `locate`
+(`CONTOUR_POLAR_FOOT_STEPS`, 4; `contour_foot_begin`, then the walk
+`contour_foot_walk` / `contour_foot_advance`): at the current point the
+level set is linearized from the field read through `field_lookup` and the
+located cell (`contour_sample_cells`), and the point moves to the foot of
+the perpendicular from the fragment. The distance is the Euclidean pixel
+distance to the isoline; the paint, the pick and the selected-level
+highlight read it. The walk is advanced by its caller's own loop, one
+iteration at a time: an iteration looks the current point up, begins or
+halves one axis's cell search (`locate_begin`, `locate_step`; the two axes
+share one call site of each), or takes the step from the located cell. The
+paint (`contour_paint`) and the pick (`field_pick_contour`) run it inside
+their one flat loop over the levels (the paint: the candidates of each level
+block), and `contour_level_distance_at` (the selected-level highlight) in a
+loop of its own, so no foot-point step and no cell search runs as a loop
+inside another loop. Chromium's SwiftShader compiles a fragment entry at its
+first draw and a compute entry when its pipeline is created. With the
+foot-point loop nested in the loop over the levels it passed 12 GB on the
+contour entries, and with the cell search nested in the foot-point step it
+took 24 to 30 s and 0.7 GB per contour entry. `locate`
 returns the bracket's boundaries (`CellHit.lo_t`, `hi_t`), which
 `contour_sample` takes for the cell's span instead of transforming them
 again. A rectangular chart keeps

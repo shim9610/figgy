@@ -371,40 +371,126 @@ fn contour_foot_begin(s: ContourSample, metric: ContourMetric, level: f32, reach
     return out;
 }
 
-/// One foot-point step from `q` (relative to the fragment at chart-area
-/// `chart_t`): the level set is linearized at `q` (`z(q) + g(q) · (x - q) =
-/// level`, `g` the pixel gradient through `field_lookup` and
-/// `contour_sample`, crossing cells as `q` moves) and the result is the foot
-/// of the perpendicular from the fragment onto that line. `moved` is false,
-/// and `q` unchanged, where the step cannot be taken; the iteration stops
-/// there.
-struct ContourFootStep {
+/// The foot-point iteration from `contour_foot_begin`'s `q`, advanced one
+/// iteration of its caller's loop at a time by `contour_foot_advance`.
+///
+/// A foot-point step from `q` (relative to the fragment at chart-area
+/// `chart_t`) linearizes the level set at `q` (`z(q) + g(q) · (x - q) =
+/// level`, `g` the pixel gradient through `field_lookup` and the located
+/// cell, crossing cells as `q` moves) and moves `q` to the foot of the
+/// perpendicular from the fragment onto that line. Locating the cell is a
+/// binary search on each axis, so a step takes several iterations: one
+/// looks `q` up, each further one begins or halves a search
+/// (`locate_step`, one axis after the other), and the last evaluates the
+/// cell and moves `q`. The walk
+/// is `done` after `CONTOUR_POLAR_FOOT_STEPS` steps or at a step that
+/// cannot be taken, which leaves `q` where it was; the distance is then
+/// `length(q)`. Run as a loop inside a loop, the search made Chromium's
+/// SwiftShader compile each contour entry for 24 to 30 s.
+struct ContourFootWalk {
     q: vec2<f32>,
-    moved: bool,
+    /// Foot-point steps taken.
+    steps: u32,
+    /// Whether the current step has looked `q` up and is searching its cell.
+    searching: bool,
+    /// `field_lookup`'s point and its per-pixel derivatives.
+    lookup_t: vec2<f32>,
+    jac_x: vec2<f32>,
+    jac_y: vec2<f32>,
+    /// The axis being searched, 0 or 1; 2 once both cells are found.
+    axis: u32,
+    /// Whether `axis`'s search has begun.
+    begun: bool,
+    x: CellSearch,
+    y: CellSearch,
+    done: bool,
 };
 
-fn contour_foot_step(chart_t: vec2<f32>, q: vec2<f32>, level: f32, reach: f32) -> ContourFootStep {
-    var out = ContourFootStep(q, false);
-    let t_per_px = transform.pixel_to_ndc * 0.5;
-    let lookup = field_lookup(chart_t + q * t_per_px, LATTICE_SAMPLES);
-    if (!lookup.hit) {
+fn contour_foot_walk(q: vec2<f32>) -> ContourFootWalk {
+    var out: ContourFootWalk;
+    out.q = q;
+    out.steps = 0u;
+    out.searching = false;
+    out.lookup_t = vec2<f32>(0.0, 0.0);
+    out.jac_x = vec2<f32>(0.0, 0.0);
+    out.jac_y = vec2<f32>(0.0, 0.0);
+    out.axis = 0u;
+    out.begun = false;
+    out.done = false;
+    return out;
+}
+
+fn contour_foot_advance(
+    chart_t: vec2<f32>,
+    walk: ContourFootWalk,
+    level: f32,
+    reach: f32,
+) -> ContourFootWalk {
+    var out = walk;
+    if (!walk.searching) {
+        let t_per_px = transform.pixel_to_ndc * 0.5;
+        let lookup = field_lookup(chart_t + walk.q * t_per_px, LATTICE_SAMPLES);
+        if (!lookup.hit) {
+            out.done = true;
+            return out;
+        }
+        out.lookup_t = lookup.t;
+        out.jac_x = lookup.jac_x;
+        out.jac_y = lookup.jac_y;
+        out.searching = true;
+        out.axis = 0u;
+        out.begun = false;
         return out;
     }
-    let at = contour_sample(lookup.t);
+    // One axis at a time through one call site of each search function, so
+    // a compiler that inlines them does so once.
+    if (walk.axis < 2u) {
+        let on_x = walk.axis == 0u;
+        let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+        let cells = select(select(field.cols, field.rows, columns_are_y),
+            select(field.rows, field.cols, columns_are_y), !on_x);
+        let base = select(field.y_base, field.x_base, on_x);
+        let len = select(field.y_len, field.x_len, on_x);
+        var search = walk.y;
+        if (on_x) {
+            search = walk.x;
+        }
+        if (!walk.begun) {
+            search = locate_begin(base, len, quad_count(cells, LATTICE_SAMPLES), walk.axis,
+                select(walk.lookup_t.y, walk.lookup_t.x, on_x), LATTICE_SAMPLES);
+            out.begun = true;
+        } else if (locate_searching(search)) {
+            search = locate_step(base, len, walk.axis, LATTICE_SAMPLES, search);
+        } else {
+            out.axis = walk.axis + 1u;
+            out.begun = false;
+        }
+        if (on_x) {
+            out.x = search;
+        } else {
+            out.y = search;
+        }
+        return out;
+    }
+    out.searching = false;
+    let at = contour_sample_cells(locate_end(walk.x), locate_end(walk.y));
     if (!at.hit) {
+        out.done = true;
         return out;
     }
-    let g = at.dz.x * lookup.jac_x + at.dz.y * lookup.jac_y;
+    let g = at.dz.x * walk.jac_x + at.dz.y * walk.jac_y;
     let g2 = dot(g, g);
     // The foot of the perpendicular from the fragment (the origin) onto the
     // level set linearized at `q`.
-    let next = -((at.z - level) - dot(g, q)) / g2 * g;
+    let next = -((at.z - level) - dot(g, walk.q)) / g2 * g;
     if (!f32_is_finite(g2) || g2 <= 0.0 || !vec2_f32_is_finite(next)
         || length(next) > reach + 1.0) {
+        out.done = true;
         return out;
     }
     out.q = next;
-    out.moved = true;
+    out.steps = walk.steps + 1u;
+    out.done = out.steps >= CONTOUR_POLAR_FOOT_STEPS;
     return out;
 }
 
@@ -414,12 +500,13 @@ fn contour_foot_step(chart_t: vec2<f32>, q: vec2<f32>, level: f32, reach: f32) -
 /// field composed with the polar inverse, so a closed form along one line
 /// is not the distance to the curve. Instead the closest point `q` on the
 /// level set is found by foot-point iteration (`contour_foot_begin`, then
-/// up to `CONTOUR_POLAR_FOOT_STEPS` of `contour_foot_step`). The fixed point
-/// is the foot of the perpendicular onto the curve itself, so the result is
-/// the Euclidean distance to the level set. Only a fragment whose first
-/// estimate is within `reach` pixels is refined; beyond it the stroke paints
-/// and picks nothing. The pick (`field_pick_contour`) runs the same two
-/// functions in one flat loop over its levels and steps.
+/// the walk, `contour_foot_advance`). The fixed point is the foot of the
+/// perpendicular onto the curve itself, so the result is the Euclidean
+/// distance to the level set. Only a fragment whose first estimate is
+/// within `reach` pixels is refined; beyond it the stroke paints and picks
+/// nothing. The selected-level highlight calls this; the paint
+/// (`contour_paint`) and the pick (`field_pick_contour`) advance the same
+/// walk in their one flat loop over the levels.
 fn contour_level_distance_at(
     chart_t: vec2<f32>,
     s: ContourSample,
@@ -431,20 +518,14 @@ fn contour_level_distance_at(
     if (!begin.refine) {
         return begin.start;
     }
-    var q = begin.q;
-    // The bound is read from the transform rather than written as the
-    // constant, so a shader compiler keeps the loop rolled instead of
-    // copying its body into each caller (the paint and the highlight).
-    // Only a polar chart gets here, so the count is the constant's.
-    let steps = select(0u, CONTOUR_POLAR_FOOT_STEPS, transform.polar_angle.x >= 0.5);
-    for (var step = 0u; step < steps; step = step + 1u) {
-        let next = contour_foot_step(chart_t, q, level, reach);
-        if (!next.moved) {
+    var walk = contour_foot_walk(begin.q);
+    loop {
+        if (walk.done) {
             break;
         }
-        q = next.q;
+        walk = contour_foot_advance(chart_t, walk, level, reach);
     }
-    return length(q);
+    return length(walk.q);
 }
 
 /// Contour lines, drawn as the level set of the bilinear field.
@@ -513,46 +594,82 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
         || !f32_is_finite(search_lo) || !f32_is_finite(search_hi)) {
         return out;
     }
-    for (var block = 0u; block < contour_level_block_count(); block = block + 1u) {
-        let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
-        let count = contour_lookup_metadata[block].finite_count;
-        let first = contour_lower_bound(start, count, search_lo);
-        let last = contour_upper_bound(start, count, search_hi);
-        var candidates = 0u;
-        for (var sorted = first; sorted < last; sorted = sorted + 1u) {
-            let record = contour_search_record(start + sorted);
-            let original = u32(record.y) - start;
-            candidates = candidates | (1u << original);
-        }
-        // A single mask restores the block's declaration order. That preserves
-        // duplicate-level colour and source-over behavior without walking all 32
-        // levels when only a few can reach this cell.
-        while (candidates != 0u) {
+    // One flat loop takes every level the fragment can reach, in the order
+    // the blocks and their masks give: an iteration either loads the next
+    // block's candidates, begins the next candidate or advances the current
+    // one's foot-point walk. Each candidate's distance is
+    // `contour_level_distance_at`'s, taken as the pick takes it
+    // (`field_pick_contour`). With the foot-point loop nested in the loops
+    // over the blocks and candidates, Chromium's SwiftShader passed 12 GB
+    // compiling this fragment at its first draw and lost the device.
+    var block = 0u;
+    var start = 0u;
+    var candidates = 0u;
+    var i = 0u;
+    var lv = 0.0;
+    var walking = false;
+    var walk = contour_foot_walk(vec2<f32>(0.0, 0.0));
+    loop {
+        var distance_to_level = -1.0;
+        if (!walking) {
+            if (candidates == 0u) {
+                if (block >= contour_level_block_count()) {
+                    break;
+                }
+                start = block * CONTOUR_LEVEL_BLOCK_SIZE;
+                let count = contour_lookup_metadata[block].finite_count;
+                let first = contour_lower_bound(start, count, search_lo);
+                let last = contour_upper_bound(start, count, search_hi);
+                // A single mask restores the block's declaration order. That
+                // preserves duplicate-level colour and source-over behavior
+                // without walking all 32 levels when only a few can reach
+                // this cell.
+                for (var sorted = first; sorted < last; sorted = sorted + 1u) {
+                    let record = contour_search_record(start + sorted);
+                    let original = u32(record.y) - start;
+                    candidates = candidates | (1u << original);
+                }
+                block = block + 1u;
+                continue;
+            }
             let original = firstTrailingBit(candidates);
             candidates = candidates & ~(1u << original);
-            let i = start + original;
-            let lv = levels[i];
+            i = start + original;
+            lv = levels[i];
             if (!f32_is_finite(lv)) {
                 continue;
             }
-            let distance_to_level = contour_level_distance_at(in.axis_t, s, metric, lv, half_w + 1.0);
-            let coverage_unclamped = half_w - distance_to_level + 0.5;
-            if (distance_to_level < 0.0 || !f32_is_finite(coverage_unclamped)) {
+            let begin = contour_foot_begin(s, metric, lv, half_w + 1.0);
+            distance_to_level = begin.start;
+            if (begin.refine) {
+                walk = contour_foot_walk(begin.q);
+                walking = true;
                 continue;
             }
-            let cov = clamp(coverage_unclamped, 0.0, 1.0);
-            if (!f32_is_finite(cov) || cov <= 0.0) {
+        } else {
+            walk = contour_foot_advance(in.axis_t, walk, lv, half_w + 1.0);
+            if (!walk.done) {
                 continue;
             }
-            let c = level_color(i) * cov;
-            let composited = c + acc * (1.0 - c.a);
-            if (!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)) {
-                continue;
-            }
-            acc = composited;
-            if (cov >= 0.5) {
-                out.level = i;
-            }
+            distance_to_level = length(walk.q);
+            walking = false;
+        }
+        let coverage_unclamped = half_w - distance_to_level + 0.5;
+        if (distance_to_level < 0.0 || !f32_is_finite(coverage_unclamped)) {
+            continue;
+        }
+        let cov = clamp(coverage_unclamped, 0.0, 1.0);
+        if (!f32_is_finite(cov) || cov <= 0.0) {
+            continue;
+        }
+        let c = level_color(i) * cov;
+        let composited = c + acc * (1.0 - c.a);
+        if (!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)) {
+            continue;
+        }
+        acc = composited;
+        if (cov >= 0.5) {
+            out.level = i;
         }
     }
     out.color = acc;
@@ -794,43 +911,36 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
     let max_distance = max(data_pick_query.limits.x, 0.0);
     let reach = half_width + max_distance + 1.0;
     // Each level's distance is `contour_level_distance_at`'s, taken in one
-    // flat loop: an iteration either begins a level (`step` 0) or takes one
-    // foot-point step of it. Nesting the polar foot-point loop, and the
-    // binary searches inside it, in a loop over the levels made a software
-    // GPU compiler's compute path grow without bound (Chromium's SwiftShader
+    // flat loop: an iteration either begins a level or advances its
+    // foot-point walk. Nesting the polar foot-point loop, and the binary
+    // searches inside it, in a loop over the levels made a software GPU
+    // compiler's compute path grow without bound (Chromium's SwiftShader
     // passed 12 GB building this pipeline; Windows WARP overflowed its
-    // stack, #226). The fragment entries keep the nested form, which
-    // compiles there.
+    // stack, #226). `contour_paint` takes its candidates the same way.
     var level_index = 0u;
-    var step = 0u;
-    var q = vec2<f32>(0.0, 0.0);
+    var walking = false;
+    var walk = contour_foot_walk(vec2<f32>(0.0, 0.0));
     var center_distance = -1.0;
     loop {
         if (level_index >= field.level_count) {
             break;
         }
         let level = levels[level_index];
-        var finished = false;
-        if (step == 0u) {
+        if (!walking) {
             let begin = contour_foot_begin(s, metric, level, reach);
             center_distance = begin.start;
-            q = begin.q;
-            finished = !begin.refine;
-            step = 1u;
+            if (begin.refine) {
+                walk = contour_foot_walk(begin.q);
+                walking = true;
+                continue;
+            }
         } else {
-            let next = contour_foot_step(cursor_t, q, level, reach);
-            if (next.moved) {
-                q = next.q;
+            walk = contour_foot_advance(cursor_t, walk, level, reach);
+            if (!walk.done) {
+                continue;
             }
-            if (!next.moved || step >= CONTOUR_POLAR_FOOT_STEPS) {
-                center_distance = length(q);
-                finished = true;
-            } else {
-                step = step + 1u;
-            }
-        }
-        if (!finished) {
-            continue;
+            center_distance = length(walk.q);
+            walking = false;
         }
         if (center_distance >= 0.0) {
             let hit_distance = max(center_distance - half_width, 0.0);
@@ -850,7 +960,6 @@ fn field_pick_contour(cursor_t: vec2<f32>) -> DataPickCandidate {
             }
         }
         level_index = level_index + 1u;
-        step = 0u;
     }
     return best;
 }
