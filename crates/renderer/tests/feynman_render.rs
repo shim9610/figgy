@@ -910,6 +910,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
         gap: 0.2,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     // A vertical photon from (0.5, 0.2) to (0.5, 0.9) crosses the cut.
     let diagram = FeynmanSeries {
@@ -1073,6 +1074,7 @@ fn a_diagram_draws_and_drags_in_a_subplot_and_an_overlay() {
         series: vec!["below".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let pair = |a: [f64; 2], b: [f64; 2]| FeynmanSeries {
         vertices: vec![
@@ -1283,6 +1285,7 @@ fn the_vector_parts_are_clipped_to_each_break_piece() {
         gap: 12.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let mut diagram = bent_scalar();
     diagram.propagators[0].bend = None;

@@ -601,6 +601,32 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the polar outer ring is the data boundary and belongs to no element",
         issue: "#47",
     },
+    // A subplot's frame (#205) is grabbed inside the frame by the selection
+    // padding and half a handle, so its selection box and handles lie in the
+    // subplot's own panel: those are UI constants, not pixel dims of the
+    // chart, so `Config::scaled` leaves them.
+    Exclusion {
+        scene: "*",
+        layer: "base",
+        element: "subplot_*:frame",
+        inv: Inv::I5,
+        detail: "bounds * at 2x are * px off * at 1x",
+        reason: "the frame's grab rect is the frame inset by the selection padding and half a \
+                 handle, UI constants the scaled config does not double",
+        issue: "#205",
+    },
+    // The frame goes anywhere, inside the parent chart or outside it, and
+    // the document area follows it (#205): no drag leaves every chart area.
+    Exclusion {
+        scene: "*",
+        layer: "base",
+        element: "subplot_*:frame",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "a subplot frame goes anywhere and the document area follows it: every drag \
+                 is a valid move",
+        issue: "#205",
+    },
 ];
 
 /// Rows only the sweep of the scenes as laid out has: the `LongLabels`
@@ -1319,7 +1345,11 @@ const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
 /// map: the oracle's side of I7. `cfg` is the document with `layer` active:
 /// a parallel chart (`Config.parallel`, #141) registers one
 /// `parallel_axis_labels_{i}` element per axis after the standard set, in
-/// its base layer and in a parallel subplot's.
+/// its base layer and in a parallel subplot's. The base layer then
+/// registers every subplot (#205), in order: its frame
+/// (`subplot_{i}:frame`) and its own base-layer set but the data area,
+/// each id prefixed `subplot_{i}:`, so an inset answers the pointer where
+/// it is drawn on top of the parent.
 fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     let mut names = match layer {
         LayerRef::Base => standard_names(""),
@@ -1348,6 +1378,22 @@ fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     };
     if let Some((prefix, axes)) = parallel {
         names.extend((0..axes).map(|i| format!("{prefix}{PARALLEL_AXIS_LABELS}_{i}")));
+    }
+    if layer == LayerRef::Base {
+        for i in 0..cfg.subplots.len() {
+            let prefix = format!("subplot_{i}:");
+            names.push(format!("{prefix}frame"));
+            let Some(mut subplot) = cfg.subplot_config(i) else {
+                continue;
+            };
+            subplot.set_active_layer(LayerRef::Base);
+            names.extend(
+                expected_names(LayerRef::Base, &subplot)
+                    .into_iter()
+                    .filter(|name| name != "data_area")
+                    .map(|name| format!("{prefix}{name}")),
+            );
+        }
     }
     names
 }

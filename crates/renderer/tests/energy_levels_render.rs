@@ -1304,8 +1304,8 @@ fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
 
 // #205: a subplot moved out of its parent is a panel of its own: the
 // document grows to hold it, it draws there at 1x and 2x, a base-layer pick
-// in it answers its series, the vector exports carry it, and the moved
-// document round-trips.
+// in it answers its series and steps over them, the vector exports carry
+// it, and the moved document round-trips.
 #[test]
 fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
     let mut r = renderer();
@@ -1403,7 +1403,13 @@ fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
             )
             .block_on()
             .unwrap();
-        assert!(svg.contains("<image"), "{scale}x svg");
+        // The subplot's levels are vector strokes of the level colour, in
+        // the subplot's own clipped data slot (#234).
+        assert!(!svg.contains("<image"), "{scale}x svg: no data image");
+        assert!(
+            svg.contains("stroke=\"#ff0000\""),
+            "{scale}x svg: the levels are vector strokes"
+        );
         let pdf = r
             .export_pdf(
                 renderer::ExportSource::chart(&chart, &list),
@@ -1413,6 +1419,32 @@ fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
             .unwrap();
         assert!(pdf.starts_with(b"%PDF"), "{scale}x pdf");
     }
+    // The base-layer pick's selection steps over the subplot's drawn rows
+    // as any energy-level selection does: the series list is the chart's.
+    let mut stepped = chart.config().clone();
+    stepped.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "inset".into(),
+            bin_index: 2,
+            half: None,
+        }],
+        ..DataSelectionsConfig::default()
+    });
+    assert_eq!(stepped.step_selection(&list, 1, 0, |_| None), Ok(true));
+    assert!(
+        matches!(
+            stepped.picked_data.as_ref().unwrap().refs[0],
+            PickedDataRef::HistogramBin { bin_index: 3, .. }
+        ),
+        "{:?}",
+        stepped.picked_data
+    );
+    assert_eq!(stepped.step_selection(&list, -1, 0, |_| None), Ok(true));
+    assert!(matches!(
+        stepped.picked_data.as_ref().unwrap().refs[0],
+        PickedDataRef::HistogramBin { bin_index: 2, .. }
+    ));
     r.remove_chart(id).unwrap();
     let json = serde_json::to_string(chart.config()).unwrap();
     let back: renderer::config::Config = serde_json::from_str(&json).unwrap();

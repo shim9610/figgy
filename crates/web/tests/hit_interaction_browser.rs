@@ -262,7 +262,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
     assert_eq!(chart.selected_annotation(), None);
 }
 
-/// The drawn box of the first tick label whose rich text starts with `lead`.
+/// The drawn box of the first tick label whose text starts with `lead`.
 struct FindLabel {
     lead: char,
     found: Option<renderer::layout::RectF>,
@@ -270,10 +270,12 @@ struct FindLabel {
 
 impl renderer::sink::Sink for FindLabel {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
-        if let renderer::sink::TextRef::Rich(rich) = text.text
-            && self.found.is_none()
-            && rich.segments.first().is_some_and(|s| s.text == self.lead)
-        {
+        // A plain label or a rich one (a power of ten): its first character.
+        let lead = match text.text {
+            renderer::sink::TextRef::Rich(rich) => rich.segments.first().map(|s| s.text),
+            renderer::sink::TextRef::Plain { text, .. } => text.chars().next(),
+        };
+        if self.found.is_none() && lead == Some(self.lead) {
             self.found = Some(text.rect());
         }
     }

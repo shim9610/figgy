@@ -144,7 +144,9 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
 /// on its line names the vertex the GPU pick resolves.
 #[wasm_bindgen_test(async)]
 async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
-    let mut chart = figgy::FiggyChart::create(canvas(100, 100))
+    // Created at a size the default layout fits (its margins need 152 px
+    // across); the config below shrinks the chart to 100 x 100 without them.
+    let mut chart = figgy::FiggyChart::create(canvas(400, 400))
         .await
         .expect("chart creation failed");
     chart
