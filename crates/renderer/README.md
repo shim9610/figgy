@@ -2,7 +2,7 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-vector fields, polar and ternary plots, plus pies, donuts, categorical bars, boxplots and
+vector fields, triangle meshes, polar and ternary plots, plus pies, donuts, categorical bars, boxplots and
 radar charts; edit their models and export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
@@ -63,6 +63,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Polar plots: lines, scatter, areas, heatmaps and contours in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; heatmaps and contours draw their cells as annular sectors ([polar heatmaps](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#heatmaps-and-contours)); histograms, images, error bars, stems, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 | Ternary plots: markers, lines and region fills of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; a `region` fills the polygons the samples outline (even-odd); line fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
 | Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | DataLess: the topology is SSOT, vertex positions optional and committed by `auto_layout`; drawn on the CPU and written as vector curves in SVG and PDF; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
+| Triangle meshes: a colour field, contour lines and, in a 3D box, a surface over triangles the host gives | `Renderer` with a `TriMesh` series | Vertex coordinate and value columns (`x_column`, `y_column`, `values`) and a triangle index column (`Renderer::upsert_triangles`), coloured through `Config.colorbar`; on a 3D chart `z_column` is the height; streamed sources are rejected; [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md) |
 | 3D surfaces: a heatmap's grid as a lit surface, contours on the floor, points and trajectories (a scatter or line series with a `z_column`), vector fields (a point vector with a `z_column` and `w`) | `Renderer` with `Config.view_3d` | The heatmap's own columns; overlays, line offsets and streamed sources are rejected; [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md) |
 
 The renderer re-exports model types: most applications do not need a separate

@@ -59,6 +59,7 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | --- | --- |
 | Cartesian axes, ticks, legends and styles | `Config`, `default::default_config`, `SeriesConfig` |
 | Numeric input columns | `Column` |
+| Triangle meshes over host-given triangles | `data_config::DataRenderType::TriMesh`, `tri_mesh::TriMeshSeries`, `MeshValues`, `MeshValueLocation`; the triangle index column itself is a renderer pool column (`Renderer::upsert_triangles`) |
 | Pie/donut slice values and presentation | `RadialChart`, `RadialSlice` |
 | Category/series bars | `data_config::DataRenderType::CategoryBars` over a categorical axis (`AxisOptions::categories`), `Config.bar_groups`; legacy documents: `CategoricalChart`, read by `Config::from_categorical` (`bounded_sources`) |
 | Supplied statistical summaries | `data_config::DataRenderType::BoxPlot` over a categorical axis, reading a record and a ragged outlier column, `BoxPlotSeriesLabels`, `format_box_plot_labels`; legacy documents: `BoxPlotChart`, `BoxPlotSeries`, read by `Config::from_boxplot` (`bounded_sources`) |
@@ -101,7 +102,9 @@ class.
   per bar series over a categorical axis), box plots (`BoxPlot`, whose
   statistics are a record and whose outliers a ragged column of the pool)
   and radar series (`Radar`, on a polar chart with a categorical angle
-  axis) are series kinds like lines, markers and fields.
+  axis) are series kinds like lines, markers and fields, and so is a
+  triangle mesh (`TriMesh`, whose triangles are a triangle index column of
+  the pool and whose values a column per vertex or per triangle).
 
 ### Document readers
 

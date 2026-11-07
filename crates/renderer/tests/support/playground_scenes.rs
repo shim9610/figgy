@@ -93,10 +93,14 @@ pub enum SceneKind {
     EnergyLevelsU,
     EnergyLevelsArAll,
     Feynman,
+    /// Potential flow past a cylinder on a triangle mesh (#210).
+    TriMesh,
+    /// The same mesh as a surface in a 3D box (#210).
+    TriSurface,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 44] = [
+    pub const ALL: [SceneKind; 46] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -141,6 +145,8 @@ impl SceneKind {
         SceneKind::EnergyLevelsU,
         SceneKind::EnergyLevelsArAll,
         SceneKind::Feynman,
+        SceneKind::TriMesh,
+        SceneKind::TriSurface,
     ];
 
     pub fn label(self) -> &'static str {
@@ -189,6 +195,8 @@ impl SceneKind {
             SceneKind::EnergyLevelsU => "Energy levels (U I)",
             SceneKind::EnergyLevelsArAll => "Energy levels (Ar I, every level)",
             SceneKind::Feynman => "Feynman diagrams",
+            SceneKind::TriMesh => "Triangle mesh (flow past a cylinder)",
+            SceneKind::TriSurface => "3D triangle mesh surface",
         }
     }
 
@@ -339,6 +347,20 @@ impl SceneKind {
                  a three-jet event. The host places the legs; the layout places every \
                  internal vertex. Pick a vertex, a line or a label; drag a vertex, bend \
                  a line, move a label."
+            }
+            SceneKind::TriMesh => {
+                "Potential flow past a cylinder on a graded annulus mesh, a mesh with \
+                 a hole that no lattice heatmap can draw. The host computes the \
+                 pressure coefficient Cp = 2 (R/r)² cos 2θ − (R/r)⁴ at every node; \
+                 the fill interpolates it across each triangle and the contours are \
+                 its level set. Pick a triangle or a contour and step with the \
+                 arrows; drag the colourbar."
+            }
+            SceneKind::TriSurface => {
+                "The same mesh in a 3D box: Cp as the height and the colour of a \
+                 matte, wireframed surface, its contours on the floor. Drag the data \
+                 area to orbit; pick a triangle on the surface or a contour on the \
+                 floor and step with the arrows."
             }
             SceneKind::EnergyLevels => {
                 "A Grotrian diagram of He I from NIST ASD values: term columns \
@@ -595,6 +617,8 @@ pub fn build(
         SceneKind::BrokenAxes => broken_axes(r),
         SceneKind::EnergyLevels => energy_levels(r),
         SceneKind::Feynman => feynman(r),
+        SceneKind::TriMesh => tri_mesh(r),
+        SceneKind::TriSurface => tri_surface(r),
         SceneKind::Stem => stem(r),
         SceneKind::Lollipop => lollipop(r),
         SceneKind::PolarHeatmap => polar_heatmap(r),
@@ -3353,6 +3377,172 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     let column_ids: Vec<&str> = columns.iter().map(String::as_str).collect();
     chart.auto_fit_colorbar_union(r.pool(), &column_ids, 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The triangle mesh scenes' data (#210): potential flow past a cylinder on
+/// an annulus from the cylinder wall `r = R` to `r = MESH_OUTER_RADIUS`,
+/// `MESH_RINGS` rings graded geometrically so the cells near the wall are
+/// small, `MESH_SPOKES` nodes around each ring and two triangles per cell.
+/// The host computes the pressure coefficient at every node,
+/// `Cp = 2 (R/r)² cos 2θ − (R/r)⁴` (rule 1); the renderer interpolates it
+/// across the triangles. The mesh has a hole, which no lattice heatmap can
+/// draw. Columns `tm_x`, `tm_y` and `tm_cp`, and the triangle index column
+/// `tm_tri`; uploaded once, as [`upload`] uploads a column.
+const MESH_RINGS: usize = 25;
+const MESH_SPOKES: usize = 72;
+const CYLINDER_RADIUS: f64 = 1.0;
+const MESH_OUTER_RADIUS: f64 = 3.0;
+
+fn cylinder_mesh(r: &mut Renderer) -> Result<(), FiggyError> {
+    use renderer::TriangleSource;
+    let tau = std::f64::consts::TAU;
+    let nodes = MESH_RINGS * MESH_SPOKES;
+    let (mut xs, mut ys, mut cp) = (
+        Vec::with_capacity(nodes),
+        Vec::with_capacity(nodes),
+        Vec::with_capacity(nodes),
+    );
+    for k in 0..MESH_RINGS {
+        let grade = k as f64 / (MESH_RINGS - 1) as f64;
+        let radius = CYLINDER_RADIUS * (MESH_OUTER_RADIUS / CYLINDER_RADIUS).powf(grade);
+        let ratio = (CYLINDER_RADIUS / radius).powi(2);
+        for j in 0..MESH_SPOKES {
+            let theta = tau * j as f64 / MESH_SPOKES as f64;
+            xs.push(radius * theta.cos());
+            ys.push(radius * theta.sin());
+            cp.push(2.0 * ratio * (2.0 * theta).cos() - ratio * ratio);
+        }
+    }
+    let mut tris: Vec<u32> = Vec::with_capacity(6 * (MESH_RINGS - 1) * MESH_SPOKES);
+    for k in 0..MESH_RINGS - 1 {
+        for j in 0..MESH_SPOKES {
+            let a = (k * MESH_SPOKES + j) as u32;
+            let b = (k * MESH_SPOKES + (j + 1) % MESH_SPOKES) as u32;
+            let c = a + MESH_SPOKES as u32;
+            let d = b + MESH_SPOKES as u32;
+            tris.extend([a, b, d, a, d, c]);
+        }
+    }
+    upload(r, "tm_x", xs)?;
+    upload(r, "tm_y", ys)?;
+    upload(r, "tm_cp", cp)?;
+    if r.pool().triangles("tm_tri").is_none() {
+        r.upsert_triangles(
+            "tm_tri",
+            &TriangleSource {
+                indices: &Column { data: tris },
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// The mesh scenes' colourbar: the pressure coefficient's range, which the
+/// contour levels are chosen in and the colourbar fits to.
+fn cylinder_colorbar() -> renderer::ColorBarOptions {
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Turbo;
+    bar.axis.min = -3.0;
+    bar.axis.max = 1.0;
+    bar
+}
+
+/// The pressure series of the mesh scenes: the fill interpolated across the
+/// triangles, about twelve nice contour levels over the pressure range, and
+/// `surface` the look on a 3D chart.
+fn cylinder_series(surface: Option<renderer::view3d::SurfaceStyle>) -> SeriesConfig {
+    use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
+    let mut contour = ContourConfig {
+        levels: vec![],
+        line: line_style(Color::from_rgb8(30, 30, 30), 1.0),
+        per_level_color: None,
+        labels: None,
+    };
+    contour
+        .set_nice_levels(&cylinder_colorbar().axis, 12)
+        .expect("the mesh scenes' pressure range gives nice levels");
+    series(
+        "pressure",
+        "tm_x",
+        "tm_y",
+        DataRenderType::TriMesh(TriMeshSeries {
+            triangles: "tm_tri".into(),
+            values: MeshValues {
+                column: "tm_cp".into(),
+                at: MeshValueLocation::Vertices,
+            },
+            fill: Some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            }),
+            contour: Some(contour),
+            surface,
+        }),
+    )
+}
+
+/// The mesh scenes' axes: the annulus with room on either side.
+fn cylinder_axes(config: &mut Config) {
+    config.bottom_x.min = -4.0;
+    config.bottom_x.max = 4.0;
+    config.left_y.min = -3.0;
+    config.left_y.max = 3.0;
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.major_spacing = 1.0;
+    }
+}
+
+/// Potential flow past a cylinder on a triangle mesh (#210): the pressure
+/// coefficient interpolated over the triangles, with contour lines.
+fn tri_mesh(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    cylinder_mesh(r)?;
+    let series = vec![cylinder_series(None)];
+    let mut config = base_config("Potential flow past a cylinder", "x / R", "y / R");
+    cylinder_axes(&mut config);
+    config.colorbar = Some(cylinder_colorbar());
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The cylinder mesh as a surface in a 3D box (#210): the pressure
+/// coefficient as the height and the colour of a matte, wireframed surface,
+/// its contours on the floor.
+fn tri_surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
+    cylinder_mesh(r)?;
+    let mut pressure = cylinder_series(Some(SurfaceStyle {
+        wireframe: Some(SurfaceWireframe {
+            color: Color::new(0.1, 0.1, 0.1, 0.3),
+            width: 0.6,
+        }),
+        material: renderer::Material::Matte,
+        ..SurfaceStyle::default()
+    }));
+    pressure.z_column = Some("tm_cp".into());
+    let series = vec![pressure];
+    // Short axis titles and five x labels: a box edge is foreshortened, so a
+    // wide turned title or nine labels along it would overlap (the oracle).
+    let mut config = base_config("Pressure over a cylinder (lengths in R)", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = math_text("C_p", &right.title_option.text);
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.set_view_3d(Some(View3d::default()));
+    cylinder_axes(&mut config);
+    config.bottom_x.major_spacing = 2.0;
+    config.colorbar = Some(cylinder_colorbar());
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tm_cp"], 0.0)?;
     chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
