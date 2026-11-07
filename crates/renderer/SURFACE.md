@@ -3,13 +3,14 @@
 A 3D chart draws a box in its data area, seen through a camera kept in the
 chart's configuration. A heatmap on it draws as a surface over its grid, a
 contour draws its isolines on the box floor, and a heatmap with contours
-draws both. Set `Config.view_3d` to `Some(View3d::default())`. `view_3d:
-None` (the default, omitted from JSON) is the flat chart, so older
-documents are unchanged.
+draws both. A triangle mesh (`TriMesh`, #210) draws as a surface over its
+triangles (a trisurf), its contours on the floor too. Set `Config.view_3d`
+to `Some(View3d::default())`. `view_3d: None` (the default, omitted from
+JSON) is the flat chart, so older documents are unchanged.
 
-The data type is the heatmap's: the same `Heatmap` series draws flat on a
-2D chart and as a surface on a 3D one. Switching between the two is one
-configuration change.
+The data types are the flat ones: the same `Heatmap` series draws flat on a
+2D chart and as a surface on a 3D one, and so does a `TriMesh` series.
+Switching between the two is one configuration change.
 
 ## Input and first render
 
@@ -132,6 +133,22 @@ which is how a host places its own overlay on the box.
 look; `None` (omitted from JSON) takes every default. On a flat chart the
 field is kept and unused.
 
+- **`TriMesh`** (#210) draws a surface over its
+  triangles when the series names its height column in
+  `SeriesConfig.z_column` (read on `right_y`, as a surface's heights are):
+  each triangle's three vertices are placed by `x_column`, `y_column` and
+  `z_column`, and the fill colours the triangle by its values through the
+  colourbar, interpolated across the triangle for vertex values and flat
+  for face values. Its contours draw on the box floor, where its level set
+  crosses the triangles. `TriMeshSeries.surface` holds the look, with the
+  same fields as a heatmap's but no `color_matrix` (the values colour the
+  mesh). The shading normal of a lit material is the triangle's own, a
+  value computed on every draw. `z_column: None` on a 3D chart is rejected,
+  and a banded fill too; on a flat chart both the height column and the
+  look are kept and unused, so a mesh switches between 2D and 3D with the
+  view too. A triangle naming a vertex past the height column is not
+  drawn, as one past the coordinate columns is not.
+
 - **`Scatter`, `Line` and `ScatterLine`** draw points and trajectories in
   the box when the series names its height column in
   `SeriesConfig.z_column` (read on `right_y`, as the surface heights are).
@@ -188,8 +205,9 @@ field is kept and unused.
 
 A 3D chart draws only these kinds, in the Precise draw style. It rejects
 overlays, line offsets, the polar and ternary systems and streamed sources,
-each with an explicit error. There is no limit on the grid's size or on a
-series' rows: every quad, marker, segment and arrow is drawn.
+each with an explicit error. There is no limit on the grid's size, a mesh's
+triangles or a series' rows: every quad, triangle, marker, segment and
+arrow is drawn.
 
 ## Interaction
 
@@ -197,20 +215,25 @@ series' rows: every quad, marker, segment and arrow is drawn.
   shows, with the depth test, and answers the grid sample nearest the
   fragment inside its quad: `PickedData::MatrixCell` with the sample's
   column and row. A sample hidden behind the surface is never answered.
-  A floor contour answers its level, as on a flat chart. A marker answers
+  A mesh surface answers `PickedData::MeshTriangle` with the triangle the
+  pixel shows and its vertex nearest the fragment, hidden triangles never.
+  A floor contour answers its level, as on a flat chart (a mesh's names the
+  triangle the stroke lies in as `x_index`). A marker answers
   `PickedData::Point` with its index, a stroke the index of its segment's
   nearer end (its dashes, not its gaps), an arrow its row where its shaft
   or head covers at least half the pixel; a mark behind a surface never
   answers.
 - **Highlight.** The picked sample's patch, the halves of the quads around
-  it nearest the sample, is outlined and brightened. It is drawn over
-  anything in front of it, so a selection is visible from every side. A
-  picked point is ringed at its projected place, over its occluders too;
-  a picked arrow is ringed at its anchor at half its head width.
-- **`step_selection`** walks the grid samples, as on a flat heatmap, and a
-  point series' rows.
+  it nearest the sample, is outlined and brightened; a mesh's picked
+  triangle is outlined and brightened whole. Either is drawn over anything
+  in front of it, so a selection is visible from every side. A picked
+  point is ringed at its projected place, over its occluders too; a picked
+  arrow is ringed at its anchor at half its head width.
+- **`step_selection`** walks the grid samples, as on a flat heatmap, a
+  mesh's triangles, and a point series' rows.
 - **`selection_details()`** reports the sample's x, y and height, plus the
-  colour grid's value when set; a point's x, y and `z`; an arrow's x, y,
+  colour grid's value when set; a mesh triangle's vertex indices, their x,
+  y, values and heights (`z`); a point's x, y and `z`; an arrow's x, y,
   `z`, `u`, `v` and `w`, and its colour value when colour mapped.
 - **Camera.** Dragging the data area orbits the camera
   (`Config::orbit_view`, half a degree per pixel). `Config::zoom_view`
@@ -223,10 +246,11 @@ series' rows: every quad, marker, segment and arrow is drawn.
     `label_offset_x` along the edge and `label_offset_y` along its normal.
   - Titles (`Element::AxisTitle`) move in screen space.
 - **Fit.** `auto_fit_layer_union` and the browser's `autoFitAll` also fit
-  `right_y` to the union of the height columns' statistics. A `Data`
-  arrow adds the bound `[z_min + f·w_min, z_max + f·w_max]` of its tips
-  (ordered for a negative factor), from the same statistics, which holds
-  every tip. Nothing is read back.
+  `right_y` to the union of the height columns' statistics (a mesh's
+  `z_column` among them). A `Data` arrow adds the bound
+  `[z_min + f·w_min, z_max + f·w_max]` of its tips (ordered for a negative
+  factor), from the same statistics, which holds every tip. Nothing is read
+  back.
 - **Annotations.** Ratio and pixel anchors draw. A 3D chart has no
   separable value axes, so data anchors, reference lines and spans are
   skipped as `NoValueAxis`.
@@ -239,9 +263,9 @@ series' rows: every quad, marker, segment and arrow is drawn.
 The surface draws into the panel composite with a depth-stencil
 attachment (`Depth24PlusStencil8`, at the target's sample count), created
 only for a 3D panel. Floor contours draw first without writing depth, then
-the surfaces with the depth test, so a translucent surface shows the
-contours below it; then every series' 3D arrows, every series' 3D line and
-every series' 3D markers,
+the surfaces (grid and mesh alike) with the depth test, so a translucent
+surface shows the contours below it; then every series' 3D arrows, every
+series' 3D line and every series' 3D markers,
 depth tested at the front of their tube and ball
 (`project_box_front`, `surface_mesh::point_depth_stencil`), with alpha to
 coverage on a multisampled composite so a mark's antialiased fringe writes
@@ -253,6 +277,18 @@ and stroke through the camera. The 3D arrows are the vector glyph with the
 flat projection fragment swapped for `vector/project_box3d.wgsl`
 (`VECTOR_POINTS_3D_SHADER`, rule 9), plus the ID pick entries of
 `vector/vector_entry_3d.wgsl`.
+
+A mesh surface is the surface module's entries over a second input
+fragment (`surface_mesh/surface_input_mesh.wgsl`, `TRI_SURFACE_SHADER`):
+one instance per triangle, three vertices, each reading the triangle's
+three indices, placing all three vertices through the camera and taking
+the triangle's normal from them. Its floor contours are the mesh module's
+own floor entries (`vs_tri_floor`), the flat contour fragment over
+triangles projected at `t.z = 0`. The ID pick writes `(id, 2, triangle,
+vertex)` for a mesh surface and `(id | 0x80000000, level, triangle, 0)` for
+a mesh floor contour. Expected cost: three vertices per triangle per pass,
+each vertex reading three indices and nine coordinates; the ID pick redraws
+every triangle into its 1×1 target. Nothing caps the triangle count.
 
 Expected cost of the arrows: six vertices per arrow, and in `Pixels` mode
 four box projections per vertex (anchor, screen-plane step, tip and front

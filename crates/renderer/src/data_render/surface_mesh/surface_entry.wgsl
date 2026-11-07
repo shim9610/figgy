@@ -1,16 +1,29 @@
 // ── Surface entries ─────────────────────────────────────────────────────────
 //
 // `vs_main` / `fs_main` draw the surface into the panel composite with the
-// depth test; `vs_selected` / `fs_selected` draw the picked sample's patch
-// in the frame's live highlight slot, over anything in front of it (no
-// depth); `fs_pick` writes the ID of what a pixel shows for the 1×1 ID pick.
+// depth test; `vs_selected` / `fs_selected` draw the picked patch in the
+// frame's live highlight slot, over anything in front of it (no depth);
+// `fs_pick` writes the ID of what a pixel shows for the 1×1 ID pick.
+//
+// The geometry comes from the input fragment spliced before this one: the
+// heatmap grid (`surface_input_grid.wgsl`) or the triangle mesh
+// (`surface_input_mesh.wgsl`, #210). Each input defines `SurfaceVertex` and
+// `surface_vertex` (one instance's vertex), `surface_fill_color` (the
+// premultiplied fill at a position inside the primitive) and the hooks
+// `surface_edge_px` (the wireframe's distance to the nearest edge),
+// `surface_pick_ids` (what the ID pick writes), `surface_selected_vertex`
+// (the picked patch's instances) and `surface_patch` (the patch's fragment
+// test and outline distance). The entries themselves know no lattice.
 
 struct SurfaceOut {
     @builtin(position) pos: vec4<f32>,
     /// Box point, perspective-correct: the box clip and the material.
     @location(0) t: vec3<f32>,
-    /// Position inside the quad, 0..1 along x and y.
-    @location(1) frac: vec2<f32>,
+    /// Position inside the primitive: `(x, y, 0)` in 0..1 of a grid quad,
+    /// or the barycentric weights of a mesh triangle.
+    @location(1) frac: vec3<f32>,
+    /// The primitive: a grid quad's `(i, j)`, or a mesh triangle's
+    /// `(index, 0)`.
     @location(2) @interpolate(flat) quad: vec2<u32>,
     @location(3) normal: vec3<f32>,
 };
@@ -19,7 +32,7 @@ fn surface_hidden() -> SurfaceOut {
     var out: SurfaceOut;
     out.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     out.t = vec3<f32>(0.0);
-    out.frac = vec2<f32>(0.0);
+    out.frac = vec3<f32>(0.0);
     out.quad = vec2<u32>(0u);
     out.normal = vec3<f32>(0.0, 0.0, 1.0);
     return out;
@@ -29,15 +42,15 @@ fn surface_out(v: SurfaceVertex, pos: vec4<f32>) -> SurfaceOut {
     var out: SurfaceOut;
     out.pos = pos;
     out.t = v.t;
-    out.frac = vec2<f32>(v.corner);
+    out.frac = v.frac;
     out.quad = v.quad;
     out.normal = v.normal;
     return out;
 }
 
 @vertex
-fn vs_main(@builtin(instance_index) quad: u32, @builtin(vertex_index) vertex: u32) -> SurfaceOut {
-    let v = surface_vertex(quad, vertex);
+fn vs_main(@builtin(instance_index) instance: u32, @builtin(vertex_index) vertex: u32) -> SurfaceOut {
+    let v = surface_vertex(instance, vertex);
     if (!v.valid) {
         return surface_hidden();
     }
@@ -46,7 +59,7 @@ fn vs_main(@builtin(instance_index) quad: u32, @builtin(vertex_index) vertex: u3
 
 /// The lit, wireframed colour of a surface fragment, premultiplied.
 fn surface_color(in: SurfaceOut, emphasis: f32) -> vec4<f32> {
-    let fill = surface_fill_color(in.quad, clamp(in.frac, vec2<f32>(0.0), vec2<f32>(1.0)));
+    let fill = surface_fill_color(in.quad, in.frac);
     var rgb = select(vec3<f32>(0.0), fill.rgb / max(fill.a, 1e-6), fill.a > 0.0);
     var alpha = fill.a;
     if (surface_flag(SURFACE_LIT)) {
@@ -64,13 +77,9 @@ fn surface_color(in: SurfaceOut, emphasis: f32) -> vec4<f32> {
     rgb = min(rgb + vec3<f32>(emphasis), vec3<f32>(1.0));
     var color = vec4<f32>(rgb * alpha, alpha);
     if (surface_flag(SURFACE_WIREFRAME)) {
-        // Distance in pixels to the nearest edge of the quad: constant
+        // Distance in pixels to the nearest edge of the primitive: constant
         // width on screen at every scale.
-        let fw = max(fwidth(in.frac), vec2<f32>(1e-6));
-        let d = min(
-            min(in.frac.x, 1.0 - in.frac.x) / fw.x,
-            min(in.frac.y, 1.0 - in.frac.y) / fw.y,
-        );
+        let d = surface_edge_px(in);
         let coverage = clamp(surface.wire_width_px * 0.5 + 0.5 - d, 0.0, 1.0);
         let wire = surface.wire_color * coverage;
         color = wire + color * (1.0 - wire.a);
@@ -86,40 +95,21 @@ fn fs_main(in: SurfaceOut) -> @location(0) vec4<f32> {
     return surface_color(in, 0.0);
 }
 
-/// The ID pick: the series, the kind and the grid sample nearest the
-/// fragment inside its quad, the sample whose patch the pixel shows.
+/// The ID pick: what the input names for the pixel's fragment (the series,
+/// the kind and the sample or triangle the pixel shows).
 @fragment
 fn fs_pick(in: SurfaceOut) -> @location(0) vec4<u32> {
     if (!box_visible(in.t)) {
         discard;
     }
-    let near = in.quad + vec2<u32>(round(clamp(in.frac, vec2<f32>(0.0), vec2<f32>(1.0))));
-    let cr = surface_cell(near);
-    return vec4<u32>(surface.pick_id, 0u, cr.x, cr.y);
+    return surface_pick_ids(in);
 }
 
-/// The picked sample's patch: the halves of the up to four quads around it
-/// nearest the sample, instance `k` the quad at offset `(k % 2, k / 2)` left
-/// and below of it.
+/// The picked patch's instances: the input's `surface_selected_vertex`
+/// places instance `k`'s vertex, or hides it.
 @vertex
 fn vs_selected(@builtin(instance_index) k: u32, @builtin(vertex_index) vertex: u32) -> SurfaceOut {
-    let picked = vec2<u32>(surface.picked_c, surface.picked_r);
-    if (picked.x == 0xffffffffu) {
-        return surface_hidden();
-    }
-    // The picked address in lattice (i, j) order.
-    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let ij = vec2<u32>(select(picked.x, picked.y, columns_are_y), select(picked.y, picked.x, columns_are_y));
-    let offset = vec2<u32>(k % 2u, k / 2u);
-    if (ij.x + offset.x == 0u || ij.y + offset.y == 0u) {
-        return surface_hidden();
-    }
-    let quad = ij + offset - vec2<u32>(1u);
-    let q = surface_quads();
-    if (quad.x >= q.x || quad.y >= q.y) {
-        return surface_hidden();
-    }
-    let v = surface_vertex(quad.x + quad.y * q.x, vertex);
+    let v = surface_selected_vertex(k, vertex);
     if (!v.valid) {
         return surface_hidden();
     }
@@ -128,22 +118,15 @@ fn vs_selected(@builtin(instance_index) k: u32, @builtin(vertex_index) vertex: u
 
 @fragment
 fn fs_selected(in: SurfaceOut) -> @location(0) vec4<f32> {
-    let picked = vec2<u32>(surface.picked_c, surface.picked_r);
-    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
-    let ij = vec2<u32>(select(picked.x, picked.y, columns_are_y), select(picked.y, picked.x, columns_are_y));
-    // Distance from the picked corner in quad fractions: the patch is the
-    // half of each quad nearest the sample.
-    let corner = vec2<f32>(ij) - vec2<f32>(in.quad);
-    let d = abs(in.frac - corner);
-    if (!box_visible(in.t) || d.x > 0.5 || d.y > 0.5) {
+    // The patch test first, in uniform control flow: it and the surface
+    // colour's wireframe call `fwidth`, which WGSL allows only there, so
+    // neither follows a return that depends on the fragment.
+    let part = surface_patch(in);
+    if (!box_visible(in.t) || !part.inside) {
         discard;
     }
     // An outline 1.5 px wide at the patch's border, the brightened surface
-    // inside it. The surface colour is computed before the choice: its
-    // wireframe calls `fwidth`, which WGSL allows only in uniform control
-    // flow, so not after a return that depends on the fragment.
-    let fw = max(fwidth(in.frac), vec2<f32>(1e-6));
-    let edge = min((0.5 - d.x) / fw.x, (0.5 - d.y) / fw.y);
+    // inside it.
     let inside = surface_color(in, surface.material.finish.w);
-    return select(inside, style.color_premul, edge < 1.5);
+    return select(inside, style.color_premul, part.edge_px < 1.5);
 }

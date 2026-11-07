@@ -26,11 +26,10 @@ struct MeshOut {
     @location(2) @interpolate(flat) values2: vec4<f32>,
     /// (triangle index, `MESH_VALUES_FINITE` when set).
     @location(3) @interpolate(flat) info: vec2<u32>,
+    /// On a 3D chart's floor (`mesh_floor.wgsl`): the fragment's axis
+    /// fractions, which clip it to the box floor. Zero in the flat entries.
+    @location(4) floor_t: vec2<f32>,
 };
-
-fn pair_finite(v: vec2<f32>) -> bool {
-    return f32_is_finite(v.x) && f32_is_finite(v.y) && f32_is_finite(v.x + v.y);
-}
 
 @vertex
 fn vs_tri(@builtin(vertex_index) vid: u32, @builtin(instance_index) tri: u32) -> MeshOut {
@@ -41,6 +40,7 @@ fn vs_tri(@builtin(vertex_index) vid: u32, @builtin(instance_index) tri: u32) ->
     out.values01 = vec4<f32>(0.0);
     out.values2 = vec4<f32>(0.0);
     out.info = vec2<u32>(tri, 0u);
+    out.floor_t = vec2<f32>(0.0);
     let m = mesh_triangle(tri);
     if (!m.valid) {
         return out;

@@ -1,7 +1,7 @@
-//! 3D surfaces (`Config.view_3d`, a heatmap drawn as a surface) through the
-//! public renderer API: the headless export, the depth test, the colour
-//! ramp, the wireframe, the lit material, the camera, the ID pick and the
-//! highlight.
+//! 3D surfaces (`Config.view_3d`, a heatmap drawn as a surface, and a
+//! triangle mesh drawn as one, #210) through the public renderer API: the
+//! headless export, the depth test, the colour ramp, the wireframe, the lit
+//! material, the camera, the ID pick and the highlight.
 //!
 //! House pattern (mirrors `polar_render.rs`): one process-wide device, a
 //! renderer per test, and assertions that name the pixel a grid sample lands
@@ -21,10 +21,11 @@ use renderer::data_config::{
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
+use renderer::tri_mesh::{MeshValueLocation, MeshValues, TriMeshSeries};
 use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
 use renderer::{
     Chart, Color, ColorMap, Config, DataRenderType, DataSelectionsConfig, PickedDataRef,
-    RasterImage, Renderer, RendererDevice, SeriesConfig,
+    RasterImage, Renderer, RendererDevice, SeriesConfig, TriangleSource,
 };
 
 const WIDTH: u32 = 520;
@@ -2193,5 +2194,548 @@ fn the_z_fit_spans_the_arrow_tips() {
             z.min,
             z.max
         );
+    }
+}
+
+// ───── Triangle meshes as surfaces (#210) ───────────────────────────────────
+
+/// The vertex lattice of most test meshes: `MESH_N × MESH_N` vertices over
+/// the unit square, two triangles per cell. 41 puts vertices at 0.5 and
+/// 0.4, the ridge's peak.
+const MESH_N: usize = 41;
+
+/// Upload `f` over the unit square as a triangle mesh of an `n × n` vertex
+/// lattice: the vertex columns `mx` and `my`, the heights `mz` (the values
+/// the mesh is coloured by too) and the triangle index column `mtri`: cell
+/// `(i, j)`'s lower triangle `(a, b, d)` then its upper `(a, d, c)`, with
+/// `a = j·n + i`, `b = a + 1`, `c = a + n`, `d = c + 1`.
+fn upload_mesh(r: &mut Renderer, n: usize, f: impl Fn(f64, f64) -> f64) {
+    let at = |k: usize| k as f64 / (n - 1) as f64;
+    let (mut xs, mut ys, mut zs) = (Vec::new(), Vec::new(), Vec::new());
+    for j in 0..n {
+        for i in 0..n {
+            xs.push(at(i));
+            ys.push(at(j));
+            zs.push(f(at(i), at(j)));
+        }
+    }
+    let mut tris: Vec<u32> = Vec::new();
+    for j in 0..n - 1 {
+        for i in 0..n - 1 {
+            let a = (j * n + i) as u32;
+            let (b, c) = (a + 1, a + n as u32);
+            let d = c + 1;
+            tris.extend([a, b, d, a, d, c]);
+        }
+    }
+    r.upsert_column("mx", &col(xs)).unwrap();
+    r.upsert_column("my", &col(ys)).unwrap();
+    r.upsert_column("mz", &col(zs)).unwrap();
+    r.upsert_triangles(
+        "mtri",
+        &TriangleSource {
+            indices: &Column { data: tris },
+        },
+    )
+    .unwrap();
+}
+
+/// The lower triangle `(a, b, d)` of cell `(i, j)` of an `n × n` lattice.
+fn lower_triangle(i: usize, j: usize, n: usize) -> usize {
+    2 * (j * (n - 1) + i)
+}
+
+/// Vertex `(i, j)` of an `n × n` lattice.
+fn mesh_vertex(i: usize, j: usize, n: usize) -> usize {
+    j * n + i
+}
+
+/// The centroid of the lower triangle of cell `(i, j)` of an `n × n`
+/// lattice and the height of the surface there: the mean of its three
+/// vertex heights, which the surface interpolates linearly.
+fn lower_centroid(i: usize, j: usize, n: usize, f: impl Fn(f64, f64) -> f64) -> [f64; 3] {
+    let at = |k: usize| k as f64 / (n - 1) as f64;
+    let corners = [(at(i), at(j)), (at(i + 1), at(j)), (at(i + 1), at(j + 1))];
+    let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+    for (cx, cy) in corners {
+        x += cx / 3.0;
+        y += cy / 3.0;
+        z += f(cx, cy) / 3.0;
+    }
+    [x, y, z]
+}
+
+/// A triangle mesh series over `mx`, `my`, `mtri` with the heights `mz` as
+/// its values and its `z_column`: a fill when `fill`, the contours given,
+/// the surface look given.
+fn mesh_surface_series(
+    surface: Option<SurfaceStyle>,
+    fill: bool,
+    contour: Option<renderer::data_config::ContourConfig>,
+) -> SeriesConfig {
+    SeriesConfig {
+        series_id: "mesh".into(),
+        source_id: None,
+        label: None,
+        x_column: "mx".into(),
+        y_column: "my".into(),
+        z_column: Some("mz".into()),
+        render_type: DataRenderType::TriMesh(TriMeshSeries {
+            triangles: "mtri".into(),
+            values: MeshValues {
+                column: "mz".into(),
+                at: MeshValueLocation::Vertices,
+            },
+            fill: fill.then_some(FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            }),
+            contour,
+            surface,
+        }),
+    }
+}
+
+fn pick_request(p: [f64; 2], scale: f32) -> renderer::GpuPickRequest {
+    renderer::GpuPickRequest {
+        canvas_position_px: [p[0] as f32, p[1] as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: (WIDTH as f32 * scale) as u32,
+            height: (HEIGHT as f32 * scale) as u32,
+        },
+        display_scale: scale,
+        max_distance_px: 0.0,
+    }
+}
+
+/// A triangle mesh on a 3D chart draws as a surface over its triangles,
+/// coloured by its values: the peak vertex lands where `project_3d` places
+/// it and a low triangle paints the ramp's bottom, at 1x and 2x (the 2x
+/// export is the 1x surface at twice the pixels).
+#[test]
+fn a_triangle_mesh_on_a_3d_chart_draws_as_a_surface() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let config = chart_3d();
+    let series = [mesh_surface_series(None, true, None)];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("trisurf-ridge-{scale}x"), &img);
+        assert_eq!(img.width, (WIDTH as f32 * scale) as u32);
+        let displayed = config.scaled(scale);
+        // Vertex (20, 16) is (0.5, 0.4), the peak at height 1.
+        let peak = displayed.project_3d([0.5, 0.4, 1.0]).unwrap();
+        let p = pixel(&img, (peak[0], peak[1] + 3.0 * f64::from(scale)));
+        assert!(is_top_color(p), "{scale}x peak at {peak:?}: {p:?}");
+        // The lower triangle of the near corner cell (36, 4) is low: Viridis
+        // near 0 is dark purple.
+        let foot = displayed
+            .project_3d(lower_centroid(36, 4, MESH_N, ridge))
+            .unwrap();
+        let q = pixel(&img, (foot[0], foot[1]));
+        assert!(
+            q[3] > 200 && q[2] > q[1] && q[0] < 120,
+            "{scale}x foot at {foot:?}: {q:?}"
+        );
+    }
+}
+
+/// The ID pick answers the triangle whose pixel the cursor is over and its
+/// vertex nearest the fragment, at 1x and 2x; a triangle hidden behind the
+/// ridge never answers, and nothing off the surface does.
+#[test]
+fn the_id_pick_answers_the_triangle_under_the_cursor() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let config = chart_3d();
+    let series = vec![mesh_surface_series(None, true, None)];
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    for scale in [1.0f32, 2.0] {
+        let displayed = config.scaled(scale);
+        let pick = |r: &mut Renderer, at: [f64; 3]| {
+            let p = displayed.project_3d(at).unwrap();
+            test_gpu::block_on(
+                r.pick_chart_data(id, pick_request([p[0], p[1]], scale))
+                    .unwrap()
+                    .resolve(),
+            )
+            .unwrap()
+        };
+        let triangle = |picked| match picked {
+            Some(renderer::PickedData::MeshTriangle {
+                series_id,
+                triangle_index,
+                vertex_index,
+                ..
+            }) => {
+                assert_eq!(series_id, "mesh");
+                (triangle_index, vertex_index)
+            }
+            other => panic!("{scale}x: picked {other:?}"),
+        };
+        // The lower triangle of cell (20, 3), on the near side of the peak
+        // (the default camera looks from -y): the cursor at its centroid.
+        let (tri, vertex) = triangle(pick(&mut r, lower_centroid(20, 3, MESH_N, ridge)));
+        assert_eq!(tri, lower_triangle(20, 3, MESH_N), "{scale}x");
+        assert!(
+            [
+                mesh_vertex(20, 3, MESH_N),
+                mesh_vertex(21, 3, MESH_N),
+                mesh_vertex(21, 4, MESH_N)
+            ]
+            .contains(&vertex),
+            "{scale}x: vertex {vertex} is a corner of the triangle"
+        );
+        // Cell (20, 20) at y = 0.5 is behind the peak at y = 0.4: the nearer
+        // surface in front of it answers, by the depth test.
+        let (hidden, _) = triangle(pick(&mut r, lower_centroid(20, 20, MESH_N, ridge)));
+        assert_ne!(
+            hidden,
+            lower_triangle(20, 20, MESH_N),
+            "{scale}x: a hidden triangle never picks"
+        );
+        assert!(
+            hidden / 2 / (MESH_N - 1) < 20,
+            "{scale}x: triangle {hidden} is nearer the eye"
+        );
+        // Above the box: nothing.
+        let above = displayed.project_3d([0.5, 0.5, 1.0]).unwrap();
+        let p = [above[0], above[1] - 60.0 * f64::from(scale)];
+        let miss = test_gpu::block_on(
+            r.pick_chart_data(id, pick_request(p, scale))
+                .unwrap()
+                .resolve(),
+        )
+        .unwrap();
+        assert_eq!(miss, None, "{scale}x");
+    }
+}
+
+/// The picked triangle is outlined over the surface where it is projected,
+/// at 1x and 2x, and nowhere else. A coarse mesh, so the triangle spans
+/// pixels enough to count its outline.
+#[test]
+fn the_picked_triangle_is_highlighted() {
+    const N: usize = 11;
+    let mut r = renderer();
+    upload_mesh(&mut r, N, ridge);
+    let mut config = chart_3d();
+    config.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::MeshTriangle {
+            source_id: None,
+            series_id: "mesh".into(),
+            triangle_index: lower_triangle(5, 1, N),
+        }],
+        highlight_color: Color::new(1.0, 0.0, 1.0, 1.0),
+        ..DataSelectionsConfig::default()
+    });
+    let series = [mesh_surface_series(None, true, None)];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("trisurf-picked-{scale}x"), &img);
+        let at = config
+            .scaled(scale)
+            .project_3d(lower_centroid(5, 1, N, ridge))
+            .unwrap();
+        let (mut near, mut far) = (0, 0);
+        for (i, p) in img.rgba.chunks_exact(4).enumerate() {
+            if !(p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180) {
+                continue;
+            }
+            let (px, py) = ((i as u32 % img.width) as f64, (i as u32 / img.width) as f64);
+            if (px - at[0]).hypot(py - at[1]) < 30.0 * f64::from(scale) {
+                near += 1;
+            } else {
+                far += 1;
+            }
+        }
+        assert!(near > 10, "{scale}x: {near} outline pixels at the triangle");
+        assert_eq!(far, 0, "{scale}x: outline pixels away from the triangle");
+    }
+}
+
+/// A mesh's contours on a 3D chart draw on the box floor, where its level
+/// crosses the triangles, and the ID pick names the level and the triangle;
+/// an opaque surface covers them and a translucent one shows them through.
+#[test]
+fn mesh_contours_draw_and_pick_on_the_floor() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let config = chart_3d();
+    let series = vec![mesh_surface_series(
+        None,
+        false,
+        Some(contour_config(vec![0.5])),
+    )];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("trisurf-floor-contour", &img);
+    // The 0.5 isoline of the ridge is the circle of radius sqrt(0.05 ln 2)
+    // around (0.5, 0.4) on the floor.
+    let radius = (0.05f64 * std::f64::consts::LN_2).sqrt();
+    let mut hits = 0;
+    for k in 0..16 {
+        let a = f64::from(k) / 16.0 * std::f64::consts::TAU;
+        let (x, y) = (0.5 + radius * a.cos(), 0.4 + radius * a.sin());
+        let p = config.project_3d([x, y, 0.0]).unwrap();
+        let px = pixel(&img, (p[0], p[1]));
+        if px[3] > 120 && px[0] > 150 && px[1] < 100 {
+            hits += 1;
+        }
+    }
+    assert!(
+        hits >= 12,
+        "{hits} of 16 points of the floor isoline are red"
+    );
+    let centre = config.project_3d([0.5, 0.4, 0.0]).unwrap();
+    let c = pixel(&img, (centre[0], centre[1]));
+    assert!(
+        !(c[0] > 150 && c[1] < 100),
+        "no stroke at the centre: {c:?}"
+    );
+
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    let on = config.project_3d([0.5 + radius, 0.4, 0.0]).unwrap();
+    match test_gpu::block_on(
+        r.pick_chart_data(id, pick_request([on[0], on[1]], 1.0))
+            .unwrap()
+            .resolve(),
+    )
+    .unwrap()
+    {
+        Some(renderer::PickedData::ContourLevel {
+            series_id,
+            level_index,
+            x_index,
+            y_index,
+            ..
+        }) => {
+            assert_eq!(series_id, "mesh");
+            assert_eq!(level_index, 0);
+            // The triangle the stroke lies in: in the column of cells the
+            // point (0.5 + r, 0.4) falls in.
+            let cell_x = ((0.5 + radius) * (MESH_N - 1) as f64).floor() as usize;
+            let triangle_cell_x = x_index / 2 % (MESH_N - 1);
+            assert!(
+                triangle_cell_x.abs_diff(cell_x) <= 1,
+                "triangle {x_index} lies in cell column {triangle_cell_x}, the point in {cell_x}"
+            );
+            assert_eq!(y_index, 0);
+        }
+        other => panic!("picked {other:?}"),
+    }
+
+    // With a fill: the opaque surface covers the floor, a translucent one
+    // shows it through.
+    let filled = |opacity: f32| {
+        let mut series = mesh_surface_series(None, true, Some(contour_config(vec![0.5])));
+        if let DataRenderType::TriMesh(mesh) = &mut series.render_type {
+            mesh.fill.as_mut().unwrap().opacity = opacity;
+        }
+        vec![series]
+    };
+    let reds = |img: &RasterImage| {
+        img.rgba
+            .chunks_exact(4)
+            .filter(|p| p[3] > 120 && p[0] > 150 && p[1] < 90 && p[2] < 90)
+            .count()
+    };
+    let opaque = export(&mut r, &config, &filled(1.0), 1.0);
+    let clear = export(&mut r, &config, &filled(0.3), 1.0);
+    save("trisurf-floor-opaque", &opaque);
+    save("trisurf-floor-translucent", &clear);
+    assert!(
+        reds(&opaque) < 20,
+        "the opaque surface covers the floor: {}",
+        reds(&opaque)
+    );
+    assert!(
+        reds(&clear) > 100,
+        "the translucent surface shows it: {}",
+        reds(&clear)
+    );
+}
+
+/// A lit material shades the mesh surface with its per-triangle normals,
+/// and a wireframe draws its edges: each changes the image.
+#[test]
+fn a_lit_wireframed_mesh_surface_shades_and_outlines_its_triangles() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let config = chart_3d();
+    let flat = export(
+        &mut r,
+        &config,
+        &[mesh_surface_series(None, true, None)],
+        1.0,
+    );
+    let lit = export(
+        &mut r,
+        &config,
+        &[mesh_surface_series(
+            Some(SurfaceStyle {
+                material: renderer::Material::Matte,
+                ..SurfaceStyle::default()
+            }),
+            true,
+            None,
+        )],
+        1.0,
+    );
+    save("trisurf-lit", &lit);
+    let changed = flat
+        .rgba
+        .chunks_exact(4)
+        .zip(lit.rgba.chunks_exact(4))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 12))
+        .count();
+    assert!(changed > 1000, "lighting changed {changed} pixels");
+    let wired = export(
+        &mut r,
+        &config,
+        &[mesh_surface_series(
+            Some(SurfaceStyle {
+                wireframe: Some(SurfaceWireframe {
+                    color: Color::new(0.0, 0.0, 0.0, 1.0),
+                    width: 1.0,
+                }),
+                ..SurfaceStyle::default()
+            }),
+            true,
+            None,
+        )],
+        1.0,
+    );
+    save("trisurf-wireframe", &wired);
+    let dark = |img: &RasterImage| {
+        img.rgba
+            .chunks_exact(4)
+            .filter(|p| p[3] > 200 && p[0] < 40 && p[1] < 40 && p[2] < 40)
+            .count()
+    };
+    assert!(
+        dark(&wired) > dark(&flat) + 2000,
+        "the wireframe adds dark edge pixels: {} over {}",
+        dark(&wired),
+        dark(&flat)
+    );
+}
+
+/// The z fit reads the height column's statistics: `right_y` spans the
+/// mesh's heights.
+#[test]
+fn the_z_fit_spans_the_mesh_heights() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, |x, y| 3.0 + 4.0 * ridge(x, y));
+    let mut chart = Chart::new(chart_3d());
+    let series = [mesh_surface_series(None, true, None)];
+    chart
+        .auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)
+        .unwrap();
+    let z = &chart.config().right_y;
+    let at = |k: usize| k as f64 / (MESH_N - 1) as f64;
+    let (min, max) = (0..MESH_N)
+        .flat_map(|i| (0..MESH_N).map(move |j| 3.0 + 4.0 * ridge(at(i), at(j))))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+            (a.min(v), b.max(v))
+        });
+    assert!(
+        (z.min - min).abs() < 1e-9 && (z.max - max).abs() < 1e-9,
+        "{} {}",
+        z.min,
+        z.max
+    );
+}
+
+/// A new upload of the height column redraws the surface where the new
+/// heights are (SSOT: the mesh's group follows its columns' epochs).
+#[test]
+fn a_height_upload_redraws_the_mesh_surface() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let config = chart_3d();
+    let series = [mesh_surface_series(None, true, None)];
+    let before = export(&mut r, &config, &series, 1.0);
+    let peak = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    assert!(is_top_color(pixel(&before, (peak[0], peak[1] + 3.0))));
+    // Halve the heights (and so the values): the peak is at 0.5 now, and
+    // the old peak pixel shows nothing of the surface.
+    let at = |k: usize| k as f64 / (MESH_N - 1) as f64;
+    let halved: Vec<f64> = (0..MESH_N)
+        .flat_map(|j| (0..MESH_N).map(move |i| 0.5 * ridge(at(i), at(j))))
+        .collect();
+    r.upsert_column("mz", &col(halved)).unwrap();
+    let after = export(&mut r, &config, &series, 1.0);
+    save("trisurf-halved", &after);
+    let p = pixel(&after, (peak[0], peak[1] + 3.0));
+    assert!(!is_top_color(p), "the old peak is gone: {p:?}");
+    let lower = config.project_3d([0.5, 0.4, 0.5]).unwrap();
+    let q = pixel(&after, (lower[0], lower[1] + 3.0));
+    // Viridis at 0.5 is teal.
+    assert!(
+        q[3] > 200 && q[1] > 110 && q[2] > 110 && q[0] < 80,
+        "the halved peak at {lower:?}: {q:?}"
+    );
+}
+
+/// A mesh in a 3D subplot draws as a surface beside the flat panel's mesh,
+/// each where its own panel places it, at 1x and 2x.
+#[test]
+fn a_3d_subplot_draws_a_mesh_surface_beside_a_flat_panel() {
+    let mut r = renderer();
+    upload_mesh(&mut r, MESH_N, ridge);
+    let mut flat = chart_3d();
+    flat.set_view_3d(None);
+    let mut subplot = chart_3d();
+    subplot.chart_area = ChartArea(Rect {
+        x: WIDTH,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let flat_mesh = mesh_surface_series(None, true, None);
+    let mut mesh_3d = flat_mesh.clone();
+    mesh_3d.series_id = "mesh_3d".into();
+    let mut parent = Chart::new(flat.clone());
+    parent.config_mut().subplots.push(renderer::Subplot {
+        config: subplot.clone(),
+        series: vec!["mesh_3d".into()],
+        link_x: None,
+        link_y: None,
+        marker: None,
+    });
+    let series = [flat_mesh, mesh_3d];
+    for scale in [1.0f32, 2.0] {
+        let document = r
+            .export_rgba(
+                renderer::ExportSource::chart(&parent, &series),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        save(&format!("trisurf-subplot-{scale}x"), &document);
+        let s = f64::from(scale);
+        assert_eq!(
+            (document.width, document.height),
+            (
+                (2.0 * f64::from(WIDTH) * s) as u32,
+                (f64::from(HEIGHT) * s) as u32
+            )
+        );
+        // The 3D panel: the peak where its camera puts it, offset by its
+        // area.
+        let peak = subplot.scaled(scale).project_3d([0.5, 0.4, 1.0]).unwrap();
+        let p = pixel(&document, (peak[0], peak[1] + 3.0 * s));
+        assert!(is_top_color(p), "{scale}x: 3D peak at {peak:?}: {p:?}");
+        // The flat panel: the mesh's fill at the peak's data position.
+        let da = parent.config().data_area().expect("data area");
+        let x = (f64::from(da.x) + 0.5 * f64::from(da.width)) * s;
+        let y = (f64::from(da.y + da.height) - 0.4 * f64::from(da.height)) * s;
+        let q = pixel(&document, (x, y));
+        assert!(is_top_color(q), "{scale}x: flat peak at ({x}, {y}): {q:?}");
     }
 }

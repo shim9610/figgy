@@ -151,7 +151,8 @@ impl PrepareContext<'_> {
             style_bg: flat.style_bg.clone(),
             field_bg: flat.field_bg.clone(),
             surface_bg,
-            quads,
+            vertices: mesh::SURFACE_QUAD_VERTICES,
+            instances: quads,
             charge: Arc::clone(&flat.charge),
             surface_charge,
         };
@@ -202,7 +203,8 @@ impl PrepareContext<'_> {
                     style_bg,
                     field_bg: flat.field_bg.clone(),
                     surface_bg,
-                    quads,
+                    vertices: mesh::SURFACE_QUAD_VERTICES,
+                    instances: mesh::SURFACE_SELECTED_INSTANCES,
                     charge: Arc::clone(&flat.charge),
                     surface_charge,
                 })
@@ -210,6 +212,174 @@ impl PrepareContext<'_> {
             _ => None,
         };
         Ok((Some(surface), selected))
+    }
+
+    /// A triangle mesh on a 3D chart (#210): its triangles as a surface
+    /// under the mesh surface pipelines, the one group 2 its flat draw
+    /// resolves (`ensure_mesh_scratches`, with the height column as the
+    /// table's third entry), with the panel camera and the mesh's look as
+    /// group 3; and, when the chart's selection names one of its triangles,
+    /// that triangle as the picked patch.
+    pub(in crate::renderer) fn mesh_surface_layers<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series: &Series<'a>,
+        pipelines: &'a TargetPipelines,
+        scratch: &FieldScratch,
+        index: usize,
+    ) -> Result<(
+        Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
+        Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
+    )> {
+        use data_render::surface_mesh::{self as mesh, SurfacePass};
+        use data_render::tri_mesh::TRI_MESH_VERTICES;
+        let cfg = series.config;
+        let panel = view.panel_rect;
+        let target = (
+            (f64::from(panel.x), f64::from(panel.y)),
+            (f64::from(panel.width), f64::from(panel.height)),
+        );
+        let (Some(camera), Some(pipeline)) = (
+            mesh::view3d_gpu(chart_config, target, target),
+            pipelines.tri_surface[SurfacePass::Draw as usize].as_ref(),
+        ) else {
+            return Ok((None, None));
+        };
+        let triangles = if scratch.drawable {
+            scratch.signature.params.rows
+        } else {
+            0
+        };
+        let style = cfg.tri_mesh().and_then(|m| m.surface.as_ref());
+        let scale = series.style.display_scale;
+        let pick_id = u32::try_from(index)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(1);
+        let look = mesh::surface_params_gpu(style, 0, scale, None, pick_id);
+        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+            &self.gpu_ledger,
+            &self.device,
+            &self.surface_bgl,
+            &camera,
+            &look,
+        )?;
+        let surface = mesh::ColumnSurfaceLayer {
+            pipeline,
+            transform_bg: &view.transform_bg,
+            style_bg: scratch.style_bg.clone(),
+            field_bg: scratch.field_bg.clone(),
+            surface_bg,
+            vertices: TRI_MESH_VERTICES,
+            instances: triangles,
+            charge: Arc::clone(&scratch.charge),
+            surface_charge,
+        };
+        // The picked triangle of this series.
+        let picked = chart_config
+            .picked_data
+            .as_ref()
+            .filter(|selection| selection.visible)
+            .and_then(|selection| {
+                selection.refs.iter().find_map(|picked| match picked {
+                    PickedDataRef::MeshTriangle {
+                        series_id,
+                        triangle_index,
+                        ..
+                    } if *series_id == cfg.series_id => Some((selection, *triangle_index)),
+                    _ => None,
+                })
+            });
+        let selected = match (
+            picked,
+            pipelines.tri_surface[SurfacePass::Selected as usize].as_ref(),
+        ) {
+            (Some((selection, triangle)), Some(pipeline)) if triangles > 0 => {
+                let Ok(triangle) = u32::try_from(triangle) else {
+                    return Ok((Some(surface), None));
+                };
+                if triangle >= triangles {
+                    return Ok((Some(surface), None));
+                }
+                let look = mesh::surface_params_gpu(style, 0, scale, Some((triangle, 0)), pick_id);
+                let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    &camera,
+                    &look,
+                )?;
+                let highlight = data_render::create_style_uniform_buffer(
+                    &self.device,
+                    &PrimitiveStyle::from_color(selection.highlight_color),
+                );
+                let style_bg =
+                    data_render::create_style_bind_group(&self.device, &self.style_bgl, &highlight);
+                Some(mesh::ColumnSurfaceLayer {
+                    pipeline,
+                    transform_bg: &view.transform_bg,
+                    style_bg,
+                    field_bg: scratch.field_bg.clone(),
+                    surface_bg,
+                    vertices: TRI_MESH_VERTICES,
+                    instances: 1,
+                    charge: Arc::clone(&scratch.charge),
+                    surface_charge,
+                })
+            }
+            _ => None,
+        };
+        Ok((Some(surface), selected))
+    }
+
+    /// A triangle mesh's contours on a 3D chart's floor (#210): every
+    /// triangle under the mesh floor pipeline (`vs_tri_floor` /
+    /// `fs_tri_floor`), the mesh's group 2, the panel camera as group 3.
+    pub(in crate::renderer) fn mesh_floor_layer<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series: &Series<'a>,
+        pipelines: &'a TargetPipelines,
+        scratch: &FieldScratch,
+        index: usize,
+    ) -> Option<Result<data_render::surface_mesh::ColumnSurfaceLayer<'a>>> {
+        use data_render::surface_mesh::{self as mesh, SurfacePass};
+        if !scratch.drawable {
+            return None;
+        }
+        let panel = view.panel_rect;
+        let target = (
+            (f64::from(panel.x), f64::from(panel.y)),
+            (f64::from(panel.width), f64::from(panel.height)),
+        );
+        let camera = mesh::view3d_gpu(chart_config, target, target)?;
+        let pipeline = pipelines.tri_surface[SurfacePass::FloorContour as usize].as_ref()?;
+        let pick_id = u32::try_from(index)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(1);
+        let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
+        let (surface_bg, surface_charge) = match mesh::create_surface_bind_group(
+            &self.gpu_ledger,
+            &self.device,
+            &self.surface_bgl,
+            &camera,
+            &look,
+        ) {
+            Ok(group) => group,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(mesh::ColumnSurfaceLayer {
+            pipeline,
+            transform_bg: &view.transform_bg,
+            style_bg: scratch.style_bg.clone(),
+            field_bg: scratch.field_bg.clone(),
+            surface_bg,
+            vertices: data_render::tri_mesh::TRI_MESH_VERTICES,
+            instances: scratch.signature.params.rows,
+            charge: Arc::clone(&scratch.charge),
+            surface_charge,
+        }))
     }
 
     /// A contour on a 3D chart's floor: the contour's group 2 under the
@@ -255,7 +425,8 @@ impl PrepareContext<'_> {
             style_bg: scratch.style_bg.clone(),
             field_bg: scratch.field_bg.clone(),
             surface_bg,
-            quads: 1,
+            vertices: mesh::SURFACE_QUAD_VERTICES,
+            instances: 1,
             charge: Arc::clone(&scratch.charge),
             surface_charge,
         }))
@@ -516,8 +687,13 @@ impl PrepareContext<'_> {
             // A triangle mesh (#210): its fill and its contours draw the one
             // group 2 `ensure_mesh_scratches` resolved, instancing the
             // triangle count (the shader rechecks every index on every draw).
+            // On a 3D chart the fill is a surface into the panel composite
+            // and the contours draw on the box floor, as a heatmap's do.
             let mut mesh = None;
             let mut mesh_contour = None;
+            let mut mesh_surface = None;
+            let mut mesh_selected = None;
+            let mut mesh_floor = None;
             if (primitives.mesh || primitives.mesh_contour) && phase.is_none() {
                 let scratch = self
                     .field_cache
@@ -528,6 +704,25 @@ impl PrepareContext<'_> {
                 } else {
                     0
                 };
+                if chart_config.view_3d().is_some() {
+                    if primitives.mesh {
+                        let (surface, selected) = self.mesh_surface_layers(
+                            view,
+                            chart_config,
+                            series,
+                            pipelines,
+                            scratch,
+                            idx,
+                        )?;
+                        mesh_surface = surface;
+                        mesh_selected = selected;
+                    }
+                    if primitives.mesh_contour {
+                        mesh_floor = self
+                            .mesh_floor_layer(view, chart_config, series, pipelines, scratch, idx)
+                            .transpose()?;
+                    }
+                }
                 for (wanted, pass, slot) in [
                     (
                         primitives.mesh,
@@ -540,7 +735,7 @@ impl PrepareContext<'_> {
                         &mut mesh_contour,
                     ),
                 ] {
-                    if !wanted {
+                    if !wanted || chart_config.view_3d().is_some() {
                         continue;
                     }
                     *slot = Some(data_render::tri_mesh::ColumnTriMeshLayer {
@@ -581,6 +776,8 @@ impl PrepareContext<'_> {
                 }
                 other => (other, None, None),
             };
+            let surface = surface.or(mesh_surface);
+            let selected_surface = selected_surface.or(mesh_selected);
 
             // A contour on a 3D chart draws on the box floor
             // (`vs_floor`), never as flat isolines over the box.
@@ -605,6 +802,7 @@ impl PrepareContext<'_> {
             } else {
                 None
             };
+            let floor = floor.or(mesh_floor);
 
             let contour = if primitives.contour && !floor_only {
                 let scratch = products

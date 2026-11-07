@@ -166,4 +166,26 @@ async fn a_mesh_picks_reports_and_steps_its_triangles() {
     assert_eq!(faces["index"], 1);
     assert_eq!(faces["value"], 4.5);
     assert_eq!(faces["at"], "Faces");
+
+    // On a 3D chart the mesh draws as a surface over its height column
+    // (#210), through the browser's own WGSL compiler, and the details
+    // report the triangle's heights too.
+    let mut lifted = mesh(MeshValueLocation::Vertices, "mv");
+    lifted.z_column = Some("mv".into());
+    chart
+        .set_series(&serde_json::to_string(&vec![lifted]).unwrap())
+        .unwrap();
+    let mut three_d: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    three_d.set_view_3d(Some(renderer::view3d::View3d::default()));
+    three_d.right_y.min = 0.0;
+    three_d.right_y.max = 6.0;
+    chart
+        .set_config(&serde_json::to_string(&three_d).unwrap())
+        .unwrap();
+    chart.frame().unwrap();
+    let surface = details(&chart).await;
+    assert_eq!(surface["index"], 1, "{surface}");
+    assert_eq!(surface["vertices"], serde_json::json!([0, 2, 3]));
+    assert_eq!(surface["values"], serde_json::json!([0.0, 6.0, 4.0]));
+    assert_eq!(surface["z"], serde_json::json!([0.0, 6.0, 4.0]));
 }

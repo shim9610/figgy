@@ -1336,8 +1336,11 @@ subplot's `marker`) are additive.
   triangle_index }` (serde tag `mesh_triangle`); `step_selection` moves it
   by `dx` over the triangles (the triangle index column's `column_len` over
   three) and by `dy` across the mesh series. The legend mark and the colour
-  cycle treat a mesh as a field. Migration: an exhaustive `match` on
-  `DataRenderType` adds `TriMesh(_)`, one on `PickedDataRef` adds
+  cycle treat a mesh as a field. `Config::drawn_z_column` names a mesh's
+  `z_column` on a 3D panel, as it names a scatter, line or point vector
+  series' (the trisurf, #210 step 5), so `step_selection` and the renderer
+  bound the draw by the height column too. Migration: an exhaustive `match`
+  on `DataRenderType` adds `TriMesh(_)`, one on `PickedDataRef` adds
   `MeshTriangle { .. }`.
 
 <a id="unreleased-renderer"></a>
@@ -1411,8 +1414,7 @@ subplot's `marker`) are additive.
   vertex columns; `series_draw_info` counts the triangles and reports a
   column shortened after registration. A streamed display refuses the kind
   ("triangle mesh series require GPU-resident columns; streamed sources are
-  not supported", rule 8), and a 3D chart refuses it until the trisurf
-  lands. The model's `TriMesh` series kind and `MeshTriangle` selection are
+  not supported", rule 8). The model's `TriMesh` series kind and `MeshTriangle` selection are
   re-exported (`renderer::tri_mesh`); `PickedData::MeshTriangle { source_id,
   series_id, triangle_index, vertex_index, distance_px }` is the pick result
   to come, `to_ref` dropping the hover-only `vertex_index`. Migration: an
@@ -1433,6 +1435,38 @@ subplot's `marker`) are additive.
   million triangles pick in about 50 ms on lavapipe; nothing caps the count.
   Migration: code that builds a `ColumnFieldSelectionLayer` sets `vertices:
   FIELD_VERTICES, instances: 0..1` for a field.
+
+- **Triangle mesh series: the 3D surface (trisurf)** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  On a 3D chart (`Config.view_3d`) a `TriMesh` series draws as a surface
+  over its triangles, each vertex placed by `x_column`, `y_column` and the
+  series' `z_column` through the camera, coloured by its values as the flat
+  fill is, with `TriMeshSeries.surface` as the look and the triangle's own
+  normal for a lit material; its contours draw on the box floor. The
+  surface entries (`surface_mesh/surface_entry.wgsl`) now draw what an input
+  fragment defines, the heatmap grid's (`surface_input_grid.wgsl`,
+  `SURFACE_SHADER`) or the mesh's (`surface_input_mesh.wgsl` over
+  `tri_mesh/mesh_input.wgsl`, the new `TRI_SURFACE_SHADER`; `SurfaceInput`
+  names which), through the hooks `surface_edge_px`, `surface_pick_ids`,
+  `surface_selected_vertex` and `surface_patch`; `SurfaceParams` moved to
+  `surface_params.wgsl` (SHADER_COMMON.md §5.21). The grid surface's pixels
+  are unchanged. The mesh module gains the floor entries `vs_tri_floor`,
+  `fs_tri_floor` and `fs_tri_floor_pick` (`tri_mesh/mesh_floor.wgsl`) and
+  splices `project_3d.wgsl`; the mesh's group 2 gains the height column as
+  its third table entry on a 3D chart (`MESH_TABLE_HEIGHTS`), so a new
+  height upload redraws the surface. The ID pick writes `(id, 2, triangle,
+  vertex)` for a mesh surface and `(id | 0x80000000, level, triangle, 0)`
+  for a mesh floor contour, decoded to `PickedData::MeshTriangle` and
+  `ContourLevel { x_index: triangle, y_index: 0 }`; the picked triangle is
+  the surface's patch, outlined and brightened over anything in front of
+  it. Registration checks the height column and counts it in the vertex
+  count, `series_draw_info` too, and `auto_fit_view_3d_z` spans it (it
+  already read every series' `z_column`). `ColumnSurfaceLayer` carries
+  `vertices` and `instances` (a grid's `SURFACE_QUAD_VERTICES` and quads, a
+  mesh's `TRI_MESH_VERTICES` and triangles); `SurfacePass::label` and
+  `create_surface_pipeline` take the `SurfaceInput`; `TargetPipelines`
+  gains `tri_surface`. Nothing caps the triangle count. Migration: code
+  that built a `ColumnSurfaceLayer` sets `vertices: SURFACE_QUAD_VERTICES`
+  and renames `quads` to `instances`.
 
 - **A frame of more series than a scratch cache holds draws them all.**
   The per-series scratch caches (256 entries each) cleared themselves when
@@ -3129,7 +3163,9 @@ subplot's `marker`) are additive.
   `step_selection` counts a mesh's triangles from the index column's
   statistics. `set_series` accepts a series that names a registered
   triangle index column; it refused every mesh series before, because the
-  triangle id is not a column id.
+  triangle id is not a column id. On a 3D chart the mesh draws as a surface
+  over its `z_column` (the trisurf, #210 step 5) and the details report the
+  triangle's heights as `z`, next to its `values`.
 - **3D vector fields** ([#211](https://github.com/shim9610/figgy/issues/211)).
   A picked arrow of a 3D point vector reports `z` and `w` in
   `selection_details()` next to `x`, `y`, `u` and `v`. The series JSON

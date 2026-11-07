@@ -527,6 +527,8 @@ impl TargetPipelines {
             surface: Default::default(),
             tri_mesh_shader: source.tri_mesh_shader.clone(),
             tri_mesh: Default::default(),
+            tri_surface_shader: source.tri_surface_shader.clone(),
+            tri_surface: Default::default(),
             ternary_region_shader: source.ternary_region_shader.clone(),
             ternary_region: Default::default(),
             // Compute pipelines: the target's format does not enter them.
@@ -615,6 +617,14 @@ impl TargetPipelines {
             self.tri_mesh_shader = other.tri_mesh_shader;
         }
         for (slot, other) in self.tri_mesh.iter_mut().zip(other.tri_mesh) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.tri_surface_shader.is_none() {
+            self.tri_surface_shader = other.tri_surface_shader;
+        }
+        for (slot, other) in self.tri_surface.iter_mut().zip(other.tri_surface) {
             if slot.is_none() {
                 *slot = other;
             }

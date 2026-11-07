@@ -1292,9 +1292,16 @@ colourbar; a column shortened later is drawn to what remains and
 (rule 8). Nothing caps the triangle count: a million triangles draw (about
 0.9 s for a 1x export on lavapipe).
 
-Status: flat charts draw, pick and highlight the fill and the contours. The
-3D surface (trisurf) follows under #210; until then a `TriMesh` series on a
-3D chart is refused with `InvalidSeriesConfig`.
+On a 3D chart (`view_3d`) the mesh draws as a surface over its triangles
+(a trisurf, [SURFACE.md](SURFACE.md)): the series names its height column
+in `z_column`, each vertex is placed by its x, y and height through the
+camera, the fill colours the triangle by its values, `surface` holds the
+look (a lit material shades with the triangle's own normal), and the
+contours draw on the box floor. The ID pick answers the triangle the pixel
+shows and its nearest vertex, the picked triangle is outlined and
+brightened over the surface, and the z fit spans the height column. A
+triangle naming a vertex past the height column is refused at registration
+and, after a later shortening, not drawn.
 
 <a id="parallel-coordinates"></a>
 
@@ -2084,7 +2091,7 @@ GPU는 그릴 때마다 컬럼 풀에서 값 컬럼을 읽어 셰이더에서 �
 
 그리기. 삼각형 하나가 인스턴스 하나다. 정점 단계는 꼭짓점 세 개를 축(로그·확률·끊김 축 포함)을 거쳐 배치하고, 가장 짧은 꼭짓점 열을 넘는 꼭짓점을 가리키거나 축이 배치할 수 없는 꼭짓점이 있는 삼각형은 그리지 않는다. 꼭짓점 값은 화면 공간에서 무게중심 좌표로 섞는다. 그래서 로그 축에서는 히트맵 보간처럼 축 `t` 공간에서 섞인다. 유한하지 않은 꼭짓점 값이 있으면 그 삼각형을 `nan_color`로 칠한다. `Bands`는 값이 닿은 레벨의 띠 색으로 칠한다. 등고선은 삼각형마다 선형 보간 함수의 등값선이며, 선까지의 거리는 `|f − L| / |∇f|`이고 레벨 검색은 히트맵과 같다. 기울기가 0인 평탄한 삼각형에는 선을 그리지 않는다. 자동 범위 맞춤은 등록된 모든 꼭짓점의 좌표를 포함한다. 등록할 때 꼭짓점 수(`x_column`, `y_column`, 꼭짓점 값이면 값 열 중 가장 짧은 길이)를 넘는 인덱스, 삼각형 수보다 짧은 삼각형 값 열, 상주 삼각형 인덱스 열이 아닌 ID, 색상 막대가 없는 경우를 거부한다. 나중에 열이 짧아지면 남은 만큼 그리고 `series_draw_info`가 `truncated`로 알린다. 스트리밍 표시는 이 종류를 거부한다(규칙 8). 삼각형 수에는 상한이 없으며 삼각형 백만 개를 그린다(lavapipe에서 1x 내보내기 약 0.9초).
 
-현재 상태: 평면 차트에서 채우기와 등고선을 그리고, 피킹하고, 선택을 강조한다. 3D 표면(trisurf)은 #210에서 이어진다. 그 전까지 3D 차트의 `TriMesh` 시리즈는 `InvalidSeriesConfig`로 거부한다.
+3D 차트(`view_3d`)에서는 메시를 삼각형 위의 표면(trisurf, [SURFACE.md](SURFACE.md))으로 그린다. 시리즈는 `z_column`에 높이 열을 적고, 꼭짓점마다 x·y·높이를 카메라로 투영해 놓으며, 채우기는 값으로 삼각형을 칠하고, `surface`가 겉모습을 정한다(조명 재질은 삼각형 자체의 법선으로 음영을 넣는다). 등고선은 상자 바닥에 그린다. ID 피킹은 픽셀이 보여 주는 삼각형과 그 가장 가까운 꼭짓점을 답하고, 선택된 삼각형은 표면 위에 외곽선과 밝아진 색으로 강조되며, z 범위 맞춤은 높이 열을 덮는다. 높이 열을 넘는 꼭짓점을 가리키는 삼각형은 등록 때 거부하고, 나중에 열이 짧아지면 그리지 않는다.
 
 <a id="그리기-정보-범위-맞춤과-시리즈-스타일"></a>
 

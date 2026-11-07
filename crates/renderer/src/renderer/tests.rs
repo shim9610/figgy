@@ -15250,6 +15250,14 @@ fn pipeline_enums_index_their_target_arrays() {
         slots(|t| &t.surface),
     );
     check(
+        "SurfacePass (triangle mesh)",
+        crate::data_render::surface_mesh::SurfacePass::ALL
+            .iter()
+            .map(|&k| k as usize)
+            .collect(),
+        slots(|t| &t.tri_surface),
+    );
+    check(
         "TernaryRegionPass",
         crate::data_render::ternary_region::TernaryRegionPass::ALL
             .iter()

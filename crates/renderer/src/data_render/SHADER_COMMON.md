@@ -37,10 +37,10 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `probability.wgsl` (§5.24) | every module that splices `projection.wgsl`, next to it |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, field, triangle mesh, contour anchor (the polar clip `field_lookup` reads, §5), every pick module |
-| `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, scatter, line, line_arc, the 3D point vector module (§5.3) |
-| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor, surface mesh, triangle mesh (§5.25); `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
+| `project_3d.wgsl` (§5.21) | field (the floor contour entries), surface mesh, triangle surface, triangle mesh (the floor contour entries, §5.25), scatter, line, line_arc, the 3D point vector module (§5.3) |
+| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor, surface mesh, triangle mesh, triangle surface (§5.25); `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`, whose two-sum it is), every vector module and every pick module that splices `arrow.wgsl` (`pair_add`), and the pick marker modules |
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
-| `ramp.wgsl` (§5.4) | field, triangle mesh, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
+| `ramp.wgsl` (§5.4) | field, triangle mesh, surface mesh, triangle surface, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
 | `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
@@ -51,14 +51,16 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector, line (the parallel row pick, §5.23) |
-| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, field (the polar cell outline, §5), the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, field (the polar cell outline, §5), surface mesh, triangle surface, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, bar (the rose wedge), field (the polar cell outline, §5), the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
 | `violin.wgsl` (§2.5, §5.19) | bar |
-| `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh |
+| `field_paint.wgsl` (§5, §5.21, §5.25) | field, surface mesh, triangle mesh, triangle surface |
+| `surface_mesh/surface_params.wgsl`, `surface_mesh/surface_entry.wgsl` (§5.21) | surface mesh (with `surface_input_grid.wgsl`), triangle surface (with `tri_mesh/mesh_input.wgsl` and `surface_input_mesh.wgsl`) |
+| `tri_mesh/mesh_input.wgsl` (§5.25) | triangle mesh (with `mesh_entry.wgsl` and `mesh_floor.wgsl`), triangle surface |
 | `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
 | `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
 | `value_label.wgsl` (§5.17) | bar |
@@ -1814,28 +1816,72 @@ the surface and the triangle mesh splice it, so a surface is coloured
 exactly as the heatmap of its grid and a mesh's contours are searched and
 composited as the heatmap's.
 
-The surface module (`surface_mesh/`, assembled by `wgsl_module!` with the
+The surface modules (`surface_mesh/`, assembled by `wgsl_module!` with the
 field grid, the field paint, the ramp, the material and the projection)
-reads `SurfaceParams` at group 3 binding 5 (CPU twin
+read `SurfaceParams` at group 3 binding 5 (`surface_params.wgsl`, CPU twin
 `surface_mesh.rs::SurfaceParamsGpu`, 80 B: the colour grid's column base,
 the `SURFACE_COLOR_GRID` / `SURFACE_WIREFRAME` / `SURFACE_LIT` flags, the
-picked sample, the wireframe's width and colour, the pick ID and the
-material). `surface_vertex` draws one instance per quad between four
-neighbouring samples, six vertices, from the field group's grid table; a
-quad with an unplaceable sample is dropped. `surface_normal` takes central
-differences of the neighbouring heights for a lit material, a shading value
-computed on every draw. `surface_fill_color` paints a quad with
-`field_fill_color`: bilinear for `Interpolated`, the corners' mean for
-`Flat`. The colour grid's columns follow the height grid's in the grid
-table at `color_base`.
+picked sample (a grid's column and row, or a mesh's triangle and 0;
+`SURFACE_NO_PICK` for none), the wireframe's width and colour, the pick ID
+and the material). The entries (`surface_entry.wgsl`: `vs_main` /
+`fs_main`, `fs_pick`, `vs_selected` / `fs_selected`) know no lattice: they
+draw what the input fragment spliced before them defines, and there are
+two inputs (`surface_mesh.rs::SurfaceInput`), each a module of its own
+(`SURFACE_SHADER`, `TRI_SURFACE_SHADER`):
 
-The floor contours are entries of the field module (`vs_floor`,
-`fs_floor_contour_pick`): a quad over the box floor (`t.z = 0`) placed
-through `project_box`, its fragments carrying the floor point in the flat
-entries' cell space, so the unchanged contour search runs per floor
-fragment and the stroke widths are floor-plane pixels (#49 D7). The ID pick writes `(id, 0, c, r)` for a
-surface sample and `(id | 0x80000000, level, c, r)` for a floor contour, to
-an `Rgba32Uint` target with the depth test.
+- `SurfaceVertex` / `surface_vertex(instance, vertex)`: one instance's
+  vertex, with its primitive in `quad` (a grid quad's `(i, j)`, a mesh
+  triangle's `(index, 0)`), its position inside it in `frac` (`(x, y, 0)`
+  of a quad, the barycentric weights of a triangle), its box point and its
+  normal; `valid` false drops the primitive, as a NaN breaks a line.
+- `surface_fill_color(quad, frac)`: the premultiplied fill there.
+- `surface_edge_px(in)`: the fragment's distance in pixels to the nearest
+  edge of its primitive, for the wireframe.
+- `surface_pick_ids(in)`: what the ID pick writes.
+- `surface_selected_vertex(k, vertex)` and `surface_patch(in)`: the picked
+  patch's instances, and whether a fragment lies in the patch with its
+  distance to the patch's border (`SurfacePatch`); the patch test runs
+  first in `fs_selected`, in uniform control flow, as it and the wireframe
+  call `fwidth`.
+
+The grid input (`surface_input_grid.wgsl`) draws one instance per quad
+between four neighbouring samples, six vertices, from the field group's
+grid table; a quad with an unplaceable sample is dropped. `surface_normal`
+takes central differences of the neighbouring heights for a lit material,
+a shading value computed on every draw. `surface_fill_color` paints a quad
+with `field_fill_color`: bilinear for `Interpolated`, the corners' mean for
+`Flat`. The colour grid's columns follow the height grid's in the grid
+table at `color_base`. Its pick writes kind 0 and the sample nearest the
+fragment; its patch is the halves of the up to four quads around the
+picked sample (`SURFACE_SELECTED_INSTANCES`).
+
+The mesh input (`surface_input_mesh.wgsl`, over `tri_mesh/mesh_input.wgsl`,
+#210) draws one instance per triangle, three vertices: each reads the
+triangle's three indices and places all three vertices by the vertex
+coordinate columns and the height column (grid table entry `MESH_HEIGHTS`,
+2, the series' `z_column`) through `view3d_axis_t` and `view3d_z_t`, so
+the three invocations agree on whether the triangle draws and on its
+normal, the triangle's own from its three box points (`mesh_surface_normal`).
+A triangle past the drawn count, naming a vertex past
+`mesh_surface_vertex_count()` (the flat count and the height column) or
+with an unplaceable vertex is dropped. `surface_fill_color` is the mesh's
+`mesh_values_at` (the triangle's value, or the barycentric blend of its
+corners' values) through `field_value_color`, as the flat mesh paints. Its
+pick writes kind 2, the triangle and its vertex nearest the fragment (the
+largest barycentric weight); its patch is the picked triangle, one
+instance.
+
+The floor contours are entries of the flat modules: the field module's
+`vs_floor` / `fs_contour` / `fs_floor_contour_pick` place a quad over the
+box floor (`t.z = 0`) through `project_box`, its fragments carrying the
+floor point in the flat entries' cell space, so the unchanged contour
+search runs per floor fragment and the stroke widths are floor-plane
+pixels (#49 D7); the mesh module's `vs_tri_floor` / `fs_tri_floor` /
+`fs_tri_floor_pick` (§5.25) place every triangle on the floor. The ID pick
+writes `(id, 0, c, r)` for a grid surface sample, `(id, 2, triangle,
+vertex)` for a mesh surface, and `(id | 0x80000000, level, c, r)` for a
+grid floor contour or `(id | 0x80000000, level, triangle, 0)` for a mesh
+floor contour, to an `Rgba32Uint` target with the depth test.
 
 **3D points and lines (#132).** `view3d_point_t` places a sample of three
 columns (x, y and the height of a series' `z_column`) and
@@ -2031,26 +2077,37 @@ f32 error, as a log axis does. CPU twin (test support):
 
 The triangle mesh module (`tri_mesh.rs::TRI_MESH_SHADER`, #210) splices
 transform, style, projection, probability, sample validity, `grid_pair`,
-`field_grid`, the ramp and `field_paint`, then
-[`tri_mesh/mesh_input.wgsl`](tri_mesh/mesh_input.wgsl) and
-[`tri_mesh/mesh_entry.wgsl`](tri_mesh/mesh_entry.wgsl). It binds the field's
+`field_grid`, the ramp, `field_paint`, the data pick and `project_3d`, then
+[`tri_mesh/mesh_input.wgsl`](tri_mesh/mesh_input.wgsl),
+[`tri_mesh/mesh_entry.wgsl`](tri_mesh/mesh_entry.wgsl) and
+[`tri_mesh/mesh_floor.wgsl`](tri_mesh/mesh_floor.wgsl). It binds the field's
 group 2 layout unchanged (`create_field_data_bind_group_layout`) and reads it
 under the `FIELD_MESH` flag (128):
 
 | Member | Meaning for a mesh |
 |---|---|
 | `x_base`, `x_len`, `y_base`, `y_len` | the vertex coordinate columns (lane base and length) |
-| `cols` | the grid table's entries: 2 |
+| `cols` | the grid table's entries: 2 on a flat chart, 3 on a 3D chart |
 | `rows` | the triangle count (`TriangleStats::triangles`) |
 | `flags` | `FIELD_MESH`; `FIELD_FACE_VALUES` (256) for one value per triangle; `FIELD_INTERPOLATED`, `FIELD_BANDS` and `FIELD_LOG_Z` as for a heatmap fill |
 | `level_count`, `stop_count`, `z_min`, `z_max`, `opacity` | as for a heatmap fill: the colourbar's ramp and bands |
 | `line_width_px`, `level_color_count` | the contour stroke, as a contour group's: one group serves the fill and the contours |
 | grid table entry 0 (`MESH_VALUES`) | the value column, read with `grid_value(0, i)` and its bound check |
 | grid table entry 1 (`MESH_INDICES`) | the triangle index column, three `u32` lanes per triangle (§5.14) |
+| grid table entry 2 (`MESH_HEIGHTS`, 3D only) | the height column (the series' `z_column`), read by the surface and the floor (§5.21) |
 
 CPU writer: `renderer/prepare/field.rs::ensure_mesh_scratch`, cached in
 `field_cache` under the series id and compared by `FieldSignature` (which
-carries the level colours a mesh's one group holds).
+carries the level colours a mesh's one group holds, and on a 3D chart the
+height column's epoch).
+
+`mesh_input.wgsl` is the reading the flat entries, the floor entries and
+the triangle surface (§5.21) share: the counts (`mesh_vertex_count`,
+`mesh_triangle_count`), the indices (`mesh_index`), the placed triangle of
+the flat draw (`mesh_triangle`), the value at barycentric weights of a
+triangle read through its indices (`mesh_values_at`) and the gradient of a
+triangle's linear interpolant from its three vertices in pixels
+(`mesh_gradient_from_px`, with `mesh_gradient_px` for a placed triangle).
 
 **Draw.** One instance per triangle, three vertices, no vertex buffers:
 `draw(0..3, 0..rows)`. `vs_tri` reads the triangle's three indices and
@@ -2107,6 +2164,18 @@ target size) at the centre of the cursor's pixel:
 
 The bundle compiles its own mesh module for this entry, since the draw
 compiles the module only when a mesh is drawn.
+
+**On a 3D chart** (`Config.view_3d`) the fill draws as a surface through
+the triangle surface module (§5.21) and the contours on the box floor
+through the floor entries of `mesh_floor.wgsl`: `vs_tri_floor` places each
+triangle's vertices at `t.z = 0` through `project_box`, carrying the values
+and the gradient `vs_tri` carries (`mesh_triangle`, `mesh_gradient_px`: the
+stroke width is floor-plane pixels, as a heatmap's floor contours' is, #49
+D7, so the draw and the 1×1 pick agree); `fs_tri_floor` is
+`mesh_contour_paint` with the fragment clipped to the box floor
+(`MeshOut.floor_t`, the fragment's axis fractions, zero in the flat
+entries), and `fs_tri_floor_pick` writes `(id | 0x80000000, level,
+triangle, 0)`. The flat mesh pipelines are not compiled for a 3D chart.
 
 **Selection.** `fs_tri_selection` runs over `vs_tri` with the data selection
 uniform as group 1 (`TriMeshPass::Selection`), through the selection layer's

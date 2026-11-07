@@ -261,6 +261,30 @@ pub(super) fn draws_floor(rt: &crate::data_config::DataRenderType) -> bool {
     )
 }
 
+/// Whether a series draws as a mesh surface on a 3D chart (#210): a
+/// triangle mesh with a fill.
+pub(super) fn draws_mesh_surface(rt: &crate::data_config::DataRenderType) -> bool {
+    matches!(
+        rt,
+        crate::data_config::DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            fill: Some(_),
+            ..
+        })
+    )
+}
+
+/// Whether a series draws contours on a 3D chart's floor through the mesh
+/// floor entries (#210): a triangle mesh with contours.
+pub(super) fn draws_mesh_floor(rt: &crate::data_config::DataRenderType) -> bool {
+    matches!(
+        rt,
+        crate::data_config::DataRenderType::TriMesh(crate::tri_mesh::TriMeshSeries {
+            contour: Some(_),
+            ..
+        })
+    )
+}
+
 /// The ternary pipelines (`TargetPipelines::ternary`).
 pub(super) const TERNARY_PIPELINES: usize = 5;
 
@@ -613,6 +637,14 @@ pub(super) struct TargetPipelines {
     pub(super) tri_mesh_shader: Option<wgpu::ShaderModule>,
     pub(super) tri_mesh:
         [Option<wgpu::RenderPipeline>; data_render::tri_mesh::TriMeshPass::ALL.len()],
+    /// A triangle mesh's surface pipelines on a 3D chart (#210), indexed by
+    /// [`data_render::surface_mesh::SurfacePass`] as `surface` is: the
+    /// surface passes from the mesh surface module
+    /// (`TRI_SURFACE_SHADER`), the floor passes from the mesh module.
+    /// Compiled only when a 3D chart draws a mesh.
+    pub(super) tri_surface_shader: Option<wgpu::ShaderModule>,
+    pub(super) tri_surface:
+        [Option<wgpu::RenderPipeline>; data_render::surface_mesh::SurfacePass::ALL.len()],
     /// A ternary series' region fill: the module and its stencil and cover
     /// pipelines, indexed by
     /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
@@ -741,23 +773,36 @@ impl TargetPipelines {
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
     ) {
-        let needed = items.iter().any(|item| {
-            item.chart_config.view_3d().is_some()
-                && item.series.iter().any(|series| {
-                    draws_surface(&series.config.render_type)
-                        || draws_floor(&series.config.render_type)
-                })
-        });
-        if !needed {
-            return;
+        let on_3d = |draws: fn(&crate::data_config::DataRenderType) -> bool| {
+            items.iter().any(|item| {
+                item.chart_config.view_3d().is_some()
+                    && item
+                        .series
+                        .iter()
+                        .any(|series| draws(&series.config.render_type))
+            })
+        };
+        if on_3d(|rt| draws_surface(rt) || draws_floor(rt)) {
+            for pass in data_render::surface_mesh::SurfacePass::ALL {
+                self.ensure_surface_pass(
+                    device,
+                    [transform_bgl, style_bgl, field_bgl, surface_bgl],
+                    surface_format,
+                    pass,
+                );
+            }
         }
-        for pass in data_render::surface_mesh::SurfacePass::ALL {
-            self.ensure_surface_pass(
-                device,
-                [transform_bgl, style_bgl, field_bgl, surface_bgl],
-                surface_format,
-                pass,
-            );
+        // A triangle mesh on a 3D chart (#210): its surface and its floor
+        // contours, from the mesh surface module and the mesh module.
+        if on_3d(|rt| draws_mesh_surface(rt) || draws_mesh_floor(rt)) {
+            for pass in data_render::surface_mesh::SurfacePass::ALL {
+                self.ensure_tri_surface_pass(
+                    device,
+                    [transform_bgl, style_bgl, field_bgl, surface_bgl],
+                    surface_format,
+                    pass,
+                );
+            }
         }
     }
 
@@ -900,6 +945,7 @@ impl TargetPipelines {
                 surface_format,
                 self.sample_count,
                 pass,
+                data_render::surface_mesh::SurfaceInput::Grid,
             ));
             return;
         }
@@ -926,8 +972,53 @@ impl TargetPipelines {
                 surface_format,
                 self.sample_count,
                 pass,
+                data_render::surface_mesh::SurfaceInput::Grid,
             ));
         }
+    }
+
+    /// One of a triangle mesh's surface pipelines (#210): the surface passes
+    /// from the mesh surface module, the floor passes from the mesh module
+    /// (`vs_tri_floor`), as [`Self::ensure_surface_pass`] builds a grid's.
+    pub(super) fn ensure_tri_surface_pass(
+        &mut self,
+        device: &wgpu::Device,
+        bgls: [&wgpu::BindGroupLayout; 4],
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::surface_mesh::SurfacePass,
+    ) {
+        let [transform_bgl, style_bgl, field_bgl, surface_bgl] = bgls;
+        if self.tri_surface[pass as usize].is_some() {
+            return;
+        }
+        let shader: &wgpu::ShaderModule = if pass.on_floor() {
+            self.tri_mesh_shader
+                .get_or_insert_with(|| data_render::tri_mesh::shader_module(device))
+        } else {
+            self.tri_surface_shader.get_or_insert_with(|| {
+                crate::gpu_compile::shader_module(
+                    device,
+                    wgpu::ShaderModuleDescriptor {
+                        label: Some("figgy triangle surface shader"),
+                        source: wgpu::ShaderSource::Wgsl(
+                            data_render::surface_mesh::TRI_SURFACE_SHADER.source.into(),
+                        ),
+                    },
+                )
+            })
+        };
+        self.tri_surface[pass as usize] = Some(data_render::surface_mesh::create_surface_pipeline(
+            device,
+            shader,
+            transform_bgl,
+            style_bgl,
+            field_bgl,
+            surface_bgl,
+            surface_format,
+            self.sample_count,
+            pass,
+            data_render::surface_mesh::SurfaceInput::Mesh,
+        ));
     }
 
     /// Compile the triangle mesh pipeline of `pass` (#210), and the mesh
@@ -1062,11 +1153,15 @@ impl TargetPipelines {
                 // A contour is the field quad through a different fragment entry
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
-                need_mesh |= primitives.mesh;
-                need_mesh_contour |= primitives.mesh_contour;
+                // A mesh on a 3D chart draws through the surface pipelines
+                // (`ensure_surface_pipelines`), not the flat mesh ones.
+                let mesh_flat = item.chart_config.view_3d().is_none();
+                need_mesh |= primitives.mesh && mesh_flat;
+                need_mesh_contour |= primitives.mesh_contour && mesh_flat;
                 // A picked triangle or level redraws through the mesh's
                 // selection entry (#210).
                 need_mesh_selection |= (primitives.mesh || primitives.mesh_contour)
+                    && mesh_flat
                     && typed_picks.is_some_and(|config| {
                         config.refs.iter().any(|picked| {
                             matches!(
@@ -2435,12 +2530,18 @@ macro_rules! renderer_prewarm_layouts {
 #[derive(Clone, Copy)]
 enum PrewarmMeshStage {
     Surface,
+    TriSurface,
     View3d,
     TernaryRegion,
 }
 
 impl PrewarmMeshStage {
-    const ALL: [Self; 3] = [Self::Surface, Self::View3d, Self::TernaryRegion];
+    const ALL: [Self; 4] = [
+        Self::Surface,
+        Self::TriSurface,
+        Self::View3d,
+        Self::TernaryRegion,
+    ];
 }
 
 fn prewarm_extent_failure(error: crate::gpu_extent::GpuExtentError) -> FiggyError {
@@ -2526,6 +2627,8 @@ pub(super) fn create_target_pipelines_observed(
         surface: Default::default(),
         tri_mesh_shader: None,
         tri_mesh: Default::default(),
+        tri_surface_shader: None,
+        tri_surface: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
@@ -2626,6 +2729,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         surface: Default::default(),
         tri_mesh_shader: None,
         tri_mesh: Default::default(),
+        tri_surface_shader: None,
+        tri_surface: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
         ternary_region_scan: None,
@@ -4259,7 +4364,8 @@ impl Renderer {
     }
 
     /// One of a prewarm's mesh stages: the 3D surface and its floor
-    /// contours, the 3D scatter and line entries, or the ternary region.
+    /// contours, a triangle mesh's surface and floor contours, the 3D
+    /// scatter and line entries, or the ternary region.
     fn prewarm_mesh_stage(&mut self, stage: PrewarmMeshStage, observer: &mut dyn FnMut(InitEvent)) {
         match stage {
             PrewarmMeshStage::Surface => {
@@ -4279,6 +4385,25 @@ impl Renderer {
                     );
                 }
                 finished(observer, "renderer.prewarm", "surface");
+            }
+            PrewarmMeshStage::TriSurface => {
+                // A triangle mesh on a 3D chart: its surface and its floor
+                // contours (#210).
+                started(observer, "renderer.prewarm", "triangle surface");
+                for pass in data_render::surface_mesh::SurfacePass::ALL {
+                    self.pipelines.ensure_tri_surface_pass(
+                        &self.device,
+                        [
+                            &self.transform_bgl,
+                            &self.style_bgl,
+                            &self.field_bgl,
+                            &self.surface_bgl,
+                        ],
+                        self.surface_format,
+                        pass,
+                    );
+                }
+                finished(observer, "renderer.prewarm", "triangle surface");
             }
             PrewarmMeshStage::View3d => {
                 // The 3D scatter and line entries (#132).

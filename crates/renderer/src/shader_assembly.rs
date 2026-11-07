@@ -61,6 +61,10 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("field", crate::data_render::FIELD_SHADER),
     ("tri_mesh", crate::data_render::tri_mesh::TRI_MESH_SHADER),
     ("surface", crate::data_render::surface_mesh::SURFACE_SHADER),
+    (
+        "tri_surface",
+        crate::data_render::surface_mesh::TRI_SURFACE_SHADER,
+    ),
     ("line_arc", crate::data_render::line_arc::LINE_ARC_SHADER),
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
     ("contour_label", crate::gpu_contour::CONTOUR_LABEL_SHADER),

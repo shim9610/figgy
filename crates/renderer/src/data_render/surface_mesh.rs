@@ -1,13 +1,17 @@
 //! The 3D surface: a heatmap on a 3D chart (`Config.view_3d`) drawn as a
-//! mesh over its sample lattice, through the panel's camera, with the depth
-//! test, inside the panel composite.
+//! mesh over its sample lattice, or a triangle mesh (#210) drawn over its
+//! triangles, through the panel's camera, with the depth test, inside the
+//! panel composite.
 //!
-//! One instance per quad between four neighbouring samples, six vertices,
-//! no vertex buffers: the vertex stage reads every sample from the pool
-//! through the field group 2 (`create_field_data_bind_group_layout`), the
-//! table the flat heatmap reads, and colours through the heatmap's own
+//! One instance per quad between four neighbouring samples (six vertices)
+//! or per triangle (three), no vertex buffers: the vertex stage reads every
+//! sample from the pool through the field group 2
+//! (`create_field_data_bind_group_layout`), the table the flat heatmap and
+//! the flat mesh read, and colours through the heatmap's own
 //! `common/field_paint.wgsl`. Group 3 holds the camera ([`View3dGpu`]) and
 //! the surface's look ([`SurfaceParamsGpu`]). Nothing is stored per sample.
+//! The two modules share the entries (`surface_entry.wgsl`) over an input
+//! fragment each ([`SurfaceInput`]).
 //!
 //! Not `data_render/surface.rs`, which is the wgpu window surface.
 
@@ -15,8 +19,8 @@ use model::view3d::{Projection3d, View3d};
 
 use crate::config::{AxisScale, Config};
 
-/// The assembled surface module. The projection fragment is the layer a
-/// later 3D vector glyph reuses (rule 9).
+/// The assembled surface module of a heatmap grid. The projection fragment
+/// is the layer a later 3D vector glyph reuses (rule 9).
 pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -29,9 +33,44 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
     "data_render/common/field_paint.wgsl",
     "data_render/common/material.wgsl",
     "data_render/common/project_3d.wgsl",
+    "data_render/surface_mesh/surface_params.wgsl",
     "data_render/surface_mesh/surface_input_grid.wgsl",
     "data_render/surface_mesh/surface_entry.wgsl",
 );
+
+/// The assembled surface module of a triangle mesh (#210): the grid's list
+/// with the mesh input (`tri_mesh/mesh_input.wgsl`, the triangle reads the
+/// flat draw shares, and `surface_input_mesh.wgsl`, their placement through
+/// the camera) in place of the grid input. The layered input / entry split
+/// is what rule 9 keeps for reuse.
+pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/field_grid.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/field_paint.wgsl",
+    "data_render/common/material.wgsl",
+    "data_render/common/project_3d.wgsl",
+    "data_render/surface_mesh/surface_params.wgsl",
+    "data_render/tri_mesh/mesh_input.wgsl",
+    "data_render/surface_mesh/surface_input_mesh.wgsl",
+    "data_render/surface_mesh/surface_entry.wgsl",
+);
+
+/// What a surface pass draws: the heatmap grid's quads
+/// (`surface_input_grid.wgsl`, [`SURFACE_SHADER`]) or a triangle mesh's
+/// triangles (`surface_input_mesh.wgsl`, [`TRI_SURFACE_SHADER`], #210).
+/// The floor contours of each are entries of its flat module (the field
+/// module's `vs_floor`, the mesh module's `vs_tri_floor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceInput {
+    Grid,
+    Mesh,
+}
 
 /// The depth-stencil format of a 3D panel's composite: depth for the
 /// surfaces, stencil for a ternary chart's region fills (#49, #55).
@@ -44,7 +83,9 @@ pub const SURFACE_PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32
 /// Vertices per surface quad: two triangles.
 pub const SURFACE_QUAD_VERTICES: u32 = 6;
 
-/// Instances of the picked sample's patch: the up to four quads around it.
+/// Instances of the picked sample's patch on a grid surface: the up to four
+/// quads around it. A mesh surface's patch is the picked triangle, one
+/// instance of [`super::tri_mesh::TRI_MESH_VERTICES`] vertices.
 pub const SURFACE_SELECTED_INSTANCES: u32 = 4;
 
 /// GPU twin: `common/project_3d.wgsl::View3d`.
@@ -65,20 +106,22 @@ pub struct View3dGpu {
 
 const _: () = assert!(std::mem::size_of::<View3dGpu>() == 208);
 
-/// `SurfaceParamsGpu::flags` bits, twins of `surface_input_grid.wgsl`.
+/// `SurfaceParamsGpu::flags` bits, twins of `surface_params.wgsl`.
 pub const SURFACE_FLAG_COLOR_GRID: u32 = 1;
 pub const SURFACE_FLAG_WIREFRAME: u32 = 2;
 pub const SURFACE_FLAG_LIT: u32 = 4;
 
-/// No picked sample.
+/// No picked sample or triangle (`surface_params.wgsl::SURFACE_NO_PICK`).
 pub const SURFACE_NO_PICK: u32 = u32::MAX;
 
-/// GPU twin: `surface_mesh/surface_input_grid.wgsl::SurfaceParams`.
+/// GPU twin: `surface_mesh/surface_params.wgsl::SurfaceParams`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SurfaceParamsGpu {
     pub color_base: u32,
     pub flags: u32,
+    /// The picked sample's constituent column and row (a grid), or the
+    /// picked triangle and 0 (a mesh); [`SURFACE_NO_PICK`] for none.
     pub picked_c: u32,
     pub picked_r: u32,
     pub wire_width_px: f32,
@@ -372,28 +415,51 @@ impl SurfacePass {
         SurfacePass::FloorContourPick,
     ];
 
-    fn entries(self) -> (&'static str, &'static str) {
-        match self {
-            SurfacePass::Draw => ("vs_main", "fs_main"),
-            SurfacePass::Selected => ("vs_selected", "fs_selected"),
-            SurfacePass::Pick => ("vs_main", "fs_pick"),
-            SurfacePass::FloorContour => ("vs_floor", "fs_contour"),
-            SurfacePass::FloorContourPick => ("vs_floor", "fs_floor_contour_pick"),
+    /// The entry points of the pass: the shared surface entries for the
+    /// surface passes, the flat module's floor entries for the floor ones
+    /// (the field module's for a grid, the mesh module's for a mesh).
+    fn entries(self, input: SurfaceInput) -> (&'static str, &'static str) {
+        match (self, input) {
+            (SurfacePass::Draw, _) => ("vs_main", "fs_main"),
+            (SurfacePass::Selected, _) => ("vs_selected", "fs_selected"),
+            (SurfacePass::Pick, _) => ("vs_main", "fs_pick"),
+            (SurfacePass::FloorContour, SurfaceInput::Grid) => ("vs_floor", "fs_contour"),
+            (SurfacePass::FloorContourPick, SurfaceInput::Grid) => {
+                ("vs_floor", "fs_floor_contour_pick")
+            }
+            (SurfacePass::FloorContour, SurfaceInput::Mesh) => ("vs_tri_floor", "fs_tri_floor"),
+            (SurfacePass::FloorContourPick, SurfaceInput::Mesh) => {
+                ("vs_tri_floor", "fs_tri_floor_pick")
+            }
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            SurfacePass::Draw => "figgy surface pipeline",
-            SurfacePass::Selected => "figgy surface selection pipeline",
-            SurfacePass::Pick => "figgy surface pick pipeline",
-            SurfacePass::FloorContour => "figgy floor contour pipeline",
-            SurfacePass::FloorContourPick => "figgy floor contour pick pipeline",
+    pub fn label(self, input: SurfaceInput) -> &'static str {
+        match (self, input) {
+            (SurfacePass::Draw, SurfaceInput::Grid) => "figgy surface pipeline",
+            (SurfacePass::Selected, SurfaceInput::Grid) => "figgy surface selection pipeline",
+            (SurfacePass::Pick, SurfaceInput::Grid) => "figgy surface pick pipeline",
+            (SurfacePass::FloorContour, SurfaceInput::Grid) => "figgy floor contour pipeline",
+            (SurfacePass::FloorContourPick, SurfaceInput::Grid) => {
+                "figgy floor contour pick pipeline"
+            }
+            (SurfacePass::Draw, SurfaceInput::Mesh) => "figgy triangle surface pipeline",
+            (SurfacePass::Selected, SurfaceInput::Mesh) => {
+                "figgy triangle surface selection pipeline"
+            }
+            (SurfacePass::Pick, SurfaceInput::Mesh) => "figgy triangle surface pick pipeline",
+            (SurfacePass::FloorContour, SurfaceInput::Mesh) => {
+                "figgy triangle mesh floor contour pipeline"
+            }
+            (SurfacePass::FloorContourPick, SurfaceInput::Mesh) => {
+                "figgy triangle mesh floor contour pick pipeline"
+            }
         }
     }
 
-    /// Whether the pass is the field module's (the floor) rather than the
-    /// surface module's.
+    /// Whether the pass is the flat module's (the floor: the field module
+    /// for a grid, the mesh module for a mesh) rather than the surface
+    /// module's.
     pub fn on_floor(self) -> bool {
         matches!(
             self,
@@ -423,9 +489,10 @@ impl SurfacePass {
     }
 }
 
-/// One surface pipeline. `target_format` and `sample_count` are the
-/// composite's (or the frame's, for [`SurfacePass::Selected`]); the pick
-/// renders one sample into [`SURFACE_PICK_FORMAT`].
+/// One surface pipeline of `input`. `target_format` and `sample_count` are
+/// the composite's (or the frame's, for [`SurfacePass::Selected`]); the pick
+/// renders one sample into [`SURFACE_PICK_FORMAT`]. `shader` is the input's
+/// surface module, or for a floor pass its flat module.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_surface_pipeline(
     device: &wgpu::Device,
@@ -437,6 +504,7 @@ pub(crate) fn create_surface_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
     pass: SurfacePass,
+    input: SurfaceInput,
 ) -> wgpu::RenderPipeline {
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
@@ -451,7 +519,7 @@ pub(crate) fn create_surface_pipeline(
             immediate_size: 0,
         },
     );
-    let (vertex, fragment) = pass.entries();
+    let (vertex, fragment) = pass.entries(input);
     let (format, samples, blend) = match pass {
         _ if pass.picks() => (SURFACE_PICK_FORMAT, 1, None),
         _ => (
@@ -463,7 +531,7 @@ pub(crate) fn create_surface_pipeline(
     crate::gpu_compile::render_pipeline(
         &device,
         &wgpu::RenderPipelineDescriptor {
-            label: Some(pass.label()),
+            label: Some(pass.label(input)),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: shader,
@@ -498,23 +566,31 @@ pub(crate) fn create_surface_pipeline(
     )
 }
 
-/// One heatmap drawn as a surface: the field's group 2 snapshot, its own
-/// group 3 and the quad count to instance.
+/// One heatmap or triangle mesh drawn as a surface, its floor contours or
+/// its picked patch: the field's group 2 snapshot, its own group 3 and what
+/// to instance.
 pub struct ColumnSurfaceLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: wgpu::BindGroup,
     pub field_bg: wgpu::BindGroup,
     pub surface_bg: wgpu::BindGroup,
-    pub quads: u32,
+    /// Vertices per instance: [`SURFACE_QUAD_VERTICES`] for a grid's quads,
+    /// [`super::tri_mesh::TRI_MESH_VERTICES`] for a mesh's triangles.
+    pub vertices: u32,
+    /// The instances: a grid's quads, a mesh's triangles, the grid floor's
+    /// one quad, or the picked patch's ([`SURFACE_SELECTED_INSTANCES`] for a
+    /// grid, one for a mesh). 0 skips the draw.
+    pub instances: u32,
     /// Keeps the group 2 and group 3 buffers' charges alive.
     pub charge: crate::gpu_memory::SharedCharge,
     pub surface_charge: crate::gpu_memory::SharedCharge,
 }
 
-/// Draw `layer` into a pass with the depth-stencil attachment.
+/// Draw `layer` into a pass with the depth-stencil attachment (the live
+/// slot for a picked patch).
 pub fn issue_surface_layer(pass: &mut wgpu::RenderPass<'_>, layer: &ColumnSurfaceLayer<'_>) {
-    if layer.quads == 0 {
+    if layer.instances == 0 {
         return;
     }
     pass.set_pipeline(layer.pipeline);
@@ -522,7 +598,7 @@ pub fn issue_surface_layer(pass: &mut wgpu::RenderPass<'_>, layer: &ColumnSurfac
     pass.set_bind_group(1, &layer.style_bg, &[]);
     pass.set_bind_group(2, &layer.field_bg, &[]);
     pass.set_bind_group(3, &layer.surface_bg, &[]);
-    pass.draw(0..SURFACE_QUAD_VERTICES, 0..layer.quads);
+    pass.draw(0..layer.vertices, 0..layer.instances);
 }
 
 /// The quads of a `cols × rows` sample lattice.
@@ -578,7 +654,8 @@ pub(crate) fn create_surface_bind_group(
 
 /// The surface look of `style` (the default when `None`) for the GPU:
 /// colour grid at `color_base`, wireframe width at `scale`, the picked
-/// sample and the ID the pick writes.
+/// sample (a grid's column and row, or a mesh's triangle and 0) and the ID
+/// the pick writes.
 pub(crate) fn surface_params_gpu(
     style: Option<&model::view3d::SurfaceStyle>,
     color_base: u32,

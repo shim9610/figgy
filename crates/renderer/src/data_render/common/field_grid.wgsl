@@ -19,7 +19,7 @@ const FIELD_BANDS: u32 = 8u;
 const FIELD_LOG_Z: u32 = 16u;
 const FIELD_HEXAGONAL: u32 = 32u;
 const FIELD_RGB: u32 = 64u;
-/// A triangle mesh (#210, SHADER_COMMON.md §5.24): `x_base` / `y_base` are
+/// A triangle mesh (#210, SHADER_COMMON.md §5.25): `x_base` / `y_base` are
 /// the vertex coordinate columns, `rows` the triangle count, and the grid
 /// table holds the value column (entry 0) and the triangle index column
 /// (entry 1, `u32` lanes).

@@ -1361,12 +1361,6 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
 ///
 /// The config is needed because a field series is only fully declared with it:
 /// `Config.colorbar` owns the z range and colormap.
-/// Why a triangle mesh series on a 3D chart is refused at registration while
-/// the renderer draws meshes flat only (#210; the trisurf is step 5 of its
-/// plan).
-pub(crate) const TRI_MESH_3D_NOT_DRAWN_REASON: &str =
-    "triangle mesh series are drawn on flat charts: this renderer does not draw them in 3D yet";
-
 pub(super) fn validate_renderer_series(
     pool: &impl ColumnRegistration,
     config: &Config,
@@ -1532,15 +1526,17 @@ pub(super) fn validate_renderer_series(
 }
 
 /// A triangle mesh series' renderer rules (#210), after the model's: its
-/// coordinate and value columns are registered, its triangles are a resident
-/// triangle index column, a colourbar colours it, its contour level count is
-/// in range, and every index names a vertex the mesh has.
+/// coordinate and value columns are registered (on a 3D chart its height
+/// column too), its triangles are a resident triangle index column, a
+/// colourbar colours it, its contour level count is in range, and every
+/// index names a vertex the mesh has.
 ///
-/// The vertex count is the shortest of `x_column`, `y_column` and, for vertex
-/// values, the value column; only the index column's statistics and the
-/// column lengths are read, never an index. A later upload that shortens a
-/// column is not re-checked: the draw drops the triangles that name a vertex
-/// past the end and `series_draw_info` reports the truncation.
+/// The vertex count is the shortest of `x_column`, `y_column`, on a 3D chart
+/// `z_column`, and, for vertex values, the value column; only the index
+/// column's statistics and the column lengths are read, never an index. A
+/// later upload that shortens a column is not re-checked: the draw drops the
+/// triangles that name a vertex past the end and `series_draw_info` reports
+/// the truncation.
 pub(super) fn validate_tri_mesh_series(
     pool: &impl ColumnRegistration,
     config: &Config,
@@ -1551,12 +1547,15 @@ pub(super) fn validate_tri_mesh_series(
         series_id: item.series_id.clone(),
         reason,
     };
-    if config.view_3d().is_some() {
-        return Err(fail(TRI_MESH_3D_NOT_DRAWN_REASON.into()));
-    }
     validate_registered_column(pool, &item.x_column)?;
     validate_registered_column(pool, &item.y_column)?;
     validate_registered_column(pool, &mesh.values.column)?;
+    // The height column bounds the draw where the mesh is drawn in 3D
+    // (`Config::drawn_z_column`); on a flat chart it is kept and unused.
+    let height = config.drawn_z_column(item);
+    if let Some(z) = height {
+        validate_registered_column(pool, z)?;
+    }
     let stats = pool.triangle_stats(&mesh.triangles).ok_or_else(|| {
         fail(format!(
             "triangle mesh {:?} is not a resident triangle index column: upload it with \
@@ -1584,9 +1583,14 @@ pub(super) fn validate_tri_mesh_series(
     let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
     let mut shortest = (len(&item.x_column), item.x_column.as_str());
     let values = (!faces).then(|| (len(&mesh.values.column), mesh.values.column.as_str()));
-    for candidate in [Some((len(&item.y_column), item.y_column.as_str())), values]
-        .into_iter()
-        .flatten()
+    let heights = height.map(|z| (len(z), z));
+    for candidate in [
+        Some((len(&item.y_column), item.y_column.as_str())),
+        values,
+        heights,
+    ]
+    .into_iter()
+    .flatten()
     {
         if candidate.0 < shortest.0 {
             shortest = candidate;

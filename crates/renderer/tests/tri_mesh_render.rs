@@ -533,9 +533,10 @@ fn a_plateau_draws_no_contour() {
     }
 }
 
-/// The renderer's registration rules: an index past the vertex count, a
-/// face value column shorter than the triangles, a missing colourbar, a
-/// triangle id that is not a triangle column and a 3D chart are refused.
+/// The renderer's registration rules: an index past the vertex count (on a
+/// 3D chart the height column's too), a face value column shorter than the
+/// triangles, a missing colourbar and a triangle id that is not a triangle
+/// column are refused.
 #[test]
 fn registration_refuses_what_the_mesh_cannot_draw() {
     let Some(mut renderer) = try_renderer() else {
@@ -620,12 +621,29 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         why.contains("not a resident triangle index column"),
         "{why}"
     );
+    // On a 3D chart the mesh draws as a surface over its height column
+    // (#210), which names a vertex the mesh has like the other columns.
     let mut three_d = chart(Some(bar.clone())).config().clone();
     three_d.set_view_3d(Some(renderer::view3d::View3d::default()));
     let mut lifted = mesh_series(MeshValueLocation::Vertices, interpolated, None);
     lifted.z_column = Some("mv".into());
+    renderer
+        .register_chart(three_d.clone(), vec![lifted.clone()])
+        .unwrap();
+    renderer
+        .upsert_column(
+            "mh",
+            &Column {
+                data: vec![0.0, 1.0, 2.0],
+            },
+        )
+        .unwrap();
+    lifted.z_column = Some("mh".into());
     let why = reason(renderer.register_chart(three_d, vec![lifted]));
-    assert!(why.contains("3D"), "{why}");
+    assert!(
+        why.contains("triangle index 3") && why.contains("\"mh\""),
+        "{why}"
+    );
 }
 
 /// A later upload that shortens a vertex column is not re-checked: the draw

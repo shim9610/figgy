@@ -8,35 +8,9 @@
 // same values. Nothing is stored per sample: positions, colours and, for a
 // lit material, normals are computed here on every draw (rule 1, rule 2).
 //
-// CPU twin: `data_render/surface_mesh.rs::SurfaceParamsGpu` (`#[repr(C)]`,
-// 80 B).
-struct SurfaceParams {
-    /// Where the colour grid's columns start in `grid`, when
-    /// `SURFACE_COLOR_GRID` is set.
-    color_base: u32,
-    flags: u32,
-    /// The picked sample's constituent column and row, `u32::MAX` for none.
-    picked_c: u32,
-    picked_r: u32,
-    wire_width_px: f32,
-    /// What the ID pick writes for this series: its pick slot plus one.
-    pick_id: u32,
-    _pad0: u32,
-    _pad1: u32,
-    /// Premultiplied.
-    wire_color: vec4<f32>,
-    material: Material,
-};
-
-const SURFACE_COLOR_GRID: u32 = 1u;
-const SURFACE_WIREFRAME: u32 = 2u;
-const SURFACE_LIT: u32 = 4u;
-
-@group(3) @binding(5) var<uniform> surface: SurfaceParams;
-
-fn surface_flag(bit: u32) -> bool {
-    return (surface.flags & bit) != 0u;
-}
+// The surface's look is `SurfaceParams` (`surface_params.wgsl`); the entries
+// are `surface_entry.wgsl`'s, over the hooks defined at the end of this
+// fragment.
 
 /// The lattice size: samples along x and along y.
 fn surface_samples() -> vec2<u32> {
@@ -147,12 +121,13 @@ fn surface_corner(vertex: u32) -> vec2<u32> {
     return corners[vertex];
 }
 
-/// One vertex of the mesh: its quad, its corner, its box point and normal.
-/// `valid` is false when any of the quad's four samples cannot be placed:
-/// the quad's two triangles are dropped, as a NaN breaks a line.
+/// One vertex of the mesh: its quad, its corner as the in-quad position
+/// `frac` (`(x, y, 0)`, each 0 or 1), its box point and normal. `valid` is
+/// false when any of the quad's four samples cannot be placed: the quad's
+/// two triangles are dropped, as a NaN breaks a line.
 struct SurfaceVertex {
     quad: vec2<u32>,
-    corner: vec2<u32>,
+    frac: vec3<f32>,
     t: vec3<f32>,
     normal: vec3<f32>,
     valid: bool,
@@ -166,7 +141,8 @@ fn surface_vertex(quad_index: u32, vertex: u32) -> SurfaceVertex {
         return out;
     }
     out.quad = vec2<u32>(quad_index % q.x, quad_index / q.x);
-    out.corner = surface_corner(vertex);
+    let corner = surface_corner(vertex);
+    out.frac = vec3<f32>(vec2<f32>(corner), 0.0);
     if (out.quad.y >= q.y) {
         return out;
     }
@@ -178,20 +154,22 @@ fn surface_vertex(quad_index: u32, vertex: u32) -> SurfaceVertex {
     if (!p00.valid || !p10.valid || !p01.valid || !p11.valid) {
         return out;
     }
-    let here = surface_point(base + out.corner);
+    let here = surface_point(base + corner);
     out.t = here.t;
     out.normal = vec3<f32>(0.0, 0.0, 1.0);
     if (surface_flag(SURFACE_LIT)) {
-        out.normal = surface_normal(base + out.corner);
+        out.normal = surface_normal(base + corner);
     }
     out.valid = true;
     return out;
 }
 
-/// The premultiplied fill colour at in-quad fractions `f` of `quad`: the
-/// heatmap's own `field_fill_color`, bilinear for interpolated shading and
-/// the quad's mean for flat shading (matplotlib's `plot_surface`).
-fn surface_fill_color(quad: vec2<u32>, f: vec2<f32>) -> vec4<f32> {
+/// The premultiplied fill colour at in-quad position `frac` (`(x, y, 0)`)
+/// of `quad`: the heatmap's own `field_fill_color`, bilinear for
+/// interpolated shading and the quad's mean for flat shading (matplotlib's
+/// `plot_surface`).
+fn surface_fill_color(quad: vec2<u32>, frac: vec3<f32>) -> vec4<f32> {
+    let f = clamp(frac.xy, vec2<f32>(0.0), vec2<f32>(1.0));
     let z00 = surface_color_value(quad);
     let z10 = surface_color_value(quad + vec2<u32>(1u, 0u));
     let z01 = surface_color_value(quad + vec2<u32>(0u, 1u));
@@ -206,4 +184,66 @@ fn surface_fill_color(quad: vec2<u32>, f: vec2<f32>) -> vec4<f32> {
         0.25,
     );
     return field_fill_color(mean, mean, mean, mean, 0.0, 0.0, style.color_premul);
+}
+
+// ── The entries' hooks for a grid ───────────────────────────────────────────
+
+/// Distance in pixels from the fragment to the nearest edge of its quad:
+/// constant wireframe width on screen at every scale.
+fn surface_edge_px(in: SurfaceOut) -> f32 {
+    let fw = max(fwidth(in.frac.xy), vec2<f32>(1e-6));
+    return min(
+        min(in.frac.x, 1.0 - in.frac.x) / fw.x,
+        min(in.frac.y, 1.0 - in.frac.y) / fw.y,
+    );
+}
+
+/// The ID pick: the series, kind 0 and the grid sample nearest the fragment
+/// inside its quad, the sample whose patch the pixel shows.
+fn surface_pick_ids(in: SurfaceOut) -> vec4<u32> {
+    let near = in.quad + vec2<u32>(round(clamp(in.frac.xy, vec2<f32>(0.0), vec2<f32>(1.0))));
+    let cr = surface_cell(near);
+    return vec4<u32>(surface.pick_id, 0u, cr.x, cr.y);
+}
+
+/// The picked sample's address in lattice (i, j) order.
+fn surface_picked_ij() -> vec2<u32> {
+    let picked = vec2<u32>(surface.picked_c, surface.picked_r);
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    return vec2<u32>(select(picked.x, picked.y, columns_are_y), select(picked.y, picked.x, columns_are_y));
+}
+
+/// The picked sample's patch: the halves of the up to four quads around it
+/// nearest the sample, instance `k` the quad at offset `(k % 2, k / 2)` left
+/// and below of it.
+fn surface_selected_vertex(k: u32, vertex: u32) -> SurfaceVertex {
+    var none: SurfaceVertex;
+    none.valid = false;
+    if (surface.picked_c == SURFACE_NO_PICK) {
+        return none;
+    }
+    let ij = surface_picked_ij();
+    let offset = vec2<u32>(k % 2u, k / 2u);
+    if (ij.x + offset.x == 0u || ij.y + offset.y == 0u) {
+        return none;
+    }
+    let quad = ij + offset - vec2<u32>(1u);
+    let q = surface_quads();
+    if (quad.x >= q.x || quad.y >= q.y) {
+        return none;
+    }
+    return surface_vertex(quad.x + quad.y * q.x, vertex);
+}
+
+/// Whether the fragment lies in the patch (the half of its quad nearest the
+/// picked sample, in quad fractions) and its distance in pixels to the
+/// patch's border.
+fn surface_patch(in: SurfaceOut) -> SurfacePatch {
+    var out: SurfacePatch;
+    let corner = vec2<f32>(surface_picked_ij()) - vec2<f32>(in.quad);
+    let d = abs(in.frac.xy - corner);
+    let fw = max(fwidth(in.frac.xy), vec2<f32>(1e-6));
+    out.inside = d.x <= 0.5 && d.y <= 0.5;
+    out.edge_px = min((0.5 - d.x) / fw.x, (0.5 - d.y) / fw.y);
+    return out;
 }
