@@ -320,18 +320,18 @@ impl RadarChart {
     /// Check the limits and invariants the renderer relies on: category and
     /// series counts, unique ids, one value per category, finite style
     /// numbers, a valid value axis and targets that exist.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.decorations.validate()?;
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
         if n < MIN_RADAR_CATEGORIES || m == 0 {
-            return Err("radar limits: at least 3 categories and 1 series");
+            return Err(crate::RuleKind::RadarChartLimits);
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
             if c.id.is_empty() || !text(&c.id, 80) || !text(&c.label, 80) || !ids.insert(&c.id) {
-                return Err("invalid category ID/label");
+                return Err(crate::RuleKind::BoxPlotChartCategory);
             }
         }
         ids.clear();
@@ -343,7 +343,7 @@ impl RadarChart {
                 || s.values.len() != n
                 || !color(s.color)
             {
-                return Err("invalid series ID/label, color or value count");
+                return Err(crate::RuleKind::BoxPlotChartSeries);
             }
             if let Some(st) = &s.style {
                 st.validate()?;
@@ -358,7 +358,7 @@ impl RadarChart {
             || !color(st.spoke_color)
             || !color(st.ring_color)
         {
-            return Err("invalid radar style");
+            return Err(crate::RuleKind::RadarChartSeriesStyle);
         }
         if !range(self.font_size, 8.0, 32.0)
             || !color(self.text_color)
@@ -368,23 +368,23 @@ impl RadarChart {
             || !text(&self.value_suffix, 24)
             || !text(&self.title, 160)
         {
-            return Err("invalid radar layout, font or colors");
+            return Err(crate::RuleKind::RadarChartStyle);
         }
         if self
             .value_range
             .is_some_and(|r| !r[0].is_finite() || !r[1].is_finite() || r[0] >= r[1])
         {
-            return Err("invalid value range");
+            return Err(crate::RuleKind::RadarChartValueRange);
         }
         if self
             .ring_spacing
             .is_some_and(|s| !s.is_finite() || s <= 0.0)
         {
-            return Err("ring spacing must be finite and positive");
+            return Err(crate::RuleKind::RadarChartRingSpacing);
         }
         for t in [&self.hovered, &self.selected].into_iter().flatten() {
             if !self.contains(t) {
-                return Err("unknown interaction target");
+                return Err(crate::RuleKind::RadarChartInteractionTarget);
             }
         }
         Ok(())

@@ -1460,7 +1460,7 @@ mod tests {
             segments,
             ..RichText::plain("", Color::BLACK, 12.0, "")
         };
-        let reason = MathErrorKind::SlotOutOfRange.as_str();
+        let malformed = |result: Result<(), crate::RuleKind>| matches!(result, Err(crate::RuleKind::InvalidMath { error }) if error.kind == MathErrorKind::SlotOutOfRange);
         let layer = crate::layer::AnnotationLayer {
             items: vec![crate::annotation::Annotation::new(
                 crate::annotation::AnnotationKind::Text {
@@ -1471,18 +1471,18 @@ mod tests {
             )],
             ..Default::default()
         };
-        assert_eq!(layer.validate(), Err(reason));
+        assert!(malformed(layer.validate()));
         let title = crate::bounded_title::BoundedTitleOptions {
             visible: true,
             text: broken.clone(),
         };
-        assert_eq!(title.validate(), Err(reason));
+        assert!(malformed(title.validate()));
         let mut radial = crate::radial::RadialChart::default();
         radial.chart_title = Some(crate::config::ChartTitleOptions {
             text: broken,
             ..radial.resolved_title()
         });
-        assert_eq!(radial.validate(), Err(reason));
+        assert!(malformed(radial.validate()));
     }
 
     // `\!` is a space of negative width: allowed on a space inside `Math`

@@ -617,29 +617,29 @@ fn kind(k: RadialKind) -> bool {
         RadialKind::Donut { inner_radius } => range(inner_radius, 0.1, 0.85),
     }
 }
-fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
+fn total(slices: &[RadialSlice]) -> Result<f64, crate::RuleKind> {
     if slices.is_empty() || slices.len() > MAX_RADIAL_SLICES {
-        return Err("a radial chart needs 1..64 slices");
+        return Err(crate::RuleKind::RadialSliceCount);
     }
     let mut sum = 0.0;
     for s in slices {
         if !s.value.is_finite() || s.value < 0.0 {
-            return Err("slice values must be finite and nonnegative");
+            return Err(crate::RuleKind::RadialSliceValue);
         }
         if !color(s.color) || s.color.a != 1.0 {
-            return Err("slice colors must be finite opaque RGBA in 0..1");
+            return Err(crate::RuleKind::RadialSliceColor);
         }
         if let Some(style) = &s.style {
             validate_style(style)?;
         }
         if s.label_color.is_some_and(|c| !color(c)) {
-            return Err("invalid slice label color");
+            return Err(crate::RuleKind::RadialSliceLabelColor);
         }
         if !range(s.explode, 0.0, 0.35) {
-            return Err("slice explode must be in 0..0.35");
+            return Err(crate::RuleKind::RadialSliceExplode);
         }
         if s.label.chars().count() > 80 || s.label.contains(['\n', '\r']) {
-            return Err("slice labels must be single-line, at most 80 characters");
+            return Err(crate::RuleKind::RadialSliceLabel);
         }
         if let Some(text) = &s.text
             && (text.split('\n').count() > MAX_LABEL_LINES
@@ -647,18 +647,16 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
                     line.chars().count() > MAX_LABEL_LINE_CHARS || line.contains(char::is_control)
                 }))
         {
-            return Err(
-                "slice label text must have at most two lines of at most 400 characters, without control characters",
-            );
+            return Err(crate::RuleKind::RadialSliceLabelText);
         }
         sum += s.value;
     }
     if !sum.is_finite() || sum <= 0.0 {
-        return Err("slice total must be positive and finite");
+        return Err(crate::RuleKind::RadialSliceTotal);
     }
     Ok(sum)
 }
-fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
+fn validate_style(s: &RadialStyle) -> Result<(), crate::RuleKind> {
     // No material check: a sector has a curved, lit surface and draws every
     // `Material`, unlike the flat bodies of bars and boxes.
     if !range(s.tilt_degrees, 0.0, 65.0)
@@ -679,7 +677,7 @@ fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
         || !color(s.outline.color)
         || s.light.iter().map(|x| x * x).sum::<f32>() < 0.0001
     {
-        return Err("invalid radial material, light, or projection");
+        return Err(crate::RuleKind::RadialStyle);
     }
     Ok(())
 }
@@ -952,28 +950,27 @@ impl RadialChart {
     /// Zero values are retained in the model, but have no geometry or label.
     /// This checks model constraints; the renderer additionally checks output size,
     /// device limits, label layout and GPU budget when preparing a frame.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.decorations.validate()?;
         self.annotations.validate()?;
         let title = self.resolved_title();
-        title.text.validate_math().map_err(|e| e.as_str())?;
+        title
+            .text
+            .validate_math()
+            .map_err(|error| crate::RuleKind::InvalidMath { error })?;
         if !title.text.within_limits() {
-            return Err(
-                "invalid radial title: size 6..160, at most 512 characters / 8 lines, finite styles",
-            );
+            return Err(crate::RuleKind::RadialTitle);
         }
         if [title.offset_x, title.offset_y, title.top_margin] != [0.0; 3] {
-            return Err(
-                "a radial chart title keeps its position in decorations: its offsets and top_margin must be 0",
-            );
+            return Err(crate::RuleKind::RadialTitleOffsets);
         }
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {
-            return Err("invalid radial shape or start angle");
+            return Err(crate::RuleKind::RadialShape);
         }
         if !range(self.font_size, 8.0, 64.0) || !color(self.label_color) || !color(self.background)
         {
-            return Err("invalid radial text or background");
+            return Err(crate::RuleKind::RadialTextOrBackground);
         }
         validate_style(&self.style)?;
         if self.label_decimals > 6
@@ -981,7 +978,7 @@ impl RadialChart {
             || self.value_suffix.contains(['\n', '\r'])
             || !range(self.interaction.hover_progress, 0.0, 1.0)
         {
-            return Err("invalid radial label format or interaction");
+            return Err(crate::RuleKind::RadialLabelFormatOrInteraction);
         }
         for target in [self.interaction.hovered, self.interaction.selected]
             .into_iter()
@@ -989,25 +986,25 @@ impl RadialChart {
         {
             let slice = self
                 .slice(target)
-                .ok_or("radial interaction target is out of range")?;
+                .ok_or(crate::RuleKind::RadialInteractionTarget)?;
             if slice.value == 0.0 {
-                return Err("cannot emphasize a zero-valued slice");
+                return Err(crate::RuleKind::RadialEmphasizedZeroSlice);
             }
         }
         if let Some(split) = &self.split {
             if self.is_sunburst() {
-                return Err("a sunburst has no detail circle");
+                return Err(crate::RuleKind::SunburstDetail);
             }
             let parent = self
                 .slices
                 .get(split.slice_index)
-                .ok_or("split slice index is out of range")?;
+                .ok_or(crate::RuleKind::RadialSplitIndex)?;
             let sum = total(&split.children)?;
             if parent.value <= 0.0 || (sum - parent.value).abs() > parent.value.abs() * 1e-9 {
-                return Err("detail values must sum to the parent slice value");
+                return Err(crate::RuleKind::RadialDetailSum);
             }
             if !kind(split.kind) {
-                return Err("invalid detail chart shape");
+                return Err(crate::RuleKind::RadialDetailShape);
             }
         }
         if self.is_sunburst() {
@@ -1022,21 +1019,21 @@ impl RadialChart {
     /// opaque colours, a positive sum) and summing to at most the node's
     /// value (1e-9 relative); and a flat chart, since the rings share one
     /// centre on screen only without a tilt or a depth.
-    fn validate_sunburst(&self) -> Result<(), &'static str> {
+    fn validate_sunburst(&self) -> Result<(), crate::RuleKind> {
         let depth = tree_depth(&self.slices);
         if depth > MAX_SUNBURST_DEPTH {
-            return Err("a sunburst has at most 8 rings");
+            return Err(crate::RuleKind::SunburstRingCount);
         }
         for ring in 1..depth {
             if self.group_len(ring) > MAX_RADIAL_SLICES {
-                return Err("a sunburst ring has at most 64 nodes");
+                return Err(crate::RuleKind::SunburstNodeCount);
             }
         }
         let flat = |style: &RadialStyle| style.tilt_degrees == 0.0 && style.depth == 0.0;
         let mut result = Ok(());
         walk_tree(&self.slices, &mut |s| {
             if !s.style.as_ref().is_none_or(flat) {
-                result = Err("a sunburst draws flat: no tilt or depth");
+                result = Err(crate::RuleKind::SunburstTilt);
                 return false;
             }
             if s.children.is_empty() {
@@ -1050,14 +1047,14 @@ impl RadialChart {
                 }
             };
             if sum > s.value * (1.0 + 1e-9) {
-                result = Err("a node's children sum to at most its value");
+                result = Err(crate::RuleKind::SunburstChildrenSum);
                 return false;
             }
             true
         });
         result?;
         if !flat(&self.style) {
-            return Err("a sunburst draws flat: no tilt or depth");
+            return Err(crate::RuleKind::SunburstTilt);
         }
         Ok(())
     }
@@ -1329,12 +1326,12 @@ mod tests {
         selected.interaction.selected = Some(RadialTarget { group: 1, index: 1 });
         assert_eq!(
             selected.validate(),
-            Err("cannot emphasize a zero-valued slice")
+            Err(crate::RuleKind::RadialEmphasizedZeroSlice)
         );
         selected.interaction.selected = Some(RadialTarget { group: 3, index: 0 });
         assert_eq!(
             selected.validate(),
-            Err("radial interaction target is out of range")
+            Err(crate::RuleKind::RadialInteractionTarget)
         );
         let mut split = sunburst();
         split.split = Some(RadialSplit {
@@ -1342,31 +1339,19 @@ mod tests {
             kind: RadialKind::Pie,
             children: vec![RadialSlice::new("Lab", 40.0, Color::WHITE)],
         });
-        assert_eq!(split.validate(), Err("a sunburst has no detail circle"));
+        assert_eq!(split.validate(), Err(crate::RuleKind::SunburstDetail));
         let mut tilted = sunburst();
         tilted.style = RadialStyle::three_dimensional();
-        assert_eq!(
-            tilted.validate(),
-            Err("a sunburst draws flat: no tilt or depth")
-        );
+        assert_eq!(tilted.validate(), Err(crate::RuleKind::SunburstTilt));
         let mut node_tilted = sunburst();
         node_tilted.slices[1].children[0].style = Some(RadialStyle::three_dimensional());
-        assert_eq!(
-            node_tilted.validate(),
-            Err("a sunburst draws flat: no tilt or depth")
-        );
+        assert_eq!(node_tilted.validate(), Err(crate::RuleKind::SunburstTilt));
         let mut over = sunburst();
         over.slices[0].children[2].value = 25.0;
-        assert_eq!(
-            over.validate(),
-            Err("a node's children sum to at most its value")
-        );
+        assert_eq!(over.validate(), Err(crate::RuleKind::SunburstChildrenSum));
         let mut bad_child = sunburst();
         bad_child.slices[0].children[0].children[1].value = -1.0;
-        assert_eq!(
-            bad_child.validate(),
-            Err("slice values must be finite and nonnegative")
-        );
+        assert_eq!(bad_child.validate(), Err(crate::RuleKind::RadialSliceValue));
         let mut deep = sunburst();
         {
             let mut node = &mut deep.slices[1].children[0];
@@ -1375,14 +1360,14 @@ mod tests {
                 node = &mut node.children[0];
             }
         }
-        assert_eq!(deep.validate(), Err("a sunburst has at most 8 rings"));
+        assert_eq!(deep.validate(), Err(crate::RuleKind::SunburstRingCount));
         let mut wide = sunburst();
         wide.slices[1].children[0].children = (0..65)
             .map(|i| RadialSlice::new(format!("p{i}"), 0.5, Color::WHITE))
             .collect();
         assert_eq!(
             wide.validate(),
-            Err("a sunburst ring has at most 64 nodes"),
+            Err(crate::RuleKind::SunburstNodeCount),
             "a sibling group past 64 is a ring past 64"
         );
         let mut wide_ring = sunburst();
@@ -1394,7 +1379,7 @@ mod tests {
             .collect();
         assert_eq!(
             wide_ring.validate(),
-            Err("a sunburst ring has at most 64 nodes")
+            Err(crate::RuleKind::SunburstNodeCount)
         );
     }
 

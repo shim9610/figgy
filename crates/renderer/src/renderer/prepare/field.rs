@@ -226,7 +226,7 @@ impl PrepareContext<'_> {
                 .as_ref()
                 .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: "a triangle mesh series needs Config.colorbar".into(),
+                    kind: crate::RuleKind::TriMeshColorbar,
                 })?;
         let unknown = |id: &str| FiggyError::UnknownColumn { id: id.to_owned() };
         let x = self
@@ -300,11 +300,10 @@ impl PrepareContext<'_> {
         if declared.len() > crate::data_config::MAX_CONTOUR_LEVELS {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: cfg.series_id.clone(),
-                reason: format!(
-                    "contour level count {} exceeds the supported maximum {}",
-                    declared.len(),
-                    crate::data_config::MAX_CONTOUR_LEVELS
-                ),
+                kind: crate::RuleKind::ContourLevelCount {
+                    count: declared.len() as u64,
+                    max: crate::data_config::MAX_CONTOUR_LEVELS as u64,
+                },
             });
         }
         let mut levels = crate::gpu_contour::try_collect(
@@ -476,7 +475,7 @@ impl PrepareContext<'_> {
                 base: u32::try_from(handle.offset / 4).map_err(|_| {
                     FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
-                        reason: "grid column offset exceeds a 32-bit lane index".into(),
+                        kind: crate::RuleKind::GridColumnOffsetOverflow,
                     }
                 })?,
                 len: u32::try_from(handle.len_values).unwrap_or(u32::MAX),
@@ -579,7 +578,7 @@ impl PrepareContext<'_> {
             None => Some(chart_config.colorbar.as_ref().ok_or_else(|| {
                 FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: "a field series needs Config.colorbar".into(),
+                    kind: crate::RuleKind::FieldColorbarRequired,
                 }
             })?),
         };

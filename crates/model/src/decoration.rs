@@ -125,7 +125,7 @@ impl DecorationLayout {
         }
         self.offsets.retain(|o| &o.element != id);
     }
-    pub fn resolve_data_area(&self, automatic: RectF) -> Result<RectF, &'static str> {
+    pub fn resolve_data_area(&self, automatic: RectF) -> Result<RectF, crate::RuleKind> {
         let r = self.data_area.unwrap_or(automatic);
         if ![r.x, r.y, r.width, r.height, r.x + r.width, r.y + r.height]
             .into_iter()
@@ -139,18 +139,16 @@ impl DecorationLayout {
             || r.x + r.width > automatic.x + automatic.width
             || r.y + r.height > automatic.y + automatic.height
         {
-            return Err(
-                "data area must fit the measured plot region and be at least 80 by 60 logical pixels",
-            );
+            return Err(crate::RuleKind::DataAreaTooSmall);
         }
         Ok(r)
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if let Some(r) = self.data_area {
             self.resolve_data_area(r)?;
         }
         if self.offsets.len() > 1024 {
-            return Err("too many decoration offsets");
+            return Err(crate::RuleKind::DecorationOffsetCount);
         }
         for (i, o) in self.offsets.iter().enumerate() {
             if o.offset.iter().any(|x| !x.is_finite())
@@ -160,7 +158,7 @@ impl DecorationLayout {
                     DecorationId::DataArea | DecorationId::DataAreaEdge(_)
                 )
             {
-                return Err("decoration offsets must be finite and unique");
+                return Err(crate::RuleKind::DecorationOffsets);
             }
             if let DecorationId::Axis(s) = &o.element {
                 let parallel = match s {
@@ -168,7 +166,7 @@ impl DecorationLayout {
                     _ => o.offset[1],
                 };
                 if parallel != 0.0 {
-                    return Err("axes only move perpendicular to their direction");
+                    return Err(crate::RuleKind::DecorationAxisMove);
                 }
             }
         }

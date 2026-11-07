@@ -825,12 +825,9 @@ fn a_streamed_source_on_a_broken_axis_is_refused() {
         let result = r.inspect_streaming_capability(id);
         r.remove_chart(id).unwrap();
         match result {
-            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, kind }) => {
                 assert_eq!(series_id, "m");
-                assert_eq!(
-                    reason,
-                    "broken axes require GPU-resident columns; streamed sources are not supported"
-                );
+                assert_eq!(kind, renderer::RuleKind::StreamedBreak);
             }
             other => panic!(
                 "expected the streamed rejection, got {:?}",

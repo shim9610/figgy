@@ -546,7 +546,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     let bar = colorbar(0.0, 6.0);
     let interpolated = Some(fill(Shading::Interpolated, FillMode::Continuous));
     let reason = |result: renderer::Result<renderer::ChartId>| match result {
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
         other => panic!("expected InvalidSeriesConfig, got {other:?}"),
     };
     // Fine as given.
@@ -578,7 +578,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
         )],
     ));
     assert!(
-        why.contains("triangle index 3") && why.contains("\"mv\""),
+        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mv\""),
         "{why}"
     );
     // One face value for two triangles.
@@ -593,7 +593,10 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
             None,
         )],
     ));
-    assert!(why.contains("1 values for 2 triangles"), "{why}");
+    assert!(
+        why.to_string().contains("1 values for 2 triangles"),
+        "{why}"
+    );
     renderer
         .upsert_column(
             "mv",
@@ -610,7 +613,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
             None,
         )],
     ));
-    assert!(why.contains("Config.colorbar"), "{why}");
+    assert!(why.to_string().contains("Config.colorbar"), "{why}");
     let mut plain = mesh_series(MeshValueLocation::Vertices, interpolated.clone(), None);
     if let DataRenderType::TriMesh(mesh) = &mut plain.render_type {
         mesh.triangles = "mx".into();
@@ -618,7 +621,8 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     let why =
         reason(renderer.register_chart(chart(Some(bar.clone())).config().clone(), vec![plain]));
     assert!(
-        why.contains("not a resident triangle index column"),
+        why.to_string()
+            .contains("not a resident triangle index column"),
         "{why}"
     );
     // On a 3D chart the mesh draws as a surface over its height column
@@ -641,7 +645,7 @@ fn registration_refuses_what_the_mesh_cannot_draw() {
     lifted.z_column = Some("mh".into());
     let why = reason(renderer.register_chart(three_d, vec![lifted]));
     assert!(
-        why.contains("triangle index 3") && why.contains("\"mh\""),
+        why.to_string().contains("triangle index 3") && why.to_string().contains("\"mh\""),
         "{why}"
     );
 }
@@ -1163,13 +1167,12 @@ fn a_streamed_vertex_column_is_refused() {
         )
         .expect("registration admits the columns; the streaming inspector names the rule");
     match renderer.inspect_streaming_capability(id) {
-        Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+        Err(FiggyError::InvalidSeriesConfig {
+            series_id,
+            kind: reason,
+        }) => {
             assert_eq!(series_id, "mesh");
-            assert_eq!(
-                reason,
-                "triangle mesh series require GPU-resident columns; streamed sources are not \
-                 supported"
-            );
+            assert_eq!(reason, renderer::RuleKind::StreamedTriMesh);
         }
         other => panic!("expected the mesh refusal, got {:?}", other.map(|_| ())),
     }

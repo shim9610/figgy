@@ -653,6 +653,7 @@ mod axis_tests {
             categorical
                 .validate_categories()
                 .unwrap_err()
+                .to_string()
                 .contains("probability")
         );
     }

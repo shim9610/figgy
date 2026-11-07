@@ -804,8 +804,8 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     let reason = |r: &mut Renderer, config: &Config, series: Vec<SeriesConfig>| {
         let what = format!("{:?} / {:?}", config.parallel(), series);
         match r.register_chart(config.clone(), series) {
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
-            Err(FiggyError::InvalidConfig { reason, .. }) => reason.to_owned(),
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
+            Err(FiggyError::InvalidConfig { kind: reason, .. }) => reason.to_owned(),
             other => panic!("registered {what}: {other:?}"),
         }
     };
@@ -815,7 +815,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, &config, vec![short]),
-        "a parallel series names one column per axis"
+        renderer::RuleKind::ParallelSeriesColumnCount
     );
     let mut plain_line = series("rows", &columns, RED, None);
     plain_line.render_type = DataRenderType::Xy(renderer::data_config::XySeries {
@@ -826,31 +826,31 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     });
     assert_eq!(
         reason(&mut r, &config, vec![plain_line]),
-        "a parallel chart draws only parallel series"
+        renderer::RuleKind::ParallelChartSeriesKind
     );
     let mut plain = bare_config();
     plain.set_parallel(None);
     assert_eq!(
         reason(&mut r, &plain, vec![series("rows", &columns, RED, None)]),
-        "a parallel series is drawn on a parallel chart (Config.parallel)"
+        renderer::RuleKind::ParallelSeriesNotParallel
     );
     r.add_column("rows_class", &col(vec![0.0, 1.0, 2.0]))
         .unwrap();
-    assert!(
+    assert!(matches!(
         reason(
             &mut r,
             &config,
             vec![series("rows", &columns, RED, Some("rows_class"))]
-        )
-        .starts_with("a parallel series coloured by a column needs Config.colorbar")
-    );
+        ),
+        renderer::RuleKind::ParallelSeriesColorbar
+    ));
     let mut dashed = series("rows", &columns, RED, None);
     if let DataRenderType::Parallel { line, .. } = &mut dashed.render_type {
         line.line_style = renderer::line::LineStylePreset::Dash;
     }
     assert_eq!(
         reason(&mut r, &config, vec![dashed]),
-        "a parallel series' line is solid"
+        renderer::RuleKind::ParallelSeriesDashed
     );
     // A chart has one coordinate system (#160): a polar chart is not a
     // parallel one, so a parallel series is refused there.
@@ -858,7 +858,7 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     polar.set_polar(Some(renderer::polar::PolarOptions::default()));
     assert_eq!(
         reason(&mut r, &polar, vec![series("rows", &columns, RED, None)]),
-        "a parallel series is drawn on a parallel chart (Config.parallel)"
+        renderer::RuleKind::ParallelSeriesNotParallel
     );
     // The chart's own rules are checked where the chart is drawn (as the
     // polar and ternary systems' are): the export names them.
@@ -871,11 +871,14 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
             )
             .block_on()
         {
-            Err(FiggyError::InvalidConfig { field, reason }) => {
+            Err(FiggyError::InvalidConfig {
+                field,
+                kind: reason,
+            }) => {
                 assert_eq!(field, "parallel", "{what}");
                 reason.to_owned()
             }
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
             other => panic!("drew {what}: {:?}", other.map(|_| ())),
         }
     };
@@ -883,19 +886,19 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     few.parallel_mut().unwrap().axes.pop();
     assert_eq!(
         config_reason(&mut r, &few, vec![series("rows", &columns[..3], RED, None)]),
-        "a parallel chart's bottom_x has one category per axis"
+        renderer::RuleKind::ParallelBottomXCategories
     );
     let mut band = bare_config();
     band.left_y.max = 2.0;
     assert_eq!(
         config_reason(&mut r, &band, vec![series("rows", &columns, RED, None)]),
-        "a parallel chart's left_y spans the normalized band: linear 0..1, not inverted"
+        renderer::RuleKind::ParallelLeftY
     );
     let mut sketched = bare_config();
     sketched.draw_style = renderer::config::DrawStyle::Sketch(Default::default());
     assert_eq!(
         config_reason(&mut r, &sketched, vec![series("rows", &columns, RED, None)]),
-        "parallel charts are drawn in the Precise style only"
+        renderer::RuleKind::ParallelDrawStyle
     );
     // A streamed source is refused before any chunk is requested (rule 8).
     let streamed = |id: &str| renderer::StreamColumn {
@@ -919,13 +922,12 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
         .register_chart(config.clone(), vec![over_stream])
         .expect("registration admits the columns; the streaming inspector names the rule");
     match r.inspect_streaming_capability(id) {
-        Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+        Err(FiggyError::InvalidSeriesConfig {
+            series_id,
+            kind: reason,
+        }) => {
             assert_eq!(series_id, "rows");
-            assert_eq!(
-                reason,
-                "parallel coordinates series require GPU-resident columns; streamed sources are \
-                 not supported"
-            );
+            assert_eq!(reason, renderer::RuleKind::StreamedParallel);
         }
         other => panic!(
             "expected the streamed rejection, got {:?}",
@@ -961,9 +963,12 @@ fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
             columns.truncate(count);
         }
         let refused = |result: renderer::Result<()>, what: &str| match result {
-            Err(FiggyError::InvalidConfig { field, reason }) => {
+            Err(FiggyError::InvalidConfig {
+                field,
+                kind: reason,
+            }) => {
                 assert_eq!(field, "parallel", "{what}, {count} axes");
-                assert_eq!(reason, "a parallel chart has at least two axes");
+                assert_eq!(reason, renderer::RuleKind::ParallelAxisCount);
             }
             other => panic!("{what} with {count} axes: {other:?}"),
         };
@@ -980,8 +985,8 @@ fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
         // The stored chart keeps its four axes, so the series checked
         // against it is refused by its column count.
         match r.set_chart_series(id, vec![item]) {
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
-                assert_eq!(reason, "a parallel series names one column per axis");
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
+                assert_eq!(reason, renderer::RuleKind::ParallelSeriesColumnCount);
             }
             other => panic!("set_chart_series with {count} columns: {other:?}"),
         }

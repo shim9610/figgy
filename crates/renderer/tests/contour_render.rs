@@ -1505,7 +1505,7 @@ fn explicit_anchors_draw_up_to_1024_and_reject_more() {
             renderer::ExportOptions::panel(1.0),
         )
         .block_on();
-    let Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+    let Err(renderer::FiggyError::InvalidSeriesConfig { kind: reason, .. }) = result else {
         panic!("1025 explicit anchors were accepted or returned the wrong error");
     };
     assert_eq!(

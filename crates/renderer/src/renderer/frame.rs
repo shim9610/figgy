@@ -1834,19 +1834,19 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
     if config.validate_overlays().is_err() {
         return Err(FiggyError::InvalidConfig {
             field: "overlays",
-            reason: "a series id may belong to at most one overlay layer",
+            kind: crate::RuleKind::SeriesInManyOverlays,
         });
     }
     if let Err(reason) = config.validate_subplots() {
         return Err(FiggyError::InvalidConfig {
             field: "subplots",
-            reason,
+            kind: reason,
         });
     }
     if let Err(reason) = config.validate_line_offset_layout() {
         return Err(FiggyError::InvalidConfig {
             field: "line_offsets",
-            reason,
+            kind: reason,
         });
     }
     match config.expand() {
@@ -1873,11 +1873,11 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
         }
         Err(crate::layout::LayoutError::TargetOutOfChartArea) => Err(FiggyError::InvalidConfig {
             field: "subplots",
-            reason: "a layer's area lies outside the chart area",
+            kind: crate::RuleKind::LayerOutsideChart,
         }),
         Err(crate::layout::LayoutError::Infeasible) => Err(FiggyError::InvalidConfig {
             field: "overlays",
-            reason: "the layered document has no feasible layout",
+            kind: crate::RuleKind::NoFeasibleLayout,
         }),
     }
 }
@@ -2946,7 +2946,7 @@ impl Renderer {
                     .validate_series_on_polar(series)
                     .map_err(|reason| FiggyError::InvalidSeriesConfig {
                         series_id: series.series_id.clone(),
-                        reason: reason.to_string(),
+                        kind: reason,
                     })?;
                 preflight_contour_label_spacing(
                     &series.series_id,

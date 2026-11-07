@@ -619,17 +619,23 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
     let reason = |r: &mut Renderer, config: &renderer::Config, series: SeriesConfig| match r
         .register_chart(config.clone(), vec![series])
     {
-        Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(renderer::FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
         other => panic!("registered: {other:?}"),
     };
     let mut uneven = hexbin(&ids, MatrixOrientation::ColumnsAreX);
     uneven.x_column = "uneven".into();
     assert!(
-        reason(&mut r, chart.config(), uneven).contains("x coordinates (\"uneven\") are uniform"),
+        reason(&mut r, chart.config(), uneven)
+            .to_string()
+            .contains("x coordinates (\"uneven\") are uniform"),
     );
     let mut lone = hexbin(&ids, MatrixOrientation::ColumnsAreX);
     lone.y_column = "lone".into();
-    assert!(reason(&mut r, chart.config(), lone).contains("y coordinates (\"lone\") are uniform"));
+    assert!(
+        reason(&mut r, chart.config(), lone)
+            .to_string()
+            .contains("y coordinates (\"lone\") are uniform")
+    );
     let mut interpolated = hexbin(&ids, MatrixOrientation::ColumnsAreX);
     if let DataRenderType::Field(renderer::data_config::FieldSeries {
         matrix: _,
@@ -642,7 +648,7 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, chart.config(), interpolated),
-        "a hexagonal grid is shaded flat"
+        renderer::RuleKind::HexagonalShading
     );
     let contour = SeriesConfig {
         render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
@@ -675,14 +681,14 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
     };
     assert_eq!(
         reason(&mut r, chart.config(), contour),
-        "contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only"
+        renderer::RuleKind::HexagonalContours
     );
     let mut log = chart.config().clone();
     log.bottom_x.scale = AxisScale::Logarithmic;
     log.bottom_x.min = 0.5;
     assert_eq!(
         reason(&mut r, &log, hexbin(&ids, MatrixOrientation::ColumnsAreX)),
-        "a hexagonal grid needs linear x and y axes: its lattice is uniform"
+        renderer::RuleKind::HexagonalAxes
     );
     let mut three_d = chart.config().clone();
     three_d.set_view_3d(Some(View3d::default()));
@@ -692,7 +698,7 @@ fn registration_rejects_what_a_hexagonal_grid_cannot_read() {
             &three_d,
             hexbin(&ids, MatrixOrientation::ColumnsAreX)
         ),
-        "a hexagonal grid draws flat: not on a 3D chart"
+        renderer::RuleKind::View3dHexagonalGrid
     );
     // The well-formed grid registers.
     r.register_chart(

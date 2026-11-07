@@ -110,15 +110,15 @@ impl PrepareContext<'_> {
         if vector.is_none() && streamline.is_none() {
             return Ok(None);
         }
-        let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
             series_id: cfg.series_id.clone(),
-            reason,
+            kind: reason,
         };
         if let Some((_, style)) = vector {
-            style.validate().map_err(|reason| invalid(reason.into()))?;
+            style.validate().map_err(|reason| invalid(reason))?;
         }
         if let Some((_, arrows)) = streamline {
-            arrows.validate().map_err(|reason| invalid(reason.into()))?;
+            arrows.validate().map_err(|reason| invalid(reason))?;
         }
         let alloc = |resource: &'static str| {
             move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
@@ -138,7 +138,7 @@ impl PrepareContext<'_> {
         };
         let lane = |handle: &ColumnHandle| {
             u32::try_from(handle.offset / 4)
-                .map_err(|_| invalid("column offset exceeds a 32-bit lane index".into()))
+                .map_err(|_| invalid(crate::RuleKind::ColumnOffsetLaneOverflow))
         };
         let len32 = |handle: &ColumnHandle| u32::try_from(handle.len_values).unwrap_or(u32::MAX);
 
@@ -336,9 +336,7 @@ impl PrepareContext<'_> {
                 params.count = cols
                     .checked_mul(rows)
                     .and_then(|count| u32::try_from(count).ok())
-                    .ok_or_else(|| {
-                        invalid("vector grid cell count exceeds the u32 instance space".into())
-                    })?;
+                    .ok_or_else(|| invalid(crate::RuleKind::VectorGridCellsOverflow))?;
                 params.flags |= vector_render::VECTOR_FLAG_GRID;
                 if u_grid.columns_are_y {
                     params.flags |= vector_render::VECTOR_FLAG_COLUMNS_ARE_Y;
@@ -352,13 +350,10 @@ impl PrepareContext<'_> {
 
         let mut stops = Vec::new();
         if color_map {
-            let bar = chart_config.colorbar.as_ref().ok_or_else(|| {
-                invalid(
-                    "a colour-mapped vector needs Config.colorbar: it owns the z range and \
-                     colormap"
-                        .into(),
-                )
-            })?;
+            let bar = chart_config
+                .colorbar
+                .as_ref()
+                .ok_or_else(|| invalid(crate::RuleKind::VectorColorMapColorbar))?;
             let colorbar = colorbar_gpu(bar);
             params.z_min = colorbar.z_min;
             params.z_max = colorbar.z_max;

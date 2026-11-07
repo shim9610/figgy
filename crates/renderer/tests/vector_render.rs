@@ -1440,7 +1440,7 @@ fn vector_series_are_validated_at_registration() {
     grid_fixture(&mut renderer, &GridLayout::Edges);
     let config = grid_chart().config().clone();
     let reason = |result: Result<_, FiggyError>| match result {
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
         other => panic!("expected an invalid series, got {other:?}"),
     };
 
@@ -1484,7 +1484,9 @@ fn vector_series_are_validated_at_registration() {
         v.orientation = MatrixOrientation::ColumnsAreY;
     }
     assert!(
-        reason(renderer.register_chart(config.clone(), vec![mismatched])).contains("orientation")
+        reason(renderer.register_chart(config.clone(), vec![mismatched]))
+            .to_string()
+            .contains("orientation")
     );
 
     let mut wrong_form = pixels(1.0);
@@ -1496,13 +1498,17 @@ fn vector_series_are_validated_at_registration() {
     let mut with_bar = config.clone();
     with_bar.colorbar = Some(two_stop_colorbar(AxisScale::Linear, 0.0, 1.0));
     assert!(
-        reason(renderer.register_chart(with_bar, vec![points("v", wrong_form)])).contains("form")
+        reason(renderer.register_chart(with_bar, vec![points("v", wrong_form)]))
+            .to_string()
+            .contains("form")
     );
 
     let mut no_bar = pixels(1.0);
     no_bar.color_map = Some(VectorColorMap::Column("u".into()));
     assert!(
-        reason(renderer.register_chart(config, vec![points("v", no_bar)])).contains("colorbar")
+        reason(renderer.register_chart(config, vec![points("v", no_bar)]))
+            .to_string()
+            .contains("colorbar")
     );
 }
 

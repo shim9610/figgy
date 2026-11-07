@@ -28,10 +28,10 @@ pub(in crate::renderer) fn validate_contour_level_count(
     if count > crate::data_config::MAX_CONTOUR_LEVELS {
         return Err(FiggyError::InvalidSeriesConfig {
             series_id: series_id.to_owned(),
-            reason: format!(
-                "contour level count {count} exceeds the supported maximum {}",
-                crate::data_config::MAX_CONTOUR_LEVELS
-            ),
+            kind: crate::RuleKind::ContourLevelCount {
+                count: count as u64,
+                max: crate::data_config::MAX_CONTOUR_LEVELS as u64,
+            },
         });
     }
     Ok(())
@@ -48,7 +48,7 @@ pub(in crate::renderer) fn validate_contour_label_config(
         .validate()
         .map_err(|reason| FiggyError::InvalidSeriesConfig {
             series_id: series_id.to_owned(),
-            reason: reason.to_owned(),
+            kind: reason,
         })
 }
 
@@ -89,9 +89,7 @@ pub(in crate::renderer) fn preflight_contour_label_spacing(
     if !spacing_px.is_finite() || spacing_px <= 0.0 {
         return Err(FiggyError::InvalidSeriesConfig {
             series_id: series_id.to_owned(),
-            reason:
-                "automatic contour label spacing_px * scale must be finite and greater than zero"
-                    .to_owned(),
+            kind: crate::RuleKind::ContourLabelSpacingScaled,
         });
     }
     Ok(Some(spacing_px))
@@ -684,7 +682,9 @@ impl PrepareContext<'_> {
         )
         .map_err(|error| FiggyError::InvalidSeriesConfig {
             series_id: series_id.to_owned(),
-            reason: error.to_string(),
+            kind: crate::RuleKind::ContourLabelAtlas {
+                detail: error.to_string(),
+            },
         })?
         else {
             return Ok(None);

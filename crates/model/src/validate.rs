@@ -21,25 +21,30 @@ pub struct ConfigError {
     /// The config field or rule family that failed, such as `"bottom_x"`,
     /// `"layout"` or `"category_bars"`.
     pub field: &'static str,
-    /// Why, as one sentence.
-    pub reason: &'static str,
+    /// Which rule failed; its `Display` is the sentence (#215).
+    pub kind: crate::RuleKind,
 }
 
 impl ConfigError {
-    fn chart(field: &'static str, reason: &'static str) -> Self {
+    fn chart(field: &'static str, kind: crate::RuleKind) -> Self {
         Self {
             series_id: None,
             field,
-            reason,
+            kind,
         }
+    }
+
+    /// The rule's sentence, for a host that only wants text.
+    pub fn reason(&self) -> String {
+        self.kind.to_string()
     }
 }
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.series_id {
-            Some(id) => write!(f, "series {id:?} ({}): {}", self.field, self.reason),
-            None => write!(f, "{}: {}", self.field, self.reason),
+            Some(id) => write!(f, "series {id:?} ({}): {}", self.field, self.kind),
+            None => write!(f, "{}: {}", self.field, self.kind),
         }
     }
 }
@@ -58,29 +63,29 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
         return fail(reason);
     }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
-        return fail("an axis crossing (`cross_at`) must be finite");
+        return fail(crate::RuleKind::AxisCrossAt);
     }
     // A categorical axis maps its category range; `min` / `max` are ignored
     // there.
     if axis.categories.is_some() {
         return match axis.category_window {
             Some([from, to]) if !(from.is_finite() && to.is_finite() && from < to) => {
-                fail("a category window needs finite bounds with from < to")
+                fail(crate::RuleKind::CategoryWindow)
             }
             _ => Ok(()),
         };
     }
     if !axis.min.is_finite() || !axis.max.is_finite() {
-        return fail("axis bounds must be finite");
+        return fail(crate::RuleKind::AxisBoundsNotFinite);
     }
     if axis.max <= axis.min {
-        return fail("axis max must be greater than min");
+        return fail(crate::RuleKind::AxisBoundsOrder);
     }
     if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
-        return fail("logarithmic axis bounds must be positive");
+        return fail(crate::RuleKind::LogAxisBounds);
     }
     if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
-        return fail("probability axis bounds must lie strictly between 0 and 1");
+        return fail(crate::RuleKind::ProbabilityAxisBounds);
     }
     Ok(())
 }
@@ -98,7 +103,7 @@ impl Config {
         if area.width == 0 || area.height == 0 {
             return Err(ConfigError::chart(
                 "chart_area",
-                "the chart area must have a non-zero width and height",
+                crate::RuleKind::ChartAreaEmpty,
             ));
         }
         // The colourbar's z axis is held to the four chart axes' rules: its
@@ -108,13 +113,13 @@ impl Config {
         if colorbar_axis.is_some_and(|axis| axis.categories.is_some()) {
             return Err(ConfigError::chart(
                 "colorbar.axis",
-                "a colourbar axis cannot be categorical",
+                crate::RuleKind::ColorbarCategorical,
             ));
         }
         if colorbar_axis.is_some_and(|axis| matches!(axis.scale, AxisScale::Probability(_))) {
             return Err(ConfigError::chart(
                 "colorbar.axis",
-                "a colourbar axis is linear or logarithmic: not a probability axis",
+                crate::RuleKind::ColorbarProbabilityAxis,
             ));
         }
         let axes = [
@@ -134,7 +139,7 @@ impl Config {
             {
                 return Err(ConfigError::chart(
                     field,
-                    "category groups are drawn on a categorical top_x or bottom_x",
+                    crate::RuleKind::CategoryGroupsAxis,
                 ));
             }
         }
@@ -147,10 +152,7 @@ impl Config {
             .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
         {
             if axis.breaks.is_some() {
-                return Err(ConfigError::chart(
-                    field,
-                    "breaks go on bottom_x, left_y or an overlay's y_axis",
-                ));
+                return Err(ConfigError::chart(field, crate::RuleKind::BreaksAxis));
             }
         }
         let broken = self.bottom_x.breaks.is_some()
@@ -159,7 +161,7 @@ impl Config {
         if broken && !matches!(self.coordinates, crate::coordinates::Coordinates::Cartesian) {
             return Err(ConfigError::chart(
                 "coordinates",
-                "a broken axis needs a rectangular chart",
+                crate::RuleKind::BreaksChart,
             ));
         }
         // Overlay y axes are ranges of the same kind, and the layer
@@ -169,16 +171,12 @@ impl Config {
             if overlay.y_axis.category_groups.is_some() {
                 return Err(ConfigError::chart(
                     "overlays.y_axis",
-                    "category groups are drawn on a categorical top_x or bottom_x",
+                    crate::RuleKind::CategoryGroupsAxis,
                 ));
             }
         }
-        self.validate_overlays().map_err(|_| {
-            ConfigError::chart(
-                "overlays",
-                "a series id may belong to at most one overlay layer",
-            )
-        })?;
+        self.validate_overlays()
+            .map_err(|_| ConfigError::chart("overlays", crate::RuleKind::SeriesInManyOverlays))?;
         // The subplot rules come before the layout check, which also expands
         // each subplot, so a broken link or nesting reports as what it is.
         self.validate_subplots()
@@ -190,12 +188,8 @@ impl Config {
                 .validate_axis_count()
                 .map_err(|reason| ConfigError::chart("parallel", reason))?;
         }
-        self.validate().map_err(|_| {
-            ConfigError::chart(
-                "layout",
-                "margins and visual dimensions must produce a non-empty data area",
-            )
-        })?;
+        self.validate()
+            .map_err(|_| ConfigError::chart("layout", crate::RuleKind::LayoutDataAreaEmpty))?;
         // A malformed math segment tree in a title, axis title or legend is
         // refused like any other field (a JSON document already fails to
         // parse); annotation texts are checked with the annotations.
@@ -217,8 +211,9 @@ impl Config {
                 )
         }));
         for (field, text) in texts {
-            text.validate_math()
-                .map_err(|error| ConfigError::chart(field, error.as_str()))?;
+            text.validate_math().map_err(|error| {
+                ConfigError::chart(field, crate::RuleKind::InvalidMath { error })
+            })?;
         }
         // Malformed annotation styles are refused like any other field;
         // non-finite values and anchors are not malformed, the raster skips
@@ -229,18 +224,17 @@ impl Config {
         self.validate_line_offset_layout()
             .map_err(|reason| ConfigError::chart("line_offsets", reason))?;
         if !self.overlays.is_empty() {
-            self.expand().map_err(|_| {
-                ConfigError::chart(
-                    "overlays",
-                    "the overlay layers must share one non-empty data area",
-                )
-            })?;
+            self.expand()
+                .map_err(|_| ConfigError::chart("overlays", crate::RuleKind::OverlayDataArea))?;
         }
         // Every subplot is a chart of its own, held to the same rules with
         // its links applied.
         for index in 0..self.subplots.len() {
             self.subplot_config(index)
-                .ok_or(ConfigError::chart("subplots", "subplot index out of range"))?
+                .ok_or(ConfigError::chart(
+                    "subplots",
+                    crate::RuleKind::SubplotIndex,
+                ))?
                 .validate_chart()?;
         }
         Ok(())
@@ -258,16 +252,16 @@ impl Config {
             let fail = |reason| ConfigError {
                 series_id: Some(item.series_id.clone()),
                 field: "series_id",
-                reason,
+                kind: reason,
             };
             if item.series_id.is_empty() {
-                return Err(fail("series_id must not be empty"));
+                return Err(fail(crate::RuleKind::SeriesIdEmpty));
             }
             if series[..index]
                 .iter()
                 .any(|earlier| earlier.series_id == item.series_id)
             {
-                return Err(fail("series_id must be unique within a chart"));
+                return Err(fail(crate::RuleKind::SeriesIdDuplicate));
             }
             // A composed kind draws only the combinations it has a form for.
             let composition = match &item.render_type {
@@ -278,10 +272,10 @@ impl Config {
             composition.map_err(|reason| ConfigError {
                 series_id: Some(item.series_id.clone()),
                 field: "render_type",
-                reason,
+                kind: reason,
             })?;
         }
-        type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>;
+        type Rule = fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>;
         let rules: [(&'static str, Rule); 13] = [
             ("category_bars", Config::validate_category_bars),
             ("box_plots", Config::validate_box_plots),
@@ -302,7 +296,7 @@ impl Config {
                 return Err(ConfigError {
                     series_id: self.first_breaking(series, rule),
                     field,
-                    reason,
+                    kind: reason,
                 });
             }
         }
@@ -311,7 +305,7 @@ impl Config {
                 .map_err(|reason| ConfigError {
                     series_id: Some(item.series_id.clone()),
                     field: "polar",
-                    reason,
+                    kind: reason,
                 })?;
         }
         Ok(())
@@ -323,7 +317,7 @@ impl Config {
     fn first_breaking(
         &self,
         series: &[SeriesConfig],
-        rule: fn(&Config, &[SeriesConfig]) -> Result<(), &'static str>,
+        rule: fn(&Config, &[SeriesConfig]) -> Result<(), crate::RuleKind>,
     ) -> Option<String> {
         (0..=series.len())
             .find(|&end| rule(self, &series[..end]).is_err())
@@ -335,16 +329,16 @@ impl Config {
     /// on a chart without them. Points, lines, radar series and category
     /// bars (as a rose, #133) are; a polar arc interpolation needs a
     /// linearly interpolated line, since a step draws chords.
-    pub fn validate_series_on_polar(&self, item: &SeriesConfig) -> Result<(), &'static str> {
+    pub fn validate_series_on_polar(&self, item: &SeriesConfig) -> Result<(), crate::RuleKind> {
         let Some(polar) = self.polar() else {
             return Ok(());
         };
         let line = match &item.render_type {
             DataRenderType::Xy(xy) if xy.errors.is_some() => {
-                return Err("error bars are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarErrorBars);
             }
             DataRenderType::Xy(xy) if xy.stem.is_some() => {
-                return Err("stems are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarStems);
             }
             DataRenderType::Xy(xy) => xy.line.as_ref().map(|line| line.interpolation.is_linear()),
             DataRenderType::CategoryBars { .. } => None,
@@ -353,51 +347,49 @@ impl Config {
                 .radar()
                 .map(|radar| radar.line_style().interpolation.is_linear()),
             DataRenderType::Histogram { .. } => {
-                return Err("histogram series are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarHistogram);
             }
             // A polar heatmap (#208): cells are annular sectors between angle
             // and radius boundaries, so the lattice must be rectangular in
             // (angle, radius) and the rings circles.
             DataRenderType::Field(field) => {
                 if field.matrix.grid_layout == crate::data_config::GridLayout::Hexagonal {
-                    return Err("a hexagonal grid is drawn on a rectangular chart");
+                    return Err(crate::RuleKind::PolarHexagonalGrid);
                 }
                 if polar.grid_shape() == crate::polar::GridShape::Polygon {
-                    return Err(
-                        "a polar heatmap's cells follow circular rings: not on a polygon grid",
-                    );
+                    return Err(crate::RuleKind::PolarHeatmapPolygonGrid);
                 }
                 None
             }
             DataRenderType::RgbImage { .. } => {
-                return Err("images are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarImage);
             }
             DataRenderType::Vector { .. } => {
-                return Err("vector series are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarVector);
             }
             DataRenderType::BoxPlot { .. } => {
-                return Err("box plots are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarBoxPlot);
             }
             DataRenderType::RangeBars { .. } => {
-                return Err("range bars are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarRangeBars);
             }
             DataRenderType::Streamlines { .. } => {
-                return Err("streamlines are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarStreamlines);
             }
             DataRenderType::Parallel { .. } => {
-                return Err("parallel series are drawn on parallel charts, not polar axes");
+                return Err(crate::RuleKind::PolarParallel);
             }
             DataRenderType::EnergyLevels(_) => {
-                return Err("energy-level series are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarEnergyLevels);
             }
             DataRenderType::TriMesh(_) => {
-                return Err("a triangle mesh is not drawn on polar axes");
+                return Err(crate::RuleKind::PolarTriMesh);
             }
             DataRenderType::Feynman(_) => {
-                return Err("Feynman series are not drawn on polar axes");
+                return Err(crate::RuleKind::PolarFeynman);
             }
             DataRenderType::Ternary { .. } => {
-                return Err("ternary series are drawn on ternary charts, not polar axes");
+                return Err(crate::RuleKind::PolarTernary);
             }
         };
         if line == Some(false)
@@ -406,10 +398,7 @@ impl Config {
                 crate::polar::PolarInterpolation::Arc { .. }
             )
         {
-            return Err(
-                "a polar arc interpolation needs a linearly interpolated line; a step \
-                 interpolation draws chords",
-            );
+            return Err(crate::RuleKind::PolarArcStepLine);
         }
         Ok(())
     }
@@ -487,13 +476,13 @@ mod tests {
         };
         let config = default_config();
         assert_eq!(config.validate_series(&[with(stem.clone())]), Ok(()));
-        let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().reason;
+        let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().kind;
         assert_eq!(
             reason(with(Stem {
                 baseline: f64::NAN,
                 ..stem.clone()
             })),
-            "a stem baseline must be finite"
+            crate::RuleKind::StemBaseline
         );
         for width in [-1.0, f32::INFINITY, f32::NAN] {
             assert_eq!(
@@ -501,7 +490,7 @@ mod tests {
                     width,
                     ..stem.clone()
                 })),
-                "a stem width must be finite and at least 0"
+                crate::RuleKind::StemWidth
             );
         }
         let mut bare = with(stem.clone());
@@ -509,7 +498,7 @@ mod tests {
             *scatter = None;
             *line = Some(crate::data_config::DataLineStyleConfig::default());
         }
-        assert_eq!(reason(bare), "stems are drawn with markers");
+        assert_eq!(reason(bare), crate::RuleKind::StemsWithoutMarkers);
 
         let mut polar = default_config();
         polar.bottom_x.min = 0.0;
@@ -517,7 +506,7 @@ mod tests {
         polar.set_polar(Some(PolarOptions::default()));
         assert_eq!(
             polar.validate_series_on_polar(&with(stem.clone())),
-            Err("stems are not drawn on polar axes")
+            Err(crate::RuleKind::PolarStems)
         );
         let mut three_d = default_config();
         three_d.set_view_3d(Some(crate::view3d::View3d::default()));
@@ -525,7 +514,7 @@ mod tests {
         tall.z_column = Some("z".into());
         assert_eq!(
             three_d.validate_view3d_series(&[tall]),
-            Err("stems draw flat: not on a 3D chart")
+            Err(crate::RuleKind::View3dStem)
         );
 
         let mut cycled = with(stem);
@@ -606,12 +595,12 @@ mod tests {
         }
         assert_eq!(
             config.validate_series_on_polar(&polar_field(GridLayout::Hexagonal, false)),
-            Err("a hexagonal grid is drawn on a rectangular chart")
+            Err(crate::RuleKind::PolarHexagonalGrid)
         );
         config.polar_mut().unwrap().grid_shape = Some(crate::polar::GridShape::Polygon);
         assert_eq!(
             config.validate_series_on_polar(&polar_field(GridLayout::Edges, false)),
-            Err("a polar heatmap's cells follow circular rings: not on a polygon grid")
+            Err(crate::RuleKind::PolarHeatmapPolygonGrid)
         );
     }
 

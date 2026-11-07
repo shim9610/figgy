@@ -424,6 +424,8 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
     let error = chart
         .set_series(&rejected)
         .expect_err("invalid spacing must reject");
+    // `spacing_px` is checked while the JSON is parsed, so the refusal is a
+    // JSON parse error: it throws a string and carries no rule `code` (#215).
     assert!(
         error
             .as_string()

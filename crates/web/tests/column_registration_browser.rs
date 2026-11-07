@@ -307,11 +307,20 @@ async fn contour_level_limit_is_atomic_across_the_wasm_json_boundary() {
         let error = chart
             .set_series(&rejected.to_string())
             .expect_err("1025 contour levels must throw through the WASM facade");
-        let message = error.as_string().expect("string rejection");
+        // A rule refusal throws an `Error` with the sentence as its
+        // message and the rule's name as its `code` (#215).
+        let field = |key: &str| {
+            js_sys::Reflect::get(&error, &wasm_bindgen::JsValue::from_str(key))
+                .ok()
+                .and_then(|value| value.as_string())
+                .unwrap_or_default()
+        };
+        let message = field("message");
         assert!(
             message.contains("contour level count 1025") && message.contains("maximum 1024"),
             "unexpected {kind} rejection: {message}"
         );
+        assert_eq!(field("code"), "ContourLevelCount", "{kind}");
         assert_eq!(
             chart.get_config().expect("config after rejection"),
             accepted_config

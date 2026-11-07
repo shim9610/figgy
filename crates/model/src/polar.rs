@@ -320,57 +320,54 @@ impl PolarOptions {
     }
 
     /// Validate against the axes the coordinate system reads.
-    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+    pub fn validate(&self, config: &Config) -> Result<(), crate::RuleKind> {
         if !self.zero_angle_degrees.is_finite() || !self.radial_label_angle_degrees.is_finite() {
-            return Err("polar angles must be finite");
+            return Err(crate::RuleKind::PolarAngles);
         }
         if !self.inner_radius_fraction.is_finite()
             || !(0.0..=0.9).contains(&self.inner_radius_fraction)
         {
-            return Err("polar inner_radius_fraction must be within 0..=0.9");
+            return Err(crate::RuleKind::PolarInnerRadius);
         }
         if let Some([start, end]) = self.sector {
             if !start.is_finite() || !end.is_finite() || end <= start {
-                return Err("polar sector must be a finite [start, end] with start < end");
+                return Err(crate::RuleKind::PolarSector);
             }
             if (end - start) * self.angle_unit.radians_per_unit()
                 > std::f64::consts::TAU * (1.0 + 1e-9)
             {
-                return Err("polar sector cannot exceed one turn");
+                return Err(crate::RuleKind::PolarSectorTurn);
             }
         }
         if let PolarInterpolation::Arc { pieces } = self.interpolation
             && !(1..=MAX_POLAR_ARC_PIECES).contains(&pieces)
         {
-            return Err("polar arc pieces must be within 1..=64");
+            return Err(crate::RuleKind::PolarArcPieces);
         }
         if config.bottom_x.scale != AxisScale::Linear {
-            return Err("the polar angle axis (bottom_x) must be linear");
+            return Err(crate::RuleKind::PolarAngleAxisScale);
         }
         if config.bottom_x.inverted {
-            return Err("the polar angle axis (bottom_x) cannot be inverted; use clockwise");
+            return Err(crate::RuleKind::PolarAngleAxisInverted);
         }
         if self.grid_shape() == GridShape::Polygon && config.bottom_x.categories.is_none() {
-            return Err(
-                "a polygon polar grid joins its rings at the categories: it needs a \
-                 categorical angle axis (bottom_x.categories)",
-            );
+            return Err(crate::RuleKind::PolarPolygonGridAxis);
         }
         if config.left_y.categories.is_some() {
-            return Err("the polar radius axis (left_y) cannot be categorical");
+            return Err(crate::RuleKind::PolarRadiusCategorical);
         }
         if matches!(config.left_y.scale, AxisScale::Probability(_)) {
-            return Err("the polar radius axis (left_y) is linear or logarithmic");
+            return Err(crate::RuleKind::PolarRadiusScale);
         }
         if !config.overlays.is_empty() {
-            return Err("polar charts have no overlay layers");
+            return Err(crate::RuleKind::PolarOverlay);
         }
         if config
             .line_offsets
             .as_ref()
             .is_some_and(|offsets| !offsets.series.is_empty())
         {
-            return Err("polar charts have no line offsets");
+            return Err(crate::RuleKind::PolarLineOffsets);
         }
         Ok(())
     }
@@ -422,7 +419,7 @@ impl Config {
     }
 
     /// Validate `polar` against the axes it reads; `None` always passes.
-    pub fn validate_polar(&self) -> Result<(), &'static str> {
+    pub fn validate_polar(&self) -> Result<(), crate::RuleKind> {
         match self.polar() {
             Some(polar) => polar.validate(self),
             None => Ok(()),
@@ -503,25 +500,21 @@ mod tests {
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
         c.polar_mut().unwrap().grid_shape = Some(GridShape::Polygon);
-        assert!(
-            c.validate_polar()
-                .unwrap_err()
-                .contains("needs a categorical angle axis")
-        );
+        assert!(matches!(
+            c.validate_polar().unwrap_err(),
+            crate::RuleKind::PolarPolygonGridAxis
+        ));
         c.polar_mut().unwrap().grid_shape = Some(GridShape::Circle);
         assert_eq!(c.validate_polar(), Ok(()));
         let mut c = config.clone();
         c.left_y.categories = category();
         assert_eq!(
             c.validate_polar(),
-            Err("the polar radius axis (left_y) cannot be categorical")
+            Err(crate::RuleKind::PolarRadiusCategorical)
         );
         let mut c = config.clone();
         c.left_y.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
-        assert_eq!(
-            c.validate_polar(),
-            Err("the polar radius axis (left_y) is linear or logarithmic")
-        );
+        assert_eq!(c.validate_polar(), Err(crate::RuleKind::PolarRadiusScale));
         let mut c = config.clone();
         c.overlays.push(crate::layer::OverlayLayer::default());
         assert!(c.validate_polar().is_err());

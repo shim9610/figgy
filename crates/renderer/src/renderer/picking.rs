@@ -2204,7 +2204,7 @@ impl Renderer {
             let paint_order =
                 u32::try_from(index).map_err(|_| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: "series paint order exceeds the GPU u32 index space".into(),
+                    kind: crate::RuleKind::SeriesPaintOrderOverflow,
                 })?;
             point_orders.push(crate::gpu_data_pick::PointPaintOrder {
                 source_id: cfg.source_id.clone(),
@@ -2242,7 +2242,7 @@ impl Renderer {
                     let bin_count =
                         u32::try_from(bin_count).map_err(|_| FiggyError::InvalidSeriesConfig {
                             series_id: cfg.series_id.clone(),
-                            reason: "histogram bin count exceeds the GPU u32 index space".into(),
+                            kind: crate::RuleKind::HistogramBinCountOverflow,
                         })?;
                     let (baseline_hi, baseline_lo) =
                         crate::data::split_f64_to_f32_pair(bar.baseline);
@@ -2634,7 +2634,7 @@ impl Renderer {
             let paint_order = u32::try_from(series.len() + index).map_err(|_| {
                 FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: "value label paint order exceeds the GPU u32 index space".into(),
+                    kind: crate::RuleKind::ValueLabelPaintOrderOverflow,
                 }
             })?;
             data_series.push(crate::gpu_data_pick::GpuDataPickSeries {

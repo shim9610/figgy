@@ -2176,10 +2176,10 @@ impl IndexTally {
     }
 }
 
-fn composite_error(id: &str, reason: impl Into<String>) -> crate::FiggyError {
+fn composite_error(id: &str, reason: crate::RuleKind) -> crate::FiggyError {
     crate::FiggyError::InvalidSeriesConfig {
         series_id: id.to_owned(),
-        reason: reason.into(),
+        kind: reason,
     }
 }
 
@@ -2287,10 +2287,9 @@ impl ColumnPool {
         match taken {
             Some(other) => Err(composite_error(
                 id,
-                format!(
-                    "the id is {other}; columns, records, ragged and triangle columns share \
-                     one id space"
-                ),
+                crate::RuleKind::IdInUse {
+                    other: other.to_string(),
+                },
             )),
             None => Ok(()),
         }
@@ -2300,22 +2299,25 @@ impl ColumnPool {
         if id.is_empty() {
             return Err(composite_error(
                 id,
-                format!("a {kind} id must not be empty"),
+                crate::RuleKind::CompositeIdEmpty {
+                    kind: kind.to_string(),
+                },
             ));
         }
         if id.contains(MEMBER_SEPARATOR) {
             return Err(composite_error(
                 id,
-                format!("a {kind} id must not contain U+001F, which separates member column ids"),
+                crate::RuleKind::CompositeIdSeparator {
+                    kind: kind.to_string(),
+                },
             ));
         }
         if self.slots.contains_key(id) {
             return Err(composite_error(
                 id,
-                format!(
-                    "the id is a column; columns, records, ragged and triangle columns share \
-                     one id space, so a {kind} needs an id of its own"
-                ),
+                crate::RuleKind::CompositeIdIsColumn {
+                    kind: kind.to_string(),
+                },
             ));
         }
         Ok(())
@@ -2373,21 +2375,19 @@ impl ColumnPool {
         if schema.len() > MAX_RECORD_FIELDS {
             return Err(composite_error(
                 &id,
-                format!(
-                    "the record schema has {} fields; a record holds at most \
-                     MAX_RECORD_FIELDS ({MAX_RECORD_FIELDS})",
-                    schema.len()
-                ),
+                crate::RuleKind::RecordSchemaFields {
+                    fields: schema.len() as u64,
+                    max: MAX_RECORD_FIELDS as u64,
+                },
             ));
         }
         if source.fields.len() > MAX_RECORD_FIELDS {
             return Err(composite_error(
                 &id,
-                format!(
-                    "the record source has {} fields; a record holds at most \
-                     MAX_RECORD_FIELDS ({MAX_RECORD_FIELDS})",
-                    source.fields.len()
-                ),
+                crate::RuleKind::RecordSourceFields {
+                    fields: source.fields.len() as u64,
+                    max: MAX_RECORD_FIELDS as u64,
+                },
             ));
         }
 
@@ -2397,13 +2397,17 @@ impl ColumnPool {
             let Some(slot) = schema.iter().position(|(known, _)| known == name) else {
                 return Err(composite_error(
                     &id,
-                    format!("'{name}' is not a field of the record schema"),
+                    crate::RuleKind::RecordUnknownField {
+                        name: name.to_string(),
+                    },
                 ));
             };
             if by_slot[slot].is_some() {
                 return Err(composite_error(
                     &id,
-                    format!("the record field '{name}' is given twice"),
+                    crate::RuleKind::RecordFieldTwice {
+                        name: name.to_string(),
+                    },
                 ));
             }
             by_slot[slot] = Some(*field);
@@ -2414,7 +2418,9 @@ impl ColumnPool {
                 if *required {
                     return Err(composite_error(
                         &id,
-                        format!("the required record field '{name}' is missing"),
+                        crate::RuleKind::RecordFieldMissing {
+                            name: name.to_string(),
+                        },
                     ));
                 }
                 continue;
@@ -2424,24 +2430,30 @@ impl ColumnPool {
                 Some((rows, first)) if rows != field.len() => {
                     return Err(composite_error(
                         &id,
-                        format!(
-                            "the record field '{name}' has {} rows but '{first}' has {rows}; \
-                             every field of a record has the same length",
-                            field.len()
-                        ),
+                        crate::RuleKind::RecordFieldLength {
+                            name: name.to_string(),
+                            len: field.len() as u64,
+                            first: first.to_string(),
+                            rows: rows as u64,
+                        },
                     ));
                 }
                 Some(_) => {}
             }
         }
         let Some((len, _)) = len else {
-            return Err(composite_error(&id, "a record needs at least one field"));
+            return Err(composite_error(&id, crate::RuleKind::RecordWithoutFields));
         };
         if len == 0 {
-            return Err(composite_error(&id, "a record needs at least one row"));
+            return Err(composite_error(&id, crate::RuleKind::RecordWithoutRows));
         }
         let rows = u32::try_from(len).map_err(|_| {
-            composite_error(&id, format!("a record holds at most {} rows", u32::MAX))
+            composite_error(
+                &id,
+                crate::RuleKind::RecordRowsOverflow {
+                    max: u64::from(u32::MAX),
+                },
+            )
         })?;
 
         // Member ids in schema order; `order[i]` is the schema slot of batch
@@ -2568,37 +2580,34 @@ impl ColumnPool {
         self.check_composite_kind_free(&id, "ragged column")?;
         let total = source.values.len();
         if total == 0 {
-            return Err(composite_error(
-                &id,
-                "a ragged column needs at least one value; register none when every group is empty",
-            ));
+            return Err(composite_error(&id, crate::RuleKind::RaggedEmpty));
         }
         // Offsets index the values as `u32`: the GPU's index space, as a
         // column's lane base.
         let total32 = u32::try_from(total).map_err(|_| {
             composite_error(
                 &id,
-                format!(
-                    "a ragged column indexes its values with u32 offsets, at most {} values, \
-                     got {total}",
-                    u32::MAX
-                ),
+                crate::RuleKind::RaggedValuesOverflow {
+                    max: u64::from(u32::MAX),
+                    total: total as u64,
+                },
             )
         })?;
         let offsets_len = source.offsets.len();
         if offsets_len < 2 {
             return Err(composite_error(
                 &id,
-                format!(
-                    "a ragged column needs one offset per group plus one, at least two, got \
-                     {offsets_len}"
-                ),
+                crate::RuleKind::RaggedOffsetCount {
+                    offsets: offsets_len as u64,
+                },
             ));
         }
         let groups = u32::try_from(offsets_len - 1).map_err(|_| {
             composite_error(
                 &id,
-                format!("a ragged column holds at most {} groups", u32::MAX),
+                crate::RuleKind::RaggedGroupsOverflow {
+                    max: u64::from(u32::MAX),
+                },
             )
         })?;
 
@@ -2649,36 +2658,32 @@ impl ColumnPool {
         // Rejections below drop `batch`, which un-inserts both members; their
         // bytes went to regions that were free, so nothing live changed.
         if !offsets.in_order || offsets.next_row != offsets_len {
-            return Err(composite_error(
-                &id,
-                "the offsets source must write every offset once, in row order",
-            ));
+            return Err(composite_error(&id, crate::RuleKind::RaggedOffsetsOrder));
         }
         if !offsets.integral {
-            return Err(composite_error(
-                &id,
-                "ragged offsets must be finite non-negative integers",
-            ));
+            return Err(composite_error(&id, crate::RuleKind::RaggedOffsetsInteger));
         }
         if offsets.first != 0.0 {
             return Err(composite_error(
                 &id,
-                format!("ragged offsets must start at 0, got {}", offsets.first),
+                crate::RuleKind::RaggedOffsetsStart {
+                    first: offsets.first.to_string(),
+                },
             ));
         }
         if !offsets.non_decreasing {
             return Err(composite_error(
                 &id,
-                "ragged offsets must be non-decreasing: group g is values[offsets[g]..offsets[g + 1]]",
+                crate::RuleKind::RaggedOffsetsDecreasing,
             ));
         }
         if offsets.previous != total as f64 {
             return Err(composite_error(
                 &id,
-                format!(
-                    "the last ragged offset is {} but there are {total} values",
-                    offsets.previous
-                ),
+                crate::RuleKind::RaggedLastOffset {
+                    last: offsets.previous.to_string(),
+                    total: total as u64,
+                },
             ));
         }
         let relocated = batch.pool.layout_generation != layout_before;
@@ -2806,18 +2811,14 @@ impl ColumnPool {
         self.check_composite_kind_free(&id, "triangle index column")?;
         let count = source.indices.len();
         if count == 0 {
-            return Err(composite_error(
-                &id,
-                "a triangle index column needs at least one triangle (three indices)",
-            ));
+            return Err(composite_error(&id, crate::RuleKind::TrianglesEmpty));
         }
         if count % 3 != 0 {
             return Err(composite_error(
                 &id,
-                format!(
-                    "a triangle index column holds three vertex indices per triangle; \
-                     {count} indices is not a multiple of 3"
-                ),
+                crate::RuleKind::TriangleIndexCount {
+                    count: count as u64,
+                },
             ));
         }
         // The shader reads index `3t + k` by its `u32` lane: the index count
@@ -2828,10 +2829,10 @@ impl ColumnPool {
             .ok_or_else(|| {
                 composite_error(
                     &id,
-                    format!(
-                        "a triangle index column holds at most {} indices, got {count}",
-                        u32::MAX
-                    ),
+                    crate::RuleKind::TriangleIndicesOverflow {
+                        max: u64::from(u32::MAX),
+                        count: count as u64,
+                    },
                 )
             })?;
 
@@ -2864,18 +2865,14 @@ impl ColumnPool {
         // Rejections below drop `batch`, which un-inserts the member; its
         // bytes went to a region that was free, so nothing live changed.
         if !tally.in_order || tally.next_row != count {
-            return Err(composite_error(
-                &id,
-                "the triangle index source must write every index once, in row order",
-            ));
+            return Err(composite_error(&id, crate::RuleKind::TriangleIndicesOrder));
         }
         if !tally.integral {
             return Err(composite_error(
                 &id,
-                format!(
-                    "triangle indices must be finite integers in 0..={}",
-                    u32::MAX
-                ),
+                crate::RuleKind::TriangleIndexRange {
+                    max: u64::from(u32::MAX),
+                },
             ));
         }
         let relocated = batch.pool.layout_generation != layout_before;

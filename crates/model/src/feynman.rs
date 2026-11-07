@@ -409,14 +409,14 @@ impl FeynmanStyle {
         *self == Self::default()
     }
 
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         if !color_ok(self.color) || !finite_in(self.width, 0.5, 24.0) {
-            return Err("invalid Feynman line style");
+            return Err(crate::RuleKind::FeynmanLineStyle);
         }
         for wiggle in [self.wave, self.coil] {
             if !finite_in(wiggle.amplitude, 0.0, 64.0) || !finite_in(wiggle.wavelength, 2.0, 256.0)
             {
-                return Err("invalid Feynman wave or coil");
+                return Err(crate::RuleKind::FeynmanWave);
             }
         }
         if !finite_in(self.head_length, 0.0, 64.0)
@@ -425,10 +425,10 @@ impl FeynmanStyle {
             || !finite_in(self.loop_radius, 2.0, 512.0)
             || !finite_in(self.fan_step, 0.0, 120.0)
         {
-            return Err("invalid Feynman marker, arrow, loop or fan size");
+            return Err(crate::RuleKind::FeynmanSizes);
         }
         if !color_ok(self.picked.color) || !finite_in(self.picked.width_extra_px, 0.0, 16.0) {
-            return Err("invalid Feynman picked style: a colour and an extra width in 0..=16");
+            return Err(crate::RuleKind::FeynmanPickedStyle);
         }
         Ok(())
     }
@@ -518,10 +518,10 @@ fn offset_ok(offset: [f32; 2]) -> bool {
 // no count limit (rule 10): the only failure is an allocation that fails.
 
 /// The error of an operation whose working memory cannot be allocated.
-pub(crate) const ALLOCATION_FAILED: &str =
-    "the Feynman series' working memory could not be allocated";
+pub(crate) const ALLOCATION_FAILED: crate::RuleKind = crate::RuleKind::FeynmanAllocation;
 /// The error of a layout whose solver stops converging.
-pub(crate) const LAYOUT_DID_NOT_CONVERGE: &str = "the Feynman layout did not converge";
+pub(crate) const LAYOUT_DID_NOT_CONVERGE: crate::RuleKind =
+    crate::RuleKind::FeynmanLayoutDidNotConverge;
 
 /// The widest bend of a line, degrees: a propagator's `bend` and the outer
 /// lines of a fan stay within it, so every arc has a finite radius.
@@ -536,7 +536,7 @@ const CG_TOLERANCE_SQUARED: f64 = 1e-24;
 const CG_STALL: u32 = 64;
 
 /// `len` copies of `fill` in one allocation of exactly that size.
-fn exact<T: Copy>(len: usize, fill: T) -> Result<Vec<T>, &'static str> {
+fn exact<T: Copy>(len: usize, fill: T) -> Result<Vec<T>, crate::RuleKind> {
     let mut v: Vec<T> = Vec::new();
     v.try_reserve_exact(len).map_err(|_| ALLOCATION_FAILED)?;
     v.resize(len, fill);
@@ -584,7 +584,7 @@ const FIXED: usize = 1;
 const ANCHORED: usize = 2;
 
 impl Topology {
-    fn new(series: &FeynmanSeries) -> Result<Self, &'static str> {
+    fn new(series: &FeynmanSeries) -> Result<Self, crate::RuleKind> {
         let (v, e) = (series.vertices.len(), series.propagators.len());
         let len = v
             .checked_mul(3)
@@ -753,7 +753,7 @@ fn lay_out(
     series: &FeynmanSeries,
     topology: &mut Topology,
     positions: &mut [[f64; 2]],
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let n = series.vertices.len();
     let (order, offsets, incident, _, flags) = topology.parts_mut();
     let (offsets, incident) = (&*offsets, &*incident);
@@ -893,7 +893,7 @@ fn solve_barycentric<'a>(
     positions: &mut [[f64; 2]],
     origin: [f64; 2],
     unit: f64,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     // The free vertices are solved in frame units and converted back on
     // success; a pinned position is read, never rewritten, so it stays
     // bit-exact.
@@ -914,7 +914,7 @@ fn solve_in_frame<'a>(
     positions: &mut [[f64; 2]],
     origin: [f64; 2],
     unit: f64,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let n = flags.len();
     let free = |i: usize| flags[i] == ANCHORED;
     let mut work = exact(3 * n, [0.0f64; 2])?;
@@ -1092,7 +1092,7 @@ impl FeynmanSeries {
     /// labels are valid rich text within the per-string limit; offsets and
     /// the style are in range. No list has a count limit (rule 10). Works
     /// in one transient list of `V + E` rows.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
         let (v, e) = (self.vertices.len(), self.propagators.len());
         let mut rows = exact(v.checked_add(e).ok_or(ALLOCATION_FAILED)?, 0usize)?;
@@ -1105,7 +1105,7 @@ impl FeynmanSeries {
             .windows(2)
             .any(|w| self.vertices[w[0]].id == self.vertices[w[1]].id)
         {
-            return Err("Feynman vertex ids must be unique");
+            return Err(crate::RuleKind::FeynmanVertexIds);
         }
         for (i, slot) in propagator_order.iter_mut().enumerate() {
             *slot = i;
@@ -1116,50 +1116,50 @@ impl FeynmanSeries {
             .windows(2)
             .any(|w| self.propagators[w[0]].id == self.propagators[w[1]].id)
         {
-            return Err("Feynman propagator ids must be unique");
+            return Err(crate::RuleKind::FeynmanPropagatorIds);
         }
         for vertex in &self.vertices {
             if vertex
                 .at
                 .is_some_and(|p| !p[0].is_finite() || !p[1].is_finite())
             {
-                return Err("a Feynman vertex position must be finite");
+                return Err(crate::RuleKind::FeynmanVertexPosition);
             }
             if let Some(VertexMarker::Blob { radius_px, fill }) = vertex.marker
                 && (!finite_in(radius_px, 0.0, 256.0) || fill.is_some_and(|c| !color_ok(c)))
             {
-                return Err("invalid Feynman blob marker");
+                return Err(crate::RuleKind::FeynmanBlob);
             }
             if !rich_ok(vertex.label.as_ref()) || !offset_ok(vertex.label_offset) {
-                return Err("invalid Feynman vertex label");
+                return Err(crate::RuleKind::FeynmanVertexLabel);
             }
         }
         for propagator in &self.propagators {
             if lookup(self, order, &propagator.from) == NONE
                 || lookup(self, order, &propagator.to) == NONE
             {
-                return Err("a propagator must name two vertices of its series");
+                return Err(crate::RuleKind::FeynmanPropagatorVertices);
             }
             if propagator
                 .bend
                 .is_some_and(|b| !finite_in(b, -MAX_BEND, MAX_BEND))
             {
-                return Err("a propagator's bend must be in -170..=170 degrees");
+                return Err(crate::RuleKind::FeynmanBend);
             }
             if propagator.color.is_some_and(|c| !color_ok(c))
                 || propagator
                     .width_px
                     .is_some_and(|w| !finite_in(w, 0.5, 24.0))
             {
-                return Err("invalid propagator colour or width");
+                return Err(crate::RuleKind::FeynmanPropagatorStyle);
             }
             if !rich_ok(propagator.label.as_ref()) || !offset_ok(propagator.label_offset) {
-                return Err("invalid propagator label");
+                return Err(crate::RuleKind::FeynmanPropagatorLabel);
             }
             if let Some(momentum) = &propagator.momentum
                 && (!rich_ok(Some(&momentum.label)) || !offset_ok(momentum.label_offset))
             {
-                return Err("invalid momentum label");
+                return Err(crate::RuleKind::FeynmanMomentumLabel);
             }
         }
         Ok(())
@@ -1237,7 +1237,7 @@ impl FeynmanSeries {
     /// pattern: a display parameter written into the SSOT on an explicit
     /// call, which the host reads back. Allocates nothing when every
     /// vertex is placed.
-    pub fn auto_layout(&mut self) -> Result<bool, &'static str> {
+    pub fn auto_layout(&mut self) -> Result<bool, crate::RuleKind> {
         if !self.has_unplaced() {
             return Ok(false);
         }
@@ -1266,7 +1266,7 @@ impl FeynmanSeries {
     /// circle. Vertices that land on one point are spread across the time
     /// direction. The frame is the bounding box of the placed vertices, or
     /// the unit square when fewer than two span one.
-    pub fn positions(&self) -> Result<Vec<[f64; 2]>, &'static str> {
+    pub fn positions(&self) -> Result<Vec<[f64; 2]>, crate::RuleKind> {
         let mut positions = exact(self.vertices.len(), [0.0f64; 2])?;
         self.fill_positions(None, &mut positions)?;
         Ok(positions)
@@ -1278,7 +1278,7 @@ impl FeynmanSeries {
         &self,
         topology: Option<&mut Topology>,
         positions: &mut [[f64; 2]],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::RuleKind> {
         if !self.has_unplaced() {
             for (p, vertex) in positions.iter_mut().zip(&self.vertices) {
                 *p = vertex.at.unwrap_or_default();
@@ -1294,7 +1294,7 @@ impl FeynmanSeries {
     /// The bounding box of every vertex position, `[[x0, y0], [x1, y1]]`,
     /// or `None` without vertices: what an axis fit reads (a display
     /// parameter, rule 1). Allocates nothing when every vertex is placed.
-    pub fn extent(&self) -> Result<Option<[[f64; 2]; 2]>, &'static str> {
+    pub fn extent(&self) -> Result<Option<[[f64; 2]; 2]>, crate::RuleKind> {
         if self.has_unplaced() {
             Ok(bounding_box(self.positions()?.into_iter()))
         } else {
@@ -1317,7 +1317,7 @@ impl FeynmanSeries {
         dx: f32,
         dy: f32,
         space: &dyn AnnotationSpace,
-    ) -> Result<NudgeResult, &'static str> {
+    ) -> Result<NudgeResult, crate::RuleKind> {
         let reject = Ok(NudgeResult::Rejected(NudgeReject::OutOfBounds));
         if !dx.is_finite() || !dy.is_finite() || index >= self.vertices.len() {
             return reject;
@@ -1369,7 +1369,7 @@ impl FeynmanSeries {
         dx: f32,
         dy: f32,
         space: &dyn AnnotationSpace,
-    ) -> Result<NudgeResult, &'static str> {
+    ) -> Result<NudgeResult, crate::RuleKind> {
         let reject = Ok(NudgeResult::Rejected(NudgeReject::OutOfBounds));
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
@@ -1406,7 +1406,7 @@ impl FeynmanSeries {
         &'s self,
         space: &dyn AnnotationSpace,
         picked: Option<FeynmanHit>,
-    ) -> Result<Placed<'s>, &'static str> {
+    ) -> Result<Placed<'s>, crate::RuleKind> {
         let mut topology = Topology::new(self)?;
         let mut px = exact(self.vertices.len(), [f64::NAN; 2])?;
         self.fill_positions(Some(&mut topology), &mut px)?;
@@ -1441,7 +1441,7 @@ impl FeynmanSeries {
         picked: Option<FeynmanHit>,
         measure: &dyn MeasureText,
         sink: &mut dyn Sink,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::RuleKind> {
         let placed = self.placed(space, picked)?;
         let mut path: Vec<PathSegment> = Vec::new();
         for index in 0..self.propagators.len() {
@@ -1481,7 +1481,7 @@ impl FeynmanSeries {
         measure: &dyn MeasureText,
         cursor: [f32; 2],
         max_distance: f32,
-    ) -> Result<Option<(FeynmanHit, f32)>, &'static str> {
+    ) -> Result<Option<(FeynmanHit, f32)>, crate::RuleKind> {
         let plot = space.plot_rect();
         if !(plot.x..=plot.x + plot.width).contains(&cursor[0])
             || !(plot.y..=plot.y + plot.height).contains(&cursor[1])
@@ -2152,7 +2152,7 @@ impl Placed<'_> {
         index: usize,
         path: &mut Vec<PathSegment>,
         sink: &mut dyn Sink,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::RuleKind> {
         let Some(geometry) = self.geometry(index) else {
             return Ok(());
         };
@@ -2285,7 +2285,7 @@ impl Placed<'_> {
         index: usize,
         path: &mut Vec<PathSegment>,
         sink: &mut dyn Sink,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::RuleKind> {
         let Some(p) = self.px(index) else {
             return Ok(());
         };
@@ -2529,7 +2529,7 @@ fn sampled_path(
     density: f64,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     out.clear();
     let mut total = 0usize;
     for [t0, t1] in spans.iter() {
@@ -2575,7 +2575,7 @@ fn offset_path(
     spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let density = match *base {
         Base::Line { .. } => 0.0,
         Base::Bow { half, .. } => 2.0 * f64::from(half).abs() / (std::f64::consts::PI / 8.0),
@@ -2602,7 +2602,7 @@ fn wave_path(
     spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     out.clear();
     let length = base.length();
     if !(length.is_finite() && length > 0.0) {
@@ -2631,7 +2631,7 @@ fn coil_path(
     spans: &Spans,
     closed: bool,
     out: &mut Vec<PathSegment>,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     out.clear();
     let length = base.length();
     if !(length.is_finite() && length > 0.0) {
@@ -2676,24 +2676,24 @@ impl crate::config::Config {
     /// ([`FeynmanSeries::validate`]), reads no column (`x_column` and
     /// `y_column` empty) and is drawn on a rectangular chart with numeric
     /// x and y axes, not on polar, ternary, parallel or 3D axes.
-    pub fn validate_feynman(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_feynman(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             let Some(diagram) = item.feynman() else {
                 continue;
             };
             diagram.validate()?;
             if !item.x_column.is_empty() || !item.y_column.is_empty() || item.z_column.is_some() {
-                return Err("a Feynman series reads no columns: x_column and y_column stay empty");
+                return Err(crate::RuleKind::FeynmanColumns);
             }
             if self.polar().is_some()
                 || self.ternary().is_some()
                 || self.parallel().is_some()
                 || self.view_3d().is_some()
             {
-                return Err("a Feynman series is drawn on a rectangular chart");
+                return Err(crate::RuleKind::FeynmanChart);
             }
             if self.bottom_x.categories.is_some() {
-                return Err("a Feynman series is placed on a numeric bottom_x");
+                return Err(crate::RuleKind::FeynmanNumericX);
             }
         }
         Ok(())

@@ -168,7 +168,9 @@ impl PrepareContext<'_> {
             axis_render::bake_contour_label_atlas(&atlas_input, self.caps.max_texture_dimension_2d)
                 .map_err(|error| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: format!("value labels: {error}"),
+                    kind: crate::RuleKind::ValueLabels {
+                        detail: error.to_string(),
+                    },
                 })?;
         let atlas = match baked {
             Some(baked) => Some(Arc::new(data_render::ValueLabelAtlas::upload(

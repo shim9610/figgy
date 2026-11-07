@@ -40,7 +40,7 @@ pub fn upload_rgba_texture(
     if expected != Some(rgba.len()) {
         return Err(crate::FiggyError::InvalidConfig {
             field: "rgba texture",
-            reason: "the RGBA8 buffer length is not width * height * 4",
+            kind: crate::RuleKind::RgbaBufferLength,
         });
     }
 

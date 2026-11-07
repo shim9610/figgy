@@ -263,22 +263,22 @@ impl View3d {
     }
 
     /// Validate the camera's values.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.azimuth_degrees.is_finite() {
-            return Err("view_3d.azimuth_degrees must be finite");
+            return Err(crate::RuleKind::View3dAzimuthNotFinite);
         }
         if !(self.elevation_degrees.is_finite() && (-90.0..=90.0).contains(&self.elevation_degrees))
         {
-            return Err("view_3d.elevation_degrees must be in -90..=90");
+            return Err(crate::RuleKind::View3dElevationOutOfRange);
         }
         if !(self.distance.is_finite() && DISTANCE_RANGE.contains(&self.distance)) {
-            return Err("view_3d.distance must be in 1.2..=100");
+            return Err(crate::RuleKind::View3dDistanceOutOfRange);
         }
         if let Some(a) = self.box_aspect
             && a.iter()
                 .any(|v| !(v.is_finite() && BOX_ASPECT_RANGE.contains(v)))
         {
-            return Err("view_3d.box_aspect lengths must be in 0.05..=20");
+            return Err(crate::RuleKind::View3dBoxAspectOutOfRange);
         }
         Ok(())
     }
@@ -546,7 +546,7 @@ impl Config {
     }
 
     /// Validate `view_3d` against the axes it reads; `None` always passes.
-    pub fn validate_view_3d(&self) -> Result<(), &'static str> {
+    pub fn validate_view_3d(&self) -> Result<(), crate::RuleKind> {
         let Some(view) = self.view_3d() else {
             return Ok(());
         };
@@ -554,24 +554,24 @@ impl Config {
         for k in 0..3 {
             let axis = box_axis(self, k);
             if axis.categories.is_some() {
-                return Err("3D chart axes (bottom_x, left_y, right_y) cannot be categorical");
+                return Err(crate::RuleKind::View3dCategoricalAxis);
             }
             if !matches!(axis.scale, AxisScale::Linear | AxisScale::Logarithmic) {
-                return Err("3D chart axes must be linear or logarithmic");
+                return Err(crate::RuleKind::View3dAxisScale);
             }
         }
         if !self.overlays.is_empty() {
-            return Err("3D charts have no overlay layers");
+            return Err(crate::RuleKind::View3dOverlay);
         }
         if self
             .line_offsets
             .as_ref()
             .is_some_and(|offsets| !offsets.series.is_empty())
         {
-            return Err("3D charts have no line offsets");
+            return Err(crate::RuleKind::View3dLineOffsets);
         }
         if !self.draw_style.is_precise() {
-            return Err("3D charts are drawn in the Precise style only");
+            return Err(crate::RuleKind::View3dDrawStyle);
         }
         Ok(())
     }
@@ -611,22 +611,19 @@ impl Config {
     /// labels, and a 3D line is linear without an area fill. A heatmap's
     /// `surface` style and a series' `z_column` on a flat chart are kept
     /// and unused, so a chart switches between 2D and 3D by its view alone.
-    pub fn validate_view3d_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_view3d_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             let (surface, matrix, fill, contour) = match &item.render_type {
                 DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. })
                     if self.view_3d().is_some() =>
                 {
-                    return Err("stems draw flat: not on a 3D chart");
+                    return Err(crate::RuleKind::View3dStem);
                 }
                 DataRenderType::Xy(crate::data_config::XySeries { errors: None, .. })
                     if self.view_3d().is_some() =>
                 {
                     if item.z_column.as_deref().is_none_or(str::is_empty) {
-                        return Err(
-                            "a scatter or line series on a 3D chart names its height column \
-                             (z_column)",
-                        );
+                        return Err(crate::RuleKind::View3dPointsWithoutZColumn);
                     }
                     let line = match &item.render_type {
                         DataRenderType::Xy(crate::data_config::XySeries {
@@ -638,10 +635,10 @@ impl Config {
                     };
                     if let Some(line) = line {
                         if line.interpolation != LineInterpolation::Linear {
-                            return Err("a line on a 3D chart is linear: no step interpolation");
+                            return Err(crate::RuleKind::View3dStepLine);
                         }
                         if line.fill.is_some() {
-                            return Err("a line on a 3D chart has no area fill");
+                            return Err(crate::RuleKind::View3dLineFill);
                         }
                     }
                     continue;
@@ -651,29 +648,24 @@ impl Config {
                 DataRenderType::Vector { components, .. } if self.view_3d().is_some() => {
                     match components {
                         crate::data_config::VectorComponents::Grid { .. } => {
-                            return Err("a grid vector draws flat: not on a 3D chart");
+                            return Err(crate::RuleKind::View3dGridVector);
                         }
                         crate::data_config::VectorComponents::Points { w, .. } => {
                             if item.z_column.as_deref().is_none_or(str::is_empty) {
-                                return Err(
-                                    "a vector series on a 3D chart names its anchor height \
-                                     column (z_column)",
-                                );
+                                return Err(crate::RuleKind::View3dVectorWithoutZColumn);
                             }
                             if w.as_deref().is_none_or(str::is_empty) {
-                                return Err(
-                                    "a vector series on a 3D chart names its z component (w)",
-                                );
+                                return Err(crate::RuleKind::View3dVectorWithoutW);
                             }
                         }
                     }
                     continue;
                 }
                 DataRenderType::RgbImage { .. } if self.view_3d().is_some() => {
-                    return Err("an image draws flat: not on a 3D chart");
+                    return Err(crate::RuleKind::View3dImage);
                 }
                 DataRenderType::Parallel { .. } if self.view_3d().is_some() => {
-                    return Err("a parallel series draws flat: not on a 3D chart");
+                    return Err(crate::RuleKind::View3dParallel);
                 }
                 // A trisurf (#210): its own rules are
                 // `Config::validate_tri_mesh_series`.
@@ -697,10 +689,7 @@ impl Config {
                     ..
                 }) => (&None, matrix, None, Some(contour)),
                 _ if self.view_3d().is_some() => {
-                    return Err(
-                        "a 3D chart draws only heatmaps, contours, heatmap contours, and the \
-                         scatter, line and point vector series that name a z_column",
-                    );
+                    return Err(crate::RuleKind::View3dSeriesKind);
                 }
                 _ => continue,
             };
@@ -711,13 +700,13 @@ impl Config {
                 continue;
             }
             if matrix.grid_layout == GridLayout::Hexagonal {
-                return Err("a hexagonal grid draws flat: not on a 3D chart");
+                return Err(crate::RuleKind::View3dHexagonalGrid);
             }
             if fill.is_some_and(|f| f.mode == FillMode::Bands) {
-                return Err("a surface's fill is continuous: banded fills are not drawn in 3D");
+                return Err(crate::RuleKind::View3dBandedSurface);
             }
             if contour.is_some_and(|c| c.labels.is_some()) {
-                return Err("contours on a 3D chart's floor have no labels");
+                return Err(crate::RuleKind::View3dContourLabels);
             }
         }
         Ok(())
@@ -729,19 +718,16 @@ fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
 }
 
 /// A surface style in range, its colour grid the shape of its height grid.
-fn validate_surface_style(style: &SurfaceStyle, matrix: &MatrixRef) -> Result<(), &'static str> {
+fn validate_surface_style(style: &SurfaceStyle, matrix: &MatrixRef) -> Result<(), crate::RuleKind> {
     if let Some(color) = &style.color_matrix {
         let same_shape = color.columns.len() == matrix.columns.len()
             && same_orientation(&color.orientation, &matrix.orientation)
             && same_layout(&color.grid_layout, &matrix.grid_layout);
         if !same_shape {
-            return Err(
-                "a surface's color_matrix has the column count, orientation and layout of its \
-                 matrix",
-            );
+            return Err(crate::RuleKind::SurfaceColorMatrixShape);
         }
         if color.columns.iter().any(|c: &ColumnId| c.is_empty()) {
-            return Err("a surface's color_matrix names its columns");
+            return Err(crate::RuleKind::SurfaceColorMatrixColumns);
         }
     }
     validate_surface_look(style)
@@ -749,24 +735,21 @@ fn validate_surface_style(style: &SurfaceStyle, matrix: &MatrixRef) -> Result<()
 
 /// A surface style's wireframe, gloss, texture and emphasis in range: the
 /// rules a field's and a triangle mesh's surface share.
-pub(crate) fn validate_surface_look(style: &SurfaceStyle) -> Result<(), &'static str> {
+pub(crate) fn validate_surface_look(style: &SurfaceStyle) -> Result<(), crate::RuleKind> {
     if let Some(wire) = &style.wireframe
         && (!finite_in(wire.width, 0.0, 24.0)
             || ![wire.color.r, wire.color.g, wire.color.b, wire.color.a]
                 .into_iter()
                 .all(|v| finite_in(v, 0.0, 1.0)))
     {
-        return Err("a surface wireframe has a width in 0..=24 and a colour in 0..=1");
+        return Err(crate::RuleKind::SurfaceWireframeStyle);
     }
     if !finite_in(style.gloss, 0.0, 1.0)
         || !finite_in(style.texture_strength, 0.0, 1.0)
         || !(style.texture_scale.is_finite() && style.texture_scale > 0.0)
         || !finite_in(style.emphasis_brightness, 0.0, 1.0)
     {
-        return Err(
-            "a surface's gloss, texture_strength and emphasis_brightness are in 0..=1 and its \
-             texture_scale is positive",
-        );
+        return Err(crate::RuleKind::SurfaceMaterialStyle);
     }
     Ok(())
 }
@@ -918,26 +901,35 @@ mod tests {
             edit(&mut config);
             config.validate_view_3d().unwrap_err()
         };
+        assert!(matches!(
+            reject(&|c| c.view_3d_mut().unwrap().elevation_degrees = 91.0),
+            crate::RuleKind::View3dElevationOutOfRange
+        ));
+        assert!(matches!(
+            reject(&|c| c.view_3d_mut().unwrap().azimuth_degrees = f64::NAN),
+            crate::RuleKind::View3dAzimuthNotFinite
+        ));
+        assert!(matches!(
+            reject(&|c| c.view_3d_mut().unwrap().distance = 1.0),
+            crate::RuleKind::View3dDistanceOutOfRange
+        ));
+        assert!(matches!(
+            reject(&|c| c.view_3d_mut().unwrap().box_aspect = Some([1.0, 0.0, 1.0])),
+            crate::RuleKind::View3dBoxAspectOutOfRange
+        ));
         assert!(
-            reject(&|c| c.view_3d_mut().unwrap().elevation_degrees = 91.0).contains("elevation")
-        );
-        assert!(
-            reject(&|c| c.view_3d_mut().unwrap().azimuth_degrees = f64::NAN).contains("azimuth")
-        );
-        assert!(reject(&|c| c.view_3d_mut().unwrap().distance = 1.0).contains("distance"));
-        assert!(
-            reject(&|c| c.view_3d_mut().unwrap().box_aspect = Some([1.0, 0.0, 1.0]))
-                .contains("box_aspect")
-        );
-        assert!(
-            reject(&|c| c.overlays.push(crate::layer::OverlayLayer::default())).contains("overlay")
+            reject(&|c| c.overlays.push(crate::layer::OverlayLayer::default()))
+                .to_string()
+                .contains("overlay")
         );
         assert!(
             reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
+                .to_string()
                 .contains("Precise")
         );
         assert!(
             reject(&|c| c.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")]))
+                .to_string()
                 .contains("categorical")
         );
         let mut log = chart();
@@ -1040,15 +1032,15 @@ mod tests {
         );
         assert_eq!(
             config.validate_view3d_series(&[vector_3d(None, Some("w"))]),
-            Err("a vector series on a 3D chart names its anchor height column (z_column)")
+            Err(crate::RuleKind::View3dVectorWithoutZColumn)
         );
         assert_eq!(
             config.validate_view3d_series(&[vector_3d(Some("z"), None)]),
-            Err("a vector series on a 3D chart names its z component (w)")
+            Err(crate::RuleKind::View3dVectorWithoutW)
         );
         assert_eq!(
             config.validate_view3d_series(&[vector_3d(Some("z"), Some(""))]),
-            Err("a vector series on a 3D chart names its z component (w)")
+            Err(crate::RuleKind::View3dVectorWithoutW)
         );
         let grid = SeriesConfig {
             render_type: DataRenderType::Vector {
@@ -1062,7 +1054,7 @@ mod tests {
         };
         assert_eq!(
             config.validate_view3d_series(&[grid]),
-            Err("a grid vector draws flat: not on a 3D chart")
+            Err(crate::RuleKind::View3dGridVector)
         );
         let flat = crate::default::default_config();
         assert_eq!(
@@ -1135,7 +1127,7 @@ mod tests {
             }),
             ..heatmap(None)
         };
-        assert!(err(scatter.clone()).contains("z_column"));
+        assert!(err(scatter.clone()).to_string().contains("z_column"));
         // With a height column the scatter draws in 3D (#132); a line too,
         // when linear and without a fill; an error bar series never.
         let mut scatter_3d = scatter.clone();
@@ -1159,12 +1151,12 @@ mod tests {
             interpolation: LineInterpolation::StepPost,
             ..plain.clone()
         };
-        assert!(err(line(stepped)).contains("linear"));
+        assert!(err(line(stepped)).to_string().contains("linear"));
         let filled = crate::data_config::DataLineStyleConfig {
             fill: Some(crate::data_config::LineFill::ToBaseline(0.0)),
             ..plain
         };
-        assert!(err(line(filled)).contains("area fill"));
+        assert!(err(line(filled)).to_string().contains("area fill"));
         let bars = SeriesConfig {
             render_type: DataRenderType::Xy(crate::data_config::XySeries {
                 scatter: Some(match &scatter.render_type {
@@ -1194,7 +1186,7 @@ mod tests {
             }),
             ..scatter_3d.clone()
         };
-        assert!(err(bars).contains("only heatmaps"));
+        assert!(matches!(err(bars), crate::RuleKind::View3dSeriesKind));
         // A flat chart draws the scatter and keeps a heatmap's surface style
         // and a series' z column.
         let flat = crate::default::default_config();
@@ -1216,17 +1208,24 @@ mod tests {
         {
             fill.mode = FillMode::Bands;
         }
-        assert!(err(banded).contains("continuous"));
+        assert!(matches!(err(banded), crate::RuleKind::View3dBandedSurface));
         let wrong = SurfaceStyle {
             color_matrix: Some(matrix(2)),
             ..SurfaceStyle::default()
         };
-        assert!(err(heatmap(Some(wrong))).contains("color_matrix"));
+        assert!(
+            err(heatmap(Some(wrong)))
+                .to_string()
+                .contains("color_matrix")
+        );
         let bright = SurfaceStyle {
             gloss: 2.0,
             ..SurfaceStyle::default()
         };
-        assert!(err(heatmap(Some(bright))).contains("gloss"));
+        assert!(matches!(
+            err(heatmap(Some(bright))),
+            crate::RuleKind::SurfaceMaterialStyle
+        ));
         let contour = ContourConfig {
             levels: vec![1.0],
             line: crate::data_config::DataLineStyleConfig {
@@ -1259,7 +1258,7 @@ mod tests {
             }),
             ..heatmap(None)
         };
-        assert!(err(labelled).contains("no labels"));
+        assert!(err(labelled).to_string().contains("no labels"));
     }
 
     #[cfg(feature = "serde")]

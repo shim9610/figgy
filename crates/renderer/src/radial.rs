@@ -28,14 +28,14 @@ mod layout;
 
 #[derive(Debug)]
 pub enum RadialError {
-    Invalid(&'static str),
+    Invalid(crate::RuleKind),
     Budget { needed: u64, limit: u64 },
     Gpu(String),
 }
 impl std::fmt::Display for RadialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(s) => f.write_str(s),
+            Self::Invalid(kind) => write!(f, "{kind}"),
             Self::Budget { needed, limit } => {
                 write!(f, "radial GPU budget: {needed} bytes needed, limit {limit}")
             }
@@ -598,7 +598,7 @@ impl RadialRenderer {
                 | wgpu::TextureFormat::Bgra8Unorm
                 | wgpu::TextureFormat::Bgra8UnormSrgb
         ) {
-            return Err(RadialError::Invalid("radial target must be RGBA8 or BGRA8"));
+            return Err(RadialError::Invalid(crate::RuleKind::RadialTargetFormat));
         }
         let device = gpu.device();
         let layout = crate::gpu_compile::bind_group_layout(
@@ -1133,21 +1133,17 @@ impl RadialRenderer {
         chart.validate().map_err(RadialError::Invalid)?;
         if !chart.labels_have_text() {
             return Err(RadialError::Invalid(
-                "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
+                crate::RuleKind::RadialLabelWithoutText,
             ));
         }
         if size.0 < 160 || size.1 < 160 || !scale.is_finite() || scale < 0.5 {
-            return Err(RadialError::Invalid(
-                "radial canvas must be at least 160x160; scale must be at least 0.5",
-            ));
+            return Err(RadialError::Invalid(crate::RuleKind::RadialCanvasSize));
         }
         let width = (size.0 as f64 * f64::from(scale)).round();
         let height = (size.1 as f64 * f64::from(scale)).round();
         let limit = f64::from(self.gpu.device().limits().max_texture_dimension_2d);
         if width > limit || height > limit {
-            return Err(RadialError::Invalid(
-                "radial output exceeds the device texture limit",
-            ));
+            return Err(RadialError::Invalid(crate::RuleKind::RadialTextureLimit));
         }
         Ok((width as u32, height as u32))
     }
@@ -1395,9 +1391,7 @@ impl RadialRenderer {
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
         let bytes = stride * u64::from(height);
         if bytes > self.gpu.device().limits().max_buffer_size {
-            return Err(RadialError::Invalid(
-                "radial readback exceeds the device buffer limit",
-            ));
+            return Err(RadialError::Invalid(crate::RuleKind::RadialReadbackLimit));
         }
         self.admit(u64::from(width) * u64::from(height) * 4 + bytes)?;
         let device = self.gpu.device();

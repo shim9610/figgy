@@ -1326,13 +1326,13 @@ fn polar_field_refusals_name_their_reason() {
     let reason = |r: &mut Renderer, config: &renderer::Config, s: SeriesConfig| match r
         .register_chart(config.clone(), vec![s])
     {
-        Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(renderer::FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
         other => panic!("expected a refusal, got {other:?}"),
     };
     let hex = field(&ids, GridLayout::Hexagonal, Shading::Flat, None, true);
     assert_eq!(
         reason(&mut r, chart.config(), hex),
-        "a hexagonal grid is drawn on a rectangular chart"
+        renderer::RuleKind::PolarHexagonalGrid
     );
     let mut polygon = chart.config().clone();
     polygon.bottom_x.categories = Some(
@@ -1347,7 +1347,7 @@ fn polar_field_refusals_name_their_reason() {
             &polygon,
             field(&ids, GridLayout::Edges, Shading::Flat, None, true)
         ),
-        "a polar heatmap's cells follow circular rings: not on a polygon grid"
+        renderer::RuleKind::PolarHeatmapPolygonGrid
     );
     let fill_and_contour = field(
         &ids,

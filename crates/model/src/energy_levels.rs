@@ -626,7 +626,7 @@ impl EnergyLevelSeries {
     /// [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters and labels are valid rich
     /// text; offsets and styles are in range. A series with a `source`
     /// holds no records. No list has a count limit (rule 10).
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
         if self.source.is_some() {
             if !self.levels.is_empty()
@@ -634,29 +634,29 @@ impl EnergyLevelSeries {
                 || !self.transitions.is_empty()
                 || !self.bands.is_empty()
             {
-                return Err("an energy-level series with a source holds no records of its own");
+                return Err(crate::RuleKind::EnergyLevelsSourceWithRecords);
             }
             return Ok(());
         }
         if !ids_unique(self.levels.iter().map(|l| l.id.as_str())) {
-            return Err("energy level ids must be non-empty and unique");
+            return Err(crate::RuleKind::EnergyLevelIds);
         }
         if !ids_unique(self.limits.iter().map(|l| l.id.as_str())) {
-            return Err("ionization limit ids must be non-empty and unique");
+            return Err(crate::RuleKind::IonizationLimitIds);
         }
         if !ids_unique(self.transitions.iter().map(|t| t.id.as_str())) {
-            return Err("transition ids must be non-empty and unique");
+            return Err(crate::RuleKind::TransitionIds);
         }
         if !ids_unique(self.bands.iter().map(|b| b.id.as_str())) {
-            return Err("level band ids must be non-empty and unique");
+            return Err(crate::RuleKind::LevelBandIds);
         }
         for band in &self.bands {
             let in_column = |id: &str| self.level(id).is_some_and(|l| l.column == band.column);
             if !in_column(&band.first) || !in_column(&band.last) {
-                return Err("a level band's first and last name levels of its column");
+                return Err(crate::RuleKind::LevelBandEnds);
             }
             if !offset_ok(band.label_offset) {
-                return Err("a level band's label offset is out of range");
+                return Err(crate::RuleKind::LevelBandLabelOffset);
             }
         }
         for level in &self.levels {
@@ -664,7 +664,7 @@ impl EnergyLevelSeries {
             if let LevelRole::Component { multiplet } = &level.role {
                 let centroid = self.level(multiplet);
                 if !centroid.is_some_and(|c| c.role == LevelRole::Centroid) {
-                    return Err("a fine-structure component must name a centroid level");
+                    return Err(crate::RuleKind::FineStructureCentroid);
                 }
             }
         }
@@ -674,10 +674,10 @@ impl EnergyLevelSeries {
         for transition in &self.transitions {
             transition.validate()?;
             if transition.lower == transition.upper {
-                return Err("a transition joins two different levels");
+                return Err(crate::RuleKind::TransitionSameLevel);
             }
             if self.level(&transition.lower).is_none() || self.level(&transition.upper).is_none() {
-                return Err("a transition must name two levels of its series");
+                return Err(crate::RuleKind::TransitionLevels);
             }
         }
         Ok(())
@@ -787,7 +787,7 @@ impl EnergyLevelSeries {
         series_id: &str,
         top: f64,
         fill: Color,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::RuleKind> {
         let mut next = layer.clone();
         for item in self.continuum_annotations(series_id, top, fill) {
             match next.items.iter_mut().find(|old| old.id == item.id) {
@@ -802,12 +802,12 @@ impl EnergyLevelSeries {
 }
 
 impl EnergyLevel {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.energy.is_finite() {
-            return Err("an energy level's energy must be finite");
+            return Err(crate::RuleKind::EnergyLevelEnergy);
         }
         if !non_negative(self.uncertainty) || !non_negative(self.g) {
-            return Err("an energy level's uncertainty and g must be finite and not negative");
+            return Err(crate::RuleKind::EnergyLevelUncertainty);
         }
         let texts = [
             &self.column,
@@ -819,38 +819,34 @@ impl EnergyLevel {
             &self.reference,
         ];
         if self.column.is_empty() || !texts.iter().all(|t| text_ok(t)) {
-            return Err(
-                "an energy level's column must be set and its text fields one line of at most 160 characters",
-            );
+            return Err(crate::RuleKind::EnergyLevelText);
         }
         if let LevelRole::Component { multiplet } = &self.role {
             if !text_ok(multiplet) {
-                return Err("a component's multiplet id is one line of at most 160 characters");
+                return Err(crate::RuleKind::ComponentMultipletId);
             }
         }
         if !rich_ok(&self.label) || !offset_ok(self.label_offset) {
-            return Err("invalid energy level label");
+            return Err(crate::RuleKind::EnergyLevelLabel);
         }
         Ok(())
     }
 }
 
 impl IonizationLimit {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.energy.is_finite() || !non_negative(self.uncertainty) {
-            return Err(
-                "an ionization limit's energy must be finite and its uncertainty not negative",
-            );
+            return Err(crate::RuleKind::IonizationLimitEnergy);
         }
         if !text_ok(&self.reference) || !rich_ok(&self.label) || !offset_ok(self.label_offset) {
-            return Err("invalid ionization limit label or reference");
+            return Err(crate::RuleKind::IonizationLimitLabel);
         }
         Ok(())
     }
 }
 
 impl Transition {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         let optional = [
             self.value,
             self.observed_wavelength,
@@ -861,10 +857,10 @@ impl Transition {
             || !non_negative(self.observed_uncertainty)
             || !non_negative(self.ritz_uncertainty)
         {
-            return Err("a transition's values must be finite and its uncertainties not negative");
+            return Err(crate::RuleKind::TransitionValues);
         }
         if !finite_in(self.x_offset, -0.5, 0.5) {
-            return Err("a transition's x_offset must be in -0.5..=0.5 of the slot");
+            return Err(crate::RuleKind::TransitionXOffset);
         }
         let texts = [
             &self.lower,
@@ -876,27 +872,27 @@ impl Transition {
             &self.line_reference,
         ];
         if !texts.iter().all(|t| text_ok(t)) {
-            return Err("a transition's text fields are one line of at most 160 characters");
+            return Err(crate::RuleKind::TransitionText);
         }
         if !rich_ok(&self.label) || !offset_ok(self.label_offset) {
-            return Err("invalid transition label");
+            return Err(crate::RuleKind::TransitionLabel);
         }
         Ok(())
     }
 }
 
 impl EnergyLevelStyle {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         let level = &self.level;
         if !color_ok(level.color)
             || !finite_in(level.width, 0.5, 24.0)
             || !finite_in(level.slot_fraction, 0.05, 1.0)
         {
-            return Err("invalid energy level stroke style");
+            return Err(crate::RuleKind::EnergyLevelStroke);
         }
         let limit = &self.limit;
         if !color_ok(limit.color) || !finite_in(limit.width, 0.0, 64.0) {
-            return Err("invalid ionization limit line style");
+            return Err(crate::RuleKind::IonizationLimitLine);
         }
         let arrow = &self.transition;
         if !color_ok(arrow.color)
@@ -904,13 +900,13 @@ impl EnergyLevelStyle {
             || !finite_in(arrow.head_length, 0.0, 64.0)
             || !finite_in(arrow.head_width, 0.0, 64.0)
         {
-            return Err("invalid transition arrow style");
+            return Err(crate::RuleKind::TransitionArrow);
         }
         if !finite_in(self.picked_width_scale, 1.0, 4.0) {
-            return Err("picked_width_scale must be in 1..=4");
+            return Err(crate::RuleKind::EnergyLevelsPickedWidth);
         }
         if !color_ok(self.band.fill) || !finite_in(self.band.inner_width, 0.0, 16.0) {
-            return Err("invalid level band style");
+            return Err(crate::RuleKind::LevelBandStyle);
         }
         Ok(())
     }
@@ -943,31 +939,27 @@ impl crate::config::Config {
     /// ternary, parallel or 3D axes. A source is resolved against the
     /// document's series when the series is drawn, since an inset's source
     /// is a series of another panel.
-    pub fn validate_energy_levels(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_energy_levels(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             let Some(levels) = item.energy_levels() else {
                 continue;
             };
             levels.validate()?;
             if !item.x_column.is_empty() || !item.y_column.is_empty() || item.z_column.is_some() {
-                return Err(
-                    "an energy-level series reads no columns: x_column and y_column stay empty",
-                );
+                return Err(crate::RuleKind::EnergyLevelsColumns);
             }
             if levels.source.as_deref() == Some(item.series_id.as_str()) {
-                return Err("an energy-level series cannot be its own source");
+                return Err(crate::RuleKind::EnergyLevelsSelfSource);
             }
             if self.polar().is_some()
                 || self.ternary().is_some()
                 || self.parallel().is_some()
                 || self.view_3d().is_some()
             {
-                return Err("an energy-level series is drawn on a rectangular chart");
+                return Err(crate::RuleKind::EnergyLevelsChart);
             }
             if self.bottom_x.categories.is_none() {
-                return Err(
-                    "an energy-level series needs a categorical bottom_x: its term columns",
-                );
+                return Err(crate::RuleKind::EnergyLevelsCategoricalX);
             }
         }
         Ok(())

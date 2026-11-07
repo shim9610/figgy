@@ -608,7 +608,9 @@ impl Renderer {
                     .column_handle(page.ranges[index])
                     .map_err(|error| FiggyError::InvalidSeriesConfig {
                         series_id: series_config.series_id.clone(),
-                        reason: format!("invalid packed selection lane: {error:?}"),
+                        kind: crate::RuleKind::PackedSelectionLane {
+                            detail: format!("{error:?}"),
+                        },
                     })
             };
             let x = lookup(&series_config.x_column)?;

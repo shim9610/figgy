@@ -90,7 +90,7 @@ pub use ::model::bounded_sources::{BoxColumn, BoxField};
 /// for its own tests.
 #[doc(hidden)]
 pub use ::model::chrome;
-pub use ::model::{ConfigError, Coordinates, SeriesUpload, UploadValues};
+pub use ::model::{ConfigError, Coordinates, RuleKind, SeriesUpload, UploadValues};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config,
     default, drag, format, layout, legend, line, preset, resize, select, sink, text, tick,

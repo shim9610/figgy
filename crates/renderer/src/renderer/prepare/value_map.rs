@@ -131,9 +131,7 @@ impl PrepareContext<'_> {
                     .as_ref()
                     .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
-                        reason: "a colour-mapped scatter needs Config.colorbar: it owns the z \
-                                 range and colormap"
-                            .into(),
+                        kind: crate::RuleKind::ScatterColorMapColorbar,
                     })?;
             let colorbar = colorbar_gpu(bar);
             params.z_min = colorbar.z_min;
@@ -150,7 +148,7 @@ impl PrepareContext<'_> {
             map.validate()
                 .map_err(|reason| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: reason.into(),
+                    kind: reason,
                 })?;
             params.size_domain_min = pair(map.domain_min);
             params.size_domain_max = pair(map.domain_max);

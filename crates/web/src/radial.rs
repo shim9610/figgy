@@ -7,6 +7,7 @@
 //! through `FiggyChart::set_categorical_document`,
 //! `FiggyChart::set_boxplot_document` and `FiggyChart::set_radar_document`,
 //! and their family names are errors naming those methods.
+use crate::web::convert::js_err;
 use renderer::{
     AnnotationLayer, BoundedAnnotationFrame, DecorationId, LayerHit, LayerRef, RendererDevice,
     radial::*,
@@ -15,9 +16,6 @@ use serde_json::json;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
-fn js_err(e: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&e.to_string())
-}
 /// A radial pick request read back: the slice the GPU picked, if any.
 async fn picked(
     ticket: Result<RadialPickTicket, RadialError>,

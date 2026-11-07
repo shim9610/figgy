@@ -4496,9 +4496,8 @@ fn grotrian_scene(
     // repository's data: it is reported and the scene is refused.
     let (chart, series) = built.map_err(|e| {
         eprintln!("bundled NIST exports: {e}");
-        FiggyError::InvalidConfig {
-            field: "grotrian_sets",
-            reason: "a bundled NIST export did not parse",
+        FiggyError::Internal {
+            invariant: "a bundled NIST export parses",
         }
     })?;
     let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
@@ -4889,16 +4888,15 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             25.2,
             Color::from_rgba8(80, 100, 220, 36),
         )
-        .map_err(|reason| FiggyError::InvalidConfig {
+        .map_err(|kind| FiggyError::InvalidConfig {
             field: "annotations",
-            reason,
+            kind,
         })?;
 
     // The inset over the two spare columns on the right: the 2p ³P°
     // components, 0.13 meV apart, on their own energy axis.
-    let plot = config.data_area().map_err(|_| FiggyError::InvalidConfig {
-        field: "chart_area",
-        reason: "the scene's data area is empty",
+    let plot = config.data_area().map_err(|_| FiggyError::Internal {
+        invariant: "the scene's data area is not empty",
     })?;
     let plot = plot.0;
     let mut inset = renderer::default::default_config();

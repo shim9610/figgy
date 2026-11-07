@@ -492,12 +492,12 @@ fn is_solid_stem(style: &crate::line::LineStylePreset) -> bool {
 impl Stem {
     /// A stem's own rules: a finite baseline and a finite width of at
     /// least 0.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.baseline.is_finite() {
-            return Err("a stem baseline must be finite");
+            return Err(crate::RuleKind::StemBaseline);
         }
         if !(self.width.is_finite() && self.width >= 0.0) {
-            return Err("a stem width must be finite and at least 0");
+            return Err(crate::RuleKind::StemWidth);
         }
         Ok(())
     }
@@ -535,21 +535,21 @@ impl XySeries {
     /// The combinations a series can draw: markers or a line (or both),
     /// error bars only with markers, along x, y or both, and stems only
     /// with markers.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.scatter.is_none() && self.line.is_none() {
-            return Err("an xy series draws markers, a line or both");
+            return Err(crate::RuleKind::XyNothingDrawn);
         }
         if let Some(errors) = &self.errors {
             if self.scatter.is_none() {
-                return Err("error bars are drawn with markers");
+                return Err(crate::RuleKind::ErrorBarsWithoutMarkers);
             }
             if errors.x.is_none() && errors.y.is_none() {
-                return Err("error bars run along x, y or both");
+                return Err(crate::RuleKind::ErrorBarsDirection);
             }
         }
         if let Some(stem) = &self.stem {
             if self.scatter.is_none() {
-                return Err("stems are drawn with markers");
+                return Err(crate::RuleKind::StemsWithoutMarkers);
             }
             stem.validate()?;
         }
@@ -560,12 +560,12 @@ impl XySeries {
 impl FieldSeries {
     /// The combinations a field can draw: a fill or contours (or both), and
     /// a surface look only with a fill.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.fill.is_none() && self.contour.is_none() {
-            return Err("a field draws a fill, contour lines or both");
+            return Err(crate::RuleKind::FieldNothingDrawn);
         }
         if self.fill.is_none() && self.surface.is_some() {
-            return Err("a surface look needs the field's fill");
+            return Err(crate::RuleKind::FieldSurfaceWithoutFill);
         }
         Ok(())
     }
@@ -804,11 +804,11 @@ impl From<WireRenderType> for DataRenderType {
 }
 
 impl TryFrom<DataRenderType> for WireRenderType {
-    type Error = &'static str;
+    type Error = crate::RuleKind;
 
     /// The written form of a render type; a combination
     /// [`XySeries::validate`] or [`FieldSeries::validate`] refuses has none.
-    fn try_from(render: DataRenderType) -> Result<Self, &'static str> {
+    fn try_from(render: DataRenderType) -> Result<Self, crate::RuleKind> {
         Ok(match render {
             DataRenderType::Xy(xy) => {
                 xy.validate()?;
@@ -873,9 +873,9 @@ impl TryFrom<DataRenderType> for WireRenderType {
                                 stem,
                             }
                         }
-                        (_, None, None) => return Err("error bars run along x, y or both"),
+                        (_, None, None) => return Err(crate::RuleKind::ErrorBarsDirection),
                     },
-                    (None, _, _) => return Err("an xy series draws markers or a line"),
+                    (None, _, _) => return Err(crate::RuleKind::XyWireNothingDrawn),
                 }
             }
             DataRenderType::Field(field) => {
@@ -899,7 +899,7 @@ impl TryFrom<DataRenderType> for WireRenderType {
                         contour,
                         surface,
                     },
-                    (None, None) => return Err("a field draws a fill, contour lines or both"),
+                    (None, None) => return Err(crate::RuleKind::FieldNothingDrawn),
                 }
             }
             DataRenderType::Histogram { bar } => WireRenderType::Histogram { bar },
@@ -1612,13 +1612,12 @@ impl Default for StreamlineArrows {
 
 impl StreamlineArrows {
     /// The validation reason for a bad arrow size or spacing.
-    pub const INVALID_REASON: &'static str = "streamline arrows need a finite spacing_px > 0, finite non-negative \
-         head_length_px and head_width_px, and spacing_px >= head_length_px";
+    pub const INVALID_REASON: crate::RuleKind = crate::RuleKind::StreamlineArrows;
 
     /// Validate invariants owned by the arrows themselves: finite sizes, a
     /// positive spacing and no head longer than the spacing, so two heads
     /// never overlap along a straight path.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         let finite_non_negative = |v: f32| v.is_finite() && v >= 0.0;
         if !(self.spacing_px.is_finite() && self.spacing_px > 0.0)
             || !finite_non_negative(self.head_length_px)
@@ -1661,27 +1660,27 @@ impl DataRenderType {
 /// interpolated line without a fill, valid arrows, and named coordinate and
 /// colour columns. The chart rules (no polar chart, a colourbar for a
 /// colour map) are checked with the chart.
-pub fn validate_streamline_series(series: &SeriesConfig) -> Result<(), &'static str> {
+pub fn validate_streamline_series(series: &SeriesConfig) -> Result<(), crate::RuleKind> {
     let Some(streamlines) = series.render_type.streamlines() else {
         return Ok(());
     };
     if !streamlines.line.interpolation.is_linear() {
-        return Err("streamlines are polylines: the line interpolation must be Linear");
+        return Err(crate::RuleKind::StreamlineInterpolation);
     }
     if streamlines.line.fill.is_some() {
-        return Err("streamlines have no fill");
+        return Err(crate::RuleKind::StreamlineFill);
     }
     if let Some(arrows) = streamlines.arrows {
         arrows.validate()?;
     }
     if series.x_column.is_empty() || series.y_column.is_empty() {
-        return Err("a streamline series names its x_column and y_column");
+        return Err(crate::RuleKind::StreamlineColumns);
     }
     if streamlines
         .color_map
         .is_some_and(|map| map.column.is_empty())
     {
-        return Err("a streamline colour map names its column");
+        return Err(crate::RuleKind::StreamlineColorMapColumn);
     }
     Ok(())
 }
@@ -1821,9 +1820,9 @@ pub struct VectorStyle {
 
 impl VectorStyle {
     /// The validation reason for a non-finite or negative pixel size.
-    pub const INVALID_PIXELS_REASON: &'static str = "vector width_px, head_length_px, head_width_px and min_length_px must be finite and non-negative";
+    pub const INVALID_PIXELS_REASON: crate::RuleKind = crate::RuleKind::VectorPixels;
     /// The validation reason for a non-finite or zero scale.
-    pub const INVALID_SCALE_REASON: &'static str = "vector scale must be finite and non-zero";
+    pub const INVALID_SCALE_REASON: crate::RuleKind = crate::RuleKind::VectorScale;
 
     #[cfg(feature = "serde")]
     fn is_zero(value: &f32) -> bool {
@@ -1831,7 +1830,7 @@ impl VectorStyle {
     }
 
     /// Validate invariants owned by the style itself.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         let pixels = [
             self.width_px,
             self.head_length_px,
@@ -2141,14 +2140,12 @@ pub struct PointSizeMap {
 
 impl PointSizeMap {
     /// The validation reason for a non-finite or empty domain.
-    pub const INVALID_DOMAIN_REASON: &'static str =
-        "point size map domain must be finite with domain_min < domain_max";
+    pub const INVALID_DOMAIN_REASON: crate::RuleKind = crate::RuleKind::PointSizeMapDomain;
     /// The validation reason for a non-finite, negative or inverted pixel range.
-    pub const INVALID_PIXELS_REASON: &'static str =
-        "point size map min_px and max_px must be finite, non-negative and min_px <= max_px";
+    pub const INVALID_PIXELS_REASON: crate::RuleKind = crate::RuleKind::PointSizeMapPixels;
 
     /// Validate invariants owned by the map itself.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.domain_min.is_finite()
             || !self.domain_max.is_finite()
             || self.domain_min >= self.domain_max
@@ -2678,13 +2675,11 @@ fn default_contour_label_color() -> Color {
 }
 
 impl ContourLabelConfig {
-    pub const INVALID_SPACING_REASON: &'static str =
-        "contour label spacing_px must be finite and greater than zero";
-    pub const TOO_MANY_ANCHORS_REASON: &'static str =
-        "contour label anchors exceed the supported maximum of 1024";
+    pub const INVALID_SPACING_REASON: crate::RuleKind = crate::RuleKind::ContourLabelSpacing;
+    pub const TOO_MANY_ANCHORS_REASON: crate::RuleKind = crate::RuleKind::ContourLabelAnchors;
 
     /// Validate invariants owned by the label configuration itself.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.spacing_px.is_finite() || self.spacing_px <= 0.0 {
             return Err(Self::INVALID_SPACING_REASON);
         }
@@ -2939,16 +2934,16 @@ pub const MAX_VALUE_LABEL_OFFSET: f32 = 4096.0;
 fn validate_value_label_offsets(
     offsets: &[[f32; 2]],
     categories: usize,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     if !offsets.is_empty() && offsets.len() != categories {
-        return Err("value label offsets need one entry per category");
+        return Err(crate::RuleKind::ValueLabelOffsetCount);
     }
     if offsets
         .iter()
         .flatten()
         .any(|v| !v.is_finite() || v.abs() > MAX_VALUE_LABEL_OFFSET)
     {
-        return Err("a value label offset is finite and at most 4096 px along either axis");
+        return Err(crate::RuleKind::ValueLabelOffset);
     }
     Ok(())
 }
@@ -3059,9 +3054,9 @@ impl CategoryBarStyle {
     /// an outline width in `0..=8`, an outline colour with channels in
     /// `0..=1`, texture strength and gloss in `0..=1`, a texture scale in
     /// `0.1..=8` and an emphasis brightness in `0..=0.5`.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.material.supported_on_flat_body() {
-            return Err("material not supported by bars");
+            return Err(crate::RuleKind::CategoricalChartBarMaterial);
         }
         if finite_in(self.corner_radius, 0.0, 32.0)
             && finite_in(self.outline_width, 0.0, 8.0)
@@ -3073,7 +3068,7 @@ impl CategoryBarStyle {
         {
             Ok(())
         } else {
-            Err("invalid bar style")
+            Err(crate::RuleKind::BarStyle)
         }
     }
 }
@@ -3199,11 +3194,11 @@ impl Default for BarGroups {
 }
 
 impl BarGroups {
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if finite_in(self.group_width, 0.1, 0.95) && finite_in(self.bar_gap, 0.0, 24.0) {
             Ok(())
         } else {
-            Err("bar groups need a group width in 0.1..=0.95 and a bar gap in 0..=24 px")
+            Err(crate::RuleKind::BarGroups)
         }
     }
 }
@@ -3270,13 +3265,13 @@ impl Default for LineOffsets {
 impl LineOffsets {
     /// The rules that do not depend on the series list: finite steps, each
     /// member id once and non-empty, any number of members.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.step_y.is_finite() || !self.step_x.is_finite() {
-            return Err("line offset steps must be finite");
+            return Err(crate::RuleKind::LineOffsetSteps);
         }
         for (index, id) in self.series.iter().enumerate() {
             if id.is_empty() || self.series[..index].contains(id) {
-                return Err("a line offset member is a non-empty series id, listed once");
+                return Err(crate::RuleKind::LineOffsetMember);
             }
         }
         Ok(())
@@ -3366,7 +3361,7 @@ impl crate::config::Config {
     /// chart and every subplot: [`LineOffsets::validate`], no polar chart,
     /// and every member drawn by the chart that lists it (the parent's base
     /// layer or one of its overlays, or the subplot itself).
-    pub fn validate_line_offset_layout(&self) -> Result<(), &'static str> {
+    pub fn validate_line_offset_layout(&self) -> Result<(), crate::RuleKind> {
         use crate::layer::LayerRef;
         let charts = std::iter::once((None, self)).chain(
             self.subplots
@@ -3383,7 +3378,7 @@ impl crate::config::Config {
                 continue;
             }
             if chart.polar().is_some() {
-                return Err("polar charts have no line offsets");
+                return Err(crate::RuleKind::PolarLineOffsets);
             }
             for id in &offsets.series {
                 let drawn = match (cell, self.layer_of_series(id)) {
@@ -3394,7 +3389,7 @@ impl crate::config::Config {
                     _ => false,
                 };
                 if !drawn {
-                    return Err("a line offset member must be drawn by the chart that lists it");
+                    return Err(crate::RuleKind::LineOffsetMemberLayer);
                 }
             }
         }
@@ -3407,7 +3402,7 @@ impl crate::config::Config {
     /// [`LineFill::ToSeries`] fill between two series of which only one is a
     /// member or that are different members: each member is drawn by a panel
     /// of its own, so such a fill would span two panels.
-    pub fn validate_line_offsets(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_line_offsets(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         self.validate_line_offset_layout()?;
         let charts = std::iter::once(self).chain(self.subplots.iter().map(|s| &s.config));
         for chart in charts {
@@ -3416,13 +3411,10 @@ impl crate::config::Config {
             };
             for id in &offsets.series {
                 let Some(member) = series.iter().find(|s| s.series_id == *id) else {
-                    return Err("a line offset member names no series of the chart");
+                    return Err(crate::RuleKind::LineOffsetMemberUnknown);
                 };
                 if !member.render_type.takes_line_offset() {
-                    return Err(
-                        "a line offset member must draw a line: Line, ScatterLine or a \
-                         LineScatterErrorbar kind",
-                    );
+                    return Err(crate::RuleKind::LineOffsetMemberNotLine);
                 }
             }
         }
@@ -3430,7 +3422,7 @@ impl crate::config::Config {
             if let Some(LineFill::ToSeries(target)) = item.render_type.line_fill()
                 && self.offset_member(&item.series_id) != self.offset_member(target)
             {
-                return Err("a ToSeries fill cannot join series with different line offsets");
+                return Err(crate::RuleKind::LineOffsetFill);
             }
         }
         Ok(())
@@ -3490,21 +3482,19 @@ impl SeriesConfig {
 pub fn validate_category_bar_series(
     series: &SeriesConfig,
     categories: &[Category],
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let Some(bars) = series.render_type.category_bars() else {
         return Ok(());
     };
     if !valid_bar_color(bars.color, true) {
-        return Err("a bar colour must be opaque with channels in 0..=1");
+        return Err(crate::RuleKind::BarColor);
     }
     bars.style.validate()?;
     if bars.labels.decimals > 6 || !single_line_within(&bars.labels.value_suffix, 24) {
-        return Err(
-            "bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
-        );
+        return Err(crate::RuleKind::BarLabelFormat);
     }
     if !bars.labels.text.is_empty() && bars.labels.text.len() != categories.len() {
-        return Err("bar label text needs one string per category");
+        return Err(crate::RuleKind::BarLabelTextCount);
     }
     validate_value_label_offsets(&bars.labels.offsets, categories.len())?;
     if bars
@@ -3513,17 +3503,17 @@ pub fn validate_category_bar_series(
         .iter()
         .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
     {
-        return Err("a bar label is one line of at most 160 characters");
+        return Err(crate::RuleKind::BarLabel);
     }
     for (index, o) in bars.overrides.iter().enumerate() {
         if o.target.series_id != series.series_id
             || !categories.iter().any(|c| c.id == o.target.category_id)
             || bars.overrides[..index].iter().any(|e| e.target == o.target)
         {
-            return Err("a bar override names a category of the axis and its own series, once");
+            return Err(crate::RuleKind::BarOverride);
         }
         if o.color.is_some_and(|c| !valid_bar_color(c, true)) {
-            return Err("a bar colour must be opaque with channels in 0..=1");
+            return Err(crate::RuleKind::BarColor);
         }
         if let Some(style) = &o.style {
             style.validate()?;
@@ -3566,7 +3556,7 @@ impl crate::config::Config {
     /// along the linear radius axis, so the group is vertical. Whether a
     /// column holds one value per category is data: the renderer checks it
     /// against the pool when it prepares.
-    pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
             groups.validate()?;
@@ -3593,9 +3583,7 @@ impl crate::config::Config {
             let horizontal = groups.direction == CategoryBarDirection::Horizontal;
             let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
             if horizontal && overlay {
-                return Err(
-                    "horizontal category bars cannot sit on an overlay layer: its own axis is a value axis on y",
-                );
+                return Err(crate::RuleKind::HorizontalBarsOnOverlay);
             }
             // The axes as the layer draws them: a subplot with its links.
             let subplot = match layer {
@@ -3606,10 +3594,7 @@ impl crate::config::Config {
             };
             let chart = subplot.as_ref().unwrap_or(self);
             if horizontal && chart.polar().is_some() {
-                return Err(
-                    "a rose fans its bars around the centre: the group direction on a polar chart \
-                     is vertical",
-                );
+                return Err(crate::RuleKind::RoseDirection);
             }
             let category_axis = if horizontal {
                 &chart.left_y
@@ -3624,12 +3609,10 @@ impl crate::config::Config {
                 _ => &chart.left_y,
             };
             let Some(categories) = category_axis.categories.as_deref() else {
-                return Err(
-                    "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
-                );
+                return Err(crate::RuleKind::CategoryBarsAxis);
             };
             if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
-                return Err("category bars need a linear numeric value axis");
+                return Err(crate::RuleKind::CategoryBarsValueAxis);
             }
             for (k, item) in members().enumerate() {
                 validate_category_bar_series(item, categories)?;
@@ -3638,7 +3621,7 @@ impl crate::config::Config {
                     .take(k)
                     .any(|earlier| earlier.category_bar_columns(groups.direction).1 == values)
                 {
-                    return Err("the category bar series of a group need distinct value columns");
+                    return Err(crate::RuleKind::CategoryBarsValueColumns);
                 }
             }
         }
@@ -3856,7 +3839,7 @@ impl BoxPlotStyle {
     /// texture strength and gloss in `0..=1`, a texture scale in `0.1..=8`,
     /// an emphasis brightness in `0..=0.5` and colours with channels in
     /// `0..=1`.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         let Self {
             material,
             corner_radius,
@@ -3885,7 +3868,7 @@ impl BoxPlotStyle {
             emphasis_brightness,
         } = self;
         if !material.supported_on_flat_body() {
-            return Err("material not supported by boxes");
+            return Err(crate::RuleKind::BoxMaterial);
         }
         if finite_in(*corner_radius, 0.0, 3.0)
             && finite_in(*outline_width, 0.0, 8.0)
@@ -3911,7 +3894,7 @@ impl BoxPlotStyle {
         {
             Ok(())
         } else {
-            Err("invalid boxplot style")
+            Err(crate::RuleKind::BoxStyle)
         }
     }
 }
@@ -4337,21 +4320,19 @@ impl SeriesConfig {
 pub fn validate_box_plot_series(
     series: &SeriesConfig,
     categories: &[Category],
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let Some(boxes) = series.render_type.box_plot() else {
         return Ok(());
     };
     if !valid_bar_color(boxes.color, true) {
-        return Err("a box colour must be opaque with channels in 0..=1");
+        return Err(crate::RuleKind::BoxColor);
     }
     boxes.style.validate()?;
     if boxes.labels.decimals > 6 || !single_line_within(&boxes.labels.value_suffix, 24) {
-        return Err(
-            "box labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
-        );
+        return Err(crate::RuleKind::BoxLabelFormat);
     }
     if !boxes.labels.text.is_empty() && boxes.labels.text.len() != categories.len() {
-        return Err("box label text needs one string per category");
+        return Err(crate::RuleKind::BoxLabelTextCount);
     }
     validate_value_label_offsets(&boxes.labels.offsets, categories.len())?;
     if boxes
@@ -4360,40 +4341,35 @@ pub fn validate_box_plot_series(
         .iter()
         .any(|text| !single_line_within(text, MAX_BOX_PLOT_LABEL_CHARS))
     {
-        return Err("a box label is one line of at most 160 characters");
+        return Err(crate::RuleKind::BoxLabel);
     }
     let (positions, record) = series.box_plot_columns();
     if positions.is_empty()
         || (record.is_empty() && boxes.violin.is_none())
         || boxes.outliers.is_some_and(str::is_empty)
     {
-        return Err(
-            "a box plot series names its category positions (x_column), its record (y_column) \
-             unless it draws a violin, and, when set, its outlier column",
-        );
+        return Err(crate::RuleKind::BoxPlotColumns);
     }
     if let Some(violin) = boxes.violin {
         if !finite_in(violin.box_width, 0.0, 1.0) {
-            return Err("a violin's box width is a share of the slot in 0..=1");
+            return Err(crate::RuleKind::ViolinBoxWidth);
         }
         if violin.halves().next().is_none() {
-            return Err("a split violin draws at least one half");
+            return Err(crate::RuleKind::ViolinHalves);
         }
         for (_, half) in violin.halves() {
             if half.curve.is_empty() || half.density.is_empty() || half.curve == half.density {
-                return Err("a violin half names a ragged curve and a distinct density column");
+                return Err(crate::RuleKind::ViolinHalfColumns);
             }
             if !half.density_scale.is_finite() || half.density_scale <= 0.0 {
-                return Err("a violin half's density_scale is finite and positive");
+                return Err(crate::RuleKind::ViolinDensityScale);
             }
             let style = &half.style;
             if !finite_in(style.outline_width, 0.0, 8.0)
                 || !valid_bar_color(style.outline_color, false)
                 || style.fill.is_some_and(|c| !valid_bar_color(c, true))
             {
-                return Err(
-                    "a violin outline is 0..=8 px wide with channels in 0..=1, its fill opaque",
-                );
+                return Err(crate::RuleKind::ViolinOutline);
             }
         }
     }
@@ -4403,17 +4379,14 @@ pub fn validate_box_plot_series(
             || points.values.is_empty()
             || points.positions == points.values
         {
-            return Err("box points name distinct position and value columns");
+            return Err(crate::RuleKind::BoxPointsColumns);
         }
         if !finite_in(style.size, 1.0, 24.0)
             || !finite_in(style.jitter, 0.0, 1.0)
             || !finite_in(style.offset, -1.0, 1.0)
             || !valid_bar_color(style.color, false)
         {
-            return Err(
-                "box points are 1..=24 px, jittered by 0..=1 and offset by -1..=1 of the half \
-                 slot, with colour channels in 0..=1",
-            );
+            return Err(crate::RuleKind::BoxPointsStyle);
         }
     }
     for (index, o) in boxes.overrides.iter().enumerate() {
@@ -4423,10 +4396,10 @@ pub fn validate_box_plot_series(
                 .iter()
                 .any(|e| e.target == o.target)
         {
-            return Err("a box override names a category of the axis and its own series, once");
+            return Err(crate::RuleKind::BoxOverride);
         }
         if o.color.is_some_and(|c| !valid_bar_color(c, true)) {
-            return Err("a box colour must be opaque with channels in 0..=1");
+            return Err(crate::RuleKind::BoxColor);
         }
         if let Some(style) = &o.style {
             style.validate()?;
@@ -4451,14 +4424,14 @@ impl crate::config::Config {
     /// Horizontal boxes cannot sit on an overlay layer, and a polar chart
     /// draws no box plots. Whether the record holds one row per category is
     /// data: the renderer checks it against the pool when it prepares.
-    pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         use crate::layer::LayerRef;
         let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
         if boxes().next().is_none() {
             return Ok(());
         }
         if self.polar().is_some() {
-            return Err("box plots are not drawn on polar axes");
+            return Err(crate::RuleKind::PolarBoxPlot);
         }
         for layer in self.panel_layers() {
             let members = || boxes().filter(|s| self.layer_of_series(&s.series_id) == layer);
@@ -4469,21 +4442,16 @@ impl crate::config::Config {
                 s.render_type.category_bars().is_some()
                     && self.layer_of_series(&s.series_id) == layer
             }) {
-                return Err("a layer draws either category bars or box plots, not both");
+                return Err(crate::RuleKind::BarsAndBoxesInLayer);
             }
             let groups = self.bar_groups_of(layer);
             if groups.mode != CategoryBarMode::Grouped {
-                return Err(
-                    "box plots stand side by side: their bar_groups mode must be Grouped, not \
-                     Stacked or PercentStacked",
-                );
+                return Err(crate::RuleKind::BoxPlotsStacked);
             }
             let horizontal = groups.direction == CategoryBarDirection::Horizontal;
             let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
             if horizontal && overlay {
-                return Err(
-                    "horizontal box plots cannot sit on an overlay layer: its own axis is a value axis on y",
-                );
+                return Err(crate::RuleKind::HorizontalBoxPlotsOnOverlay);
             }
             let subplot = match layer {
                 LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -4505,12 +4473,10 @@ impl crate::config::Config {
                 _ => &chart.left_y,
             };
             let Some(categories) = category_axis.categories.as_deref() else {
-                return Err(
-                    "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
-                );
+                return Err(crate::RuleKind::BoxPlotsAxis);
             };
             if value_axis.categories.is_some() || value_axis.scale != AxisScale::Linear {
-                return Err("box plots need a linear numeric value axis");
+                return Err(crate::RuleKind::BoxPlotsValueAxis);
             }
             for item in members() {
                 validate_box_plot_series(item, categories)?;
@@ -4747,12 +4713,12 @@ pub const MAX_RANGE_STROKE_WIDTH: f32 = 24.0;
 /// value suffix of at most 24 characters, `labels.text` of one-line strings
 /// of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`] characters, and
 /// `labels.offsets` empty or one per string of `labels.text`.
-pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), &'static str> {
+pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), crate::RuleKind> {
     let Some(bars) = series.render_type.range_bars() else {
         return Ok(());
     };
     if !valid_bar_color(bars.color, true) {
-        return Err("a range bar colour must be opaque with channels in 0..=1");
+        return Err(crate::RuleKind::RangeBarColor);
     }
     bars.style.validate()?;
     let columns = || {
@@ -4761,27 +4727,24 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), &'static s
             .chain(bars.extra_columns())
     };
     if columns().any(str::is_empty) {
-        return Err(
-            "a range bar series names its positions (x_column), its end values (y_column), its \
-             start values and every optional column",
-        );
+        return Err(crate::RuleKind::RangeBarColumns);
     }
     if columns()
         .enumerate()
         .any(|(k, id)| columns().take(k).any(|earlier| earlier == id))
     {
-        return Err("the columns of a range bar series are distinct");
+        return Err(crate::RuleKind::RangeBarColumnsDistinct);
     }
     if bars.whiskers.is_some_and(|w| {
         !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
             || w.color.is_some_and(|c| !valid_bar_color(c, true))
     }) {
-        return Err("range bar whiskers are 0..=24 px wide, in an opaque colour");
+        return Err(crate::RuleKind::RangeBarWhiskers);
     }
     if bars.connector.is_some_and(|c| {
         !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false)
     }) {
-        return Err("a range bar connector is 0..=24 px wide, its colour channels in 0..=1");
+        return Err(crate::RuleKind::RangeBarConnector);
     }
     let opaque = match bars.color_by {
         RangeColor::Single => true,
@@ -4795,29 +4758,27 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), &'static s
         RangeColor::State { styles, .. } => styles.iter().all(|s| valid_bar_color(s.color, true)),
     };
     if !opaque {
-        return Err("range bar direction and state colours must be opaque");
+        return Err(crate::RuleKind::RangeBarStateColors);
     }
     if bars
         .progress
         .is_some_and(|p| !finite_in(p.remaining_opacity, 0.0, 1.0))
     {
-        return Err("a range bar's remaining opacity is in 0..=1");
+        return Err(crate::RuleKind::RangeBarRemainingOpacity);
     }
     if bars.slot_width.is_some_and(|w| !(w.is_finite() && w > 0.0)) {
-        return Err("a range bar slot width is finite and greater than 0");
+        return Err(crate::RuleKind::RangeBarSlotWidth);
     }
     let labels = bars.labels;
     if labels.decimals > 6 || !single_line_within(&labels.value_suffix, 24) {
-        return Err(
-            "range bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
-        );
+        return Err(crate::RuleKind::RangeBarLabelFormat);
     }
     if labels
         .text
         .iter()
         .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
     {
-        return Err("a range bar label is one line of at most 160 characters");
+        return Err(crate::RuleKind::RangeBarLabel);
     }
     validate_value_label_offsets(&labels.offsets, labels.text.len())?;
     Ok(())
@@ -4841,7 +4802,7 @@ impl crate::config::Config {
     /// overlay layer, and a polar chart draws no range bars. Whether every
     /// column holds one value per row is data: the renderer checks it
     /// against the pool when it prepares.
-    pub fn validate_range_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_range_bars(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         use crate::layer::LayerRef;
         let ranges = || {
             series
@@ -4852,7 +4813,7 @@ impl crate::config::Config {
             return Ok(());
         }
         if self.polar().is_some() {
-            return Err("range bars are not drawn on polar axes");
+            return Err(crate::RuleKind::PolarRangeBars);
         }
         for layer in self.panel_layers() {
             let members = || ranges().filter(|s| self.layer_of_series(&s.series_id) == layer);
@@ -4863,21 +4824,16 @@ impl crate::config::Config {
                 (s.render_type.category_bars().is_some() || s.render_type.box_plot().is_some())
                     && self.layer_of_series(&s.series_id) == layer
             }) {
-                return Err("a layer draws either category bars, box plots or range bars");
+                return Err(crate::RuleKind::RangeBarsWithOtherBars);
             }
             let groups = self.bar_groups_of(layer);
             if groups.mode != CategoryBarMode::Grouped {
-                return Err(
-                    "range bars stand side by side: their bar_groups mode must be Grouped, not \
-                     Stacked or PercentStacked",
-                );
+                return Err(crate::RuleKind::RangeBarsStacked);
             }
             let horizontal = groups.direction == CategoryBarDirection::Horizontal;
             let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
             if horizontal && overlay {
-                return Err(
-                    "horizontal range bars cannot sit on an overlay layer: its own axis is a value axis on y",
-                );
+                return Err(crate::RuleKind::HorizontalRangeBarsOnOverlay);
             }
             let subplot = match layer {
                 LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
@@ -4899,14 +4855,11 @@ impl crate::config::Config {
                 _ => &chart.left_y,
             };
             if value_axis.categories.is_some() {
-                return Err("range bars need a numeric value axis");
+                return Err(crate::RuleKind::RangeBarsValueAxis);
             }
             let categorical = position_axis.categories.is_some();
             if !categorical && position_axis.scale != AxisScale::Linear {
-                return Err(
-                    "range bars need a categorical or linear numeric position axis: bottom_x \
-                     for vertical bars, left_y for horizontal ones",
-                );
+                return Err(crate::RuleKind::RangeBarsPositionAxis);
             }
             let connectors = members().any(|s| {
                 s.render_type
@@ -4914,16 +4867,13 @@ impl crate::config::Config {
                     .is_some_and(|b| b.connector.is_some())
             });
             if connectors && members().nth(1).is_some() {
-                return Err("a range bar connector needs its series alone in its layer");
+                return Err(crate::RuleKind::RangeBarConnectorLayer);
             }
             for item in members() {
                 validate_range_bar_series(item)?;
                 let slot = item.render_type.range_bars().and_then(|b| b.slot_width);
                 if categorical == slot.is_some() {
-                    return Err(
-                        "a range bar series on a categorical position axis has no slot_width; \
-                         on a numeric one it needs one",
-                    );
+                    return Err(crate::RuleKind::RangeBarSlotWidthAxis);
                 }
             }
         }
@@ -5038,7 +4988,7 @@ impl RadarSeriesStyle {
     /// The ranges a set field is held to: an outline width in `0..=12`, a
     /// fill colour with channels in `0..=1`, a marker size in `1..=24` and
     /// a fill opacity in `0..=1`.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.line_width_px.is_some_and(|v| !finite_in(v, 0.0, 12.0))
             || self.fill.is_some_and(|c| !valid_bar_color(c, false))
             || self
@@ -5046,7 +4996,7 @@ impl RadarSeriesStyle {
                 .is_some_and(|v| !finite_in(v, 1.0, 24.0))
             || self.fill_opacity.is_some_and(|v| !finite_in(v, 0.0, 1.0))
         {
-            return Err("invalid radar series style");
+            return Err(crate::RuleKind::RadarSeriesStyle);
         }
         Ok(())
     }
@@ -5193,21 +5143,19 @@ impl DataRenderType {
 pub fn validate_radar_series(
     series: &SeriesConfig,
     categories: &[Category],
-) -> Result<(), &'static str> {
+) -> Result<(), crate::RuleKind> {
     let Some(radar) = series.render_type.radar() else {
         return Ok(());
     };
     if !valid_bar_color(radar.color, false) {
-        return Err("a radar colour needs channels in 0..=1");
+        return Err(crate::RuleKind::RadarColor);
     }
     radar.style.validate()?;
     if radar.labels.decimals > 6 || !single_line_within(&radar.labels.value_suffix, 24) {
-        return Err(
-            "radar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
-        );
+        return Err(crate::RuleKind::RadarLabelFormat);
     }
     if !radar.labels.text.is_empty() && radar.labels.text.len() != categories.len() {
-        return Err("radar label text needs one string per category");
+        return Err(crate::RuleKind::RadarLabelTextCount);
     }
     validate_value_label_offsets(&radar.labels.offsets, categories.len())?;
     if radar
@@ -5216,13 +5164,10 @@ pub fn validate_radar_series(
         .iter()
         .any(|text| !single_line_within(text, MAX_RADAR_LABEL_CHARS))
     {
-        return Err("a radar label is one line of at most 160 characters");
+        return Err(crate::RuleKind::RadarLabel);
     }
     if series.x_column.is_empty() || series.y_column.is_empty() {
-        return Err(
-            "a radar series names its category index column (x_column) and its value column \
-             (y_column)",
-        );
+        return Err(crate::RuleKind::RadarColumns);
     }
     Ok(())
 }
@@ -5246,7 +5191,10 @@ impl crate::config::Config {
     /// flat chart (no `view_3d`) whose x and y axes are linear, so the
     /// lattice is uniform on screen as it is in data. The coordinate
     /// columns' uniformity is the renderer's check, from their statistics.
-    pub fn validate_hexagonal_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_hexagonal_series(
+        &self,
+        series: &[SeriesConfig],
+    ) -> Result<(), crate::RuleKind> {
         for item in series {
             let (matrix, shading) = match &item.render_type {
                 DataRenderType::Field(crate::data_config::FieldSeries {
@@ -5275,9 +5223,7 @@ impl crate::config::Config {
                         .flatten()
                         .any(|grid| grid.grid_layout == GridLayout::Hexagonal)
                     {
-                        return Err(
-                            "a grid vector reads a rectangular lattice: not a hexagonal grid",
-                        );
+                        return Err(crate::RuleKind::HexagonalGridVector);
                     }
                     continue;
                 }
@@ -5287,18 +5233,16 @@ impl crate::config::Config {
                 continue;
             }
             let Some(shading) = shading else {
-                return Err(
-                    "contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only",
-                );
+                return Err(crate::RuleKind::HexagonalContours);
             };
             if *shading != Shading::Flat {
-                return Err("a hexagonal grid is shaded flat");
+                return Err(crate::RuleKind::HexagonalShading);
             }
             if self.view_3d().is_some() {
-                return Err("a hexagonal grid draws flat: not on a 3D chart");
+                return Err(crate::RuleKind::View3dHexagonalGrid);
             }
             if self.bottom_x.scale != AxisScale::Linear || self.left_y.scale != AxisScale::Linear {
-                return Err("a hexagonal grid needs linear x and y axes: its lattice is uniform");
+                return Err(crate::RuleKind::HexagonalAxes);
             }
             // A `Continuous` break remaps the axis, so the lattice would not
             // be uniform; each `Panels` piece is linear and keeps it (#200).
@@ -5309,9 +5253,7 @@ impl crate::config::Config {
                 })
             };
             if continuous_cut(&self.bottom_x) || continuous_cut(&self.left_y) {
-                return Err(
-                    "a hexagonal grid's lattice is uniform: not on a Continuous broken axis",
-                );
+                return Err(crate::RuleKind::HexagonalBrokenAxis);
             }
         }
         Ok(())
@@ -5324,7 +5266,10 @@ impl crate::config::Config {
     /// `view_3d`). Polar charts reject every field series (the renderer's
     /// rule), and a hexagonal lattice follows
     /// [`validate_hexagonal_series`](Self::validate_hexagonal_series).
-    pub fn validate_rgb_image_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_rgb_image_series(
+        &self,
+        series: &[SeriesConfig],
+    ) -> Result<(), crate::RuleKind> {
         for item in series {
             let DataRenderType::RgbImage {
                 red,
@@ -5338,31 +5283,29 @@ impl crate::config::Config {
                 continue;
             };
             if green.columns.len() != red.columns.len() || blue.columns.len() != red.columns.len() {
-                return Err("an image's channels share one lattice: the same number of columns");
+                return Err(crate::RuleKind::ImageChannelColumns);
             }
             if green.orientation != red.orientation
                 || blue.orientation != red.orientation
                 || green.grid_layout != red.grid_layout
                 || blue.grid_layout != red.grid_layout
             {
-                return Err(
-                    "an image's channels share one lattice: the same orientation and grid layout",
-                );
+                return Err(crate::RuleKind::ImageChannelLattice);
             }
             if !range[0].is_finite() || !range[1].is_finite() || !(range[0] < range[1]) {
-                return Err("an image's range is finite with a smaller low end");
+                return Err(crate::RuleKind::ImageRange);
             }
             if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
-                return Err("an image's opacity is 0..=1");
+                return Err(crate::RuleKind::ImageOpacity);
             }
             if self.view_3d().is_some() {
-                return Err("an image draws flat: not on a 3D chart");
+                return Err(crate::RuleKind::View3dImage);
             }
         }
         Ok(())
     }
 
-    pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         use crate::layer::LayerRef;
         let radars = || series.iter().filter(|s| s.render_type.radar().is_some());
         if radars().next().is_none() {
@@ -5381,18 +5324,13 @@ impl crate::config::Config {
             };
             let chart = subplot.as_ref().unwrap_or(self);
             let Some(polar) = chart.polar() else {
-                return Err("radar series are drawn on a polar chart (Config.polar)");
+                return Err(crate::RuleKind::RadarNotPolar);
             };
             let Some(categories) = chart.bottom_x.categories.as_deref() else {
-                return Err(
-                    "radar series need a categorical angle axis: bottom_x.categories on the \
-                     polar chart",
-                );
+                return Err(crate::RuleKind::RadarAngleAxis);
             };
             if !polar.interpolation.is_chord() {
-                return Err(
-                    "radar polygons have straight edges: the polar interpolation must be Chord",
-                );
+                return Err(crate::RuleKind::RadarInterpolation);
             }
             for item in members() {
                 validate_radar_series(item, categories)?;
@@ -5548,7 +5486,7 @@ impl crate::config::Config {
         dx: i32,
         dy: i32,
         column_len: impl Fn(&str) -> Option<usize>,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<bool, crate::RuleKind> {
         let Some(next) = self.stepped_selection(series, dx, dy, &column_len)? else {
             return Ok(false);
         };
@@ -5570,7 +5508,7 @@ impl crate::config::Config {
         dx: i32,
         dy: i32,
         column_len: &dyn Fn(&str) -> Option<usize>,
-    ) -> Result<Option<crate::config::PickedDataRef>, &'static str> {
+    ) -> Result<Option<crate::config::PickedDataRef>, crate::RuleKind> {
         use crate::config::PickedDataRef;
         let Some(reference) = self.picked_data.as_ref().and_then(|s| s.refs.first()) else {
             return Ok(None);
@@ -5759,7 +5697,7 @@ impl crate::config::Config {
                         components: VectorComponents::Grid { u, .. },
                         ..
                     } => u,
-                    _ => return Err("selected matrix no longer exists"),
+                    _ => return Err(crate::RuleKind::SelectedMatrixGone),
                 };
                 let edges = usize::from(matches!(matrix.grid_layout, GridLayout::Edges));
                 let depth = matrix
@@ -7223,6 +7161,7 @@ mod category_bar_tests {
             config
                 .validate_category_bars(&[bars("a"), bars("b")])
                 .unwrap_err()
+                .to_string()
                 .contains("overlay")
         );
 
@@ -7258,9 +7197,7 @@ mod category_bar_tests {
         });
         assert_eq!(
             config.validate_category_bars(&[bars("a")]),
-            Err(
-                "a rose fans its bars around the centre: the group direction on a polar chart is vertical"
-            )
+            Err(crate::RuleKind::RoseDirection)
         );
     }
 
@@ -7275,7 +7212,7 @@ mod category_bar_tests {
         edit(&mut s, |style, _| style.material = Material::Toon);
         assert_eq!(
             validate_category_bar_series(&s, &cats),
-            Err("material not supported by bars")
+            Err(crate::RuleKind::CategoricalChartBarMaterial)
         );
         let edits: Vec<Box<dyn Fn(&mut CategoryBarStyle)>> = vec![
             Box::new(|s| s.corner_radius = 32.5),
@@ -7703,6 +7640,7 @@ mod box_plot_tests {
                 config
                     .validate_box_plots(&[boxes("a")])
                     .unwrap_err()
+                    .to_string()
                     .contains("Grouped"),
                 "{mode:?}"
             );
@@ -7725,19 +7663,19 @@ mod box_plot_tests {
         config.bottom_x.scale = AxisScale::Logarithmic;
         assert_eq!(
             config.validate_box_plots(&[boxes("a")]),
-            Err("box plots need a linear numeric value axis")
+            Err(crate::RuleKind::BoxPlotsValueAxis)
         );
         // A probability value axis too (#209).
         config.bottom_x.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
         assert_eq!(
             config.validate_box_plots(&[boxes("a")]),
-            Err("box plots need a linear numeric value axis")
+            Err(crate::RuleKind::BoxPlotsValueAxis)
         );
         let mut polar = chart(3);
         polar.set_polar(Some(Default::default()));
         assert_eq!(
             polar.validate_box_plots(&[boxes("a")]),
-            Err("box plots are not drawn on polar axes")
+            Err(crate::RuleKind::PolarBoxPlot)
         );
     }
 
@@ -7769,7 +7707,7 @@ mod box_plot_tests {
         };
         assert_eq!(
             config.validate_box_plots(&[bars, boxes("a")]),
-            Err("a layer draws either category bars or box plots, not both")
+            Err(crate::RuleKind::BarsAndBoxesInLayer)
         );
     }
 
@@ -7788,6 +7726,7 @@ mod box_plot_tests {
             config
                 .validate_box_plots(&[boxes("over")])
                 .unwrap_err()
+                .to_string()
                 .contains("overlay")
         );
         let mut config = chart(3);
@@ -7816,7 +7755,7 @@ mod box_plot_tests {
         style(&mut s).material = crate::Material::Toon;
         assert_eq!(
             validate_box_plot_series(&s, &cats),
-            Err("material not supported by boxes")
+            Err(crate::RuleKind::BoxMaterial)
         );
         for edit in [
             |s: &mut BoxPlotStyle| s.corner_radius = 4.0,
@@ -7830,7 +7769,7 @@ mod box_plot_tests {
             edit(style(&mut s));
             assert_eq!(
                 validate_box_plot_series(&s, &cats),
-                Err("invalid boxplot style")
+                Err(crate::RuleKind::BoxStyle)
             );
         }
         let mut s = boxes("a");
@@ -7846,7 +7785,7 @@ mod box_plot_tests {
         labels(&mut s).text = vec!["1".into(); 2];
         assert_eq!(
             validate_box_plot_series(&s, &cats),
-            Err("box label text needs one string per category")
+            Err(crate::RuleKind::BoxLabelTextCount)
         );
         labels(&mut s).text = vec!["1".into(), "two\nlines".into(), "3".into()];
         assert!(validate_box_plot_series(&s, &cats).is_err());
@@ -8284,6 +8223,7 @@ mod radar_tests {
             rectangular
                 .validate_radar(&[radar("a")])
                 .unwrap_err()
+                .to_string()
                 .contains("polar")
         );
         let mut numeric = config.clone();
@@ -8292,15 +8232,15 @@ mod radar_tests {
             numeric
                 .validate_radar(&[radar("a")])
                 .unwrap_err()
+                .to_string()
                 .contains("categorical angle axis")
         );
         let mut arcs = config.clone();
         arcs.polar_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 4 };
-        assert!(
-            arcs.validate_radar(&[radar("a")])
-                .unwrap_err()
-                .contains("Chord")
-        );
+        assert!(matches!(
+            arcs.validate_radar(&[radar("a")]).unwrap_err(),
+            crate::RuleKind::RadarInterpolation
+        ));
         let mut sector = config.clone();
         sector.polar_mut().unwrap().sector = Some([0.0, 180.0]);
         sector.polar_mut().unwrap().inner_radius_fraction = 0.2;
@@ -8368,6 +8308,7 @@ mod radar_tests {
         assert!(
             check(series)
                 .unwrap_err()
+                .to_string()
                 .contains("one string per category"),
             "text follows the categories"
         );
@@ -8886,7 +8827,7 @@ mod step_selection_tests {
         let mut config = selected(cell("l", 0, 0));
         assert_eq!(
             config.step_selection(&series, 1, 0, |c| columns.get(c).copied()),
-            Err("selected matrix no longer exists")
+            Err(crate::RuleKind::SelectedMatrixGone)
         );
     }
 
@@ -9671,7 +9612,7 @@ mod hexagonal_tests {
         );
         assert_eq!(
             ok(&[heatmap(GridLayout::Hexagonal, Shading::Interpolated)]),
-            Err("a hexagonal grid is shaded flat")
+            Err(crate::RuleKind::HexagonalShading)
         );
         assert_eq!(
             ok(&[series(DataRenderType::Field(
@@ -9682,7 +9623,7 @@ mod hexagonal_tests {
                     surface: None
                 }
             ))]),
-            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+            Err(crate::RuleKind::HexagonalContours)
         );
         assert_eq!(
             ok(&[series(DataRenderType::Field(
@@ -9693,7 +9634,7 @@ mod hexagonal_tests {
                     surface: None
                 }
             ))]),
-            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+            Err(crate::RuleKind::HexagonalContours)
         );
         assert_eq!(
             ok(&[series(DataRenderType::Vector {
@@ -9712,13 +9653,13 @@ mod hexagonal_tests {
                     color_map: None,
                 },
             })]),
-            Err("a grid vector reads a rectangular lattice: not a hexagonal grid")
+            Err(crate::RuleKind::HexagonalGridVector)
         );
         let mut log = config.clone();
         log.left_y.scale = AxisScale::Logarithmic;
         assert_eq!(
             log.validate_hexagonal_series(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]),
-            Err("a hexagonal grid needs linear x and y axes: its lattice is uniform")
+            Err(crate::RuleKind::HexagonalAxes)
         );
         for style in [
             crate::config::AxisBreakStyle::Continuous,
@@ -9732,7 +9673,7 @@ mod hexagonal_tests {
             });
             let expected = match style {
                 crate::config::AxisBreakStyle::Continuous => {
-                    Err("a hexagonal grid's lattice is uniform: not on a Continuous broken axis")
+                    Err(crate::RuleKind::HexagonalBrokenAxis)
                 }
                 crate::config::AxisBreakStyle::Panels => Ok(()),
             };
@@ -9747,11 +9688,11 @@ mod hexagonal_tests {
         let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];
         assert_eq!(
             three_d.validate_hexagonal_series(&hex),
-            Err("a hexagonal grid draws flat: not on a 3D chart")
+            Err(crate::RuleKind::View3dHexagonalGrid)
         );
         assert_eq!(
             three_d.validate_view3d_series(&hex),
-            Err("a hexagonal grid draws flat: not on a 3D chart"),
+            Err(crate::RuleKind::View3dHexagonalGrid),
             "the 3D rules reject it too, whichever runs first"
         );
     }
@@ -9806,26 +9747,17 @@ mod image_tests {
         if let DataRenderType::RgbImage { green, .. } = &mut short.render_type {
             green.columns.pop();
         }
-        assert_eq!(
-            ok(&[short]),
-            Err("an image's channels share one lattice: the same number of columns")
-        );
+        assert_eq!(ok(&[short]), Err(crate::RuleKind::ImageChannelColumns));
         let mut turned = image([0.0, 1.0], 1.0);
         if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
             blue.orientation = MatrixOrientation::ColumnsAreY;
         }
-        assert_eq!(
-            ok(&[turned]),
-            Err("an image's channels share one lattice: the same orientation and grid layout")
-        );
+        assert_eq!(ok(&[turned]), Err(crate::RuleKind::ImageChannelLattice));
         let mut edges = image([0.0, 1.0], 1.0);
         if let DataRenderType::RgbImage { red, .. } = &mut edges.render_type {
             red.grid_layout = GridLayout::Edges;
         }
-        assert_eq!(
-            ok(&[edges]),
-            Err("an image's channels share one lattice: the same orientation and grid layout")
-        );
+        assert_eq!(ok(&[edges]), Err(crate::RuleKind::ImageChannelLattice));
         for range in [
             [1.0, 1.0],
             [2.0, 1.0],
@@ -9834,14 +9766,14 @@ mod image_tests {
         ] {
             assert_eq!(
                 ok(&[image(range, 1.0)]),
-                Err("an image's range is finite with a smaller low end"),
+                Err(crate::RuleKind::ImageRange),
                 "{range:?}"
             );
         }
         for opacity in [-0.1, 1.5, f32::NAN] {
             assert_eq!(
                 ok(&[image([0.0, 1.0], opacity)]),
-                Err("an image's opacity is 0..=1"),
+                Err(crate::RuleKind::ImageOpacity),
                 "{opacity}"
             );
         }
@@ -9850,11 +9782,11 @@ mod image_tests {
         let flat = [image([0.0, 1.0], 1.0)];
         assert_eq!(
             three_d.validate_rgb_image_series(&flat),
-            Err("an image draws flat: not on a 3D chart")
+            Err(crate::RuleKind::View3dImage)
         );
         assert_eq!(
             three_d.validate_view3d_series(&flat),
-            Err("an image draws flat: not on a 3D chart"),
+            Err(crate::RuleKind::View3dImage),
             "the 3D rules reject it too, whichever runs first"
         );
     }
