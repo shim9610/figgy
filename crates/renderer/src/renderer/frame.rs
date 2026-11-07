@@ -525,7 +525,8 @@ pub(super) struct PreparedSurfaceLayer {
     pub(super) style_bg: wgpu::BindGroup,
     pub(super) field_bg: wgpu::BindGroup,
     pub(super) surface_bg: wgpu::BindGroup,
-    pub(super) quads: u32,
+    pub(super) vertices: u32,
+    pub(super) instances: u32,
     pub(super) charge: crate::gpu_memory::SharedCharge,
     pub(super) surface_charge: crate::gpu_memory::SharedCharge,
 }
@@ -574,7 +575,8 @@ impl PreparedSurfaceLayer {
             style_bg: layer.style_bg,
             field_bg: layer.field_bg,
             surface_bg: layer.surface_bg,
-            quads: layer.quads,
+            vertices: layer.vertices,
+            instances: layer.instances,
             charge: layer.charge,
             surface_charge: layer.surface_charge,
         }
@@ -587,7 +589,8 @@ impl PreparedSurfaceLayer {
             style_bg: self.style_bg.clone(),
             field_bg: self.field_bg.clone(),
             surface_bg: self.surface_bg.clone(),
-            quads: self.quads,
+            vertices: self.vertices,
+            instances: self.instances,
             charge: Arc::clone(&self.charge),
             surface_charge: Arc::clone(&self.surface_charge),
         }

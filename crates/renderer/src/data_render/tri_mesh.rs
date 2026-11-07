@@ -4,13 +4,16 @@
 //! A mesh reads the field's group 2 unchanged
 //! ([`create_field_data_bind_group_layout`](super::create_field_data_bind_group_layout))
 //! under [`FIELD_FLAG_MESH`](super::FIELD_FLAG_MESH): `FieldParams` and the
-//! grid table are reinterpreted as SHADER_COMMON.md §5.24 says, so the fill
+//! grid table are reinterpreted as SHADER_COMMON.md §5.25 says, so the fill
 //! colours through the heatmap's `field_value_color` and the contours through
 //! its level search. One instance per triangle and three vertices; no vertex
-//! buffers.
+//! buffers. On a 3D chart the mesh draws as a surface
+//! ([`super::surface_mesh::TRI_SURFACE_SHADER`]) and its contours on the box
+//! floor through this module's floor entries (`mesh_floor.wgsl`).
 
 /// The assembled triangle mesh module: the field's shared fragments, then the
-/// mesh input and its entries.
+/// mesh input, its flat entries and its floor entries (which project through
+/// the camera, `project_3d.wgsl`, as the field module's floor does).
 pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -22,8 +25,10 @@ pub(crate) const TRI_MESH_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/data_pick.wgsl",
+    "data_render/common/project_3d.wgsl",
     "data_render/tri_mesh/mesh_input.wgsl",
     "data_render/tri_mesh/mesh_entry.wgsl",
+    "data_render/tri_mesh/mesh_floor.wgsl",
 );
 
 /// Vertices per triangle instance.
@@ -33,6 +38,10 @@ pub const TRI_MESH_VERTICES: u32 = 3;
 pub const MESH_TABLE_VALUES: usize = 0;
 /// The grid table entry of a mesh's triangle index column (`MESH_INDICES`).
 pub const MESH_TABLE_INDICES: usize = 1;
+/// The grid table entry of a mesh's height column on a 3D chart
+/// (`MESH_HEIGHTS`, the series' `z_column`); a flat mesh's table has two
+/// entries.
+pub const MESH_TABLE_HEIGHTS: usize = 2;
 
 /// Which triangle mesh pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

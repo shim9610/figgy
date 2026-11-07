@@ -19,14 +19,16 @@ pub struct SeriesLayers<'a> {
     pub mesh: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
     /// A triangle mesh's contour strokes, issued where `contour` is.
     pub mesh_contour: Option<super::tri_mesh::ColumnTriMeshLayer<'a>>,
-    /// A heatmap on a 3D chart, drawn as a surface into the panel
-    /// composite with the depth test (`issue_series_surfaces`), never by
-    /// `issue_series_data`.
+    /// A heatmap or a triangle mesh (#210) on a 3D chart, drawn as a
+    /// surface into the panel composite with the depth test
+    /// (`issue_series_surfaces`), never by `issue_series_data`.
     pub surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
-    /// A contour on a 3D chart's floor (`vs_floor`, one instance), drawn
-    /// before every surface without writing depth.
+    /// A contour on a 3D chart's floor (a heatmap's `vs_floor`, one
+    /// instance; a mesh's `vs_tri_floor`, every triangle), drawn before
+    /// every surface without writing depth.
     pub floor: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
-    /// The picked sample's patch of the surface, in the live highlight slot.
+    /// The picked sample's patch of the surface, or a mesh's picked
+    /// triangle, in the live highlight slot.
     pub selected_surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
     /// A ternary series' region fill, drawn into the panel composite's
     /// stencil attachment before every series' fill and body
@@ -362,18 +364,10 @@ pub(crate) fn draw_scatter_layer(pass: &mut wgpu::RenderPass<'_>, s: &ColumnScat
 /// pick rings, after every body. The caller must have already set the
 /// viewport (panel) and scissor (data_area).
 pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
-    // The picked surface sample's patch, over whatever is in front of it
-    // (#49 D4): the live slot has no depth.
+    // The picked surface sample's patch (or a mesh's picked triangle, #210),
+    // over whatever is in front of it (#49 D4): the live slot has no depth.
     if let Some(patch) = &series.selected_surface {
-        pass.set_pipeline(patch.pipeline);
-        pass.set_bind_group(0, patch.transform_bg, &[]);
-        pass.set_bind_group(1, &patch.style_bg, &[]);
-        pass.set_bind_group(2, &patch.field_bg, &[]);
-        pass.set_bind_group(3, &patch.surface_bg, &[]);
-        pass.draw(
-            0..super::surface_mesh::SURFACE_QUAD_VERTICES,
-            0..super::surface_mesh::SURFACE_SELECTED_INSTANCES,
-        );
+        super::surface_mesh::issue_surface_layer(pass, patch);
     }
     for selection in &series.selected_bars {
         pass.set_pipeline(selection.pipeline);

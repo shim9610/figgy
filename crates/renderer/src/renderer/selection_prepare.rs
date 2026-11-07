@@ -797,7 +797,11 @@ impl PrepareContext<'_> {
                     // A triangle mesh's picked triangle (#210): that one
                     // instance redrawn through the mesh's selection entry,
                     // outlined inside its edges.
-                    PickedDataRef::MeshTriangle { triangle_index, .. } if primitives.mesh => {
+                    // A 3D chart's picked triangle is its surface patch
+                    // (`mesh_surface_layers`), not the flat outline.
+                    PickedDataRef::MeshTriangle { triangle_index, .. }
+                        if primitives.mesh && chart_config.view_3d().is_none() =>
+                    {
                         let Ok(triangle) = u32::try_from(*triangle_index) else {
                             continue;
                         };
@@ -842,8 +846,12 @@ impl PrepareContext<'_> {
                         });
                     }
                     // A triangle mesh's picked level: every triangle redrawn,
-                    // painting that level's stroke widened.
-                    PickedDataRef::ContourLevel { level_index, .. } if primitives.mesh_contour => {
+                    // painting that level's stroke widened. On a 3D chart
+                    // the contours are on the floor, which draws no
+                    // highlight, as a heatmap's floor does not.
+                    PickedDataRef::ContourLevel { level_index, .. }
+                        if primitives.mesh_contour && chart_config.view_3d().is_none() =>
+                    {
                         let Ok(level_index) = u32::try_from(*level_index) else {
                             continue;
                         };

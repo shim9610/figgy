@@ -577,11 +577,12 @@ impl Config {
     }
 
     /// The height column that bounds `series`' draw, if any: its
-    /// `z_column` when it is a scatter or line series drawn on a 3D panel
-    /// (#132). The panel is the one that owns the series: this chart, or
-    /// the subplot that draws it. On a flat panel the column is kept and
-    /// unused, so it bounds nothing. The draw, `step_selection` and the
-    /// renderer's draw info read the same answer (#207).
+    /// `z_column` when it is a scatter, line, point vector or triangle mesh
+    /// series drawn on a 3D panel (#132, #211, #210). The panel is the one
+    /// that owns the series: this chart, or the subplot that draws it. On a
+    /// flat panel the column is kept and unused, so it bounds nothing. The
+    /// draw, `step_selection` and the renderer's draw info read the same
+    /// answer (#207).
     pub fn drawn_z_column<'a>(&self, series: &'a SeriesConfig) -> Option<&'a str> {
         use crate::layer::LayerRef;
         let panel = match self.layer_of_series(&series.series_id) {
@@ -596,7 +597,8 @@ impl Config {
             | DataRenderType::Vector {
                 components: crate::data_config::VectorComponents::Points { .. },
                 ..
-            } => series.z_column.as_deref().filter(|z| !z.is_empty()),
+            }
+            | DataRenderType::TriMesh(_) => series.z_column.as_deref().filter(|z| !z.is_empty()),
             _ => None,
         }
     }

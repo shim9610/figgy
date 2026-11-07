@@ -1878,6 +1878,9 @@ pub(crate) struct SurfacePickIdentity {
 /// The kind word a 3D point pick writes (`fs_3d_pick`, #132): the ID's
 /// third word is the point's index.
 pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
+/// The kind word a triangle mesh surface pick writes (`surface_input_mesh.wgsl::surface_pick_ids`, #210):
+/// the ID's `(c, r)` are the triangle and its vertex nearest the fragment.
+pub(crate) const SURFACE_PICK_KIND_MESH_TRIANGLE: u32 = 2;
 
 /// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
 pub(crate) struct SurfacePickTicket {
@@ -1923,6 +1926,17 @@ impl SurfacePickTicket {
                 source_id: identity.source_id.clone(),
                 series_id: identity.series_id.clone(),
                 point_index: c as usize,
+                distance_px: 0.0,
+            }));
+        }
+        // A triangle mesh drawn as a surface (#210): the triangle under the
+        // cursor and its vertex nearest the fragment, at distance zero.
+        if b == SURFACE_PICK_KIND_MESH_TRIANGLE {
+            return Ok(Some(PickedData::MeshTriangle {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                triangle_index: c as usize,
+                vertex_index: r as usize,
                 distance_px: 0.0,
             }));
         }

@@ -3,7 +3,8 @@
 //! draw's own vertex entry and depth rule, with the camera premultiplied by
 //! a matrix that maps the cursor pixel onto the target. The pixel the
 //! cursor is over picks exactly what it shows: the nearest quad's nearest
-//! grid sample, hidden quads never.
+//! grid sample (or the nearest triangle and its nearest vertex of a mesh
+//! surface, #210), hidden ones never.
 
 use super::*;
 
@@ -62,6 +63,17 @@ impl Renderer {
         use data_render::surface_mesh::{self as mesh, SurfacePass};
         for pass in [SurfacePass::Pick, SurfacePass::FloorContourPick] {
             self.pipelines.ensure_surface_pass(
+                &self.device,
+                [
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.field_bgl,
+                    &self.surface_bgl,
+                ],
+                self.surface_format,
+                pass,
+            );
+            self.pipelines.ensure_tri_surface_pass(
                 &self.device,
                 [
                     &self.transform_bgl,
@@ -131,6 +143,18 @@ impl Renderer {
                 .iter()
                 .filter(|cfg| crate::renderer::device::draws_surface(&cfg.render_type))
         };
+        // The triangle meshes (#210): their fills as surfaces, their
+        // contours on the floor, each from the mesh's one group 2.
+        let mesh_floors = || {
+            series
+                .iter()
+                .filter(|cfg| crate::renderer::device::draws_mesh_floor(&cfg.render_type))
+        };
+        let mesh_surfaces = || {
+            series
+                .iter()
+                .filter(|cfg| crate::renderer::device::draws_mesh_surface(&cfg.render_type))
+        };
         {
             let (_, mut ctx) = self.preparation_parts();
             for cfg in surfaces() {
@@ -138,6 +162,9 @@ impl Renderer {
             }
             for cfg in floors() {
                 ctx.ensure_contour_scratch(cfg, config, request.display_scale)?;
+            }
+            for cfg in mesh_floors().chain(mesh_surfaces()) {
+                ctx.ensure_mesh_scratch(config, cfg, request.display_scale)?;
             }
             for cfg in vectors() {
                 ctx.ensure_vector_scratch(config, cfg, request.display_scale)?;
@@ -161,9 +188,11 @@ impl Renderer {
         let draw_camera = mesh::view3d_gpu(config, panel_target, panel_target);
         // The 3D point series' columns, arcs and camera groups, resolved
         // with the preparation half; their pick ids follow the floors' and
-        // surfaces' in `identities` (floors, surfaces, then these).
+        // surfaces' in `identities` (floors, mesh floors, surfaces, mesh
+        // surfaces, then these).
         let point_count = points().count();
-        let first_point_id = floors().count() + surfaces().count();
+        let first_point_id =
+            floors().count() + surfaces().count() + mesh_floors().count() + mesh_surfaces().count();
         let mut point_picks: Vec<PointPick3d> = Vec::new();
         point_picks
             .try_reserve_exact(point_count)
@@ -324,13 +353,18 @@ impl Renderer {
         });
         let mut identities = Vec::new();
         let mut charges = Vec::new();
+        let mesh_count = mesh_floors().count() + mesh_surfaces().count();
         identities
             .try_reserve_exact(
-                surfaces().count() + floors().count() + point_count + vectors().count(),
+                surfaces().count()
+                    + floors().count()
+                    + mesh_count
+                    + point_count
+                    + vectors().count(),
             )
             .and_then(|()| {
                 charges.try_reserve_exact(
-                    surfaces().count() + floors().count() + vectors().count() + 1,
+                    surfaces().count() + floors().count() + mesh_count + vectors().count() + 1,
                 )
             })
             .map_err(|error| FiggyError::StateAllocationFailed {
@@ -416,6 +450,51 @@ impl Renderer {
                 pass.set_bind_group(3, &surface_bg, &[]);
                 pass.draw(0..mesh::SURFACE_QUAD_VERTICES, 0..1);
             }
+            // The meshes' floor contours (#210): every triangle through the
+            // mesh floor pick entry, the mesh's group 2.
+            let mesh_floor_pipeline = self.pipelines.tri_surface
+                [SurfacePass::FloorContourPick as usize]
+                .as_ref()
+                .ok_or(FiggyError::internal(
+                    "the mesh floor pick pipeline was just ensured",
+                ))?;
+            for cfg in mesh_floors() {
+                let Some(camera) = camera.as_ref() else {
+                    continue;
+                };
+                let Some(scratch) = self.field_cache.get(cfg.series_id.as_str()) else {
+                    continue;
+                };
+                let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
+                let mut floor_camera = *camera;
+                floor_camera.flags[3] = pick_id as f32;
+                let look = mesh::surface_params_gpu(None, 0, request.display_scale, None, pick_id);
+                let (surface_bg, charge) = mesh::create_surface_bind_group(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    &floor_camera,
+                    &look,
+                )?;
+                charges.push(charge);
+                identities.push(crate::gpu_data_pick::SurfacePickIdentity {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    columns_are_y: false,
+                });
+                if !scratch.drawable {
+                    continue;
+                }
+                pass.set_pipeline(mesh_floor_pipeline);
+                pass.set_bind_group(0, &transform_bg, &[]);
+                pass.set_bind_group(1, &scratch.style_bg, &[]);
+                pass.set_bind_group(2, &scratch.field_bg, &[]);
+                pass.set_bind_group(3, &surface_bg, &[]);
+                pass.draw(
+                    0..data_render::tri_mesh::TRI_MESH_VERTICES,
+                    0..scratch.signature.params.rows,
+                );
+            }
             for cfg in surfaces() {
                 let (Some(camera), Some(scratch)) = (
                     camera.as_ref(),
@@ -465,6 +544,57 @@ impl Renderer {
                 pass.set_bind_group(2, &scratch.field_bg, &[]);
                 pass.set_bind_group(3, &surface_bg, &[]);
                 pass.draw(0..mesh::SURFACE_QUAD_VERTICES, 0..quads);
+            }
+            // The meshes as surfaces (#210): every triangle through the mesh
+            // surface pick entry, writing kind 2, the triangle and its
+            // nearest vertex, depth tested with the grid surfaces.
+            let mesh_pipeline = self.pipelines.tri_surface[SurfacePass::Pick as usize]
+                .as_ref()
+                .ok_or(FiggyError::internal(
+                    "the mesh surface pick pipeline was just ensured",
+                ))?;
+            for cfg in mesh_surfaces() {
+                let (Some(camera), Some(scratch)) = (
+                    camera.as_ref(),
+                    self.field_cache.get(cfg.series_id.as_str()),
+                ) else {
+                    continue;
+                };
+                let triangles = if scratch.drawable {
+                    scratch.signature.params.rows
+                } else {
+                    0
+                };
+                let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
+                let look = mesh::surface_params_gpu(
+                    cfg.tri_mesh().and_then(|m| m.surface.as_ref()),
+                    0,
+                    request.display_scale,
+                    None,
+                    pick_id,
+                );
+                let (surface_bg, charge) = mesh::create_surface_bind_group(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    camera,
+                    &look,
+                )?;
+                charges.push(charge);
+                identities.push(crate::gpu_data_pick::SurfacePickIdentity {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    columns_are_y: false,
+                });
+                if triangles == 0 {
+                    continue;
+                }
+                pass.set_pipeline(mesh_pipeline);
+                pass.set_bind_group(0, &transform_bg, &[]);
+                pass.set_bind_group(1, &scratch.style_bg, &[]);
+                pass.set_bind_group(2, &scratch.field_bg, &[]);
+                pass.set_bind_group(3, &surface_bg, &[]);
+                pass.draw(0..data_render::tri_mesh::TRI_MESH_VERTICES, 0..triangles);
             }
             // The 3D scatter and line series after the surfaces, as the
             // draw paints them (#132): every stroke, then every marker,

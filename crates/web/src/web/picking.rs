@@ -795,19 +795,31 @@ impl FiggyChart {
                     ])
                     .await?;
                 let faces = mesh.values.at == renderer::tri_mesh::MeshValueLocation::Faces;
-                let mut samples: [(String, usize); 9] = Default::default();
+                // On a 3D chart the triangle's heights too (#210), read last.
+                let height = self
+                    .chart_config()?
+                    .drawn_z_column(&series)
+                    .map(str::to_owned);
+                let mut samples: [(String, usize); 12] = Default::default();
                 for (corner, &vertex) in corners.iter().enumerate() {
                     let vertex = vertex as usize;
                     samples[corner] = (series.x_column.clone(), vertex);
                     samples[3 + corner] = (series.y_column.clone(), vertex);
                     samples[6 + corner] = (mesh.values.column.clone(), vertex);
                 }
-                let count = if faces {
+                let mut count = if faces {
                     samples[6] = (mesh.values.column.clone(), *triangle_index);
                     7
                 } else {
                     9
                 };
+                let heights_at = height.map(|z| {
+                    for (corner, &vertex) in corners.iter().enumerate() {
+                        samples[count + corner] = (z.clone(), vertex as usize);
+                    }
+                    count += 3;
+                    count - 3
+                });
                 let values = self.read_selection_samples(&samples[..count]).await?;
                 let finite = |v: f64| v.is_finite().then_some(v);
                 result["index"] = serde_json::json!(triangle_index);
@@ -825,6 +837,9 @@ impl FiggyChart {
                     result["value"] = serde_json::json!(finite(values[6]));
                 } else {
                     result["values"] = triple(6);
+                }
+                if let Some(at) = heights_at {
+                    result["z"] = triple(at);
                 }
                 result["at"] = serde_json::json!(mesh.values.at);
             }

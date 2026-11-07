@@ -3896,7 +3896,7 @@
         "layout": 8
       },
       "kind": "compute",
-      "source": "f9118b695f4c024e"
+      "source": "7f92af23ad94ad79"
     },
     {
       "descriptor": {
@@ -3908,7 +3908,7 @@
         "layout": 8
       },
       "kind": "compute",
-      "source": "f9118b695f4c024e"
+      "source": "7f92af23ad94ad79"
     },
     {
       "descriptor": {
@@ -3920,7 +3920,7 @@
         "layout": 8
       },
       "kind": "compute",
-      "source": "f9118b695f4c024e"
+      "source": "7f92af23ad94ad79"
     },
     {
       "descriptor": {
@@ -3932,7 +3932,7 @@
         "layout": 8
       },
       "kind": "compute",
-      "source": "f9118b695f4c024e"
+      "source": "7f92af23ad94ad79"
     },
     {
       "descriptor": {
@@ -3968,7 +3968,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -3980,7 +3980,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -3992,7 +3992,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4004,7 +4004,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4016,7 +4016,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4100,7 +4100,7 @@
         "layout": 34
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4112,7 +4112,7 @@
         "layout": 34
       },
       "kind": "compute",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4196,7 +4196,7 @@
         "layout": 35
       },
       "kind": "compute",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -4663,7 +4663,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4714,7 +4714,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -4753,7 +4753,148 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": false,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_tri_floor",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle mesh floor contour pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_tri_floor"
+        }
+      },
+      "kind": "render",
+      "source": "838bac2fdd5eaf9f"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": false,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_tri_floor",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle mesh floor contour pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_tri_floor"
+        }
+      },
+      "kind": "render",
+      "source": "838bac2fdd5eaf9f"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": false,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_tri_floor_pick",
+          "targets": [
+            {
+              "format": "rgba32uint",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle mesh floor contour pick pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_tri_floor"
+        }
+      },
+      "kind": "render",
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -4804,7 +4945,7 @@
         }
       },
       "kind": "render",
-      "source": "cc6bc60c2eca59f9"
+      "source": "52832995c6553555"
     },
     {
       "descriptor": {
@@ -4855,7 +4996,109 @@
         }
       },
       "kind": "render",
-      "source": "cc6bc60c2eca59f9"
+      "source": "52832995c6553555"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle surface pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_main"
+        }
+      },
+      "kind": "render",
+      "source": "34e371cfdb96e85a"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle surface pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_main"
+        }
+      },
+      "kind": "render",
+      "source": "34e371cfdb96e85a"
     },
     {
       "descriptor": {
@@ -4894,7 +5137,46 @@
         }
       },
       "kind": "render",
-      "source": "cc6bc60c2eca59f9"
+      "source": "52832995c6553555"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_pick",
+          "targets": [
+            {
+              "format": "rgba32uint",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle surface pick pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_main"
+        }
+      },
+      "kind": "render",
+      "source": "34e371cfdb96e85a"
     },
     {
       "descriptor": {
@@ -7534,7 +7816,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7580,7 +7862,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7626,7 +7908,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7672,7 +7954,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7718,7 +8000,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7764,7 +8046,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7810,7 +8092,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -7856,7 +8138,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -8976,7 +9258,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -9022,7 +9304,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -14212,7 +14494,7 @@
         }
       },
       "kind": "render",
-      "source": "cc6bc60c2eca59f9"
+      "source": "52832995c6553555"
     },
     {
       "descriptor": {
@@ -14258,7 +14540,99 @@
         }
       },
       "kind": "render",
-      "source": "cc6bc60c2eca59f9"
+      "source": "52832995c6553555"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_selected",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle surface selection pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_selected"
+        }
+      },
+      "kind": "render",
+      "source": "34e371cfdb96e85a"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_selected",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy triangle surface selection pipeline",
+        "layout": 12,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_selected"
+        }
+      },
+      "kind": "render",
+      "source": "34e371cfdb96e85a"
     },
     {
       "descriptor": {
@@ -15008,7 +15382,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -15054,7 +15428,7 @@
         }
       },
       "kind": "render",
-      "source": "265eb60ac56863ff"
+      "source": "235307b7a1d41984"
     },
     {
       "descriptor": {
@@ -15100,7 +15474,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -15146,7 +15520,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -15192,7 +15566,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -15238,7 +15612,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -15284,7 +15658,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {
@@ -15330,7 +15704,7 @@
         }
       },
       "kind": "render",
-      "source": "bbe34e4f4244ed7a"
+      "source": "838bac2fdd5eaf9f"
     },
     {
       "descriptor": {

@@ -345,20 +345,23 @@ pub(super) fn series_draw_info_from_pool(
             truncated: false,
         },
         // A triangle mesh counts its triangles (#210), face values bounding
-        // them. It is truncated when the shortest vertex column no longer
-        // reaches the largest index: the draw then drops every triangle
-        // that names a vertex past the end, which this does not count
-        // (no index is read on the CPU).
+        // them. It is truncated when the shortest vertex column (on a 3D
+        // panel the height column too) no longer reaches the largest index:
+        // the draw then drops every triangle that names a vertex past the
+        // end, which this does not count (no index is read on the CPU).
         DataRenderType::TriMesh(mesh) => {
             let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
             let stats = pool.triangle_stats(&mesh.triangles);
             let triangles = stats.map_or(0, |stats| u64::from(stats.triangles));
             let values = len(&mesh.values.column);
-            let vertices = if faces {
+            let mut vertices = if faces {
                 x.min(y)
             } else {
                 x.min(y).min(values)
             };
+            if let Some(z) = drawn_z {
+                vertices = vertices.min(len(z));
+            }
             let drawn = if faces {
                 triangles.min(values)
             } else {

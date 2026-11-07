@@ -204,12 +204,13 @@ impl PrepareContext<'_> {
     }
 
     /// Build or reuse one triangle mesh series' group 2 (#210, SHADER_COMMON.md
-    /// §5.24): the field's layout under `FIELD_FLAG_MESH`, the vertex
+    /// §5.25): the field's layout under `FIELD_FLAG_MESH`, the vertex
     /// coordinate columns in the coordinate slots, the triangle count in
-    /// `rows`, and a two-entry table of the value column and the triangle
-    /// index column. The fill's colourbar and bands and the contours' levels,
-    /// stroke width and colours share the one group, cached in `field_cache`
-    /// under the series id and compared by its signature like a heatmap's.
+    /// `rows`, and a table of the value column, the triangle index column
+    /// and, on a 3D chart, the height column. The fill's colourbar and bands
+    /// and the contours' levels, stroke width and colours share the one
+    /// group, cached in `field_cache` under the series id and compared by
+    /// its signature like a heatmap's.
     pub(in crate::renderer) fn ensure_mesh_scratch(
         &mut self,
         chart_config: &Config,
@@ -248,8 +249,16 @@ impl PrepareContext<'_> {
         let member = triangles.slot().indices.as_str();
         let indices = triangles.indices().ok_or_else(|| unknown(member))?;
         let triangle_count = triangles.stats().triangles;
+        // On a 3D chart the height column (`z_column`) is the table's third
+        // entry (`MESH_TABLE_HEIGHTS`): the surface reads it, and its epoch
+        // stamps the signature, so a new upload rebuilds the group.
+        let height_id = chart_config.drawn_z_column(cfg);
+        let height = height_id
+            .map(|id| self.pool.handle_for(id).ok_or_else(|| unknown(id)))
+            .transpose()?;
         let epoch = |id: &str| self.pool.allocation_epoch(id).ok_or_else(|| unknown(id));
         let epochs = [epoch(values_id)?, epoch(member)?];
+        let height_epoch = height_id.map(epoch).transpose()?;
         let column = |handle: &ColumnHandle, resource| -> Result<data_render::GridColumnGpu> {
             Ok(data_render::GridColumnGpu {
                 base: lane_u32(handle.offset / 4, resource)?,
@@ -260,6 +269,11 @@ impl PrepareContext<'_> {
             column(&values, "mesh value column lane")?,
             column(&indices, "mesh index column lane")?,
         ];
+        let height_column = height
+            .as_ref()
+            .map(|handle| column(handle, "mesh height column lane"))
+            .transpose()?;
+        let entries = grid.len() + usize::from(height_column.is_some());
 
         let mut flags = data_render::FIELD_FLAG_MESH;
         if mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces {
@@ -325,7 +339,7 @@ impl PrepareContext<'_> {
             y_base: lane_u32(y.offset / 4, "mesh y column lane")?,
             x_len: u32::try_from(x.len_values).unwrap_or(u32::MAX),
             y_len: u32::try_from(y.len_values).unwrap_or(u32::MAX),
-            cols: grid.len() as u32,
+            cols: u32::try_from(entries).unwrap_or(u32::MAX),
             rows: triangle_count,
             level_count,
             stop_count,
@@ -346,14 +360,16 @@ impl PrepareContext<'_> {
         };
         let mut grid_table = Vec::new();
         grid_table
-            .try_reserve_exact(grid.len())
+            .try_reserve_exact(entries)
             .map_err(alloc("mesh grid table"))?;
         grid_table.extend_from_slice(&grid);
+        grid_table.extend(height_column);
         let mut epoch_list = Vec::new();
         epoch_list
-            .try_reserve_exact(epochs.len())
+            .try_reserve_exact(entries)
             .map_err(alloc("mesh grid epochs"))?;
         epoch_list.extend_from_slice(&epochs);
+        epoch_list.extend(height_epoch);
         let signature = FieldSignature {
             pool_layout_generation: self.pool.layout_generation(),
             params,
@@ -375,14 +391,17 @@ impl PrepareContext<'_> {
             return Ok(Arc::clone(&scratch.sources));
         }
         let mut ids = Vec::new();
-        ids.try_reserve_exact(2).map_err(alloc("mesh source ids"))?;
+        ids.try_reserve_exact(entries)
+            .map_err(alloc("mesh source ids"))?;
         ids.push(values_id.to_owned());
         ids.push(member.to_owned());
+        ids.extend(height_id.map(str::to_owned));
         let mut owned = Vec::new();
         owned
-            .try_reserve_exact(epochs.len())
+            .try_reserve_exact(entries)
             .map_err(alloc("mesh source epochs"))?;
         owned.extend_from_slice(&epochs);
+        owned.extend(height_epoch);
         let sources = Arc::new(GridSources { ids, epochs: owned });
         let scratch = self.build_field_scratch(signature, sources)?;
         if !self.in_frame {
