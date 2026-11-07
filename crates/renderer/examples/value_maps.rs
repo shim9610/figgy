@@ -66,7 +66,12 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         "stars",
         "sx",
         "sy",
-        DataRenderType::Scatter { scatter: points },
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(points),
+            line: None,
+            errors: None,
+            stem: None,
+        }),
     )];
     colorbar(
         chart.config_mut(),
@@ -162,7 +167,12 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
             id,
             &format!("{id}-x"),
             &format!("{id}-y"),
-            DataRenderType::Scatter { scatter: marker },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(marker),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         ));
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);
     }

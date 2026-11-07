@@ -29,7 +29,7 @@
 //!    snapshot does not reserve bytes for a future allocation.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Number of rows in a [`GpuMemoryUsage`] report.
 pub const GPU_RESOURCE_KIND_COUNT: usize = 14;
@@ -133,8 +133,9 @@ impl ResidentAdmission {
 /// subsystem that caused it instead of a single opaque total.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum GpuResourceKind {
-    /// The column pool's `primary` (+ `backup` while one exists). Reported by
-    /// the pool itself, not charged through the ledger.
+    /// The column pool's slab and defragmentation backup, its growth
+    /// candidates and its upload staging, charged to the ledger as the pool
+    /// creates them (#160).
     ColumnPool,
     /// Per-panel grid and decoration textures.
     PanelTexture,
@@ -227,6 +228,24 @@ impl GpuResourceKind {
             GpuResourceKind::ViewResident => "view resident",
         }
     }
+}
+
+// Every `[_; GPU_RESOURCE_KIND_COUNT]` row table is indexed by
+// `GpuResourceKind::index`, and the report walks `ALL` by position: the
+// index of `ALL[i]` is `i`, so `index` maps the listed kinds one to one onto
+// the rows (#152).
+const _: () = assert!(kinds_are_listed_in_row_order());
+
+/// Whether `GpuResourceKind::ALL[i].index() == i` for every `i`.
+const fn kinds_are_listed_in_row_order() -> bool {
+    let mut i = 0;
+    while i < GpuResourceKind::ALL.len() {
+        if GpuResourceKind::ALL[i].index() != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 /// Exact byte cost of a live texture, samples and mip levels included.
@@ -329,7 +348,8 @@ impl RetirementBatch {
     }
 }
 
-/// Running GPU byte counts, shared by every renderer subsystem.
+/// Running GPU byte counts and the memory budget of one device bundle
+/// ([`crate::RendererDevice`]), shared by every renderer built from it (#160).
 ///
 /// Counters remain atomic. Final tracked owners queue physical resources for
 /// destruction at the host's submission/completion boundary. Ownership crosses
@@ -342,6 +362,12 @@ pub struct GpuLedger {
     retired: [RetiredBytes; GPU_RESOURCE_KIND_COUNT],
     creations: [AtomicU64; GPU_RESOURCE_KIND_COUNT],
     peak_bytes: AtomicU64,
+    /// The host's ceiling for [`Self::total_bytes`], read only while
+    /// `budget_set` is true. Two atomics rather than a sentinel, so a budget
+    /// of `u64::MAX` bytes stays distinct from no budget: resident admission
+    /// refuses a promotion when none is set.
+    budget: AtomicU64,
+    budget_set: AtomicBool,
 }
 
 /// Fixed-size, generation-free accounting for pending and submitted retirements.
@@ -354,13 +380,14 @@ pub(crate) struct RetiredBytes {
 }
 
 impl RetiredBytes {
+    // The byte counters saturate: a u64 of bytes cannot overflow from real
+    // allocations, and these run from `Drop` paths that cannot report one.
     pub(crate) fn retire(&self, bytes: u64) {
         self.add_total(bytes);
         self.pending
-            .try_update(Ordering::Release, Ordering::Relaxed, |n| {
-                n.checked_add(bytes)
-            })
-            .expect("pending GPU byte total overflow");
+            .update(Ordering::Release, Ordering::Relaxed, |n| {
+                n.saturating_add(bytes)
+            });
     }
 
     // Physical resources carry their own pending credit in the queue entry.
@@ -368,10 +395,9 @@ impl RetiredBytes {
     // completion credit bytes before the corresponding handle was drained.
     fn add_total(&self, bytes: u64) {
         self.total
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(bytes)
-            })
-            .expect("retired GPU byte total overflow");
+            .update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.saturating_add(bytes)
+            });
     }
 
     pub(crate) fn total(&self) -> u64 {
@@ -383,11 +409,13 @@ impl RetiredBytes {
     }
 
     pub(crate) fn complete(&self, bytes: u64) {
+        // A completion owns exactly the bytes its batch took, so it never
+        // exceeds the total; saturating as `remove_live` does keeps a
+        // mis-paired credit at zero instead of wrapping.
         self.total
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_sub(bytes)
-            })
-            .expect("completed GPU byte batch exceeds retired total");
+            .update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                n.saturating_sub(bytes)
+            });
     }
 }
 
@@ -406,6 +434,36 @@ impl GpuLedger {
             retired: std::array::from_fn(|_| RetiredBytes::default()),
             creations: std::array::from_fn(|_| AtomicU64::new(0)),
             peak_bytes: AtomicU64::new(0),
+            budget: AtomicU64::new(u64::MAX),
+            budget_set: AtomicBool::new(false),
+        }
+    }
+
+    /// The device's memory budget: `None` when device limits are the only
+    /// bound.
+    pub fn budget(&self) -> Option<u64> {
+        // Acquire pairs with the Release in `set_budget`, so a set flag is
+        // never read beside the value it replaced.
+        self.budget_set
+            .load(Ordering::Acquire)
+            .then(|| self.budget.load(Ordering::Relaxed))
+    }
+
+    /// The device's memory budget as the bound a check compares against:
+    /// `u64::MAX` when there is none.
+    pub fn budget_limit(&self) -> u64 {
+        self.budget().unwrap_or(u64::MAX)
+    }
+
+    /// Set the device's memory budget for every renderer that shares this
+    /// ledger. Never evicts what is held.
+    pub fn set_budget(&self, budget: Option<u64>) {
+        match budget {
+            Some(bytes) => {
+                self.budget.store(bytes, Ordering::Relaxed);
+                self.budget_set.store(true, Ordering::Release);
+            }
+            None => self.budget_set.store(false, Ordering::Release),
         }
     }
 
@@ -432,8 +490,8 @@ impl GpuLedger {
     fn remove_live(&self, kind: GpuResourceKind, bytes: u64) {
         // Saturating so a mis-paired credit reports zero rather than wrapping
         // to a nonsense total that would refuse every later allocation.
-        let _ = self.live[kind.index()].try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
-            Some(live.saturating_sub(bytes))
+        self.live[kind.index()].update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            live.saturating_sub(bytes)
         });
     }
 
@@ -449,13 +507,17 @@ impl GpuLedger {
         self.retired[kind.index()].add_total(bytes);
         self.remove_live(kind, bytes);
         // host-alloc: W1-d
-        self.pending_resources
-            .push(RetiredAllocation {
-                kind,
-                bytes,
-                resource,
-            })
-            .expect("the unbounded retirement queue is never closed");
+        if let Err(refused) = self.pending_resources.push(RetiredAllocation {
+            kind,
+            bytes,
+            resource,
+        }) {
+            // The unbounded queue is never closed, so this does not happen;
+            // if it did, destroy the resource now and credit its bytes.
+            let allocation = refused.into_inner();
+            self.retired[allocation.kind.index()].complete(allocation.bytes);
+            drop(allocation);
+        }
     }
 
     pub(crate) fn take_retirement(&self) -> RetirementBatch {
@@ -474,9 +536,7 @@ impl GpuLedger {
                 break;
             };
             let row = &mut batch.bytes[allocation.kind.index()];
-            *row = row
-                .checked_add(allocation.bytes)
-                .expect("retirement batch overflow");
+            *row = row.saturating_add(allocation.bytes);
             // host-alloc: W1-d
             batch.resources.push(allocation.resource);
         }
@@ -530,11 +590,7 @@ impl GpuLedger {
 
     fn bump_peak(&self) {
         let total = self.total_bytes();
-        let _ = self
-            .peak_bytes
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |peak| {
-                (total > peak).then_some(total)
-            });
+        self.peak_bytes.fetch_max(total, Ordering::Relaxed);
     }
 }
 
@@ -551,31 +607,6 @@ pub struct GpuMemoryUsage {
 }
 
 impl GpuMemoryUsage {
-    /// Overwrite one row.
-    ///
-    /// The renderer grafts the [`GpuResourceKind::ColumnPool`] row in from the
-    /// pool's own capacity: the pool is the authority on its bytes, and
-    /// charging them twice (once at its `create_buffer`, once from capacity)
-    /// would double-count exactly the term the memory-scaling curve measures.
-    pub fn with_kind(mut self, kind: GpuResourceKind, live: u64, retired: u64) -> Self {
-        let i = kind.index();
-        self.live[i] = live;
-        self.retired[i] = retired;
-        self
-    }
-
-    /// Add `count` creations to one row (the pool reports its own).
-    pub fn with_creations(mut self, kind: GpuResourceKind, count: u64) -> Self {
-        self.creations[kind.index()] = count;
-        self
-    }
-
-    /// Raise the reported peak to at least `bytes`.
-    pub fn with_peak_at_least(mut self, bytes: u64) -> Self {
-        self.peak_bytes = self.peak_bytes.max(bytes);
-        self
-    }
-
     pub fn live_bytes(&self) -> u64 {
         self.live.iter().fold(0u64, |a, b| a.saturating_add(*b))
     }
@@ -603,11 +634,6 @@ impl GpuMemoryUsage {
     }
 
     /// Everything that is not the pool.
-    ///
-    /// This is the value that rides into the pool as
-    /// `GpuAllocCtx::external_bytes`: the pool adds its own current capacity
-    /// and the capacity it is about to allocate, so counting pool bytes here
-    /// too would charge them twice.
     pub fn external_bytes(&self) -> u64 {
         self.total_bytes().saturating_sub(self.pool_bytes())
     }
@@ -822,14 +848,20 @@ impl ChargeTally {
 }
 
 /// Create a buffer and tally exactly the size the device was asked for.
+///
+/// The buffer is created inside wgpu error scopes (`gpu_checked`),
+/// so an out-of-memory or limit failure is an error, not a panic (#152).
+/// The size is tallied only when the buffer was created.
 pub fn charged_buffer(
     tally: &ChargeTally,
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
-) -> wgpu::Buffer {
-    tally.add(desc.size);
+) -> crate::Result<wgpu::Buffer> {
     // gpu-alloc: caller
-    device.create_buffer(desc)
+    let buffer =
+        crate::renderer::gpu_checked(device, "charged GPU buffer", || device.create_buffer(desc))?;
+    tally.add(desc.size);
+    Ok(buffer)
 }
 
 /// Create an initialized buffer and tally the size wgpu will actually allocate.
@@ -842,11 +874,14 @@ pub fn charged_buffer_init(
     tally: &ChargeTally,
     device: &wgpu::Device,
     desc: &wgpu::util::BufferInitDescriptor<'_>,
-) -> wgpu::Buffer {
+) -> crate::Result<wgpu::Buffer> {
     use wgpu::util::DeviceExt;
-    tally.add(buffer_init_bytes(desc.contents.len() as u64));
     // gpu-alloc: caller
-    device.create_buffer_init(desc)
+    let buffer = crate::renderer::gpu_checked(device, "charged GPU buffer", || {
+        device.create_buffer_init(desc)
+    })?;
+    tally.add(buffer_init_bytes(desc.contents.len() as u64));
+    Ok(buffer)
 }
 
 /// Bytes `create_buffer_init` allocates for `contents_len` bytes of contents.
@@ -1100,7 +1135,7 @@ mod tests {
             })
             .unwrap();
         assert!(
-            pollster::block_on(scope.pop()).is_none(),
+            crate::test_gpu::block_on(scope.pop()).is_none(),
             "recorded work must remain valid"
         );
         assert_eq!(ledger.snapshot().retired_bytes(), 16);
@@ -1113,7 +1148,7 @@ mod tests {
         encoder.clear_buffer(&raw, 0, None);
         queue.submit([encoder.finish()]);
         assert!(
-            pollster::block_on(scope.pop()).is_some(),
+            crate::test_gpu::block_on(scope.pop()).is_some(),
             "retired allocation was not destroyed"
         );
     }
@@ -1303,10 +1338,11 @@ mod tests {
 
     #[test]
     fn external_bytes_exclude_the_pool_row() {
-        let usage = GpuMemoryUsage::default()
-            .with_kind(GpuResourceKind::ColumnPool, 8 * 1024 * 1024, 0)
-            .with_kind(GpuResourceKind::PanelTexture, 2 * 1024 * 1024, 0)
-            .with_kind(GpuResourceKind::MsaaTarget, 1024 * 1024, 0);
+        let ledger = GpuLedger::new();
+        ledger.record_alloc(GpuResourceKind::ColumnPool, 8 * 1024 * 1024);
+        ledger.record_alloc(GpuResourceKind::PanelTexture, 2 * 1024 * 1024);
+        ledger.record_alloc(GpuResourceKind::MsaaTarget, 1024 * 1024);
+        let usage = ledger.snapshot();
         assert_eq!(usage.pool_bytes(), 8 * 1024 * 1024);
         assert_eq!(usage.external_bytes(), 3 * 1024 * 1024);
         assert_eq!(usage.total_bytes(), 11 * 1024 * 1024);

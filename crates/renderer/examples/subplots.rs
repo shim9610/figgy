@@ -126,7 +126,17 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         let mut style = line(color, 3.);
         style.fill = Some(LineFill::ToBaseline(floor));
         style.fill_color = Some(Color::from_rgba(color.r, color.g, color.b, 0.1));
-        specs.push(series(id, "h", id, DataRenderType::Line { line: style }));
+        specs.push(series(
+            id,
+            "h",
+            id,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(style),
+                errors: None,
+                stem: None,
+            }),
+        ));
     }
     let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
     config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
@@ -137,6 +147,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
                 series: vec![sensors[k].0.to_string()],
                 link_x: Some(CellRef::Parent),
                 link_y: None,
+                marker: None,
             };
             subplot.config.legend.visible = false;
             subplot
@@ -167,8 +178,10 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:data_area")
             .is_some()
     );
-    let image =
-        pollster::block_on(r.export_document_rgba_with_clear_async(&chart, &specs, 1., bg))?;
+    let image = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::document(1.).with_clear(bg),
+    )?;
     save(&image, bg, &out.join("gallery-subplots.png"))
 }
 
@@ -219,6 +232,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
         series: series.iter().map(|id| id.to_string()).collect(),
         link_x: None,
         link_y: None,
+        marker: None,
     };
 
     // The document's own chart is the upper-left cell; three subplots fill
@@ -264,9 +278,12 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             id,
             x,
             y,
-            DataRenderType::Line {
-                line: line(color, 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(color, 2.5)),
+                errors: None,
+                stem: None,
+            }),
         )
     };
     let specs = [
@@ -302,12 +319,10 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:overlay_0:axis_right")
             .is_some()
     );
-    let image = pollster::block_on(r.export_document_rgba_with_clear_async(
-        &chart,
-        &specs,
-        1.0,
-        Color::WHITE,
-    ))?;
+    let image = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &specs),
+        renderer::ExportOptions::document(1.0).with_clear(Color::WHITE),
+    )?;
     let path = out.join("mixed-axes.png");
     std::fs::write(&path, renderer::encode_png(&image)?)?;
     println!("{}: {}x{}", path.display(), image.width, image.height);

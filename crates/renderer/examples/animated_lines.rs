@@ -23,17 +23,23 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
             "primary",
             "wave-x",
             "wave-a",
-            DataRenderType::Line {
-                line: line(blue, 3.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(blue, 3.0)),
+                errors: None,
+                stem: None,
+            }),
         ),
         series(
             "harmonic",
             "wave-x",
             "wave-b",
-            DataRenderType::Line {
-                line: line(coral, 2.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(coral, 2.5)),
+                errors: None,
+                stem: None,
+            }),
         ),
     ];
     let mut wave = chart("Waves in motion", "Position", "Amplitude", (720, 460));
@@ -60,25 +66,34 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
             "path",
             "orbit-x",
             "orbit-y",
-            DataRenderType::Line {
-                line: line(Color::from_rgb8(186, 204, 226), 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(Color::from_rgb8(186, 204, 226), 1.5)),
+                errors: None,
+                stem: None,
+            }),
         ),
         series(
             "trail",
             "trail-x",
             "trail-y",
-            DataRenderType::Line {
-                line: line(blue, 3.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(blue, 3.5)),
+                errors: None,
+                stem: None,
+            }),
         ),
         series(
             "head",
             "head-x",
             "head-y",
-            DataRenderType::Scatter {
-                scatter: scatter(coral, 11.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter(coral, 11.0)),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         ),
     ];
     let mut orbit = chart(

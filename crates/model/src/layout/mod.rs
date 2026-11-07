@@ -7,28 +7,18 @@ mod rect;
 
 pub use fit::FitStrategy;
 pub use geometry::{
-    LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, TitleBand, TitlePlacement, axis_anchor,
-    axis_offset, axis_title_offset_to_screen, axis_title_placement, axis_visibility_extent,
-    axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
-    fit_chart_title_margin, label_origin, label_rect, legend_rect, point_on_rect_side,
-    rect_axis_visibility_rect, screen_offset_to_axis_title,
+    BreakKnot, BreakMap, LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN,
+    PROBABILITY_RANGE_FALLBACK, TitleBand, TitlePlacement, auto_layout, axis_anchor, axis_cross,
+    axis_fraction, axis_offset, axis_title_offset_to_screen, axis_title_placement,
+    chart_title_placement, chart_title_placement_in, colorbar_rect, colorbar_title_placement,
+    fit_chart_title_margin, guarded_log_range, guarded_probability_range, label_origin, label_rect,
+    legend_rect, mirrored_breaks, point_on_rect_side, screen_offset_to_axis_title, span_fraction,
+    value_in_cut, visible_colorbar_rect,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
-pub use rect::{ChartArea, DataArea, Rect, RectF};
+pub use rect::{ChartArea, DataArea, Rect, RectF, inset_paint_order, inset_parent};
 
-/// One part of a decoration as a renderer draws it, in the chart frame:
-/// what [`crate::text::MeasureText::drawn_parts`] reports.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DrawnPart {
-    /// A block of glyphs: one tick label.
-    Text(RectF),
-    /// A stroked segment `width` across: an axis line or one tick.
-    Segment {
-        a: [f32; 2],
-        b: [f32; 2],
-        width: f32,
-    },
-}
+pub use crate::sink::DrawnPart;
 
 // Support types.
 
@@ -348,7 +338,8 @@ impl Config {
 /// positive is a renderer-side rule (`validate_renderer_config`), which is
 /// where the reason string lives.
 fn axis_dims_feasible(axis: &AxisOptions) -> Result<(), LayoutError> {
-    if axis.max <= axis.min {
+    let (min, max) = axis.data_range();
+    if max <= min {
         return Err(LayoutError::Infeasible);
     }
     if axis.out_margin < 0.0
@@ -364,11 +355,52 @@ fn axis_dims_feasible(axis: &AxisOptions) -> Result<(), LayoutError> {
 // Invariant tests (data_area / margins / validate).
 
 #[cfg(test)]
+mod inset_order_tests {
+    use super::{Rect, inset_paint_order, inset_parent};
+
+    fn rect(x: u32, y: u32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    // #205: insets paint as a tree, each after the panel it is nested in
+    // and before that panel's next sibling, whatever their list order.
+    #[test]
+    fn insets_paint_in_tree_order() {
+        // Panel and data rects: 0 the parent, 1 an inset inside inset 2
+        // (listed before it), 2 and 3 insets of 0, 4 an overlay sharing 0's
+        // rect, 5 a panel of its own and 6 its inset.
+        let panels = [
+            (rect(0, 0, 400, 300), rect(40, 20, 340, 250)),
+            (rect(262, 42, 60, 50), rect(272, 44, 46, 40)),
+            (rect(250, 30, 120, 100), rect(260, 40, 100, 80)),
+            (rect(200, 90, 120, 100), rect(210, 100, 100, 80)),
+            (rect(0, 0, 400, 300), rect(40, 20, 340, 250)),
+            (rect(400, 0, 400, 300), rect(440, 20, 340, 250)),
+            (rect(500, 50, 100, 80), rect(510, 60, 80, 60)),
+        ];
+        let rects = |i: usize| panels[i];
+        let order: Vec<usize> = inset_paint_order(panels.len(), rects).collect();
+        assert_eq!(order, [2, 1, 3, 6]);
+        assert_eq!(inset_parent(panels.len(), rects, 1), Some(2));
+        assert_eq!(inset_parent(panels.len(), rects, 2), Some(0));
+        assert_eq!(inset_parent(panels.len(), rects, 4), None);
+        assert_eq!(inset_parent(panels.len(), rects, 0), None);
+        assert_eq!(inset_paint_order(0, rects).count(), 0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{Side, colorbar_contribution};
     use crate::config::Config;
     use crate::default::{default_colorbar_options, default_config};
     use crate::layout::{ChartArea, LayoutError, Rect};
+    use crate::select::tests::LaysOut;
 
     fn config_with_colorbar(side: Side) -> Config {
         let mut cfg = default_config();
@@ -666,7 +698,7 @@ mod tests {
         cfg.overlays.push(OverlayLayer::default());
         let before = cfg.data_area().unwrap().0;
         assert_eq!(
-            cfg.nudge(Element::DataAreaEdge(Side::Right), 20.0, 0.0),
+            cfg.nudge(Element::DataAreaEdge(Side::Right), &LaysOut, 20.0, 0.0),
             crate::layout::NudgeResult::Moved
         );
         let after = cfg.data_area().unwrap().0;
@@ -762,10 +794,10 @@ mod tests {
                 let before = cfg.clone();
                 match (next() * 6.0) as u32 {
                     0 | 1 => {
-                        let _ = cfg.nudge(Element::DataAreaEdge(side), dx, dy);
+                        let _ = cfg.nudge(Element::DataAreaEdge(side), &LaysOut, dx, dy);
                     }
                     2 => {
-                        let _ = cfg.nudge(Element::DataArea, dx, dy);
+                        let _ = cfg.nudge(Element::DataArea, &LaysOut, dx, dy);
                     }
                     3 => {
                         let _ = cfg.set_side_margin(side, next() * 300.0);

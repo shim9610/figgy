@@ -14,7 +14,7 @@
 /// Which layer of a chart document receives pointer interaction.
 ///
 /// This is document state, one level above element selection
-/// (`DecorationLayout::selected`, `picked_points`, `picked_data`): it decides
+/// (`DecorationLayout::selected`, `picked_data`): it decides
 /// which layer's elements are registered in the hit map, not which element is
 /// selected. `Base` is the default and exists on every chart, so a document
 /// without the field routes the pointer to the chart's own elements.
@@ -24,8 +24,8 @@ pub enum LayerRef {
     /// The chart's own series, axes and decorations.
     #[default]
     Base,
-    /// An overlay layer by index into the document's overlay list. Bounded
-    /// charts have no overlays; a setter must fall back to `Base` there and
+    /// An overlay layer by index into the document's overlay list. The
+    /// radial chart has no overlays; a setter must fall back to `Base` there and
     /// whenever the index is out of range.
     Overlay(usize),
     /// The dedicated annotation layer.
@@ -45,8 +45,9 @@ impl LayerRef {
         matches!(self, Self::Base)
     }
 
-    /// The layer as a bounded chart reads it. Bounded charts have no
-    /// overlays and no subplots, so those indices fall back to `Base`.
+    /// The layer as the radial chart and the legacy documents read it: they
+    /// have no overlays and no subplots, so those indices fall back to
+    /// `Base`.
     pub fn bounded(self) -> Self {
         match self {
             Self::Overlay(_) | Self::Subplot(_) | Self::SubplotOverlay(..) => Self::Base,
@@ -55,7 +56,7 @@ impl LayerRef {
     }
 }
 
-/// The shared `set_active_layer` of the bounded chart families: store the
+/// The `set_active_layer` of the radial chart: store the
 /// layer with the overlay fallback and, when it actually changes, clear the
 /// decoration selection, which names an element of the previous layer's
 /// pointer route (a decoration below the annotations, or an
@@ -213,13 +214,58 @@ pub struct Subplot {
     pub series: Vec<String>,
     /// `None` (default, omitted): the X axis is this subplot's own. `Some`:
     /// `bottom_x` follows the target's `bottom_x` range, scale, direction and
-    /// tick spacing (`major_spacing`, `minor_count`); its style stays its own.
+    /// tick spacing (`major_spacing`, `minor_count`, `log_ticks`); its style
+    /// stays its own.
     /// The target must be the parent or a subplot with a lower index.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub link_x: Option<CellRef>,
     /// The same for `left_y` and the target's `left_y`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub link_y: Option<CellRef>,
+    /// What this subplot magnifies, marked on the parent (#205): a window
+    /// rectangle on the parent's plot and connectors to this subplot's plot,
+    /// placed from the SSOT on every draw, so they follow a moved, resized
+    /// or zoomed inset and a parent view change. `None` (default, omitted)
+    /// marks nothing.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub marker: Option<InsetMarker>,
+}
+
+/// The mark of what an inset magnifies (#205), drawn on the parent's
+/// annotation layer under the insets: the window clipped to the parent's
+/// plot, and two connectors from the window's facing corners to the
+/// inset's plot. Not selectable: the inset itself is.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct InsetMarker {
+    /// The window in the parent's data coordinates, `[[x0, x1], [y0, y1]]`.
+    /// `None` (default, omitted) derives it from the inset
+    /// ([`crate::config::Config::inset_window`]).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub window: Option<[[f64; 2]; 2]>,
+    /// The window's border and the connectors.
+    pub line: crate::annotation::AnnotationLineStyle,
+    /// Whether the connectors are drawn. Default `true`.
+    pub connectors: bool,
+}
+
+impl Default for InsetMarker {
+    /// A derived window, a thin grey line and connectors.
+    fn default() -> Self {
+        Self {
+            window: None,
+            line: crate::annotation::AnnotationLineStyle {
+                color: crate::color::Color::from_rgb8(120, 128, 140),
+                width: 1.0,
+                style: crate::line::LineStylePreset::Solid,
+            },
+            connectors: true,
+        }
+    }
 }
 
 impl Default for Subplot {
@@ -230,6 +276,7 @@ impl Default for Subplot {
             series: Vec::new(),
             link_x: None,
             link_y: None,
+            marker: None,
         }
     }
 }
@@ -328,10 +375,10 @@ mod tests {
         assert_eq!(decorations.selected, Some(DecorationId::Legend));
     }
 
-    // Every bounded family stores its layer through the shared setter, reads
-    // an `Overlay` as `Base`, and keeps `Annotations` through JSON.
+    // The radial chart stores its layer through the shared setter, reads an
+    // `Overlay` as `Base`, and keeps `Annotations` through JSON.
     #[test]
-    fn bounded_charts_set_and_read_their_active_layer() {
+    fn the_radial_chart_sets_and_reads_its_active_layer() {
         use crate::decoration::DecorationId;
         macro_rules! check {
             ($chart:ty, $data:expr) => {{
@@ -366,15 +413,26 @@ mod tests {
         check!(crate::radial::RadialChart, |c| {
             c.interaction.selected = Some(crate::radial::RadialTarget::main(0))
         });
-        check!(crate::categorical::CategoricalChart, |c| {
-            c.selected = Some(crate::categorical::CategoryBarTarget::new("a", "s"))
-        });
-        check!(crate::boxplot::BoxPlotChart, |c| {
-            c.selected = Some(crate::boxplot::BoxPlotTarget::new("a", "s"))
-        });
-        check!(crate::radar::RadarChart, |c| {
-            c.selected = Some(crate::radar::RadarTarget::vertex("s", "a"))
-        });
+    }
+
+    // The legacy documents carry their layer for the readers, reading an
+    // overlay as `Base`.
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_documents_read_their_active_layer() {
+        macro_rules! check {
+            ($chart:ty) => {{
+                let mut c = <$chart>::default();
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.active_layer = LayerRef::Overlay(1);
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.active_layer = LayerRef::Annotations;
+                assert_eq!(c.active_layer(), LayerRef::Annotations);
+            }};
+        }
+        check!(crate::categorical::CategoricalChart);
+        check!(crate::boxplot::BoxPlotChart);
+        check!(crate::radar::RadarChart);
     }
 
     #[test]

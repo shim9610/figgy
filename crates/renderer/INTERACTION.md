@@ -1,20 +1,24 @@
 # 상호작용 가이드 / Interaction guide
 
-원형·범주형 막대·박스플롯·레이더는 데이터 모델이 서로 다르지만, 그리기 영역·제목·축·라벨·범례는
+원형 차트는 데이터 모델이 다르지만, 그리기 영역·제목·축·라벨·범례는
 Cartesian 차트와 같은 `HitMap → Selectable → Draggable / Resizable` 계약을 사용한다. 포인터 이벤트 전달과
 드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
 
-Radial, categorical bar, box plot and radar charts are the bounded charts: each
-renderer draws one validated model and takes no column sources. Their plot
-area, title, axes, labels and legend use the same
+The radial chart is the DataLess chart: its renderer draws one validated
+model and takes no column sources. Its plot area, title, axes, labels and
+legend use the same
 `HitMap → Selectable → Draggable / Resizable` contract as Cartesian charts. The
 host forwards pointer events and requests frames while dragging; it never
 recomputes hit regions or label positions.
 
-- `frame.hit_test([x, y])` picks data: slices, bars, boxes, radar vertices and
-  polygons. `frame.decorations().hit_test([x, y])` picks the title, axes,
-  labels, legend and plot area, and returns `DataArea` wherever no other
-  decoration is hit, including over data.
+- The radial chart picks its slices on the GPU with the draw's own
+  sector ray-march: `frame.pick([x, y])` submits the pick and returns a
+  `RadialPickTicket`, whose `resolve()` (`resolve_blocking()` natively) reads
+  the slice back. `frame.decorations().hit_test([x, y])` picks the title,
+  axes, labels, legend and plot area, and returns `DataArea` wherever no other
+  decoration is hit, including over data. The radial frame's decorations are
+  a `HitMap<RadialChart>` placed from the chart: pass the chart the frame was
+  prepared from (`frame.decoration_at(&chart, [x, y])`).
 - Test the selected plot area's resize handles first (`hit_resize_handle`),
   then foreground decorations, then data, then `DataArea`. The plot area wins
   over data only while the host is in a plot-area edit mode.
@@ -32,8 +36,11 @@ recomputes hit regions or label positions.
 
 ## 데이터 선택과 장식 요소 선택
 
-- `frame.hit_test([x, y])`는 원형 조각·막대·박스·레이더 꼭짓점과 다각형 같은 데이터를 고른다.
+- 원형 차트는 그리기와 같은 조각 광선 추적으로 GPU에서 조각을 고른다. `frame.pick([x, y])`가 요청을 제출하고
+  `RadialPickTicket`을 돌려주며, `resolve()`(네이티브는 `resolve_blocking()`)가 결과를 읽는다.
 - `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례와 그리기 영역(`DataArea`)을 고른다.
+  원형 차트의 장식 요소는 차트에서 위치를 다시 계산하는 `HitMap<RadialChart>`이므로, 프레임을
+  준비한 차트를 함께 넘긴다(`frame.decoration_at(&chart, [x, y])`).
 - 영역을 선택한 상태라면 `map.hit_resize_handle(id, [x, y])`로 리사이즈 핸들을 먼저 검사한다.
   핸들은 영역 경계 밖으로도 걸쳐 있다.
 - 그다음 제목·라벨·축·범례 같은 앞쪽 요소, 데이터, `DataArea` 순서로 호스트가 판정한다.
@@ -42,8 +49,8 @@ recomputes hit regions or label positions.
 - 좌표와 이동량은 차트 내부의 논리 픽셀이다. CSS로 확대된 캔버스라면 화면 좌표를
   차트의 논리 크기로 변환한다. DPR을 곱한 framebuffer 좌표를 넘기지 않는다.
 
-장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 막대·박스플롯·레이더의
-`selected`·`hovered`와 원형의 `interaction.selected`·`interaction.hovered`에 저장한다.
+장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 원형의
+`interaction.selected`·`interaction.hovered`에 저장한다.
 두 선택은 별개 상태이므로 한 종류만 선택하려면 호스트가 다른 쪽 선택을 명시적으로 지운다.
 
 | 요소 | `DecorationId` | 이동 규칙 |
@@ -54,21 +61,227 @@ recomputes hit regions or label positions.
 | 눈금·범주 라벨 | `AxisLabel(Side)` | 해당 축의 라벨 묶음을 이동 |
 | 축 제목 | `AxisTitle(Side)` | 회전된 제목도 포인터의 화면 방향으로 이동 |
 | 범례 | `Legend` | 기호와 모든 행을 함께 이동 |
-| 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨 연결선 끝도 갱신 |
-| 막대·박스·레이더 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
-| 레이더 스포크 라벨 | `SpokeLabel { category_id }` | 바깥 고리 끝의 범주 이름 하나만 이동. 재정렬해도 같은 ID에 적용 |
+| 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨의 연결선은 라벨의 일부로, 조각에서 시작해 옮긴 글자까지 이어진다. 선택 테두리와 판정 영역은 글자 줄과 연결선을 각각 감싼다 |
+| 막대·박스·레이더 값 라벨 | `PickedDataRef::ValueLabel { series_id, category_index }`(선택), 이동량은 시리즈의 `labels.offsets` | 해당 값 라벨만 이동. GPU 데이터 선택(`pick_chart_data`)으로 고르며, 아래 "Value labels" 참고 |
 
-원형 차트는 축과 범례를 그리지 않으므로 그 히트 영역도 없다. 레이더는 첫 스포크를 따라
-놓는 값 라벨 묶음을 `AxisLabel(Left)`로 등록하고 축 선·축 제목은 없다. 숨긴 제목·라벨·범례는
+원형 차트는 축과 범례를 그리지 않으므로 그 히트 영역도 없다. 레이더 차트는 극좌표
+차트이므로 아래 극좌표 축 드래그 규칙을 따른다. 숨긴 제목·라벨·범례는
 히트맵에 등록되지 않는다. 축 라벨은 Cartesian 차트와 같이 묶음 선택이며, 범주 이름 하나마다
 독립적으로 이동하는 계약은 아니다. 영역 조정은 데이터 값이나 축 범위를 바꾸지 않는다.
 드래그로 데이터 값을 바꾸는 기능은 없다.
 
+A categorical Cartesian axis (`AxisOptions::categories`) draws its category
+labels as the same `AxisLabel(Side)` group as numeric tick labels: they are hit,
+selected, highlighted and dragged (along and across the axis, through
+`label_offset_x` / `label_offset_y`) together, and the axis line drag moves
+them with the line. This holds on overlay Y axes and in subplots.
+
+The labels an adaptive logarithmic axis (`AxisOptions::log_ticks`, #42)
+keeps on its 1..9 or 1-2-5 ladder are the same `AxisLabel(Side)` group: a
+2·10^k label is inside the group's bounds, hits as it and drags with it, on
+overlay Y axes, in subplots, on the polar ray and on the colourbar. Which
+labels the pruning keeps depends on the range and the pixels only; a drag
+moves the kept labels and does not change the set.
+
+Categorical bars are a Cartesian series kind (`DataRenderType::CategoryBars`
+over a categorical axis, [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)),
+so every Cartesian interaction applies to them unchanged: the title, legend,
+axes, tick and category labels and axis titles are selected and dragged as
+on any Cartesian chart, the plot area is dragged and resized, the annotation
+layer and the active layer route as below, and overlays and subplots carry
+their own bar groups. A bar is picked by the typed data pick
+(`pick_chart_data`) as `PickedData::HistogramBin { series_id, bin_index }`,
+`bin_index` the category row, through the bar's drawn shape (rounded
+corners and overrides included); a host's hover and click use this pick
+(`pick_data` in the WASM wrapper), as for histogram bins. A selected bar
+(`PickedDataRef::HistogramBin` in `Config.picked_data`) draws an inside
+outline in the highlight colour and gains its emphasis brightness. In the
+WASM wrapper `step_selection(dx, dy)` (the model's `Config::step_selection`,
+which native hosts call with their column lengths) moves along the categories on the
+category axis' pointer direction and across the series of the bar group on
+the other, and `selection_details()` reports the category id and label and
+the bar's value read back from the GPU column. An axis line that crosses
+the value axis (`AxisOptions::cross_at`) is hit and dragged where it is
+drawn. The bars' value labels are pick and drag targets of their own
+(Value labels, below).
+
+Box plots are a Cartesian series kind too (`DataRenderType::BoxPlot` over a
+categorical axis, [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md)),
+with the same Cartesian interactions: decoration selection and drag, the
+plot area, the annotation layer and the active layer, and overlays and
+subplots with their own box groups. Every drawn part of a box (the body,
+the whiskers and caps, the median, the mean and each outlier) is picked by
+`pick_chart_data` as `PickedData::HistogramBin { series_id, bin_index }`
+for its box, `bin_index` the category row; a host's hover and click use
+this pick. A selected box (`PickedDataRef::HistogramBin`) draws an inside
+outline around its painted body, the notch included, and gains its
+emphasis brightness. In the WASM wrapper `step_selection(dx, dy)` walks the
+categories and the series of the box group (the boxes, never their
+outliers), and `selection_details()` reports the category and the box's
+statistics read back from its record. The boxes' value labels are pick and
+drag targets of their own (Value labels, below). A box plot's violin
+answers its category the same way, inside its fill or on its outline, a
+split violin naming the half under the cursor (`half`), and its highlight
+outlines the selected category's violin or the selected half alone; a raw point
+(`BoxPlot.points`) is picked as `PickedData::Point { series_id,
+point_index }` where its draw placed it, its highlight rings it, and
+`step_selection` walks the points (`dx`) and the box plot series with
+points (`dy`).
+
+Radar series are a polar series kind (`DataRenderType::Radar` on a polar
+chart with a categorical angle axis, [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)),
+so the polar interactions apply unchanged: the title, legend, ring and ray
+axes, spoke (category) and ring labels and axis titles are selected and
+dragged as on any polar chart, the plot area is dragged and resized, the
+annotation layer places ratio anchors, and polar subplots carry their own
+radar groups. A vertex is picked by `pick_chart_data` as
+`PickedData::Point { series_id, point_index }`, `point_index` the category row; the
+outline, its closing segment from the last category back to the first and
+the fill pick the series too, with the vertex markers over the outline and
+the outline over the fill. A picked vertex (`PickedDataRef::Point`) draws the
+picked ring. In the WASM wrapper `step_selection(dx, dy)` steps the vertices
+of the series and across the radar series, and `selection_details()`
+reports the category id and label. The vertices' value labels are pick and
+drag targets of their own (Value labels, below).
+
+Range bars are a Cartesian series kind as well (`DataRenderType::RangeBars`,
+[range bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RANGEBARS.md)),
+with the same interactions: decoration selection and drag, the plot area,
+the annotation layer and the active layer, and overlays and subplots with
+range groups of their own. The body, the whisker and the connector of a bar
+are picked by `pick_chart_data` as `PickedData::HistogramBin { series_id,
+bin_index }` for the bar, `bin_index` its row; the picked bar's highlight
+rings its body, and `step_selection` moves along the rows and across the
+range series of the layer.
+
+Ternary charts (`Config.ternary`, `DataRenderType::Ternary`,
+[ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md))
+keep every interaction in the triangle's frames. Markers, strokes, dashes
+and region fills are picked where they paint as
+`PickedData::Point { point_index }` (a fill's index is the lowest of an
+edge the cursor's ray crosses, and a fill loses every tie to a mark);
+the picked ring is drawn on the marker, `step_selection` walks the points
+(bounded by the shortest of the three columns), and `selection_details()`
+reports `x`, `y` and `c`. An edge drags along its outward normal
+(`line_offset`), its tick labels drag along the edge (`label_offset_x`) and
+along the normal (`label_offset_y`), and the titles drag in screen space.
+The slanted edges and their labels hit and outline on their drawn parts;
+the top axis registers nothing. The plot area moves and resizes, and the
+triangle refits. The annotation layer places ratio anchors only, ternary
+subplots carry their own triangle, and overlays and streamed sources are
+rejected.
+
+Parallel coordinates (`Config.parallel`, `DataRenderType::Parallel`,
+[configuration](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates))
+keep the rectangular chart's interactions and add the axes' own. A row is
+picked by `pick_chart_data` as `PickedData::Point { point_index }` where its
+nearest segment is within the distance; the picked row is redrawn in the
+selection's colour and width over every row; `step_selection` walks the
+rows (bounded by the shortest column); `selection_details()` reports
+`values` (one per axis) and, mapped, `color_value`. Each parallel axis's
+tick labels are their own element (`Element::ParallelAxisLabel(i)`, hit id
+`parallel_axis_labels_{i}`) and drag into the axis's `label_offset`; the
+categorical `bottom_x` (its labels, drag and title), the chart title, the
+legend and the plot area behave as on any rectangular chart, and `left_y`
+registers its elements but draws nothing. The annotation layer places
+ratio anchors and `bottom_x` data anchors (the y axis is the normalized
+band `0..1`); parallel subplots carry their own axes; overlays and streamed
+sources are rejected.
+
+Triangle mesh series (`DataRenderType::TriMesh`, #210) are picked by
+`pick_chart_data` as `PickedData::MeshTriangle { series_id, triangle_index,
+vertex_index }`: the triangle under the cursor's pixel, or within one output
+pixel of its edge, where the fill paints, the later triangle on overlap;
+`vertex_index` is its vertex nearest the cursor and is not kept in the
+selection. A contour stroke within the pick distance answers first, as
+`PickedData::ContourLevel` with the triangle in `x_index`. The picked
+triangle is outlined inside its edges and a picked level redrawn wider.
+`step_selection` walks the triangles with `dx` and the mesh series with
+`dy`; `selection_details()` reports the triangle's vertex indices and their
+coordinates and values. Decorations, the plot area, the annotation layer,
+overlays and subplots work as on any Cartesian chart. On a 3D chart
+(`Config.view_3d`, [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md))
+the mesh is a surface over its triangles and its contours are on the box
+floor: the ID pick answers the triangle the cursor's pixel shows as
+`MeshTriangle` and a floor stroke as `ContourLevel`, never one hidden behind
+the surface; the picked triangle is outlined and brightened over anything in
+front of it; `step_selection` and the details are the flat chart's.
+
+3D charts (`Config.view_3d`, a heatmap or a triangle mesh drawn as a surface,
+[surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
+pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
+depth test: a heatmap surface answers `PickedData::MatrixCell` for the grid
+sample nearest the fragment inside its quad and a mesh surface
+`PickedData::MeshTriangle` for its triangle, never one hidden behind the
+surface,
+and a floor contour answers its level; a scatter or line series with a
+`z_column` answers `PickedData::Point` for the marker or the segment end
+under the cursor, never a mark behind a surface. The picked sample's patch is
+outlined and brightened over anything in front of it, and a picked point is
+ringed at its projected place. `step_selection`
+walks the samples and `selection_details()` reports the sample's values. A
+data-area drag orbits the camera (`Config::orbit_view`) and
+`Config::zoom_view` zooms it; the data area's edges still resize it. A box
+axis drags along its edge's outward screen normal (`line_offset`), its tick
+labels in the edge frame and the titles in screen space. The annotation
+layer places ratio anchors only, 3D subplots carry their own camera, and
+overlays and streamed sources are rejected.
+
+### Value labels
+
+The value label of a category bar, box plot or radar series is the
+series' `labels.text[i]` (SSOT configuration, written by `format_labels`,
+`format_box_plot_labels` or `format_radar_labels`; the renderer never formats
+a value), drawn at the bar end, past the top of the box or outside the
+vertex along its spoke, from the pool on every draw, and moved by its drag
+offset `labels.offsets[i]` (logical pixels, x right, y down). Labels never
+displace each other, and nothing is thinned: a crowded categorical axis
+staggers its labels over rows ([#205](https://github.com/shim9610/figgy/issues/205)) instead.
+
+- **Hover and click.** A label is a typed pick target: `pick_chart_data`
+  answers `PickedData::ValueLabel { series_id, category_index, distance_px }`
+  within the pick distance of its selection box (0 inside it). A label is
+  drawn over every series of its panel, so it wins every tie against the
+  data under it: the pick of an inside label's pixels names the label, not
+  its bar. `pick_chart` (points and lines) does not see labels. In the WASM
+  wrapper `pick_data` reports `{ "kind": "value_label", series_id,
+  category_index, label_id, distance_px }` and `pick_point` reports a label
+  under the pointer before any point, as `{ source_id, series_id,
+  point_index: category, distance_px, label_id }`.
+- **Selection.** A selected label is the typed selection
+  `PickedDataRef::ValueLabel` in `Config.picked_data` (`PickedData::to_ref`);
+  its selection box is drawn around its frame by the same placement it is
+  drawn with: its content box grown by `SELECTION_PADDING`, stroked
+  `SELECTION_STROKE_WIDTH` wide in `SELECTION_COLOR`, as a decoration's box.
+  `step_selection` does not step a label (it returns `false`), and
+  `selection_details()` reports its category, string, offset and
+  `label_id`. A radar series with `Emphasized` labels shows them while it has
+  a selection.
+- **Drag.** A drag writes the label's offset through
+  `SeriesConfig::drag_value_label(index, categories, dx, dy)` (logical-pixel
+  deltas; the first drag fills `labels.offsets` with one zero offset per
+  category); the next frame draws the label there. The placement is the
+  GPU's, so the only bound on a drag is `MAX_VALUE_LABEL_OFFSET` (4096 px)
+  along either axis. The CPU hit map (`hit_test`, `on_press`) does not hold
+  labels: their positions come from the pool. A WASM host presses a label by
+  the id a pick reported, `"series:<series_id>:label:<index>"`
+  (`value_label_id` / `parse_value_label_id`):
+  `press_value_label(label_id)` selects it and starts the drag, `on_move`
+  moves it and `on_release` ends it. A legacy document's `DataLabel`
+  offsets are read into `labels.offsets`.
+- **Export, overlays and subplots.** PNG export bakes the atlas at the
+  export scale, so a 2x export draws the strings at twice the size, not a
+  magnified 1x atlas. A series on an overlay or a subplot draws, picks and
+  drags its labels in its own panel. A label that would cross the data
+  area's edge past its anchor is placed on the other side of the anchor
+  (inside the bar's end, below a box's top, inward along a radar spoke),
+  drawn and picked there; what still overflows after that is clipped to the
+  data area like every data primitive.
+
 ## Manual label placement
 
 Use the displayed frame's decoration hit map to select and drag labels. Each
-radial label, each bar/box/radar value label and each radar spoke label can move
-independently; axis tick labels move together as a group. Drag deltas are
+radial label can move independently; axis tick labels move together as a group. Drag deltas are
 floating-point logical pixels, so small fractional adjustments are supported. Store selection in `decorations.selected`,
 apply `drag_by` to `chart.decorations`, and prepare a new frame before drawing or
 using the updated hit map. Export uses the same stored offsets.
@@ -82,55 +295,58 @@ use renderer::{RadialChart, RadialRenderer, DecorationId};
 # fn edit(renderer: &mut RadialRenderer, chart: &mut RadialChart) -> Result<(), renderer::RadialError> {
 // 실제 모델/크기/DPR에 맞춰 준비한 프레임으로만 선택한다.
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
-let map = frame.decorations();
-if let Some(hit) = map.hit_test([120.0, 180.0]) {
-    let target: DecorationId = map.element(hit).unwrap().id.clone();
+// 원형 차트의 장식 요소는 차트에서 위치를 다시 계산하므로 프레임을 준비한 차트를 넘긴다.
+if let Some(hit) = frame.decoration_at(chart, [120.0, 180.0]) {
+    let target: DecorationId = frame.decoration_id(chart, hit).unwrap();
     chart.decorations.selected = Some(target);
 
     // 프레임별 포인터 이동량. 누적 drag_delta를 매번 더하지 않는다.
-    let result = map.drag_by(&mut chart.decorations, hit, 8.0, -4.0);
+    let result = frame.drag_decoration(chart, hit, 8.0, -4.0);
     // result: Some(Moved), Some(Rejected(OutOfBounds)), 또는 없는 hit면 None.
     // 거절 시 상태는 바뀌지 않는다.
     let _ = result;
 }
 let next_frame = renderer.prepare(chart, (800, 520), 2.0)?;
-// next_frame.draw(...) 또는 renderer.export_rgba_async(...).
+// next_frame.draw(...) 또는 renderer.export_rgba(...).
 # Ok(()) }
 ```
 
 기존 트레잇을 직접 사용하는 경로도 같다.
 
 ```rust,no_run
-# fn drag(map: &renderer::decoration::DecorationMap, hit: renderer::HitId,
+# fn drag(frame: &renderer::RadialFrame, hit: renderer::HitId,
 #         chart: &mut renderer::RadialChart) {
-let element = map.hit_map().get(hit).unwrap();
+let element = frame.decorations().get(hit).unwrap();
+// 원형 차트의 요소는 차트에서 부품을 배치하고 글자를 직접 측정하므로 measure는 읽지 않는다.
 let result = element.as_draggable().unwrap()
-    .drag_by(&mut chart.decorations, 8.0, -4.0);
+    .drag_by(chart, &renderer::CpuTextMeasure::default(), 8.0, -4.0);
 # let _ = result;
 # }
 ```
 
 `HitId`는 해당 프레임 히트맵에서만 유효하다. 장기간 저장할 때는 `DecorationId`를 쓴다.
 크기·폰트·데이터·방향·모양을 바꾼 다음에는 `prepare`한 새 프레임에서 다시 조회한다.
-`map.bounds(hit)`와 `map.selection_box(hit)`도 논리 픽셀이다. 선택 테두리는 공통
+`map.bounds(hit)`와 `map.selection_box(hit)`도 논리 픽셀이다. 원형 프레임에서는
+`frame.decoration_bounds(&chart, hit)`와 `frame.decoration_selection_box(&chart, hit)`가 같은
+값을 돌려주며, 캔버스보다 넓은 제목의 선택 테두리는 캔버스 안으로 잘린다. 선택 테두리는 공통
 `SelectionBox` 규칙으로 렌더러가 그린다.
 
 ## 그리기 영역 선택과 크기 조정
 
 `DecorationId::DataArea`의 히트맵 요소는 `as_draggable()`와 `as_resizable()`을 모두 제공한다.
 선택 테두리의 8개 핸들, 핸들 판정과 이동 방향은 기존 공통 리사이즈 계약을 사용한다.
-`DecorationMap::hit_resize_handle`과 `resize_by`는 같은 트레잇 호출을 편하게 감싼 메서드다.
+원형 프레임의 `decoration_resize_handle`과 `resize_decoration`은 같은 트레잇 호출을 편하게
+감싼 메서드다.
 
 ```rust,no_run
 # fn resize(renderer: &mut renderer::RadialRenderer, chart: &mut renderer::RadialChart)
 # -> Result<(), renderer::RadialError> {
 use renderer::{DecorationId, layout::NudgeResult, resize::ResizeHandle};
 let displayed = renderer.prepare(chart, (800, 520), 2.0)?;
-let map = displayed.decorations();
-let (id, _) = map.entries().find(|(_, e)| e.id == DecorationId::DataArea).unwrap();
+let id = displayed.decoration(&DecorationId::DataArea).unwrap();
 let mut trial = chart.clone();
 trial.decorations.selected = Some(DecorationId::DataArea);
-if map.resize_by(&mut trial.decorations, id, ResizeHandle::SE, -80., -60.)
+if displayed.resize_decoration(&mut trial, id, ResizeHandle::SE, -80., -60.)
     == Some(NudgeResult::Moved)
 {
     // 글자가 들어갈 공간까지 검사한 뒤 편집 결과를 확정한다.
@@ -146,8 +362,8 @@ if map.resize_by(&mut trial.decorations, id, ResizeHandle::SE, -80., -60.)
 범례에 필요한 공간을 측정해 자동 배치한다. 지정한 영역은 이 자동 영역 안에 있어야 하며
 최소 크기는 80×60이다. 처음에는 가용 영역을 사용하므로 크기를 줄인 뒤 남은 공간 안에서
 옮길 수 있다. 더 넓은 영역이 필요하면 캔버스를 키우거나 제목·라벨 공간을 줄인다.
-원형 차트는 이 영역 안에 원과 라벨을 배치하며 분할 원도 함께 이동한다. 레이더는 영역 안에서
-범주 라벨이 들어갈 자리를 남긴 가장 큰 원을 바깥 고리로 쓴다. 막대·박스플롯은
+원형 차트는 이 영역 안에 원과 라벨을 배치하며 분할 원도 함께 이동한다. 레이더를 포함한
+극좌표 차트는 영역 안의 가장 큰 원을 바깥 고리로 쓴다. 막대·박스플롯은
 영역을 데이터 좌표의 투영 범위로 쓰며, 축·눈금·그리드·데이터 라벨을 함께 다시 계산한다.
 차트 제목과 범례는 각각 기존 캔버스 기준 배치를 유지한다.
 
@@ -167,7 +383,7 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 
 `decorations.data_area`가 영역을, `decorations.offsets`가 각 요소의 자동 배치 결과에 더할 논리 픽셀 이동량을 보관한다.
 `decorations.reset(&id)`는 해당 요소를 자동 위치로 되돌린다. `serde` 기능을 켜면 원형·범주형 막대·박스플롯·레이더
-모델 모두 이 상태를 직렬화·복원할 수 있으며, 이전 문서에 `decorations`가 없으면 기본 위치와 선택 없음으로 읽는다.
+문서 모두 이 상태를 직렬화·복원할 수 있으며, 이전 문서에 `decorations`가 없으면 기본 위치와 선택 없음으로 읽는다.
 원형 조각 ID는 원본 배열 인덱스이므로 조각을 재정렬할 때 호스트가 관련 선택·이동 상태도 대응시켜야 한다.
 
 영역·위치·장식 선택 변경은 라벨 텍스처 캐시를 무효화한다. 재질·데이터 호버처럼 글자 위치를
@@ -181,7 +397,9 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 ## 트레잇 상태 타입, 마이그레이션, 웹 연결
 
 `Selectable`, `Draggable`, `Resizable`, `HitMap`은 상태 타입을 매개변수로 받으며 기본값은 `Config`다.
-Cartesian 차트는 `Config`를, 원형·범주형 막대·박스플롯·레이더는 `DecorationLayout`을 상태로 넘긴다.
+Cartesian 차트(범주형 막대·박스플롯 포함)는 `Config`를, 원형 차트는 `RadialChart`를 상태로
+넘긴다. 레이더 문서는 `Config::from_radar`로 읽은 `Config`를 쓴다. 원형 차트의 요소는 넘긴 차트에서 부품을 배치하므로
+히트·선택 테두리·드래그가 그림과 같은 배치에서 나온다.
 원형·범주형 막대·박스플롯·레이더 모델의 모든 필드를 명시한 Rust 구조체 리터럴에는
 `decorations: Default::default()`가, `DecorationLayout`의 모든 필드를 명시한 리터럴에는
 `data_area: None`이 필요하다. `..Default::default()`로 끝내도 된다. `DecorationId`를 빠짐없이
@@ -189,12 +407,13 @@ Cartesian 차트는 `Config`를, 원형·범주형 막대·박스플롯·레이�
 `DataAreaEdge`는 리사이즈가 내부에서 옮기는 변을 가리키며 히트 영역으로 등록하지 않는다.
 `data_area`가 없는 JSON은 영역을 자동 배치로 읽는다.
 
-Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·박스플롯·레이더를 위한
+Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형 차트를 위한
 `FiggyBoundedChart`를 제공한다. 이 클래스는 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며,
 호스트는 포인터 이벤트를 연결하고 SSOT 변경 후 새 프레임을 그린다. 초기 표시는
 `first_frame_ready()`를 기다린다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
+레이더 문서는 극좌표 차트이므로 `FiggyChart.set_radar_document`로 연다.
 
-네이티브 연결 예제는 `radial_editor`, `categorical_editor`, `boxplot_editor`, `radar_editor`이며
+네이티브 연결 예제는 `radial_editor`이며
 `egui_demo` 기능이 필요하다.
 `cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor`처럼 실행한다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.
@@ -205,26 +424,36 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·
 데이터 경계라 히트 영역이 없고, 반직선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아
 `radial_label_angle_degrees`가 바뀐다. 각도 눈금 라벨은 포인터가 있는 스포크를 따라 안팎으로,
 반지름 눈금 라벨은 반직선 프레임에서 움직인다. 이 규칙에는 포인터 위치가 필요하므로
-`Draggable::drag_from(cfg, at, dx, dy)`와 `Config::nudge_from(element, Some(at), dx, dy)`에
+`Draggable::drag_from(cfg, measure, at, dx, dy)`와 `Config::nudge_from(element, measure, Some(at), dx, dy)`에
 이동량을 잰 기준 포인터 위치 `at`(차트 내부 논리 픽셀)을 함께 넘긴다. `drag_from`의 기본 구현은
 `at`을 무시하고 `drag_by`를 호출하므로, 극좌표 축과 눈금 라벨이 아닌 요소는 `drag_by`와 똑같이
 움직인다. 웹 래퍼의 `on_move`는 누른 지점에 이동량을 누적한 포인터 위치를 넘긴다. 상단·우측 축은
 그리지 않으므로 축 선·눈금 라벨·제목 모두 히트 영역이 없다. 각도나 반지름 눈금 라벨을 선택하면
 원 전체를 감싸는 상자 하나 대신 라벨마다 그려진 자리에 선택 상자를 그린다
-(`SelectionBox::outline`이 `SelectionOutline::TickLabels(side)`). 차트 제목, 하단·좌측 축 제목, 범례,
+(`SelectionBox::outline()`이 `SelectionOutline::Parts`이고, 반직선도 선과 눈금마다 그려진 자리에 상자를 그린다). 차트 제목, 하단·좌측 축 제목, 범례,
 그리기 영역은 일반 차트와 같이 움직인다.
 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
 
-## Independent bounded chart titles
+## Independent radial chart titles
 
-The four bounded charts, `RadialChart`, `CategoricalChart`, `BoxPlotChart` and
-`RadarChart`, accept an optional
-`chart_title: BoundedTitleOptions { visible, text: RichText }`. When present it
-is authoritative. The legacy plain `title` is a fallback only. Call
-`normalize_title()` once when loading an old document into an editor: it copies
-its title, family, color and former `font_size * 1.5` size into the independent
-rich document. Later label size/color/family edits do not alter that document.
-Native code can set `chart_title` directly; the old plain API remains available.
+The radial chart and the categorical, box plot and radar documents accept an
+optional rich `chart_title`. `RadialChart`
+holds the shared chart title, `chart_title: Option<ChartTitleOptions>`, written
+and read as the same `{ visible, text }` object; its `offset_x`, `offset_y` and
+`top_margin` must be 0 there, because the position lives in `decorations`, and
+the title is centred in the chart's own title band across the canvas through
+`select::emit_chart_title_in`. `CategoricalChart`, `BoxPlotChart` and
+`RadarChart` hold `chart_title: BoundedTitleOptions { visible, text: RichText }`;
+those three documents are read into a Cartesian or polar `Config`, whose chart
+title the rich title becomes.
+It is the radial chart's only title (#160). `RadialChart::set_title_text(text)`
+makes a plain title in the chart's current family, `font_size * 1.5` and label
+colour; later label size/color/family edits do not alter it. A radial document
+written before 0.19 may carry the former plain `title` string: without a
+`chart_title` it is read into one in the document's font, the way it was drawn,
+and only `chart_title` is written. A legacy categorical, box plot or radar
+document's title (its `chart_title`, or its plain `title` in its font) is read
+into the `Config`'s chart title.
 
 The existing `DecorationId::ChartTitle` and `decorations.offsets` remain the only
 position authority. Do not add a second host-side title offset or HTML overlay.
@@ -234,33 +463,39 @@ Hidden titles are not registered in the hit map. Automatic plot space accounts
 for title metrics; incompatible explicit data areas fail preparation atomically.
 
 Title font sizes are 6–160 logical pixels, with at most 512 characters and eight
-lines. The label font fields control axis, category, data and legend text as
-specified by each bounded family, not an explicit title.
+lines (`RichText::within_limits`). A radial title wider than the canvas is drawn
+clipped by it; its hit region, selection box and drag containment are its drawn
+extent intersected with the canvas. The documents read into a `Config` follow
+the Cartesian title rules. The label font fields control label text, not an
+explicit title.
 
 Multi-line titles also support `text.align` (`TextAlign::Left`, `Center`, or
-`Right`) inside the measured text block. `normalize_title()` preserves legacy
-appearance by using `Left`; existing saved rich titles without `align` also
-read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
+`Right`) inside the measured text block. A plain title (`set_title_text`, or a
+legacy plain `title` read from a document) uses `Left`; existing saved rich
+titles without `align` also read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
 `..Default::default()`).
 
-Run `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles`
-for a native PNG example covering all four families, multiline alignment and a
-subscript; it writes `pie.png`, `bar.png`, `box.png` and `radar.png`. See
-[the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/bounded_titles.rs). Hosts own editor widgets,
+Run `cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles`
+for a native PNG example covering the radial chart, multiline
+alignment and a subscript; it writes `pie.png`. A
+categorical, box plot or radar document's title becomes the chart title of
+the `Config` it is read into (`Config::from_categorical`,
+`Config::from_boxplot`, `Config::from_radar`). See
+[the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/radial_titles.rs). Hosts own editor widgets,
 undo and file storage.
 
 ## Layers and the active layer
 
-Every chart family (`Config`, `RadialChart`, `CategoricalChart`, `BoxPlotChart`,
-`RadarChart`) carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
+Every chart family and document (`Config`, `RadialChart`, `CategoricalChart`,
+`BoxPlotChart`, `RadarChart`) carries `active_layer: LayerRef` and `annotations: AnnotationLayer`. Both are
 `serde(default)` and omitted from JSON at their defaults, so existing documents
 parse and serialize unchanged. `LayerRef::Base` (the default) is the chart's
 own layer; `Overlay(index)` addresses an overlay layer, `Subplot(index)` and
 `SubplotOverlay(subplot, overlay)` a subplot and an overlay inside it, and
-`Annotations` the annotation layer. Bounded charts have no overlays or
-subplots and read those values as `Base`. The active layer is document state
+`Annotations` the annotation layer. The radial chart and the legacy documents
+have no overlays or subplots and read those values as `Base`. The active layer is document state
 one level above element selection: it decides which layer's elements the
-pointer route registers, while `selected`, `picked_points` and `picked_data`
+pointer route registers, while `selected` and `picked_data`
 keep naming the element inside that layer. Drawn pixels never depend on
 `active_layer`: inactive layers are not dimmed, and editing chrome belongs to
 the host. Overlay layers and subplots route through the Cartesian hit map (see
@@ -274,7 +509,7 @@ hit map registers the `Overlay` ids for the active overlay (see "Overlay
 layers"); annotation items are hit-tested through their own `AnnotationMap`,
 which the pointer route tests on top while `Annotations` is active (see
 "Annotation layer"). Explicit Rust chart literals need the two fields (or
-`..Default::default()`). The bounded frame and label raster caches strip both
+`..Default::default()`). The radial frame and label raster caches strip both
 fields from their keys, so editing either reuses the cached frame; only the
 annotation pass depends on them.
 
@@ -306,9 +541,13 @@ decoration texture, above every layer. The registry classifies every
 direction, band or series list is also a geometry edit (the `view` revision),
 its colours and legend are not.
 
-**Drawing order and pixels.** Panels composite in layer order, each as
-grid → data (then its picked highlights) → decoration, so the picked-highlight
-order is "A data → A highlight → B data → B highlight". Overlay panels draw
+**Drawing order and pixels.** Panels composite in layer order in two
+passes: first every panel's grid → data (then its picked highlights), then
+every panel's decoration. So the picked-highlight order is "A data →
+A highlight → B data → B highlight", and on every layer the decoration is
+above the data, as on a single-layer chart: an overlay's data never covers
+the base panel's axes and labels, nor a subplot overlay's data its
+subplot's. Overlay panels draw
 no grid, X axis, title or colourbar and, in the Milkyway style, no backdrop.
 `ChartView::render_warnings` merges every panel's tick warnings, overlay ones
 tagged `WarningAxis::OverlayY(index)`.
@@ -362,9 +601,9 @@ from its series. Series of a subplot count only where an axis is linked (see
 (`set_active_layer`, then `auto_fit_all`) or calls `auto_fit_overlay_y` /
 `auto_fit_subplot` with explicit columns.
 
-**Export.** `export_document_rgba_async` / `export_document_png_bytes_async`
+**Export.** `export_rgba` / `export_png`
 (and their `_with_clear` and blocking native variants) render the whole group
-into one image; the existing `export_panel_*` entry points stay and render the
+into one image; the existing panel exports (`ExportScope::Panel`) stay and render the
 base panel only. For a document without overlays both produce byte-identical
 images. The WASM `export_png` exports the document.
 
@@ -377,8 +616,8 @@ never invalidate a panel's axis raster cache. Overlay panels carry no
 annotation textures.
 
 **Limits.** Polar charts take no overlay layers; overlays own no X axis (no
-twiny); nesting is one level (overlays have no layers of their own); bounded
-charts cannot be overlay layers; a nonresident streaming series listed by an
+twiny); nesting is one level (overlays have no layers of their own); the
+radial chart cannot be an overlay layer; a nonresident streaming series listed by an
 overlay is rejected by every registry entry point, and the stream request
 paths reject a document with overlays as a whole. Subplots are charts of
 their own; see the next section.
@@ -417,11 +656,42 @@ parent's. Every element measures against the subplot's chart
 single-chart policy to that chart, stored back in `subplots[i].config`: the
 subplot's data area moves and resizes through its own margins, its axes,
 labels, titles and legend move as on any chart. The set depends on the active
-layer, the overlay count and the active subplot's overlay count; rebuild the
-map when any of them changes. A subplot or overlay index past its list
+layer, the overlay count, the active subplot's overlay count and the subplot
+count; rebuild the map when any of them changes. A subplot or overlay index past its list
 recovers to `Base`, a missing subplot overlay to its subplot. GPU picking of an
 active subplot layer uses that subplot's panel in its own area and only the
 series it draws.
+
+**Subplot frames on the base layer** ([#205](https://github.com/shim9610/figgy/issues/205)).
+With `Base` active, `HitMap::for_active_layer` also registers, over the
+parent's elements, every subplot's frame (`SubplotFrameElement`,
+`subplot_<i>:frame`, `Element::SubplotFrame(i)`) and that subplot's own
+base set except its plot (`subplot_<i>:axis_left`, `subplot_<i>:legend`, …,
+as `SubplotElement`s). These answer only where their subplot is drawn on
+top (`Selectable::owns_point`, from `Config::subplot_at`: panels of their
+own in list order, then insets in paint order, the last that holds the
+point), so where panels overlap the one painted over the others takes the
+pointer, and the parent's plot beside an inset stays the parent's. A press
+on a subplot's plot selects its frame. The frame drags as a whole
+(`Draggable::drag_from`, with the pointer) and its eight handles resize it
+(`Resizable::resize_from`, `Element::SubplotFrameEdge(i, side)`), both by
+whole pixels: the step is how far the rounded pointer moved, so sub-pixel
+moves add up. A frame goes anywhere, inside the parent chart or outside it;
+one moved past the document's top or left edge shifts every chart area by
+the overshoot (`Config::translate_areas`), and a resize that would lose the
+frame's last pixel or leave no room for the subplot's plot is rejected. The
+frame's selection box lies inside the frame, inset by the selection padding
+and half a handle, so it is composited into the subplot's own panel
+wherever the subplot is. The registration does not depend on where the
+subplots are, so a frame moved over or out of another panel keeps its ids.
+A host that scales the document to its surface holds the placement for the
+drag (`Renderer::hold_chart_display(id, true)` on the press that starts
+it, `false` on the release): the document keeps the scale and the position
+of its parent chart it had when the hold began, so a frame dragged past the
+document's edge, which grows the document, does not rescale the page under
+the pointer; parts that leave the surface are cut, and the release fits the
+document again. The WASM wrapper does this in `on_press` / `on_release`,
+the playground in its pointer handlers.
 
 **Linked axes.** `ChartViewState::subplots` carries one view state per
 subplot (a linked axis reads as its root's range) and must match the
@@ -452,14 +722,22 @@ extents.
 whole document (`Config::document_area`, the union of every chart area) to the
 surface and returns the rect where the parent's area lands;
 `GpuPickRequest::display_panel_px` is the displayed document rect
-(`fit_display_panel` of the document area). The document export renders the
-union; `export_panel_*` keeps the parent's area. The document's one annotation
+(`fit_display_panel` of the document area), or the held placement while a
+subplot frame drags (above). A base-layer pick (`pick_chart`,
+`pick_chart_data`) whose cursor lies in a subplot's frame runs on that
+subplot, as if it were the active layer (`Config::subplot_at`, #205); on any
+other active layer the host has chosen the layer itself. The document export renders the
+union; the panel export (`ExportScope::Panel`) keeps the parent's area. The document's one annotation
 layer stays in the parent's area: it is drawn there only, anchored in the
 parent's axes, and its items answer the pointer route
 (`ChartView::hit_test_active_layer`) only while `Annotations` is active; with
 a subplot active the route reaches the subplot's own elements.
 `ChartView::render_warnings` tags a subplot's warnings
-`WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`).
+`WarningAxis::Subplot { index, axis }` (`subplots[i].config.<axis>`). A
+subplot's `marker` (`InsetMarker`, #205) is emitted into the parent's
+annotation layer on every draw, under the insets: the window the inset
+magnifies, clipped to the parent's plot, and connectors to the inset's plot;
+it is not selectable.
 
 **Limits.** Subplots nest one level (a subplot's chart has overlays but no
 subplots), are Cartesian only, keep no annotation layer of their own, and a
@@ -470,6 +748,64 @@ for two native 2×2 exports: `gallery-subplots.png`, the parent and three
 subplots linked to its X axis, and `mixed-axes.png` with one linked axis, a
 different X column and a twin Y axis inside a subplot. See
 [the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/subplots.rs).
+
+## Offset spectra
+
+`Config::line_offsets` stacks line series as offset spectra (see
+[`LineOffsets`](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#lineoffsets-configline_offsets)):
+member `k` is drawn shifted by `k * step_y` along y and `k * step_x` along x.
+The host uploads the curves as they are; the shift is a display parameter,
+and nothing per point is shifted or stored on the CPU. `Config::expand()`
+draws each member as an internal panel of its own after the overlay panels,
+the panel of the layer that scales it with its ranges moved and every axis
+element hidden, so lines, fills, markers, error bars, dashes and the picked
+ring follow without a transform of their own. A later member is drawn over
+an earlier one, its fill included.
+
+**Views and caches.** A member panel has the textures and the raster cache
+of an overlay panel and is counted with them (`overlay_count()`,
+`layer_raster_generations()`); a view created or refreshed with fewer panels
+than the document now has must be refreshed before it draws. Every
+`line_offsets` field is a raster edit and a geometry edit (the `raster` and
+`view` revisions), like adding an overlay; a step edit re-rasterizes only the
+member panels it moves.
+
+**Picking and selection.** A member panel is not a layer: `active_layer`
+never names one, and `Config::panel_layers()` reports its owner's layer for
+it. A pick on the owner layer tests every member where its own panel draws
+it and answers with what is painted under the cursor: the last member in
+`line_offsets.series` order with a hit at distance 0 (inside its painted
+line, marker, error bar or fill) answers first, since the member panels
+composite in that order and a later member's fill covers an earlier
+member's line; with no member painted there, the nearest hit within
+`max_distance_px` of any series answers, as on every chart. A typed pick
+(`pick_chart_data`) lets a member's point hit painted under the cursor
+answer before the data under it. A pick names the source index; `selection_details` in the WASM wrapper
+reads the column's own values from the pool, unshifted, and
+`step_selection` walks the source indices and the series order as without a
+group.
+
+**Decorations, the data area and annotations.** The member panels register
+nothing in the hit map: the owner layer's elements answer as on any chart,
+and a plot-area drag, resize or wheel acts on the base panel, which the
+member panels follow because they are derived from it at expansion. The
+annotation layer stays on the base panel, anchored in the base axes; the
+host places trace labels as annotations (the `OffsetSpectra` playground
+scene labels each trace at its start).
+
+**Fit and export.** `Chart::auto_fit_layer_union` fits the base range from
+every member's extents plus its shift (a factor of `10^shift` on a
+logarithmic axis, `Chart::line_offset_fit_extents`), and the WASM
+`auto_fit_all` does the same with the GPU extents. The document export
+(PNG at any scale, SVG and PDF) draws every member; the panel export (`ExportScope::Panel`) keeps
+the base panel.
+
+**Limits.** Line kinds only, any number of members (each is a panel of its
+own, so a member whose textures cannot be allocated fails with the GPU
+allocation error), no polar chart,
+no `ToSeries` fill across members, and a nonresident streaming member is
+rejected by every registry entry point; the stream request paths reject a
+document with members as a whole.
 
 ## Annotation layer
 
@@ -485,14 +821,9 @@ fixed order is:
 
 - Cartesian panels: grid → annotation underlay → data → picked highlight →
   decoration → annotation overlay.
-- Bounded charts: annotation underlay → the frame's own draw → annotation
-  overlay. The frame paints an opaque background by default, so an underlay
-  only shows through a frame prepared with
-  `FrameBackground::HostClear` (`set_background`), which leaves the background
-  to the host's clear colour; the host then clears with `chart.background`.
-  `export_rgba` switches to that mode by itself whenever an underlay exists and
-  keeps one cached frame per mode, so an export never evicts the interactive
-  frame.
+- The radial chart: the frame's own draw (its opaque background included) →
+  annotation overlay. It has no value axes, so a span is skipped with a
+  warning and nothing is drawn below the slices.
 
 A text box may overlap the legend; the user resolves that by moving the box.
 Annotations do not take part in the data-area margins and the label placer
@@ -501,11 +832,11 @@ never nudges them.
 **Anchor space.** The only thing the layer needs from a chart family is the
 anchor ↔ pixel conversion, the `AnnotationSpace` trait implemented by the
 `PixelSpace` each frame derives from its layout (`pixel_space_for_config` for
-Cartesian configs, `Frame::annotation_space()` for bounded frames,
+Cartesian configs, `RadialFrame::annotation_space()` for the radial frame,
 `AnnotationMap::space()` on any map). Rectangular Cartesian charts convert
-data anchors through `bottom_x` / `left_y`; bar and box charts through the
-category index axis and the value axis. Polar charts (`Config.polar`), radial
-charts and radar charts have no separable value axes: they place ratio
+data anchors through `bottom_x` / `left_y` (on a chart of category bars the
+categorical axis maps category indices, as on a chart of box plots). Polar charts (`Config.polar`, radar
+charts included) and radial charts have no separable value axes: they place ratio
 anchors only and report data anchors as warnings. Drags are converted back
 through the same space, so a data-anchored item follows later zooms and a
 ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds without moving.
@@ -518,7 +849,7 @@ map and nothing else (`ChartView::layer_stamps()` counts each layer's writes).
 `refresh_axis*` redoes the annotation rasters too, because the anchor space
 follows the axes and the data area, so a host that refreshes the axis raster
 needs no second call for the same frame. Toggling `visible` bumps no raster
-revision at all: the draw skips the two composites. On bounded charts
+revision at all: the draw skips the two composites. On the radial chart
 `prepare_annotations(chart, size, scale)` returns an
 `Arc<BoundedAnnotationFrame>` cached beside the frame: an item edit or a
 selection change returns the same `Arc<Frame>` with the same label raster and
@@ -529,24 +860,29 @@ a new annotation frame; a `visible` toggle returns an annotation frame that
 (`AnnotationLayer` implements `DragConfig`) exposed as an `AnnotationMap`:
 `ChartView::annotation_map()` after a refresh,
 `BoundedAnnotationFrame::annotations()` after `prepare_annotations`. It has the
-`DecorationMap` shape: `hit_test`, `element` (index and measured text size),
+shape of a decoration hit map: `hit_test`, `element` (index and measured text size),
 `find(index)`, `bounds`, `selection_box`, `drag_by`, `hit_resize_handle`,
 `resize_by`, `warnings`, `space`. Coordinates are logical pixels of the frame:
-chart-local for bounded charts; for Cartesian charts, the same pixel space as
+chart-local for the radial chart; for Cartesian charts, the same pixel space as
 the `HitMap`, where `chart_area` sits at its own `x` / `y`. Every item has the
 common blue selection box; the handles it carries are the item's own: a span's
 two edges (`W`/`E` or `N`/`S`), a reference line's two value handles (`W`/`E`
 on an `X` line, `N`/`S` on a `Y` line; both move the value), an arrow's two
 endpoints (the endpoint further left is `W`, the other `E`;
-`N`/`S` for a vertical arrow); a text box has none. `resize_by` with that
-compass name moves the handle, `drag_by` moves the whole item. Moves that
-would leave the axis range (lines, span edges), the plot (a whole span) or the
-panel (text, arrow endpoints) are rejected atomically. Later items win where
+`N`/`S` for a vertical arrow); a rectangle's or ellipse's eight box handles
+(`W` / `E` move the side at the smaller / larger x, `N` / `S` the same in y, a
+corner both); a polygon's handles are its vertices (`hit_vertex`,
+`drag_vertex(layer, id, vertex, dx, dy)`, never a compass name); a text box has
+none. A shape is hit anywhere inside its polygon (a concave one in its arms
+and not in its notch), and its selection outline is that polygon. `resize_by`
+with that compass name moves the handle, `drag_by` moves the whole item. Moves
+that would leave the axis range (lines, span edges), the plot (a whole span or
+shape) or the panel (text, arrow endpoints) are rejected atomically. Later items win where
 items overlap. Hidden items and items the raster skipped are not registered;
 the skipped ones are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` / `BoundedAnnotationFrame::render_warnings()`.
 
-Selection follows each family's convention. Bounded charts store it in the
+Selection follows each family's convention. The radial chart stores it in the
 shared `decorations.selected = Some(DecorationId::Annotation(index))`; the
 frame caches ignore that value, so selecting an annotation never rebuilds the
 chart frame. Cartesian hosts pass the selected index to `refresh_annotations`;
@@ -570,13 +906,13 @@ measured by the renderer into the annotation layer's own
   or any overlay, in a single-layer chart and in a layered document alike.
   `config` is the config the view was refreshed with (the display config of a
   scaled view).
-- Bounded: `BoundedAnnotationFrame::hit_test_active_layer(chart.active_layer(),
-  frame.decorations(), point)` tests the items above every decoration of the
-  frame; the decorations all stay registered below them, because a bounded
-  chart has no other layer whose elements could be excluded. Slices, bars,
-  boxes and radar vertices and polygons are not part of either map and keep
-  answering through the frame's own `hit_test` on every layer, as GPU data picking keeps addressing the base
-  layer on Cartesian charts.
+- Radial: `BoundedAnnotationFrame::route_active_layer(chart.active_layer(),
+  point, || frame.decoration_at(&chart, point))` tests the items above every
+  decoration of the frame; the decorations all stay registered below them,
+  because the radial chart has no other layer whose elements could be
+  excluded. Slices are not part of either map and keep answering through the
+  frame's GPU `pick` on every layer, as GPU data picking keeps addressing the
+  base layer on Cartesian charts.
 
 Both return a `LayerHit`: `Annotation { index, id }` (select
 `DecorationId::Annotation(index)` and drag through the annotation map with
@@ -587,12 +923,12 @@ part, which a hidden layer (`visible = false`) never does.
 
 Changing the layer clears the element selection, as on overlay layers: the
 registry drops its `HitId`, the WASM wrapper drops the annotation selection
-when the layer changes away from or into `Annotations`, and the bounded
-`set_active_layer` (`RadialChart`, `CategoricalChart`, `BoxPlotChart`, `RadarChart`,
-with an `Overlay` stored as `Base`) clears `decorations.selected`. The data selection
-(`picked_*`, the bounded charts' selected bar, box, slice or radar target) is kept. A layer
+when the layer changes away from or into `Annotations`, and
+`RadialChart::set_active_layer` (with an `Overlay` stored as `Base`) clears
+`decorations.selected`. The data selection (`picked_*`, the radial chart's
+selected slice) is kept. A layer
 switch changes no raster revision of its own: the data, grid and decoration
-textures and the bounded frame and label raster are reused, and only a cleared
+textures and the radial frame and label raster are reused, and only a cleared
 selection redraws its selection chrome. Selecting or dragging an item through
 the route is an annotation refresh only. The index-based methods
 (`AnnotationMap::find`, `drag_by`, `resize_by` and the WASM `*_annotation`
@@ -600,20 +936,20 @@ methods) keep working on every layer for hosts with their own annotation
 tool.
 
 ```rust,no_run
-use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, DecorationId};
-# fn edit(renderer: &mut renderer::CategoricalRenderer, chart: &mut renderer::CategoricalChart)
-# -> Result<(), renderer::CategoricalError> {
-chart.annotations.items.push(Annotation::new(AnnotationKind::Span {
-    axis: AnnotationAxis::X, from: -0.5, to: 0.5, fill: renderer::Color::new(1., 0., 0., 0.3),
+use renderer::{Anchor, Annotation, AnnotationKind, DecorationId};
+# fn edit(renderer: &mut renderer::RadialRenderer, chart: &mut renderer::RadialChart)
+# -> Result<(), renderer::RadialError> {
+chart.annotations.items.push(Annotation::new(AnnotationKind::Arrow {
+    from: Anchor::Ratio { x: 0.2, y: 0.8 },
+    to: Anchor::Ratio { x: 0.4, y: 0.6 },
+    style: Default::default(),
+    text: None,
 }));
 chart.annotations.items.push(Annotation::new(AnnotationKind::Text {
     anchor: Anchor::Ratio { x: 0.6, y: 0.1 },
     text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 12., ""),
     box_style: Some(Default::default()),
 }));
-// The span is an underlay: prepare the frame with a host clear and clear the
-// pass with `chart.background`.
-renderer.set_background(renderer::FrameBackground::HostClear);
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {
@@ -623,7 +959,7 @@ if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {
     let _ = layer.annotations().drag_by(&mut chart.annotations, hit, 8.0, -4.0);
 }
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
-// In the pass: layer.draw_underlay(pass); frame.draw(pass); layer.draw_overlay(pass).
+// In the pass: frame.draw(pass); layer.draw_overlay(pass).
 # let _ = frame; let _ = layer;
 # Ok(()) }
 ```
@@ -631,7 +967,7 @@ let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 The Cartesian call order is the usual one plus the annotation branch:
 `refresh_axis*` when the raster stamp changed (it carries the annotations
 along), else `refresh_annotations` when the annotation stamp or the selection
-changed, then `prepare` / `paint`. `export_panel_*` rasterizes the layer at the
+changed, then `prepare` / `paint`. the panel export (`ExportScope::Panel`) rasterizes the layer at the
 export scale from the same scaled config as the axes, so 1× and 2× exports use
 the metrics of their hit maps.
 
@@ -647,6 +983,30 @@ The WASM wrappers expose the layer on both classes (`FiggyChart`,
 `select_decoration`, `resize_handle` and `drag` on `FiggyBoundedChart`) follow
 the route above and name items as `"annotation_<n>"`.
 
+## SVG and PDF export
+
+`export_svg` / `export_pdf` (and the radial
+`export_svg` / `export_pdf`) write the document a PNG export of
+the same arguments draws ([#48](https://github.com/shim9610/figgy/issues/48)).
+The decorations come from the same emit the raster, the hit map and the
+selection box answer from, so every element a user can select or drag is in
+the file where it is drawn: titles, axes, tick labels, axis titles, legend,
+colourbar, polar chrome, annotations, and on the radial chart its title,
+labels and leader lines. Picked highlights and value labels are part of the
+data image of their panel group. A DataLess series (an energy-level diagram)
+is written as vector parts from its own emit, its picked row included,
+between the images of the GPU data under it and the value labels over it
+([#234](https://github.com/shim9610/figgy/issues/234)). Overlays and subplots export as on screen:
+the panels' `Below` parts and data first, then their `Above` parts, with the
+annotation overlay above the parent area's decorations.
+
+The export reads the document and caches nothing, so hover, click selection,
+`step_selection`, drag, resize and SSOT invalidation do not apply to the
+file: edit the model, then export again. No selection box is drawn, as in the
+Cartesian PNG export; the radial export also draws none (its PNG draws the
+selected decoration's box) and draws every inside label above every slice.
+A chart with a streamed source is rejected.
+
 ## Area fill and step lines on Cartesian line series
 
 A Cartesian line series can fill the area under its line or between its line
@@ -655,11 +1015,17 @@ step pieces (`DataLineStyleConfig.interpolation`); see the
 [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#area-fill-and-step-lines).
 Interaction contracts:
 
-- The fill is a property of the line, not a hit target. `pick_chart` and
-  `pick_chart_data` (`pick_point` and `pick_data` in the WASM wrapper) keep
-  resolving the line's samples; the picked-point ring and the
-  typed selection overlay are drawn after every fill and every body, so a fill
-  never covers a highlight. Selecting the series selects its fill.
+- The fill is a property of the line and picks as part of it. `pick_chart`
+  and `pick_chart_data` (`pick_point` and `pick_data` in the WASM wrapper)
+  hit a fill only where the cursor lies inside a trapezoid it paints
+  (distance zero), and resolve the hit to the line's samples: the filled
+  segment's nearer endpoint, by the stepped-path rule below. Every fill is
+  drawn before every series body, so a fill loses every tie to a stroke, a
+  marker or an error bar, and among fills the later series wins. A fill whose
+  colour has zero alpha paints nothing and does not pick. Streamed series
+  have no fill. The picked-point ring and the typed selection overlay are
+  drawn after every fill and every body, so a fill never covers a highlight.
+  Selecting the series selects its fill.
 - A pick on a stepped line walks the same axis-aligned pieces the line draws.
   The nearest piece wins and the result snaps to the nearer source index by
   position along the stepped path, so a hit on a riser still names one of the
@@ -674,4 +1040,35 @@ Interaction contracts:
   its rule; `series_symbol_segments` emits it and `RichSegment.rule_band`
   stores it, inside the fixed-width symbol field, so legend hit bounds do not
   change.
+- A legend symbol names the series it stands for (`RichSegment.series_id`,
+  set by `series_symbol_segments`). `update_legend_symbols_preserving_text`,
+  `legend_entry_of_series` and `legend_entry_series_id` pair entries with
+  series by that id, so reordering series, or a series without an entry,
+  never moves a mark to another entry's text. A symbol written before the
+  field existed pairs by position, as before, and names its series once it
+  is restyled.
 
+## Feynman diagrams
+
+A Feynman series ([#234](https://github.com/shim9610/figgy/issues/234)) is
+picked on the CPU through the placement its raster draws with, as an
+energy-level series is: a typed data pick answers
+`PickedData::FeynmanVertex`, `FeynmanPropagator` or
+`FeynmanLabel { part, index }`, labels over markers over lines, and nothing
+inside a break gap or outside the plot. A vertex answers within the pick
+distance of its marker, and there it wins over the lines that meet at it,
+within a third of a line between the markers, so a leg end without a
+marker picks and a short line still picks in its middle; every other part
+competes by distance. A layout that fails is the pick's error. The picked
+part is drawn in the series' `style.picked` colour, `width_extra_px` wider;
+a picked label is boxed. `step_selection` walks the vertices or the
+propagators by `dx` and the Feynman series by `dy`; a label does not step.
+`Renderer::drag_feynman(chart, series_id, hit, dx, dy)` drags a
+`FeynmanHit` in the series' panel space: `Vertex(i)` moves a vertex through
+the axes, committing the whole layout on the first drag so no other vertex
+moves; `Propagator(i)` sets a line's bend to the arc through its moved
+middle. A label moves in logical pixels through the value-label drag,
+`FeynmanSeries::drag_label` on the host's series, and `drag_feynman`
+refuses it. The web wrapper's `press_feynman` starts these drags, a label's
+through the same pointer as `press_value_label`. See
+[Feynman diagrams](FEYNMAN.md).

@@ -5,6 +5,8 @@
 //! spokes and rings. `set_y_range` sets the radius axis. `set_x_range` only
 //! chooses which angle ticks, spokes and labels are drawn: 360° (or 2π) is
 //! always one full turn, and `sector` limits the drawn part of the circle.
+//! A heatmap draws its cells as annular sectors between its angle and
+//! radius boundaries, with its contours and their labels (#208).
 //! cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -46,11 +48,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "gain",
             "deg",
             "pattern",
-            DataRenderType::Line { line },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions::default());
+            config.set_polar(Some(PolarOptions::default()));
             config.bottom_x.major_spacing = 30.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 0.25;
@@ -73,20 +80,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "rose",
             "rose_deg",
             "rose",
-            DataRenderType::ScatterLine {
-                scatter: gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0),
-                line: gallery::line(Color::from_rgb8(200, 60, 40), 1.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0)),
+                line: Some(gallery::line(Color::from_rgb8(200, 60, 40), 1.5)),
+                errors: None,
+                stem: None,
+            }),
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 zero_angle_degrees: 90.0,
                 clockwise: true,
                 interpolation: PolarInterpolation::Arc { pieces: 6 },
                 radial_label_angle_degrees: 45.0,
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = 45.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
@@ -109,17 +118,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "spiral",
             "spiral_deg",
             "spiral",
-            DataRenderType::ScatterLine {
-                scatter: gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0),
-                line: dashed,
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0)),
+                line: Some(dashed),
+                errors: None,
+                stem: None,
+            }),
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 interpolation: PolarInterpolation::Arc { pieces: 16 },
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = 45.0;
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
@@ -147,22 +158,116 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "response",
             "phase",
             "response",
-            DataRenderType::Line { line },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line),
+                errors: None,
+                stem: None,
+            }),
         )];
         {
             let config = chart.config_mut();
-            config.polar = Some(PolarOptions {
+            config.set_polar(Some(PolarOptions {
                 angle_unit: AngleUnit::Radians,
                 sector: Some([-PI / 2.0, PI / 2.0]),
                 inner_radius_fraction: 0.2,
                 radial_label_angle_degrees: 90.0,
                 ..PolarOptions::default()
-            });
+            }));
             config.bottom_x.major_spacing = PI / 4.0;
             config.bottom_x.label_style.format = LabelFormat::Radians;
             config.left_y.major_spacing = 0.5;
         }
         gallery::save(r, &chart, &series, &out.join("04-sector-radians.png"))?;
+
+        // 5) A heatmap on the polar chart (#208): an antenna's gain in dBi
+        //    over azimuth (5° cells) and frequency (rings from 1 to 6 GHz),
+        //    the main lobe narrowing as the frequency rises, with labelled
+        //    contours along the -3 dB and -10 dB lines.
+        let azimuths = 72usize;
+        let bands = 25usize;
+        // Sample centres every 5°, and the first again one turn on: naming
+        // its column twice closes the interpolated seam at 0°.
+        let centres: Vec<f64> = (0..=azimuths).map(|i| i as f64 * 5.0 + 2.5).collect();
+        let frequencies: Vec<f64> = (0..bands)
+            .map(|j| 1.0 + j as f64 * 5.0 / (bands - 1) as f64)
+            .collect();
+        r.add_column("gain_az", &gallery::column(centres))?;
+        r.add_column("gain_ghz", &gallery::column(frequencies.clone()))?;
+        let mut ids: Vec<String> = (0..azimuths).map(|i| format!("gain_z{i}")).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let az = (i as f64 * 5.0 + 2.5).to_radians();
+            let gain: Vec<f64> = frequencies
+                .iter()
+                .map(|f| {
+                    // A cosine-power main lobe whose power grows with the
+                    // frequency, a back lobe 20 dB down and a floor.
+                    let lobe = (0.5 * (1.0 + az.cos())).powf(1.5 * f);
+                    let back = 0.01 * (0.5 * (1.0 - az.cos())).powi(4);
+                    10.0 * (lobe + back + 1e-3).log10() + 6.0
+                })
+                .collect();
+            r.add_column(id, &gallery::column(gain))?;
+        }
+        ids.push(ids[0].clone());
+        let mut chart = gallery::chart("Gain over azimuth and frequency", "Azimuth", "GHz", size);
+        chart.set_x_range(0.0, 360.0);
+        chart.set_y_range(1.0, 6.0);
+        let series = vec![gallery::series(
+            "gain",
+            "gain_az",
+            "gain_ghz",
+            DataRenderType::Field(renderer::data_config::FieldSeries {
+                matrix: renderer::data_config::MatrixRef {
+                    columns: ids,
+                    orientation: renderer::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: renderer::data_config::GridLayout::Centers,
+                },
+                fill: Some(renderer::data_config::FieldFillConfig {
+                    mode: renderer::data_config::FillMode::Continuous,
+                    shading: renderer::data_config::Shading::Interpolated,
+                    opacity: 1.0,
+                }),
+                contour: Some(renderer::data_config::ContourConfig {
+                    levels: vec![-4.0, 3.0],
+                    line: gallery::line(Color::from_rgb8(25, 25, 25), 1.2),
+                    per_level_color: None,
+                    labels: Some(renderer::data_config::ContourLabelConfig {
+                        visible: true,
+                        font_size: 12.0,
+                        color: Color::from_rgb8(25, 25, 25),
+                        format: LabelFormat::Decimal,
+                        significant_digits: 1,
+                        spacing_px: 180.0,
+                        anchors: Vec::new(),
+                        bg_color: None,
+                        bg_padding_px: 2.0,
+                    }),
+                }),
+                surface: None,
+            }),
+        )];
+        {
+            let config = chart.config_mut();
+            config.set_polar(Some(PolarOptions {
+                zero_angle_degrees: 90.0,
+                clockwise: true,
+                inner_radius_fraction: 0.08,
+                radial_label_angle_degrees: 90.0,
+                ..PolarOptions::default()
+            }));
+            config.bottom_x.major_spacing = 30.0;
+            config.bottom_x.label_style.format = LabelFormat::Degrees;
+            config.left_y.major_spacing = 1.0;
+            config.grid.show_major_x = false;
+            config.grid.show_major_y = false;
+            let mut bar = renderer::default::default_colorbar_options();
+            bar.axis.min = -24.0;
+            bar.axis.max = 6.0;
+            bar.axis.major_spacing = 6.0;
+            config.colorbar = Some(bar);
+        }
+        gallery::save(r, &chart, &series, &out.join("05-gain-heatmap.png"))?;
         Ok(())
     })
 }

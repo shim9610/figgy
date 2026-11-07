@@ -3,8 +3,6 @@
 //! Run: `cargo run -p figgy-renderer --example sketch_demo`
 //! Output: `target/sketch_demo/{precise,sketch,sketch_tour}.png`
 
-use std::sync::Arc;
-
 use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
 use renderer::data::Column;
@@ -12,16 +10,14 @@ use renderer::data_config::{
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
     ScatterShape, SeriesConfig,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
+use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
 
 fn col(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// Export clears to transparent; composite over white for viewing.
@@ -36,7 +32,12 @@ fn over_white(img: &mut RasterImage) {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
-    let mut img = r.export_panel_rgba(chart, series, 1.0).expect("export");
+    let mut img = r
+        .export_rgba_blocking(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .expect("export");
     over_white(&mut img);
     std::fs::write(path, encode_png(&img).expect("png")).expect("write");
     println!("wrote {path}");
@@ -44,10 +45,10 @@ fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) 
 
 fn main() {
     let inst = create_instance();
-    let adapter = request_adapter(&inst).expect("adapter");
-    let (device, queue) = request_device(&adapter).expect("device");
+    let adapter = request_adapter_blocking(&inst).expect("adapter");
+    let (device, queue) = request_device_blocking(&adapter).expect("device");
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -75,8 +76,9 @@ fn main() {
         label: None,
         x_column: "x".into(),
         y_column: "stars".into(),
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: accent,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: 6.5,
@@ -85,16 +87,18 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: accent,
                 line_width: 3.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     }];
 
     let star_chart = |style: DrawStyle| {
@@ -164,8 +168,9 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "ya".into(),
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: accent,
                     point_shape: ScatterShape::CircleFilled,
                     point_size: 5.5,
@@ -174,16 +179,18 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                line: DataLineStyleConfig {
+                }),
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: accent,
                     line_width: 2.5,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+                stem: None,
+            }),
         },
         SeriesConfig {
             series_id: "trend".into(),
@@ -191,16 +198,20 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "yb".into(),
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_style: LineStylePreset::Dash,
                     line_color: blue,
                     line_width: 2.5,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+                stem: None,
+            }),
         },
         SeriesConfig {
             series_id: "meas".into(),
@@ -208,8 +219,9 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "yc".into(),
-            render_type: DataRenderType::ScatterErrorbarY {
-                scatter: DataScatterStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: green,
                     point_shape: ScatterShape::Diamond,
                     point_size: 5.0,
@@ -218,20 +230,25 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-                err_y: ErrorRef::Symmetric {
-                    column: "err".into(),
-                },
-                err_style: DataErrorBarStyleConfig {
-                    error_bar_color: green,
-                    error_bar_width: 1.6,
-                    error_bar_cap_size: 6.0,
-                    cap_width: 1.6,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            },
+                }),
+                line: None,
+                errors: Some(renderer::data_config::ErrorBars {
+                    x: None,
+                    y: Some(ErrorRef::Symmetric {
+                        column: "err".into(),
+                    }),
+                    style: DataErrorBarStyleConfig {
+                        error_bar_color: green,
+                        error_bar_width: 1.6,
+                        error_bar_cap_size: 6.0,
+                        cap_width: 1.6,
+                        error_bar_style_table: None,
+                        error_bar_style_index_column: None,
+                        error_bar_style_overrides: None,
+                    },
+                }),
+                stem: None,
+            }),
         },
     ];
 

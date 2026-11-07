@@ -283,7 +283,7 @@ impl Pipelines {
         transform: &wgpu::BindGroup,
         style: &wgpu::BindGroup,
         style_map: Option<&wgpu::BindGroup>,
-    ) -> Snapshot {
+    ) -> crate::Result<Snapshot> {
         let tally = ChargeTally::default();
         let pixels = pixels.max(1);
         let count = bar_instance_count(edges.len_values, values.len_values);
@@ -301,7 +301,7 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let winners = charged_buffer(
             &tally,
             device,
@@ -311,7 +311,7 @@ impl Pipelines {
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         let bg = |layout: &wgpu::BindGroupLayout, binding| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("histogram envelope data"),
@@ -334,9 +334,10 @@ impl Pipelines {
         };
         let compute_data = bg(&self.compute_layout, 3);
         let data = bg(&self.render_layout, 2);
-        let map = style_map
-            .cloned()
-            .unwrap_or_else(|| create_bar_style_map(device, &self.map_layout, &[]).bind_group);
+        let map = match style_map {
+            Some(map) => map.clone(),
+            None => create_bar_style_map(device, &self.map_layout, &[])?.bind_group,
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("histogram envelope preparation"),
         });
@@ -354,13 +355,13 @@ impl Pipelines {
             pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
         }
         queue.submit([encoder.finish()]);
-        Snapshot {
+        Ok(Snapshot {
             pipeline: self.render.clone(),
             data,
             map,
             pixels,
             _charge: Arc::new(tally.into_charge(ledger, GpuResourceKind::Uniform)),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -370,7 +371,6 @@ impl Pipelines {
         encoder: &mut wgpu::CommandEncoder,
         ledger: &Arc<GpuLedger>,
         max_renderer_bytes: u64,
-        pool_bytes: u64,
         persistent: &Persistent,
         work: &wgpu::Buffer,
         edges: ColumnHandle,
@@ -421,7 +421,7 @@ impl Pipelines {
         {
             return Err(StreamError::TooLarge);
         }
-        check_stream_budget(ledger, max_renderer_bytes, pool_bytes, local_bytes)?;
+        check_stream_budget(ledger, max_renderer_bytes, local_bytes)?;
         let tally = ChargeTally::default();
         let params = [edge_base, value_base, count, persistent.pixels];
         let uniform = charged_buffer_init(
@@ -432,7 +432,8 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let offset = [global_bin_start, 0, 0, 0];
         let offset_uniform = charged_buffer_init(
             &tally,
@@ -442,7 +443,8 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&offset),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let local = charged_buffer(
             &tally,
             device,
@@ -452,7 +454,8 @@ impl Pipelines {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let reduce_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stream histogram local reduction data"),
             layout: &self.stream_reduce_layout,
@@ -573,7 +576,6 @@ impl Persistent {
         ledger: &Arc<GpuLedger>,
         pixels: u32,
         max_renderer_bytes: u64,
-        pool_bytes: u64,
         style_map: Option<&wgpu::BindGroup>,
     ) -> Result<Self, StreamError> {
         let pixels = pixels.max(1);
@@ -596,7 +598,6 @@ impl Persistent {
         check_stream_budget(
             ledger,
             max_renderer_bytes,
-            pool_bytes,
             bytes.checked_add(map_bytes).ok_or(StreamError::Overflow)?,
         )?;
         let tally = ChargeTally::default();
@@ -615,7 +616,8 @@ impl Persistent {
                     },
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let data = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stream histogram persistent render data"),
             layout: &pipelines.stream_render_layout,
@@ -624,9 +626,14 @@ impl Persistent {
                 resource: winners.as_entire_binding(),
             }],
         });
-        let map = style_map
-            .cloned()
-            .unwrap_or_else(|| create_bar_style_map(device, &pipelines.map_layout, &[]).bind_group);
+        let map = match style_map {
+            Some(map) => map.clone(),
+            None => {
+                create_bar_style_map(device, &pipelines.map_layout, &[])
+                    .map_err(stream_gpu_error)?
+                    .bind_group
+            }
+        };
         // The empty-map helper owns one padding style, one padding override and
         // one metadata uniform. This persistent owner charges their exact bytes.
         tally.add(map_bytes);
@@ -702,15 +709,21 @@ impl StreamChunk {
     }
 }
 
+/// A GPU failure in the streamed histogram path, in the scheduler's error
+/// type, which carries no payload: every such failure is an allocation the
+/// stream could not make.
+fn stream_gpu_error(_: crate::FiggyError) -> StreamError {
+    StreamError::AllocationFailed
+}
+
 fn check_stream_budget(
     ledger: &Arc<GpuLedger>,
     max_renderer_bytes: u64,
-    pool_bytes: u64,
     additional: u64,
 ) -> Result<(), StreamError> {
-    if pool_bytes
-        .checked_add(ledger.total_bytes())
-        .and_then(|n| n.checked_add(additional))
+    if ledger
+        .total_bytes()
+        .checked_add(additional)
         .ok_or(StreamError::Overflow)?
         > max_renderer_bytes
     {
@@ -807,10 +820,11 @@ mod stream_tests {
 
     fn gpu() -> (wgpu::Device, wgpu::Queue) {
         let instance = create_instance();
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("stream histogram GPU test requires an adapter");
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        let adapter = crate::test_gpu::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .expect("stream histogram GPU test requires an adapter");
+        crate::test_gpu::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .expect("stream histogram GPU device creation failed")
     }
 
@@ -850,7 +864,7 @@ mod stream_tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream histogram test shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("bar_columnar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.source.into()),
             },
         );
         let transform_bgl = create_scatter_transform_bind_group_layout(device);
@@ -877,6 +891,11 @@ mod stream_tests {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
+            breaks: crate::data_render::NO_BREAKS,
+            break_info: crate::data_render::NO_BREAK_INFO,
+            scale_prob: crate::data_render::NO_PROBABILITY,
         };
         let transform_uniform = create_scatter_transform_uniform_buffer(device, &transform);
         let transform_bg =
@@ -890,7 +909,9 @@ mod stream_tests {
         bar_style.dash[1] = [0.0; 4];
         let style_uniform = create_style_uniform_buffer(device, &bar_style);
         let style_bg = create_style_bind_group(device, &style_bgl, &style_uniform);
-        let map_bg = create_bar_style_map(device, &map_bgl, overrides).bind_group;
+        let map_bg = create_bar_style_map(device, &map_bgl, overrides)
+            .unwrap()
+            .bind_group;
         (pipelines, transform_bg, style_bg, map_bg)
     }
 
@@ -953,23 +974,29 @@ mod stream_tests {
         let (pipelines, transform, style, map) = setup(&device, 8, &[]);
         let ledger = Arc::new(GpuLedger::new());
         assert_eq!(
-            Persistent::new(&pipelines, &device, &ledger, 8, 128, 1, Some(&map)).err(),
+            Persistent::new(&pipelines, &device, &ledger, 8, 127, Some(&map)).err(),
             Some(StreamError::TooLarge),
-            "resident pool bytes must participate in the renderer cap"
+            "the 128 pixel bytes must fit the renderer cap"
         );
         let persistent =
-            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, 0, Some(&map)).unwrap();
+            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, Some(&map)).unwrap();
         assert_eq!(persistent.charged_bytes(), 128);
         let empty_map_ledger = Arc::new(GpuLedger::new());
+        // The 8 pixels' 128 bytes and one padding row of each map buffer.
+        let padded = 128
+            + (std::mem::size_of::<BarStyleSlotGpu>()
+                + std::mem::size_of::<BarStyleOverrideGpu>()
+                + std::mem::size_of::<BarStyleMapMeta>()) as u64;
+        assert_eq!(padded, 320);
         assert_eq!(
-            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, 255, 0, None).err(),
+            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded - 1, None).err(),
             Some(StreamError::TooLarge),
             "the unmapped padding style map must be inside admission"
         );
         let empty_map =
-            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, 256, 0, None).unwrap();
-        assert_eq!(empty_map.charged_bytes(), 256);
-        assert_eq!(empty_map_ledger.total_bytes(), 256);
+            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded, None).unwrap();
+        assert_eq!(empty_map.charged_bytes(), padded);
+        assert_eq!(empty_map_ledger.total_bytes(), padded);
         drop(empty_map);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stream histogram test clear"),
@@ -1004,8 +1031,7 @@ mod stream_tests {
                     &mut device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
                     &ledger,
-                    192,
-                    1,
+                    191,
                     &persistent,
                     &work,
                     edges,
@@ -1051,7 +1077,6 @@ mod stream_tests {
                     &mut encoder,
                     &ledger,
                     u64::MAX,
-                    0,
                     &persistent,
                     &work,
                     edges,
@@ -1089,7 +1114,6 @@ mod stream_tests {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }),
                     &ledger,
                     u64::MAX,
-                    0,
                     &persistent,
                     &work,
                     edges,
@@ -1122,7 +1146,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 empty_edges,
@@ -1174,7 +1197,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,
@@ -1202,6 +1224,8 @@ mod stream_tests {
             fill_color_premul: color,
             border_color_premul: [0.0; 4],
             params: [0.0, 0.0, 0.0, 1.0],
+            material: [0.0; 4],
+            finish: [0.0; 4],
         };
         let overrides = [
             make_override(100, [0.0, 1.0, 0.0, 1.0]),
@@ -1210,7 +1234,7 @@ mod stream_tests {
         let (pipelines, transform, style, map) = setup(&device, 8, &overrides);
         let ledger = Arc::new(GpuLedger::new());
         let persistent =
-            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, 0, Some(&map)).unwrap();
+            Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, Some(&map)).unwrap();
         let work = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stream histogram mapped reused work"),
             size: 24,
@@ -1244,7 +1268,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,
@@ -1296,7 +1319,6 @@ mod stream_tests {
                 &mut encoder,
                 &ledger,
                 u64::MAX,
-                0,
                 &persistent,
                 &work,
                 edges,

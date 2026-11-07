@@ -23,7 +23,7 @@ is no guaranteed response deadline.
 | Code | Supported |
 | --- | --- |
 | Latest crates.io release: `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1 | Yes |
-| Default branch (`master`), including the `figgy` 0.15.1 WebAssembly example in `crates/web`, which is not published to crates.io | Yes |
+| Default branch (`master`), including `figgy` 0.15.1, the browser product in `crates/web`, which is built from this repository and not published to a registry | Yes |
 | Older releases and pinned Git revisions | No |
 
 Security fixes target the supported code above. Older releases and pinned Git
@@ -32,7 +32,7 @@ versions are still welcome; please state whether the issue also reproduces on th
 current code.
 
 This repository contains the `figgy-model` and `figgy-renderer` Rust libraries and
-their examples, including the WebAssembly integration example. It does not
+their examples, and `figgy`, the browser product in `crates/web`. It does not
 operate or distribute the separate figgyplot.com Studio application. If the
 affected component is unclear, describe the application and the renderer revision
 in the private report so the scope can be determined.
@@ -42,7 +42,11 @@ Rendering defects without a security impact belong in the
 
 ## Automated checks
 
-Dependabot alerts track known dependency vulnerabilities. Secret scanning and
+Dependabot alerts track known dependency vulnerabilities, and
+[`.github/dependabot.yml`](.github/dependabot.yml) proposes dependency and
+GitHub Actions updates. In CI, `cargo deny check` ([`deny.toml`](deny.toml))
+fails on any RustSec advisory, a license outside the allowed list, a wildcard
+version or a dependency from an unknown source. Secret scanning and
 push protection help detect accidentally committed credentials. CodeQL analyzes
 public, non-draft pull requests; see [CI coverage](ci/README.md#security-analysis).
 These checks supplement review and tests; they do not guarantee that the code is

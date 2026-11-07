@@ -20,9 +20,6 @@ pub(crate) struct ChunkUploadBudget {
     /// Staging plus work bytes, including any allocation padding.
     pub max_upload_bytes: u64,
     pub renderer_budget_bytes: u64,
-    /// ALL pool live + retired bytes, including old slabs and pending copies,
-    /// which are not in the external resource ledger. Never pass just capacity.
-    pub pool_bytes: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -34,10 +31,13 @@ pub(crate) struct StreamSourceSlice<'a> {
     pub source_offset: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum ChunkUploadError {
     Input(StreamError),
+    /// A host allocation for the chunk's metadata failed.
     AllocationFailed,
+    /// The GPU rejected a chunk buffer, or the device was lost.
+    Gpu(crate::FiggyError),
     MappingFailed,
     #[cfg(test)]
     WriterFailed,
@@ -179,8 +179,7 @@ fn work_allocation_bytes(
             .checked_add(preferred)
             .is_some_and(|bytes| bytes <= budget.max_upload_bytes)
         && ledger_bytes
-            .checked_add(budget.pool_bytes)
-            .and_then(|bytes| bytes.checked_add(required))
+            .checked_add(required)
             .and_then(|bytes| bytes.checked_add(preferred))
             .is_some_and(|bytes| bytes <= budget.renderer_budget_bytes);
     if fits { preferred } else { required }
@@ -222,8 +221,7 @@ fn validate_layout(
         work_bytes
     };
     let total = ledger_bytes
-        .checked_add(budget.pool_bytes)
-        .and_then(|bytes| bytes.checked_add(work_bytes))
+        .checked_add(work_bytes)
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
     if input_bytes > budget.max_input_bytes
@@ -280,13 +278,10 @@ fn validate_source_layout(
         work_bytes
     };
     let total = ledger_bytes
-        .checked_add(budget.pool_bytes)
-        .and_then(|bytes| {
-            bytes.checked_add(if reusable_staging_bytes >= work_bytes {
-                0
-            } else {
-                work_bytes
-            })
+        .checked_add(if reusable_staging_bytes >= work_bytes {
+            0
+        } else {
+            work_bytes
         })
         .and_then(|bytes| bytes.checked_add(new_work_bytes))
         .ok_or(StreamError::Overflow)?;
@@ -450,6 +445,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing<'a>(
         preferred_work_bytes,
         &mut |_, _, _, _| {},
         None,
+        &mut false,
     )
 }
 
@@ -465,6 +461,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
     preferred_work_bytes: u64,
     observe: &mut dyn FnMut(usize, usize, f32, f32),
     reusable_staging: Option<&TrackedBuffer>,
+    staging_unmapped: &mut bool,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     if statistics_plans.len() != columns.len() {
         return Err(StreamError::InvalidPayload.into());
@@ -521,17 +518,17 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         )
         .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::StreamingUpload, buffer))
     };
-    let staging =
-        if let Some(staging) = reusable_staging.filter(|staging| staging.size() >= work_bytes) {
-            staging.clone()
-        } else {
-            create(
-                "stream chunk staging",
-                work_bytes,
-                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                true,
-            )?
-        };
+    let reused = reusable_staging.filter(|staging| staging.size() >= work_bytes);
+    let staging = if let Some(staging) = reused {
+        staging.clone()
+    } else {
+        create(
+            "stream chunk staging",
+            work_bytes,
+            wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+            true,
+        )?
+    };
     let written: Result<(), ChunkUploadError> = (|| {
         let mut mapped = staging
             .slice(..)
@@ -542,26 +539,34 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
             let end = usize::try_from(column.offset_bytes + column.pair_bytes)
                 .map_err(|_| StreamError::Overflow)?;
             let supplied = source_at(index);
+            let out_of_range = std::cell::Cell::new(false);
             let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut on_pair = |row, hi, lo| observe(index, row, hi, lo);
-                supplied.source.write_range(
-                    supplied.source_offset.map_or(column.range.offset, |_| 0),
-                    ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair),
-                )
+                let mut writer = ColumnPairWriter::new_observed(
+                    mapped.slice(start..end),
+                    &out_of_range,
+                    &mut on_pair,
+                );
+                // The writer records this chunk's statistics.
+                supplied
+                    .source
+                    .write_range(
+                        supplied.source_offset.map_or(column.range.offset, |_| 0),
+                        &mut writer,
+                    )
+                    .map(|()| writer.bounds())
             }))
             .map_err(|_| ChunkUploadError::SourceWrite {
                 index,
                 error: crate::ColumnRangeWriteError::SourceFailed,
             })?
             .map_err(|error| ChunkUploadError::SourceWrite { index, error })?;
-            crate::streaming_source::validate_statistics(
-                column.range.len,
-                crate::StreamStatistics::Known(bounds),
-            )
-            .map_err(|_| ChunkUploadError::SourceWrite {
-                index,
-                error: crate::ColumnRangeWriteError::SourceFailed,
-            })?;
+            if out_of_range.get() {
+                return Err(ChunkUploadError::SourceWrite {
+                    index,
+                    error: crate::ColumnRangeWriteError::InvalidRange,
+                });
+            }
             if !statistics_plans[index].ranges.is_empty() {
                 column.statistics = Some(bounds);
             }
@@ -569,6 +574,9 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         Ok(())
     })();
     staging.unmap();
+    // The caller's reusable slot is unmapped now only if it was the one
+    // written; a fresh staging leaves it mapped (#152).
+    *staging_unmapped = reused.is_some();
     written?;
     let work = if let Some(work) = reusable_work.filter(|work| work.size() >= work_bytes) {
         work.clone()
@@ -764,11 +772,11 @@ fn create_buffer_checked(
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
 ) -> Result<wgpu::Buffer, ChunkUploadError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    crate::renderer::gpu_checked(device, "stream chunk upload", || {
         // gpu-alloc: StreamingUpload
         device.create_buffer(desc)
-    }))
-    .map_err(|_| ChunkUploadError::AllocationFailed)
+    })
+    .map_err(ChunkUploadError::Gpu)
 }
 
 #[cfg(test)]
@@ -846,14 +854,28 @@ fn record_chunk_with_factory_observed(
         for (column_index, (input, column)) in columns.iter().zip(&layout).enumerate() {
             let start = column.offset_bytes as usize;
             let end = (column.offset_bytes + column.pair_bytes) as usize;
+            let out_of_range = std::cell::Cell::new(false);
             if let Some(observe) = observe.as_mut() {
                 let mut on_pair = |row, hi, lo| observe(column_index, row, hi, lo);
                 write(
                     input,
-                    ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair),
+                    ColumnPairWriter::new_observed(
+                        mapped.slice(start..end),
+                        &out_of_range,
+                        &mut on_pair,
+                    ),
                 )?;
             } else {
-                write(input, ColumnPairWriter::new(mapped.slice(start..end)))?;
+                write(
+                    input,
+                    ColumnPairWriter::new(mapped.slice(start..end), &out_of_range),
+                )?;
+            }
+            if out_of_range.get() {
+                return Err(ChunkUploadError::SourceWrite {
+                    index: column_index,
+                    error: crate::ColumnRangeWriteError::InvalidRange,
+                });
             }
         }
         Ok(())
@@ -904,7 +926,7 @@ mod tests {
         use crate::data_render::*;
         let (device, queue) = shared_device().expect("chunk draw requires GPU; no skip");
         let ledger = Arc::new(GpuLedger::new());
-        let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
+        let ctx = GpuAllocCtx::new(&device, &queue, &ledger);
         let mut pool = ColumnPool::new(ctx, 4096).unwrap();
         // The low lane matters: the high lanes all round to the same value.
         let xs = crate::data::Column {
@@ -917,13 +939,9 @@ mod tests {
                 1e9 + 8.,
                 1e9 + 2.,
             ],
-            min: 1e9,
-            max: 1e9 + 10.,
         };
         let ys = crate::data::Column {
             data: vec![2., 8., 4., 4., f64::NAN, 7., 6.],
-            min: 0.,
-            max: 10.,
         };
         let resident_x = pool.add_hilo_column("x".into(), &xs, ctx).unwrap();
         let resident_y = pool.add_hilo_column("y".into(), &ys, ctx).unwrap();
@@ -980,6 +998,11 @@ mod tests {
                     style_params: [[0.; 4]; 3],
                     polar_angle: [0.; 4],
                     polar_extent: [0.; 4],
+                    ternary_lt: [0.0; 4],
+                    ternary_r: [0.0; 4],
+                    breaks: crate::data_render::NO_BREAKS,
+                    break_info: crate::data_render::NO_BREAK_INFO,
+                    scale_prob: crate::data_render::NO_PROBABILITY,
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);
@@ -1051,13 +1074,24 @@ mod tests {
                                 None => (pool.buffer(), resident_x, resident_y),
                             };
                             let layers = SeriesLayers {
+                                value_labels: None,
+                                energy_levels: None,
                                 area: None,
                                 field: None,
+                                mesh: None,
+                                mesh_contour: None,
                                 bar: None,
+                                violin: None,
+                                category_bars: None,
+                                box_points: None,
                                 contour: None,
                                 vector: None,
                                 errorbar: None,
                                 line_extra: None,
+                                parallel: None,
+                                line_3d: None,
+                                scatter_3d: None,
+                                vector_3d: None,
                                 line: line.then_some(ColumnLineLayer {
                                     pipeline: &line_pipeline,
                                     transform_bg: &tbg,
@@ -1068,6 +1102,10 @@ mod tests {
                                     arc: None,
                                     verts_per_instance: 4,
                                     texture_bg: None,
+                                    closed: false,
+                                    value_map: None,
+                                    third: None,
+                                    view3d: None,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,
@@ -1083,10 +1121,17 @@ mod tests {
                                     color_value: None,
                                     size_value: None,
                                     texture_bg: None,
+                                    third: None,
+                                    view3d: None,
                                 }),
                                 selected_bars: vec![],
                                 selected_fields: vec![],
                                 picked: vec![],
+                                selected_surface: None,
+                                region: None,
+                                surface: None,
+                                floor: None,
+                                stem: None,
                             };
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: None,
@@ -1185,7 +1230,6 @@ mod tests {
             max_work_buffer_bytes: 2048,
             max_upload_bytes: 4096,
             renderer_budget_bytes: 8192,
-            pool_bytes: 0,
         }
     }
 
@@ -1359,32 +1403,116 @@ mod tests {
             .unwrap();
     }
 
+    /// SOURCE_LAYOUT_ONE_PER_COLUMN (#152): `validate_source_layout` gives
+    /// one uploaded column per requested range, in order and packed back to
+    /// back, for 1 column and `max_columns` columns, and refuses none or
+    /// more; a chunk whose last column alone has a statistics plan measures
+    /// that column only.
+    #[test]
+    fn a_source_layout_has_one_entry_per_column() {
+        let budget = budget();
+        assert!(matches!(
+            validate_source_layout(&[], budget, 2048, 0, 0, 0),
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
+        for count in [1, budget.max_columns] {
+            let columns: Vec<ColumnRange> = (0..count as u64)
+                .map(|column| range(column, 3 + column, SourceEncoding::ScalarF32))
+                .collect();
+            let (layout, work_bytes) =
+                validate_source_layout(&columns, budget, 2048, 0, 0, 0).unwrap();
+            assert_eq!(layout.len(), columns.len());
+            let mut offset = 0;
+            for (uploaded, requested) in layout.iter().zip(&columns) {
+                assert_eq!(uploaded.range, *requested);
+                assert_eq!(uploaded.offset_bytes, offset);
+                assert_eq!(uploaded.statistics, None);
+                offset += uploaded.pair_bytes;
+            }
+            assert_eq!(offset, work_bytes);
+        }
+        let over: Vec<ColumnRange> = (0..budget.max_columns as u64 + 1)
+            .map(|column| range(column, 1, SourceEncoding::ScalarF32))
+            .collect();
+        assert!(matches!(
+            validate_source_layout(&over, budget, 2048, 0, 0, 0),
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
+
+        let (device, queue) = crate::data_render::shared_device()
+            .expect("stream statistics test requires a GPU adapter");
+        let ledger = Arc::new(GpuLedger::new());
+        let values = [[1.0f32, 2.0], [3.0, 4.0], [-5.0, 6.0]];
+        let inputs: Vec<ColumnInput<'_>> = values
+            .iter()
+            .enumerate()
+            .map(|(column, values)| ColumnInput {
+                range: range(column as u64, 2, SourceEncoding::ScalarF32),
+                bytes: bytemuck::cast_slice(values),
+            })
+            .collect();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let chunk = record_chunk_collecting_statistics(
+            &device,
+            &mut encoder,
+            &ledger,
+            budget,
+            &inputs,
+            &[
+                ChunkStatisticsPlan::default(),
+                ChunkStatisticsPlan::default(),
+                ChunkStatisticsPlan {
+                    ranges: vec![100..102],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(chunk.columns.len(), inputs.len());
+        assert_eq!(chunk.columns[0].statistics, None);
+        assert_eq!(chunk.columns[1].statistics, None);
+        assert_eq!(
+            chunk.columns[2].statistics,
+            Some(Some(StreamBounds {
+                min: -5.0,
+                max: 6.0,
+                min_positive: Some(6.0),
+            }))
+        );
+        let submitted = queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submitted),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+    }
+
     #[test]
     fn layout_validates_empty_short_overflow_and_device_cap_before_allocating() {
-        assert_eq!(
+        assert!(matches!(
             validate_layout(&[], budget(), 2048, 0, 0),
-            Err(StreamError::InvalidRange.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
         let bytes = [0u8; 8];
         let mut input = ColumnInput {
             range: range(0, 2, SourceEncoding::ScalarF32),
             bytes: &bytes,
         };
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 8, 0, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
         input.range.len = 3;
         input.range.source_len = 200;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 2048, 0, 0),
-            Err(StreamError::InvalidPayload.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::InvalidPayload))
+        ));
         input.range.offset = u64::MAX;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 2048, 0, 0),
-            Err(StreamError::Overflow.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::Overflow))
+        ));
         assert_eq!(checked_pair_bytes(u64::MAX), Err(StreamError::Overflow));
     }
 
@@ -1396,24 +1524,26 @@ mod tests {
             bytes: &bytes,
         };
         let mut caps = budget();
-        caps.pool_bytes = 64 + 36; // Live pool plus uncompleted retired slabs.
+        // The ledger holds 100 bytes of other resources plus the live pool
+        // (64) and its uncompleted retired slabs (36).
+        let ledger_bytes = 100 + 64 + 36;
         caps.renderer_budget_bytes = 216;
-        assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0).is_ok());
+        assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, ledger_bytes, 0).is_ok());
         caps.renderer_budget_bytes -= 1;
-        assert_eq!(
-            validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0),
-            Err(StreamError::TooLarge.into())
-        );
+        assert!(matches!(
+            validate_layout(std::slice::from_ref(&input), caps, 2048, ledger_bytes, 0),
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
         caps.renderer_budget_bytes = u64::MAX;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, u64::MAX, 0),
-            Err(StreamError::Overflow.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::Overflow))
+        ));
         caps.max_upload_bytes = 15;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, 0, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
     }
 
     #[test]
@@ -1427,10 +1557,10 @@ mod tests {
         caps.renderer_budget_bytes = 16;
         assert_eq!(work_allocation_bytes(8, 32, caps, 2048, 0), 8);
         assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, 8, 8).is_ok());
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, 8, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
     }
 
     #[test]
@@ -1518,8 +1648,6 @@ mod tests {
         let ledger = Arc::new(GpuLedger::new());
         let source = crate::Column {
             data: vec![1f32, 2f32],
-            min: 1.0,
-            max: 2.0,
         };
         let supply = |_| StreamSourceSlice {
             source: crate::StreamColumnSource::Scalar(&source),

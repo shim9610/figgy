@@ -1,4 +1,6 @@
-//! Independent bounded-chart title. DecorationLayout owns its position.
+//! The rich title of the legacy categorical, box plot and radar documents
+//! (`BoundedTitleOptions`), and the wire form of the radial chart's title.
+//! The chart's `DecorationLayout` owns the title's position.
 use crate::{
     Color,
     text::{RichSegment, RichText},
@@ -27,38 +29,66 @@ impl BoundedTitleOptions {
             },
         }
     }
-    pub fn has_text(&self) -> bool {
-        self.visible && !self.text.segments.is_empty()
-    }
     pub fn validate(&self) -> Result<(), &'static str> {
-        fn range(v: f32, lo: f32, hi: f32) -> bool {
-            v.is_finite() && (lo..=hi).contains(&v)
-        }
-        fn color(c: Color) -> bool {
-            [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0., 1.))
-        }
-        let t = &self.text;
-        if !range(t.font_size, 6., 160.)
-            || !color(t.color)
-            || t.font.chars().count() > 160
-            || t.font.chars().any(char::is_control)
-            || t.segments.len() > 512
-            || t.segments.iter().filter(|s| s.text == '\n').count() > 7
-            || t.segments.iter().any(|s| {
-                (s.text.is_control() && !matches!(s.text, '\n' | '\t'))
-                    || s.font_size.is_some_and(|v| !range(v, 6., 160.))
-                    || s.color.is_some_and(|v| !color(v))
-                    || s.field_em.is_some_and(|v| !range(v, 0., 32.))
-                    || s.rule_dash
-                        .as_ref()
-                        .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
-            })
-        {
+        self.text.validate_math().map_err(|e| e.as_str())?;
+        if !self.text.within_limits() {
             return Err(
                 "invalid bounded title: size 6..160, at most 512 characters / 8 lines, finite styles",
             );
         }
         Ok(())
+    }
+}
+
+/// The wire form of the radial chart's `chart_title`, held as a
+/// [`ChartTitleOptions`](crate::config::ChartTitleOptions): the
+/// `{"visible", "text"}` object a [`BoundedTitleOptions`] writes, in that
+/// order, so documents keep their bytes. The chart keeps the title's position
+/// in its `decorations`, so the offsets and `top_margin` are not written and
+/// read as 0; the chart's validation rejects other values.
+#[cfg(feature = "serde")]
+pub(crate) mod bounded_title_wire {
+    use crate::config::ChartTitleOptions;
+    use crate::text::RichText;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    struct WireRef<'a> {
+        visible: bool,
+        text: &'a RichText,
+    }
+
+    #[derive(Deserialize)]
+    struct Wire {
+        visible: bool,
+        text: RichText,
+    }
+
+    pub(crate) fn serialize<S: Serializer>(
+        title: &Option<ChartTitleOptions>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match title {
+            Some(title) => serializer.serialize_some(&WireRef {
+                visible: title.visible,
+                text: &title.text,
+            }),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ChartTitleOptions>, D::Error> {
+        Ok(
+            Option::<Wire>::deserialize(deserializer)?.map(|wire| ChartTitleOptions {
+                text: wire.text,
+                visible: wire.visible,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                top_margin: 0.0,
+            }),
+        )
     }
 }
 
@@ -84,34 +114,41 @@ mod tests {
         title.text.segments[0].color = Some(Color::new(1., 0., 0., f32::NAN));
         assert!(title.validate().is_err());
     }
+    /// A radial document written before 0.19 with a plain `title`: the
+    /// title is read in the document's font, keeps that look when the font
+    /// changes, and only `chart_title` is written (#160).
     #[cfg(feature = "serde")]
     #[test]
-    fn all_legacy_families_freeze_title_style_and_round_trip() {
-        macro_rules! check {
-            ($chart:ty, $color:ident) => {{
-                let mut chart = <$chart>::default();
-                chart.title = "A²".into();
-                chart.font_size = 16.;
-                let old = serde_json::to_value(&chart).unwrap();
-                assert!(old.get("chart_title").is_none());
-                chart = serde_json::from_value(old).unwrap();
-                let expected = chart.resolved_title();
-                chart.normalize_title();
-                chart.font_size = 28.;
-                chart.$color = Color::WHITE;
-                chart.font_family = "Another font".into();
-                chart.normalize_title();
-                assert_eq!(chart.resolved_title(), expected);
-                chart.chart_title.as_mut().unwrap().text.align = crate::text::TextAlign::Right;
-                chart.chart_title.as_mut().unwrap().visible = false;
-                let copy: $chart =
-                    serde_json::from_str(&serde_json::to_string(&chart).unwrap()).unwrap();
-                assert_eq!(copy, chart);
-            }};
-        }
-        check!(crate::RadialChart, label_color);
-        check!(crate::CategoricalChart, text_color);
-        check!(crate::BoxPlotChart, text_color);
-        check!(crate::RadarChart, text_color);
+    fn the_legacy_radial_title_is_read_in_its_style_and_round_trips() {
+        let mut old = serde_json::to_value(crate::RadialChart {
+            font_size: 16.,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(old.get("title").is_none() && old.get("chart_title").is_none());
+        old["title"] = "A²".into();
+        let mut chart: crate::RadialChart = serde_json::from_value(old).unwrap();
+        let expected = crate::config::ChartTitleOptions::from_legacy_plain(
+            "A²",
+            "sans-serif",
+            16.,
+            chart.label_color,
+        );
+        assert_eq!(chart.chart_title.as_ref(), Some(&expected));
+        chart.font_size = 28.;
+        chart.label_color = Color::WHITE;
+        chart.font_family = "Another font".into();
+        assert_eq!(chart.resolved_title(), expected);
+        chart.chart_title.as_mut().unwrap().text.align = crate::text::TextAlign::Right;
+        chart.chart_title.as_mut().unwrap().visible = false;
+        let json = serde_json::to_value(&chart).unwrap();
+        assert!(json.get("title").is_none(), "{json}");
+        let copy: crate::RadialChart = serde_json::from_value(json).unwrap();
+        assert_eq!(copy, chart);
+        // A rich title wins over a legacy one, as it was drawn.
+        let mut both = serde_json::to_value(&chart).unwrap();
+        both["title"] = "ignored".into();
+        let read: crate::RadialChart = serde_json::from_value(both).unwrap();
+        assert_eq!(read.chart_title, chart.chart_title);
     }
 }

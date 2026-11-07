@@ -10,7 +10,7 @@ use renderer::data_config::{
     ContourConfig, ContourLabelConfig, DataLineStyleConfig, GridLayout, MatrixOrientation,
     MatrixRef,
 };
-use renderer::data_render::{create_instance, request_adapter_async, request_device_async};
+use renderer::gpu::{create_instance, request_adapter_async, request_device_async};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
@@ -66,9 +66,7 @@ async fn pop_raw_error_scope(device: &wgpu::Device) -> Option<String> {
 }
 
 fn column(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 async fn renderer() -> Renderer {
@@ -80,7 +78,7 @@ async fn renderer() -> Renderer {
         .await
         .expect("Chrome/Dawn must create a WebGPU device");
     Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -175,13 +173,15 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
-        render_type: DataRenderType::Contour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: vec!["p0".into(), "p1".into(), "p2".into()],
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            contour: ContourConfig {
+            fill: None,
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -203,8 +203,9 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
                     bg_color: Some(Color::new(1.0, 0.0, 1.0, 1.0)),
                     bg_padding_px: 2.0,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     }
 }
 
@@ -241,7 +242,10 @@ async fn chrome_webgpu_keeps_all_1024_automatic_contour_labels() {
         .expect("1024-label browser indirect readback")
         .expect("automatic contour label snapshot");
     let image = renderer
-        .export_panel_rgba_async(&chart, std::slice::from_ref(&config), 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, std::slice::from_ref(&config)),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("Chrome must consume the 1024-label indirect draw");
     let label_ink = image
@@ -272,7 +276,10 @@ async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
     let configs = [automatic_series(vec![1.0, 2.0, 3.0])];
 
     push_raw_error_scope(renderer.device(), "validation");
-    let mut export = Box::pin(renderer.export_panel_rgba_async(&chart, &configs, 1.0));
+    let mut export = Box::pin(renderer.export_rgba(
+        renderer::ExportSource::chart(&chart, &configs),
+        renderer::ExportOptions::panel(1.0),
+    ));
     let waker = Waker::from(Arc::new(NoopWake));
     let mut context = Context::from_waker(&waker);
     assert!(
@@ -291,7 +298,10 @@ async fn cancelled_contour_export_does_not_cross_the_host_error_scope() {
     );
 
     renderer
-        .export_panel_rgba_async(&chart, &configs, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &configs),
+            renderer::ExportOptions::panel(1.0),
+        )
         .await
         .expect("contour export after cancellation");
 }
@@ -440,6 +450,9 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .await
         .expect("export after font generation change");
 
+    // The export multiplies the automatic spacing by its scale: f32::MAX
+    // times a scale whose target fits the device's texture limit overflows.
+    // (An unbounded scale fails on the target's size first, since f27296a.)
     let automatic_overflow = facade_series(f32::MAX, true, false).to_string();
     chart
         .set_series(&automatic_overflow)
@@ -448,9 +461,9 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .frame()
         .expect("frame before export-only scale overflow");
     chart
-        .export_png(f32::INFINITY)
+        .export_png(4.0)
         .await
-        .expect_err("clamped automatic spacing product must overflow");
+        .expect_err("automatic spacing times the export scale must overflow");
     chart.frame().expect("frame after rejected export");
 
     let explicit = facade_series(f32::MAX, true, true).to_string();
@@ -458,7 +471,7 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .set_series(&explicit)
         .expect("finite explicit spacing");
     chart
-        .export_png(f32::INFINITY)
+        .export_png(4.0)
         .await
         .expect("explicit export must not multiply spacing");
 }

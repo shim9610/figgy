@@ -7,8 +7,9 @@ use crate::annotation::{
 };
 use crate::config::LegendCorner;
 use crate::layout::{ChartArea, NudgeResult, RectF};
+use crate::test_gpu::BlockOn as _;
 use crate::text::RichText;
-use crate::{AnnotationSkip, LayerRef, RenderWarning};
+use crate::{AnnotationSkip, LayerRef, RenderWarning, SelectionGeometry};
 
 const PANEL: Rect = Rect {
     x: 0,
@@ -85,7 +86,7 @@ fn annotated_config() -> Config {
 fn fixture(config: &Config) -> (Renderer, ChartId) {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         1,
@@ -96,8 +97,6 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
         "x",
         &crate::Column {
             data: vec![0.0f32, 2.0],
-            min: 0.0,
-            max: 2.0,
         },
     )
     .unwrap();
@@ -105,13 +104,17 @@ fn fixture(config: &Config) -> (Renderer, ChartId) {
         "a",
         &crate::Column {
             data: vec![0.5f32, 0.5],
-            min: 0.5,
-            max: 0.5,
         },
     )
     .unwrap();
     let mut series = declaration("s", "x", "a");
-    if let DataRenderType::Line { line } = &mut series.render_type {
+    if let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+        ..
+    }) = &mut series.render_type
+    {
         line.line_width = 6.0;
     }
     let id = r.register_chart(config.clone(), vec![series]).unwrap();
@@ -401,7 +404,7 @@ fn view_map_drags_write_anchors_that_round_trip() {
     // The arrow's `to` handle moves only that endpoint; `from` stays.
     let arrow = map.find(3).unwrap();
     let selection = map.selection_box(arrow).unwrap();
-    assert_eq!(selection.handles.len(), 2);
+    assert_eq!(selection.handles().len(), 2);
     let to_px = space
         .anchor_to_px(&Anchor::Data { x: 1.8, y: 1.0 })
         .unwrap();
@@ -508,10 +511,18 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
     );
     let series = r.chart_series(id).unwrap().to_vec();
     let one = r
-        .export_panel_rgba(&Chart::new(config.clone()), &series, 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportOptions::panel(1.0),
+        )
+        .block_on()
         .unwrap();
     let two = r
-        .export_panel_rgba(&Chart::new(config.clone()), &series, 2.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(config.clone()), &series),
+            crate::ExportOptions::panel(2.0),
+        )
+        .block_on()
         .unwrap();
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
     // The span's left edge, found on a plot row below the line.
@@ -542,31 +553,19 @@ fn export_scales_annotations_and_reports_unplaceable_items() {
             .annotation_map()
             .bounds(scaled_view.annotation_map().find(index).unwrap())
             .unwrap();
-        // Geometry doubles. The selection padding around drawn shapes and
-        // the reference line's grab strip are pointer affordances of fixed
-        // thickness, so only the geometry inside them does.
+        // Geometry doubles. Bounds are the union of the drawn parts without
+        // grab slack (the stroke width scales with the config), so the whole
+        // bounds double with it.
         let centre = |r: RectF| [r.x + r.width * 0.5, r.y + r.height * 0.5];
         let (ca, cb) = (centre(a), centre(b));
         assert!(
             (cb[0] - ca[0] * 2.0).abs() <= 2.0 && (cb[1] - ca[1] * 2.0).abs() <= 2.0,
             "item {index}: {b:?} is not {a:?} doubled"
         );
-        if index != 1 {
-            let (a, b) = (
-                a.expanded(-crate::select::SELECTION_PADDING),
-                b.expanded(-crate::select::SELECTION_PADDING),
-            );
-            assert!(
-                (b.width - a.width * 2.0).abs() <= 2.0 && (b.height - a.height * 2.0).abs() <= 2.0,
-                "item {index}: {b:?} is not {a:?} doubled"
-            );
-        } else {
-            // The strip adds a fixed 3 px on each end at every scale.
-            assert!(
-                ((b.width - 6.0) - (a.width - 6.0) * 2.0).abs() <= 2.0,
-                "item {index}: {b:?} vs {a:?}"
-            );
-        }
+        assert!(
+            (b.width - a.width * 2.0).abs() <= 2.0 && (b.height - a.height * 2.0).abs() <= 2.0,
+            "item {index}: {b:?} is not {a:?} doubled"
+        );
     }
 }
 
@@ -829,8 +828,9 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         ) {
             (AnnotationKind::Text { anchor, .. }, AnnotationKind::Arrow { from, to, .. }) => {
                 assert_eq!(anchor.kind(), AnchorKind::Ratio);
-                // The bounds pad the drawn box; its corner is the anchor.
-                let drawn = text_box.expanded(-crate::select::SELECTION_PADDING);
+                // The bounds are the drawn box (no grab slack); its corner
+                // is the anchor.
+                let drawn = text_box;
                 let moved = space.anchor_to_px(anchor).unwrap();
                 assert!((moved[0] - drawn.x - 9.0).abs() < 1e-2);
                 assert!((moved[1] - drawn.y - 7.0).abs() < 1e-2);

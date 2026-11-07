@@ -1,15 +1,13 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use renderer::{
-    Color, RendererDevice,
-    data_render::{create_instance, request_adapter, request_device},
-    encode_png,
+    Color, Material, RendererDevice, encode_png,
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     radial::*,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 fn base() -> RadialChart {
     let mut chart = RadialChart {
-        title: "Regional share".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         labels: RadialLabels::Outside,
         label_format: RadialLabelFormat::NamePercent,
@@ -22,8 +20,9 @@ fn base() -> RadialChart {
         ],
         ..Default::default()
     };
+    chart.set_title_text("Regional share");
     chart.style = RadialStyle {
-        material: RadialMaterial::Matte,
+        material: Material::Matte,
         // Match the approved oblique mockup; 0 degrees is straight overhead.
         tilt_degrees: 55.0,
         depth: 0.16,
@@ -45,50 +44,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "target/radial-gallery".into());
     std::fs::create_dir_all(&directory)?;
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
-    let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-    let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let (device, queue) = request_device_blocking(&adapter)?;
+    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
+    let mut renderer = RadialRenderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut cases = Vec::new();
     for (name, material) in [
-        ("matte", RadialMaterial::Matte),
-        ("ceramic", RadialMaterial::Ceramic),
-        ("satin-metal", RadialMaterial::SatinMetal),
-        ("toon", RadialMaterial::Toon),
-        ("enamel", RadialMaterial::Enamel),
-        ("brushed-metal", RadialMaterial::BrushedMetal),
-        ("paper", RadialMaterial::Paper),
-        ("plywood", RadialMaterial::Wood),
-        ("hatch", RadialMaterial::Hatch),
-        ("pearl", RadialMaterial::Pearl),
+        ("matte", Material::Matte),
+        ("ceramic", Material::Ceramic),
+        ("satin-metal", Material::SatinMetal),
+        ("toon", Material::Toon),
+        ("enamel", Material::Enamel),
+        ("brushed-metal", Material::BrushedMetal),
+        ("paper", Material::Paper),
+        ("plywood", Material::Wood),
+        ("hatch", Material::Hatch),
+        ("pearl", Material::Pearl),
     ] {
         let mut c = base();
-        c.title = name.to_uppercase();
+        c.set_title_text(&name.to_uppercase());
         c.style.material = material;
-        if material == RadialMaterial::Toon {
+        if material == Material::Toon {
             c.style.outline.rim = true;
             c.style.outline.separators = true;
         }
         if matches!(
             material,
-            RadialMaterial::Hatch
-                | RadialMaterial::Pearl
-                | RadialMaterial::Paper
-                | RadialMaterial::Wood
+            Material::Hatch | Material::Pearl | Material::Paper | Material::Wood
         ) {
             c.style.texture_strength = 0.7;
         }
-        if material == RadialMaterial::Wood {
+        if material == Material::Wood {
             c.style.roughness = 0.9;
             c.style.gloss = 0.1;
         }
         cases.push((name.to_owned(), c));
     }
     let mut outlined = base();
-    outlined.title = "Raised pie / visible rim and separators".into();
+    outlined.set_title_text("Raised pie / visible rim and separators");
     outlined.kind = RadialKind::Pie;
-    outlined.style.material = RadialMaterial::Flat;
+    outlined.style.material = Material::Flat;
     outlined.style.depth = 0.3;
     outlined.style.bevel = 0.0;
     outlined.style.gap_degrees = 0.0;
@@ -105,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(("outlined-raised-pie".into(), outlined));
     for (name, amount) in [("corners-sharp", 0.0), ("corners-rounded", 0.12)] {
         let mut c = base();
-        c.title = name.into();
+        c.set_title_text(name);
         c.style.inner_corner = amount;
         c.style.outer_corner = amount;
         c.style.depth = 0.0;
@@ -114,10 +110,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cases.push((name.into(), c));
     }
     let mut edited = base();
-    edited.title = "Selected slice / individual edits".into();
+    edited.set_title_text("Selected slice / individual edits");
     edited.interaction.selected = Some(RadialTarget::main(0));
     let style = RadialStyle {
-        material: RadialMaterial::Ceramic,
+        material: Material::Ceramic,
         outline: RadialOutline {
             emphasis: true,
             width: 1.5,
@@ -132,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     edited.value_suffix = " units".into();
     cases.push(("individual-edit".into(), edited));
     let mut split = base();
-    split.title = "Regional share / Video breakdown".into();
+    split.set_title_text("Regional share / Video breakdown");
     split.labels = RadialLabels::Inside;
     split.label_format = RadialLabelFormat::Percent;
     split.split = Some(RadialSplit {
@@ -146,8 +142,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(("pie-of-pie".into(), split));
     // Deterministic time samples: host calls the same model transition on pointer events.
     let mut hover = base();
-    hover.title = "Hover lift / Search".into();
-    hover.style.material = RadialMaterial::Ceramic;
+    hover.set_title_text("Hover lift / Search");
+    hover.style.material = Material::Ceramic;
     for frame in 0..20 {
         hover.interaction.animate_hover(
             if frame < 10 {
@@ -160,8 +156,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         cases.push((format!("hover-{frame:02}"), hover.clone()));
     }
-    for (name, chart) in cases {
-        let img = renderer.export_rgba(&chart, (900, 620), 1.0)?;
+    for (name, mut chart) in cases {
+        // The drawn label strings are written once each case is edited.
+        chart.format_labels();
+        let img = renderer.export_rgba_blocking(
+            &chart,
+            (900, 620),
+            renderer::ExportOptions::document(1.0),
+        )?;
         std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
         renderer.end_frame();
         gpu.device().poll(wgpu::PollType::Wait {

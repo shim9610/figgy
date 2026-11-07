@@ -53,9 +53,7 @@ const SERIES_IDS: [&str; 4] = ["precise", "sketch", "milkyway", "constellation"]
 const X_SPAN: f64 = 12.566; // 4π
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 const FG: Color = Color {
@@ -167,7 +165,7 @@ struct LabState {
 
 impl LabState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
     }
 
     fn regen_data(&mut self, n: usize, bump_variant: bool) {
@@ -382,46 +380,73 @@ fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
         0 => (
             DrawStyle::Precise,
             "Precise — dashed line (GPU arc scan)",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Dash, Color::from_rgb8(100, 180, 255), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Dash,
+                    Color::from_rgb8(100, 180, 255),
+                    2.0,
+                )),
+                errors: None,
+                stem: None,
+            }),
         ),
         1 => (
             DrawStyle::Sketch(SketchOptions::default()),
             "Sketch — arc-parameterized wobble",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 150, 110), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(255, 150, 110),
+                    2.0,
+                )),
+                errors: None,
+                stem: None,
+            }),
         ),
         2 => (
             DrawStyle::Milkyway(MilkywayOptions::default()),
             "Milkyway — ribbon + indirect star pass",
-            DataRenderType::Line {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(190, 150, 255), 2.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(190, 150, 255),
+                    2.0,
+                )),
+                errors: None,
+                stem: None,
+            }),
         ),
         _ => (
             DrawStyle::Constellation(ConstellationOptions::default()),
             "Constellation — PSF stars",
-            DataRenderType::ScatterLine {
-                line: line(LineStylePreset::Solid, Color::from_rgb8(255, 214, 130), 1.5),
-                scatter: scatter(Color::from_rgb8(255, 214, 130), 3.0),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter(Color::from_rgb8(255, 214, 130), 3.0)),
+                line: Some(line(
+                    LineStylePreset::Solid,
+                    Color::from_rgb8(255, 214, 130),
+                    1.5,
+                )),
+                errors: None,
+                stem: None,
+            }),
         ),
     }
 }
 
 impl LabApp {
     fn init_state(&mut self, render_state: &egui_wgpu::RenderState) -> Result<LabState, String> {
-        let device = Arc::new(render_state.device.clone());
-        let queue = Arc::new(render_state.queue.clone());
+        let device = render_state.device.clone();
+        let queue = render_state.queue.clone();
         // Ask for the target pool; `try_new` clamps it to what the device's
         // storage binding can address (the arc scan binds the whole pool as
         // one binding). Size the density ceiling from the GRANTED capacity
         // read back below — 5 columns × 4 bytes per point, ~10% slack for
         // allocator alignment.
         let mut renderer = Renderer::try_new(
-            RendererDevice::new(device, queue),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             render_state.target_format,
             POOL_TARGET_BYTES,
         )
@@ -468,6 +493,7 @@ impl LabApp {
                 source_id: None,
                 x_column: X_ID.into(),
                 y_column: Y_IDS[i].into(),
+                z_column: None,
                 render_type,
             };
             let style = renderer.create_style_for_series(&series).unwrap();

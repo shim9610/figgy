@@ -1,5 +1,7 @@
 // Input layer, points form: `u` / `v` (and the colour value) are index-aligned
-// columns, read at the instance index like the anchor columns.
+// columns, read at the instance index like the anchor columns. On a 3D chart
+// (`VECTOR_FLAG_THREE_D`, #211) the anchor height and the z component `w`
+// are two more such columns; the flat modules never set the flag.
 
 /// The arrow sample for instance `i`, or an invalid sample past `count` or
 /// where a component is not finite. A zero vector is a valid sample that
@@ -25,6 +27,16 @@ fn vector_sample(i: u32) -> VectorSample {
     sample.origin_hi = vec3<f32>(x.x, y.x, 0.0);
     sample.origin_lo = vec3<f32>(x.y, y.y, 0.0);
     sample.vector = vec3<f32>(u.x + u.y, v.x + v.y, 0.0);
+    if (vector_flag(VECTOR_FLAG_THREE_D)) {
+        let z = vector_pool_pair(vector_params.height_base, i);
+        let w = vector_pool_pair(vector_params.w_base, i);
+        if (!vector_pair_finite(w)) {
+            return sample;
+        }
+        sample.origin_hi.z = z.x;
+        sample.origin_lo.z = z.y;
+        sample.vector.z = w.x + w.y;
+    }
     if (vector_flag(VECTOR_FLAG_COLOR_MAP)) {
         sample.value = vector_pool_pair(vector_params.c_base, i);
         sample.value_valid = true;

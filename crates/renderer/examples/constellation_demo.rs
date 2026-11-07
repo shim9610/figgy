@@ -4,8 +4,6 @@
 //! Run: `cargo run -p figgy-renderer --example constellation_demo`
 //! Output: `target/constellation_demo/*.png`
 
-use std::sync::Arc;
-
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
 use renderer::data::Column;
@@ -13,16 +11,14 @@ use renderer::data_config::{
     DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
     ScatterShape, SeriesConfig,
 };
-use renderer::data_render::{create_instance, request_adapter, request_device};
 use renderer::default;
+use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
 
 fn col(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// Composite the transparent export over a deep-space backdrop.
@@ -38,7 +34,12 @@ fn over_space(img: &mut RasterImage) {
 }
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
-    let mut img = r.export_panel_rgba(chart, series, 1.0).expect("export");
+    let mut img = r
+        .export_rgba_blocking(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .expect("export");
     over_space(&mut img);
     let ink = img
         .rgba
@@ -56,16 +57,20 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -109,10 +114,10 @@ fn build_chart(style: DrawStyle) -> Chart {
 
 fn main() {
     let inst = create_instance();
-    let adapter = request_adapter(&inst).expect("adapter");
-    let (device, queue) = request_device(&adapter).expect("device");
+    let adapter = request_adapter_blocking(&inst).expect("adapter");
+    let (device, queue) = request_device_blocking(&adapter).expect("device");
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -250,7 +255,10 @@ fn main() {
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
     let mut img = r
-        .export_panel_rgba(&spec_chart(), &spec_distinct, 2.0)
+        .export_rgba_blocking(
+            renderer::ExportSource::chart(&spec_chart(), &spec_distinct),
+            renderer::ExportOptions::panel(2.0),
+        )
         .expect("export");
     over_space(&mut img);
     std::fs::write(
@@ -308,8 +316,9 @@ fn main() {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
-            render_type: DataRenderType::Scatter {
-                scatter: DataScatterStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(DataScatterStyleConfig {
                     point_color: color,
                     point_shape: shape,
                     point_size: size,
@@ -318,8 +327,11 @@ fn main() {
                     point_style_overrides: None,
                     point_color_map: None,
                     point_size_map: None,
-                },
-            },
+                }),
+                line: None,
+                errors: None,
+                stem: None,
+            }),
         };
 
     // Three scatter series, distinct ring angles, chart-scale markers.
@@ -406,8 +418,9 @@ fn main() {
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 15.0,
@@ -416,16 +429,18 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: Color::from_rgb8(255, 142, 92),
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     }];
     export(
         &mut r,
@@ -447,8 +462,9 @@ fn main() {
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
-        render_type: DataRenderType::ScatterErrorbarY {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),
                 point_shape: ScatterShape::Circle,
                 point_size: 13.0,
@@ -457,20 +473,25 @@ fn main() {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            err_y: ErrorRef::Symmetric {
-                column: "perr".into(),
-            },
-            err_style: DataErrorBarStyleConfig {
-                error_bar_color: Color::from_rgb8(255, 160, 110),
-                error_bar_width: 2.0,
-                error_bar_cap_size: 7.0,
-                cap_width: 2.0,
-                error_bar_style_table: None,
-                error_bar_style_index_column: None,
-                error_bar_style_overrides: None,
-            },
-        },
+            }),
+            line: None,
+            errors: Some(renderer::data_config::ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric {
+                    column: "perr".into(),
+                }),
+                style: DataErrorBarStyleConfig {
+                    error_bar_color: Color::from_rgb8(255, 160, 110),
+                    error_bar_width: 2.0,
+                    error_bar_cap_size: 7.0,
+                    cap_width: 2.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
+                },
+            }),
+            stem: None,
+        }),
     }];
     export(
         &mut r,

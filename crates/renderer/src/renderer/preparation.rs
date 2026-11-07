@@ -51,13 +51,19 @@ impl PreparationFeature {
             Self::Basic => matches!(
                 field,
                 "line"
+                    | "line_mapped"
+                    | "line_parallel"
+                    | "line_parallel_selection"
                     | "area"
                     | "scatter"
                     | "scatter_mapped"
                     | "pick_ring"
                     | "pick_ring_mapped"
+                    | "ternary"
+                    | "parallel"
                     | "errorbar"
                     | "errorbar_mapped"
+                    | "errorbar_stem"
             ),
             Self::Bars => field.starts_with("bar"),
             Self::Fields => {
@@ -97,22 +103,31 @@ impl PreparationFeature {
         }
         for item in series {
             let group = match item.render_type {
-                DataRenderType::Histogram { .. } => Self::Bars,
+                DataRenderType::Histogram { .. }
+                | DataRenderType::CategoryBars { .. }
+                | DataRenderType::BoxPlot { .. }
+                | DataRenderType::RangeBars { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
-                DataRenderType::Heatmap { .. }
-                | DataRenderType::Contour { .. }
-                | DataRenderType::HeatmapContour { .. }
-                | DataRenderType::Vector { .. } => Self::Fields,
-                DataRenderType::Scatter { .. }
-                | DataRenderType::Line { .. }
-                | DataRenderType::ScatterLine { .. }
-                | DataRenderType::ScatterErrorbarX { .. }
-                | DataRenderType::ScatterErrorbarY { .. }
-                | DataRenderType::ScatterErrorbarXY { .. }
-                | DataRenderType::LineScatterErrorbarX { .. }
-                | DataRenderType::LineScatterErrorbarY { .. }
-                | DataRenderType::LineScatterErrorbarXY { .. } => Self::Basic,
+                DataRenderType::Field(_)
+                | DataRenderType::RgbImage { .. }
+                | DataRenderType::Vector { .. }
+                // Streamline lines draw through the line pipelines (always
+                // prepared) and their arrowheads through a vector pipeline.
+                | DataRenderType::Streamlines { .. }
+                // A triangle mesh reads the field's group 2 (#210).
+                | DataRenderType::TriMesh(_) => Self::Fields,
+                DataRenderType::Xy(_)
+                // A radar series draws through the line and scatter pipelines.
+                | DataRenderType::Radar { .. }
+                // So does a ternary series, through its ternary entries, and
+                // a parallel series through the line module's parallel
+                // entries.
+                | DataRenderType::Ternary { .. }
+                | DataRenderType::Parallel { .. } => Self::Basic,
+                // Drawn on the CPU and composited (#203, #234): no GPU
+                // pipeline.
+                DataRenderType::EnergyLevels(_) | DataRenderType::Feynman(_) => continue,
             };
             if !result.contains(&group) {
                 result.push(group);
@@ -128,9 +143,10 @@ pub struct PipelinePreparation {
     feature: PreparationFeature,
     identity: u64,
     generation: u64,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     ledger: Arc<GpuLedger>,
+    health: DeviceHealth,
     format: wgpu::TextureFormat,
     pipelines: TargetPipelines,
     transform: wgpu::BindGroupLayout,
@@ -141,13 +157,15 @@ pub struct PipelinePreparation {
     field: wgpu::BindGroupLayout,
     star: wgpu::BindGroupLayout,
     vector: wgpu::BindGroupLayout,
+    category_bar: wgpu::BindGroupLayout,
+    parallel: wgpu::BindGroupLayout,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
     job: PipelinePreparation,
     contour: Option<crate::gpu_contour::ContourLabelPipelines>,
     arc: Option<data_render::line_arc::ArcScanPipelines>,
-    extent: Option<crate::gpu_errorbar::GpuErrorbarExtentEngine>,
+    extent: Option<crate::gpu_extent::GpuErrorbarExtentEngine>,
     picker: RendererPicker,
 }
 fn failure(reason: impl std::fmt::Display) -> FiggyError {
@@ -156,33 +174,70 @@ fn failure(reason: impl std::fmt::Display) -> FiggyError {
         reason: reason.to_string(),
     }
 }
+/// The picker's shaders, borrowed from a preparation's pipelines.
+macro_rules! picker_shaders {
+    ($job:expr) => {
+        crate::gpu_data_pick::DataPickShaders {
+            bar: &$job.pipelines.shaders.bar,
+            field: &$job.pipelines.shaders.field,
+            vector_grid: &$job.pipelines.shaders.vector_grid,
+            line: &$job.pipelines.shaders.line,
+        }
+    };
+}
+
+/// A preparation's [`PrewarmLayouts`], borrowed field by field so that
+/// `pipelines` stays free for the prewarm's `&mut`.
+macro_rules! preparation_layouts {
+    ($job:expr, $contour:expr) => {
+        PrewarmLayouts {
+            device: &$job.device,
+            queue: &$job.queue,
+            transform_bgl: &$job.transform,
+            style_bgl: &$job.style,
+            per_point_style_map_bgl: &$job.mapped,
+            point_value_map_bgl: &$job.value_map,
+            data_selection_bgl: &$job.selection,
+            field_bgl: &$job.field,
+            vector_bgl: &$job.vector,
+            category_bar_data_bgl: &$job.category_bar,
+            parallel_bgl: &$job.parallel,
+            star_data_bgl: &$job.star,
+            label_pipelines: $contour,
+            feature: Some($job.feature),
+            surface_format: $job.format,
+        }
+    };
+}
+
 impl PipelinePreparation {
     pub fn feature(&self) -> PreparationFeature {
         self.feature
     }
+    /// Compile the feature's pipelines. In the browser this awaits
+    /// WebGPU's asynchronous compiler and yields between pipelines; on
+    /// native nothing waits, and `Self::compile_blocking` does the same
+    /// work without an executor.
     pub async fn compile(
         mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<PreparedPipelines> {
-        let mut contour = None;
-        let mut arc = None;
-        let mut extent = None;
-        let mut picker = RendererPicker::disabled();
+        let mut parts = CompiledParts::new();
         if self.feature == PreparationFeature::Picking {
-            picker
+            parts
+                .picker
                 .enable_observed_async(
                     self.device.clone(),
                     self.queue.clone(),
                     self.ledger.clone(),
-                    crate::gpu_data_pick::DataPickShaders {
-                        bar: &self.pipelines.shaders.bar,
-                        field: &self.pipelines.shaders.field,
-                        vector_grid: &self.pipelines.shaders.vector_grid,
-                    },
+                    self.health.clone(),
+                    picker_shaders!(self),
                     &self.transform,
                     &self.field,
                     &self.mapped,
                     &self.vector,
+                    &self.category_bar,
+                    &self.parallel,
                     observer,
                 )
                 .await
@@ -203,7 +258,7 @@ impl PipelinePreparation {
                 crate::init::prewarm_compute_entries_js(
                     &self.device,
                     "contour.label.async",
-                    include_str!("../contour_anchor.wgsl"),
+                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
                     &[
                         ("anchor_project", "anchor_seed"),
                         ("anchor_project", "anchor_step"),
@@ -214,31 +269,14 @@ impl PipelinePreparation {
                 )
                 .await
                 .map_err(failure)?;
-                contour = Some(crate::gpu_contour::ContourLabelPipelines::new(
-                    &self.device,
-                    &self.field,
-                ));
+                parts.contour = Some(self.contour_pipelines());
             }
+            let layouts = preparation_layouts!(self, parts.contour.as_ref());
             self.pipelines
-                .prewarm_all_observed(
-                    &self.device,
-                    &self.queue,
-                    &self.transform,
-                    &self.style,
-                    &self.mapped,
-                    &self.value_map,
-                    &self.selection,
-                    &self.field,
-                    &self.vector,
-                    &self.star,
-                    contour.as_ref(),
-                    Some(self.feature),
-                    self.format,
-                    observer,
-                )
+                .prewarm_all_observed(&layouts, observer)
                 .await;
             if self.feature == PreparationFeature::Basic {
-                arc = Some(
+                parts.arc = Some(
                     data_render::line_arc::create_arc_scan_pipelines_observed_async(
                         &self.device,
                         observer,
@@ -246,34 +284,112 @@ impl PipelinePreparation {
                     .await
                     .map_err(failure)?,
                 );
-                crate::gpu_errorbar::GpuErrorbarExtentEngine::warm_device_async(&self.device)
+                crate::gpu_extent::GpuErrorbarExtentEngine::warm_device_async(&self.device)
                     .await
                     .map_err(failure)?;
-                extent = Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
-                    &self.device,
-                    self.ledger.clone(),
-                ));
+                parts.extent = Some(self.extent_engine());
             }
         }
-        Ok(PreparedPipelines {
+        Ok(self.prepared(parts))
+    }
+
+    /// [`Self::compile`] on native, without an executor: a native device
+    /// compiles each pipeline when it is created, so nothing waits.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compile_blocking(
+        mut self,
+        observer: &mut dyn FnMut(InitEvent),
+    ) -> Result<PreparedPipelines> {
+        let mut parts = CompiledParts::new();
+        if self.feature == PreparationFeature::Picking {
+            parts
+                .picker
+                .enable_observed(
+                    self.device.clone(),
+                    self.queue.clone(),
+                    self.ledger.clone(),
+                    self.health.clone(),
+                    picker_shaders!(self),
+                    &self.transform,
+                    &self.field,
+                    &self.mapped,
+                    &self.vector,
+                    &self.category_bar,
+                    &self.parallel,
+                    observer,
+                )
+                .map_err(failure)?;
+        } else {
+            if self.feature == PreparationFeature::Fields {
+                parts.contour = Some(self.contour_pipelines());
+            }
+            let layouts = preparation_layouts!(self, parts.contour.as_ref());
+            self.pipelines
+                .prewarm_all_observed_blocking(&layouts, observer);
+            if self.feature == PreparationFeature::Basic {
+                parts.arc = Some(data_render::line_arc::create_arc_scan_pipelines_observed(
+                    &self.device,
+                    observer,
+                ));
+                parts.extent = Some(self.extent_engine());
+            }
+        }
+        Ok(self.prepared(parts))
+    }
+
+    fn contour_pipelines(&self) -> crate::gpu_contour::ContourLabelPipelines {
+        crate::gpu_contour::ContourLabelPipelines::new(&self.device, &self.field)
+    }
+
+    fn extent_engine(&self) -> crate::gpu_extent::GpuErrorbarExtentEngine {
+        crate::gpu_extent::GpuErrorbarExtentEngine::new_tracked(&self.device, self.ledger.clone())
+            .with_health(self.health.clone())
+    }
+
+    fn prepared(self, parts: CompiledParts) -> PreparedPipelines {
+        PreparedPipelines {
             job: self,
-            contour,
-            arc,
-            extent,
-            picker,
-        })
+            contour: parts.contour,
+            arc: parts.arc,
+            extent: parts.extent,
+            picker: parts.picker,
+        }
     }
 }
+
+/// What a compile builds besides the job's own pipelines.
+struct CompiledParts {
+    contour: Option<crate::gpu_contour::ContourLabelPipelines>,
+    arc: Option<data_render::line_arc::ArcScanPipelines>,
+    extent: Option<crate::gpu_extent::GpuErrorbarExtentEngine>,
+    picker: RendererPicker,
+}
+
+impl CompiledParts {
+    fn new() -> Self {
+        Self {
+            contour: None,
+            arc: None,
+            extent: None,
+            picker: RendererPicker::disabled(),
+        }
+    }
+}
+
 impl Renderer {
     pub fn preparation_ready(&self, feature: PreparationFeature) -> bool {
         let p = &self.pipelines;
         match feature {
             PreparationFeature::Basic => {
                 p.line.is_some()
+                    && p.line_mapped.is_some()
+                    && p.line_parallel.is_some()
+                    && p.line_parallel_selection.is_some()
                     && p.scatter.is_some()
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
                     && p.pick_ring_mapped.is_some()
+                    && p.ternary.iter().all(Option::is_some)
                     && p.errorbar.is_some()
                     && p.errorbar_mapped.is_some()
                     && self.arc_pipelines.is_some()
@@ -284,6 +400,19 @@ impl Renderer {
                     && p.bar_envelope.is_some()
                     && p.bar_mapped.is_some()
                     && p.bar_selection.is_some()
+                    && p.bar_selection_mapped.is_some()
+                    && p.bar_category.is_some()
+                    && p.bar_category_selection.is_some()
+                    && p.bar_box_plot.is_some()
+                    && p.bar_box_plot_selection.is_some()
+                    && p.bar_range.is_some()
+                    && p.bar_range_selection.is_some()
+                    && p.bar_violin.is_some()
+                    && p.bar_violin_selection.is_some()
+                    && p.bar_box_points.is_some()
+                    && p.bar_box_point_selection.is_some()
+                    && p.bar_value_label.is_some()
+                    && p.bar_value_label_selection.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -294,15 +423,16 @@ impl Renderer {
                     && p.contour_label.is_some()
                     && p.vector_points.is_some()
                     && p.vector_grid.is_some()
+                    && p.vector_path.is_some()
                     && self.contour_label_pipelines.is_some()
             }
             PreparationFeature::Picking => matches!(
                 self.picker.pipeline_state,
                 PickerPipelineState::Ready { .. }
             ),
-            style => p
-                .styled
-                .contains_key(&style.style_key().expect("style variant")),
+            PreparationFeature::Sketch => p.styled.contains_key(&StyleKey::Sketch),
+            PreparationFeature::Milkyway => p.styled.contains_key(&StyleKey::Milkyway),
+            PreparationFeature::Constellation => p.styled.contains_key(&StyleKey::Constellation),
         }
     }
     pub fn begin_preparation(&self, feature: PreparationFeature) -> Option<PipelinePreparation> {
@@ -316,6 +446,7 @@ impl Renderer {
             device: self.device.clone(),
             queue: self.queue.clone(),
             ledger: self.gpu_ledger.clone(),
+            health: self.health.clone(),
             format: self.surface_format,
             pipelines: TargetPipelines::empty_for_preparation(&self.pipelines),
             transform: self.transform_bgl.clone(),
@@ -326,9 +457,16 @@ impl Renderer {
             field: self.field_bgl.clone(),
             star: self.star_data_bgl.clone(),
             vector: self.vector_bgl.clone(),
+            category_bar: self.category_bar_data_bgl.clone(),
+            parallel: self.parallel_bgl.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
+        let result = self.install_preparation_unreported(prepared);
+        self.reported(result)
+    }
+
+    fn install_preparation_unreported(&mut self, prepared: PreparedPipelines) -> Result<()> {
         let PreparedPipelines {
             job,
             contour,
@@ -338,7 +476,7 @@ impl Renderer {
         } = prepared;
         if self.renderer_identity != job.identity
             || self.target_pipeline_generation != job.generation
-            || !Arc::ptr_eq(&self.device, &job.device)
+            || self.device != job.device
             || self.surface_format != job.format
             || self.target_sample_count != job.pipelines.sample_count
         {
@@ -375,17 +513,46 @@ impl TargetPipelines {
             sample_count: source.sample_count,
             styled: HashMap::new(),
             line: None,
+            line_mapped: None,
+            line_parallel: None,
+            line_parallel_selection: None,
             area: None,
             scatter: None,
             scatter_mapped: None,
             pick_ring: None,
             pick_ring_mapped: None,
+            ternary: Default::default(),
+            view3d: Default::default(),
+            surface_shader: source.surface_shader.clone(),
+            surface: Default::default(),
+            tri_mesh_shader: source.tri_mesh_shader.clone(),
+            tri_mesh: Default::default(),
+            tri_surface_shader: source.tri_surface_shader.clone(),
+            tri_surface: Default::default(),
+            ternary_region_shader: source.ternary_region_shader.clone(),
+            ternary_region: Default::default(),
+            // Compute pipelines: the target's format does not enter them.
+            ternary_region_scan: source.ternary_region_scan.clone(),
             errorbar: None,
             errorbar_mapped: None,
+            errorbar_stem: None,
             bar: None,
             bar_envelope: None,
             bar_mapped: None,
             bar_selection: None,
+            bar_selection_mapped: None,
+            bar_category: None,
+            bar_category_selection: None,
+            bar_box_plot: None,
+            bar_box_plot_selection: None,
+            bar_range: None,
+            bar_range_selection: None,
+            bar_violin: None,
+            bar_violin_selection: None,
+            bar_box_points: None,
+            bar_box_point_selection: None,
+            bar_value_label: None,
+            bar_value_label_selection: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -394,11 +561,24 @@ impl TargetPipelines {
             contour_label: None,
             vector_points: None,
             vector_grid: None,
+            vector_path: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
+        if self.ternary_region_scan.is_none() {
+            self.ternary_region_scan = other.ternary_region_scan.clone();
+        }
         if self.line.is_none() {
             self.line = other.line;
+        }
+        if self.line_mapped.is_none() {
+            self.line_mapped = other.line_mapped;
+        }
+        if self.line_parallel.is_none() {
+            self.line_parallel = other.line_parallel;
+        }
+        if self.line_parallel_selection.is_none() {
+            self.line_parallel_selection = other.line_parallel_selection;
         }
         if self.area.is_none() {
             self.area = other.area;
@@ -414,6 +594,40 @@ impl TargetPipelines {
         }
         if self.pick_ring_mapped.is_none() {
             self.pick_ring_mapped = other.pick_ring_mapped;
+        }
+        for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        for (slot, other) in self.view3d.iter_mut().zip(other.view3d) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.surface_shader.is_none() {
+            self.surface_shader = other.surface_shader;
+        }
+        for (slot, other) in self.surface.iter_mut().zip(other.surface) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.tri_mesh_shader.is_none() {
+            self.tri_mesh_shader = other.tri_mesh_shader;
+        }
+        for (slot, other) in self.tri_mesh.iter_mut().zip(other.tri_mesh) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.tri_surface_shader.is_none() {
+            self.tri_surface_shader = other.tri_surface_shader;
+        }
+        for (slot, other) in self.tri_surface.iter_mut().zip(other.tri_surface) {
+            if slot.is_none() {
+                *slot = other;
+            }
         }
         if self.errorbar.is_none() {
             self.errorbar = other.errorbar;
@@ -433,11 +647,53 @@ impl TargetPipelines {
         if self.bar_selection.is_none() {
             self.bar_selection = other.bar_selection;
         }
+        if self.bar_selection_mapped.is_none() {
+            self.bar_selection_mapped = other.bar_selection_mapped;
+        }
+        if self.bar_category.is_none() {
+            self.bar_category = other.bar_category;
+        }
+        if self.bar_category_selection.is_none() {
+            self.bar_category_selection = other.bar_category_selection;
+        }
+        if self.bar_box_plot.is_none() {
+            self.bar_box_plot = other.bar_box_plot;
+        }
+        if self.bar_box_plot_selection.is_none() {
+            self.bar_box_plot_selection = other.bar_box_plot_selection;
+        }
+        if self.bar_range.is_none() {
+            self.bar_range = other.bar_range;
+        }
+        if self.bar_range_selection.is_none() {
+            self.bar_range_selection = other.bar_range_selection;
+        }
+        if self.bar_violin.is_none() {
+            self.bar_violin = other.bar_violin;
+        }
+        if self.bar_violin_selection.is_none() {
+            self.bar_violin_selection = other.bar_violin_selection;
+        }
+        if self.bar_box_points.is_none() {
+            self.bar_box_points = other.bar_box_points;
+        }
+        if self.bar_box_point_selection.is_none() {
+            self.bar_box_point_selection = other.bar_box_point_selection;
+        }
+        if self.bar_value_label.is_none() {
+            self.bar_value_label = other.bar_value_label;
+        }
+        if self.bar_value_label_selection.is_none() {
+            self.bar_value_label_selection = other.bar_value_label_selection;
+        }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;
         }
         if self.vector_grid.is_none() {
             self.vector_grid = other.vector_grid;
+        }
+        if self.vector_path.is_none() {
+            self.vector_path = other.vector_path;
         }
         if self.field.is_none() {
             self.field = other.field;
@@ -469,7 +725,7 @@ mod tests {
     fn renderer() -> Renderer {
         let (device, queue) = crate::test_gpu::device();
         Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             4096,
         )
@@ -491,7 +747,7 @@ mod tests {
             let mut observer = |_| {};
             let future = job.compile(&mut observer);
             r.set_chart_config(id, config.clone()).unwrap();
-            let prepared = pollster::block_on(future).unwrap();
+            let prepared = crate::test_gpu::block_on(future).unwrap();
             r.install_preparation(prepared).unwrap();
             assert_eq!(r.chart_config(id).unwrap(), &config);
             assert!(r.preparation_ready(feature));
@@ -501,7 +757,7 @@ mod tests {
     #[test]
     fn detached_preparation_rejects_replaced_target_and_other_renderer() {
         let mut r = renderer();
-        let prepared = pollster::block_on(
+        let prepared = crate::test_gpu::block_on(
             r.begin_preparation(PreparationFeature::Sketch)
                 .unwrap()
                 .compile(&mut |_| {}),
@@ -515,7 +771,7 @@ mod tests {
         assert!(!r.preparation_ready(PreparationFeature::Sketch));
         let job = r.begin_preparation(PreparationFeature::Sketch).unwrap();
         drop(r);
-        let prepared = pollster::block_on(job.compile(&mut |_| {})).unwrap();
+        let prepared = crate::test_gpu::block_on(job.compile(&mut |_| {})).unwrap();
         let mut replacement = renderer();
         assert!(matches!(
             replacement.install_preparation(prepared),

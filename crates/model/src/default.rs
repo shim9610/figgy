@@ -21,24 +21,13 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::config::{
     AxisOptions, AxisScale, AxisTitleOptions, BarAlign, ChartTitleOptions, ColorBarOptions, Config,
-    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
+    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, LogTickPolicy, TickVisibility,
 };
 use crate::format::LabelFormat;
 use crate::layer::{AnnotationLayer, LayerRef};
 use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
 use crate::text::{RichText, TextAlign};
-
-/// Empty RichText (no segments). Filled in by builders.
-pub fn default_rich_text() -> RichText {
-    RichText {
-        segments: Vec::new(),
-        color: Color::BLACK,
-        font_size: 12.0,
-        font: String::new(),
-        align: TextAlign::Left,
-    }
-}
 
 /// Chart title style. Text starts empty and is filled in by a builder.
 pub fn default_chart_title_options() -> ChartTitleOptions {
@@ -115,6 +104,12 @@ pub fn default_axis_options_x() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
+        categories: None,
+        category_groups: None,
+        category_window: None,
+        cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 
@@ -139,6 +134,12 @@ pub fn default_axis_options_y() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
+        categories: None,
+        category_groups: None,
+        category_window: None,
+        cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 
@@ -173,6 +174,12 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
+        categories: None,
+        category_groups: None,
+        category_window: None,
+        cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
+        breaks: None,
     }
 }
 
@@ -301,17 +308,21 @@ pub fn default_config() -> Config {
         chart_title: default_chart_title_options(),
         grid: default_grid_options(),
         legend: default_legend(),
-        picked_points: None,
         picked_data: None,
         // No z dimension until a field series needs one — see
         // `default_colorbar_options`.
         colorbar: None,
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
-        polar: None,
+        coordinates: crate::coordinates::Coordinates::Cartesian,
         overlays: Vec::new(),
         subplots: Vec::new(),
         active_layer: LayerRef::Base,
         annotations: AnnotationLayer::default(),
+        // Grouped vertical bars until a chart sets its own.
+        bar_groups: None,
+        // Every series drawn where its values are.
+        line_offsets: None,
+        plot_background: None,
     }
 }

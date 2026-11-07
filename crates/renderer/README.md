@@ -2,7 +2,7 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-vector fields and polar plots, plus pies, donuts, categorical bars, boxplots and
+vector fields, triangle meshes, polar and ternary plots, plus pies, donuts, categorical bars, boxplots and
 radar charts; edit their models and export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
@@ -23,7 +23,6 @@ Add these dependencies to your application's `Cargo.toml`:
 [dependencies]
 renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
-pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
@@ -40,8 +39,11 @@ The crate root page of the API documentation shows the example after this
 README. From a source checkout, run
 `cargo run --locked -p figgy-renderer --example line -- line.png`.
 
-The application needs its own `wgpu` and `pollster` dependencies for this example.
-Hosts with an async executor can await export directly instead of using pollster.
+The application needs its own `wgpu` dependency for this example and no async
+executor: it requests the adapter and device with `gpu::request_adapter_blocking`
+and `gpu::request_device_blocking` and exports with `export_rgba_blocking`. A host
+with an async executor awaits the `_async` requests and `export_rgba` instead,
+which the device bundle's poll thread completes.
 Hosts that already own a matching wgpu 30 device/queue can share them through
 `RendererDevice`. They do not need a second device or a particular GUI toolkit.
 
@@ -50,17 +52,29 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Charts | Entry point | Input and guide |
 | --- | --- | --- |
 | Lines, scatter, error bars, histograms, heatmaps, contours | `Renderer` | Numeric columns and `SeriesConfig`; [native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) |
-| Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
-| Individual, grouped and stacked bars | `CategoricalRenderer` | `CategoricalChart` with category/series IDs; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
-| Grouped/notched boxes and outliers | `BoxPlotRenderer` | `BoxPlotChart` with supplied statistics; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
-| Radar (spider) charts | `RadarRenderer` | `RadarChart` with one value per category and series; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
-| Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
+| Hexbins: host-binned counts on a hexagonal grid | `Renderer` | A `Heatmap` whose `MatrixRef.grid_layout` is `Hexagonal`, shaded flat on linear axes; [hexagonal grids](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
+| Colour images (imshow) | `Renderer` | An `RgbImage` series: three channel grids on one lattice mapped from a `range`, no colourbar; [colour images](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#colour-images-imshow) |
+| Parallel coordinates | `Renderer` | A `Parallel` series on a chart with `Config.parallel`: one column per axis, one polyline per row, each axis its own range; [parallel coordinates](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates) |
+| Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with its slice values in the model; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
+| Sunbursts (nested rings) | `RadialRenderer` | A flat `RadialChart` whose slices carry `children`, each ring over its parent's span; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md#선버스트중첩-고리) |
+| Individual, grouped and stacked bars | `Renderer` | `CategoryBars` series over a categorical axis, or a legacy `CategoricalChart` read by `Config::from_categorical`; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md); on a polar chart the bars fan around the centre as a [rose](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#roses-polar-bars) |
+| Grouped/notched boxes and outliers | `Renderer` | `BoxPlot` series over a categorical axis, reading a record of supplied statistics and a ragged outlier column, or a legacy `BoxPlotChart` read by `Config::from_boxplot`; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
+| Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
+| Polar plots: lines, scatter, areas, heatmaps and contours in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; heatmaps and contours draw their cells as annular sectors ([polar heatmaps](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#heatmaps-and-contours)); histograms, images, error bars, stems, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
+| Ternary plots: markers, lines and region fills of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; a `region` fills the polygons the samples outline (even-odd); line fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
+| Feynman diagrams: vertices, propagators and particles, laid out automatically and dragged into place | `Renderer` with a `Feynman` series | DataLess: the topology is SSOT, vertex positions optional and committed by `auto_layout`; drawn on the CPU and written as vector curves in SVG and PDF; [Feynman guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/FEYNMAN.md) |
+| Triangle meshes: a colour field, contour lines and, in a 3D box, a surface over triangles the host gives | `Renderer` with a `TriMesh` series | Vertex coordinate and value columns (`x_column`, `y_column`, `values`) and a triangle index column (`Renderer::upsert_triangles`), coloured through `Config.colorbar`; on a 3D chart `z_column` is the height; streamed sources are rejected; [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md) |
+| 3D surfaces: a heatmap's grid as a lit surface, contours on the floor, points and trajectories (a scatter or line series with a `z_column`), vector fields (a point vector with a `z_column` and `w`) | `Renderer` with `Config.view_3d` | The heatmap's own columns; overlays, line offsets and streamed sources are rejected; [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md) |
 
 The renderer re-exports model types: most applications do not need a separate
-`figgy-model` dependency. Pies, donuts, bars, box plots and radar charts are
-bounded charts: each draws one validated model with at most 64 slices or
-categories, takes no column sources or streamed data, and computes no
-statistics from raw samples. All five renderers can share a
+`figgy-model` dependency. Pies and donuts are the
+DataLess chart: it draws one validated model with at most 64 slices,
+takes no column sources or streamed data, and computes no
+statistics from raw samples. Categorical bars and box plots are `Renderer`
+series over a categorical axis, and radar series over the categorical angle
+axis of a polar chart; the legacy `CategoricalChart`, `BoxPlotChart` and
+`RadarChart` documents are deprecated readers for this release, removed in the
+next milestone. Both renderers can share a
 `RendererDevice`; each maintains its own resource budget. Vector fields, point
 colour and size maps, area fills, step lines, overlay axes and subplots are
 `Renderer` features declared in `SeriesConfig` and `Config`; see the
@@ -72,8 +86,8 @@ allocation paths, not total device VRAM; see the
 
 Prepare and draw the current model, pick against the displayed frame, then edit
 the model. For Cartesian charts, refresh changed axes/decorations and recreate
-affected caller-owned `ChartStyle` values before preparing again. Bounded chart
-renderers update their derived resources in `prepare`.
+affected caller-owned `ChartStyle` values before preparing again. The radial
+renderer updates its derived resources in `prepare`.
 Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
@@ -83,12 +97,11 @@ the data and the other items above every decoration; see the
 [interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
-includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate
+includes Cartesian refresh and radial edit/export examples, and explains frame lifetime and coordinate
 units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles (in Korean) and titles,
 layers, subplots and annotations (in English). Runnable editors are
-`winit_simple`, `radial_editor`, `categorical_editor`, `boxplot_editor` and
-`radar_editor`; all but the first require `--features egui_demo`.
+`winit_simple` and `radial_editor`; the second requires `--features egui_demo`.
 
 Automatic Cartesian streaming fits the axes only on request: call
 `Renderer::request_stream_auto_fit(chart_id, padding)` when the initial range is
@@ -128,7 +141,9 @@ full native integration examples.
 ## License and verification
 
 Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
-OFL notices in `fonts/`. The package includes source, shaders, fonts, guides,
+OFL and GUST notices in `fonts/`: Liberation Sans and Comic Neue under the SIL
+OFL 1.1, and New Computer Modern Math, the math face, under the GUST Font
+License (shipped unmodified). The package includes source, shaders, fonts, guides,
 runnable examples, tests and test fixtures. Gallery PNG/GIF assets and the unsupported
 iced integration source stay in the Git repository and are not installed with
 the crate. Architecture illustrations link to a fixed public source revision.

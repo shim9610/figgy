@@ -1,15 +1,13 @@
 #![cfg(target_arch = "wasm32")]
 
-use std::sync::Arc;
-
 use renderer::{
     Chart, Color, DataRenderType, RegisteredChartDrawItem, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{
         BarOrientation, DataBarBinStyleConfig, DataBarStyleConfig, DataBarStyleOverride,
     },
-    data_render::{create_instance, request_adapter_async, request_device_async},
     default,
+    gpu::{create_instance, request_adapter_async, request_device_async},
     layout::{ChartArea, Rect},
 };
 use wasm_bindgen::{JsCast, JsValue};
@@ -53,10 +51,8 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
     let (device, queue) = request_device_async(&adapter)
         .await
         .expect("Chrome WebGPU device required");
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4096,
     )
@@ -66,8 +62,6 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
             "browser-edges",
             &Column {
                 data: (0..17).map(|i| i as f32 * 0.25).collect(),
-                min: 0.0,
-                max: 4.0,
             },
         )
         .expect("edge upload failed");
@@ -76,8 +70,6 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
             "browser-values",
             &Column {
                 data: vec![2.0; 16],
-                min: 2.0,
-                max: 2.0,
             },
         )
         .expect("value upload failed");
@@ -94,6 +86,7 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         label: None,
         x_column: "browser-edges".into(),
         y_column: "browser-values".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: Color::new(0.0, 0.6, 0.0, 1.0),

@@ -39,6 +39,11 @@ mod tests {
             style_params: params,
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
+            breaks: crate::data_render::NO_BREAKS,
+            break_info: crate::data_render::NO_BREAK_INFO,
+            scale_prob: crate::data_render::NO_PROBABILITY,
         }
     }
 
@@ -124,6 +129,7 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
                     &base_transform,
                     *base,
                 )
+                .unwrap()
             })
             .collect();
         assert_eq!(bytemuck::bytes_of(&base_transform), &original);
@@ -132,8 +138,8 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             bases.len() as u64 * STREAM_POINT_TRANSFORM_BYTES
         );
         for source in [
-            include_str!("scatter_columnar.wgsl"),
-            include_str!("errorbar_columnar.wgsl"),
+            crate::data_render::SCATTER_SHADER.source,
+            crate::data_render::ERRORBAR_SHADER.source,
         ] {
             let shader = crate::gpu_compile::shader_module(
                 &device,
@@ -262,7 +268,8 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
                     transform_bgl,
                     &case.transform,
                     if include_global_base { start as u32 } else { 0 },
-                );
+                )
+                .unwrap();
                 (start, len, bg, charge)
             })
             .collect();

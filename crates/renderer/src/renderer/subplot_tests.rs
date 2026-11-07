@@ -4,7 +4,7 @@
 //! is always a fresh renderer given the final state.
 use super::*;
 use crate::layout::{ChartArea, Rect};
-use crate::select::SelectionBox;
+use crate::test_gpu::BlockOn as _;
 use crate::text::RichText;
 use crate::{CellRef, HitMap, LayerRef, OverlayLayer, Subplot, SubplotAxis, WarningAxis};
 
@@ -16,15 +16,13 @@ const UPPER: Rect = Rect {
 };
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    crate::Column { data, min, max }
+    crate::Column { data }
 }
 
 fn renderer() -> Renderer {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
         1,
@@ -102,12 +100,14 @@ fn document() -> Config {
             series: vec!["s1".into()],
             link_x: None,
             link_y: None,
+            marker: None,
         },
         Subplot {
             config: second,
             series: Vec::new(),
             link_x: Some(CellRef::Parent),
             link_y: Some(CellRef::Subplot(0)),
+            marker: None,
         },
     ];
     c.sync_subplot_links(None);
@@ -142,11 +142,32 @@ fn fresh_frame_with(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     frame_with_view(&mut r, id, &view)
 }
 
-fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
-    let config = r.chart_config(id).unwrap().clone();
+/// Refresh every panel of `id`, selecting the element `selected` names on
+/// the layer it names (`None` clears the selection). The selection is
+/// resolved on that layer's hit map, so the layer is set on the chart handed
+/// to the refresh; the raster ignores the active layer. Returns the box the
+/// renderer drew.
+fn refresh(
+    r: &mut Renderer,
+    id: ChartId,
+    view: &mut ChartView,
+    selected: Option<(LayerRef, &str)>,
+) -> Option<crate::layout::RectF> {
+    let mut config = r.chart_config(id).unwrap().clone();
     let panel = config.chart_area.0;
-    r.refresh_axis_with_selection(view, &Chart::new(config), panel, selection)
+    let element = selected.map(|(layer, element)| {
+        config.active_layer = layer;
+        element
+    });
+    let chart = Chart::new(config);
+    let drawn = element.map(|element| {
+        r.selection_box(&chart, element)
+            .unwrap_or_else(|| panic!("{element} has no selection box"))
+            .rect()
+    });
+    r.refresh_axis_with_selection(view, &chart, panel, element)
         .unwrap();
+    drawn
 }
 
 /// The `(x, y)` pixels at which `a` and `b` (320 wide) differ.
@@ -157,21 +178,6 @@ fn differing(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
         .filter(|(_, (p, q))| p != q)
         .map(|(i, _)| (i % 320, i / 320))
         .collect()
-}
-
-fn selection_box_at(x: f32, y: f32) -> SelectionBox {
-    SelectionBox {
-        rect: crate::layout::RectF {
-            x,
-            y,
-            width: 40.0,
-            height: 20.0,
-        },
-        color: crate::select::SELECTION_COLOR,
-        stroke_width: crate::select::SELECTION_STROKE_WIDTH,
-        handles: Vec::new(),
-        outline: crate::select::SelectionOutline::Rect,
-    }
 }
 
 // Each subplot draws as a chart of its own, in its own area, with its own
@@ -267,7 +273,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             after.needs_raster_since(Some(&before)),
             format!("{name}: an edit must refresh the raster"),
         );
-        refresh(&mut r, id, &mut view, &[]);
+        refresh(&mut r, id, &mut view, None);
         check(
             view.layer_raster_generations() == expected,
             format!(
@@ -294,7 +300,18 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
         "the member edit did not move the link group".into(),
     );
 
-    refresh(&mut r, id, &mut view, &[selection_box_at(220.0, 160.0)]);
+    // Subplot 1's data area sits in the lower right panel.
+    let drawn = refresh(
+        &mut r,
+        id,
+        &mut view,
+        Some((LayerRef::Subplot(1), "subplot_1:data_area")),
+    )
+    .expect("a selection was drawn");
+    check(
+        drawn.x >= 160.0 && drawn.y >= 120.0,
+        format!("subplot 1's data area box {drawn:?} is not in its panel"),
+    );
     check(
         view.layer_raster_generations() == vec![3, 4, 3, 4],
         format!("subplot 1 selection: {:?}", view.layer_raster_generations()),
@@ -306,12 +323,18 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             .all(|&(x, y)| x >= 160 && y >= 120),
         "the selection box was drawn outside subplot 1".into(),
     );
-    refresh(&mut r, id, &mut view, &[selection_box_at(60.0, 40.0)]);
+    // The parent's data area sits in the upper panel.
+    let drawn = refresh(&mut r, id, &mut view, Some((LayerRef::Base, "data_area")))
+        .expect("a selection was drawn");
+    check(
+        drawn.y + drawn.height <= 120.0,
+        format!("the parent's data area box {drawn:?} is not in its panel"),
+    );
     check(
         view.layer_raster_generations() == vec![4, 4, 3, 5],
         format!("parent selection: {:?}", view.layer_raster_generations()),
     );
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     check(
         frame_with_view(&mut r, id, &view) == previous,
         "clearing the selection did not restore the frame".into(),
@@ -340,7 +363,7 @@ fn a_linked_view_state_edit_moves_the_group_in_one_call() {
     state.subplots[0].left_y.max = 80.0;
     r.set_chart_view_state(id, state.clone()).unwrap();
     let edited = r.chart_config(id).unwrap().clone();
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     let after = frame_with_view(&mut r, id, &view);
     let fresh = fresh_frame(&edited);
 
@@ -431,9 +454,27 @@ fn a_subplot_document_exports_every_chart() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut r = renderer();
     let chart = Chart::new(document());
-    let document_image = r.export_document_rgba(&chart, &series(), 1.0).unwrap();
-    let panel = r.export_panel_rgba(&chart, &series(), 1.0).unwrap();
-    let large = r.export_document_rgba(&chart, &series(), 2.0).unwrap();
+    let document_image = r
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let panel = r
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let large = r
+        .export_rgba(
+            crate::ExportSource::chart(&chart, &series()),
+            crate::ExportOptions::document(2.0),
+        )
+        .block_on()
+        .unwrap();
     let mut side = document();
     side.subplots[1].config.chart_area.0 = Rect {
         x: 320,
@@ -442,7 +483,11 @@ fn a_subplot_document_exports_every_chart() {
         height: 120,
     };
     let wide = r
-        .export_document_rgba(&Chart::new(side), &series(), 1.0)
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(side), &series()),
+            crate::ExportOptions::document(1.0),
+        )
+        .block_on()
         .unwrap();
     drop(fonts);
 
@@ -518,7 +563,9 @@ fn a_subplot_document_is_displayed_and_picked_as_one_document() {
             },
         )
         .unwrap();
-    let picked = pollster::block_on(ticket.resolve()).unwrap().unwrap();
+    let picked = crate::test_gpu::block_on(ticket.resolve())
+        .unwrap()
+        .unwrap();
     assert_eq!(picked.series_id, "s1");
     assert_eq!(picked.point_index, 3);
 }
@@ -732,7 +779,11 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         (document(), "s2", lower_left),
     ] {
         let base = r
-            .export_document_rgba(&Chart::new(plain.clone()), &series(), 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&Chart::new(plain.clone()), &series()),
+                crate::ExportOptions::document(1.0),
+            )
+            .block_on()
             .unwrap();
         let mut picked = plain.clone();
         picked.picked_data = Some(crate::config::DataSelectionsConfig {
@@ -744,7 +795,11 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
             ..Default::default()
         });
         let image = r
-            .export_document_rgba(&Chart::new(picked), &series(), 1.0)
+            .export_rgba(
+                crate::ExportSource::chart(&Chart::new(picked), &series()),
+                crate::ExportOptions::document(1.0),
+            )
+            .block_on()
             .unwrap();
         let mut inside = 0;
         for (i, (a, b)) in base.rgba.chunks(4).zip(image.rgba.chunks(4)).enumerate() {
@@ -763,4 +818,260 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         }
         assert!(inside > 20, "{series_id}: {inside} highlighted pixels");
     }
+}
+
+// A subplot's line offsets are its own (#50): its members draw in its own
+// area, shifted on its own axes, exactly where a host-shifted copy of the
+// data draws, while the parent's group stays in the parent's area; the view
+// holds a panel view per member, and a pick in the subplot finds the member
+// where it is drawn.
+#[test]
+fn subplot_members_draw_shifted_in_their_own_area() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut r = renderer();
+    r.add_column("b20", &column(vec![30.0, 50.0, 40.0, 70.0, 60.0]))
+        .unwrap();
+    r.add_column("a3", &column(vec![0.5, 0.9, 0.6, 1.1, 0.7]))
+        .unwrap();
+    let group = |ids: &[&str], step_y: f64| crate::data_config::LineOffsets {
+        series: ids.iter().map(|id| (*id).into()).collect(),
+        step_y,
+        step_x: 0.0,
+    };
+    let host = |shifted: bool| {
+        let mut list = series();
+        list.push(declaration("s3", "x", if shifted { "a3" } else { "a" }));
+        list.push(declaration("t1", "x", if shifted { "b20" } else { "b" }));
+        list
+    };
+    let mut plain = document();
+    plain.subplots[0].series.push("t1".into());
+    let mut offset = plain.clone();
+    offset.line_offsets = Some(group(&["s0", "s3"], 0.3));
+    offset.subplots[0].config.line_offsets = Some(group(&["s1", "t1"], 20.0));
+    let drawn = r
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(offset.clone()), &host(false)),
+            crate::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let expected = r
+        .export_rgba(
+            crate::ExportSource::chart(&Chart::new(plain.clone()), &host(true)),
+            crate::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    drop(fonts);
+    let (largest, count) = drawn
+        .rgba
+        .chunks_exact(4)
+        .zip(expected.rgba.chunks_exact(4))
+        .map(|(p, q)| p.iter().zip(q).map(|(a, b)| a.abs_diff(*b)).max().unwrap())
+        .fold((0u8, 0usize), |(largest, count), d| {
+            (largest.max(d), count + usize::from(d > 0))
+        });
+    // The shift is added in the shader for the group and on the host for
+    // the copy, so the two lines sit within an f32 rounding of each other
+    // and their anti-aliased edges differ by a few code values: up to 2 on
+    // lavapipe, 3 on WARP and Metal (#63), on a handful of pixels.
+    assert!(
+        largest <= 4 && count <= 16,
+        "{count} pixels differ by up to {largest}"
+    );
+    assert_ne!(
+        drawn.rgba,
+        r.export_rgba(
+            crate::ExportSource::chart(&Chart::new(plain), &host(false)),
+            crate::ExportOptions::document(1.0)
+        )
+        .block_on()
+        .unwrap()
+        .rgba
+    );
+    let view = r
+        .create_chart_view(&Chart::new(offset.clone()), UPPER)
+        .unwrap();
+    // Base, its two members, then subplot 0 with its overlay and two
+    // members, then subplot 1.
+    assert_eq!(view.overlay_count(), 7);
+    let mut active = offset;
+    active.set_active_layer(LayerRef::Subplot(0));
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(active.clone(), host(false)).unwrap();
+    let panel = active.subplot_config(0).unwrap();
+    let da = panel.data_area().unwrap().0;
+    // Point 0 of `t1` (x 0.1 on the -0.5..1 axis, y 10) is drawn at 30 on
+    // the subplot's 0..60 axis.
+    let at = [
+        da.x as f32 + (0.1 + 0.5) / 1.5 * da.width as f32,
+        (da.y + da.height) as f32 - 30.0 / 60.0 * da.height as f32,
+    ];
+    let request = GpuPickRequest {
+        canvas_position_px: at,
+        display_panel_px: active.document_area(),
+        display_scale: 1.0,
+        max_distance_px: 3.0,
+    };
+    let hit = crate::test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
+        .unwrap()
+        .expect("the shifted subplot member picks");
+    assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));
+}
+
+/// A 320 x 240 chart with `overlays` overlays (`o{k}`) and a line offset
+/// group of `members` base series (`m{k}`), for PANELS_MATCH_LAYERS.
+fn shaped(overlays: usize, members: usize) -> Config {
+    let mut c = chart(
+        Rect {
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 240,
+        },
+        (0.0, 1.0),
+    );
+    c.overlays = (0..overlays)
+        .map(|k| {
+            let mut overlay = OverlayLayer::default();
+            overlay.y_axis.min = 0.0;
+            overlay.y_axis.max = 1.0;
+            overlay.y_axis.major_spacing = 0.5;
+            overlay.y_axis.out_margin = 18.0;
+            overlay.y_axis.label_style.font_size = 9.0;
+            overlay.y_axis.title_option.visible = false;
+            overlay.series = vec![format!("o{k}")];
+            overlay
+        })
+        .collect();
+    if members > 0 {
+        c.line_offsets = Some(crate::data_config::LineOffsets {
+            series: (0..members).map(|k| format!("m{k}")).collect(),
+            step_y: 0.002,
+            step_x: 0.0,
+        });
+    }
+    c
+}
+
+/// PANELS_MATCH_LAYERS (#152): `expand_for_render` gives at least one and
+/// at most `panel_layers().len()` panels (exactly that many unless the
+/// layout fell back to the base panel), `panel_places` one place per panel
+/// and `route_selection_boxes` one list per place, so every reader of those
+/// lists by panel index stays in range. Single-layer charts, overlays, line
+/// offset groups of 0, 1 and 200 members, subplots with overlays and
+/// members, a squeezed chart area and a nested subplot; then a registered
+/// chart grows and shrinks its overlays (0, 3, 1) and members (0, 200, 0)
+/// through `set_chart_config`, and after every edit the refreshed view
+/// holds one overlay view per extra panel, draws and exports.
+#[test]
+fn rendered_panels_match_the_panel_layers_through_every_edit() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = renderer();
+    let probe = Chart::new(shaped(0, 0));
+    let boxes: Vec<_> = r.selection_box(&probe, "data_area").into_iter().collect();
+    assert_eq!(boxes.len(), 1);
+
+    let mut members_in_subplot = document();
+    members_in_subplot.subplots[0].series.push("t1".into());
+    members_in_subplot.subplots[0].config.line_offsets = Some(crate::data_config::LineOffsets {
+        series: vec!["s1".into(), "t1".into()],
+        step_y: 5.0,
+        step_x: 0.0,
+    });
+    let mut squeezed = shaped(3, 5);
+    squeezed.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 30,
+        height: 20,
+    });
+    let documents = [
+        shaped(0, 0),
+        shaped(1, 0),
+        shaped(3, 0),
+        shaped(0, 1),
+        shaped(3, 1),
+        shaped(0, 200),
+        shaped(3, 200),
+        document(),
+        members_in_subplot,
+        squeezed,
+    ];
+    let mut fallbacks = 0;
+    for c in &documents {
+        let layers = c.panel_layers();
+        assert_eq!(layers.first(), Some(&LayerRef::Base));
+        let panels = expand_for_render(c).unwrap();
+        assert!(!panels.is_empty() && panels.len() <= layers.len());
+        if panels.len() != layers.len() {
+            assert_eq!(panels.len(), 1, "a partial expansion");
+            fallbacks += 1;
+        }
+        assert_eq!(render_panel_count(c).unwrap(), panels.len());
+        let rect = c.chart_area.0;
+        let places = panel_places(c, &panels, rect);
+        assert_eq!(places.len(), panels.len());
+        let routed = route_selection_boxes(&places, &boxes);
+        assert_eq!(routed.len(), places.len());
+        assert_eq!(routed.iter().map(Vec::len).sum::<usize>(), boxes.len());
+        // Placed far from the box, every place misses it: the topmost
+        // takes it.
+        let far = Rect {
+            x: rect.x + 100_000,
+            y: rect.y + 100_000,
+            ..rect
+        };
+        let routed = route_selection_boxes(&panel_places(c, &panels, far), &boxes);
+        assert_eq!(routed.len(), panels.len());
+        assert_eq!(routed.last().map(Vec::len), Some(boxes.len()));
+        for layer in &layers {
+            assert!(panel_index(c, panels.len(), *layer) < panels.len());
+        }
+        for id in ["s0", "s1", "s2", "t1", "o0", "o2", "m0", "m199", "nowhere"] {
+            assert!(series_panel_index(c, panels.len(), id) < panels.len());
+        }
+    }
+    assert_eq!(fallbacks, 1, "only the squeezed chart falls back");
+    let mut nested = document();
+    nested.subplots[0].config.subplots = document().subplots;
+    assert!(expand_for_render(&nested).is_err());
+
+    // The registry: one declaration per series any step names.
+    let mut declarations = vec![declaration("s0", "x", "a")];
+    declarations.extend((0..3).map(|k| declaration(&format!("o{k}"), "x", "b")));
+    declarations.extend((0..200).map(|k| declaration(&format!("m{k}"), "x", "c")));
+    let first = shaped(0, 0);
+    let id = r
+        .register_chart(first.clone(), declarations.clone())
+        .unwrap();
+    let mut view = r
+        .create_chart_view(&Chart::new(first.clone()), first.chart_area.0)
+        .unwrap();
+    for (overlays, members) in [(0, 0), (3, 0), (1, 0), (1, 200), (3, 200), (1, 0), (0, 0)] {
+        let config = shaped(overlays, members);
+        r.set_chart_config(id, config.clone()).unwrap();
+        let chart = Chart::new(r.chart_config(id).unwrap().clone());
+        r.refresh_axis_with_selection(&mut view, &chart, config.chart_area.0, Some("legend"))
+            .unwrap();
+        let panels = expand_for_render(chart.config()).unwrap();
+        assert_eq!(panels.len(), 1 + overlays + members);
+        assert_eq!(view.overlay_count(), panels.len() - 1);
+        let pixels = frame_with_view(&mut r, id, &view);
+        assert!(pixels.chunks_exact(4).any(|p| p[3] != 0));
+        let png = r
+            .export_png(
+                crate::ExportSource::chart(&chart, &declarations),
+                crate::ExportOptions::document(1.0),
+            )
+            .block_on()
+            .unwrap();
+        assert!(!png.is_empty());
+    }
+    drop(fonts);
 }

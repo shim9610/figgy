@@ -9,8 +9,6 @@
 //! Run with:
 //! `cargo run -p figgy-renderer --example constellation_lab --features egui_demo`
 
-use std::sync::Arc;
-
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 
@@ -32,9 +30,7 @@ const POOL_CAPACITY: u64 = 8 * 1024 * 1024;
 const SPACE_BG: egui::Color32 = egui::Color32::from_rgb(11, 15, 23);
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 /// All figgy state, stored directly in `CallbackResources` — no `Mutex`.
@@ -66,7 +62,7 @@ fn build_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec
 
 impl FiggyState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
     }
 }
 
@@ -77,12 +73,16 @@ impl Drop for FiggyState {
 }
 
 fn build_state(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     format: wgpu::TextureFormat,
 ) -> Result<FiggyState, String> {
-    let mut renderer = Renderer::try_new(RendererDevice::new(device, queue), format, POOL_CAPACITY)
-        .map_err(|e| format!("Renderer init failed: {e}"))?;
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        format,
+        POOL_CAPACITY,
+    )
+    .map_err(|e| format!("Renderer init failed: {e}"))?;
 
     // Sparse constellation data: the intended use case is 5-10 source points,
     // not a densely sampled curve.
@@ -105,8 +105,9 @@ fn build_state(
         label: None,
         x_column: "sample_x".into(),
         y_column: y.into(),
-        render_type: DataRenderType::ScatterLine {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: color,
                 point_shape: ScatterShape::CircleFilled,
                 point_size,
@@ -115,16 +116,18 @@ fn build_state(
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line: DataLineStyleConfig {
+            }),
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: 2.0,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
 
     let series = vec![
@@ -221,7 +224,12 @@ impl CallbackTrait for LabCallback {
 
         for idx in 0..state.series.len() {
             let mut changed = false;
-            if let DataRenderType::ScatterLine { scatter, .. } = &mut state.series[idx].render_type
+            if let DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(_),
+                errors: None,
+                ..
+            }) = &mut state.series[idx].render_type
                 && (scatter.point_size - self.point_size).abs() > f32::EPSILON
             {
                 scatter.point_size = self.point_size;
@@ -373,8 +381,8 @@ impl eframe::App for LabApp {
         self.render_state = Some(render_state.clone());
 
         if !self.initialized && self.failed.is_none() {
-            let device = Arc::new(render_state.device.clone());
-            let queue = Arc::new(render_state.queue.clone());
+            let device = render_state.device.clone();
+            let queue = render_state.queue.clone();
             match build_state(device, queue, render_state.target_format) {
                 Ok(state) => {
                     render_state

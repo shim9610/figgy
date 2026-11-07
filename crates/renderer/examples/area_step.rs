@@ -101,7 +101,17 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
         let mut style = line(Color::from_rgba(teal.r, teal.g, teal.b, 0.0), 0.5);
         style.fill = to.map(|s| LineFill::ToSeries(s.into()));
         style.fill_color = Some(Color::from_rgba(teal.r, teal.g, teal.b, alpha));
-        series(id, "day", id, DataRenderType::Line { line: style })
+        series(
+            id,
+            "day",
+            id,
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(style),
+                errors: None,
+                stem: None,
+            }),
+        )
     };
     let mut dashed = line(teal, 3.);
     dashed.line_style = LineStylePreset::Dash;
@@ -114,15 +124,23 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
             "history",
             "day",
             "history",
-            DataRenderType::Line {
-                line: line(ink, 3.),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(ink, 3.)),
+                errors: None,
+                stem: None,
+            }),
         ),
         series(
             "forecast",
             "day",
             "forecast",
-            DataRenderType::Line { line: dashed },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(dashed),
+                errors: None,
+                stem: None,
+            }),
         ),
     ];
     chart = chart
@@ -201,15 +219,23 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
             "setpoint",
             "hour",
             "setpoint",
-            DataRenderType::Line { line: step },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(step),
+                errors: None,
+                stem: None,
+            }),
         ),
         series(
             "room",
             "minute",
             "room",
-            DataRenderType::Line {
-                line: line(coral, 3.5),
-            },
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(line(coral, 3.5)),
+                errors: None,
+                stem: None,
+            }),
         ),
     ];
     chart = chart
@@ -248,7 +274,17 @@ fn step_modes(r: &mut Renderer, out: &Path) -> Result {
         style.interpolation = interpolation;
         // A fill under a step line follows the steps.
         style.fill = (id == "post").then_some(LineFill::ToBaseline(0.0));
-        series(id, "sx", "sy", DataRenderType::Line { line: style })
+        series(
+            id,
+            "sx",
+            "sy",
+            DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(style),
+                errors: None,
+                stem: None,
+            }),
+        )
     });
     let mut chart = gallery::chart("Step interpolation", "Sample", "Value", (960, 600));
     chart.set_x_range(-0.5, 7.5);

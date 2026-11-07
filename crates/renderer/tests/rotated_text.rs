@@ -18,7 +18,8 @@ fn text(canvas: &mut Canvas, origin: (f32, f32)) {
         false,
         false,
         FontPolicy::Standard,
-    );
+    )
+    .unwrap();
 }
 
 // Independent pixel permutation: no rasterizer or image filtering in the oracle.
@@ -99,12 +100,12 @@ fn rich_titles_preserve_premultiplied_color_at_fractional_rotation_centers() {
         // translates local coordinates by these amounts for the two turns.
         let (tx, ty) = if clockwise { (-0.25, 0.0) } else { (0.0, 0.25) };
         horizontal.translate(tx, ty);
-        draw_rich_text(&mut horizontal, &rt, (7.5, 44.25), FontPolicy::Standard);
+        draw_rich_text(&mut horizontal, &rt, (7.5, 44.25), FontPolicy::Standard).unwrap();
         let expected = rotate_pixels(&horizontal.into_rgba(), clockwise);
         let mut vertical = Canvas::new(SIZE as u32, SIZE as u32).unwrap();
         vertical.save();
         vertical.rotate_at(if clockwise { 90.0 } else { -90.0 }, 64.125, 63.875);
-        draw_rich_text(&mut vertical, &rt, (7.5, 44.25), FontPolicy::Standard);
+        draw_rich_text(&mut vertical, &rt, (7.5, 44.25), FontPolicy::Standard).unwrap();
         vertical.restore();
         assert_eq!(vertical.translation(), Some((0.0, 0.0)));
         let actual = vertical.into_rgba();

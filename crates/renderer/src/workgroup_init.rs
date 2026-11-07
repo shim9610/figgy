@@ -7,6 +7,29 @@
 
 pub(super) const EXPLICIT_ZERO: &str = "FIGGY_EXPLICIT_WORKGROUP_ZERO";
 
+/// Every compute entry compiled with [`compilation_options`]: the shader
+/// benchmark refuses explicit zeroing for any other entry, and
+/// `every_workgroup_entry_initializes_before_computation` fails for a
+/// workgroup-memory entry missing from it, so a new one is listed here on
+/// every backend, not only where DX12 takes the explicit path.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(super) const EXPLICIT_ZERO_ENTRIES: &[&str] = &[
+    "reduce_values",
+    "reduce_states",
+    "pick_exact_candidates",
+    "pick_reduce_candidates",
+    "pick_histogram_bin",
+    "pick_category_bar",
+    "pick_box_plot",
+    "pick_range_bar",
+    "pick_violin",
+    "pick_value_labels",
+    "pick_parallel",
+    "pick_tri_mesh",
+    "scan_block",
+    "ring_scan_block",
+];
+
 fn explicit_options() -> wgpu::PipelineCompilationOptions<'static> {
     wgpu::PipelineCompilationOptions {
         constants: &[(EXPLICIT_ZERO, 1.0)],
@@ -41,7 +64,7 @@ mod tests {
 
     const CASES: &[Case] = &[
         Case {
-            source: include_str!("gpu_errorbar.wgsl"),
+            source: crate::gpu_extent::ERRORBAR_FIT_SHADER.source,
             array: "shared_states",
             width: 64,
             poison: "SeriesState(AxisState(vec2<f32>(1.0), vec2<f32>(2.0), vec2<f32>(3.0)), AxisState(vec2<f32>(4.0), vec2<f32>(5.0), vec2<f32>(6.0)))",
@@ -55,18 +78,42 @@ mod tests {
             bits: "v.valid | v.series_order | v.point_index | v.primitive_kind | v.primitive_index | bitcast<u32>(v.distance_sq) | bitcast<u32>(v.distance_px) | v._pad",
         },
         Case {
-            source: include_str!("data_render/bar_columnar.wgsl"),
+            source: crate::data_render::BAR_SHADER.source,
             array: "data_pick_shared",
             width: 64,
             poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
             bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
         },
         Case {
-            source: include_str!("data_render/line_arc.wgsl"),
+            source: crate::data_render::line_arc::LINE_ARC_SHADER.source,
             array: "scan_shared",
             width: 256,
-            poison: "23.0",
-            bits: "bitcast<u32>(v)",
+            poison: "vec2<u32>(23u, 24u)",
+            bits: "v.x | v.y",
+        },
+        // The parallel coordinates pick (#141), in the line module.
+        Case {
+            source: crate::data_render::LINE_SHADER.source,
+            array: "parallel_pick_shared",
+            width: 64,
+            poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
+            bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
+        },
+        // The triangle mesh pick (#210), in the mesh module.
+        Case {
+            source: crate::data_render::tri_mesh::TRI_MESH_SHADER.source,
+            array: "mesh_pick_shared",
+            width: 64,
+            poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
+            bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
+        },
+        // The ternary ring-start scan (#49).
+        Case {
+            source: crate::data_render::ternary_region::TERNARY_REGION_SHADER.source,
+            array: "ring_shared",
+            width: 256,
+            poison: "23u",
+            bits: "v",
         },
     ];
 
@@ -106,6 +153,11 @@ mod tests {
                     entry.name
                 );
                 assert_eq!(entry.workgroup_size, [case.width, 1, 1]);
+                assert!(
+                    EXPLICIT_ZERO_ENTRIES.contains(&entry.name.as_str()),
+                    "{} is missing from EXPLICIT_ZERO_ENTRIES",
+                    entry.name
+                );
             }
         }
     }

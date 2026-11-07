@@ -4,7 +4,7 @@
 //!
 //! 1. **Data → Column**: wrap two `Vec<f64>` from `renderer::demo` as
 //!    `renderer::Column<f64>` (default `ColumnSource` impl).
-//! 2. **One-line WindowedRenderer**: `Renderer::for_window(window, size,
+//! 2. **One-line WindowedRenderer**: `Renderer::for_window_async(window, size,
 //!    pool_capacity)` — figgy owns instance / adapter / device / queue /
 //!    surface / swap chain. Zero wgpu setup code.
 //! 3. **Register columns**: `renderer.add_column(id, &column)`.
@@ -60,15 +60,17 @@ use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
     CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    SelectionBox, Series, SeriesConfig, WindowedRenderer, encode_png,
+    Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
-const AXIS_PRESETS: [AxisPreset; 5] = [
+const AXIS_PRESETS: [AxisPreset; 7] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
+    AxisPreset::Hidden,
+    AxisPreset::Grotrian,
 ];
 
 const COLOR_CYCLES: [ColorCycle; 5] = [
@@ -88,9 +90,7 @@ const GAP: u32 = 8;
 // ============================================================================
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 // ============================================================================
@@ -145,7 +145,7 @@ impl App {
 
     fn shutdown_gpu(&mut self) {
         if let Some(renderer) = self.renderer.as_ref() {
-            renderer.wait_idle();
+            renderer.wait_idle().unwrap();
         }
         self.panels.clear();
         self.renderer.take();
@@ -212,16 +212,20 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         label: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg_sin).unwrap();
     PanelEntry {
@@ -288,16 +292,20 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
@@ -355,16 +363,20 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         label: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg_xs).unwrap();
     PanelEntry {
@@ -438,18 +450,19 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         label: None,
         x_column: "bump_x".into(),
         y_column: "bump_y".into(),
-        render_type: DataRenderType::HeatmapContour {
+        z_column: None,
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns: ids,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour: ContourConfig {
+            }),
+            contour: Some(ContourConfig {
                 levels,
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -467,15 +480,15 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
                     format: LabelFormat::Decimal,
                     significant_digits: 1,
                     spacing_px: 120.0,
-                    // Empty: the GPU picks. A non-empty list would override it.
+
                     anchors: Vec::new(),
-                    // The label's own background, so the isoline under it does
-                    // not run through the digits.
+
                     bg_color: Some(Color::from_rgb8(250, 250, 250)),
                     bg_padding_px: 2.0,
                 }),
-            },
-        },
+            }),
+            surface: None,
+        }),
     }];
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     let styles = series
@@ -509,7 +522,7 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
 
         // One-line setup — figgy owns surface / device / queue / pipelines.
-        let mut renderer = match Renderer::for_window(
+        let mut renderer = match Renderer::for_window_blocking(
             Arc::clone(&window),
             (size.width, size.height),
             POOL_CAPACITY,
@@ -685,7 +698,8 @@ impl App {
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        if drag.drag_by(panel.chart.config_mut(), dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if drag.drag_by(panel.chart.config_mut(), &measure, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -703,7 +717,8 @@ impl App {
         let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else {
             return;
         };
-        if rz.resize_by(panel.chart.config_mut(), handle, dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -771,7 +786,10 @@ impl App {
             return;
         };
         for (i, panel) in self.panels.iter().enumerate() {
-            match renderer.export_panel_png_bytes(&panel.chart, &panel.series, EXPORT_SCALE) {
+            match renderer.export_png_blocking(
+                renderer::ExportSource::chart(&panel.chart, &panel.series),
+                renderer::ExportOptions::panel(EXPORT_SCALE),
+            ) {
                 Ok(bytes) => {
                     let path = format!("/tmp/figgy_winit_panel_{i}.png");
                     if let Err(e) = std::fs::write(&path, &bytes) {
@@ -783,7 +801,7 @@ impl App {
                 Err(e) => eprintln!("[export] panel {i} failed: {e}"),
             }
         }
-        // encode_png can also be called on an export_panel_rgba result (e.g. RGBA-only for clipboard).
+        // encode_png can also be called on an export_rgba result (e.g. RGBA-only for clipboard).
         let _ = encode_png;
     }
 
@@ -802,23 +820,15 @@ impl App {
         let rects = compute_panel_rects(w, h);
         for (i, (panel, rect)) in self.panels.iter_mut().zip(rects.iter()).enumerate() {
             panel.chart.config_mut().chart_area = ChartArea(*rect);
-            let sel_boxes: Vec<SelectionBox> = match selected {
-                Some((pi, id)) if pi == i => panel
-                    .hitmap
-                    .selection_box(
-                        id,
-                        panel.chart.config(),
-                        &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                    )
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
+            let selected_id: Option<String> = match selected {
+                Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
+                _ => None,
             };
             if let Err(e) = renderer.refresh_axis_with_selection(
                 &mut panel.view,
                 &panel.chart,
                 *rect,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[refresh_axis] {e}");
                 return;
@@ -850,23 +860,15 @@ impl App {
             // only needs resetting.
             let _ = panel.chart.consume_data_dirty();
             if raster_dirty {
-                let sel_boxes: Vec<SelectionBox> = match selected {
-                    Some((pi, id)) if pi == i => panel
-                        .hitmap
-                        .selection_box(
-                            id,
-                            panel.chart.config(),
-                            &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                        )
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
+                let selected_id: Option<String> = match selected {
+                    Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
+                    _ => None,
                 };
                 if let Err(e) = renderer.refresh_axis_with_selection(
                     &mut panel.view,
                     &panel.chart,
                     panel_rect,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 ) {
                     eprintln!("[refresh_axis] {e}");
                     return;

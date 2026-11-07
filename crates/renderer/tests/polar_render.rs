@@ -6,10 +6,11 @@
 //! lands on through `Config::polar_geometry`, so a wrong angle, direction,
 //! radius or sector fails rather than passes.
 
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -17,13 +18,15 @@ use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineIn
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
+#[cfg(feature = "cpu-twin")]
+use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape,
-    SeriesConfig, Subplot, display_config_for_surface,
+    OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig, Subplot,
 };
+#[cfg(feature = "cpu-twin")]
+use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
@@ -36,32 +39,22 @@ const RED: Color = Color {
 };
 
 fn col(data: Vec<f64>) -> Column<f64> {
-    let min = data
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(f64::INFINITY, f64::min);
-    let max = data
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
-fn shared_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-    static DEVICE: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+fn shared_device() -> (wgpu::Device, wgpu::Queue) {
+    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(|| {
         let (device, queue) = test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+        (device, queue)
     });
-    (Arc::clone(device), Arc::clone(queue))
+    (device.clone(), queue.clone())
 }
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         8 * 1024 * 1024,
     )
@@ -90,7 +83,7 @@ fn bare_chart(polar: PolarOptions) -> Chart {
         axis.line_visible = false;
         axis.tick = renderer::config::TickVisibility::None;
     }
-    config.polar = Some(polar);
+    config.set_polar(Some(polar));
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 360.0);
     chart.set_y_range(0.0, 1.0);
@@ -104,8 +97,9 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
-        render_type: DataRenderType::Scatter {
-            scatter: DataScatterStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(DataScatterStyleConfig {
                 point_color: RED,
                 point_shape: ScatterShape::CircleFilled,
                 point_size: size,
@@ -114,8 +108,11 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-        },
+            }),
+            line: None,
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -137,7 +134,13 @@ fn line(id: &str, line: DataLineStyleConfig) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
-        render_type: DataRenderType::Line { line },
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -153,12 +156,13 @@ fn upload(renderer: &mut Renderer, theta: Vec<f64>, r: Vec<f64>) {
 /// The pixel a (θ, r) sample lands on: the same circle the renderer draws
 /// against, with the axis fractions of the chart's own axes.
 fn polar_px(config: &Config, theta: f64, r: f64) -> (f64, f64) {
-    let polar = config.polar.as_ref().expect("polar chart");
+    let polar = config.polar().expect("polar chart");
     let geometry = config.polar_geometry().expect("geometry");
     let axis = &config.left_y;
     let t = match axis.scale {
         AxisScale::Logarithmic => (r.ln() - axis.min.ln()) / (axis.max.ln() - axis.min.ln()),
         AxisScale::Linear => (r - axis.min) / (axis.max - axis.min),
+        AxisScale::Probability(_) => unreachable!("a polar radius is linear or logarithmic"),
     };
     let t = if axis.inverted { 1.0 - t } else { t };
     let inner = f64::from(polar.inner_radius_fraction);
@@ -211,7 +215,13 @@ fn count(img: &RasterImage, pred: fn(&[u8]) -> bool) -> usize {
 }
 
 fn export(renderer: &mut Renderer, chart: &Chart, series: &[SeriesConfig]) -> RasterImage {
-    renderer.export_panel_rgba(chart, series, 1.0).unwrap()
+    renderer
+        .export_rgba(
+            renderer::ExportSource::chart(chart, series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap()
 }
 
 /// Writes the image when `FIGGY_INTERACTION_ARTIFACTS` names a directory.
@@ -524,6 +534,7 @@ fn inner_radius_log_radius_and_below_range_samples() {
     assert!((2 * 120..2 * 260).contains(&ink), "{ink} red pixels");
 }
 
+#[cfg(feature = "cpu-twin")]
 fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     let (_, panel, scale) = display_config_for_surface(chart.config(), (WIDTH, HEIGHT));
     assert_eq!(scale, 1.0);
@@ -535,8 +546,10 @@ fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 struct Columns(Vec<(String, Vec<f32>)>);
 
+#[cfg(feature = "cpu-twin")]
 impl PointColumnLookup for Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
@@ -546,6 +559,7 @@ impl PointColumnLookup for Columns {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let mut renderer = renderer();
@@ -594,7 +608,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
             )
         };
         let mut gpu = |at: (f64, f64), max: f32| {
-            pollster::block_on(
+            test_gpu::block_on(
                 renderer
                     .pick_chart(id, pick_request(&chart, at, max))
                     .unwrap()
@@ -648,7 +662,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let config = chart.config();
     let inside = polar_px(config, 90.0, 1.0);
     let outside = polar_px(config, 200.0, 0.5);
-    let hit = pollster::block_on(
+    let hit = test_gpu::block_on(
         renderer
             .pick_chart(id, pick_request(&chart, inside, 2.0))
             .unwrap()
@@ -656,7 +670,7 @@ fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     )
     .unwrap();
     assert_eq!(hit.map(|h| h.point_index), Some(1));
-    let miss = pollster::block_on(
+    let miss = test_gpu::block_on(
         renderer
             .pick_chart(id, pick_request(&chart, outside, 2.0))
             .unwrap()
@@ -690,6 +704,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: RED,
@@ -704,7 +719,11 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         },
     };
     match renderer
-        .export_panel_rgba(&chart, &[histogram], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &[histogram]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
         .map(|_| ())
     {
         Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
@@ -720,13 +739,22 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         ..PolarOptions::default()
     });
     assert!(matches!(
-        renderer.export_panel_rgba(&arc, &[line("step", stepped)], 1.0),
+        renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&arc, &[line("step", stepped)]),
+                renderer::ExportOptions::panel(1.0)
+            )
+            .block_on(),
         Err(FiggyError::InvalidSeriesConfig { .. })
     ));
     let mut overlay = bare_chart(PolarOptions::default());
     overlay.config_mut().overlays.push(OverlayLayer::default());
     match renderer
-        .export_panel_rgba(&overlay, &[scatter("points", 4.0)], 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&overlay, &[scatter("points", 4.0)]),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
         .map(|_| ())
     {
         Err(FiggyError::InvalidConfig { field, .. }) => assert_eq!(field, "polar"),
@@ -736,13 +764,22 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
     log_angle.config_mut().bottom_x.scale = AxisScale::Logarithmic;
     log_angle.set_x_range(1.0, 360.0);
     assert!(matches!(
-        renderer.export_panel_rgba(&log_angle, &[scatter("points", 4.0)], 1.0),
+        renderer
+            .export_rgba(
+                renderer::ExportSource::chart(&log_angle, &[scatter("points", 4.0)]),
+                renderer::ExportOptions::panel(1.0)
+            )
+            .block_on(),
         Err(FiggyError::InvalidConfig { field: "polar", .. })
     ));
     // The same series draws once the chart is valid again.
     assert!(
         renderer
-            .export_panel_rgba(&chart, &[scatter("points", 4.0)], 1.0)
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[scatter("points", 4.0)]),
+                renderer::ExportOptions::panel(1.0)
+            )
+            .block_on()
             .is_ok()
     );
 }
@@ -753,7 +790,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
     upload(&mut renderer, vec![0.0, 90.0, 180.0], vec![1.0, 0.5, 1.0]);
     // A rectangular parent on the left, a polar subplot on the right.
     let mut parent = bare_chart(PolarOptions::default());
-    parent.config_mut().polar = None;
+    parent.config_mut().set_polar(None);
     parent.set_x_range(0.0, 360.0);
     parent.set_y_range(0.0, 1.0);
     let plain = export(&mut renderer, &parent, &[scatter("points", 8.0)]);
@@ -769,12 +806,17 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
         series: vec!["polar_points".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let mut polar_points = scatter("polar_points", 8.0);
     polar_points.series_id = "polar_points".into();
     let series = [scatter("points", 8.0), polar_points];
     let document = renderer
-        .export_document_rgba(&parent, &series, 1.0)
+        .export_rgba(
+            renderer::ExportSource::chart(&parent, &series),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
         .unwrap();
     assert_eq!((document.width, document.height), (2 * WIDTH, HEIGHT));
     // The rectangular panel of the document equals its standalone export.
@@ -874,7 +916,13 @@ fn grid_axes_and_labels_draw_rings_spokes_and_angle_formats_at_both_scales() {
         "angle label at pi/2"
     );
     // The 2x export doubles every position.
-    let img2 = renderer.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let img2 = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
     assert_eq!((img2.width, img2.height), (2 * WIDTH, 2 * HEIGHT));
     let scaled = chart.config().scaled(2.0);
     let spoke2 = polar_px(&scaled, std::f64::consts::FRAC_PI_4, 0.75);
@@ -1036,17 +1084,18 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     // above the ray, at the ink's height, and the hit map answers there.
     let geometry = chart.config().polar_geometry().unwrap();
     let mut outer: Option<renderer::layout::RectF> = None;
-    assert!(renderer::MeasureText::drawn_parts(
-        &measure,
+    assert!(renderer::chrome::emit_part_of(
         chart.config(),
         &renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
-        &mut |part| {
+        &measure,
+        &mut renderer::sink::Parts(&mut |part| {
             if let renderer::layout::DrawnPart::Text(r) = part
                 && outer.is_none_or(|o| r.x > o.x)
             {
                 outer = Some(r);
             }
-        },
+        }),
+        1.0
     ));
     let label = outer.expect("the ray draws labels");
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
@@ -1071,8 +1120,8 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
 // they do not fit, the kept ones never overlap at any angle.
 #[test]
 fn radius_labels_survive_rotating_the_ray() {
+    use renderer::CpuTextMeasure;
     use renderer::layout::{DrawnPart, Element, RectF, Side};
-    use renderer::{CpuTextMeasure, MeasureText};
     let labels = |angle: f64, max: f64, font_size: f32| {
         let mut chart = bare_chart(PolarOptions {
             radial_label_angle_degrees: angle,
@@ -1089,13 +1138,17 @@ fn radius_labels_survive_rotating_the_ray() {
         let config = chart.config().clone();
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut boxes: Vec<RectF> = Vec::new();
-        assert!(
-            measure.drawn_parts(&config, &Element::AxisLabel(Side::Left), &mut |part| {
+        assert!(renderer::chrome::emit_part_of(
+            &config,
+            &Element::AxisLabel(Side::Left),
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(rect) = part {
                     boxes.push(rect);
                 }
-            })
-        );
+            }),
+            1.0
+        ));
         boxes
     };
     let angles = [0.0, 5.0, 15.0, 30.0, 90.0, 180.0, 270.0, 330.0, 355.0];
@@ -1113,6 +1166,109 @@ fn radius_labels_survive_rotating_the_ray() {
                 assert!(apart, "the ray at {angle}°: {a:?} overlaps {b:?}");
             }
         }
+    }
+}
+
+// An adaptive logarithmic radius (#42): over 3e3..8e5 the rings and the
+// ray's ticks sit on the 1-2-5 ladder, so 2·10^k and 5·10^k draw a ring
+// where the decade ladder draws none, the ray labels a 1-2-5 subset, and
+// a zoom to 1e4..8e4 re-plans the 1..9 ladder with no help from the host.
+// The same rings are drawn at 2x.
+#[test]
+fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
+    use renderer::CpuTextMeasure;
+    use renderer::config::LogTickPolicy;
+    use renderer::layout::{DrawnPart, Element, Side};
+    let mut renderer = renderer();
+    upload(&mut renderer, vec![0.0], vec![1e4]);
+    let chart_for = |policy: LogTickPolicy, min: f64, max: f64| {
+        let mut chart = bare_chart(PolarOptions::default());
+        chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+        chart.config_mut().left_y.log_ticks = policy;
+        chart.set_y_range(min, max);
+        let config = chart.config_mut();
+        config.grid.show_major_y = true;
+        config.grid.major_y_color = Color::new(0.0, 0.0, 1.0, 1.0);
+        config.grid.major_y_width = 2.0;
+        config.left_y.label_style.visible = true;
+        config.left_y.label_style.label_visible = true;
+        // Small enough for the 1-2-5 labels to fit along the ray; at the
+        // default size they demote to the decades.
+        config.left_y.label_style.font_size = 9.0;
+        config.left_y.line_visible = true;
+        config.left_y.tick = renderer::config::TickVisibility::Outside;
+        chart
+    };
+    let is_blue = |p: &[u8]| p[3] > 180 && p[2] > 150 && p[0] < 120 && p[1] < 120;
+    let ray_labels = |config: &Config| {
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        let mut count = 0;
+        assert!(renderer::chrome::emit_part_of(
+            config,
+            &Element::AxisLabel(Side::Left),
+            &measure,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let DrawnPart::Text(_) = part {
+                    count += 1;
+                }
+            }),
+            1.0
+        ));
+        count
+    };
+    let series = [scatter("points", 4.0)];
+    let adaptive = chart_for(LogTickPolicy::Adaptive, 3e3, 8e5);
+    let decades = chart_for(LogTickPolicy::Decades, 3e3, 8e5);
+    assert_eq!(
+        renderer::tick::major_ticks(&adaptive.config().left_y).collect::<Vec<_>>(),
+        [5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]
+    );
+    let img = export(&mut renderer, &adaptive, &series);
+    let img_decades = export(&mut renderer, &decades, &series);
+    save("polar-adaptive-log-radius", &img);
+    let config = adaptive.config();
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "ring at {value:e}: {ring:?}");
+        assert!(
+            !is_blue(at(&img_decades, ring)),
+            "the decade ladder has no ring at {value:e}"
+        );
+    }
+    for value in [1e4, 1e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "decade ring at {value:e}");
+    }
+    assert!(ray_labels(config) > ray_labels(decades.config()));
+    assert!(ray_labels(config) >= 3);
+
+    // 2x: the same rings, at twice the pixels.
+    let img2 = renderer
+        .export_rgba(
+            renderer::ExportSource::chart(&adaptive, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
+    let scaled = adaptive.config().scaled(2.0);
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(&scaled, 200.0, value);
+        assert!(is_blue(at(&img2, ring)), "2x ring at {value:e}");
+    }
+    assert_eq!(ray_labels(&scaled), ray_labels(config));
+
+    // A zoom re-plans: 1e4..8e4 draws a ring at every multiple.
+    let mut zoomed = Chart::new(adaptive.config().clone());
+    zoomed.set_y_range(1e4, 8e4);
+    assert_eq!(
+        zoomed.config().left_y.log_ticks,
+        LogTickPolicy::Adaptive,
+        "a range helper keeps the policy"
+    );
+    let img = export(&mut renderer, &zoomed, &series);
+    for value in [3e4, 4e4, 6e4, 7e4] {
+        let ring = polar_px(zoomed.config(), 200.0, value);
+        assert!(is_blue(at(&img, ring)), "zoomed ring at {value:e}");
     }
 }
 

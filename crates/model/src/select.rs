@@ -1,28 +1,34 @@
-//! Selection policy — `Selectable` and the chart elements that implement it.
+//! Selection policy — `Selectable`, the geometry sinks and the chart
+//! elements.
 //!
-//! Selectable objects expose their interaction-policy pixel bounds (`bounds`); what
-//! selection *does* is fixed by the trait's default methods so it applies
-//! uniformly to every element: a blue highlight box around the bounds
-//! (`selection_box`) and point hit-testing (`contains`). The renderer draws
-//! the box with skia (`axis_render::draw_selection_boxes`); the model only
+//! Every element has one placement function, its [`Selectable::emit`], which
+//! hands the parts it draws to a [`Sink`]. What selection *does* is fixed by
+//! the three sinks of this module, which every element shares through the
+//! blanket [`SelectionGeometry`] trait: the bounds are the union of the
+//! emitted parts, the hit region is what the selection outlines, and the
+//! selection box is built from the same parts. No element can override them,
+//! so a drawn element, its hit region and its box cannot disagree. The
+//! renderer draws the box (`axis_render::draw_selection_box`); the model only
 //! states the policy.
 //!
-//! Placement formulas shared with the renderer consume glyph extents through
-//! the [`MeasureText`] contract. Tick labels and axis strokes come from the
-//! renderer's own layout ([`MeasureText::drawn_parts`]): tick generation,
-//! formatting and pruning belong to the renderer, and the model does not
-//! estimate them.
+//! Every element emits through [`emit_element`], which the renderer's raster
+//! also draws with: titles, the legend, the colourbar strip and title and the
+//! data area are placed here, and tick labels and axis strokes by
+//! [`crate::chrome`], whose tick plan, formatting and pruning measure text
+//! only through [`MeasureText`]. Every measure gets the drawn labels' bounds
+//! (#160).
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config};
+use crate::config::{AxisOptions, ChartTitleOptions, Config};
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    DrawnPart, Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_title_placement,
-    chart_title_placement, colorbar_rect, colorbar_title_placement, legend_rect,
+    Element, LEGEND_BORDER_WIDTH, NudgeReject, NudgeResult, RectF, Side, axis_title_placement,
+    chart_title_placement_in, colorbar_title_placement, legend_rect, visible_colorbar_rect,
 };
-use crate::resize::Resizable;
+use crate::resize::{Resizable, ResizeHandle};
+use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, TextRef, union};
 use crate::text::MeasureText;
 
 /// Selection highlight color (blue).
@@ -36,6 +42,9 @@ pub const SELECTION_COLOR: Color = Color {
 pub const SELECTION_STROKE_WIDTH: f32 = 1.5;
 /// Gap between the element bounds and the highlight box, px.
 pub const SELECTION_PADDING: f32 = 2.0;
+/// Least half width of the box a stroke is outlined and grabbed with where
+/// an element hits on its parts (see [`segment_grab_half_width`]).
+pub const STROKE_GRAB_HALF_WIDTH: f32 = 3.0;
 
 /// What a selection highlight outlines.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -43,73 +52,91 @@ pub enum SelectionOutline {
     /// The box [`SelectionBox::rect`].
     #[default]
     Rect,
-    /// Each tick label of the axis on this side, boxed where the renderer
-    /// draws it, in place of `rect`, which still bounds them. Polar tick
-    /// labels ring the plot or line the ray, so one box around them would
-    /// cover the chart. The model does not lay out tick labels; a consumer
-    /// without that layout draws `rect`.
-    TickLabels(Side),
+    /// Each drawn part of the element, where it is drawn, in place of `rect`,
+    /// which still bounds them: a label block as its box, a stroke as the
+    /// thin oriented box around it, a triangle as itself. Polar tick labels
+    /// ring the plot or line the ray and an arrow is a diagonal, so one box
+    /// around them would cover the chart. The parts are the ones the
+    /// selection sink saw; nothing is laid out twice.
+    Parts(Vec<DrawnPart>),
 }
 
-/// The blue box drawn around a selected element. Produced by
-/// [`Selectable::selection_box`]; consumed by the renderer's skia pass.
+/// The blue box drawn around a selected element, in the chart frame. Built
+/// only by [`SelectionGeometry::selection_box`], from the element's emitted
+/// parts; the renderer's raster pass and host UI read it through its
+/// accessors and map it into their own frame and scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionBox {
+    rect: RectF,
+    color: Color,
+    stroke_width: f32,
+    handles: Vec<RectF>,
+    outline: SelectionOutline,
+}
+
+impl SelectionBox {
     /// Box rect in chart-surface pixels (already padding-expanded).
-    pub rect: RectF,
-    pub color: Color,
-    pub stroke_width: f32,
+    pub fn rect(&self) -> RectF {
+        self.rect
+    }
+
+    pub fn color(&self) -> Color {
+        self.color
+    }
+
+    pub fn stroke_width(&self) -> f32 {
+        self.stroke_width
+    }
+
     /// Resize handle squares (empty for non-resizable elements). Drawn as
     /// filled squares on top of the box outline.
-    pub handles: Vec<RectF>,
-    /// What the highlight outlines: `rect`, or each tick label of an axis.
-    pub outline: SelectionOutline,
+    pub fn handles(&self) -> &[RectF] {
+        &self.handles
+    }
+
+    /// What the highlight outlines: `rect`, or each drawn part.
+    pub fn outline(&self) -> &SelectionOutline {
+        &self.outline
+    }
+
+    /// This box inside `area`: its rectangle intersected with it, for an
+    /// element its canvas clips. The handles and the part outlines are
+    /// kept.
+    pub fn clipped_to(mut self, area: RectF) -> Self {
+        let r = self.rect;
+        let (x0, y0) = (r.x.max(area.x), r.y.max(area.y));
+        let x1 = (r.x + r.width).min(area.x + area.width);
+        let y1 = (r.y + r.height).min(area.y + area.height);
+        self.rect = RectF {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0.0),
+            height: (y1 - y0).max(0.0),
+        };
+        self
+    }
 }
 
 /// An object the user can select on the chart.
 ///
-/// Implementations provide [`Self::bounds`] only. Selection behavior lives in
-/// the default methods so it is identical across elements; override them only
-/// to change the policy itself.
+/// Implementations provide [`Self::emit`], the element's one placement, and
+/// declare their capabilities. Its bounds, hit test and selection box are
+/// the sinks of [`SelectionGeometry`], which every `Selectable` gets and
+/// none can override.
 pub trait Selectable<C: DragConfig = Config> {
-    /// Interaction bounds of this element under `cfg`, or `None` when the
-    /// element is hidden, empty, or the layout is infeasible. Text-bearing
-    /// elements use `measure`; tick labels and axes are the parts `measure`
-    /// reports as drawn, and have no bounds under a measure that does not
-    /// lay them out.
-    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
+    /// Place every part this element draws under `cfg` into `sink`, in the
+    /// chart frame, and return `true`; return `false` when `measure` cannot
+    /// lay the element out (tick labels and axes under a measure that does
+    /// not place them). An element that is hidden, empty or infeasible
+    /// places nothing and returns `true`.
+    fn emit(&self, cfg: &C, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool;
 
-    /// Default selection policy: a blue box [`SELECTION_PADDING`] px outside
-    /// the bounds, stroked [`SELECTION_STROKE_WIDTH`] px in
-    /// [`SELECTION_COLOR`]. Resizable elements additionally carry the eight
-    /// resize handle squares.
-    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox> {
-        let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
-        let handles = match self.as_resizable() {
-            Some(_) => crate::resize::handle_rects(&rect)
-                .iter()
-                .map(|(_, r)| *r)
-                .collect(),
-            None => Vec::new(),
-        };
-        Some(SelectionBox {
-            rect,
-            color: SELECTION_COLOR,
-            stroke_width: SELECTION_STROKE_WIDTH,
-            handles,
-            outline: self.selection_outline(cfg),
-        })
-    }
-
-    /// What the highlight outlines; every element but polar tick labels
-    /// outlines its bounds.
-    fn selection_outline(&self, _cfg: &C) -> SelectionOutline {
-        SelectionOutline::Rect
-    }
-
-    /// Default hit test: point-in-bounds.
-    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
+    /// Whether the selection outlines each drawn part instead of one box
+    /// around them, and the element hits on its parts instead of inside the
+    /// box: polar tick labels and the polar ray, a ternary chart's slanted
+    /// edges and their labels, annotations.
+    fn outlines_parts(&self, _cfg: &C) -> bool {
+        false
     }
 
     /// Default registration: every `Selectable` can enter a [`HitMap`] the
@@ -137,6 +164,15 @@ pub trait Selectable<C: DragConfig = Config> {
         None
     }
 
+    /// Whether the pointer at `(x, y)` may reach this element at all, before
+    /// its drawn parts are tested. A subplot's element on the base layer
+    /// answers only where that subplot's frame is drawn on top (#205), so a
+    /// panel painted over it takes the pointer; every other element answers
+    /// everywhere.
+    fn owns_point(&self, _cfg: &C, _x: f32, _y: f32) -> bool {
+        true
+    }
+
     /// Stable element name for hosts that key on identity rather than
     /// [`HitId`] (e.g. a wasm host exposing hit-testing as strings):
     /// `"data_area"`, `"axis_bottom"`, `"tick_labels_left"`,
@@ -145,6 +181,316 @@ pub trait Selectable<C: DragConfig = Config> {
     /// Custom host elements keep the default.
     fn element_id(&self) -> String {
         "custom".to_string()
+    }
+}
+
+/// The bounds, hit test and selection box of every [`Selectable`]: the three
+/// geometry sinks run over the element's [`Selectable::emit`].
+///
+/// Blanket-implemented for every `Selectable`, so no element can supply a
+/// second placement for any of the three.
+pub trait SelectionGeometry<C: DragConfig = Config> {
+    /// The union of the parts the element draws under `cfg`, or `None` when
+    /// it draws none or `measure` cannot lay it out.
+    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
+
+    /// Whether `(x, y)` is inside what the selection outlines: the box
+    /// [`SELECTION_PADDING`] px around the bounds, or, for an element that
+    /// [`Selectable::outlines_parts`], the [`part_outline`] of one of its
+    /// parts.
+    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool;
+
+    /// The selection policy: a blue box [`SELECTION_PADDING`] px outside the
+    /// bounds, stroked [`SELECTION_STROKE_WIDTH`] px in [`SELECTION_COLOR`],
+    /// with the element's resize handles, outlining the box or each part.
+    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox>;
+}
+
+/// The extent of a drawn part for the bounds: what is drawn, without grab
+/// slack.
+fn part_extent(part: &DrawnPart) -> RectF {
+    part.extent()
+}
+
+/// The shape a per-part selection draws around one drawn part, in the
+/// part's frame, and the region the part is grabbed in: the one geometry of
+/// the hit test, the renderer's highlight and a host's outline. A text block
+/// or rectangle is its box grown by [`SELECTION_PADDING`]; a stroke is the
+/// box [`segment_grab_half_width`] either side of its line and the padding
+/// beyond its ends; a triangle is its [`padded_triangle`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PartOutline {
+    Quad([[f32; 2]; 4]),
+    Triangle([[f32; 2]; 3]),
+    /// A shape annotation's own polygon, possibly concave: grabbed
+    /// anywhere inside it (non-zero winding), its edge included.
+    Polygon(Vec<[f32; 2]>),
+}
+
+impl PartOutline {
+    /// The corners in drawing order; the polygon closes on the first.
+    pub fn corners(&self) -> &[[f32; 2]] {
+        match self {
+            PartOutline::Quad(c) => c,
+            PartOutline::Triangle(c) => c,
+            PartOutline::Polygon(c) => c,
+        }
+    }
+
+    /// Whether `(x, y)` is inside the outline, its edge included.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let c = self.corners();
+        if let PartOutline::Polygon(_) = self {
+            return polygon_contains(c, x, y);
+        }
+        let side =
+            |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        let (mut positive, mut negative) = (false, false);
+        for i in 0..c.len() {
+            let d = side(c[i], c[(i + 1) % c.len()]);
+            positive |= d > 0.0;
+            negative |= d < 0.0;
+        }
+        !(positive && negative)
+    }
+}
+
+/// Whether `(x, y)` is inside the closed polygon `c` by the non-zero
+/// winding rule, or on one of its edges.
+pub fn polygon_contains(c: &[[f32; 2]], x: f32, y: f32) -> bool {
+    let mut winding = 0i32;
+    for i in 0..c.len() {
+        let (a, b) = (c[i], c[(i + 1) % c.len()]);
+        let cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        // On the edge: within its extent and on its line.
+        let on_line = cross.abs() <= 1e-3 * (1.0 + (b[0] - a[0]).abs() + (b[1] - a[1]).abs());
+        if on_line
+            && x >= a[0].min(b[0]) - 1e-3
+            && x <= a[0].max(b[0]) + 1e-3
+            && y >= a[1].min(b[1]) - 1e-3
+            && y <= a[1].max(b[1]) + 1e-3
+        {
+            return true;
+        }
+        if a[1] <= y {
+            if b[1] > y && cross > 0.0 {
+                winding += 1;
+            }
+        } else if b[1] <= y && cross < 0.0 {
+            winding -= 1;
+        }
+    }
+    winding != 0
+}
+
+/// The [`PartOutline`] of `part`.
+pub fn part_outline(part: &DrawnPart) -> PartOutline {
+    match part {
+        DrawnPart::Polygon { points, width } => {
+            PartOutline::Polygon(padded_polygon(points, width * 0.5 + SELECTION_PADDING))
+        }
+        DrawnPart::Path { width, .. } => {
+            // The extent of the path's points, which bounds the curve.
+            let r = part
+                .extent()
+                .expanded(SELECTION_PADDING.max(STROKE_GRAB_HALF_WIDTH - width * 0.5));
+            PartOutline::Quad([
+                [r.x, r.y],
+                [r.x + r.width, r.y],
+                [r.x + r.width, r.y + r.height],
+                [r.x, r.y + r.height],
+            ])
+        }
+        &DrawnPart::Text(r) | &DrawnPart::Rect(r) => {
+            let r = r.expanded(SELECTION_PADDING);
+            PartOutline::Quad([
+                [r.x, r.y],
+                [r.x + r.width, r.y],
+                [r.x + r.width, r.y + r.height],
+                [r.x, r.y + r.height],
+            ])
+        }
+        &DrawnPart::Segment { a, b, width } => {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let len = d[0].hypot(d[1]);
+            let (dir, n) = if len > 0.0 {
+                ([d[0] / len, d[1] / len], [-d[1] / len, d[0] / len])
+            } else {
+                ([1.0, 0.0], [0.0, 1.0])
+            };
+            let half = segment_grab_half_width(width);
+            let along = SELECTION_PADDING;
+            let p = |s: f32, t: f32| [a[0] + dir[0] * s + n[0] * t, a[1] + dir[1] * s + n[1] * t];
+            PartOutline::Quad([
+                p(-along, -half),
+                p(len + along, -half),
+                p(len + along, half),
+                p(-along, half),
+            ])
+        }
+        &DrawnPart::Triangle(t) => PartOutline::Triangle(padded_triangle(t)),
+    }
+}
+
+/// Whether `(x, y)` is inside the outline of a drawn part.
+fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
+    part_outline(part).contains(x, y)
+}
+
+/// Half the width of the box a stroke `width` across is outlined and
+/// grabbed with: half the stroke plus [`SELECTION_PADDING`], at least
+/// [`STROKE_GRAB_HALF_WIDTH`].
+pub fn segment_grab_half_width(width: f32) -> f32 {
+    (width * 0.5 + SELECTION_PADDING).max(STROKE_GRAB_HALF_WIDTH)
+}
+
+/// The polygon `points` with every edge moved `pad` px outward (the miter
+/// of each vertex's two edge normals, as [`padded_triangle`]): the outline
+/// of a shape part, half its border width plus [`SELECTION_PADDING`], so
+/// the stroke and its antialiasing are inside the grab region. A degenerate
+/// polygon (no area, a zero-length edge, a reflex spike too sharp to miter)
+/// is returned as it is.
+pub fn padded_polygon(points: &[[f32; 2]], pad: f32) -> Vec<[f32; 2]> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    let mut area = 0.0;
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    if area.abs() < 1e-6 {
+        return points.to_vec();
+    }
+    // The outward normal of the edge `a`..`b`: for a polygon whose
+    // vertices turn clockwise on screen (positive shoelace with y down) the
+    // outside is to the edge's left in the y-down frame, else to its right.
+    let turn = if area > 0.0 { -1.0 } else { 1.0 };
+    let outward = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len <= 0.0 {
+            return None;
+        }
+        Some([-(b[1] - a[1]) / len * turn, (b[0] - a[0]) / len * turn])
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (prev, v, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
+        let (Some(n1), Some(n2)) = (outward(prev, v), outward(v, next)) else {
+            return points.to_vec();
+        };
+        let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+        if denom <= 1e-6 {
+            return points.to_vec();
+        }
+        let k = pad / denom;
+        out.push([v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])]);
+    }
+    out
+}
+
+/// The triangle `t` with every edge moved [`SELECTION_PADDING`] px outward:
+/// the outline of a triangle part. A degenerate triangle is returned as it
+/// is.
+pub fn padded_triangle(t: [[f32; 2]; 3]) -> [[f32; 2]; 3] {
+    let cx = (t[0][0] + t[1][0] + t[2][0]) / 3.0;
+    let cy = (t[0][1] + t[1][1] + t[2][1]) / 3.0;
+    // The unit normal of the edge `a`..`b` that points away from the centroid.
+    let outward = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len <= 0.0 {
+            return None;
+        }
+        let n = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+        let to_centroid = (cx - a[0]) * n[0] + (cy - a[1]) * n[1];
+        Some(if to_centroid > 0.0 { [-n[0], -n[1]] } else { n })
+    };
+    let mut out = t;
+    for i in 0..3 {
+        let (prev, v, next) = (t[(i + 2) % 3], t[i], t[(i + 1) % 3]);
+        let (Some(n1), Some(n2)) = (outward(prev, v), outward(v, next)) else {
+            return t;
+        };
+        let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+        if denom <= 1e-6 {
+            return t;
+        }
+        let k = SELECTION_PADDING / denom;
+        out[i] = [v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])];
+    }
+    out
+}
+
+/// The bounds sink: `Some(None)` when the element draws nothing, `None`
+/// when `measure` cannot lay it out.
+fn drawn_union<C: DragConfig>(
+    element: &(impl Selectable<C> + ?Sized),
+    cfg: &C,
+    measure: &dyn MeasureText,
+) -> Option<Option<RectF>> {
+    let mut bounds: Option<RectF> = None;
+    let laid_out = element.emit(
+        cfg,
+        measure,
+        &mut Parts(&mut |part| {
+            let r = part_extent(&part);
+            bounds = Some(bounds.map_or(r, |u| union(u, r)));
+        }),
+    );
+    laid_out.then_some(bounds)
+}
+
+impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
+    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF> {
+        drawn_union(self, cfg, measure).flatten()
+    }
+
+    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        if self.outlines_parts(cfg) {
+            let mut hit = false;
+            self.emit(
+                cfg,
+                measure,
+                &mut Parts(&mut |part| hit |= part_contains(&part, x, y)),
+            );
+            hit
+        } else {
+            self.bounds(cfg, measure)
+                .is_some_and(|b| b.expanded(SELECTION_PADDING).contains(x, y))
+        }
+    }
+
+    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox> {
+        let outline = if self.outlines_parts(cfg) {
+            let mut parts = Vec::new();
+            if !self.emit(cfg, measure, &mut Parts(&mut |part| parts.push(part))) {
+                return None;
+            }
+            SelectionOutline::Parts(parts)
+        } else {
+            SelectionOutline::Rect
+        };
+        let rect = match &outline {
+            // The parts are in hand: their union is the bounds.
+            SelectionOutline::Parts(parts) => parts
+                .iter()
+                .map(DrawnPart::extent)
+                .reduce(crate::sink::union)?,
+            SelectionOutline::Rect => self.bounds(cfg, measure)?,
+        }
+        .expanded(SELECTION_PADDING);
+        let mut handles = Vec::new();
+        if let Some(resizable) = self.as_resizable() {
+            resizable.resize_handles(cfg, measure, &mut |_, square| handles.push(square));
+        }
+        Some(SelectionBox {
+            rect,
+            color: SELECTION_COLOR,
+            stroke_width: SELECTION_STROKE_WIDTH,
+            handles,
+            outline,
+        })
     }
 }
 
@@ -192,7 +538,7 @@ impl<C: DragConfig> HitMap<C> {
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, el)| el.contains(cfg, measure, x, y))
+            .find(|(_, el)| el.owns_point(cfg, x, y) && el.contains(cfg, measure, x, y))
             .map(|(i, _)| HitId(i))
     }
 
@@ -209,7 +555,7 @@ impl<C: DragConfig> HitMap<C> {
     }
 
     /// Selection highlight for a registered element — the registered
-    /// element's [`Selectable::selection_box`] policy.
+    /// element's [`SelectionGeometry::selection_box`] policy.
     pub fn selection_box(
         &self,
         id: HitId,
@@ -264,6 +610,12 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
+        // The x axes' category group headers (#203): registered on every
+        // chart, so the set stays the active layer's; an axis without
+        // groups places nothing and is never hit.
+        for side in [Side::Top, Side::Bottom] {
+            map.register(CategoryGroupLabelElement { side });
+        }
         map
     }
 
@@ -297,7 +649,16 @@ impl HitMap<Config> {
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
         if layer == LayerRef::Base {
-            return Self::standard_chart();
+            let mut map = Self::standard_chart();
+            // A parallel chart's axes (#141), each its own label band, over
+            // the shared elements.
+            if let Some(parallel) = cfg.parallel() {
+                for axis in 0..parallel.axes.len() {
+                    map.register(ParallelAxisLabelElement { axis });
+                }
+            }
+            map.register_subplots(cfg);
+            return map;
         }
         if let LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) = layer {
             return Self::for_subplot(cfg, index, layer);
@@ -319,6 +680,10 @@ impl HitMap<Config> {
         map.register(ColorBarAxisElement);
         map.register(ColorBarLabelElement);
         map.register(ColorBarTitleElement);
+        // The x axes are shared, and so are their group headers (#203).
+        for side in [Side::Top, Side::Bottom] {
+            map.register(CategoryGroupLabelElement { side });
+        }
         if let LayerRef::Overlay(index) = layer {
             map.register(OverlayAxisElement { layer: index });
             map.register(OverlayAxisLabelElement { layer: index });
@@ -335,6 +700,33 @@ impl HitMap<Config> {
     /// `SubplotOverlay(index, j)`), each element wrapped in a
     /// [`SubplotElement`]. A subplot shares no element with the parent, so
     /// nothing else is registered.
+    /// Every subplot on the base layer (#205), over the parent's elements:
+    /// its frame ([`SubplotFrameElement`], which a press on its plot
+    /// selects) and its own chart's base set except its plot, wrapped as
+    /// [`SubplotElement`]s that answer only where their subplot is drawn on
+    /// top ([`Config::subplot_at`]). The registration does not depend on
+    /// where the subplots are, so a frame moved over or out of another
+    /// panel keeps its ids.
+    fn register_subplots(&mut self, cfg: &Config) {
+        for index in 0..cfg.subplots.len() {
+            self.register(SubplotFrameElement { subplot: index });
+            let Some(mut subplot) = cfg.subplot_config(index) else {
+                continue;
+            };
+            subplot.active_layer = LayerRef::Base;
+            for element in Self::for_active_layer(&subplot).entries {
+                if element.element_id() == "data_area" {
+                    continue;
+                }
+                self.register(SubplotElement {
+                    subplot: index,
+                    inner: element,
+                    routed: true,
+                });
+            }
+        }
+    }
+
     fn for_subplot(cfg: &Config, index: usize, layer: LayerRef) -> Self {
         let Some(mut subplot) = cfg.subplot_config(index) else {
             return Self::standard_chart();
@@ -349,6 +741,7 @@ impl HitMap<Config> {
             map.register(SubplotElement {
                 subplot: index,
                 inner: element,
+                routed: false,
             });
         }
         map
@@ -367,6 +760,9 @@ impl HitMap<Config> {
 pub struct SubplotElement {
     pub subplot: usize,
     inner: Box<dyn Selectable + Send + Sync>,
+    /// Registered on the base layer, where the subplot shares the pointer
+    /// with the parent and the other subplots (#205).
+    routed: bool,
 }
 
 impl std::fmt::Debug for SubplotElement {
@@ -389,9 +785,51 @@ impl SubplotElement {
         let result = edit(&mut chart);
         if result == NudgeResult::Moved {
             let stored = &mut cfg.subplots[self.subplot].config;
-            chart.active_layer = stored.active_layer;
-            chart.annotations = std::mem::take(&mut stored.annotations);
-            *stored = chart;
+            // Every field of the edited chart is named: a new one is stored
+            // from the edit unless it is one `subplot_config` overrides.
+            let Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_data,
+                colorbar,
+                draw_style,
+                coordinates,
+                overlays,
+                subplots,
+                // `subplot_config` resets these two; the stored ones stay.
+                active_layer: _,
+                annotations: _,
+                bar_groups,
+                line_offsets,
+                plot_background,
+            } = chart;
+            *stored = Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_data,
+                colorbar,
+                draw_style,
+                coordinates,
+                overlays,
+                subplots,
+                active_layer: stored.active_layer,
+                annotations: std::mem::take(&mut stored.annotations),
+                bar_groups,
+                line_offsets,
+                plot_background,
+            };
         }
         result
     }
@@ -402,9 +840,16 @@ impl Selectable for SubplotElement {
         format!("subplot_{}:{}", self.subplot, self.inner.element_id())
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        self.inner
-            .bounds(&cfg.subplot_config(self.subplot)?, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        match cfg.subplot_config(self.subplot) {
+            Some(chart) => self.inner.emit(&chart, measure, sink),
+            None => true,
+        }
+    }
+
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.subplot_config(self.subplot)
+            .is_some_and(|chart| self.inner.outlines_parts(&chart))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -413,6 +858,10 @@ impl Selectable for SubplotElement {
 
     fn as_resizable(&self) -> Option<&dyn Resizable> {
         self.inner.as_resizable().map(|_| self as &dyn Resizable)
+    }
+
+    fn owns_point(&self, cfg: &Config, x: f32, y: f32) -> bool {
+        !self.routed || cfg.subplot_at(x, y) == Some(self.subplot)
     }
 }
 
@@ -423,20 +872,33 @@ impl Draggable for SubplotElement {
             .map_or(Element::DataArea, |drag| drag.nudge_element())
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let Some(drag) = self.inner.as_draggable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        self.edit(cfg, |chart| drag.drag_by(chart, dx, dy))
+        self.edit(cfg, |chart| drag.drag_by(chart, measure, dx, dy))
     }
 
-    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let Some(drag) = self.inner.as_draggable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
         // A subplot's chart keeps document coordinates, so the pointer
         // passes through unchanged.
-        self.edit(cfg, |chart| drag.drag_from(chart, at, dx, dy))
+        self.edit(cfg, |chart| drag.drag_from(chart, measure, at, dx, dy))
     }
 }
 
@@ -453,6 +915,7 @@ impl Resizable for SubplotElement {
     fn resize_by(
         &self,
         cfg: &mut Config,
+        measure: &dyn MeasureText,
         handle: crate::resize::ResizeHandle,
         dx: f32,
         dy: f32,
@@ -460,17 +923,130 @@ impl Resizable for SubplotElement {
         let Some(resize) = self.inner.as_resizable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        self.edit(cfg, |chart| resize.resize_by(chart, handle, dx, dy))
+        self.edit(cfg, |chart| {
+            resize.resize_by(chart, measure, handle, dx, dy)
+        })
+    }
+
+    fn resize_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        handle: crate::resize::ResizeHandle,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let Some(resize) = self.inner.as_resizable() else {
+            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        };
+        self.edit(cfg, |chart| {
+            resize.resize_from(chart, measure, handle, at, dx, dy)
+        })
     }
 
     fn resize_handles(
         &self,
         cfg: &Config,
         measure: &dyn MeasureText,
-    ) -> Option<[(crate::resize::ResizeHandle, RectF); 8]> {
-        self.inner
-            .as_resizable()?
-            .resize_handles(&cfg.subplot_config(self.subplot)?, measure)
+        each: &mut dyn FnMut(ResizeHandle, RectF),
+    ) {
+        if let (Some(resize), Some(chart)) =
+            (self.inner.as_resizable(), cfg.subplot_config(self.subplot))
+        {
+            resize.resize_handles(&chart, measure, each);
+        }
+    }
+}
+
+/// Subplot `subplot`'s frame on the base layer (#205): its `chart_area`,
+/// selected by a press on the subplot's plot or anywhere in the frame no
+/// decoration of it covers. A drag moves the subplot and its handles resize
+/// it, by whole pixels ([`Element::SubplotFrame`]), inside the parent chart
+/// or outside it. The id is `subplot_<n>:frame`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubplotFrameElement {
+    pub subplot: usize,
+}
+
+impl Selectable for SubplotFrameElement {
+    fn element_id(&self) -> String {
+        format!("subplot_{}:frame", self.subplot)
+    }
+
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_element(cfg, &Element::SubplotFrame(self.subplot), measure, sink)
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+
+    fn as_resizable(&self) -> Option<&dyn Resizable> {
+        Some(self)
+    }
+
+    fn owns_point(&self, cfg: &Config, x: f32, y: f32) -> bool {
+        cfg.subplot_at(x, y) == Some(self.subplot)
+    }
+}
+
+impl Draggable for SubplotFrameElement {
+    fn nudge_element(&self) -> Element {
+        Element::SubplotFrame(self.subplot)
+    }
+
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge_from(self.nudge_element(), measure, Some(at), dx, dy)
+    }
+}
+
+impl Resizable for SubplotFrameElement {
+    fn resize_targets(&self, handle: ResizeHandle) -> (Option<Element>, Option<Element>) {
+        use ResizeHandle::*;
+        let edge = |side| Some(Element::SubplotFrameEdge(self.subplot, side));
+        let horizontal = match handle {
+            NW | W | SW => edge(Side::Left),
+            NE | E | SE => edge(Side::Right),
+            N | S => None,
+        };
+        let vertical = match handle {
+            NW | N | NE => edge(Side::Top),
+            SW | S | SE => edge(Side::Bottom),
+            E | W => None,
+        };
+        (horizontal, vertical)
+    }
+
+    fn resize_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        handle: ResizeHandle,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let (horizontal, vertical) = self.resize_targets(handle);
+        let mut moved = false;
+        if let Some(edge) = horizontal {
+            moved |= cfg.nudge_from(edge, measure, Some(at), dx, 0.0) == NudgeResult::Moved;
+        }
+        if let Some(edge) = vertical {
+            moved |= cfg.nudge_from(edge, measure, Some(at), 0.0, dy) == NudgeResult::Moved;
+        }
+        if moved {
+            NudgeResult::Moved
+        } else {
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        }
     }
 }
 
@@ -492,6 +1068,23 @@ pub struct AxisTitleElement {
 /// between the tick ends and the outer chart edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AxisLabelElement {
+    pub side: Side,
+}
+
+/// The tick-label band of parallel axis `axis` of a parallel chart
+/// (`Config.parallel`, #141): the labels the renderer draws along that
+/// axis, outlined and hit label by label, dragged into the axis's
+/// `label_offset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelAxisLabelElement {
+    pub axis: usize,
+}
+
+/// The category group headers of the categorical `top_x` or `bottom_x`
+/// (#203), outlined and hit header by header, dragged into the axis'
+/// `category_groups.offset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategoryGroupLabelElement {
     pub side: Side,
 }
 
@@ -571,172 +1164,296 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     }
 }
 
-/// The config the renderer draws the base layer of a layered document with
-/// (the expanded base panel, or the document without its layers when it does
-/// not expand at this size, as the renderer's panel expansion does), or `None`
-/// for a single-layer document, which is drawn as it is.
-fn drawn_base_panel(cfg: &Config) -> Option<Config> {
-    if cfg.overlays.is_empty() && cfg.subplots.is_empty() {
-        return None;
+/// Run `f` on the config the renderer draws the base layer of `cfg` with: a
+/// single-layer document as it is; a layered one as its expanded base panel
+/// (the expansion's own copy of the SSOT configuration, borrowed here), or
+/// without its layers when it does not expand at this size, as the
+/// renderer's panel expansion does.
+pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
+    if cfg.overlays.is_empty() && cfg.subplots.is_empty() && !cfg.has_offset_members() {
+        return f(cfg);
     }
     match cfg.expand() {
-        Ok(expansion) => expansion
-            .panel(LayerRef::Base)
-            .map(|panel| panel.config.clone()),
+        Ok(expansion) => match expansion.panel(LayerRef::Base) {
+            Some(panel) => f(&panel.config),
+            None => f(cfg),
+        },
         Err(_) => {
             let mut panel = cfg.clone();
             panel.overlays.clear();
             panel.subplots.clear();
+            panel.line_offsets = None;
             panel.active_layer = LayerRef::Base;
-            Some(panel)
+            f(&panel)
         }
     }
 }
 
-/// The extent of a drawn part: a label's glyph block, or a segment's stroke
-/// with at least `min_half` either side.
-fn part_extent(part: &DrawnPart, min_half: f32) -> RectF {
-    match *part {
-        DrawnPart::Text(r) => r,
-        DrawnPart::Segment { a, b, width } => {
-            let half = (width * 0.5).max(min_half);
-            RectF {
-                x: a[0].min(b[0]) - half,
-                y: a[1].min(b[1]) - half,
-                width: (a[0] - b[0]).abs() + half * 2.0,
-                height: (a[1] - b[1]).abs() + half * 2.0,
+// The model's own placements: the elements it can lay out from the layout
+// functions and a text measure. The renderer draws them through the same
+// function.
+
+/// Place decoration `element` of `cfg` into `sink`, in `cfg`'s chart frame,
+/// and return whether it could be laid out: the one placement of the chart
+/// title, the axis titles, the legend, the colourbar strip and its title and
+/// the data area, which the renderer's raster draws with too. Tick labels,
+/// axis strokes and the colourbar's axis and labels are placed by
+/// [`crate::chrome::emit_part_of`], with the tick plan, formatting and
+/// pruning the raster draws, measured by `measure`.
+///
+/// `cfg` is drawn as it is: a caller with a layered document passes the
+/// panel the layer is drawn with (the elements of this module do).
+pub fn emit_element(
+    cfg: &Config,
+    element: &Element,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) -> bool {
+    match element {
+        Element::ChartTitle => emit_chart_title(cfg, measure, sink),
+        Element::AxisTitle(side) => emit_axis_title(cfg, side, measure, sink),
+        Element::Legend => emit_legend(cfg, measure, sink),
+        Element::ColorBar => emit_colorbar_strip(cfg, sink),
+        Element::ColorBarTitle => emit_colorbar_title(cfg, measure, sink),
+        Element::DataArea => emit_data_area(cfg, sink),
+        Element::AxisLabel(_)
+        | Element::Axis(_)
+        | Element::ColorBarAxis
+        | Element::ColorBarLabel
+        | Element::ParallelAxisLabel(_)
+        | Element::CategoryGroupLabel(_) => {
+            // The hit map has no display scale: a broken axis' frames snap
+            // on the grid of the pixels it is given, within a logical pixel
+            // of the drawn frame and well inside the stroke grab width.
+            return crate::chrome::emit_part_of(cfg, element, measure, sink, 1.0);
+        }
+        // Resize targets: nothing of their own is drawn.
+        Element::DataAreaEdge(_) | Element::ColorBarEdge(_) | Element::SubplotFrameEdge(..) => {}
+        // The frame inset by the selection padding and half a handle, so
+        // its selection box and handles lie inside the frame, in the
+        // subplot's own panel, wherever the subplot is (#205).
+        Element::SubplotFrame(index) => {
+            if let Some(subplot) = cfg.subplots.get(*index) {
+                let inset = SELECTION_PADDING + crate::resize::HANDLE_SIZE / 2.0;
+                sink.rect(
+                    Slot::Above,
+                    RectF::from_rect(&subplot.config.chart_area.0).expanded(-inset),
+                    None,
+                    None,
+                );
             }
         }
     }
+    true
 }
 
-/// Whether `(x, y)` is on a drawn part: inside a label's block grown by
-/// [`SELECTION_PADDING`], as its outline is, or within half a segment's
-/// stroke and at least `min_half` of it.
-fn part_contains(part: &DrawnPart, min_half: f32, x: f32, y: f32) -> bool {
-    match *part {
-        DrawnPart::Text(r) => r.expanded(SELECTION_PADDING).contains(x, y),
-        DrawnPart::Segment { a, b, width } => {
-            let d = [b[0] - a[0], b[1] - a[1]];
-            let len2 = d[0] * d[0] + d[1] * d[1];
-            let t = if len2 > 0.0 {
-                (((x - a[0]) * d[0] + (y - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            (x - a[0] - t * d[0]).hypot(y - a[1] - t * d[1]) <= (width * 0.5).max(min_half)
+fn emit_chart_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let ct = &cfg.chart_title;
+    emit_chart_title_in(
+        ct,
+        RectF::from_rect(&cfg.chart_area),
+        ct.top_margin,
+        measure,
+        sink,
+    );
+}
+
+/// The one placement of a chart title: `title` centred across `chart_area`
+/// and in the band `top_margin` high at its top, moved by the title's
+/// offsets. A Cartesian chart passes its chart area and the title's own
+/// band; a chart that lays out its own title band (the radial chart) passes
+/// its canvas and that band. Places nothing for a hidden or empty title.
+pub fn emit_chart_title_in(
+    title: &ChartTitleOptions,
+    chart_area: RectF,
+    top_margin: f32,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
+    let ct = title;
+    if !ct.visible || ct.text.segments.is_empty() {
+        return;
+    }
+    let m = measure.measure_rich(&ct.text);
+    let placement = chart_title_placement_in(chart_area, top_margin, (ct.offset_x, ct.offset_y), m);
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&ct.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: None,
+        },
+    );
+}
+
+/// The axis title on `side`. A polar chart draws no top or right axis, so
+/// their titles are not placed either; a ternary chart places the titles of
+/// its three edges along them, a 3D chart those of its three box axes, and
+/// neither draws a top title.
+fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    if cfg.polar().is_some() && matches!(side, Side::Top | Side::Right) {
+        return;
+    }
+    let axis = axis_of(cfg, side);
+    let to = &axis.title_option;
+    if !to.visible || to.text.segments.is_empty() {
+        return;
+    }
+    let Ok(da) = cfg.data_area() else {
+        return;
+    };
+    let m = measure.measure_rich(&to.text);
+    let slanted = crate::ternary::side_component(side).and_then(|k| {
+        let offset = (to.offset_x, to.offset_y);
+        if cfg.ternary().is_some() {
+            cfg.ternary_title_placement(k, offset, m)
+        } else {
+            let reach = crate::chrome::box3d_label_reach(cfg, k, measure);
+            cfg.box_title_placement(k, offset, m, reach)
         }
+    });
+    if (cfg.ternary().is_some() || cfg.view_3d().is_some()) && slanted.is_none() {
+        return;
+    }
+    let ternary = slanted;
+    let placement = ternary.unwrap_or_else(|| {
+        axis_title_placement(
+            side.clone(),
+            &cfg.chart_area,
+            &da,
+            cfg.title_band(side),
+            (to.offset_x, to.offset_y),
+            m,
+        )
+    });
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&to.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: (placement.rotation_degrees != 0.0)
+                .then_some((placement.rotation_degrees, placement.rotation_center)),
+        },
+    );
+}
+
+/// The legend box in one corner of the data area: the box with its fill and
+/// border, then the content, whose first baseline sits `ascent` below the
+/// padded top-left corner.
+fn emit_legend(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let lg = &cfg.legend;
+    if !lg.visible || lg.content.segments.is_empty() {
+        return;
+    }
+    let Ok(da) = cfg.data_area() else {
+        return;
+    };
+    let m = measure.measure_rich(&lg.content);
+    let rect = legend_rect(&da, lg.corner, lg.padding, (lg.offset_x, lg.offset_y), m);
+    sink.rect(
+        Slot::Above,
+        rect,
+        Some(lg.bg_color),
+        Some(Border {
+            color: lg.border_color,
+            width: LEGEND_BORDER_WIDTH,
+            tag: "legend_box",
+        }),
+    );
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&lg.content),
+            origin: (rect.x + lg.padding, rect.y + lg.padding + m.ascent),
+            extents: m,
+            rotation: None,
+        },
+    );
+}
+
+/// The colourbar strip: the ramp and its border.
+fn emit_colorbar_strip(cfg: &Config, sink: &mut dyn Sink) {
+    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
+        return;
+    };
+    sink.ramp(Slot::Above, rect, bar);
+    if bar.border_width > 0.0 {
+        sink.rect(
+            Slot::Above,
+            rect,
+            None,
+            Some(Border {
+                color: bar.border_color,
+                width: bar.border_width,
+                tag: "colorbar_strip",
+            }),
+        );
     }
 }
 
-/// The union of the parts of `element` the renderer draws under `cfg`,
-/// laid out through `measure` ([`MeasureText::drawn_parts`]): `Some(None)`
-/// when it draws none, `None` when `measure` cannot lay them out.
-fn drawn_union(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    min_half: f32,
-) -> Option<Option<RectF>> {
-    let mut union: Option<RectF> = None;
-    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
-        let r = part_extent(&part, min_half);
-        union = Some(match union {
-            None => r,
-            Some(u) => {
-                let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
-                let x1 = (u.x + u.width).max(r.x + r.width);
-                let y1 = (u.y + u.height).max(r.y + r.height);
-                RectF {
-                    x: x0,
-                    y: y0,
-                    width: x1 - x0,
-                    height: y1 - y0,
-                }
-            }
-        });
-    });
-    laid_out.then_some(union)
-}
-
-/// Whether `(x, y)` falls on one of the drawn parts of `element`
-/// ([`part_contains`]), or `None` when `measure` cannot lay them out.
-fn drawn_part_hit(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    min_half: f32,
-    x: f32,
-    y: f32,
-) -> Option<bool> {
-    let mut hit = false;
-    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
-        hit |= part_contains(&part, min_half, x, y);
-    });
-    laid_out.then_some(hit)
-}
-
-/// Whether `(x, y)` falls inside the selection box around the drawn parts
-/// of `element`, or `None` when `measure` cannot lay them out. The hit
-/// region is the box the selection draws, so a click inside the box always
-/// selects the element.
-fn drawn_box_hit(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    x: f32,
-    y: f32,
-) -> Option<bool> {
-    let union = drawn_union(cfg, measure, element, 0.0)?;
-    Some(union.is_some_and(|r| r.expanded(SELECTION_PADDING).contains(x, y)))
-}
-
-fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOptions, RectF)> {
-    let bar = cfg.colorbar.as_ref()?;
-    if !bar.visible {
-        return None;
+/// The colourbar title, anchored on the painted strip so shortening,
+/// aligning, dragging or resizing the bar moves the title with it.
+fn emit_colorbar_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
+        return;
+    };
+    let to = &bar.axis.title_option;
+    if !to.visible || to.text.segments.is_empty() {
+        return;
     }
-    let da = cfg.data_area().ok()?;
-    let rect = colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
-    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
+    let m = measure.measure_rich(&to.text);
+    let placement = colorbar_title_placement(
+        bar.side.clone(),
+        &rect,
+        &bar.axis,
+        (to.offset_x, to.offset_y),
+        m,
+    );
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&to.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: (placement.rotation_degrees != 0.0)
+                .then_some((placement.rotation_degrees, placement.rotation_center)),
+        },
+    );
 }
 
-/// Half the width of the hit strip along a polar ray, in logical pixels.
-const POLAR_RAY_HIT_HALF_WIDTH: f32 = 4.0;
+/// The data area: a rectangle that paints nothing of its own.
+fn emit_data_area(cfg: &Config, sink: &mut dyn Sink) {
+    if let Ok(da) = cfg.data_area() {
+        sink.rect(Slot::Above, RectF::from_rect(&da.0), None, None);
+    }
+}
 
 impl Selectable for AxisElement {
     fn element_id(&self) -> String {
         format!("axis_{}", side_str(&self.side))
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]):
-    /// a polar chart's angle axis is the outer ring, which is the data
-    /// boundary and not selectable, and its radius ray is grabbed at least
-    /// 4 px either side. `None` when nothing is
-    /// drawn or `measure` does not lay the axis out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        if cfg.polar.is_some() && self.side != Side::Left {
-            return None;
+    /// The line and ticks the renderer draws ([`crate::chrome::emit_part_of`]): a
+    /// polar chart's angle axis is the outer ring, which is the data boundary
+    /// and not selectable, and its radius ray hits on each stroke.
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        if cfg.polar().is_some() && self.side != Side::Left {
+            return true;
         }
-        let min_half = if cfg.polar.is_some() {
-            POLAR_RAY_HIT_HALF_WIDTH
-        } else {
-            0.0
-        };
-        drawn_union(cfg, measure, &Element::Axis(self.side.clone()), min_half).flatten()
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::Axis(self.side.clone()), measure, sink)
+        })
     }
 
-    /// The polar ray hits on each drawn stroke, a Cartesian axis inside the
-    /// selection box around its drawn line and ticks.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        let element = Element::Axis(self.side.clone());
-        if cfg.polar.is_some() {
-            self.side == Side::Left
-                && drawn_part_hit(cfg, measure, &element, POLAR_RAY_HIT_HALF_WIDTH, x, y)
-                    .unwrap_or(false)
-        } else {
-            drawn_box_hit(cfg, measure, &element, x, y).unwrap_or(false)
-        }
+    /// Per part also when the axis frames its pieces (#200): its frames
+    /// cross the plot, so its box would cover the data.
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.polar().is_some()
+            || cfg.ternary().is_some()
+            || cfg.view_3d().is_some()
+            || on_drawn_panel(cfg, |panel| frames_pieces(panel, &self.side))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -744,39 +1461,84 @@ impl Selectable for AxisElement {
     }
 }
 
+/// Whether the axis on `side` of `cfg` draws the frames of its pieces
+/// (#200).
+fn frames_pieces(cfg: &Config, side: &Side) -> bool {
+    matches!(
+        &axis_of(cfg, side).breaks,
+        Some(crate::config::AxisBreaks {
+            frame_each_panel: true,
+            ..
+        })
+    ) && crate::layout::BreakMap::of(axis_of(cfg, side)).is_broken()
+}
+
 impl Selectable for AxisLabelElement {
     fn element_id(&self) -> String {
         format!("tick_labels_{}", side_str(&self.side))
     }
 
-    /// The union of the labels the renderer draws
-    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
-    /// `measure` does not lay tick labels out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::AxisLabel(self.side.clone()), 0.0).flatten()
+    /// The labels the renderer draws ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::AxisLabel(self.side.clone()), measure, sink)
+        })
     }
 
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
-    /// outline each label rather than the box around all of them.
-    fn selection_outline(&self, cfg: &Config) -> SelectionOutline {
-        match self.side {
-            Side::Bottom | Side::Left if cfg.polar.is_some() => {
-                SelectionOutline::TickLabels(self.side.clone())
-            }
-            _ => SelectionOutline::Rect,
-        }
+    /// each label is outlined and hit where it is drawn.
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.polar().is_some() || cfg.ternary().is_some() || cfg.view_3d().is_some()
     }
 
-    /// Polar labels hit on each drawn label, where each is outlined;
-    /// Cartesian labels inside the one box around them.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        let labels = Element::AxisLabel(self.side.clone());
-        let drawn = if cfg.polar.is_some() {
-            drawn_part_hit(cfg, measure, &labels, 0.0, x, y)
-        } else {
-            drawn_box_hit(cfg, measure, &labels, x, y)
-        };
-        drawn.unwrap_or(false)
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for CategoryGroupLabelElement {
+    fn element_id(&self) -> String {
+        format!("category_groups_{}", side_str(&self.side))
+    }
+
+    /// The headers the renderer draws past the axis' tick labels
+    /// ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(
+                panel,
+                &Element::CategoryGroupLabel(self.side.clone()),
+                measure,
+                sink,
+            )
+        })
+    }
+
+    /// Each header (and its bracket) is outlined and hit where it is drawn.
+    fn outlines_parts(&self, _: &Config) -> bool {
+        true
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for ParallelAxisLabelElement {
+    fn element_id(&self) -> String {
+        format!("parallel_axis_labels_{}", self.axis)
+    }
+
+    /// The labels the renderer draws along the axis ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ParallelAxisLabel(self.axis), measure, sink)
+        })
+    }
+
+    /// Each label is outlined and hit where it is drawn along its axis.
+    fn outlines_parts(&self, _: &Config) -> bool {
+        true
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -792,36 +1554,10 @@ impl Selectable for AxisTitleElement {
     /// Placed on the config the base layer is drawn with: in a layered
     /// document that is the expanded base panel, whose margins follow the
     /// widest axis band of the group.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        // A polar chart draws no top or right axis, so their titles have no
-        // hit region either.
-        if cfg.polar.is_some() && matches!(self.side, Side::Top | Side::Right) {
-            return None;
-        }
-        let panel = drawn_base_panel(cfg);
-        let cfg = panel.as_ref().unwrap_or(cfg);
-        let axis = axis_of(cfg, &self.side);
-        let to = &axis.title_option;
-        if !to.visible || to.text.segments.is_empty() {
-            return None;
-        }
-        let da = cfg.data_area().ok()?;
-        let m = measure.measure_rich(&to.text);
-        Some(
-            axis_title_placement(
-                self.side.clone(),
-                &cfg.chart_area,
-                &da,
-                TitleBand {
-                    out_margin: axis.out_margin,
-                    chart_title_margin: cfg.chart_title.top_margin,
-                    edge_inset: cfg.colorbar_band(&self.side),
-                },
-                (to.offset_x, to.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::AxisTitle(self.side.clone()), measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -834,21 +1570,10 @@ impl Selectable for ChartTitleElement {
         "chart_title".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let ct = &cfg.chart_title;
-        if !ct.visible || ct.text.segments.is_empty() {
-            return None;
-        }
-        let m = measure.measure_rich(&ct.text);
-        Some(
-            chart_title_placement(
-                &cfg.chart_area,
-                ct.top_margin,
-                (ct.offset_x, ct.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ChartTitle, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -861,8 +1586,10 @@ impl Selectable for DataAreaElement {
         "data_area".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        cfg.data_area().ok().map(|da| RectF::from_rect(&da.0))
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::DataArea, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -879,19 +1606,12 @@ impl Selectable for ColorBarElement {
         "colorbar".to_string()
     }
 
-    /// The strip rect — the same one the renderer paints, offsets included, so
-    /// the highlight box and the eight handles sit on the bar the user sees.
-    /// Ticks and labels are outside it, as they are for an axis.
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        visible_colorbar_rect(cfg).map(|(_, rect)| rect)
-    }
-
-    /// The strip with the outer half of its border, which is stroked centred
-    /// on the strip's edge.
-    fn contains(&self, cfg: &Config, _measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        visible_colorbar_rect(cfg).is_some_and(|(bar, rect)| {
-            rect.expanded(bar.border_width.max(0.0) * 0.5)
-                .contains(x, y)
+    /// The strip the renderer paints, offsets included, so the highlight box
+    /// and the eight handles sit on the bar the user sees. Ticks and labels
+    /// are outside it, as they are for an axis.
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBar, measure, sink)
         })
     }
 
@@ -909,15 +1629,11 @@ impl Selectable for ColorBarAxisElement {
         "colorbar_axis".to_string()
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]);
-    /// `None` when nothing is drawn or `measure` does not lay them out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::ColorBarAxis, 0.0).flatten()
-    }
-
-    /// Inside the selection box around the drawn line and ticks.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        drawn_box_hit(cfg, measure, &Element::ColorBarAxis, x, y).unwrap_or(false)
+    /// The line and ticks the renderer draws ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarAxis, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -930,16 +1646,11 @@ impl Selectable for ColorBarLabelElement {
         "colorbar_tick_labels".to_string()
     }
 
-    /// The union of the labels the renderer draws
-    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
-    /// `measure` does not lay them out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::ColorBarLabel, 0.0).flatten()
-    }
-
-    /// Inside the selection box around the drawn labels.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        drawn_box_hit(cfg, measure, &Element::ColorBarLabel, x, y).unwrap_or(false)
+    /// The labels the renderer draws ([`crate::chrome::emit_part_of`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarLabel, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -952,23 +1663,10 @@ impl Selectable for ColorBarTitleElement {
         "colorbar_title".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let (bar, rect) = visible_colorbar_rect(cfg)?;
-        let title = &bar.axis.title_option;
-        if !title.visible || title.text.segments.is_empty() {
-            return None;
-        }
-        let m = measure.measure_rich(&title.text);
-        Some(
-            colorbar_title_placement(
-                bar.side.clone(),
-                &rect,
-                &bar.axis,
-                (title.offset_x, title.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarTitle, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -984,29 +1682,9 @@ impl Selectable for LegendElement {
         "legend".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let lg = &cfg.legend;
-        if !lg.visible || lg.content.segments.is_empty() {
-            return None;
-        }
-        let da = cfg.data_area().ok()?;
-
-        let m = measure.measure_rich(&lg.content);
-        Some(legend_rect(
-            &da,
-            lg.corner,
-            lg.padding,
-            (lg.offset_x, lg.offset_y),
-            m,
-        ))
-    }
-
-    /// The box with the outer half of its border, which is stroked centred
-    /// on the box edge.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.bounds(cfg, measure).is_some_and(|b| {
-            b.expanded(crate::layout::LEGEND_BORDER_WIDTH * 0.5)
-                .contains(x, y)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::Legend, measure, sink)
         })
     }
 
@@ -1015,7 +1693,7 @@ impl Selectable for LegendElement {
     }
 }
 
-// Overlay layer elements. Bounds come from the overlay's expanded panel; a
+// Overlay layer elements. Parts come from the overlay's expanded panel; a
 // drag is applied to that panel through the ordinary nudge path and only the
 // moved fields are copied back into the overlay's own options.
 
@@ -1041,17 +1719,33 @@ fn drag_overlay_axis_element(
     cfg: &mut Config,
     layer: usize,
     element: Element,
+    measure: &dyn MeasureText,
     dx: f32,
     dy: f32,
 ) -> NudgeResult {
     let Some(mut panel) = cfg.overlay_panel(layer) else {
         return NudgeResult::Rejected(NudgeReject::OutOfBounds);
     };
-    let result = panel.nudge(element, dx, dy);
+    let result = panel.nudge(element, measure, dx, dy);
     if result == NudgeResult::Moved {
         adopt_overlay_axis(&mut cfg.overlays[layer].y_axis, &panel.right_y);
     }
     result
+}
+
+/// Emit `inner` on the overlay panel of `layer`; nothing while the document
+/// has no such panel.
+fn emit_on_overlay_panel(
+    cfg: &Config,
+    layer: usize,
+    inner: &dyn Selectable,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) -> bool {
+    match cfg.overlay_panel(layer) {
+        Some(panel) => inner.emit(&panel, measure, sink),
+        None => true,
+    }
 }
 
 impl Selectable for OverlayAxisElement {
@@ -1059,9 +1753,14 @@ impl Selectable for OverlayAxisElement {
         overlay_id(self.layer, DecorationId::Axis(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1074,8 +1773,14 @@ impl Draggable for OverlayAxisElement {
         Element::Axis(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1084,9 +1789,14 @@ impl Selectable for OverlayAxisLabelElement {
         overlay_id(self.layer, DecorationId::AxisLabel(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisLabelElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisLabelElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1099,8 +1809,14 @@ impl Draggable for OverlayAxisLabelElement {
         Element::AxisLabel(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1109,9 +1825,14 @@ impl Selectable for OverlayAxisTitleElement {
         overlay_id(self.layer, DecorationId::AxisTitle(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisTitleElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisTitleElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1124,8 +1845,14 @@ impl Draggable for OverlayAxisTitleElement {
         Element::AxisTitle(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1134,10 +1861,15 @@ impl Selectable for OverlayLegendElement {
         overlay_id(self.layer, DecorationId::Legend)
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        cfg.overlays.get(self.layer)?.legend.as_ref()?;
-        let panel = cfg.overlay_panel(self.layer)?;
-        LegendElement.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        if cfg
+            .overlays
+            .get(self.layer)
+            .is_none_or(|overlay| overlay.legend.is_none())
+        {
+            return true;
+        }
+        emit_on_overlay_panel(cfg, self.layer, &LegendElement, measure, sink)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1150,7 +1882,13 @@ impl Draggable for OverlayLegendElement {
         Element::Legend
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         if cfg
             .overlays
             .get(self.layer)
@@ -1161,7 +1899,7 @@ impl Draggable for OverlayLegendElement {
         let Some(mut panel) = cfg.overlay_panel(self.layer) else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        let result = panel.nudge(Element::Legend, dx, dy);
+        let result = panel.nudge(Element::Legend, measure, dx, dy);
         if result == NudgeResult::Moved
             && let Some(legend) = cfg.overlays[self.layer].legend.as_mut()
         {
@@ -1173,11 +1911,74 @@ impl Draggable for OverlayLegendElement {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    #[test]
+    fn part_outlines_are_what_is_grabbed() {
+        // A 1 px horizontal stroke from (10, 10) to (50, 10): grabbed within
+        // 3 px either side and 2 px beyond either end, as its box is drawn.
+        let (a, b) = ([10.0, 10.0], [50.0, 10.0]);
+        assert_eq!(segment_grab_half_width(1.0), STROKE_GRAB_HALF_WIDTH);
+        assert_eq!(segment_grab_half_width(6.0), 3.0 + SELECTION_PADDING);
+        let stroke = |a, b, width| part_outline(&DrawnPart::Segment { a, b, width });
+        let thin = stroke(a, b, 1.0);
+        assert!(thin.contains(30.0, 12.9));
+        assert!(!thin.contains(30.0, 13.1));
+        assert!(thin.contains(8.1, 10.0));
+        assert!(!thin.contains(7.9, 10.0));
+        assert!(thin.contains(51.9, 10.0));
+        assert!(!thin.contains(52.1, 10.0));
+        assert_eq!(
+            thin,
+            PartOutline::Quad([[8.0, 7.0], [52.0, 7.0], [52.0, 13.0], [8.0, 13.0]])
+        );
+        // A degenerate stroke is a dot grabbed within the same box.
+        let dot = stroke(a, a, 1.0);
+        assert!(dot.contains(12.0, 10.0));
+        assert!(!dot.contains(13.5, 10.0));
+        // A rectangle grows by the padding on every side.
+        let rect = RectF {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 5.0,
+        };
+        assert_eq!(
+            part_outline(&DrawnPart::Rect(rect)),
+            PartOutline::Quad([[8.0, 8.0], [32.0, 8.0], [32.0, 17.0], [8.0, 17.0]])
+        );
+
+        // A right triangle grows 2 px outward on every edge: the point 1 px
+        // outside the bottom edge is inside the padded triangle, 3 px is not.
+        let t = [[0.0, 0.0], [40.0, 0.0], [0.0, 30.0]];
+        let padded = part_outline(&DrawnPart::Triangle(t));
+        assert!(padded.contains(20.0, -1.0));
+        assert!(!padded.contains(20.0, -3.0));
+        let PartOutline::Triangle(corners) = padded else {
+            panic!("a triangle outlines a triangle");
+        };
+        assert!((corners[0][0] + SELECTION_PADDING).abs() < 1e-5);
+        assert!((corners[0][1] + SELECTION_PADDING).abs() < 1e-5);
+        for v in t {
+            assert!(padded.contains(v[0], v[1]));
+        }
+        assert_eq!(padded_triangle([a, a, b]), [a, a, b]);
+    }
+
     use super::*;
     use crate::default::default_config;
-    use crate::layout::{ChartArea, Rect};
+    use crate::layout::{ChartArea, Rect, colorbar_rect};
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
+
+    /// A test measure that measures text as [`FixedMeasure`] does; the
+    /// tick labels and axis strokes are the ones `crate::chrome` places
+    /// with it.
+    pub(crate) struct LaysOut;
+
+    impl MeasureText for LaysOut {
+        fn measure_rich(&self, rt: &RichText) -> TextExtents {
+            FixedMeasure.measure_rich(rt)
+        }
+    }
 
     /// `element_id` gives every standard element a distinct, stable name —
     /// hosts key hover/context UI on these strings.
@@ -1215,7 +2016,7 @@ mod tests {
     /// Deterministic stub mirroring the renderer's line splitting: 8 px per
     /// segment on the widest line, 10 up / 3 down per line, `'\n'` segments
     /// start a new 13 px line below the first baseline.
-    struct FixedMeasure;
+    pub(crate) struct FixedMeasure;
     impl MeasureText for FixedMeasure {
         fn measure_rich(&self, rt: &RichText) -> TextExtents {
             let mut line_lens = vec![0usize];
@@ -1292,6 +2093,8 @@ mod tests {
                 "colorbar_axis",
                 "colorbar_tick_labels",
                 "colorbar_title",
+                "category_groups_top",
+                "category_groups_bottom",
                 "overlay_0:axis_right",
                 "overlay_0:tick_labels_right",
                 "overlay_0:axis_title_right",
@@ -1301,7 +2104,7 @@ mod tests {
         assert!(!ids.iter().any(|id| id == "axis_left" || id == "axis_right"));
         cfg.set_active_layer(LayerRef::Annotations);
         let ids = ids_of(&HitMap::for_active_layer(&cfg));
-        assert_eq!(ids.len(), 13);
+        assert_eq!(ids.len(), 15);
         assert!(!ids.iter().any(|id| id.starts_with("overlay_")));
         // An out-of-range index is the base set.
         cfg.active_layer = LayerRef::Overlay(3);
@@ -1333,6 +2136,208 @@ mod tests {
         cfg.subplots.push(subplot);
         cfg.sync_subplot_links(None);
         cfg
+    }
+
+    /// [`cfg_with_subplot`] plus an inset in the parent's plot.
+    fn cfg_with_inset() -> Config {
+        let mut cfg = cfg_with_subplot();
+        let data = cfg.data_area().unwrap().0;
+        let mut inset = crate::layer::Subplot::default();
+        inset.config.chart_area = ChartArea(Rect {
+            x: data.x + 60,
+            y: data.y + 40,
+            width: 360,
+            height: 260,
+        });
+        cfg.subplots.push(inset);
+        cfg
+    }
+
+    fn hit_id(cfg: &Config, map: &HitMap, x: f32, y: f32) -> Option<String> {
+        map.hit_test(cfg, &FixedMeasure, x, y)
+            .and_then(|id| map.get(id))
+            .map(|element| element.element_id())
+    }
+
+    fn centre_of(rect: Rect) -> (f32, f32) {
+        (
+            rect.x as f32 + rect.width as f32 / 2.0,
+            rect.y as f32 + rect.height as f32 / 2.0,
+        )
+    }
+
+    // On the base layer every subplot registers its frame and its own
+    // decorations over the parent's (#205); a press on a subplot's plot
+    // selects its frame, and the panel drawn on top takes the pointer.
+    #[test]
+    fn every_subplot_routes_on_the_base_layer() {
+        let cfg = cfg_with_inset();
+        let map = HitMap::for_active_layer(&cfg);
+        let ids = ids_of(&map);
+        let standard = ids_of(&HitMap::standard_chart());
+        assert_eq!(ids[..standard.len()], standard[..]);
+        for subplot in 0..2 {
+            assert!(ids.contains(&format!("subplot_{subplot}:frame")));
+            assert!(ids.contains(&format!("subplot_{subplot}:axis_left")));
+            assert!(!ids.contains(&format!("subplot_{subplot}:data_area")));
+        }
+        let plot = |index: usize| cfg.subplot_config(index).unwrap().data_area().unwrap().0;
+        let (x, y) = centre_of(plot(0));
+        assert_eq!(hit_id(&cfg, &map, x, y).as_deref(), Some("subplot_0:frame"));
+        let (x, y) = centre_of(plot(1));
+        assert_eq!(hit_id(&cfg, &map, x, y).as_deref(), Some("subplot_1:frame"));
+        // The parent's plot beside the inset is still the parent's.
+        let parent = cfg.data_area().unwrap().0;
+        assert_eq!(
+            hit_id(&cfg, &map, parent.x as f32 + 10.0, parent.y as f32 + 10.0).as_deref(),
+            Some("data_area")
+        );
+        // The inset's own axis answers as the inset's.
+        let axis = map.find("subplot_1:axis_bottom").unwrap();
+        let bounds = map.get(axis).unwrap().bounds(&cfg, &FixedMeasure).unwrap();
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        assert_eq!(
+            hit_id(&cfg, &map, x, y).as_deref(),
+            Some("subplot_1:axis_bottom")
+        );
+        // The frame carries the eight handles.
+        let frame = map.get(map.find("subplot_1:frame").unwrap()).unwrap();
+        assert_eq!(
+            frame
+                .selection_box(&cfg, &FixedMeasure)
+                .unwrap()
+                .handles()
+                .len(),
+            8
+        );
+    }
+
+    // A frame steps by whole pixels: with the pointer, by how far the
+    // rounded pointer moved, so sub-pixel moves add up; its edges resize it
+    // while the subplot's plot still fits.
+    #[test]
+    fn a_subplot_frame_moves_and_resizes_by_whole_pixels() {
+        let mut cfg = cfg_with_inset();
+        let map = HitMap::for_active_layer(&cfg);
+        let frame = map.get(map.find("subplot_1:frame").unwrap()).unwrap();
+        let drag = frame.as_draggable().unwrap();
+        let before = cfg.clone();
+        let start = cfg.subplots[1].config.chart_area.0;
+        assert_eq!(
+            drag.drag_from(&mut cfg, &FixedMeasure, [10.4, 10.0], 0.3, 0.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(cfg.subplots[1].config.chart_area.0.x, start.x + 1);
+        assert_eq!(
+            drag.drag_from(&mut cfg, &FixedMeasure, [10.7, 10.0], 0.3, 0.0),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, -1.0, 25.0),
+            NudgeResult::Moved
+        );
+        let moved = cfg.subplots[1].config.chart_area.0;
+        assert_eq!((moved.x, moved.y), (start.x, start.y + 25));
+        assert_eq!((moved.width, moved.height), (start.width, start.height));
+        // Nothing else moved.
+        assert_eq!(cfg.chart_area, before.chart_area);
+        assert_eq!(cfg.subplots[0], before.subplots[0]);
+        assert_eq!(
+            cfg.subplots[1].config.left_y,
+            before.subplots[1].config.left_y
+        );
+
+        let resize = frame.as_resizable().unwrap();
+        assert_eq!(
+            resize.resize_from(
+                &mut cfg,
+                &FixedMeasure,
+                ResizeHandle::E,
+                [0.0, 0.0],
+                -40.0,
+                0.0
+            ),
+            NudgeResult::Moved
+        );
+        assert_eq!(cfg.subplots[1].config.chart_area.0.width, start.width - 40);
+        assert_eq!(
+            resize.resize_from(
+                &mut cfg,
+                &FixedMeasure,
+                ResizeHandle::NW,
+                [0.0, 0.0],
+                20.0,
+                10.0
+            ),
+            NudgeResult::Moved
+        );
+        let resized = cfg.subplots[1].config.chart_area.0;
+        assert_eq!((resized.x, resized.y), (moved.x + 20, moved.y + 10));
+        assert_eq!(
+            (resized.width, resized.height),
+            (start.width - 60, start.height - 10)
+        );
+        // A frame too small for the subplot's plot is refused as a whole.
+        let kept = cfg.clone();
+        assert_eq!(
+            resize.resize_from(
+                &mut cfg,
+                &FixedMeasure,
+                ResizeHandle::E,
+                [0.0, 0.0],
+                -10_000.0,
+                0.0
+            ),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, kept);
+    }
+
+    // A frame goes anywhere and keeps the pointer there (#205): moved off
+    // the parent it is still the subplot's, moved past the document's top
+    // left corner the whole document shifts to keep coordinates positive.
+    #[test]
+    fn a_subplot_frame_moved_out_of_its_parent_keeps_the_pointer() {
+        let mut cfg = cfg_with_inset();
+        let map = HitMap::for_active_layer(&cfg);
+        let drag = map
+            .get(map.find("subplot_1:frame").unwrap())
+            .unwrap()
+            .as_draggable()
+            .unwrap();
+        // Over the subplot below the parent: drawn after it, so on top.
+        let below = cfg.subplots[0].config.chart_area.0;
+        let start = cfg.subplots[1].config.chart_area.0;
+        let dy = (below.y + 40) as f32 - start.y as f32;
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, 0.0, dy),
+            NudgeResult::Moved
+        );
+        let inset = cfg.subplots[1].config.chart_area.0;
+        assert_eq!(inset.y, below.y + 40);
+        let (x, y) = centre_of(inset);
+        assert_eq!(cfg.subplot_at(x, y), Some(1));
+        assert_eq!(hit_id(&cfg, &map, x, y).as_deref(), Some("subplot_1:frame"));
+        // The lower panel keeps the pointer where the inset does not cover it.
+        let (x, _) = centre_of(below);
+        let y = (below.y + below.height - 5) as f32;
+        assert_eq!(cfg.subplot_at(x, y), Some(0));
+
+        // Past the left edge: everything shifts right by the overshoot.
+        let parent = cfg.chart_area.0;
+        let dx = -(inset.x as f32) - 30.0;
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, dx, 0.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(cfg.subplots[1].config.chart_area.0.x, 0);
+        assert_eq!(cfg.chart_area.0.x, parent.x + 30);
+        assert_eq!(cfg.subplots[0].config.chart_area.0.x, below.x + 30);
+        let (x, y) = centre_of(cfg.subplots[1].config.chart_area.0);
+        assert_eq!(hit_id(&cfg, &map, x, y).as_deref(), Some("subplot_1:frame"));
     }
 
     // An active subplot registers exactly its own chart's set under
@@ -1388,7 +2393,10 @@ mod tests {
 
         let before = cfg.clone();
         let drag = element.as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 10.0, -6.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, 10.0, -6.0),
+            NudgeResult::Moved
+        );
         let moved = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
         assert_eq!((moved.x, moved.y), (da.x + 10, da.y - 6));
         assert_eq!(cfg.data_area(), before.data_area());
@@ -1401,19 +2409,25 @@ mod tests {
             element
                 .selection_box(&cfg, &FixedMeasure)
                 .unwrap()
-                .handles
+                .handles()
                 .len(),
             8
         );
-        let handle = resize
-            .resize_handles(&cfg, &FixedMeasure)
-            .unwrap()
-            .into_iter()
-            .find(|(handle, _)| *handle == crate::resize::ResizeHandle::E)
-            .unwrap();
-        assert!(handle.1.x > moved.x as f32);
+        let mut east = None;
+        resize.resize_handles(&cfg, &FixedMeasure, &mut |handle, square| {
+            if handle == crate::resize::ResizeHandle::E {
+                east = Some(square);
+            }
+        });
+        assert!(east.unwrap().x > moved.x as f32);
         assert_eq!(
-            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::E, -30.0, 0.0),
+            resize.resize_by(
+                &mut cfg,
+                &FixedMeasure,
+                crate::resize::ResizeHandle::E,
+                -30.0,
+                0.0
+            ),
             NudgeResult::Moved
         );
         let resized = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
@@ -1422,7 +2436,10 @@ mod tests {
 
         let axis = map.find("subplot_0:axis_bottom").unwrap();
         let drag = map.get(axis).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 0.0, 5.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, 0.0, 5.0),
+            NudgeResult::Moved
+        );
         assert_eq!(cfg.subplots[0].config.bottom_x.line_offset, 5.0);
         assert_eq!(cfg.bottom_x, before.bottom_x);
     }
@@ -1446,14 +2463,17 @@ mod tests {
             .unwrap();
         assert_eq!(hit, id, "the overlay legend is on top of the shared legend");
         let drag = map.get(id).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, -5.0, 6.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, -5.0, 6.0),
+            NudgeResult::Moved
+        );
         let moved = cfg.overlays[0].legend.as_ref().unwrap();
         assert_eq!((moved.offset_x, moved.offset_y), (-5.0, 6.0));
         assert_eq!((cfg.legend.offset_x, cfg.legend.offset_y), (0.0, 0.0));
         cfg.overlays[0].legend = None;
         assert!(map.get(id).unwrap().bounds(&cfg, &FixedMeasure).is_none());
         assert_eq!(
-            drag.drag_by(&mut cfg, 1.0, 1.0),
+            drag.drag_by(&mut cfg, &FixedMeasure, 1.0, 1.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
     }
@@ -1509,9 +2529,10 @@ mod tests {
         let cfg = cfg_800x600();
         let b = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
         let sb = DataAreaElement.selection_box(&cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.rect, b.expanded(SELECTION_PADDING));
-        assert_eq!(sb.color, SELECTION_COLOR);
-        assert_eq!(sb.stroke_width, SELECTION_STROKE_WIDTH);
+        assert_eq!(sb.rect(), b.expanded(SELECTION_PADDING));
+        assert_eq!(sb.color(), SELECTION_COLOR);
+        assert_eq!(sb.stroke_width(), SELECTION_STROKE_WIDTH);
+        assert_eq!(sb.outline(), &SelectionOutline::Rect);
     }
 
     #[test]
@@ -1541,7 +2562,7 @@ mod tests {
             )
             .unwrap();
         let sb = map.selection_box(id, &cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.rect, tb.expanded(SELECTION_PADDING));
+        assert_eq!(sb.rect(), tb.expanded(SELECTION_PADDING));
 
         // Center of the data area → data area element.
         let db = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
@@ -1574,7 +2595,7 @@ mod tests {
         // Drag through the trait-object route hosts use.
         let drag = LegendElement.as_draggable().expect("legend is draggable");
         assert_eq!(
-            drag.drag_by(&mut cfg, 9.0, -5.0),
+            drag.drag_by(&mut cfg, &FixedMeasure, 9.0, -5.0),
             crate::layout::NudgeResult::Moved
         );
         let after = LegendElement.bounds(&cfg, &FixedMeasure).unwrap();
@@ -1586,25 +2607,27 @@ mod tests {
     fn data_area_selection_box_carries_resize_handles() {
         let cfg = cfg_800x600();
         let sb = DataAreaElement.selection_box(&cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.handles.len(), 8);
+        assert_eq!(sb.handles().len(), 8);
         // Non-resizable elements carry none.
         let mut cfg = cfg;
         cfg.chart_title.text = RichText::plain("title", Color::BLACK, 14.0, "");
         let sb2 = ChartTitleElement
             .selection_box(&cfg, &FixedMeasure)
             .unwrap();
-        assert!(sb2.handles.is_empty());
+        assert!(sb2.handles().is_empty());
     }
 
+    // Tick labels are placed by the model (#160): under any measure the
+    // drawn labels have bounds and hidden ones none.
     #[test]
     fn hidden_axis_labels_have_no_bounds() {
         let mut cfg = cfg_800x600();
+        let labels = AxisLabelElement { side: Side::Left };
+        assert!(labels.bounds(&cfg, &LaysOut).is_some());
+        assert!(labels.bounds(&cfg, &FixedMeasure).is_some());
         cfg.left_y.label_style.label_visible = false;
-        assert!(
-            AxisLabelElement { side: Side::Left }
-                .bounds(&cfg, &FixedMeasure)
-                .is_none()
-        );
+        assert!(labels.bounds(&cfg, &LaysOut).is_none());
+        assert!(labels.bounds(&cfg, &FixedMeasure).is_none());
     }
 
     #[test]
@@ -1742,9 +2765,9 @@ mod tests {
         let box_ = ColorBarElement
             .selection_box(&cfg, &FixedMeasure)
             .expect("selection box");
-        assert_eq!(box_.handles.len(), 8);
+        assert_eq!(box_.handles().len(), 8);
         assert_eq!(
-            box_.rect,
+            box_.rect(),
             ColorBarElement
                 .bounds(&cfg, &FixedMeasure)
                 .expect("bounds")
@@ -1753,7 +2776,7 @@ mod tests {
 
         // Non-resizable chrome still has none, so the handles mean something.
         let title = ChartTitleElement.selection_box(&cfg, &FixedMeasure);
-        assert!(title.is_none_or(|b| b.handles.is_empty()));
+        assert!(title.is_none_or(|b| b.handles().is_empty()));
     }
 
     #[test]

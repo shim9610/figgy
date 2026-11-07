@@ -346,6 +346,14 @@ function makeKernel(name, options = {}) {
       calls.push(["export", scale]);
       return this.exportImpl(scale);
     },
+    export_svg(scale) {
+      calls.push(["export_svg", scale]);
+      return Promise.resolve("<svg/>");
+    },
+    export_pdf(scale) {
+      calls.push(["export_pdf", scale]);
+      return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
+    },
     first_frame_ready() {
       calls.push(["first_frame_ready"]);
       return options.firstFrameImpl?.() ?? Promise.resolve();
@@ -549,6 +557,33 @@ test("completed stream export reuses source views and picking delegates without 
   assert.equal(element.busy, false);
 });
 
+test("SVG and PDF export run as the export operation on a resident chart", async () => {
+  const kernel = makeKernel("vector");
+  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
+  const element = new Element();
+  connect(element);
+  await element.ready;
+  await waitForIdle(element);
+  const svg = element.export_svg(2);
+  assert.equal(element.busy, true, "the export holds the operation gate");
+  await assert.rejects(element.export_pdf(), /busy/);
+  assert.equal(await svg, "<svg/>");
+  assert.equal(element.busy, false);
+  assert.deepEqual(Array.from(await element.export_pdf()), [37, 80, 68, 70]);
+  assert.deepEqual(
+    kernel.calls.filter(([name]) => name.startsWith("export")),
+    [["export_svg", 2], ["export_pdf", 1]],
+  );
+});
+
+test("SVG and PDF export reject a chart shown from a stream without calling the kernel", async () => {
+  const { kernel, element } = await completedReplayFixture({ typed: true });
+  await assert.rejects(element.export_svg(2), /SVG export does not support streamed sources/);
+  await assert.rejects(element.export_pdf(2), /PDF export does not support streamed sources/);
+  assert.equal(kernel.calls.filter(([name]) => name === "export_svg" || name === "export_pdf").length, 0);
+  assert.equal(element.busy, false);
+});
+
 function runFacadeFrame(state) {
   const [id, callback] = [...state.rafs.entries()].at(-1);
   state.rafs.delete(id);
@@ -571,10 +606,9 @@ test("selection-only mutations do not replay a completed stream", async () => {
     replayRequests += 1;
     return { status: "complete" };
   };
-  kernel.set_picked_points = () => {};
   kernel.set_picked_data = () => {};
   for (let index = 0; index < 10; index += 1) {
-    element.set_picked_points(String(index));
+    element.set_picked_data(String(index));
     runFacadeFrame(state);
   }
   element.set_picked_data("null");
@@ -591,7 +625,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
     return range.offset === 3 ? first.promise : newest.promise;
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request, ids, revisions, lengths, offsets, chunks) => {
@@ -604,7 +638,7 @@ test("selection replacement keeps old overlay until the newest bounded range res
   runFacadeFrame(state);
   assert.equal(reads.length, 1, "unchanged pending selection must not re-read");
   assert.equal(committed, 1);
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   assert.deepEqual(reads.map((r) => r.offset), [3, 5]);
@@ -629,7 +663,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
     return range.offset === 3 ? old.promise : new Float32Array([5]);
   } });
   let desired = 3, committed = 1;
-  kernel.set_picked_points = (json) => { desired = JSON.parse(json); };
+  kernel.set_picked_data = (json) => { desired = JSON.parse(json); };
   kernel.stream_selection_request_ranges = () => desired === committed
     ? { status: "complete", free() {} } : selectionRequest(desired, freed);
   kernel.stream_selection_submit_ranges = (request) => { committed = request.index; };
@@ -637,7 +671,7 @@ test("a superseded selection rejection cannot swallow a newer selection mutation
   runFacadeFrame(state);
   old.reject(new Error("old selection failed"));
   await flushTasks();
-  element.set_picked_points("5");
+  element.set_picked_data("5");
   runFacadeFrame(state);
   await flushTasks();
   runFacadeFrame(state);

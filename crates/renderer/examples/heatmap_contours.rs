@@ -58,19 +58,20 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         "potential",
         "field-x",
         "field-y",
-        DataRenderType::HeatmapContour {
+        DataRenderType::Field(renderer::data_config::FieldSeries {
             matrix: MatrixRef {
                 columns,
                 orientation: MatrixOrientation::ColumnsAreX,
                 grid_layout: GridLayout::Centers,
             },
-            fill: FieldFillConfig {
+            fill: Some(FieldFillConfig {
                 mode: FillMode::Continuous,
                 shading: Shading::Interpolated,
                 opacity: 1.0,
-            },
-            contour,
-        },
+            }),
+            contour: Some(contour),
+            surface: None,
+        }),
     )];
     let mut c = chart("A smooth field, exact contour levels", "x", "y", (960, 640));
     c.set_x_range(-3.0, 3.0);

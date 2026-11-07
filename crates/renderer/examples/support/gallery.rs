@@ -4,19 +4,17 @@ use renderer::{
     Chart, Color, Renderer, RendererDevice, SeriesConfig,
     data::Column,
     data_config::{DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape},
-    data_render::{create_instance, request_adapter, request_device},
     default, encode_png,
+    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     layout::{ChartArea, Rect},
     line::LineStylePreset,
 };
-use std::{error::Error, path::Path, sync::Arc};
+use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
 pub fn column(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 pub fn line(color: Color, width: f32) -> DataLineStyleConfig {
@@ -50,6 +48,7 @@ pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> Series
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type,
     }
 }
@@ -91,8 +90,10 @@ pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Cha
 }
 
 pub fn save(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &Path) -> Result {
-    let img =
-        pollster::block_on(r.export_panel_rgba_with_clear_async(chart, series, 1.0, Color::WHITE))?;
+    let img = r.export_rgba_blocking(
+        renderer::ExportSource::chart(chart, series),
+        renderer::ExportOptions::panel(1.0).with_clear(Color::WHITE),
+    )?;
     if img.rgba.chunks_exact(4).any(|px| px[3] != 255) {
         return Err(format!("{}: white-background export is not opaque", path.display()).into());
     }
@@ -126,16 +127,16 @@ pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
     // Instance and adapter stay alive until rendering and readback finish.
     // Software GPU selection belongs to the environment, not the example.
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Gallery adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_blocking(&adapter)?;
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         16 * 1024 * 1024,
     )?;
     let result = render(&mut renderer);
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     result
 }
 

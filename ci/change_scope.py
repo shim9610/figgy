@@ -5,8 +5,8 @@ from pathlib import PurePosixPath
 import subprocess
 import sys
 
-# Markdown under crates/ is packaged, linted by package_docs.py, compiled as
-# doctests through include_str! or parsed by tests (SHADER_COMMON.md).
+# Markdown under crates/ is packaged, linted by package_docs.py and, for the
+# guides the crate docs include through include_str!, compiled as doctests.
 CHECKED_DIRS = ("crates",)
 
 

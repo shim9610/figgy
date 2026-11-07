@@ -6,9 +6,8 @@
 use super::super::*;
 use super::{declaration, read_draw_target};
 use crate::annotation::{Anchor, Annotation, AnnotationKind};
-use crate::config::{PickedPointRef, PickedPointsConfig, SketchOptions};
-use crate::layout::{ChartArea, RectF};
-use crate::select::{SelectionBox, SelectionOutline};
+use crate::config::{DataSelectionsConfig, PickedDataRef, SketchOptions};
+use crate::layout::ChartArea;
 use crate::text::RichText;
 use crate::{LayerRef, OverlayLayer};
 
@@ -21,9 +20,7 @@ const PANEL: Rect = Rect {
 const POINTS: usize = 200;
 
 fn column(data: Vec<f32>) -> crate::Column<f32> {
-    let min = data.iter().copied().fold(f32::INFINITY, f32::min);
-    let max = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    crate::Column { data, min, max }
+    crate::Column { data }
 }
 
 fn wave(phase: f32, scale: f32) -> crate::Column<f32> {
@@ -37,7 +34,7 @@ fn wave(phase: f32, scale: f32) -> crate::Column<f32> {
 fn renderer(format: wgpu::TextureFormat, samples: u32) -> Renderer {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut r = Renderer::try_new_with_sample_count(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         format,
         1 << 20,
         samples,
@@ -81,11 +78,17 @@ fn base_config() -> Config {
 /// A line with markers: both body kinds and a pickable point.
 fn series(id: &str, y: &str) -> SeriesConfig {
     let mut s = declaration(id, "x", y);
-    let DataRenderType::Line { line } = s.render_type.clone() else {
+    let DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: None,
+        line: Some(line),
+        errors: None,
+        ..
+    }) = s.render_type.clone()
+    else {
         unreachable!("the declaration is a line")
     };
-    s.render_type = DataRenderType::ScatterLine {
-        scatter: crate::data_config::DataScatterStyleConfig {
+    s.render_type = DataRenderType::Xy(crate::data_config::XySeries {
+        scatter: Some(crate::data_config::DataScatterStyleConfig {
             point_color: Color::new(0.1, 0.3, 0.9, 0.8),
             point_shape: crate::ScatterShape::Circle,
             point_size: 6.0,
@@ -94,9 +97,11 @@ fn series(id: &str, y: &str) -> SeriesConfig {
             point_style_overrides: None,
             point_color_map: None,
             point_size_map: None,
-        },
-        line,
-    };
+        }),
+        line: Some(line),
+        errors: None,
+        stem: None,
+    });
     s
 }
 
@@ -211,9 +216,11 @@ fn painted_like_direct(r: &Renderer, mut frame: PreparedFrame, samples: u32) -> 
     cached
 }
 
-fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
+/// Refresh every panel of `id` with the element `selected` names selected
+/// (`None` clears the selection).
+fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selected: Option<&str>) {
     let config = r.chart_config(id).unwrap().clone();
-    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selection)
+    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected)
         .unwrap();
 }
 
@@ -221,7 +228,7 @@ fn edit(r: &mut Renderer, id: ChartId, view: &mut ChartView, apply: impl FnOnce(
     let mut config = r.chart_config(id).unwrap().clone();
     apply(&mut config);
     r.set_chart_config(id, config).unwrap();
-    refresh(r, id, view, &[]);
+    refresh(r, id, view, None);
 }
 
 fn font_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -285,15 +292,15 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     let drawn = r.resident_display_serial(&view).unwrap();
     let mut previous = painted_like_direct(&r, frame, 1);
 
-    let picked = |index: usize, ring: Color| PickedPointsConfig {
+    let picked = |index: usize, ring: Color| DataSelectionsConfig {
         visible: true,
-        refs: vec![PickedPointRef {
+        refs: vec![PickedDataRef::Point {
             source_id: None,
             series_id: "s0".into(),
             point_index: index,
         }],
-        ring_color: ring,
-        ..PickedPointsConfig::default()
+        highlight_color: ring,
+        ..DataSelectionsConfig::default()
     };
     let cases: Vec<(&str, Box<dyn Fn(&mut Config)>)> = vec![
         (
@@ -325,15 +332,15 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
         ),
         (
             "point picked",
-            Box::new(move |c| c.picked_points = Some(picked(100, Color::new(1.0, 0.5, 0.0, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(100, Color::new(1.0, 0.5, 0.0, 1.0)))),
         ),
         (
             "pick moved",
-            Box::new(move |c| c.picked_points = Some(picked(40, Color::new(1.0, 0.5, 0.0, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(40, Color::new(1.0, 0.5, 0.0, 1.0)))),
         ),
         (
             "pick ring colour",
-            Box::new(move |c| c.picked_points = Some(picked(40, Color::new(0.0, 0.8, 0.2, 1.0)))),
+            Box::new(move |c| c.picked_data = Some(picked(40, Color::new(0.0, 0.8, 0.2, 1.0)))),
         ),
     ];
     for (name, apply) in cases {
@@ -350,19 +357,12 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     }
 
     // An element's selection box lives in the decoration layer.
-    let selection = SelectionBox {
-        rect: RectF {
-            x: 60.0,
-            y: 60.0,
-            width: 80.0,
-            height: 40.0,
-        },
-        color: Color::new(0.0, 0.4, 1.0, 1.0),
-        stroke_width: 2.0,
-        handles: Vec::new(),
-        outline: SelectionOutline::Rect,
-    };
-    refresh(&mut r, id, &mut view, &[selection]);
+    let config = r.chart_config(id).unwrap().clone();
+    assert!(
+        r.selection_box(&Chart::new(config), "data_area").is_some(),
+        "the data area has a selection box"
+    );
+    refresh(&mut r, id, &mut view, Some("data_area"));
     let frame = prepare(&mut r, id, &view);
     assert_eq!(
         r.resident_display_serial(&view),
@@ -416,7 +416,13 @@ fn data_edits_draw_the_bodies_exactly_once() {
         (
             "line width",
             Edit::Series(|s| {
-                if let DataRenderType::ScatterLine { line, .. } = &mut s.render_type {
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: Some(_),
+                    line: Some(line),
+                    errors: None,
+                    ..
+                }) = &mut s.render_type
+                {
                     line.line_width = 5.0;
                 }
             }),
@@ -431,7 +437,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
                 let mut list = r.chart_series(id).unwrap().to_vec();
                 apply(&mut list[0]);
                 r.set_chart_series(id, list).unwrap();
-                refresh(&mut r, id, &mut view, &[]);
+                refresh(&mut r, id, &mut view, None);
             }
             Edit::Column => {
                 r.upsert_column("a", &wave(0.9, 1.0)).unwrap();
@@ -530,11 +536,17 @@ fn each_layer_keeps_its_own_bodies() {
             Edit::Config(apply) => edit(&mut r, id, &mut view, apply),
             Edit::Series(index) => {
                 let mut list = r.chart_series(id).unwrap().to_vec();
-                if let DataRenderType::ScatterLine { line, .. } = &mut list[index].render_type {
+                if let DataRenderType::Xy(crate::data_config::XySeries {
+                    scatter: Some(_),
+                    line: Some(line),
+                    errors: None,
+                    ..
+                }) = &mut list[index].render_type
+                {
                     line.line_width += 2.0;
                 }
                 r.set_chart_series(id, list).unwrap();
-                refresh(&mut r, id, &mut view, &[]);
+                refresh(&mut r, id, &mut view, None);
             }
         }
         let frame = prepare(&mut r, id, &view);
@@ -650,7 +662,8 @@ struct Scene {
     columns: Vec<(&'static str, Vec<f32>)>,
     config: Config,
     series: Vec<SeriesConfig>,
-    selection: Vec<SelectionBox>,
+    /// The element id selected on the document's active layer.
+    selection: Option<&'static str>,
 }
 
 impl Scene {
@@ -669,7 +682,7 @@ impl Scene {
             ],
             config,
             series: vec![series("s0", "a"), series("s1", "b")],
-            selection: Vec::new(),
+            selection: None,
         }
     }
 
@@ -698,7 +711,7 @@ fn fresh_pixels(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Vec
         &mut view,
         &Chart::new(scene.config.clone()),
         PANEL,
-        &scene.selection,
+        scene.selection,
     )
     .unwrap();
     let frame = prepare(&mut r, id, &view);
@@ -761,34 +774,31 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
             ("annotation visibility", [false, false])
         }
         6 => {
-            c.picked_points = (rng.below(3) != 0).then(|| PickedPointsConfig {
+            c.picked_data = (rng.below(3) != 0).then(|| DataSelectionsConfig {
                 visible: true,
-                refs: vec![PickedPointRef {
+                refs: vec![PickedDataRef::Point {
                     source_id: None,
                     series_id: if rng.below(2) == 0 { "s0" } else { "s1" }.into(),
                     point_index: rng.below(POINTS as u64) as usize,
                 }],
-                ring_color: ring(rng),
-                ..PickedPointsConfig::default()
+                highlight_color: ring(rng),
+                ..DataSelectionsConfig::default()
             });
             ("pick", [false, false])
         }
         7 => {
-            scene.selection = if scene.selection.is_empty() {
-                vec![SelectionBox {
-                    rect: RectF {
-                        x: rng.step(40.0, 200.0) as f32,
-                        y: rng.step(40.0, 150.0) as f32,
-                        width: 60.0,
-                        height: 30.0,
-                    },
-                    color: Color::new(0.0, 0.4, 1.0, 1.0),
-                    stroke_width: 2.0,
-                    handles: Vec::new(),
-                    outline: SelectionOutline::Rect,
-                }]
-            } else {
-                Vec::new()
+            // An element every active layer registers, resolved on the
+            // active layer the scene has at the refresh.
+            const SELECTABLE: [&str; 5] = [
+                "data_area",
+                "legend",
+                "chart_title",
+                "axis_bottom",
+                "tick_labels_bottom",
+            ];
+            scene.selection = match scene.selection {
+                None => Some(SELECTABLE[rng.below(SELECTABLE.len() as u64) as usize]),
+                Some(_) => None,
             };
             ("selection box", [false, false])
         }
@@ -820,13 +830,25 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
             ("overlay y range", [false, true])
         }
         12 => {
-            if let DataRenderType::ScatterLine { line, .. } = &mut scene.series[0].render_type {
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(_),
+                line: Some(line),
+                errors: None,
+                ..
+            }) = &mut scene.series[0].render_type
+            {
                 line.line_width = if line.line_width > 3.0 { 1.5 } else { 4.0 };
             }
             ("base series", [true, false])
         }
         13 => {
-            if let DataRenderType::ScatterLine { scatter, .. } = &mut scene.series[1].render_type {
+            if let DataRenderType::Xy(crate::data_config::XySeries {
+                scatter: Some(scatter),
+                line: Some(_),
+                errors: None,
+                ..
+            }) = &mut scene.series[1].render_type
+            {
                 scatter.point_size = if scatter.point_size > 7.0 { 5.0 } else { 9.0 };
             }
             ("overlay series", [false, true])
@@ -898,7 +920,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
                 &mut view,
                 &Chart::new(scene.config.clone()),
                 PANEL,
-                &scene.selection,
+                scene.selection,
             )
             .unwrap();
             let frame = prepare(&mut r, id, &view);
@@ -922,4 +944,119 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
             }
         }
     }
+}
+
+#[cfg(feature = "serde")]
+#[path = "resident_display_mutation_tests.rs"]
+mod mutation;
+
+/// A chart drawn through `draw_registered` with a display set paints the same
+/// pixels as the direct draw of its placed config with styles at the display
+/// scale, which is what the browser product drew before (#160). Checked at a
+/// shrinking, an equal and a growing surface.
+#[test]
+fn a_registered_display_paints_the_placed_document_at_its_scale() {
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    for surface in [(160, 120), (320, 240), (640, 480)] {
+        let mut r = renderer(format, 1);
+        let config = base_config();
+        let declarations = vec![series("a", "a"), series("b", "b")];
+        let id = r
+            .register_chart(config.clone(), declarations.clone())
+            .unwrap();
+        r.set_chart_display(id, Some(surface)).unwrap();
+
+        let (placed, panel_rect, scale) = crate::display_config_for_surface(&config, surface);
+        let (display, display_rect, display_scale) = r.chart_display_config(id).unwrap();
+        assert_eq!(*display, placed);
+        assert_eq!((display_rect, display_scale), (panel_rect, scale));
+
+        let chart = Chart::new(placed.clone());
+        let view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let registered = prepare(&mut r, id, &view);
+        let registered = try_paint(&r, &registered, 1, surface).unwrap();
+
+        let styles: Vec<ChartStyle> = declarations
+            .iter()
+            .map(|s| r.create_style_for_series_scaled(s, scale).unwrap())
+            .collect();
+        let direct_series: Vec<Series<'_>> = declarations
+            .iter()
+            .zip(&styles)
+            .map(|(config, style)| Series { config, style })
+            .collect();
+        let direct_view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let direct = r
+            .prepare(&[ChartDrawItem {
+                view: &direct_view,
+                chart_config: &placed,
+                series: &direct_series,
+            }])
+            .unwrap();
+        let direct = try_paint(&r, &direct, 1, surface).unwrap();
+        assert_eq!(registered, direct, "surface {surface:?}");
+    }
+}
+
+/// Setting a display changes how the chart is drawn, not the chart: a fit
+/// token stays current, and the render stamp moves. The placed config follows
+/// a config edit.
+#[test]
+fn a_registered_display_follows_the_config_and_keeps_fit_tokens() {
+    let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
+    let id = r
+        .register_chart(base_config(), vec![series("a", "a")])
+        .unwrap();
+    let token = r.begin_fit_commit(id).unwrap();
+    let stamp = r.chart_render_stamp(id).unwrap();
+    r.set_chart_display(id, Some((640, 480))).unwrap();
+    assert_eq!(r.begin_fit_commit(id).unwrap(), token);
+    assert_ne!(r.chart_render_stamp(id).unwrap(), stamp);
+
+    let mut edited = base_config();
+    edited.bottom_x.max = 2.0;
+    r.set_chart_config(id, edited.clone()).unwrap();
+    let (display, _, _) = r.chart_display_config(id).unwrap();
+    assert_eq!(
+        *display,
+        crate::display_config_for_surface(&edited, (640, 480)).0
+    );
+
+    // Clearing the display draws the stored document again.
+    r.set_chart_display(id, None).unwrap();
+    let (display, rect, scale) = r.chart_display_config(id).unwrap();
+    assert_eq!(*display, edited);
+    assert_eq!((rect, scale), (PANEL, 1.0));
+}
+
+/// A series whose source is not resident is skipped by the registered draw,
+/// and the rest of the chart still prepares (#160).
+#[test]
+fn a_registered_draw_skips_a_series_without_a_resident_source() {
+    let mut r = renderer(wgpu::TextureFormat::Rgba8Unorm, 1);
+    r.register_streamed_columns(vec![crate::StreamColumn {
+        id: "s".into(),
+        len: 100,
+        encoding: crate::StreamEncoding::HiLoF32,
+        replay: crate::StreamReplay::Sequential,
+        revision: 1,
+        statistics: crate::StreamStatistics::Unknown,
+    }])
+    .unwrap();
+    let id = r
+        .register_chart(
+            base_config(),
+            vec![series("a", "a"), declaration("streamed", "s", "s")],
+        )
+        .unwrap();
+    r.set_chart_display(id, Some((320, 240))).unwrap();
+    let chart = Chart::new(r.chart_config(id).unwrap().clone());
+    let view = r.create_chart_view(&chart, PANEL).unwrap();
+    let frame = prepare(&mut r, id, &view);
+    assert_eq!(frame.items.len(), 1);
+    assert_eq!(
+        frame.items[0].series.len(),
+        1,
+        "only the resident series is drawn"
+    );
 }

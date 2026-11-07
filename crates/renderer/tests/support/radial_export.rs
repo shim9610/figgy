@@ -21,7 +21,7 @@ fn red_top(rgba: &[u8], width: u32) -> usize {
 }
 
 pub async fn check(gpu: RendererDevice) {
-    let mut r = RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut chart = RadialChart {
         kind: RadialKind::Donut { inner_radius: 0.45 },
         labels: RadialLabels::Inside,
@@ -39,10 +39,11 @@ pub async fn check(gpu: RendererDevice) {
         },
         ..Default::default()
     };
+    chart.format_labels();
     for scale in [1., 2.] {
         chart.interaction = Default::default();
         let rest = r
-            .export_rgba_async(&chart, (400, 320), scale)
+            .export_rgba(&chart, (400, 320), renderer::ExportOptions::document(scale))
             .await
             .unwrap();
         let rest_png = decoded(&rest);
@@ -50,7 +51,7 @@ pub async fn check(gpu: RendererDevice) {
         chart.interaction.hovered = Some(RadialTarget::main(0));
         chart.interaction.hover_progress = 0.5;
         let partial = r
-            .export_rgba_async(&chart, (400, 320), scale)
+            .export_rgba(&chart, (400, 320), renderer::ExportOptions::document(scale))
             .await
             .unwrap();
         let partial_png = decoded(&partial);
@@ -59,7 +60,7 @@ pub async fn check(gpu: RendererDevice) {
         chart.interaction.hover_progress = 1.;
         let hover_frame = r.prepare(&chart, (400, 320), scale).unwrap();
         let hover = r
-            .export_rgba_async(&chart, (400, 320), scale)
+            .export_rgba(&chart, (400, 320), renderer::ExportOptions::document(scale))
             .await
             .unwrap();
         let hover_png = decoded(&hover);
@@ -77,7 +78,7 @@ pub async fn check(gpu: RendererDevice) {
         let selected_frame = r.prepare(&chart, (400, 320), scale).unwrap();
         assert!(selected_frame.shares_annotations_with(&hover_frame));
         let selected = r
-            .export_rgba_async(&chart, (400, 320), scale)
+            .export_rgba(&chart, (400, 320), renderer::ExportOptions::document(scale))
             .await
             .unwrap();
         assert_eq!(
@@ -102,7 +103,7 @@ pub async fn check(gpu: RendererDevice) {
         chart.interaction.selected = None;
         assert_eq!(
             decoded(
-                &r.export_rgba_async(&chart, (400, 320), scale)
+                &r.export_rgba(&chart, (400, 320), renderer::ExportOptions::document(scale))
                     .await
                     .unwrap()
             ),

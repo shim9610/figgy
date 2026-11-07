@@ -130,26 +130,6 @@ fn next_entry(
             }
             1 => {
                 if let Some(picks) = config
-                    .picked_points
-                    .as_ref()
-                    .filter(|p| p.visible && (primitives.line || primitives.scatter))
-                {
-                    while let Some(pick) = picks.refs.get(cursor.ordinal) {
-                        let ordinal = cursor.ordinal;
-                        cursor.ordinal += 1;
-                        if picked_ref_matches_series(declaration, pick) {
-                            selected = Some((
-                                pick.point_index,
-                                SelectionRefFilter::Legacy(ordinal),
-                                false,
-                            ));
-                            break;
-                        }
-                    }
-                }
-            }
-            2 => {
-                if let Some(picks) = config
                     .picked_data
                     .as_ref()
                     .filter(|p| p.visible && (primitives.line || primitives.scatter))
@@ -258,8 +238,11 @@ fn columns_for<'a>(
     }
     if !entry.bar
         && matches!(config.draw_style, DrawStyle::Precise)
-        && let Some(id) = extract_scatter(&series.render_type)
-            .and_then(|scatter| scatter.point_style_index_column.as_deref())
+        && let Some(id) = extract_scatter(&series.render_type).and_then(|scatter| match scatter {
+            std::borrow::Cow::Borrowed(scatter) => scatter.point_style_index_column.as_deref(),
+            // A derived (radar) marker style reads no style-index column.
+            std::borrow::Cow::Owned(_) => None,
+        })
     {
         add(id, 1);
     }
@@ -269,10 +252,7 @@ fn columns_for<'a>(
 impl Renderer {
     fn selection_config(&self, job: StreamJob) -> StreamResult<(Config, RenderRevision)> {
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -288,7 +268,6 @@ impl Renderer {
                 && state.revisions.view == snapshot.view_revision
             {
                 let current = state.config.scaled(snapshot.display_scale);
-                config.picked_points = current.picked_points;
                 config.picked_data = current.picked_data;
             }
             Ok((config, state.revisions.selection))
@@ -322,27 +301,14 @@ impl Renderer {
         config: &Config,
         revision: RenderRevision,
     ) -> StreamResult<()> {
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         let view_revision = draw.expected_view_revision;
         let changed = draw.selection.revision != Some(revision)
             || draw.selection.view_revision != view_revision;
         if changed {
             self.discard_pending_selection(job)?;
-            let state = &mut self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection;
             state.candidate.clear();
             state.cursor = SelectionCursor::default();
@@ -354,14 +320,7 @@ impl Renderer {
             state.failed = false;
             state.last_issued = None;
         }
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         if draw.selection.admitted || draw.selection.failed {
             return Ok(());
         }
@@ -375,17 +334,20 @@ impl Renderer {
                 |s| s.sources.get(id),
             )
         };
-        let styles = snapshot.map_or_else(
-            || {
-                &self.chart_states[&job.chart]
+        let styles = match snapshot {
+            Some(s) => &s.styles.styles,
+            None => {
+                &self
+                    .chart_states
+                    .get(&job.chart)
+                    .ok_or(FiggyError::UnknownChart { id: job.chart })?
                     .prepared_styles
                     .as_ref()
-                    .unwrap()
+                    .ok_or(FiggyError::internal("validated explicit stream styles"))?
                     .styles
-            },
-            |s| &s.styles.styles,
-        );
-        let limits = self.stream_runtime.as_ref().unwrap().scheduler.limits();
+            }
+        };
+        let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
         let mut cursor = SelectionCursor::default();
         let mut bytes = 0u64;
         let mut staging = 0u64;
@@ -423,13 +385,7 @@ impl Renderer {
             let overhead = if entry.field.is_some() {
                 field::OVERHEAD
             } else {
-                std::mem::size_of::<PrimitiveStyle>() as u64
-                    + if entry.bar {
-                        std::mem::size_of::<data_render::DataSelectionGpu>() as u64
-                    } else {
-                        0
-                    }
-                    + if mapped { 16 } else { 0 }
+                std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
             };
             bytes = bytes
                 .checked_add(work + overhead)
@@ -443,18 +399,12 @@ impl Renderer {
             .checked_add(bytes)
             .and_then(|value| value.checked_add(staging))
             .ok_or(StreamError::Overflow)?
-            > self.memory_budget.unwrap_or(u64::MAX)
+            > self.gpu_ledger.budget_limit()
         {
             return Err(StreamError::TooLarge.into());
         }
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state
             .candidate
@@ -471,10 +421,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -500,26 +447,14 @@ impl Renderer {
         }
         let (config, revision) = self.selection_config(job)?;
         if let Err(error) = self.prepare_selection_candidate(job, &config, revision) {
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection
                 .failed = true;
             return Err(error);
         }
         let ticket = loop {
-            let draw = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap();
+            let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
             if draw.selection.complete {
                 return Ok(StreamingSelectionRequest::Complete { revision });
             }
@@ -540,14 +475,7 @@ impl Renderer {
                 )
             });
             let Some((entry, next_cursor)) = next else {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap();
+                let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
                 draw.selection.ready = std::mem::take(&mut draw.selection.candidate);
                 draw.selection.complete = true;
                 draw.display_dirty = true;
@@ -576,18 +504,18 @@ impl Renderer {
             else {
                 return Ok(StreamingSelectionRequest::Backpressure { revision });
             };
-            let runtime = self.stream_runtime.as_mut().unwrap();
+            let runtime = live_runtime_mut(&mut self.stream_runtime)?;
             runtime
                 .requests
                 .iter_mut()
                 .find(|request| request.ticket == ticket)
-                .unwrap()
+                .ok_or(FiggyError::internal("a ready ticket has its request"))?
                 .selection = true;
             let state = &mut runtime
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == job)
-                .unwrap()
+                .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                 .selection;
             state.pending = Some(ticket);
             state.entry = Some(entry);
@@ -634,14 +562,8 @@ impl Renderer {
         let Some((page, local)) = cache.point_page(entry.series, source_index) else {
             // No selected marker lies in the completed view. In particular,
             // do not ask the source for an offscreen row just to draw a ring.
-            let state = &mut self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection;
             state.cursor = next_cursor;
             return Ok(());
@@ -656,9 +578,13 @@ impl Renderer {
             &self.style_bgl,
             &self.per_point_style_map_bgl,
             &self.point_value_map_bgl,
+            [&self.surface_bgl, &self.view3d_value_map_bgl],
             &self.data_selection_bgl,
             &self.field_bgl,
             &self.vector_bgl,
+            &self.star_data_bgl,
+            &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             &[ChartDrawItem {
@@ -700,12 +626,16 @@ impl Renderer {
                     x,
                     y,
                     bar: None,
+                    category: None,
+                    violin: None,
+                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
                         packed_instance: Some(local),
                     },
                     mapped_point_bg: None,
+                    view3d: None,
                 },
                 None,
                 true,
@@ -730,14 +660,8 @@ impl Renderer {
                 _map_charge: None,
             }
         };
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state.candidate.push(packet);
         state.cursor = next_cursor;
@@ -771,14 +695,11 @@ impl Renderer {
     pub fn abandon_stream_selection(&mut self, ticket: StreamingSelectionTicket) -> Result<()> {
         self.validate_stream_job(ticket.ticket.job)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.ticket.job)
-            .unwrap();
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
         if draw.selection.revision != Some(ticket.revision)
             || draw.selection.last_issued != Some(ticket.ticket)
         {
@@ -789,14 +710,11 @@ impl Renderer {
         }
         self.discard_pending_selection(ticket.ticket.job)
             .map_err(StreamRequestError::into_figgy)?;
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .selection;
         state.candidate.clear();
         state.entry = None;
@@ -813,14 +731,8 @@ impl Renderer {
             .ok_or_else(|| StreamRequestError::from(StreamError::Stale).into_figgy())?;
         self.discard_pending_selection(job)
             .map_err(StreamRequestError::into_figgy)?;
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state.entry = None;
         state.last_issued = None;
@@ -854,10 +766,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -877,21 +786,12 @@ impl Renderer {
             .iter()
             .map(|c| c.range)
             .collect();
-        let series_config = snapshot.as_ref().map_or_else(
-            || &self.chart_states[&ticket.job.chart].series[entry.series],
-            |s| &s.series[entry.series],
-        );
-        let styles = snapshot.as_ref().map_or_else(
-            || {
-                &self.chart_states[&ticket.job.chart]
-                    .prepared_styles
-                    .as_ref()
-                    .unwrap()
-                    .styles
-            },
-            |s| &s.styles.styles,
-        );
-        let style = &styles[entry.series];
+        let (_, series_config, style) = stream_execution_series(
+            &self.chart_states,
+            snapshot.as_deref(),
+            ticket.job.chart,
+            entry.series,
+        )?;
         let mapped = entry.field.is_none()
             && !entry.bar
             && matches!(config.draw_style, DrawStyle::Precise)
@@ -903,9 +803,13 @@ impl Renderer {
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
                 &self.point_value_map_bgl,
+                [&self.surface_bgl, &self.view3d_value_map_bgl],
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.star_data_bgl,
+                &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {
@@ -921,13 +825,7 @@ impl Renderer {
         let headroom = if entry.field.is_some() {
             field::OVERHEAD
         } else {
-            std::mem::size_of::<PrimitiveStyle>() as u64
-                + if entry.bar {
-                    std::mem::size_of::<data_render::DataSelectionGpu>() as u64
-                } else {
-                    0
-                }
-                + if mapped { 16 } else { 0 }
+            std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
         };
         let mut encoder = self
             .device
@@ -950,21 +848,12 @@ impl Renderer {
         };
         let packet = (|| -> StreamResult<StreamSelectionPacket> {
             let (states, preparation) = self.preparation_parts();
-            let series_config = snapshot.as_ref().map_or_else(
-                || &states[&ticket.job.chart].series[entry.series],
-                |s| &s.series[entry.series],
-            );
-            let styles = snapshot.as_ref().map_or_else(
-                || {
-                    &states[&ticket.job.chart]
-                        .prepared_styles
-                        .as_ref()
-                        .unwrap()
-                        .styles
-                },
-                |s| &s.styles.styles,
-            );
-            let style = &styles[entry.series];
+            let (_, series_config, style) = stream_execution_series(
+                states,
+                snapshot.as_deref(),
+                ticket.job.chart,
+                entry.series,
+            )?;
             if let Some(cell) = entry.field {
                 return field::packet(
                     &preparation,
@@ -999,15 +888,15 @@ impl Renderer {
                 }
             });
             let tally = crate::gpu_memory::ChargeTally::new();
-            let map = if mapped {
-                Some(style.scatter_map.as_ref().unwrap().stream_bind_group(
+            // `mapped` requires the scatter map.
+            let map = match style.scatter_map.as_ref().filter(|_| mapped) {
+                Some(scatter_map) => Some(scatter_map.stream_bind_group(
                     preparation.device,
                     preparation.per_point_style_map_bgl,
                     u32::try_from(entry.index).map_err(|_| StreamError::TooLarge)?,
                     &tally,
-                ))
-            } else {
-                None
+                )?),
+                None => None,
             };
             let map_charge = mapped.then(|| {
                 crate::gpu_memory::shared_charge(
@@ -1032,12 +921,16 @@ impl Renderer {
                     x,
                     y,
                     bar,
+                    category: None,
+                    violin: None,
+                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
                         packed_instance: None,
                     },
                     mapped_point_bg: map.as_ref(),
+                    view3d: None,
                 },
                 None,
                 matches!(config.draw_style, DrawStyle::Precise),
@@ -1079,14 +972,11 @@ impl Renderer {
         drop(chunk);
         match submitted {
             Ok(_) => {
-                let state = &mut self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let state = &mut live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap()
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                     .selection;
                 state.candidate.push(packet);
                 state.cursor = state.next_cursor;

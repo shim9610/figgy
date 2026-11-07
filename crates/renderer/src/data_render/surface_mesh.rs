@@ -1,0 +1,704 @@
+//! The 3D surface: a heatmap on a 3D chart (`Config.view_3d`) drawn as a
+//! mesh over its sample lattice, or a triangle mesh (#210) drawn over its
+//! triangles, through the panel's camera, with the depth test, inside the
+//! panel composite.
+//!
+//! One instance per quad between four neighbouring samples (six vertices)
+//! or per triangle (three), no vertex buffers: the vertex stage reads every
+//! sample from the pool through the field group 2
+//! (`create_field_data_bind_group_layout`), the table the flat heatmap and
+//! the flat mesh read, and colours through the heatmap's own
+//! `common/field_paint.wgsl`. Group 3 holds the camera ([`View3dGpu`]) and
+//! the surface's look ([`SurfaceParamsGpu`]). Nothing is stored per sample.
+//! The two modules share the entries (`surface_entry.wgsl`) over an input
+//! fragment each ([`SurfaceInput`]).
+//!
+//! Not `data_render/surface.rs`, which is the wgpu window surface.
+
+use model::view3d::{Projection3d, View3d};
+
+use crate::config::{AxisScale, Config};
+
+/// The assembled surface module of a heatmap grid. The projection fragment
+/// is the layer a later 3D vector glyph reuses (rule 9).
+pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/field_grid.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/field_paint.wgsl",
+    "data_render/common/material.wgsl",
+    "data_render/common/project_3d.wgsl",
+    "data_render/surface_mesh/surface_params.wgsl",
+    "data_render/surface_mesh/surface_input_grid.wgsl",
+    "data_render/surface_mesh/surface_entry.wgsl",
+);
+
+/// The assembled surface module of a triangle mesh (#210): the grid's list
+/// with the mesh input (`tri_mesh/mesh_input.wgsl`, the triangle reads the
+/// flat draw shares, and `surface_input_mesh.wgsl`, their placement through
+/// the camera) in place of the grid input. The layered input / entry split
+/// is what rule 9 keeps for reuse.
+pub const TRI_SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/probability.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/field_grid.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/field_paint.wgsl",
+    "data_render/common/material.wgsl",
+    "data_render/common/project_3d.wgsl",
+    "data_render/surface_mesh/surface_params.wgsl",
+    "data_render/tri_mesh/mesh_input.wgsl",
+    "data_render/surface_mesh/surface_input_mesh.wgsl",
+    "data_render/surface_mesh/surface_entry.wgsl",
+);
+
+/// What a surface pass draws: the heatmap grid's quads
+/// (`surface_input_grid.wgsl`, [`SURFACE_SHADER`]) or a triangle mesh's
+/// triangles (`surface_input_mesh.wgsl`, [`TRI_SURFACE_SHADER`], #210).
+/// The floor contours of each are entries of its flat module (the field
+/// module's `vs_floor`, the mesh module's `vs_tri_floor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceInput {
+    Grid,
+    Mesh,
+}
+
+/// The depth-stencil format of a 3D panel's composite: depth for the
+/// surfaces, stencil for a ternary chart's region fills (#49, #55).
+/// Guaranteed by WebGPU, so no device feature is needed.
+pub const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
+
+/// The ID pick target's format: `(series slot + 1, kind, c, r)`.
+pub const SURFACE_PICK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
+
+/// Vertices per surface quad: two triangles.
+pub const SURFACE_QUAD_VERTICES: u32 = 6;
+
+/// Instances of the picked sample's patch on a grid surface: the up to four
+/// quads around it. A mesh surface's patch is the picked triangle, one
+/// instance of [`super::tri_mesh::TRI_MESH_VERTICES`] vertices.
+pub const SURFACE_SELECTED_INSTANCES: u32 = 4;
+
+/// GPU twin: `common/project_3d.wgsl::View3d`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct View3dGpu {
+    pub view_proj: [[f32; 4]; 4],
+    pub view_proj_live: [[f32; 4]; 4],
+    pub z_min: [f32; 2],
+    pub z_max: [f32; 2],
+    /// x: logarithmic z; y: perspective; z: output pixels per box
+    /// half-diagonal.
+    pub flags: [f32; 4],
+    pub half_extents: [f32; 4],
+    pub eye: [f32; 4],
+    pub light: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<View3dGpu>() == 208);
+
+/// `SurfaceParamsGpu::flags` bits, twins of `surface_params.wgsl`.
+pub const SURFACE_FLAG_COLOR_GRID: u32 = 1;
+pub const SURFACE_FLAG_WIREFRAME: u32 = 2;
+pub const SURFACE_FLAG_LIT: u32 = 4;
+
+/// No picked sample or triangle (`surface_params.wgsl::SURFACE_NO_PICK`).
+pub const SURFACE_NO_PICK: u32 = u32::MAX;
+
+/// GPU twin: `surface_mesh/surface_params.wgsl::SurfaceParams`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SurfaceParamsGpu {
+    pub color_base: u32,
+    pub flags: u32,
+    /// The picked sample's constituent column and row (a grid), or the
+    /// picked triangle and 0 (a mesh); [`SURFACE_NO_PICK`] for none.
+    pub picked_c: u32,
+    pub picked_r: u32,
+    pub wire_width_px: f32,
+    pub pick_id: u32,
+    pub _pad: [u32; 2],
+    pub wire_color: [f32; 4],
+    pub(crate) material: super::MaterialGpu,
+}
+
+const _: () = assert!(std::mem::size_of::<SurfaceParamsGpu>() == 80);
+
+/// The light, fixed relative to the camera (#49 D8): 45° to the right of
+/// the eye and 45° above it.
+const LIGHT_AZIMUTH_OFFSET_DEGREES: f64 = 45.0;
+const LIGHT_ELEVATION_DEGREES: f64 = 45.0;
+
+/// The map from chart pixels to the clip space of a `size` target whose
+/// origin is chart pixel `origin`, as row-major rows.
+fn pixel_to_clip(origin: (f64, f64), size: (f64, f64)) -> [[f64; 4]; 4] {
+    let (w, h) = (size.0.max(1.0), size.1.max(1.0));
+    [
+        [2.0 / w, 0.0, 0.0, -1.0 - 2.0 * origin.0 / w],
+        [0.0, -2.0 / h, 0.0, 1.0 + 2.0 * origin.1 / h],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn mul(a: &[[f64; 4]; 4], b: &[[f64; 4]; 4]) -> [[f64; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..4).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    out
+}
+
+/// Row-major to the column layout of a WGSL `mat4x4<f32>`.
+fn columns(m: &[[f64; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut c = [[0.0f32; 4]; 4];
+    for (j, col) in c.iter_mut().enumerate() {
+        for (i, v) in col.iter_mut().enumerate() {
+            *v = m[i][j] as f32;
+        }
+    }
+    c
+}
+
+/// A box direction in box space from an azimuth and an elevation.
+fn direction(azimuth_degrees: f64, elevation_degrees: f64) -> [f32; 4] {
+    let (a, e) = (azimuth_degrees.to_radians(), elevation_degrees.to_radians());
+    [
+        (e.cos() * a.cos()) as f32,
+        (e.cos() * a.sin()) as f32,
+        e.sin() as f32,
+        0.0,
+    ]
+}
+
+/// The camera uniform of a 3D chart. `composite` is the chart-pixel
+/// rectangle of the panel composite target (origin, size), `live` the
+/// frame target's: the composite draws the surface, the live slot its
+/// highlight. `None` for a chart that is not 3D.
+pub fn view3d_gpu(
+    config: &Config,
+    composite: ((f64, f64), (f64, f64)),
+    live: ((f64, f64), (f64, f64)),
+) -> Option<View3dGpu> {
+    let view: &View3d = config.view_3d()?;
+    let m = config.view_matrix()?.m;
+    let axis = &config.right_y;
+    let log = matches!(axis.scale, AxisScale::Logarithmic);
+    let (lo, hi) = if log {
+        let (a, b) = crate::chart::guarded_log_range(axis.min, axis.max);
+        (a.log10(), b.log10())
+    } else {
+        axis.data_range()
+    };
+    let (lo, hi) = if axis.inverted { (hi, lo) } else { (lo, hi) };
+    let (min_hi, min_lo) = crate::data::split_f64_to_f32_pair(lo);
+    let (max_hi, max_lo) = crate::data::split_f64_to_f32_pair(hi);
+    let h = view.half_extents();
+    // Output pixels per box half-diagonal: the distance between the
+    // projected centre and a projected unit step along the screen.
+    let centre = config.project_3d([0.5, 0.5, 0.5]);
+    let corner = config.project_3d([1.0, 1.0, 1.0]);
+    let pixels = match (centre, corner) {
+        (Some(c), Some(k)) => ((k[0] - c[0]).hypot(k[1] - c[1])).max(1.0),
+        _ => 1.0,
+    };
+    Some(View3dGpu {
+        view_proj: columns(&mul(&pixel_to_clip(composite.0, composite.1), &m)),
+        view_proj_live: columns(&mul(&pixel_to_clip(live.0, live.1), &m)),
+        z_min: [min_hi, min_lo],
+        z_max: [max_hi, max_lo],
+        flags: [
+            if log { 1.0 } else { 0.0 },
+            if view.projection == Projection3d::Perspective {
+                1.0
+            } else {
+                0.0
+            },
+            pixels as f32,
+            0.0,
+        ],
+        half_extents: [h[0] as f32, h[1] as f32, h[2] as f32, 0.0],
+        eye: direction(view.azimuth_degrees, view.elevation_degrees),
+        light: direction(
+            view.azimuth_degrees + LIGHT_AZIMUTH_OFFSET_DEGREES,
+            (view.elevation_degrees + LIGHT_ELEVATION_DEGREES).min(90.0),
+        ),
+    })
+}
+
+/// Group 3 of the surface: binding 4 the camera, binding 5 the surface's
+/// look. Bindings 4 and 5 leave the field module's group 3 bindings (the
+/// contour label gaps, 0, 1 and 3) free for the floor entries.
+pub fn create_surface_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let uniform = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy surface data bgl"),
+            entries: &[uniform(4), uniform(5)],
+        },
+    )
+}
+
+/// Group 3 of a 3D chart's mapped scatter entries (#132): the point value
+/// map (bindings 0 and 1, `value_map.rs`) and the camera and params of the
+/// surface group (bindings 4 and 5) in one group, because the mapped
+/// scatter pipeline already fills groups 0 to 3.
+pub fn create_view3d_value_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let buffer = |binding, ty| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let uniform = wgpu::BufferBindingType::Uniform;
+    crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy view3d value map bgl"),
+            entries: &[
+                buffer(0, uniform),
+                buffer(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                buffer(4, uniform),
+                buffer(5, uniform),
+            ],
+        },
+    )
+}
+
+/// A 3D series' camera group (#132): the bind group a 3D scatter, line or
+/// ring draw binds as group 3 and the charge of its uniforms.
+#[derive(Clone)]
+pub struct View3dBinding {
+    pub bind_group: wgpu::BindGroup,
+    pub charge: crate::gpu_memory::SharedCharge,
+}
+
+/// The camera group of a 3D scatter or line series: the surface layout
+/// (`create_surface_data_bind_group_layout`) with `camera` and a default
+/// look carrying `pick_id`, or, when `value_map` is given, the combined
+/// layout above with the series' value map beside them.
+pub(crate) fn create_view3d_binding(
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    camera: &View3dGpu,
+    scale: f32,
+    pick_id: u32,
+    value_map: Option<&super::PointValueMapBuffers>,
+) -> crate::Result<View3dBinding> {
+    let look = surface_params_gpu(None, 0, scale, None, pick_id);
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let uniform = |label, contents: &[u8]| {
+        crate::gpu_memory::charged_buffer_init(
+            &tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        )
+    };
+    let view_buf = uniform("figgy view3d camera uniform", bytemuck::bytes_of(camera))?;
+    let look_buf = uniform("figgy view3d params uniform", bytemuck::bytes_of(&look))?;
+    let camera_entries = [
+        wgpu::BindGroupEntry {
+            binding: 4,
+            resource: view_buf.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 5,
+            resource: look_buf.as_entire_binding(),
+        },
+    ];
+    let bind_group = match value_map {
+        Some(map) => device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy view3d value map bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: map.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: map.stops.as_entire_binding(),
+                },
+                camera_entries[0].clone(),
+                camera_entries[1].clone(),
+            ],
+        }),
+        None => device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy view3d bg"),
+            layout,
+            entries: &camera_entries,
+        }),
+    };
+    Ok(View3dBinding {
+        bind_group,
+        charge: crate::gpu_memory::shared_charge(
+            tally,
+            ledger,
+            crate::gpu_memory::GpuResourceKind::Uniform,
+        ),
+    })
+}
+
+/// The depth state of a 3D scatter or line draw (#132): depth tested and
+/// written against the surfaces and each other, `LessEqual` so the later
+/// draw wins a tie. No bias: the shader places a marker at the front of a
+/// ball of its radius and a stroke at the front of a tube of its half width
+/// (`project_box_front`), so a mark on a surface shows whole and a marker
+/// covers its own stroke at the sample.
+pub fn point_depth_stencil() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: DEPTH_STENCIL_FORMAT,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
+/// Which surface pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum SurfacePass {
+    /// The surface in the panel composite, depth-tested.
+    Draw,
+    /// The picked sample's patch in the live highlight slot, no depth.
+    Selected,
+    /// The 1×1 ID pick, depth-tested.
+    Pick,
+    /// A contour on the box floor (`vs_floor` / `fs_contour` of the field
+    /// module), drawn under the surfaces without writing depth.
+    FloorContour,
+    /// The floor contours' ID pick.
+    FloorContourPick,
+}
+
+// `TargetPipelines::surface` has `ALL.len()` slots indexed by
+// `pass as usize`: the last discriminant is the last slot (#152).
+const _: () = assert!(SurfacePass::FloorContourPick as usize + 1 == SurfacePass::ALL.len());
+
+impl SurfacePass {
+    pub const ALL: [SurfacePass; 5] = [
+        SurfacePass::Draw,
+        SurfacePass::Selected,
+        SurfacePass::Pick,
+        SurfacePass::FloorContour,
+        SurfacePass::FloorContourPick,
+    ];
+
+    /// The entry points of the pass: the shared surface entries for the
+    /// surface passes, the flat module's floor entries for the floor ones
+    /// (the field module's for a grid, the mesh module's for a mesh).
+    fn entries(self, input: SurfaceInput) -> (&'static str, &'static str) {
+        match (self, input) {
+            (SurfacePass::Draw, _) => ("vs_main", "fs_main"),
+            (SurfacePass::Selected, _) => ("vs_selected", "fs_selected"),
+            (SurfacePass::Pick, _) => ("vs_main", "fs_pick"),
+            (SurfacePass::FloorContour, SurfaceInput::Grid) => ("vs_floor", "fs_contour"),
+            (SurfacePass::FloorContourPick, SurfaceInput::Grid) => {
+                ("vs_floor", "fs_floor_contour_pick")
+            }
+            (SurfacePass::FloorContour, SurfaceInput::Mesh) => ("vs_tri_floor", "fs_tri_floor"),
+            (SurfacePass::FloorContourPick, SurfaceInput::Mesh) => {
+                ("vs_tri_floor", "fs_tri_floor_pick")
+            }
+        }
+    }
+
+    pub fn label(self, input: SurfaceInput) -> &'static str {
+        match (self, input) {
+            (SurfacePass::Draw, SurfaceInput::Grid) => "figgy surface pipeline",
+            (SurfacePass::Selected, SurfaceInput::Grid) => "figgy surface selection pipeline",
+            (SurfacePass::Pick, SurfaceInput::Grid) => "figgy surface pick pipeline",
+            (SurfacePass::FloorContour, SurfaceInput::Grid) => "figgy floor contour pipeline",
+            (SurfacePass::FloorContourPick, SurfaceInput::Grid) => {
+                "figgy floor contour pick pipeline"
+            }
+            (SurfacePass::Draw, SurfaceInput::Mesh) => "figgy triangle surface pipeline",
+            (SurfacePass::Selected, SurfaceInput::Mesh) => {
+                "figgy triangle surface selection pipeline"
+            }
+            (SurfacePass::Pick, SurfaceInput::Mesh) => "figgy triangle surface pick pipeline",
+            (SurfacePass::FloorContour, SurfaceInput::Mesh) => {
+                "figgy triangle mesh floor contour pipeline"
+            }
+            (SurfacePass::FloorContourPick, SurfaceInput::Mesh) => {
+                "figgy triangle mesh floor contour pick pipeline"
+            }
+        }
+    }
+
+    /// Whether the pass is the flat module's (the floor: the field module
+    /// for a grid, the mesh module for a mesh) rather than the surface
+    /// module's.
+    pub fn on_floor(self) -> bool {
+        matches!(
+            self,
+            SurfacePass::FloorContour | SurfacePass::FloorContourPick
+        )
+    }
+
+    fn picks(self) -> bool {
+        matches!(self, SurfacePass::Pick | SurfacePass::FloorContourPick)
+    }
+
+    /// The depth state: a surface writes depth and nearer wins; a floor
+    /// contour, drawn first, writes none, so the surfaces blend over it.
+    pub fn depth_stencil(self) -> Option<wgpu::DepthStencilState> {
+        let state = |write: bool| wgpu::DepthStencilState {
+            format: DEPTH_STENCIL_FORMAT,
+            depth_write_enabled: Some(write),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
+        match self {
+            SurfacePass::Selected => None,
+            SurfacePass::Draw | SurfacePass::Pick => Some(state(true)),
+            SurfacePass::FloorContour | SurfacePass::FloorContourPick => Some(state(false)),
+        }
+    }
+}
+
+/// One surface pipeline of `input`. `target_format` and `sample_count` are
+/// the composite's (or the frame's, for [`SurfacePass::Selected`]); the pick
+/// renders one sample into [`SURFACE_PICK_FORMAT`]. `shader` is the input's
+/// surface module, or for a floor pass its flat module.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_surface_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    surface_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    pass: SurfacePass,
+    input: SurfaceInput,
+) -> wgpu::RenderPipeline {
+    let layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy surface layout"),
+            bind_group_layouts: &[
+                Some(transform_bgl),
+                Some(style_bgl),
+                Some(field_bgl),
+                Some(surface_bgl),
+            ],
+            immediate_size: 0,
+        },
+    );
+    let (vertex, fragment) = pass.entries(input);
+    let (format, samples, blend) = match pass {
+        _ if pass.picks() => (SURFACE_PICK_FORMAT, 1, None),
+        _ => (
+            target_format,
+            sample_count,
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        ),
+    };
+    crate::gpu_compile::render_pipeline(
+        &device,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some(pass.label(input)),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some(vertex),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: pass.depth_stencil(),
+            multisample: super::multisample_state(samples),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some(fragment),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        },
+    )
+}
+
+/// One heatmap or triangle mesh drawn as a surface, its floor contours or
+/// its picked patch: the field's group 2 snapshot, its own group 3 and what
+/// to instance.
+pub struct ColumnSurfaceLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: wgpu::BindGroup,
+    pub field_bg: wgpu::BindGroup,
+    pub surface_bg: wgpu::BindGroup,
+    /// Vertices per instance: [`SURFACE_QUAD_VERTICES`] for a grid's quads,
+    /// [`super::tri_mesh::TRI_MESH_VERTICES`] for a mesh's triangles.
+    pub vertices: u32,
+    /// The instances: a grid's quads, a mesh's triangles, the grid floor's
+    /// one quad, or the picked patch's ([`SURFACE_SELECTED_INSTANCES`] for a
+    /// grid, one for a mesh). 0 skips the draw.
+    pub instances: u32,
+    /// Keeps the group 2 and group 3 buffers' charges alive.
+    pub charge: crate::gpu_memory::SharedCharge,
+    pub surface_charge: crate::gpu_memory::SharedCharge,
+}
+
+/// Draw `layer` into a pass with the depth-stencil attachment (the live
+/// slot for a picked patch).
+pub fn issue_surface_layer(pass: &mut wgpu::RenderPass<'_>, layer: &ColumnSurfaceLayer<'_>) {
+    if layer.instances == 0 {
+        return;
+    }
+    pass.set_pipeline(layer.pipeline);
+    pass.set_bind_group(0, layer.transform_bg, &[]);
+    pass.set_bind_group(1, &layer.style_bg, &[]);
+    pass.set_bind_group(2, &layer.field_bg, &[]);
+    pass.set_bind_group(3, &layer.surface_bg, &[]);
+    pass.draw(0..layer.vertices, 0..layer.instances);
+}
+
+/// The quads of a `cols × rows` sample lattice.
+pub fn surface_quad_count(cols: u32, rows: u32) -> u32 {
+    cols.saturating_sub(1)
+        .saturating_mul(rows.saturating_sub(1))
+}
+
+/// The group 3 of one surface draw: the camera and the surface's look, in
+/// two uniforms charged as one.
+pub(crate) fn create_surface_bind_group(
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &View3dGpu,
+    surface: &SurfaceParamsGpu,
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let uniform = |label, contents: &[u8]| {
+        crate::gpu_memory::charged_buffer_init(
+            &tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        )
+    };
+    let view_buf = uniform("figgy surface camera uniform", bytemuck::bytes_of(view))?;
+    let surface_buf = uniform("figgy surface params uniform", bytemuck::bytes_of(surface))?;
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy surface bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: view_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: surface_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::Uniform,
+    );
+    Ok((bind_group, charge))
+}
+
+/// The surface look of `style` (the default when `None`) for the GPU:
+/// colour grid at `color_base`, wireframe width at `scale`, the picked
+/// sample (a grid's column and row, or a mesh's triangle and 0) and the ID
+/// the pick writes.
+pub(crate) fn surface_params_gpu(
+    style: Option<&model::view3d::SurfaceStyle>,
+    color_base: u32,
+    scale: f32,
+    picked: Option<(u32, u32)>,
+    pick_id: u32,
+) -> SurfaceParamsGpu {
+    let default = model::view3d::SurfaceStyle::default();
+    let style = style.unwrap_or(&default);
+    let mut flags = 0;
+    if style.color_matrix.is_some() {
+        flags |= SURFACE_FLAG_COLOR_GRID;
+    }
+    let (wire_width_px, wire_color) = match &style.wireframe {
+        Some(wire) if wire.width > 0.0 => {
+            flags |= SURFACE_FLAG_WIREFRAME;
+            let c = wire.color;
+            (wire.width * scale, [c.r * c.a, c.g * c.a, c.b * c.a, c.a])
+        }
+        _ => (0.0, [0.0; 4]),
+    };
+    if style.material != model::Material::Flat {
+        flags |= SURFACE_FLAG_LIT;
+    }
+    let (picked_c, picked_r) = picked.unwrap_or((SURFACE_NO_PICK, SURFACE_NO_PICK));
+    SurfaceParamsGpu {
+        color_base,
+        flags,
+        picked_c,
+        picked_r,
+        wire_width_px,
+        pick_id,
+        _pad: [0; 2],
+        wire_color,
+        material: super::MaterialGpu::pack(
+            style.material,
+            0.5,
+            style.texture_strength,
+            style.texture_scale,
+            style.gloss,
+            0.0,
+            0.0,
+            style.emphasis_brightness,
+        ),
+    }
+}

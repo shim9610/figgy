@@ -4,11 +4,12 @@
 //! event loop, this file owns the wgpu surface, and egui (through
 //! `egui-winit` + `egui-wgpu`, no eframe) draws the control panel over it.
 //!
-//! - Cartesian scenes (lines/areas/steps, scatter + error bars, histogram,
-//!   heatmap + contours, log axes, twin Y axes, subplots, annotations, up to
-//!   100 million resident points) are registered charts of one `Renderer`. The renderer paints
-//!   them straight into the surface pass; egui draws on top.
-//! - Bounded scenes (radial, categorical bars, box plots) render into an
+//! - Cartesian and polar scenes (lines/areas/steps, scatter + error bars,
+//!   histogram, heatmap + contours, log axes, twin Y axes, subplots,
+//!   annotations, category bars, box plots, radar, up to 100 million
+//!   resident points) are registered charts of one `Renderer`. The renderer
+//!   paints them straight into the surface pass; egui draws on top.
+//! - The radial scene (the DataLess pie and donut chart) renders into an
 //!   offscreen texture that egui shows as an image.
 //!
 //! Pointer, on the chart:
@@ -23,8 +24,10 @@
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
 mod big_data;
-mod bounded;
 mod cartesian;
+mod radial;
+/// The scene catalogue, shared with the renderer's decoration oracle.
+#[path = "../../../crates/renderer/tests/support/playground_scenes.rs"]
 mod scenes;
 mod widgets;
 
@@ -38,10 +41,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use renderer::data_render;
+use renderer::gpu;
 use renderer::{Renderer, RendererDevice};
 
-use crate::bounded::BoundedScene;
 use crate::cartesian::CartesianHost;
+use crate::radial::RadialHost;
 use crate::scenes::SceneKind;
 
 const POOL_CAPACITY: u64 = 128 * 1024 * 1024;
@@ -51,8 +55,8 @@ const PANEL_WIDTH: f32 = 330.0;
 struct Gpu {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     _adapter: wgpu::Adapter,
     _instance: wgpu::Instance,
 }
@@ -60,9 +64,9 @@ struct Gpu {
 impl Gpu {
     fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
-        let instance = data_render::create_instance();
-        let surface = data_render::create_surface_for_window(&instance, window)?;
-        let adapter = data_render::request_adapter_for_surface(&instance, &surface)?;
+        let instance = gpu::create_instance();
+        let surface = gpu::create_surface_for_window(&instance, window)?;
+        let adapter = gpu::request_adapter_for_surface_blocking(&instance, &surface)?;
         eprintln!("[gpu] adapter: {:?}", adapter.get_info());
         let (device, queue) = request_device(&adapter)?;
         let limits = device.limits();
@@ -71,9 +75,7 @@ impl Gpu {
             limits.max_buffer_size >> 20,
             limits.max_storage_buffer_binding_size >> 20
         );
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
-        let config = data_render::try_configure_surface(
+        let config = gpu::try_configure_surface(
             &surface,
             &adapter,
             &device,
@@ -98,7 +100,7 @@ impl Gpu {
     }
 
     fn renderer_device(&self) -> RendererDevice {
-        RendererDevice::new(Arc::clone(&self.device), Arc::clone(&self.queue))
+        RendererDevice::new(self.device.clone(), self.queue.clone()).expect("figgy poll thread")
     }
 }
 
@@ -106,9 +108,7 @@ impl Gpu {
 /// buffer at 256 MiB and a storage binding at 128 MiB; the column pool is one
 /// buffer, so 100 million resident points (1.6 GB of hi/lo pairs) need what
 /// the GPU actually allows. Every other limit stays at the baseline.
-fn request_device(
-    adapter: &wgpu::Adapter,
-) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+fn request_device(adapter: &wgpu::Adapter) -> renderer::Result<(wgpu::Device, wgpu::Queue)> {
     let supported = adapter.limits();
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("figgy playground device"),
@@ -122,13 +122,13 @@ fn request_device(
         memory_hints: wgpu::MemoryHints::Performance,
         trace: wgpu::Trace::Off,
     };
-    pollster::block_on(adapter.request_device(&descriptor))
+    gpu::request_device_with_blocking(adapter, &descriptor)
 }
 
 /// What the scene code needs from the host while egui runs.
 pub struct HostCtx<'a> {
-    pub device: &'a Arc<wgpu::Device>,
-    pub queue: &'a Arc<wgpu::Queue>,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
     pub egui_renderer: &'a mut egui_wgpu::Renderer,
     pub pixels_per_point: f32,
     pub status: &'a mut String,
@@ -137,7 +137,7 @@ pub struct HostCtx<'a> {
 /// Exactly one scene is live at a time.
 enum Active {
     Cartesian(Box<CartesianHost>),
-    Bounded(Box<dyn BoundedScene>),
+    Radial(Box<RadialHost>),
 }
 
 struct Playground {
@@ -170,8 +170,8 @@ impl Playground {
     }
 
     fn switch(&mut self, kind: SceneKind, gpu: &Gpu, egui_renderer: &mut egui_wgpu::Renderer) {
-        let next = if kind.is_bounded() {
-            bounded::create(kind, gpu.renderer_device()).map(Active::Bounded)
+        let next = if kind.is_radial() {
+            RadialHost::create(gpu.renderer_device(), kind).map(|r| Active::Radial(Box::new(r)))
         } else {
             CartesianHost::new(&mut self.cartesian, kind)
                 .map(|c| Active::Cartesian(Box::new(c)))
@@ -181,7 +181,7 @@ impl Playground {
             Ok(next) => {
                 match std::mem::replace(&mut self.active, next) {
                     Active::Cartesian(old) => old.remove(&mut self.cartesian),
-                    Active::Bounded(mut old) => old.release(egui_renderer),
+                    Active::Radial(mut old) => old.release(egui_renderer),
                 }
                 self.kind = kind;
                 self.status = format!("Scene: {}", kind.label());
@@ -220,7 +220,7 @@ impl App {
             });
         }
         if let (Some(p), Some(r)) = (self.playground.as_mut(), self.egui_renderer.as_mut())
-            && let Active::Bounded(scene) = &mut p.active
+            && let Active::Radial(scene) = &mut p.active
         {
             scene.release(r);
         }
@@ -258,7 +258,7 @@ impl App {
             egui::Panel::top("scene_tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.strong("Cartesian");
-                    for k in SceneKind::ALL.iter().filter(|k| !k.is_bounded()) {
+                    for k in SceneKind::ALL.iter().filter(|k| !k.is_radial()) {
                         if ui
                             .selectable_label(playground.kind == *k, k.label())
                             .clicked()
@@ -268,8 +268,8 @@ impl App {
                         }
                     }
                     ui.separator();
-                    ui.strong("Bounded");
-                    for k in SceneKind::ALL.iter().filter(|k| k.is_bounded()) {
+                    ui.strong("Radial");
+                    for k in SceneKind::ALL.iter().filter(|k| k.is_radial()) {
                         if ui
                             .selectable_label(playground.kind == *k, k.label())
                             .clicked()
@@ -295,7 +295,7 @@ impl App {
                             Active::Cartesian(c) => {
                                 c.controls(ui, &mut playground.cartesian, &mut host)
                             }
-                            Active::Bounded(b) => b.controls(ui, &mut host),
+                            Active::Radial(b) => b.controls(ui, &mut host),
                         }
                     });
                 });
@@ -308,7 +308,7 @@ impl App {
                         Active::Cartesian(c) => {
                             c.viewport(ui, rect, &response, &mut playground.cartesian, &mut host)
                         }
-                        Active::Bounded(b) => b.viewport(ui, rect, &response, &mut host),
+                        Active::Radial(b) => b.viewport(ui, rect, &response, &mut host),
                     }
                 });
         });
@@ -322,7 +322,7 @@ impl App {
         let frame_start = Instant::now();
         let prepared = match &mut playground.active {
             Active::Cartesian(c) => c.prepare(&mut playground.cartesian),
-            Active::Bounded(_) => None,
+            Active::Radial(_) => None,
         };
         let prepare_time = frame_start.elapsed();
         let timed = matches!(&playground.active, Active::Cartesian(c) if c.wants_frame_timing());
@@ -514,10 +514,10 @@ impl Drop for App {
 
 fn main() {
     if std::env::args().any(|a| a == "--selftest") {
-        let instance = data_render::create_instance();
-        let adapter = data_render::request_adapter(&instance).expect("adapter");
-        let (d, q) = data_render::request_device(&adapter).expect("device");
-        let gpu = RendererDevice::new(Arc::new(d), Arc::new(q));
+        let instance = gpu::create_instance();
+        let adapter = gpu::request_adapter_blocking(&instance).expect("adapter");
+        let (d, q) = gpu::request_device_blocking(&adapter).expect("device");
+        let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
         let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Bgra8Unorm, POOL_CAPACITY)
             .expect("renderer");
         match cartesian::selftest(&mut r) {

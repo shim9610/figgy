@@ -23,8 +23,6 @@
 //! Run with:
 //! `cargo run -p figgy-renderer --example egui_embed --features egui_demo`
 
-use std::sync::Arc;
-
 use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 
@@ -37,17 +35,15 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
-    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    DataRenderType, HitId, HitMap, MIN_EXPORT_SCALE, PreparedFrame, Renderer, RendererDevice,
+    ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 // Use light foreground for axes / labels / titles so they read on dark egui backgrounds.
@@ -199,22 +195,23 @@ impl FiggyState {
         let Some(panel) = self.panels.get_mut(pi) else {
             return;
         };
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
         if let Some(handle) = self.active_resize {
             if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
+                let _ = rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy);
             }
             return;
         }
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
+        let _ = drag.drag_by(panel.chart.config_mut(), &measure, dx, dy);
     }
 }
 
 impl FiggyState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
         self.panels.clear();
     }
 }
@@ -257,16 +254,20 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {
@@ -323,16 +324,20 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color: color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
     let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
@@ -380,16 +385,20 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         source_id: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
-        render_type: DataRenderType::Line {
-            line: DataLineStyleConfig {
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
                 line_color,
                 line_width: line_w,
                 fill: None,
                 fill_color: None,
                 interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-        },
+            }),
+            errors: None,
+            stem: None,
+        }),
     };
     let style = renderer.create_style_for_series(&cfg).unwrap();
     PanelEntry {
@@ -446,17 +455,13 @@ impl CallbackTrait for FiggyCallback {
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
         };
-        let sel_boxes: Vec<SelectionBox> = match selected {
-            Some((pi, id)) if pi == self.panel_idx => panel
-                .hitmap
-                .selection_box(
-                    id,
-                    panel.chart.config(),
-                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                )
-                .into_iter()
-                .collect(),
-            _ => Vec::new(),
+        // The renderer draws the selection from the element's own placement;
+        // the host only names the element.
+        let selected_id: Option<String> = match selected {
+            Some((pi, id)) if pi == self.panel_idx => {
+                panel.hitmap.get(id).map(|el| el.element_id())
+            }
+            _ => None,
         };
 
         // If the panel rect changed (or on first grading) or the raster is
@@ -470,7 +475,7 @@ impl CallbackTrait for FiggyCallback {
                 &mut panel.view,
                 &panel.chart,
                 self.panel_rect_px,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 panel.prepared = None;
@@ -488,7 +493,7 @@ impl CallbackTrait for FiggyCallback {
                     &mut panel.view,
                     &panel.chart,
                     cur_rect,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 )
             {
                 eprintln!("[figgy] refresh_axis failed: {e}");
@@ -626,14 +631,14 @@ impl eframe::App for DemoApp {
         self.render_state = Some(render_state.clone());
 
         if !self.initialized {
-            // figgy needs Arc<Device/Queue>. Wrap RenderState's owned values in Arc
-            // (wgpu::Device is Arc-like internally, so the clone is cheap).
-            let device = Arc::new(render_state.device.clone());
-            let queue = Arc::new(render_state.queue.clone());
+            // wgpu::Device and wgpu::Queue are reference-counted handles, so the
+            // clones share RenderState's device and queue.
+            let device = render_state.device.clone();
+            let queue = render_state.queue.clone();
             let format = render_state.target_format;
 
             let mut renderer = match Renderer::try_new(
-                RendererDevice::new(device, queue),
+                RendererDevice::new(device, queue).expect("figgy poll thread"),
                 format,
                 POOL_CAPACITY,
             ) {
@@ -705,7 +710,8 @@ impl eframe::App for DemoApp {
                     // DPI input — figgy maps dpi/96 → scale → clamp internally.
                     ui.label("DPI:");
                     let dpi_min = (MIN_EXPORT_SCALE * 96.0).round() as u32;
-                    let dpi_max = (MAX_EXPORT_SCALE * 96.0).round() as u32;
+                    // No renderer bound: the device texture limit decides; 16x here.
+                    let dpi_max = 16 * 96;
                     ui.add(
                         egui::DragValue::new(&mut self.export_dpi)
                             .range(dpi_min..=dpi_max)
@@ -721,10 +727,9 @@ impl eframe::App for DemoApp {
                             .expect("FiggyState");
                         let (renderer, panels) = (&mut state.renderer, &state.panels);
                         for (i, panel) in panels.iter().enumerate() {
-                            match renderer.export_panel_png_bytes(
-                                &panel.chart,
-                                &panel.series,
-                                scale,
+                            match renderer.export_png_blocking(
+                                renderer::ExportSource::chart(&panel.chart, &panel.series),
+                                renderer::ExportOptions::panel(scale),
                             ) {
                                 Ok(bytes) => {
                                     let path = format!("/tmp/figgy_egui_panel_{i}.png");

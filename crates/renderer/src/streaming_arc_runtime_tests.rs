@@ -1,11 +1,8 @@
 use super::*;
+use crate::test_gpu::BlockOn as _;
 
 fn column(data: Vec<f64>) -> crate::Column<f64> {
-    crate::Column {
-        min: data.iter().copied().fold(f64::INFINITY, f64::min),
-        max: data.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        data,
-    }
+    crate::Column { data }
 }
 
 fn source(column: &crate::Column<f64>, hilo: bool) -> crate::StreamColumnSource<'_> {
@@ -42,7 +39,7 @@ fn parity_with_samples(
     let (device, queue) = data_render::shared_device().unwrap();
     let make = || {
         Renderer::try_new_with_sample_count(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            RendererDevice::new(device.clone(), queue.clone()).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             (n as u64 * 32).max(4096),
             samples,
@@ -122,8 +119,8 @@ fn parity_with_samples(
         interpolation: crate::data_config::LineInterpolation::Linear,
     };
     let render_type = if matches!(chart.config().draw_style, DrawStyle::Constellation(_)) {
-        DataRenderType::ScatterLine {
-            scatter: crate::data_config::DataScatterStyleConfig {
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(crate::data_config::DataScatterStyleConfig {
                 point_size: 4.0,
                 point_color: Color::new(0.8, 0.3, 0.2, 0.65),
                 point_shape: crate::data_config::ScatterShape::CircleFilled,
@@ -132,11 +129,18 @@ fn parity_with_samples(
                 point_style_overrides: None,
                 point_color_map: None,
                 point_size_map: None,
-            },
-            line,
-        }
+            }),
+            line: Some(line),
+            errors: None,
+            stem: None,
+        })
     } else {
-        DataRenderType::Line { line }
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+            stem: None,
+        })
     };
     let series = vec![SeriesConfig {
         series_id: "line".into(),
@@ -144,6 +148,7 @@ fn parity_with_samples(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type,
     }];
     let id = streamed
@@ -226,7 +231,7 @@ fn parity_with_samples(
             0
         );
         streamed.end_gpu_frame();
-        streamed.wait_idle();
+        streamed.wait_idle().unwrap();
         streamed.service_stream_requests();
         assert_eq!(
             streamed
@@ -251,11 +256,11 @@ fn parity_with_samples(
         match streamed.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
-            crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle(),
+            crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle().unwrap(),
             _ => {}
         }
     }
-    streamed.wait_idle();
+    streamed.wait_idle().unwrap();
     drop(
         streamed
             .prepare_registered(&[RegisteredChartDrawItem {
@@ -273,6 +278,7 @@ fn parity_with_samples(
             match streamed.request_stream_operation_ranges(operation).unwrap() {
                 crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                     assert!(ranges.iter().all(|range| range.len <= io));
+                    assert!(streamed.check_stream_tickets_for_test() >= 1);
                     let data: Vec<_> = ranges
                         .iter()
                         .map(|range| {
@@ -299,13 +305,21 @@ fn parity_with_samples(
                         .submit_stream_operation_ranges(operation, &supplied)
                         .unwrap();
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    streamed.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted { .. }
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }
         }
-        let actual = pollster::block_on(streamed.finish_stream_export(operation)).unwrap();
-        let expected = resident.export_panel_rgba(&chart, &series, scale).unwrap();
+        let actual = crate::test_gpu::block_on(streamed.finish_stream_export(operation)).unwrap();
+        let expected = resident
+            .export_rgba(
+                crate::ExportSource::chart(&chart, &series),
+                crate::ExportOptions::panel(scale),
+            )
+            .block_on()
+            .unwrap();
         let different = actual
             .rgba
             .iter()
@@ -400,24 +414,25 @@ fn stream_arc_exact_constellation_dash_and_dot() {
 fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
     let (device, queue) = data_render::shared_device().unwrap();
     let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         4096,
     )
     .unwrap();
     let config = crate::default::default_config();
     let before = renderer.gpu_memory_usage().total_bytes();
-    renderer.memory_budget = Some(before);
+    let _ = renderer.set_memory_budget(Some(before));
     assert!(matches!(
         renderer.new_stream_arc(&config, u64::from(u32::MAX)),
         Err(StreamRequestError::Scheduler(StreamError::TooLarge))
     ));
     assert_eq!(renderer.gpu_memory_usage().total_bytes(), before);
-    renderer.memory_budget = None;
+    let _ = renderer.set_memory_budget(None);
     let state = renderer
         .new_stream_arc(&config, u64::from(u32::MAX))
         .unwrap();
-    assert!(state.buffers.charge.charged_bytes() < 270_000);
+    // Bounded by one canonical chunk's block sums, 8-byte arc pairs (#107).
+    assert!(state.buffers.charge.charged_bytes() < 540_000);
     assert_eq!(
         renderer.gpu_memory_usage().total_bytes() - before,
         state.buffers.charge.charged_bytes()
@@ -436,7 +451,7 @@ fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
             > 0
     );
     renderer.end_gpu_frame();
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     renderer.service_gpu_completions().unwrap();
     assert_eq!(
         renderer

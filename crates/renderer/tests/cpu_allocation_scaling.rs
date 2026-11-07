@@ -102,7 +102,7 @@ fn no_gpu(context: &str) {
 }
 
 fn settle_gpu(renderer: &Renderer) {
-    pollster::block_on(renderer.wait_submitted_work());
+    test_gpu::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 const COLUMN_VALUE_BYTES: u64 = 8;
@@ -123,11 +123,10 @@ fn least_squares(points: &[(f64, f64)]) -> (f64, f64) {
 }
 
 fn renderer_with_pool(pool_bytes: u64) -> Option<Renderer> {
-    use std::sync::Arc;
     let (device, queue) = test_gpu::device();
     Some(
         Renderer::try_new(
-            RendererDevice::new(Arc::new(device), Arc::new(queue)),
+            RendererDevice::new(device, queue).expect("figgy poll thread"),
             wgpu::TextureFormat::Rgba8Unorm,
             pool_bytes,
         )
@@ -152,8 +151,6 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 1023.0,
                 data: (0..1024).map(|i| i as f32).collect(),
             },
         )
@@ -174,8 +171,6 @@ fn host_bytes_do_not_scale_with_uploaded_data() {
         // The caller's buffer is built before the baseline: it is the host's
         // own data, and counting it would hide whether the renderer copies it.
         let column = Column {
-            min: 0.0f32,
-            max: (values - 1) as f32,
             data: (0..values).map(|i| i as f32).collect(),
         };
         settle_gpu(&renderer);
@@ -364,8 +359,6 @@ fn prepare_cost_is_independent_of_series_length() {
             .add_column(
                 id,
                 &Column {
-                    min: 0.0f32,
-                    max: (len - 1) as f32,
                     data: (0..len).map(|i| i as f32).collect(),
                 },
             )
@@ -386,16 +379,20 @@ fn prepare_cost_is_independent_of_series_length() {
             label: None,
             x_column: x.to_string(),
             y_column: y.to_string(),
-            render_type: renderer::DataRenderType::Line {
-                line: renderer::DataLineStyleConfig {
+            z_column: None,
+            render_type: renderer::DataRenderType::Xy(renderer::XySeries {
+                scatter: None,
+                line: Some(renderer::DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,
                     line_color: renderer::Color::new(0.1, 0.2, 0.3, 1.0),
                     line_width: 1.0,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+                stem: None,
+            }),
         };
         let style = renderer.create_style_for_series(&series_config).unwrap();
         let series = [renderer::Series {
@@ -434,6 +431,114 @@ fn prepare_cost_is_independent_of_series_length() {
     );
 }
 
+/// A polar heatmap (#208) prepares in the same number of host allocations
+/// whatever its radius rows: the frame's tables are per constituent column,
+/// never per cell. Sixteen angle columns of 64 rows and of 65,536 rows.
+#[test]
+fn polar_field_prepare_cost_is_independent_of_its_rows() {
+    let _measurement = measurement_guard();
+    let Some(mut renderer) = renderer_with_pool(64 << 20) else {
+        no_gpu("polar field prepare-vs-rows measurement");
+        return;
+    };
+    let columns = 16usize;
+    let (short, long) = (64usize, 65_536usize);
+    for (prefix, rows) in [("s", short), ("l", long)] {
+        renderer
+            .add_column(
+                &format!("{prefix}a"),
+                &Column {
+                    data: (0..=columns).map(|i| i as f32 * 22.5).collect(),
+                },
+            )
+            .unwrap();
+        renderer
+            .add_column(
+                &format!("{prefix}r"),
+                &Column {
+                    data: (0..=rows).map(|j| j as f32).collect(),
+                },
+            )
+            .unwrap();
+        for i in 0..columns {
+            renderer
+                .add_column(
+                    &format!("{prefix}z{i}"),
+                    &Column {
+                        data: (0..rows).map(|j| ((i + j) % 7) as f32).collect(),
+                    },
+                )
+                .unwrap();
+        }
+    }
+    renderer.end_gpu_frame();
+
+    let mut config = panel_config(320, 240);
+    config.set_polar(Some(renderer::polar::PolarOptions::default()));
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.axis.min = 0.0;
+    bar.axis.max = 6.0;
+    bar.axis.major_spacing = 1.0;
+    config.colorbar = Some(bar);
+    let mut counts = Vec::new();
+    for (prefix, rows) in [("s", short), ("l", long)] {
+        let mut chart = Chart::new(config.clone());
+        chart.set_x_range(0.0, 360.0);
+        chart.set_y_range(0.0, rows as f64);
+        let view = renderer
+            .create_chart_view(&chart, chart.config().chart_area.0)
+            .unwrap();
+        let series_config = renderer::SeriesConfig {
+            series_id: format!("field-{rows}"),
+            source_id: None,
+            label: None,
+            x_column: format!("{prefix}a"),
+            y_column: format!("{prefix}r"),
+            z_column: None,
+            render_type: renderer::DataRenderType::Field(renderer::data_config::FieldSeries {
+                matrix: renderer::data_config::MatrixRef {
+                    columns: (0..columns).map(|i| format!("{prefix}z{i}")).collect(),
+                    orientation: renderer::data_config::MatrixOrientation::ColumnsAreX,
+                    grid_layout: renderer::data_config::GridLayout::Edges,
+                },
+                fill: Some(renderer::data_config::FieldFillConfig {
+                    mode: renderer::data_config::FillMode::Continuous,
+                    shading: renderer::data_config::Shading::Flat,
+                    opacity: 1.0,
+                }),
+                contour: None,
+                surface: None,
+            }),
+        };
+        let style = renderer.create_style_for_series(&series_config).unwrap();
+        let series = [renderer::Series {
+            config: &series_config,
+            style: &style,
+        }];
+        let items = [ChartDrawItem {
+            view: &view,
+            chart_config: chart.config(),
+            series: &series,
+        }];
+        renderer.prepare(&items).unwrap();
+        renderer.prepare(&items).unwrap();
+        let before = calls();
+        let prepared = renderer.prepare(&items).unwrap();
+        let allocations = calls() - before;
+        drop(prepared);
+        println!("polar field prepare with {rows} rows: {allocations} allocations");
+        counts.push(allocations);
+    }
+    let (short_count, long_count) = (counts[0], counts[1]);
+    assert!(
+        long_count.abs_diff(short_count) <= 4,
+        "a polar field with {}× the rows changed the frame's host allocation \
+         count ({short_count} → {long_count}). Frame work must be per column, \
+         never per cell.",
+        long / short
+    );
+}
+
 #[test]
 fn pool_growth_allocates_a_bounded_amount() {
     let _measurement = measurement_guard();
@@ -448,8 +553,6 @@ fn pool_growth_allocates_a_bounded_amount() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 255.0,
                 data: (0..256).map(|i| i as f32).collect(),
             },
         )
@@ -459,8 +562,6 @@ fn pool_growth_allocates_a_bounded_amount() {
 
     let values = 1 << 18;
     let column = Column {
-        min: 0.0f32,
-        max: (values - 1) as f32,
         data: (0..values).map(|i| i as f32).collect(),
     };
     let capacity_before = renderer.pool().capacity();
@@ -521,8 +622,6 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         .add_column(
             "warm",
             &Column {
-                min: 0.0f32,
-                max: 1023.0,
                 data: (0..1024).map(|i| i as f32).collect(),
             },
         )
@@ -541,8 +640,6 @@ fn a_batch_upload_costs_less_host_heap_per_column_than_one_at_a_time() {
         // buffer, and counting it would hide whether the renderer copies it.
         let sources: Vec<Column<f32>> = (0..COLUMNS)
             .map(|c| Column {
-                min: 0.0f32,
-                max: (values - 1) as f32,
                 data: (0..values).map(|i| (i + c) as f32).collect(),
             })
             .collect();

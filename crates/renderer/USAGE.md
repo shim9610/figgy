@@ -28,8 +28,9 @@ shown below.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Direct host GPU
-sharing requires wgpu 30. The WASM wrapper remains a separate consumer and is
-excluded from Rust registry publishing.
+sharing requires wgpu 30. The WASM wrapper (`figgy`, the browser product) is a
+separate package with `publish = false`; its publication target is
+[open](https://github.com/shim9610/figgy/issues/57).
 See [Rust API contracts](API.md) for ownership, frame lifetimes,
 render targets and compatibility policy.
 
@@ -46,9 +47,10 @@ model types without the renderer depends on
 `model = { package = "figgy-model", version = "0.12.1" }`.
 
 For a local checkout, replace `version` with a `path` relative to the consuming
-application's `Cargo.toml`. A standalone program that calls `pollster::block_on`
-(as [examples/line.rs](examples/line.rs) does) must also declare `pollster = "1.0"`.
-Crate examples already have access to this dependency through the renderer manifest.
+application's `Cargo.toml`. A native program needs no async executor: every call
+that waits for the GPU has a `_blocking` form (see
+[GPU results](#gpu-results-awaited-blocking-or-checked)), as
+[examples/line.rs](examples/line.rs) uses.
 
 ### Host crates
 
@@ -134,10 +136,10 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // One-line setup — figgy owns instance/adapter/device/queue/surface/swap chain.
-let mut renderer = Renderer::for_window(
+let mut renderer = Renderer::for_window_blocking(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // 16 MiB GPU column pool
+    16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
 ).unwrap();
 
 // renderer.add_column takes `&dyn ColumnSource`.
@@ -146,9 +148,7 @@ let mut renderer = Renderer::for_window(
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
 fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::Column { data, min, max }
+    renderer::Column { data }
 }
 renderer.add_column("x", &column(xs)).unwrap();
 renderer.add_column("y", &column(ys)).unwrap();
@@ -167,17 +167,15 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
-    render_type: DataRenderType::Line {
-        line: DataLineStyleConfig {
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
+    render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: Color::from_rgb8(20, 110, 230),
             line_width: 2.0,
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        },
-    },
+        }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
@@ -194,7 +192,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → pre
 
 ### `ColumnSource` — the data adapter trait
 
-`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. In the same pass that writes the GPU pairs, the source returns `ColumnUploadStats::min_positive`, the smallest finite positive value it wrote; log-axis auto-fit uses it as the lower bound when the data contains zeros or negatives. The renderer cannot read wgpu 30's write-only mapped bytes back, so this statistic must come from the source. `min` / `max` retain their source-level meaning. For a scalar column `min_positive` is taken from the actual uploaded `(value as f32, 0)` value, and for a hi-lo column from the recorded `hi as f64 + lo as f64`; both include only finite positive values. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
+`Renderer::add_column` takes `&dyn ColumnSource` — implement the trait on any container of yours and native upload writes into mapped staging without an intermediate conversion `Vec`. The GPU then copies staging into the column pool; “zero-copy” here means no extra CPU conversion buffer or retained CPU point mirror. A source only writes values. The `ColumnPairWriter` it writes through records the column's statistics in that same pass: the finite minimum and maximum and the smallest finite value above zero. `writer.write_value(index, v)` writes an f64 as its `(hi, lo)` split and records `v` itself; `writer.write_pair(index, hi, lo)` records `hi as f64 + lo as f64`. A value the GPU reads as zero (below f32 range) is recorded as zero. Auto-fit reads them, and log-axis auto-fit uses the smallest positive value as the lower bound when the data contains zeros or negatives. Non-finite values are left out. A streamed source is measured the same way, one chunk at a time. Use `Renderer::add_hilo_column` with `&dyn HiLoColumnSource` for large absolute timestamps or coordinates that must preserve sub-f32 deltas.
 
 `add_column` / `add_hilo_column` register a new id. To atomically replace an
 existing id, use `upsert_column` / `upsert_hilo_column`. `Renderer` prepares the
@@ -210,18 +208,18 @@ allocation-free `commit`; hosts do not rebuild the picker themselves.
 pub trait ColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }  // default
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// Legacy scalar encoder retained for source compatibility.
-    /// Caller guarantees `dst.len() == self.len() * 4`. null → `f32::NAN`.
-    fn write_f32_le_into(&self, dst: &mut [u8]);
+    /// Write every value as a `(value as f32, 0)` pair (or a `(hi, lo)`
+    /// split), each index in `0..len()` once. null → `f32::NAN`.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// Write `(value as f32, 0)` pairs and return stats in the same pass.
-    fn write_f32_pair_le_into_with_stats(
+    /// One streamed chunk: `writer.len()` values from `start`. Sources that
+    /// are never streamed keep the default, which reports `Unsupported`.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
@@ -231,18 +229,16 @@ pub trait ColumnSource {
 pub trait HiLoColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// Legacy slice encoder retained for source compatibility.
-    /// Caller guarantees `dst.len() == self.len() * 8`.
-    fn write_f32_pair_le_into(&self, dst: &mut [u8]);
+    /// Write every value as a `(hi, lo)` pair.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// Write pairs and return stats from recorded `hi as f64 + lo as f64`.
-    fn write_f32_pair_le_into_with_stats(
+    /// One streamed chunk, as for `ColumnSource`.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
@@ -252,47 +248,24 @@ pub trait HiLoColumnSource {
 `update_register_column_f64` for an explicit replacement when using timestamp
 axes with large Unix epoch values.
 
-Custom implementations of either trait must implement
-`write_f32_pair_le_into_with_stats`. It has no default, so a source that omits
-it fails to compile instead of failing during upload. There is no byte-readback
-or silently incorrect fallback.
+`write_pairs` has no default, so a source that omits it fails to compile
+instead of failing during upload. A source never reports statistics, so they
+cannot disagree with its values.
 
 **Custom — time series / DataFrame / mmap / FFI data, anything**:
 
 ```rust
 struct MyTimeSeries {
     samples: Vec<f64>,    // or Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
-    cached_min: f64,
-    cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
     fn len(&self) -> usize { self.samples.len() }
-    fn min(&self) -> f64 { self.cached_min }
-    fn max(&self) -> f64 { self.cached_max }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.samples.len() * 4);
-        for (i, &v) in self.samples.iter().enumerate() {
-            dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut writer: renderer::ColumnPairWriter<'_>,
-    ) -> renderer::ColumnUploadStats {
+    fn write_pairs(&self, writer: &mut renderer::ColumnPairWriter<'_>) {
         debug_assert_eq!(writer.len(), self.samples.len());
-        let mut min_positive: Option<f64> = None;
         for (index, &sample) in self.samples.iter().enumerate() {
-            let value = sample as f32;
-            writer.write_pair(index, value, 0.0);
-            let value = value as f64;
-            if value.is_finite() && value > 0.0
-                && min_positive.map_or(true, |current| value < current)
-            {
-                min_positive = Some(value);
-            }
+            writer.write_pair(index, sample as f32, 0.0);
         }
-        renderer::ColumnUploadStats { min_positive }
     }
 }
 
@@ -322,7 +295,7 @@ Each example shows:
 - Legends
 - DPI input + Save PNG button (egui) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
 
-### Browser integration example — timestamp axes
+### Browser timestamp axes demo
 
 `crates/web/timestamp-demo.html` exercises the browser timestamp path with
 absolute Unix time values uploaded through `register_column_f64(Float64Array)`
@@ -428,6 +401,42 @@ Full version: [examples/egui_embed.rs](examples/egui_embed.rs). That example
 does not call `end_gpu_frame`; [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)
 is a host that calls it once after `queue.submit`.
 
+### GPU results: awaited, blocking or checked
+
+A pick, an extent, a radial pick, an export and `wait_submitted_work` read a
+GPU result back. Each can be waited for in three ways, with the same result
+(#160): preparing and submitting the work, and decoding its result, are
+written once, and only the wait differs.
+
+| Wait | Calls | Where it waits |
+|---|---|---|
+| Awaited | `ticket.resolve().await`, `renderer.export_png(..).await`, `wait_submitted_work().await` | Native: the device bundle's poll thread polls the device and the future is `Pending` until the work completes. Browser: the browser polls the device. |
+| Blocking (native) | `ticket.resolve_blocking()`, `export_png_blocking(..)`, `wait_submitted_work_blocking()` | The calling thread polls the device until the work completes. |
+| Checked | `ticket.try_resolve()` | Never waits: `TryResolve::Ready(result)` once the work has completed, `TryResolve::Pending(ticket)` before, to check again on a later frame. |
+
+`RendererDevice::new` starts one poll thread per device bundle on native,
+shared by the bundle's clones, its renderers and every pending ticket. The
+thread parks while nothing is pending and exits once all of them are gone. A
+host that makes blocking calls only builds the bundle with
+`RendererDevice::blocking`, which starts no thread; an awaited wait on it
+fails with `FiggyError::AsyncWaitUnavailable` instead of never completing.
+A ticket on a streamed series resolves by `resolve` only
+(`GpuPickError::Streamed`, rule 8).
+
+In an immediate-mode UI a hover pick fits `try_resolve`: submit the pick on
+a pointer move, keep the ticket next to the panel, and check it each frame.
+No thread blocks and the ticket needs no lock:
+
+```rust
+// Sketch: `pending: Option<GpuPickTicket>` lives in the panel's state.
+if let Some(ticket) = pending.take() {
+    match ticket.try_resolve()? {
+        renderer::TryResolve::Ready(hit) => hover = hit,
+        renderer::TryResolve::Pending(ticket) => pending = Some(ticket),
+    }
+}
+```
+
 ### iced integration status
 
 The retained [iced integration source](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)
@@ -453,10 +462,17 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
   (u, v) columns at scattered anchors or from two matrices on a grid, in
   pixel or data scale, optionally coloured through the colourbar.
   [Reference](CONFIG.md#vector-fields) and `vector_field`.
+- **Triangle meshes**: `DataRenderType::TriMesh` draws a colour fill and
+  contour lines over triangles the host gives, and a surface in the box of a
+  3D chart. Upload the vertex coordinates and values as columns and the
+  triangles with `Renderer::upsert_triangles(id, &TriangleSource { indices })`
+  (three vertex rows per triangle, from a `Column<u32>`); the renderer never
+  triangulates. [Guide](TRIMESH.md) and the `TriMesh` / `TriSurface`
+  playground scenes.
 - **Overlay axes, subplots and annotations**: each overlay layer draws its series
   against its own right-hand Y axis; subplots arrange whole charts in a grid with
   linked or twin axes; the annotation layer adds reference lines, spans,
-  text and arrows. Polar, radar and radial charts have no value axes: they draw
+  text and arrows. Polar charts (radar charts included) and radial charts have no value axes: they draw
   ratio-anchored text and arrows only and skip reference lines, spans and
   data-anchored items with `RenderWarning::AnnotationSkipped`. A document has
   one annotation layer, drawn in the parent chart's area; subplots have none of
@@ -474,28 +490,35 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### Box plots
 
-`BoxPlotRenderer` draws precomputed quartiles, medians, whiskers, means and outliers
-with matte/satin surfaces, individual styles, grouped layouts and either direction.
-Notches use explicit median confidence intervals. See the [box plot guide](BOXPLOT.md)
-or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`.
-Titles, axes, labels and legends use the [shared interaction API](INTERACTION.md).
+A `DataRenderType::BoxPlot` series draws precomputed quartiles, medians,
+whiskers, means and outliers over a categorical axis, read from a record of box
+statistics and a ragged outlier column, with matte/satin surfaces, individual
+styles, grouped layouts and either direction. Notches use explicit median
+confidence intervals. `Config::from_boxplot` opens a legacy `BoxPlotChart`
+document. See the [box plot guide](BOXPLOT.md) or run
+`cargo run -p figgy-renderer --example boxplot_gallery`. Picking, selection,
+titles, axes, labels and legends are the Cartesian chart's
+([interaction guide](INTERACTION.md)).
 
 ### Radar charts
 
-`RadarRenderer` compares 1 to 16 series over 3 to 64 categories: one spoke
-per category, one shared value axis, closed polygons with fills, outlines and
-vertex markers on a polygon or circular grid. The host supplies one value per
-category and series; per-spoke normalization is not computed. See the
+A radar chart is a polar chart with a categorical angle axis: one spoke per
+category, one shared numeric radius axis, and `DataRenderType::Radar` series
+drawn as closed outlines with fills and vertex markers on a polygon
+(`PolarOptions.grid_shape`) or circular grid. The host supplies one value per
+category and series as columns; per-spoke normalization is not computed.
+`Config::from_radar` opens a legacy `RadarChart` document. See the
 [radar guide](RADAR.md) or run
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`.
-Titles, labels and legends use the [shared interaction API](INTERACTION.md).
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`.
+Picking, selection, titles, axes, labels and legends are the polar chart's
+([interaction guide](INTERACTION.md)).
 
 ### Polar plots
 
-A polar plot is a Cartesian chart with `config.polar = Some(PolarOptions { .. })`:
+A polar plot is a Cartesian chart with `config.set_polar(Some(PolarOptions { .. })`:
 the same line, scatter and area series, column pool, picking and export, drawn
 in (angle, radius). `bottom_x` is the angle axis and `left_y` the radius axis.
-`set_y_range` sets the radius range; `set_x_range` only chooses which angle
+`set_y_range` sets the radius range); `set_x_range` only chooses which angle
 ticks, spokes and labels are drawn, because one turn always spans 360° (or 2π)
 from `zero_angle_degrees`. The grid becomes rings and spokes, the angle axis the
 outer ring and the radius axis a labelled ray that drags around the centre.
@@ -508,13 +531,15 @@ error. See the [polar guide](POLAR.md) or run
 
 ### Categorical bars
 
-`CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
-`CategoricalChart` holds the category IDs, series and optional values itself; bar
-charts do not go through `ColumnSource`, the column pool or streaming.
-Per-bar colors, materials, rounding, outlines, label formats and selection are
-edited directly on that model.
-See the [categorical API guide](CATEGORICAL.md) (in Korean) or run
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`.
+The Cartesian `Renderer` draws grouped, stacked and 100% stacked bars in
+either direction as `DataRenderType::CategoryBars` series over a categorical
+axis, laid out by `Config.bar_groups`. Their positions and values are columns
+uploaded through `ColumnSource`; streamed sources are rejected. Per-bar
+colours, materials, rounding and outlines are per-bar overrides on the
+series, and a bar is picked and selected like a histogram bin.
+`Config::from_categorical` opens a legacy `CategoricalChart` document as such
+a chart. See the [bar guide](CATEGORICAL.md) or run
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
 
 ### Radial charts
 
@@ -534,13 +559,13 @@ The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 
 ```rust
 let bytes = renderer
-    .export_panel_png_bytes_async(&chart, &series_configs, scale)
+    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 std::fs::write("/tmp/out.png", &bytes)?;          // or clipboard / network / wherever.
 
 // If you only need RGBA:
 let img = renderer
-    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, length = w * h * 4)
 ```
@@ -551,17 +576,67 @@ setup example above, `std::slice::from_ref(&cfg)`) and `scale` is the export
 scale, such as `2.0`. The image is the chart area times `scale` on a fully
 transparent background. The `_with_clear_async` variants take a background
 colour as a fourth argument, for example
-`export_panel_png_bytes_with_clear_async(&chart, &series_configs, scale, Color::WHITE)`.
-`export_panel_*` draws the base chart area only. For a chart with `overlays` or
-`subplots`, `export_document_png_bytes_async` / `export_document_rgba_async`
+`export_png(&chart, &series_configs, scale, Color::WHITE)`.
+the panel export (`ExportScope::Panel`) draws the base chart area only. For a chart with `overlays` or
+`subplots`, `export_png` / `export_rgba`
 (and their `_with_clear` and blocking variants) take the same arguments and
 draw every layer and subplot into one image covering all chart areas.
-`scale` bounds: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0), automatically clamped.
+`scale` is at least `renderer::MIN_EXPORT_SCALE` (0.25; NaN and values at or below zero become it) and has no upper bound: the scaled image must fit the device's texture limit (`max_texture_dimension_2d`, commonly 8192 or 16384 px per side), and a larger export fails with `FiggyError::GpuResourceLimit` before anything is allocated.
 Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font, line, margin, grid, legend)
 scales by the same factor, so the layout matches the on-screen chart at a
 higher pixel density (or a lower one below 1.0).
+
+### SVG and PDF export
+
+```rust
+let svg: String = renderer
+    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+The two documents hold the same picture as `export_png`
+with the same arguments ([#48](https://github.com/shim9610/figgy/issues/48)).
+The decorations are vector content, written from the placement the PNG
+draws with: axes, ticks, tick labels, grid, polar rings and spokes, axis and
+chart titles, legend, the colourbar's border, axis and labels, and the
+annotation layer. Text is written as glyph outlines, so no font is embedded
+and the text cannot be selected or searched. The data layer (fills, lines,
+markers, bars, fields, contours, vectors, picked highlights and value
+labels) is drawn by the GPU, so each panel group's data is one image at
+`scale ×` resolution, the PNG export's own pixels: one image for a chart and
+its overlays, one more for each subplot. A DataLess series (an energy-level
+diagram) is drawn on the CPU, so it is vector content too, written from the
+emit its raster uses ([#234](https://github.com/shim9610/figgy/issues/234)).
+It sits between the GPU data under it and the value labels over it, so a
+panel group with one is written as an image of the data under it, the
+series, then an image of the labels; an image with no GPU series in it is
+left out. The colourbar ramp and the
+Milkyway backdrop are images too; the Milkyway glow is not drawn. Selection
+boxes are never drawn, as in the PNG export.
+
+The SVG's `viewBox` is in physical pixels and its `width` / `height`, like
+the PDF page, are the logical size in points (1 px = 0.75 pt), so a 2x export
+has the same page size with twice the image resolution. `scale` is clamped
+as for the PNG export, and the `_with_clear_async` variants paint the clear
+colour as a rectangle under everything. Every export is async, and a native
+host can also call its `_blocking` twin (see
+[GPU results](#gpu-results-awaited-blocking-or-checked)).
+`WindowedRenderer` has the same four methods. A series with a streamed
+source is rejected with `FiggyError::ColumnNotResident`, as by the PNG
+export.
+
+The radial chart exports with `RadialRenderer::export_svg(&chart, size,
+scale)` and `export_pdf` (blocking: `export_svg` / `export_pdf`): the
+slices and background are one image, the title, labels, leader lines, split
+connectors and annotations are vector content. Every inside label is drawn
+above every slice at its place in the PNG, and no selection box is drawn.
 
 ---
 
@@ -587,7 +662,7 @@ Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`이고 Rust 라이브�
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. GPU를 직접 공유하려면 호스트도 wgpu 30을 사용해야 한다.
-WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서는 제외한다.
+브라우저용 제품인 WASM 래퍼(`figgy`)는 별도 패키지이며 `publish = false`다. 배포 대상은 [아직 정하지 않았다](https://github.com/shim9610/figgy/issues/57).
 소유권·프레임 수명·출력 타깃·호환성은 [API 계약](API.md)을 참고한다.
 
 ```toml
@@ -600,9 +675,9 @@ wgpu     = "30"
 크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 의존성으로 지정한다.
 
 로컬 체크아웃을 쓰려면 `version` 대신 `path = "../figgy/crates/renderer"`처럼 애플리케이션의
-`Cargo.toml` 기준 경로를 지정한다. [examples/line.rs](examples/line.rs)처럼
-`pollster::block_on`을 직접 호출하는 독립 프로그램은 `pollster = "1.0"`도 의존성에 추가한다.
-저장소의 예제는 렌더러 manifest를 통해 이 의존성을 이미 쓸 수 있다.
+`Cargo.toml` 기준 경로를 지정한다. 네이티브 프로그램에는 비동기 실행기가 필요 없다. GPU를
+기다리는 호출에는 모두 `_blocking` 형태가 있다([GPU 결과](#gpu-결과-비동기-동기-확인)).
+[examples/line.rs](examples/line.rs)도 이 형태를 쓴다.
 
 ### 호스트 크레이트
 
@@ -680,10 +755,10 @@ let window = Arc::new(event_loop.create_window(winit::window::Window::default_at
 let size = window.inner_size();
 
 // 한 줄로 초기화한다. instance·adapter·device·queue·surface·swap chain은 모두 figgy가 소유한다.
-let mut renderer = Renderer::for_window(
+let mut renderer = Renderer::for_window_blocking(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // GPU column pool 16 MiB
+    16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
 ).unwrap();
 
 // renderer.add_column은 `&dyn ColumnSource`를 받는다.
@@ -692,9 +767,7 @@ let mut renderer = Renderer::for_window(
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
 fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    renderer::Column { data, min, max }
+    renderer::Column { data }
 }
 renderer.add_column("x", &column(xs)).unwrap();
 renderer.add_column("y", &column(ys)).unwrap();
@@ -713,17 +786,15 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
-    render_type: DataRenderType::Line {
-        line: DataLineStyleConfig {
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
+    render_type: DataRenderType::Xy(renderer::data_config::XySeries { scatter: None, line: Some(DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
             line_color: Color::from_rgb8(20, 110, 230),
             line_width: 2.0,
             fill: None,
             fill_color: None,
             interpolation: renderer::data_config::LineInterpolation::Linear,
-        },
-    },
+        }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
 let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
@@ -744,7 +815,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 `Renderer::add_column`은 `&dyn ColumnSource`를 받는다. 사용 중인 데이터 타입에 이 트레이트를 구현하면 네이티브 환경에서 중간 변환용 `Vec` 없이 매핑된 스테이징 버퍼에 직접 기록할 수 있다. 스테이징 버퍼에서 컬럼 풀로 옮기는 작업은 GPU가 수행한다. CPU에는 변환용 버퍼나 점 데이터의 복사본을 따로 두지 않는다.
 
-데이터 소스는 값을 GPU용 쌍으로 기록하면서 최소 양수 값도 함께 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `min` / `max`는 원본 데이터 기준을 유지한다. 최소 양수 값은 일반 컬럼에서는 실제 업로드한 `(value as f32, 0)`, hi/lo 컬럼에서는 기록한 `hi as f64 + lo as f64`를 기준으로 계산하며, 유한한 양수만 포함한다.
+데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `writer.write_value(index, v)`로 f64를 기록하면 `(hi, lo)`로 나눠 쓰고 통계에는 `v` 자체를 반영한다. `writer.write_pair(index, hi, lo)`는 `hi as f64 + lo as f64`를 반영한다. 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
 
 큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 `Column` 타입 세 가지는 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
 
@@ -756,61 +827,39 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 pub trait ColumnSource {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool { self.len() == 0 }  // 디폴트 제공
-    fn min(&self) -> f64;
-    fn max(&self) -> f64;
 
-    /// 기존 구현과의 소스 호환을 위해 남겨 둔 스칼라 인코더다.
-    /// 호출자가 `dst.len() == self.len() * 4`를 보장한다. null은 `f32::NAN`으로 기록한다.
-    fn write_f32_le_into(&self, dst: &mut [u8]);
+    /// 모든 값을 `(value as f32, 0)` 쌍(또는 `(hi, lo)` 분할)으로 기록한다.
+    /// `0..len()`의 각 인덱스를 한 번씩 쓴다. null은 `f32::NAN`으로 기록한다.
+    fn write_pairs(&self, writer: &mut ColumnPairWriter<'_>);
 
-    /// `(value as f32, 0)` 쌍을 기록하고 같은 순회에서 계산한 통계를 반환한다.
-    fn write_f32_pair_le_into_with_stats(
+    /// 스트리밍 청크 하나: `start`부터 `writer.len()`개의 값을 쓴다.
+    /// 스트리밍하지 않는 소스는 `Unsupported`를 반환하는 기본 구현을 쓴다.
+    fn write_pair_range(
         &self,
-        writer: ColumnPairWriter<'_>,
-    ) -> ColumnUploadStats;
+        start: u64,
+        writer: &mut ColumnPairWriter<'_>,
+    ) -> Result<(), ColumnRangeWriteError>;
 }
 ```
 
 **기본 제공 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
 
-사용자 정의 `ColumnSource`는 값 기록과 통계 계산을 함께 수행하는 메서드를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 나므로 업로드 도중에야 문제를 발견하는 일을 피할 수 있다. 렌더러는 기록한 바이트를 다시 읽지 않으며, 이 메서드를 대신하는 부정확한 대체 경로도 없다. `HiLoColumnSource`도 같은 이름의 메서드에서 `(hi, lo)`를 기록하고, 두 값을 합쳐 계산한 통계를 반환해야 한다.
+사용자 정의 `ColumnSource`는 값을 기록하는 `write_pairs`를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 난다. 소스는 값만 기록하고 통계는 넘기지 않는다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 그래서 통계가 데이터와 어긋날 수 없다. `HiLoColumnSource`도 같은 이름의 메서드로 `(hi, lo)` 쌍을 기록한다.
 
 **사용자 정의 구현 예: 시계열·DataFrame·mmap·FFI 데이터**
 
 ```rust
 struct MyTimeSeries {
     samples: Vec<f64>,    // 또는 Arc<[f64]>, ndarray::ArrayView, polars::Series, ...
-    cached_min: f64,
-    cached_max: f64,
 }
 
 impl renderer::ColumnSource for MyTimeSeries {
     fn len(&self) -> usize { self.samples.len() }
-    fn min(&self) -> f64 { self.cached_min }
-    fn max(&self) -> f64 { self.cached_max }
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.samples.len() * 4);
-        for (i, &v) in self.samples.iter().enumerate() {
-            dst[i*4..i*4+4].copy_from_slice(&(v as f32).to_le_bytes());
-        }
-    }
-    fn write_f32_pair_le_into_with_stats(
-        &self,
-        mut writer: renderer::ColumnPairWriter<'_>,
-    ) -> renderer::ColumnUploadStats {
+    fn write_pairs(&self, writer: &mut renderer::ColumnPairWriter<'_>) {
         debug_assert_eq!(writer.len(), self.samples.len());
-        let mut min_positive: Option<f64> = None;
         for (index, &sample) in self.samples.iter().enumerate() {
-            let value = sample as f32;
-            writer.write_pair(index, value, 0.0);
-            let value = value as f64;
-            if value.is_finite() && value > 0.0
-                && min_positive.map_or(true, |current| value < current)
-            {
-                min_positive = Some(value);
-            }
+            writer.write_pair(index, sample as f32, 0.0);
         }
-        renderer::ColumnUploadStats { min_positive }
     }
 }
 
@@ -841,7 +890,7 @@ cargo run -p figgy-renderer --example egui_embed --features egui_demo
 
 <a id="브라우저-timestamp-축-데모"></a>
 
-### 브라우저 통합 예제 — 시간축
+### 브라우저 시간축 데모
 
 `crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 눈금 간격을 자동으로 조절한다.
 
@@ -899,7 +948,7 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 
 호스트는 한 프레임의 명령 버퍼를 모두 GPU 큐에 제출한 뒤 `renderer.end_gpu_frame()`을 한 번 호출한다. egui처럼 콜백 실행을 관리하는 호스트에서는 이전 프레임의 제출이 끝났음을 확인한 뒤 다음 프레임의 첫 prepare 직전에 호출해도 된다. 패널마다 호출하면 아직 제출하지 않은 다른 패널의 자원을 너무 일찍 회수 대상으로 넘길 수 있다.
 
-`WindowedRenderer::draw*`나 패널 내보내기(`export_panel_*`)처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
+`WindowedRenderer::draw*`나 패널 내보내기(the panel export (`ExportScope::Panel`))처럼 렌더러가 직접 제출하는 경로에서는 이 처리를 내부에서 수행한다. 외부 렌더 패스 기록과 이 경로를 함께 쓴다면 미리 기록해 둔 명령 버퍼를 먼저 모두 제출해야 한다. 렌더러는 wgpu 명령 버퍼의 내부 참조를 볼 수 없으므로 호스트가 아직 제출하지 않은 자원만 따로 골라 보호할 수 없다.
 
 `paint_prepared`는 같은 토큰으로 여러 패스에 호출할 수 있다. `PreparedFrame`이 그리기에 필요한 입력을 보관하므로 paint 단계에서 `items`를 다시 만들거나 전달하지 않는다. 준비 후 관련 렌더러 자원이 바뀌면 아무 명령도 기록하지 않고 `FiggyError::StalePreparedFrame`을 반환한다. 다음 프레임에서 다시 `prepare`하면 된다.
 
@@ -908,6 +957,39 @@ impl egui_wgpu::CallbackTrait for FiggyCallback {
 토큰으로 기록한 명령 버퍼는 그 토큰의 `ChartView`를 다시 바꾸기 전에 제출해야 한다. `refresh_axis`, `update_transform`, 같은 뷰로 실행하는 다음 `prepare`가 여기에 해당한다. 렌더러는 기록하기 전에 콘텐츠 리비전으로 오래된 입력을 거부하지만, 호스트에 넘어간 명령 버퍼는 검사하거나 순서를 정할 수 없다.
 
 winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사용하는 호스트는 두 단계를 연속 실행하는 `Renderer::paint(&mut self, …)`를 사용하면 된다. 전체 예제는 [egui_embed.rs](examples/egui_embed.rs)를 참고한다. 이 예제는 `end_gpu_frame`을 호출하지 않는다. `queue.submit` 뒤에 한 번 호출하는 호스트는 [tools/playground/src/main.rs](https://github.com/shim9610/figgy/blob/master/tools/playground/src/main.rs)에서 볼 수 있다.
+
+### GPU 결과: 비동기, 동기, 확인
+
+픽, extent, 원형 차트 픽, 내보내기와 `wait_submitted_work`는 GPU 결과를 읽어 온다.
+세 가지 방법으로 기다릴 수 있고 결과는 같다(#160). 작업 준비와 제출, 결과 해석은 한
+벌이고 기다리는 방법만 다르다.
+
+| 대기 | 호출 | 기다리는 곳 |
+|---|---|---|
+| 비동기 | `ticket.resolve().await`, `renderer.export_png(..).await`, `wait_submitted_work().await` | 네이티브: 장치 묶음의 poll 스레드가 장치를 처리하고, future는 작업이 끝날 때까지 `Pending`을 돌려준다. 브라우저: 브라우저가 장치를 처리한다. |
+| 동기(네이티브) | `ticket.resolve_blocking()`, `export_png_blocking(..)`, `wait_submitted_work_blocking()` | 호출한 스레드가 작업이 끝날 때까지 장치를 처리한다. |
+| 확인 | `ticket.try_resolve()` | 기다리지 않는다. 작업이 끝났으면 `TryResolve::Ready(결과)`, 아니면 `TryResolve::Pending(티켓)`을 돌려주므로 다음 프레임에 다시 확인한다. |
+
+네이티브에서 `RendererDevice::new`는 장치 묶음마다 poll 스레드를 하나 띄운다. 묶음의
+복제본, 묶음으로 만든 렌더러, 기다리는 티켓이 이 스레드를 함께 소유한다. 기다리는 작업이
+없으면 스레드는 잠들고, 소유자가 모두 사라지면 끝난다. 동기 함수만 쓰는 호스트는
+`RendererDevice::blocking`으로 스레드 없는 묶음을 만든다. 이 묶음에서 비동기 대기를
+부르면 끝나지 않는 대신 `FiggyError::AsyncWaitUnavailable`을 돌려준다. 스트리밍
+시리즈의 티켓은 `resolve`로만 읽는다(`GpuPickError::Streamed`, 규칙 8).
+
+즉시 모드 UI의 호버 픽에는 `try_resolve`가 맞는다. 포인터가 움직일 때 픽을 제출하고,
+티켓을 패널 상태에 두었다가 매 프레임 확인한다. 막히는 스레드도 없고 티켓에 잠금도
+필요 없다.
+
+```rust
+// 개요: `pending: Option<GpuPickTicket>`은 패널 상태에 둔다.
+if let Some(ticket) = pending.take() {
+    match ticket.try_resolve()? {
+        renderer::TryResolve::Ready(hit) => hover = hit,
+        renderer::TryResolve::Pending(ticket) => pending = Some(ticket),
+    }
+}
+```
 
 ### iced 통합 상태
 
@@ -926,9 +1008,14 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
 - **벡터장**: `DataRenderType::Vector`는 흩어진 기준점의 (u, v) 컬럼 또는 격자 위 행렬 두 개에서
   표본마다 화살표 하나를 픽셀 또는 데이터 스케일로 그리고, 색상 막대로 색칠할 수 있다.
   [설정](CONFIG.md#벡터장)과 `vector_field` 예제.
+- **삼각 메시**: `DataRenderType::TriMesh`는 호스트가 준 삼각형 위에 색 채움과 등고선을
+  그리고, 3D 차트에서는 상자 안의 표면으로 그린다. 정점 좌표와 값은 컬럼으로 올리고 삼각형은
+  `Renderer::upsert_triangles(id, &TriangleSource { indices })`로 올린다(삼각형마다 정점
+  번호 세 개, `Column<u32>`). 렌더러는 삼각분할을 하지 않는다. [가이드](TRIMESH.md)와
+  플레이그라운드의 `TriMesh`, `TriSurface` 장면.
 - **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
-  더한다. 극좌표·레이더·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
+  더한다. 극좌표(레이더 포함)·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
   기준선·구간과 데이터 좌표 항목은 `RenderWarning::AnnotationSkipped` 경고를 내고 건너뛴다.
   주석 층은 문서마다 하나이며 부모 차트 영역에 그린다. 서브플롯에는 따로 없다.
   [오버레이](INTERACTION.md#overlay-layers), [서브플롯](INTERACTION.md#subplots),
@@ -944,24 +1031,26 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 박스플롯
 
-`BoxPlotRenderer`는 미리 집계한 사분위수·중앙값·수염·평균·이상치를 그린다.
+`DataRenderType::BoxPlot` 시리즈는 범주형 축 위에 미리 집계한 사분위수·중앙값·수염·평균·이상치를
+상자 통계 레코드와 이상치 가변 길이 컬럼에서 읽어 그린다.
 가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
-노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](BOXPLOT.md)을 참고하거나
-`cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·축·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+노치는 입력받은 중앙값 신뢰구간으로 그린다. 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다.
+[사용법](BOXPLOT.md)을 참고하거나 `cargo run -p figgy-renderer --example boxplot_gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 직교 좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 레이더 차트
 
-`RadarRenderer`는 고정된 범주 집합 위에서 몇 개의 시리즈를 비교한다. 범주마다 스포크 하나,
-값 축은 하나를 공유하며, 각 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 다각형이다. 고리는
-다각형(거미줄) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가 넣으며 스포크별 정규화는
-계산하지 않는다. [사용법](RADAR.md)을 참고하거나
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+레이더 차트는 각도 축이 범주형인 극좌표 차트다. 범주마다 스포크 하나, 숫자 반지름 축 하나를
+공유하며, `DataRenderType::Radar` 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 외곽선이다. 고리는
+다각형(거미줄, `PolarOptions.grid_shape`) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가
+컬럼으로 넣으며 스포크별 정규화는 계산하지 않는다. 예전 `RadarChart` 문서는 `Config::from_radar`로 연다.
+[사용법](RADAR.md)을 참고하거나
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 극좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 극좌표 플롯
 
-극좌표 플롯은 `config.polar = Some(PolarOptions { .. })`를 켠 직교 차트다. 직교 차트와 같은
+극좌표 플롯은 `config.set_polar(Some(PolarOptions { .. })`를 켠 직교 차트다. 직교 차트와 같은
 선·산점도·면 시리즈, 컬럼 풀, 피킹, 내보내기를 그대로 쓰고 좌표만 (각도, 반지름)으로 바꿔 그린다.
 `bottom_x`가 각도 축, `left_y`가 반지름 축이다. `set_y_range`는 반지름 범위를 정한다. 원은 항상
 `zero_angle_degrees`에서 시작하는 한 바퀴(360° 또는 2π)이므로 `set_x_range`는 그릴 각도
@@ -974,11 +1063,11 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 범주형 막대
 
-`CategoricalRenderer`는 가로·세로 묶음, 누적, 100% 누적 막대를 그린다. 범주·시리즈·값은
-`CategoricalChart` 모델에 직접 담으며 `ColumnSource`, 컬럼 풀, 스트리밍을 사용하지 않는다.
-막대별 색·재질·모서리·외곽선·표기와 선택 상태도 이 모델에서 편집한다.
+범주형 막대는 직교 좌표 `Renderer`가 범주형 축 위에 그리는 `DataRenderType::CategoryBars` 시리즈다.
+가로·세로 묶음, 누적, 100% 누적은 `Config.bar_groups`로 정하고, 위치와 값은 `ColumnSource`로 올린
+컬럼에서 읽는다. 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다.
 [API 사용법](CATEGORICAL.md)을 참고하거나
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`로 편집기를 실행한다.
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
 
 ### 원형 차트
 
@@ -998,13 +1087,13 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ```rust
 let bytes = renderer
-    .export_panel_png_bytes_async(&chart, &series_configs, scale)
-    .await?;
+    .export_png(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
+    .await?);
 std::fs::write("/tmp/out.png", &bytes)?;          // 클립보드나 네트워크로 보내도 된다.
 
 // RGBA만 필요하면:
 let img = renderer
-    .export_panel_rgba_async(&chart, &series_configs, scale)
+    .export_rgba(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::panel(scale))
     .await?;
 // img.width, img.height, img.rgba (straight alpha, 길이 = w * h * 4)
 ```
@@ -1013,12 +1102,33 @@ let img = renderer
 예제의 `series_configs`는 그릴 `SeriesConfig` 슬라이스이고(앞의 초기화 예제라면
 `std::slice::from_ref(&cfg)`), `scale`은 `2.0` 같은 출력 배율이다. 결과 이미지는 차트 영역에
 `scale`을 곱한 크기이며 배경은 완전히 투명하다. `_with_clear_async` 버전은 네 번째 인자로 배경색을
-받는다. 예: `export_panel_png_bytes_with_clear_async(&chart, &series_configs, scale, Color::WHITE)`.
-`export_panel_*`는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
-`export_document_png_bytes_async` / `export_document_rgba_async`(`_with_clear` 버전과 동기 버전 포함)로
+받는다. 예: `export_png(&chart, &series_configs, scale, Color::WHITE)`.
+the panel export (`ExportScope::Panel`)는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
+`export_png` / `export_rgba`에 `ExportScope::Document`를 주어
 레이어와 서브플롯을 이미지 한 장에 모두 그린다. 이 이미지는 모든 차트 영역을 합친 크기다.
-`scale`의 범위는 `renderer::MIN_EXPORT_SCALE`(0.25)부터 `renderer::MAX_EXPORT_SCALE`(8.0)까지다. 범위를 벗어난 값은 오류 없이 가까운 경계값으로 바꾸고, NaN이나 0 이하의 값은 0.25로 바꾼다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
+`scale`의 최솟값은 `renderer::MIN_EXPORT_SCALE`(0.25)이고 NaN이나 0 이하의 값은 0.25로 바꾼다. 상한은 없다. 배율을 적용한 이미지가 장치의 텍스처 크기 한도(`max_texture_dimension_2d`, 보통 한 변 8192 또는 16384픽셀) 안에 들어와야 하며, 넘으면 메모리를 잡기 전에 `FiggyError::GpuResourceLimit` 오류를 돌려준다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
 폰트, 선, 여백, 격자, 범례의 픽셀 크기가 모두 같은 비율로 바뀌므로 화면과 같은 배치를 더 높은 해상도로 얻는다. 1.0보다 작은 배율은 해상도를 낮춘다.
+
+### SVG와 PDF 내보내기
+
+```rust
+let svg: String = renderer
+    .export_svg(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_pdf(renderer::ExportSource::chart(&chart, &series_configs), renderer::ExportOptions::document(scale))
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+두 문서에는 같은 인자로 `export_png`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
+장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
+데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. DataLess 시리즈(에너지 준위 도표)는 CPU가 그리므로 래스터와 같은 배치 결과를 벡터로 기록한다([#234](https://github.com/shim9610/figgy/issues/234)). 이 시리즈는 아래쪽 GPU 데이터와 위쪽 값 라벨 사이에 놓이므로, 이런 시리즈가 있는 패널 묶음은 아래 데이터 이미지, 시리즈, 라벨 이미지 순으로 기록한다. GPU 시리즈가 하나도 없는 이미지는 넣지 않는다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
+
+SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그린다. 출력 함수는 모두 비동기이고, 네이티브 호스트는 `_blocking` 함수도 쓸 수 있다([GPU 결과](#gpu-결과-비동기-동기-확인)). `WindowedRenderer`에도 같은 메서드 네 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
+
+원형 차트는 `RadialRenderer::export_svg(&chart, size, scale)`와 `export_pdf`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 
 ---

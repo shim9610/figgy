@@ -4,16 +4,14 @@
 use renderer::config::{DrawStyle, LegendCorner, LegendEntryKind, MilkywayOptions};
 use renderer::data::Column;
 use renderer::data_config::{DataLineStyleConfig, DataRenderType};
-use renderer::data_render::{create_instance, request_adapter, request_device};
+use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, Color, Renderer, RendererDevice, SeriesConfig, encode_png};
-use std::{error::Error, path::PathBuf, sync::Arc};
+use std::{error::Error, path::PathBuf};
 
 fn column(data: Vec<f64>) -> Column<f64> {
-    let min = data.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -26,11 +24,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(parent)?;
     }
     let instance = create_instance();
-    let adapter = request_adapter(&instance)?;
+    let adapter = request_adapter_blocking(&instance)?;
     eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device(&adapter)?;
+    let (device, queue) = request_device_blocking(&adapter)?;
     let mut r = Renderer::try_new(
-        RendererDevice::new(Arc::new(device), Arc::new(queue)),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Rgba8Unorm,
         8 * 1024 * 1024,
     )?;
@@ -122,21 +120,31 @@ fn main() -> Result<(), Box<dyn Error>> {
             label: None,
             x_column: "time".into(),
             y_column: id.into(),
-            render_type: DataRenderType::Line {
-                line: DataLineStyleConfig {
+            z_column: None,
+            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+                scatter: None,
+                line: Some(DataLineStyleConfig {
                     line_color: color,
                     line_width: 2.0,
                     line_style: LineStylePreset::Solid,
                     fill: None,
                     fill_color: None,
                     interpolation: renderer::data_config::LineInterpolation::Linear,
-                },
-            },
+                }),
+                errors: None,
+                stem: None,
+            }),
         });
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }
-    let img = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &series, 1.0, bg))?;
-    let empty = pollster::block_on(r.export_panel_rgba_with_clear_async(&chart, &[], 1.0, bg))?;
+    let img = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &series),
+        renderer::ExportOptions::panel(1.0).with_clear(bg),
+    )?;
+    let empty = r.export_rgba_blocking(
+        renderer::ExportSource::chart(&chart, &[]),
+        renderer::ExportOptions::panel(1.0).with_clear(bg),
+    )?;
     let changed = img
         .rgba
         .chunks_exact(4)
@@ -162,6 +170,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         "{}: 1280x1024, {changed} data-dependent pixels; two Line series",
         output.display()
     );
-    r.wait_idle();
+    r.wait_idle().unwrap();
     Ok(())
 }

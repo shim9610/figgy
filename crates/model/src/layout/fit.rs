@@ -242,6 +242,19 @@ impl Config {
         }
     }
 
+    /// Place subplot `index`'s frame at `area`, in this document's pixels
+    /// (#205): anywhere, inside the parent chart, over another panel or
+    /// beside every one. The subplot's plot must fit in the new frame; on an
+    /// error, including an `index` past the subplot list
+    /// ([`LayoutError::Infeasible`]), nothing changes.
+    pub fn set_subplot_area(&mut self, index: usize, area: ChartArea) -> Result<(), LayoutError> {
+        let mut probe = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
+        probe.chart_area = area.clone();
+        probe.data_area()?;
+        self.subplots[index].config.chart_area = area;
+        Ok(())
+    }
+
     pub fn resize_chart_area_scaled(&mut self, new_area: ChartArea) -> Result<(), LayoutError> {
         let old_w = self.chart_area.width as f32;
         let old_h = self.chart_area.height as f32;
@@ -380,6 +393,37 @@ mod tests {
         });
         let res = cfg.fit_to_data_area(bad, FitStrategy::ProportionalScale);
         assert!(res.is_err());
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn a_subplot_area_is_set_anywhere_and_refused_when_its_plot_cannot_fit() {
+        let mut cfg = default_config();
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.chart_area = ChartArea(Rect {
+            x: 10,
+            y: 10,
+            width: 300,
+            height: 200,
+        });
+        cfg.subplots.push(subplot);
+        let far = ChartArea(Rect {
+            x: 5000,
+            y: 3000,
+            width: 320,
+            height: 240,
+        });
+        cfg.set_subplot_area(0, far.clone()).unwrap();
+        assert_eq!(cfg.subplots[0].config.chart_area, far);
+        let before = cfg.clone();
+        let tiny = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        assert!(cfg.set_subplot_area(0, tiny).is_err());
+        assert!(cfg.set_subplot_area(7, far).is_err());
         assert_eq!(cfg, before);
     }
 

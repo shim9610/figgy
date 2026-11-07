@@ -1,5 +1,5 @@
 //! Pixel verification of area fills and step interpolation on Cartesian line
-//! series, through the public `export_panel_rgba` path.
+//! series, through the public `export_rgba` path.
 //!
 //! House pattern (see `sketch_render.rs`): every test builds its own renderer
 //! on a shared device, GPU initialization failures fail the suite, and
@@ -9,10 +9,11 @@
 //! matches a predicate. Expected positions are computed through the chart's
 //! own data area and axis range, the same mapping the GPU transform uses.
 
+use test_gpu::BlockOn as _;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use renderer::config::AxisScale;
 use renderer::data::Column;
@@ -27,25 +28,22 @@ use renderer::{
 // ───────────────────────── plumbing / fixtures ─────────────────────────
 
 fn col_f64(data: Vec<f64>) -> Column<f64> {
-    let finite = || data.iter().copied().filter(|v| v.is_finite());
-    let min = finite().fold(f64::INFINITY, f64::min);
-    let max = finite().fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
+    Column { data }
 }
 
-fn shared_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-    static DEVICE: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+fn shared_device() -> (wgpu::Device, wgpu::Queue) {
+    static DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
     let (device, queue) = DEVICE.get_or_init(|| {
         let (device, queue) = test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+        (device, queue)
     });
-    (Arc::clone(device), Arc::clone(queue))
+    (device.clone(), queue.clone())
 }
 
 fn renderer() -> Renderer {
     let (device, queue) = shared_device();
     Renderer::try_new(
-        RendererDevice::new(device, queue),
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
         wgpu::TextureFormat::Bgra8Unorm,
         4 * 1024 * 1024,
     )
@@ -112,7 +110,13 @@ fn series(id: &str, x: &str, y: &str, line: DataLineStyleConfig) -> SeriesConfig
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        render_type: DataRenderType::Line { line },
+        z_column: None,
+        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: None,
+            line: Some(line),
+            errors: None,
+            stem: None,
+        }),
     }
 }
 
@@ -144,6 +148,7 @@ fn data_y_to_px(chart: &Chart, value: f64) -> f32 {
             (value.log10() - cfg.left_y.min.log10())
                 / (cfg.left_y.max.log10() - cfg.left_y.min.log10())
         }
+        AxisScale::Probability(_) => unreachable!("these charts are linear or logarithmic"),
     };
     (da.y + da.height) as f32 - t as f32 * da.height as f32
 }
@@ -230,7 +235,13 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
         LineFill::ToBaseline(0.0),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     expect(&img, &chart, 1.0, 0.5, is_green, "under the peak");
     expect(&img, &chart, 0.5, 0.3, is_green, "under the rising edge");
@@ -260,7 +271,13 @@ fn area_fill_paints_between_the_line_and_its_baseline_under_the_line() {
         LineFill::ToBaseline(0.4),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -296,7 +313,13 @@ fn default_fill_colour_is_the_line_colour_at_quarter_alpha() {
             LineInterpolation::Linear,
         ),
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let under = pixel(&img, data_x_to_px(&chart, 0.5), data_y_to_px(&chart, 0.25));
     assert!(
         under[0] > 200 && under[1] < 40 && under[2] < 40,
@@ -343,7 +366,13 @@ fn fill_between_two_series_follows_the_referenced_series() {
             GREEN,
         ),
     ];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
 
     expect(
         &img,
@@ -407,7 +436,13 @@ fn fills_composite_in_series_order_under_every_line() {
         filled("low", "fo_x", "fo_low", LineFill::ToBaseline(0.0), BLUE),
         filled("high", "fo_x", "fo_high", LineFill::ToBaseline(0.0), GREEN),
     ];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -428,7 +463,13 @@ fn fills_composite_in_series_order_under_every_line() {
 
     // Reversed declaration order reverses the composite: blue wins below.
     let series = [series[1].clone(), series[0].clone()];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -467,7 +508,13 @@ fn fill_breaks_where_the_line_breaks() {
             ),
             filled("gap", "gap_x", "gap_y", fill.clone(), GREEN),
         ];
-        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         expect(
             &img,
             &chart,
@@ -517,7 +564,13 @@ fn non_monotonic_series_blends_overlapping_trapezoids_twice() {
         LineFill::ToBaseline(0.0),
         half_green,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     let once = pixel(&img, data_x_to_px(&chart, 0.5), data_y_to_px(&chart, 0.5));
     let twice = pixel(&img, data_x_to_px(&chart, 1.5), data_y_to_px(&chart, 0.5));
     assert!(is_green(&once) && is_green(&twice), "{once:?} / {twice:?}");
@@ -551,7 +604,13 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
             LineFill::ToBaseline(baseline),
             GREEN,
         )];
-        let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         expect(
             &img,
             &chart,
@@ -572,7 +631,13 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
         LineFill::ToBaseline(10.0),
         GREEN,
     )];
-    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
     expect(
         &img,
         &chart,
@@ -589,6 +654,135 @@ fn log_axis_clamps_a_nonpositive_baseline_to_the_axis_minimum() {
         is_empty,
         "below a positive baseline",
     );
+}
+
+/// `set_y_range` gives `right_y` the scale of `left_y` and the ticks of it,
+/// so the right edge frames the left axis: a logarithmic `left_y` puts
+/// decades on both edges. The helper used to keep each axis's scale and
+/// derive both axes' tick settings from the left one, so beside a
+/// logarithmic `left_y` a linear `right_y` over 1..1000 got a one-unit
+/// spacing with eight minors: about 8000 inside ticks, painted as a solid
+/// bar down the right edge. Beside a linear `left_y` a logarithmic
+/// `right_y` got a linear spacing read as decades and drew no decade inside
+/// the range. A second independent value axis on the right is an overlay
+/// layer. The probes read the right axis's inside ticks in two columns: two
+/// pixels in from the axis line every tick crosses, four pixels in only the
+/// majors (`major_tick_length` 5, `minor_tick_length` 3).
+#[test]
+fn the_right_axis_takes_the_left_axis_scale_and_its_ticks() {
+    use AxisScale::{Linear, Logarithmic};
+    let mut r = renderer();
+    let settings = |scale: &AxisScale| match scale {
+        Linear => (renderer::tick::axis_major_spacing(&Linear, 1.0, 1000.0), 4),
+        Logarithmic => (1.0, 8),
+        AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+    };
+    for (left, right) in [
+        (Logarithmic, Linear),
+        (Logarithmic, Logarithmic),
+        (Linear, Logarithmic),
+    ] {
+        let mut chart = bare_chart(400, 300);
+        chart.config_mut().left_y.scale = left.clone();
+        chart.config_mut().right_y.scale = right.clone();
+        chart.set_x_range(0.0, 4.0);
+        chart.set_y_range(1.0, 1000.0);
+
+        let cfg = chart.config();
+        let case = format!("{left:?} left_y, {right:?} right_y before");
+        assert_eq!(
+            (&cfg.left_y.scale, &cfg.right_y.scale),
+            (&left, &left),
+            "{case}: right_y takes the left axis's scale"
+        );
+        let (spacing, minors) = settings(&left);
+        for (name, axis) in [("left_y", &cfg.left_y), ("right_y", &cfg.right_y)] {
+            assert_eq!(
+                (axis.major_spacing, axis.minor_count),
+                (spacing, minors),
+                "{case}: {name} takes the tick settings of the left axis's scale"
+            );
+        }
+
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &[]),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
+        let da = cfg.data_area().expect("data area");
+        let (top, bottom) = (da.y, da.y + da.height);
+        let inked = |x: u32, y: u32| img.rgba[((y * img.width + x) * 4 + 3) as usize] > 128;
+        // The right axis line: the column right of the data area's middle
+        // that is inked down its whole height.
+        let line_x = (da.x + da.width / 2..img.width)
+            .rev()
+            .find(|&x| (top + 2..bottom - 2).all(|y| inked(x, y)))
+            .expect("the right axis line is drawn");
+        // The inked runs of column `x` between the top and bottom axis
+        // lines, as (first row, length).
+        let runs = |x: u32| {
+            let mut runs = Vec::new();
+            let mut start = None;
+            for y in top + 3..bottom - 3 {
+                match (inked(x, y), start) {
+                    (true, None) => start = Some(y),
+                    (false, Some(s)) => {
+                        runs.push((s, y - s));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(s) = start {
+                runs.push((s, bottom - 3 - s));
+            }
+            runs
+        };
+
+        let widest = runs(line_x - 2).iter().map(|&(_, len)| len).max();
+        assert!(
+            widest.is_some_and(|len| len <= 3),
+            "{case}: the widest inked run next to the right axis line is \
+             {widest:?} px; each tick is a thin stroke, not a bar"
+        );
+
+        let to_px = |v: f64| {
+            let t = match left {
+                AxisScale::Linear => (v - 1.0) / 999.0,
+                AxisScale::Logarithmic => v.log10() / 3.0,
+                AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+            };
+            bottom as f64 - t * da.height as f64
+        };
+        // Top to bottom, the order `runs` reads them in.
+        let mut expected: Vec<f64> = match left {
+            AxisScale::Linear => (1..)
+                .map(|k| k as f64 * spacing)
+                .take_while(|&v| v < 1000.0)
+                .map(to_px)
+                .collect(),
+            AxisScale::Logarithmic => [10.0, 100.0].map(to_px).to_vec(),
+            AxisScale::Probability(_) => unreachable!("a linear and log sweep"),
+        };
+        expected.sort_by(f64::total_cmp);
+        let majors: Vec<f64> = runs(line_x - 4)
+            .iter()
+            .map(|&(s, len)| s as f64 + (len as f64 - 1.0) / 2.0)
+            .collect();
+        assert_eq!(
+            majors.len(),
+            expected.len(),
+            "{case}: right_y majors at rows {majors:?}, expected {expected:?}"
+        );
+        for (got, want) in majors.iter().zip(&expected) {
+            assert!(
+                (got - want).abs() <= 1.5,
+                "{case}: right_y major at row {got}, expected {want} ({majors:?})"
+            );
+        }
+    }
 }
 
 /// The fill-between declaration is validated before any GPU work: a different
@@ -629,7 +823,13 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
         (&unknown[..], "not in this chart"),
         (&itself[..], "reference the series itself"),
     ] {
-        match r.export_panel_rgba(&chart, series, 1.0) {
+        match r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+        {
             Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
                 assert_eq!(series_id, "hi");
                 assert!(reason.contains(needle), "{reason}");
@@ -659,7 +859,12 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
         ),
         filled("hi", "rj_x", "rj_y", LineFill::ToSeries("lo".into()), GREEN),
     ];
-    r.export_panel_rgba(&chart, &ok, 1.0).unwrap();
+    r.export_rgba(
+        renderer::ExportSource::chart(&chart, &ok),
+        renderer::ExportOptions::panel(1.0),
+    )
+    .block_on()
+    .unwrap();
 }
 
 /// A fill or a step mode on a streamed (nonresident) series is refused with
@@ -730,7 +935,12 @@ fn step_modes_draw_axis_aligned_pieces_instead_of_the_chord() {
     let (chart, x, y) = two_point_chart(&mut r, "st");
     let render = |r: &mut Renderer, mode| {
         let series = [series("step", &x, &y, line(None, None, mode))];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap()
     };
 
     let linear = render(&mut r, LineInterpolation::Linear);
@@ -831,7 +1041,12 @@ fn step_fill_follows_the_stepped_line() {
             &y,
             line(Some(LineFill::ToBaseline(0.0)), Some(GREEN), mode),
         )];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap()
     };
     let linear = render(&mut r, LineInterpolation::Linear);
     expect(
@@ -942,7 +1157,12 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
                     ..line(None, None, mode)
                 },
             )];
-            r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+            r.export_rgba(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap()
         };
         let solid = count(&render(&mut r, LineStylePreset::Solid), is_red);
         let dashed = count(&render(&mut r, LineStylePreset::Dash), is_red);
@@ -953,6 +1173,86 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
         assert!(
             dashed * 100 > solid * 30 && dashed * 100 < solid * 85,
             "{mode:?}: dashed ink {dashed} vs solid {solid}"
+        );
+    }
+}
+
+/// The export scale has no upper bound of its own: a 16× export of a
+/// 400×300 panel is 6400×4800 px with the fill covering 256 times the pixels,
+/// and a scale whose target passes the device's texture limit fails with
+/// `GpuResourceLimit` instead of being clamped, for PNG, SVG and PDF alike.
+#[test]
+fn export_scale_is_bounded_by_the_device_texture_limit_only() {
+    let mut r = renderer();
+    let (chart, x, y) = two_point_chart(&mut r, "s16");
+    let series = [series(
+        "step",
+        &x,
+        &y,
+        line(
+            Some(LineFill::ToBaseline(0.0)),
+            Some(GREEN),
+            LineInterpolation::StepPost,
+        ),
+    )];
+    let one = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let sixteen = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(16.0),
+        )
+        .block_on()
+        .unwrap();
+    assert_eq!(
+        (sixteen.width, sixteen.height),
+        (one.width * 16, one.height * 16)
+    );
+    let (g1, g16) = (count(&one, is_green), count(&sixteen, is_green));
+    assert!(
+        (g16 as f64 / g1 as f64 / 256.0 - 1.0).abs() < 0.05,
+        "fill ink scales by area: {g1} → {g16}"
+    );
+    let svg = r
+        .export_svg(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(16.0),
+        )
+        .block_on()
+        .unwrap();
+    assert!(
+        svg.contains(r#"viewBox="0 0 6400 4800""#),
+        "the SVG is 16× too"
+    );
+    let too_big = 1.0e4;
+    for result in [
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(too_big),
+        )
+        .block_on()
+        .map(|_| ()),
+        r.export_svg(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(too_big),
+        )
+        .block_on()
+        .map(|_| ()),
+        r.export_pdf(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::document(too_big),
+        )
+        .block_on()
+        .map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(FiggyError::GpuResourceLimit { .. })),
+            "{result:?}"
         );
     }
 }
@@ -973,8 +1273,20 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
             LineInterpolation::StepPost,
         ),
     )];
-    let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let one = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    let two = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
     let (g1, g2) = (count(&one, is_green), count(&two, is_green));
     assert!(
@@ -1000,7 +1312,13 @@ fn export_scales_fill_and_steps_consistently_at_1x_and_2x() {
         assert!(is_empty(&probe(0.5, 0.6)), "{scale}x no chord");
     }
     // PNG export goes through the same path and decodes to the same size.
-    let png = r.export_panel_png_bytes(&chart, &series, 2.0).unwrap();
+    let png = r
+        .export_png(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(2.0),
+        )
+        .block_on()
+        .unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 }
 
@@ -1024,7 +1342,12 @@ fn fills_and_steps_are_deterministic_across_renderers() {
             ),
             filled("between", &x, &y, LineFill::ToSeries("step".into()), GREEN),
         ];
-        r.export_panel_rgba(&chart, &series, 1.0).unwrap()
+        r.export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap()
     };
     let mut a = renderer();
     let first = build(&mut a);
@@ -1060,7 +1383,12 @@ fn legend_symbol_shows_a_band_for_a_filled_series() {
             renderer::legend::series_symbol_segments(&series[0], None),
             "filled",
         );
-        r.export_panel_rgba(chart, &series, 1.0).unwrap()
+        r.export_rgba(
+            renderer::ExportSource::chart(chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap()
     };
     let plain = render(&mut r, &mut chart, None);
     let banded = render(&mut r, &mut chart, Some(LineFill::ToBaseline(0.0)));
@@ -1102,13 +1430,219 @@ fn log_axis_places_lines_at_every_magnitude() {
             "ly",
             line(None, None, LineInterpolation::Linear),
         )];
-        let img = r.export_panel_rgba(&chart, &s, 1.0).unwrap();
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &s),
+                renderer::ExportOptions::panel(1.0),
+            )
+            .block_on()
+            .unwrap();
         let x = data_x_to_px(&chart, 0.5);
         let y = data_y_to_px(&chart, magnitude);
         let p = pixel(&img, x, y);
         assert!(
             p[0] > 200 && p[1] < 80 && p[2] < 80,
             "{magnitude:e}: no line at ({x}, {y}) on the log axis: {p:?}"
+        );
+    }
+}
+
+/// The values a pool column holds at `indices`, read back from the GPU pool
+/// the way a host's selection details read them (hi + lo pairs).
+fn pool_values(r: &Renderer, column: &str, indices: &[usize]) -> Vec<f64> {
+    let handle = r.pool().handle_for(column).expect("resident column");
+    let buffer = r.device().create_buffer(&wgpu::BufferDescriptor {
+        label: Some("selected values"),
+        size: indices.len() as u64 * 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = r.device().create_command_encoder(&Default::default());
+    for (slot, index) in indices.iter().enumerate() {
+        encoder.copy_buffer_to_buffer(
+            r.pool().buffer(),
+            handle.offset + *index as u64 * 8,
+            &buffer,
+            slot as u64 * 8,
+            8,
+        );
+    }
+    r.queue().submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| result.unwrap());
+    r.device()
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    let values = slice
+        .get_mapped_range()
+        .unwrap()
+        .chunks_exact(8)
+        .map(|pair| {
+            f64::from(f32::from_le_bytes(pair[..4].try_into().unwrap()))
+                + f64::from(f32::from_le_bytes(pair[4..].try_into().unwrap()))
+        })
+        .collect();
+    buffer.unmap();
+    values
+}
+
+/// Offset spectra (#50): a member is drawn shifted, but a pick on the
+/// shifted trace names the source index, and the values a host reads for it
+/// are the column's own, unshifted; the column statistics and an export of
+/// the same document without the group are unchanged.
+#[test]
+fn offset_lines_report_unshifted_values() {
+    use renderer::data_config::LineOffsets;
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let xs = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let ys = vec![2.0, 3.5, 2.5, 4.0, 3.0];
+    r.add_column("x", &col_f64(xs.clone())).unwrap();
+    r.add_column("y", &col_f64(ys.clone())).unwrap();
+    let mut chart = bare_chart(240, 180);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 12.0);
+    let plain = chart.config().clone();
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["low".into(), "high".into()],
+        step_y: 5.0,
+        step_x: 0.5,
+    });
+    let declared = [
+        series("low", "x", "y", line(None, None, LineInterpolation::Linear)),
+        series(
+            "high",
+            "x",
+            "y",
+            line(None, None, LineInterpolation::Linear),
+        ),
+    ];
+    let id = r
+        .register_chart(chart.config().clone(), declared.to_vec())
+        .unwrap();
+    let image = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &declared),
+            renderer::ExportOptions::document(1.0),
+        )
+        .block_on()
+        .unwrap();
+    for index in 0..xs.len() {
+        // `high` is drawn half a unit right and five up.
+        let (x, y) = (
+            data_x_to_px(&chart, xs[index] + 0.5),
+            data_y_to_px(&chart, ys[index] + 5.0),
+        );
+        assert!(
+            is_red(&pixel(&image, x, y)),
+            "point {index} is not drawn shifted"
+        );
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [x, y],
+            display_panel_px: chart.config().chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 2.0,
+        };
+        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
+            .unwrap()
+            .expect("the shifted point picks");
+        assert_eq!((hit.series_id.as_str(), hit.point_index), ("high", index));
+        let values = pool_values(&r, "x", &[index])
+            .into_iter()
+            .chain(pool_values(&r, "y", &[index]))
+            .collect::<Vec<_>>();
+        assert_eq!(values, [xs[index], ys[index]], "point {index}");
+        // The unshifted place of the point is not `high`'s.
+        let unshifted = renderer::GpuPickRequest {
+            canvas_position_px: [
+                data_x_to_px(&chart, xs[index]),
+                data_y_to_px(&chart, ys[index]),
+            ],
+            ..request
+        };
+        let low = test_gpu::block_on(r.pick_chart(id, unshifted).unwrap().resolve())
+            .unwrap()
+            .expect("the first member is unshifted");
+        assert_eq!((low.series_id.as_str(), low.point_index), ("low", index));
+    }
+    let slot = r.pool().slot("y").expect("resident column");
+    assert_eq!((slot.min, slot.max), (2.0, 4.0));
+    assert_eq!(chart.config().left_y.max, plain.left_y.max);
+}
+
+/// Offset spectra have no member cap (#107): 40 members, past the old 32,
+/// each draw shifted at 1x and 2x, and a pick on a member past the old cap
+/// names that member and the source index.
+#[test]
+fn forty_offset_members_draw_and_pick() {
+    use renderer::data_config::LineOffsets;
+    const MEMBERS: usize = 40;
+    const STEP: f64 = 2.0;
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let xs = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let ys = vec![2.0, 3.5, 2.5, 4.0, 3.0];
+    r.add_column("x", &col_f64(xs.clone())).unwrap();
+    r.add_column("y", &col_f64(ys.clone())).unwrap();
+    let mut chart = bare_chart(240, 640);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 5.0 + STEP * MEMBERS as f64);
+    let ids: Vec<String> = (0..MEMBERS).map(|k| format!("m{k}")).collect();
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: ids.clone(),
+        step_y: STEP,
+        step_x: 0.0,
+    });
+    let declared: Vec<SeriesConfig> = ids
+        .iter()
+        .map(|id| series(id, "x", "y", line(None, None, LineInterpolation::Linear)))
+        .collect();
+    let id = r
+        .register_chart(chart.config().clone(), declared.clone())
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let image = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &declared),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        for k in [0, 31, 32, MEMBERS - 1] {
+            let shift = STEP * k as f64;
+            for index in [0, 3] {
+                let (x, y) = (
+                    data_x_to_px(&chart, xs[index]) * scale,
+                    data_y_to_px(&chart, ys[index] + shift) * scale,
+                );
+                assert!(
+                    is_red(&pixel(&image, x, y)),
+                    "{scale}x: member {k} point {index} is not drawn shifted"
+                );
+            }
+        }
+    }
+    for k in [32, MEMBERS - 1] {
+        let shift = STEP * k as f64;
+        let index = 3;
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [
+                data_x_to_px(&chart, xs[index]),
+                data_y_to_px(&chart, ys[index] + shift),
+            ],
+            display_panel_px: chart.config().chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 2.0,
+        };
+        let hit = test_gpu::block_on(r.pick_chart(id, request).unwrap().resolve())
+            .unwrap()
+            .expect("the shifted member picks");
+        assert_eq!(
+            (hit.series_id.as_str(), hit.point_index),
+            (ids[k].as_str(), index)
         );
     }
 }

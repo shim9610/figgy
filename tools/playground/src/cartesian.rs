@@ -5,7 +5,10 @@
 //! WASM host uses. Pointer deltas are divided by the display scale before
 //! they edit the document, so drags stay exact at any window size.
 
-use renderer::config::{AxisOptions, AxisScale, Config, DrawStyle, MilkywayOptions, SketchOptions};
+use renderer::config::{
+    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, ProbabilityScale,
+    SketchOptions,
+};
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
     SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
@@ -20,7 +23,7 @@ use renderer::{
     ArrowStyle, AxisPreset, CellRef, Chart, ChartDrawItem, ChartId, ChartStyle, ChartView, Color,
     ColorCycle, ColorMap, CpuTextMeasure, DataSelectionsConfig, GpuPickRequest, HitId, HitMap,
     LayerHit, LayerRef, OverlayLayer, PickedData, PreparedFrame, RenderWarning, Renderer,
-    ResizeHandle, ScatterShape, SelectionBox, Series, Subplot, fit_display_panel, place_document,
+    ResizeHandle, ScatterShape, Series, Subplot, fit_display_panel, place_document,
 };
 
 use crate::HostCtx;
@@ -28,12 +31,14 @@ use crate::big_data::{self, BigData, FrameTime};
 use crate::scenes::{self, SceneKind};
 use crate::widgets::{self, choice, color, rich_text, section, slider};
 
-const AXIS_PRESETS: [AxisPreset; 5] = [
+const AXIS_PRESETS: [AxisPreset; 7] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
+    AxisPreset::Hidden,
+    AxisPreset::Grotrian,
 ];
 const COLOR_CYCLES: [ColorCycle; 5] = [
     ColorCycle::Classic,
@@ -70,6 +75,15 @@ const COLORMAPS: &[ColorMap] = &[
     ColorMap::RdBu,
 ];
 const SIZE_SCALES: &[SizeScale] = &[SizeScale::Area, SizeScale::Radius];
+/// The axis scales the "X scale" / "Y scale" combos offer (#209).
+const SCALES: &[AxisScale] = &[
+    AxisScale::Linear,
+    AxisScale::Logarithmic,
+    AxisScale::Probability(ProbabilityScale::Normal),
+    AxisScale::Probability(ProbabilityScale::Weibull),
+    AxisScale::Probability(ProbabilityScale::Logistic),
+];
+
 const CORNERS: &[LegendCorner] = &[
     LegendCorner::TopLeft,
     LegendCorner::TopRight,
@@ -87,6 +101,9 @@ enum PointerMode {
 enum Drag {
     None,
     Element,
+    /// A value label the pick found under the press: the move writes its
+    /// series' `labels.offsets`.
+    ValueLabel,
     Resize(ResizeHandle),
     Annotation,
     AnnotationHandle(ResizeHandle),
@@ -122,6 +139,14 @@ pub struct CartesianHost {
     selected: Option<HitId>,
     selected_annotation: Option<usize>,
     drag: Drag,
+    /// The pointer in document pixels while an element drags: the press
+    /// point advanced by every move. A subplot frame steps by whole pixels
+    /// from it, polar axes turn by its angle.
+    drag_pointer: [f32; 2],
+    /// While a subplot frame drags (#205): the display scale and the
+    /// surface position of the parent's chart area, held from the press so
+    /// a document the drag grows does not rescale under the pointer.
+    hold: Option<(f32, [i64; 2])>,
     mode: PointerMode,
     picks: Vec<PickedData>,
     /// One line per pick: the picked point's coordinates and, for a colour-
@@ -139,7 +164,7 @@ pub struct CartesianHost {
 
 impl CartesianHost {
     pub fn new(r: &mut Renderer, kind: SceneKind) -> Result<Self, renderer::FiggyError> {
-        let scene = scenes::build(r, kind)?;
+        let scene = scenes::build(r, kind, big_data::START_POINTS)?;
         let id = r.register_chart(scene.config.clone(), scene.series.clone())?;
         Ok(Self {
             kind,
@@ -159,6 +184,8 @@ impl CartesianHost {
             selected: None,
             selected_annotation: None,
             drag: Drag::None,
+            drag_pointer: [0.0; 2],
+            hold: None,
             mode: PointerMode::Edit,
             picks: Vec::new(),
             pick_notes: Vec::new(),
@@ -252,12 +279,23 @@ impl CartesianHost {
         if vp.width < 8 || vp.height < 8 {
             return None;
         }
-        let doc = cfg.document_area();
-        let (scale, mut document) =
-            fit_display_panel((doc.width, doc.height), (vp.width, vp.height));
-        document.x += vp.x;
-        document.y += vp.y;
-        let config = place_document(cfg, scale, document);
+        let (config, document, scale) = match self.hold {
+            Some((scale, origin)) => {
+                let mut config = cfg.scaled(scale);
+                let at = config.chart_area.0;
+                config.translate_areas(origin[0] - i64::from(at.x), origin[1] - i64::from(at.y));
+                let document = config.document_area();
+                (config, document, scale)
+            }
+            None => {
+                let doc = cfg.document_area();
+                let (scale, mut document) =
+                    fit_display_panel((doc.width, doc.height), (vp.width, vp.height));
+                document.x += vp.x;
+                document.y += vp.y;
+                (place_document(cfg, scale, document), document, scale)
+            }
+        };
         let panel = config.chart_area.0;
         Some(Display {
             config,
@@ -299,7 +337,7 @@ impl CartesianHost {
         let chart = Chart::new(d.config.clone());
         let view = match self.view.take() {
             Some(v) => v,
-            None => match r.create_chart_view(&chart, d.panel) {
+            None => match r.create_chart_view_at(&chart, d.panel, d.scale) {
                 Ok(v) => {
                     self.raster_dirty = true;
                     v
@@ -313,13 +351,19 @@ impl CartesianHost {
         let mut view = view;
         if self.raster_dirty || view.panel_rect() != d.panel {
             let hitmap = HitMap::for_active_layer(&d.config);
-            let measure = CpuTextMeasure::for_style(&d.config.draw_style);
-            let boxes: Vec<SelectionBox> = self
+            let selected = self
                 .selected
-                .and_then(|id| hitmap.selection_box(id, &d.config, &measure))
-                .into_iter()
-                .collect();
-            if let Err(e) = r.refresh_axis_with_selection(&mut view, &chart, d.panel, &boxes) {
+                .and_then(|id| hitmap.get(id))
+                .map(|el| el.element_id());
+            if let Err(e) =
+                r.refresh_axis_with_selection_at(
+                    &mut view,
+                    &chart,
+                    d.panel,
+                    selected.as_deref(),
+                    d.scale,
+                )
+            {
                 self.error = Some(format!("refresh: {e}"));
             }
             self.warnings = view.render_warnings().to_vec();
@@ -413,6 +457,8 @@ impl CartesianHost {
         }
         if released {
             self.drag = Drag::None;
+            // The document fits the viewport again.
+            changed |= self.hold.take().is_some();
         }
         if pan_down && response.hovered() && (delta.x != 0.0 || delta.y != 0.0) {
             changed |= self.pan(r, &d, delta.x * ppp, delta.y * ppp);
@@ -463,11 +509,16 @@ impl CartesianHost {
             self.drag = Drag::Annotation;
             return;
         }
+        self.drag_pointer = self.document_point(r, d, p);
         if let Some(id) = self.selected
             && let Some(rz) = hitmap.get(id).and_then(|e| e.as_resizable())
             && let Some(handle) = rz.hit_resize_handle(&d.config, &measure, p[0], p[1])
         {
             self.drag = Drag::Resize(handle);
+            let (horizontal, vertical) = rz.resize_targets(handle);
+            if moves_subplot_frame(horizontal.as_ref()) || moves_subplot_frame(vertical.as_ref()) {
+                self.hold_display(d);
+            }
             return;
         }
         let hit = hitmap.hit_test(&d.config, &measure, p[0], p[1]);
@@ -484,8 +535,13 @@ impl CartesianHost {
                 self.raster_dirty = true;
             }
             self.selected_annotation = None;
-            self.drag = Drag::None;
-            self.select_pick(r, Some(picked), add);
+            // A value label is selected alone and dragged by the move.
+            let label = matches!(
+                picked,
+                PickedData::ValueLabel { .. } | PickedData::FeynmanLabel { .. }
+            );
+            self.drag = if label { Drag::ValueLabel } else { Drag::None };
+            self.select_pick(r, Some(picked), add && !label);
             return;
         }
         if !add && !self.picks.is_empty() {
@@ -501,12 +557,90 @@ impl CartesianHost {
             self.selected_annotation = None;
         }
         self.drag = if draggable { Drag::Element } else { Drag::None };
+        let frame = hit
+            .and_then(|id| hitmap.get(id))
+            .and_then(|e| e.as_draggable())
+            .map(|e| e.nudge_element());
+        if moves_subplot_frame(frame.as_ref()) {
+            self.hold_display(d);
+        }
+    }
+
+    /// A surface point in document pixels: the inverse of the display's
+    /// scale and placement.
+    fn document_point(&self, r: &Renderer, d: &Display, p: [f32; 2]) -> [f32; 2] {
+        let Ok(cfg) = r.chart_config(self.id) else {
+            return p;
+        };
+        let doc = cfg.document_area();
+        if d.scale <= 0.0 {
+            return p;
+        }
+        [
+            doc.x as f32 + (p[0] - d.document.x as f32) / d.scale,
+            doc.y as f32 + (p[1] - d.document.y as f32) / d.scale,
+        ]
+    }
+
+    /// Hold the display where it is while a subplot frame drags (#205).
+    fn hold_display(&mut self, d: &Display) {
+        let at = d.config.chart_area.0;
+        self.hold = Some((d.scale, [i64::from(at.x), i64::from(at.y)]));
     }
 
     fn on_move(&mut self, r: &mut Renderer, d: &Display, dx: f32, dy: f32) -> bool {
         let mut config = self.config(r);
         let moved = match self.drag {
             Drag::None => return false,
+            // A Feynman label moves its row's own offset (#234).
+            Drag::ValueLabel
+                if matches!(self.picks.last(), Some(PickedData::FeynmanLabel { .. })) =>
+            {
+                let Some(PickedData::FeynmanLabel {
+                    series_id,
+                    part,
+                    index,
+                    ..
+                }) = self.picks.last().cloned()
+                else {
+                    return false;
+                };
+                let mut series = self.series(r);
+                let Some(diagram) = series
+                    .iter_mut()
+                    .find(|s| s.series_id == series_id)
+                    .and_then(|s| s.feynman_mut())
+                else {
+                    return false;
+                };
+                let (dx, dy) = (dx / d.scale, dy / d.scale);
+                if diagram.drag_label(part, index, dx, dy) != NudgeResult::Moved {
+                    return false;
+                }
+                self.commit_series(r, series);
+                return true;
+            }
+            Drag::ValueLabel => {
+                let Some(PickedData::ValueLabel {
+                    series_id,
+                    category_index,
+                    ..
+                }) = self.picks.last().cloned()
+                else {
+                    return false;
+                };
+                let mut series = self.series(r);
+                let Some(item) = series.iter_mut().find(|s| s.series_id == series_id) else {
+                    return false;
+                };
+                let count = item.value_label_text().map_or(0, <[String]>::len);
+                let (dx, dy) = (dx / d.scale, dy / d.scale);
+                if item.drag_value_label(category_index, count, dx, dy) != NudgeResult::Moved {
+                    return false;
+                }
+                self.commit_series(r, series);
+                return true;
+            }
             Drag::Annotation | Drag::AnnotationHandle(_) => {
                 let (Some(view), Some(index)) = (&self.view, self.selected_annotation) else {
                     return false;
@@ -529,16 +663,19 @@ impl CartesianHost {
                 };
                 let (dx, dy) = (dx / d.scale, dy / d.scale);
                 let hitmap = HitMap::for_active_layer(&d.config);
+                let measure = CpuTextMeasure::for_style(&d.config.draw_style);
                 let Some(el) = hitmap.get(id) else {
                     return false;
                 };
+                let at = self.drag_pointer;
+                self.drag_pointer = [at[0] + dx, at[1] + dy];
                 match self.drag {
                     Drag::Resize(h) => el.as_resizable().is_some_and(|rz| {
-                        rz.resize_by(&mut config, h, dx, dy) == NudgeResult::Moved
+                        rz.resize_from(&mut config, &measure, h, at, dx, dy) == NudgeResult::Moved
                     }),
-                    _ => el
-                        .as_draggable()
-                        .is_some_and(|dr| dr.drag_by(&mut config, dx, dy) == NudgeResult::Moved),
+                    _ => el.as_draggable().is_some_and(|dr| {
+                        dr.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved
+                    }),
                 }
             }
         };
@@ -563,7 +700,7 @@ impl CartesianHost {
             },
         );
         match ticket {
-            Ok(t) => match pollster::block_on(t.resolve()) {
+            Ok(t) => match t.resolve_blocking() {
                 Ok(p) => p,
                 Err(e) => {
                     self.error = Some(format!("pick resolve: {e}"));
@@ -658,7 +795,8 @@ impl CartesianHost {
         }
         let at = |axis: &AxisOptions, f: f32| {
             let f = if axis.inverted { 1.0 - f } else { f } as f64;
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             from_space(axis, a + (b - a) * f)
         };
         Some((at(&d.config.bottom_x, fx), at(&d.config.left_y, fy)))
@@ -704,7 +842,8 @@ impl CartesianHost {
         };
         let shift = |axis: &AxisOptions, frac: f64| {
             let frac = if axis.inverted { -frac } else { frac };
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             let s = (b - a) * frac;
             (from_space(axis, a + s), from_space(axis, b + s))
         };
@@ -729,7 +868,8 @@ impl CartesianHost {
         let fy = (1.0 - (p[1] - area.y as f32) / area.height as f32).clamp(0.0, 1.0) as f64;
         let scale = |axis: &AxisOptions, f: f64| {
             let f = if axis.inverted { 1.0 - f } else { f };
-            let (a, b) = (to_space(axis, axis.min), to_space(axis, axis.max));
+            let (lo, hi) = axis.data_range();
+            let (a, b) = (to_space(axis, lo), to_space(axis, hi));
             let c = a + (b - a) * f;
             (
                 from_space(axis, c - (c - a) * factor),
@@ -780,6 +920,17 @@ impl CartesianHost {
             ui.horizontal(|ui| {
                 if ui.button("Reset view").clicked() {
                     reset_ranges(&mut config, &self.initial);
+                }
+                if ui
+                    .button("Auto layout")
+                    .on_hover_text(
+                        "layout::auto_layout: axis bands, title offsets and label formats \
+                         that do not overlap. Press again after a fit or a zoom.",
+                    )
+                    .clicked()
+                {
+                    let measure = CpuTextMeasure::for_style(&config.draw_style);
+                    config = renderer::layout::auto_layout(&config, &measure);
                 }
                 if ui.button("Reset scene").clicked() {
                     config = self.initial.clone();
@@ -872,14 +1023,16 @@ impl CartesianHost {
                 ui.checkbox(&mut config.grid.show_minor_y, "minor Y");
             });
             ui.horizontal(|ui| {
-                let mut log_x = config.bottom_x.scale == AxisScale::Logarithmic;
-                let mut log_y = config.left_y.scale == AxisScale::Logarithmic;
-                if ui.checkbox(&mut log_x, "log X").changed() {
-                    set_log(&mut config, true, log_x);
+                let mut scale_x = config.bottom_x.scale.clone();
+                let mut scale_y = config.left_y.scale.clone();
+                if choice(ui, "X scale", &mut scale_x, SCALES) {
+                    set_scale(&mut config, true, scale_x);
                 }
-                if ui.checkbox(&mut log_y, "log Y").changed() {
-                    set_log(&mut config, false, log_y);
+                if choice(ui, "Y scale", &mut scale_y, SCALES) {
+                    set_scale(&mut config, false, scale_y);
                 }
+            });
+            ui.horizontal(|ui| {
                 let mut inv_x = config.bottom_x.inverted;
                 let mut inv_y = config.left_y.inverted;
                 if ui.checkbox(&mut inv_x, "invert X").changed() {
@@ -891,6 +1044,28 @@ impl CartesianHost {
                     config.right_y.inverted = inv_y;
                 }
             });
+            // The log tick policy (`AxisOptions::log_ticks`): whole decades,
+            // or the decades, 1-2-5 or 1..9 ladder the range calls for.
+            ui.horizontal(|ui| {
+                for (x, label) in [(true, "adaptive log X"), (false, "adaptive log Y")] {
+                    let pair = if x {
+                        [&mut config.bottom_x, &mut config.top_x]
+                    } else {
+                        [&mut config.left_y, &mut config.right_y]
+                    };
+                    let mut adaptive = pair[0].log_ticks == LogTickPolicy::Adaptive;
+                    if ui.checkbox(&mut adaptive, label).changed() {
+                        let policy = if adaptive {
+                            LogTickPolicy::Adaptive
+                        } else {
+                            LogTickPolicy::Decades
+                        };
+                        for axis in pair {
+                            axis.log_ticks = policy;
+                        }
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut config.legend.visible, "Legend");
                 choice(ui, "corner", &mut config.legend.corner, CORNERS);
@@ -900,6 +1075,50 @@ impl CartesianHost {
                     ui.checkbox(&mut bar.visible, "Colourbar");
                     choice(ui, "map", &mut bar.colormap, COLORMAPS);
                 });
+            }
+            // The polar coordinate system: a radar chart's spoke layout and
+            // ring shape.
+            let categorical = config.bottom_x.categories.is_some();
+            if let Some(polar) = config.polar_mut() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut polar.clockwise, "clockwise");
+                    let mut polygon = polar.grid_shape() == renderer::GridShape::Polygon;
+                    if categorical && ui.checkbox(&mut polygon, "polygon grid").changed() {
+                        polar.grid_shape = Some(if polygon {
+                            renderer::GridShape::Polygon
+                        } else {
+                            renderer::GridShape::Circle
+                        });
+                    }
+                });
+                let mut zero = polar.zero_angle_degrees as f32;
+                slider(ui, "zero angle°", &mut zero, -180.0..=180.0);
+                polar.zero_angle_degrees = f64::from(zero);
+                let mut ray = polar.radial_label_angle_degrees as f32;
+                slider(ui, "ray angle°", &mut ray, 0.0..=360.0);
+                polar.radial_label_angle_degrees = f64::from(ray);
+                slider(
+                    ui,
+                    "inner radius",
+                    &mut polar.inner_radius_fraction,
+                    0.0..=0.9,
+                );
+            }
+            // How the category bar series share a slot. The direction stays:
+            // it decides which columns and axes the series read.
+            if let Some(groups) = config.bar_groups.as_mut() {
+                choice(
+                    ui,
+                    "bar mode",
+                    &mut groups.mode,
+                    &[
+                        renderer::CategoryBarMode::Grouped,
+                        renderer::CategoryBarMode::Stacked,
+                        renderer::CategoryBarMode::PercentStacked,
+                    ],
+                );
+                slider(ui, "group width", &mut groups.group_width, 0.1..=0.95);
+                slider(ui, "bar gap px", &mut groups.bar_gap, 0.0..=24.0);
             }
         });
 
@@ -1038,6 +1257,22 @@ impl CartesianHost {
                             color(ui, "colour", &mut style.line.color);
                             slider(ui, "head length", &mut style.head_length, 2.0..=30.0);
                         }
+                        // A shape's look: the fill (or none), the border and
+                        // whether it sits under the data.
+                        AnnotationKind::Rect { style, .. }
+                        | AnnotationKind::Ellipse { style, .. }
+                        | AnnotationKind::Polygon { style, .. } => {
+                            let mut filled = style.fill.is_some();
+                            if ui.checkbox(&mut filled, "fill").changed() {
+                                style.fill = filled.then_some(Color::new(0.3, 0.5, 0.9, 0.25));
+                            }
+                            if let Some(fill) = &mut style.fill {
+                                color(ui, "fill colour", fill);
+                            }
+                            color(ui, "border colour", &mut style.border.color);
+                            slider(ui, "border width", &mut style.border.width, 0.0..=6.0);
+                            ui.checkbox(&mut style.below, "below the data");
+                        }
                     }
                     if ui.button("Delete annotation").clicked() {
                         config.annotations.items.remove(i);
@@ -1049,23 +1284,50 @@ impl CartesianHost {
 
         section(ui, "Export", false, |ui| {
             slider(ui, "scale", &mut self.export_scale, 1.0..=4.0);
-            if ui.button("Export document PNG").clicked() {
-                let chart = Chart::new(config.clone());
-                match r.export_document_png_bytes(&chart, &series, self.export_scale) {
-                    Ok(bytes) => {
-                        let dir = std::path::Path::new("target/playground");
-                        let path = dir.join(format!("{:?}.png", self.kind).to_lowercase());
-                        let result = std::fs::create_dir_all(dir)
-                            .and_then(|_| std::fs::write(&path, &bytes));
-                        *host.status = match result {
-                            Ok(()) => {
-                                format!("Saved {} ({} KiB)", path.display(), bytes.len() / 1024)
-                            }
-                            Err(e) => format!("Write failed: {e}"),
-                        };
-                    }
-                    Err(e) => *host.status = format!("Export failed: {e}"),
+            let chart = Chart::new(config.clone());
+            let exported = if ui.button("Export document PNG").clicked() {
+                Some((
+                    "png",
+                    r.export_png_blocking(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    ),
+                ))
+            } else if ui.button("Export document SVG").clicked() {
+                Some((
+                    "svg",
+                    r.export_svg_blocking(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    )
+                    .map(String::into_bytes),
+                ))
+            } else if ui.button("Export document PDF").clicked() {
+                Some((
+                    "pdf",
+                    r.export_pdf_blocking(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::document(self.export_scale),
+                    ),
+                ))
+            } else {
+                None
+            };
+            match exported {
+                Some((extension, Ok(bytes))) => {
+                    let dir = std::path::Path::new("target/playground");
+                    let path = dir.join(format!("{:?}.{extension}", self.kind).to_lowercase());
+                    let result =
+                        std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, &bytes));
+                    *host.status = match result {
+                        Ok(()) => {
+                            format!("Saved {} ({} KiB)", path.display(), bytes.len() / 1024)
+                        }
+                        Err(e) => format!("Write failed: {e}"),
+                    };
                 }
+                Some((_, Err(e))) => *host.status = format!("Export failed: {e}"),
+                None => {}
             }
         });
 
@@ -1279,6 +1541,8 @@ fn to_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => v.max(f64::MIN_POSITIVE).log10(),
         AxisScale::Linear => v,
+        // The model's scale map (#209); a value off the paper stays put.
+        AxisScale::Probability(_) => axis.scale.forward(v).unwrap_or(v),
     }
 }
 
@@ -1286,24 +1550,25 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
     match axis.scale {
         AxisScale::Logarithmic => 10f64.powf(v),
         AxisScale::Linear => v,
+        AxisScale::Probability(_) => axis.scale.inverse(v).unwrap_or(v),
     }
 }
 
-fn set_log(config: &mut Config, x: bool, log: bool) {
-    let scale = if log {
-        AxisScale::Logarithmic
-    } else {
-        AxisScale::Linear
-    };
+/// Put the X or Y axis pair on `scale`, keeping the range where the scale
+/// can draw it: a logarithmic axis needs a positive minimum, a probability
+/// axis both bounds strictly inside `(0, 1)`.
+fn set_scale(config: &mut Config, x: bool, scale: AxisScale) {
     let (min, max) = {
         let axis = if x { &config.bottom_x } else { &config.left_y };
         (axis.min, axis.max)
     };
-    let (min, max) = if log && min <= 0.0 {
-        let max = if max > 0.0 { max } else { 1.0 };
-        (max / 1000.0, max)
-    } else {
-        (min, max)
+    let (min, max) = match scale {
+        AxisScale::Logarithmic if min <= 0.0 => {
+            let max = if max > 0.0 { max } else { 1.0 };
+            (max / 1000.0, max)
+        }
+        AxisScale::Probability(_) if !(min > 0.0 && max < 1.0 && min < max) => (0.001, 0.999),
+        _ => (min, max),
     };
     let mut chart = Chart::new(config.clone());
     chart.with_axis_range_change(|c| {
@@ -1332,6 +1597,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
         dst.scale = src.scale.clone();
         dst.major_spacing = src.major_spacing;
         dst.minor_count = src.minor_count;
+        dst.log_ticks = src.log_ticks;
     }
     copy(&mut config.bottom_x, &initial.bottom_x);
     copy(&mut config.top_x, &initial.top_x);
@@ -1362,20 +1628,37 @@ fn draw_style_index(style: &DrawStyle) -> usize {
 
 fn render_type_name(t: &DataRenderType) -> &'static str {
     match t {
-        DataRenderType::Scatter { .. } => "scatter",
-        DataRenderType::Line { .. } => "line",
-        DataRenderType::ScatterLine { .. } => "scatter+line",
-        DataRenderType::ScatterErrorbarX { .. }
-        | DataRenderType::ScatterErrorbarY { .. }
-        | DataRenderType::ScatterErrorbarXY { .. } => "scatter+errors",
-        DataRenderType::LineScatterErrorbarX { .. }
-        | DataRenderType::LineScatterErrorbarY { .. }
-        | DataRenderType::LineScatterErrorbarXY { .. } => "line+scatter+errors",
+        DataRenderType::Xy(xy) => {
+            match (xy.scatter.is_some(), xy.line.is_some(), xy.errors.is_some()) {
+                (false, ..) => "line",
+                (true, false, false) => "scatter",
+                (true, true, false) => "scatter+line",
+                (true, false, true) => "scatter+errors",
+                (true, true, true) => "line+scatter+errors",
+            }
+        }
         DataRenderType::Histogram { .. } => "histogram",
-        DataRenderType::Heatmap { .. } => "heatmap",
-        DataRenderType::Contour { .. } => "contour",
-        DataRenderType::HeatmapContour { .. } => "heatmap+contour",
+        DataRenderType::CategoryBars { .. } => "category bars",
+        DataRenderType::BoxPlot { .. } => "box plot",
+        DataRenderType::RangeBars { .. } => "range bars",
+        DataRenderType::Ternary { .. } => "ternary",
+        DataRenderType::Radar { .. } => "radar",
+        DataRenderType::RgbImage { .. } => "image",
+        DataRenderType::Field(field) => match (field.fill.is_some(), field.contour.is_some()) {
+            (_, false) => "heatmap",
+            (false, true) => "contour",
+            (true, true) => "heatmap+contour",
+        },
         DataRenderType::Vector { .. } => "vector",
+        DataRenderType::Streamlines { .. } => "streamlines",
+        DataRenderType::Parallel { .. } => "parallel",
+        DataRenderType::EnergyLevels(_) => "energy levels",
+        DataRenderType::TriMesh(mesh) => match (mesh.fill.is_some(), mesh.contour.is_some()) {
+            (_, false) => "triangle mesh",
+            (false, true) => "triangle mesh contour",
+            (true, true) => "triangle mesh+contour",
+        },
+        DataRenderType::Feynman(_) => "Feynman diagram",
     }
 }
 
@@ -1479,14 +1762,10 @@ fn scatter_controls(
 /// The scatter style of a render type that draws markers.
 fn scatter_of(t: &DataRenderType) -> Option<&renderer::DataScatterStyleConfig> {
     match t {
-        DataRenderType::Scatter { scatter }
-        | DataRenderType::ScatterLine { scatter, .. }
-        | DataRenderType::ScatterErrorbarX { scatter, .. }
-        | DataRenderType::ScatterErrorbarY { scatter, .. }
-        | DataRenderType::ScatterErrorbarXY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarX { scatter, .. }
-        | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scatter),
+            ..
+        }) => Some(scatter),
         _ => None,
     }
 }
@@ -1509,7 +1788,7 @@ fn series_columns(s: &SeriesConfig) -> Vec<String> {
 /// The component and colour columns of a point vector series.
 fn vector_point_columns(t: &DataRenderType) -> Option<(&String, &String, Option<&String>)> {
     let DataRenderType::Vector {
-        components: VectorComponents::Points { u, v },
+        components: VectorComponents::Points { u, v, .. },
         style,
     } = t
     else {
@@ -1642,6 +1921,41 @@ fn error_controls(ui: &mut egui::Ui, e: &mut renderer::DataErrorBarStyleConfig) 
     slider(ui, "cap size", &mut e.error_bar_cap_size, 0.0..=20.0);
 }
 
+/// A stem or lollipop plot's controls (#206): stems on or off, and their
+/// baseline, direction, colour, width and dash.
+fn stem_controls(ui: &mut egui::Ui, stem: &mut Option<renderer::data_config::Stem>) {
+    use renderer::data_config::{CategoryBarDirection, Stem};
+    let mut on = stem.is_some();
+    if ui.checkbox(&mut on, "stems").changed() {
+        *stem = on.then(|| Stem {
+            baseline: 0.0,
+            direction: CategoryBarDirection::Vertical,
+            color: renderer::Color::from_rgb8(90, 90, 90),
+            width: 1.5,
+            line_style: renderer::line::LineStylePreset::Solid,
+        });
+    }
+    let Some(stem) = stem else {
+        return;
+    };
+    ui.add(
+        egui::DragValue::new(&mut stem.baseline)
+            .speed(0.05)
+            .prefix("stem baseline "),
+    );
+    let mut horizontal = stem.direction == CategoryBarDirection::Horizontal;
+    if ui.checkbox(&mut horizontal, "horizontal stems").changed() {
+        stem.direction = if horizontal {
+            CategoryBarDirection::Horizontal
+        } else {
+            CategoryBarDirection::Vertical
+        };
+    }
+    color(ui, "stem colour", &mut stem.color);
+    slider(ui, "stem width", &mut stem.width, 0.0..=8.0);
+    choice(ui, "stem dash", &mut stem.line_style, widgets::LINE_STYLES);
+}
+
 fn series_controls(
     ui: &mut egui::Ui,
     s: &mut SeriesConfig,
@@ -1650,45 +1964,51 @@ fn series_controls(
     r: &Renderer,
 ) {
     match &mut s.render_type {
-        DataRenderType::Line { line } => line_controls(ui, line),
-        DataRenderType::Scatter { scatter } => scatter_controls(ui, scatter, columns, r),
-        DataRenderType::ScatterLine { scatter, line } => {
-            scatter_controls(ui, scatter, columns, r);
-            line_controls(ui, line);
+        DataRenderType::Xy(xy) => {
+            if let Some(scatter) = &mut xy.scatter {
+                scatter_controls(ui, scatter, columns, r);
+            }
+            if let Some(line) = &mut xy.line {
+                line_controls(ui, line);
+            }
+            if let Some(errors) = &mut xy.errors {
+                error_controls(ui, &mut errors.style);
+            }
+            // Stems need markers (#206).
+            if xy.scatter.is_some() {
+                stem_controls(ui, &mut xy.stem);
+            }
         }
-        DataRenderType::ScatterErrorbarX {
-            scatter, err_style, ..
+        // A parallel series' rows: their line (its colour stands when no
+        // colour column maps them).
+        DataRenderType::Parallel { line, .. } => line_controls(ui, line),
+        // An energy-level series (#203): its strokes and arrows.
+        DataRenderType::EnergyLevels(levels) => {
+            color(ui, "level colour", &mut levels.style.level.color);
+            slider(ui, "level width", &mut levels.style.level.width, 0.5..=24.0);
+            color(ui, "arrow colour", &mut levels.style.transition.color);
+            slider(
+                ui,
+                "arrow width",
+                &mut levels.style.transition.width,
+                0.5..=24.0,
+            );
         }
-        | DataRenderType::ScatterErrorbarY {
-            scatter, err_style, ..
+        // A Feynman diagram (#234): its lines, waves and coils.
+        DataRenderType::Feynman(diagram) => {
+            color(ui, "line colour", &mut diagram.style.color);
+            slider(ui, "line width", &mut diagram.style.width, 0.5..=24.0);
+            slider(ui, "wave amplitude", &mut diagram.style.wave.amplitude, 0.0..=64.0);
+            slider(ui, "coil size", &mut diagram.style.coil.amplitude, 0.0..=64.0);
         }
-        | DataRenderType::ScatterErrorbarXY {
-            scatter, err_style, ..
-        } => {
-            scatter_controls(ui, scatter, columns, r);
-            error_controls(ui, err_style);
-        }
-        DataRenderType::LineScatterErrorbarX {
-            scatter,
-            line,
-            err_style,
-            ..
-        }
-        | DataRenderType::LineScatterErrorbarY {
-            scatter,
-            line,
-            err_style,
-            ..
-        }
-        | DataRenderType::LineScatterErrorbarXY {
-            scatter,
-            line,
-            err_style,
-            ..
-        } => {
-            scatter_controls(ui, scatter, columns, r);
-            line_controls(ui, line);
-            error_controls(ui, err_style);
+        // The markers and the line of a ternary series, whichever it draws.
+        DataRenderType::Ternary { scatter, line, .. } => {
+            if let Some(scatter) = scatter {
+                scatter_controls(ui, scatter, columns, r);
+            }
+            if let Some(line) = line {
+                line_controls(ui, line);
+            }
         }
         DataRenderType::Histogram { bar } => {
             color(ui, "fill", &mut bar.fill_color);
@@ -1716,31 +2036,165 @@ fn series_controls(
                 *config = chart.config().clone();
             }
         }
-        DataRenderType::Heatmap { fill, .. } => {
-            slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
-            choice(
-                ui,
-                "shading",
-                &mut fill.shading,
-                &[Shading::Interpolated, Shading::Flat],
-            );
+        // The direction and stacking are the chart's (`Config::bar_groups`),
+        // shared by every bar series of the panel.
+        DataRenderType::CategoryBars {
+            color: fill, style, ..
+        } => {
+            color(ui, "fill", fill);
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
+            ui.checkbox(&mut style.outline, "outline");
+            color(ui, "outline colour", &mut style.outline_color);
+            slider(ui, "outline width", &mut style.outline_width, 0.0..=4.0);
         }
-        DataRenderType::Contour { contour, .. } => contour_controls(ui, contour, config),
-        DataRenderType::HeatmapContour { fill, contour, .. } => {
-            slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+        // The direction, group width and gap are the chart's
+        // (`Config::bar_groups`), shared by the panel's box plot series.
+        DataRenderType::BoxPlot {
+            color: fill, style, ..
+        } => {
+            color(ui, "fill", fill);
+            choice(ui, "material", &mut style.material, FLAT_BODY_MATERIALS);
+            ui.checkbox(&mut style.notched, "notched");
+            ui.checkbox(&mut style.caps, "caps");
+            ui.checkbox(&mut style.show_mean, "mean");
+            ui.checkbox(&mut style.show_outliers, "outliers");
+            ui.checkbox(&mut style.outlier_filled, "filled outliers");
+            ui.checkbox(&mut style.outline, "outline");
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=3.0);
+            slider(ui, "whisker width", &mut style.whisker_width, 0.0..=4.0);
+        }
+        // The direction, group width and gap are the chart's
+        // (`Config::bar_groups`); the columns are the scene's.
+        DataRenderType::RangeBars {
+            color: fill,
+            style,
+            whiskers,
+            connector,
+            ..
+        } => {
+            color(ui, "fill", fill);
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
+            ui.checkbox(&mut style.outline, "outline");
+            color(ui, "outline colour", &mut style.outline_color);
+            slider(ui, "outline width", &mut style.outline_width, 0.0..=4.0);
+            if let Some(w) = whiskers {
+                slider(ui, "whisker width", &mut w.width, 0.0..=8.0);
+            }
+            if let Some(c) = connector {
+                color(ui, "connector colour", &mut c.color);
+                slider(ui, "connector width", &mut c.width, 0.0..=8.0);
+            }
+        }
+        // The grid shape, the spoke direction and the rings are the polar
+        // chart's (the "Chart" section); the look is the series'.
+        DataRenderType::Radar {
+            color: c, style, ..
+        } => {
+            color(ui, "colour", c);
+            let mut width = style.line_width();
+            slider(ui, "line width", &mut width, 0.0..=12.0);
+            style.line_width_px = Some(width);
+            let mut opacity = style
+                .fill_opacity
+                .unwrap_or(renderer::RadarSeriesStyle::DEFAULT_FILL_OPACITY);
+            slider(ui, "fill opacity", &mut opacity, 0.0..=1.0);
+            style.fill_opacity = Some(opacity);
+            let mut marker = style.marker();
+            choice(
+                ui,
+                "marker",
+                &mut marker,
+                &[
+                    renderer::RadarMarker::None,
+                    renderer::RadarMarker::Circle,
+                    renderer::RadarMarker::Square,
+                ],
+            );
+            style.marker = Some(marker);
+            let mut size = style.marker_size();
+            slider(ui, "marker size", &mut size, 1.0..=24.0);
+            style.marker_size_px = Some(size);
+        }
+        DataRenderType::Field(field) => {
+            if let Some(fill) = &mut field.fill {
+                slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+                choice(
+                    ui,
+                    "shading",
+                    &mut fill.shading,
+                    &[Shading::Interpolated, Shading::Flat],
+                );
+            }
+            if let Some(contour) = &mut field.contour {
+                contour_controls(ui, contour, config);
+            }
+        }
+        // A triangle mesh (#210): its shading follows where its values sit,
+        // so only the opacity and the contour lines are offered.
+        DataRenderType::TriMesh(mesh) => {
+            if let Some(fill) = &mut mesh.fill {
+                slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
+            }
+            if let Some(contour) = &mut mesh.contour {
+                contour_controls(ui, contour, config);
+            }
+        }
+        // An image's channels are its data; its look is the opacity and the
+        // shading, and the range the bytes map through.
+        DataRenderType::RgbImage {
+            range,
+            shading,
+            opacity,
+            ..
+        } => {
+            slider(ui, "opacity", opacity, 0.0..=1.0);
             choice(
                 ui,
                 "shading",
-                &mut fill.shading,
+                shading,
                 &[Shading::Interpolated, Shading::Flat],
             );
-            contour_controls(ui, contour, config);
+            ui.horizontal(|ui| {
+                ui.label("range");
+                ui.add(egui::DragValue::new(&mut range[0]).speed(0.5));
+                ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
+            });
         }
         DataRenderType::Vector { components, style } => {
             vector_controls(ui, components, style, columns);
         }
+        // The paths are the host's; the look is the line's and the heads'.
+        // Interpolation and fill stay off: streamlines are plain polylines.
+        DataRenderType::Streamlines { line, arrows, .. } => {
+            color(ui, "line colour", &mut line.line_color);
+            slider(ui, "line width", &mut line.line_width, 0.5..=10.0);
+            choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
+            let mut heads = arrows.is_some();
+            if ui.checkbox(&mut heads, "arrowheads").changed() {
+                *arrows = heads.then(renderer::StreamlineArrows::default);
+            }
+            if let Some(arrows) = arrows {
+                slider(ui, "head length", &mut arrows.head_length_px, 0.0..=24.0);
+                slider(ui, "head width", &mut arrows.head_width_px, 0.0..=24.0);
+                slider(ui, "spacing", &mut arrows.spacing_px, 8.0..=240.0);
+                arrows.spacing_px = arrows.spacing_px.max(arrows.head_length_px);
+            }
+        }
     }
 }
+
+// Every material but Toon and Pearl, which boxes reject.
+const FLAT_BODY_MATERIALS: &[renderer::Material] = &[
+    renderer::Material::Flat,
+    renderer::Material::Matte,
+    renderer::Material::Ceramic,
+    renderer::Material::SatinMetal,
+    renderer::Material::Enamel,
+    renderer::Material::BrushedMetal,
+    renderer::Material::Paper,
+    renderer::Material::Wood,
+    renderer::Material::Hatch,
+];
 
 fn vector_controls(
     ui: &mut egui::Ui,
@@ -1861,6 +2315,12 @@ fn describe_pick(p: &PickedData) -> String {
         } => {
             format!("{series_id} point #{point_index} ({distance_px:.1} px)")
         }
+        PickedData::ValueLabel {
+            series_id,
+            category_index,
+            distance_px,
+            ..
+        } => format!("{series_id} value label #{category_index} ({distance_px:.1} px)"),
         other => format!("{other:?}"),
     }
 }
@@ -1887,9 +2347,7 @@ fn layer_columns<'a>(
         .filter(|s| {
             !matches!(
                 s.render_type,
-                DataRenderType::Heatmap { .. }
-                    | DataRenderType::Contour { .. }
-                    | DataRenderType::HeatmapContour { .. }
+                DataRenderType::Field(_) | DataRenderType::RgbImage { .. }
             )
         })
         .collect();
@@ -1960,9 +2418,42 @@ fn new_overlay(n: usize) -> OverlayLayer {
     o
 }
 
-/// Lay the parent and every subplot out on a grid filling the document.
+/// Lay the parent and every subplot that is not an inset out on a grid
+/// filling the document. An inset moves with the panel it is nested in, so
+/// it keeps its place on it (#205).
 fn retile(config: &mut Config) {
-    let n = 1 + config.subplots.len() as u32;
+    let count = config.subplots.len() + 1;
+    let area = |config: &Config, index: usize| match index {
+        0 => config.chart_area.0,
+        _ => config.subplots[index - 1].config.chart_area.0,
+    };
+    // Each panel's inset parent and frame before the re-tile.
+    let before: Vec<(Option<usize>, Rect)> = {
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = |index: usize| {
+            let panel = match index {
+                0 => &*config,
+                _ => &config.subplots[index - 1].config,
+            };
+            (panel.chart_area.0, panel.data_area().map_or(empty, |d| d.0))
+        };
+        (0..count)
+            .map(|index| {
+                (
+                    renderer::layout::inset_parent(count, rects, index),
+                    area(config, index),
+                )
+            })
+            .collect()
+    };
+    // The insets outer before inner, from the layout before the re-tile.
+    let order: Vec<usize> = config.insets().collect();
+    let n = before.iter().filter(|(parent, _)| parent.is_none()).count() as u32;
     let cols = (n as f64).sqrt().ceil() as u32;
     let rows = n.div_ceil(cols);
     let (w, h) = (scenes::DOC_W / cols, scenes::DOC_H / rows);
@@ -1975,8 +2466,26 @@ fn retile(config: &mut Config) {
         })
     };
     config.chart_area = cell(0);
+    let mut next = 1;
     for (i, s) in config.subplots.iter_mut().enumerate() {
-        s.config.chart_area = cell(i as u32 + 1);
+        if before[i + 1].0.is_none() {
+            s.config.chart_area = cell(next);
+            next += 1;
+        }
+    }
+    // Insets follow their parent, outer before inner: a parent's new frame
+    // is set before its children read it.
+    for subplot in order {
+        let index = subplot + 1;
+        let (Some(parent), old) = before[index] else {
+            continue;
+        };
+        let (from, to) = (before[parent].1, area(config, parent));
+        let shift =
+            |v: u32, a: u32, b: u32| (i64::from(v) + i64::from(b) - i64::from(a)).max(0) as u32;
+        let frame = &mut config.subplots[subplot].config.chart_area.0;
+        frame.x = shift(old.x, from.x, to.x);
+        frame.y = shift(old.y, from.y, to.y);
     }
 }
 
@@ -1986,7 +2495,6 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
     c.overlays.clear();
     c.annotations = Default::default();
     c.picked_data = None;
-    c.picked_points = None;
     c.legend.visible = false;
     c.chart_title.text.segments = rich_segments_from_text(&format!("Subplot {n}"));
     c.set_active_layer(LayerRef::Base);
@@ -1995,6 +2503,7 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
         series: Vec::new(),
         link_x: None,
         link_y: None,
+        marker: None,
     }
 }
 
@@ -2002,12 +2511,14 @@ fn new_subplot(parent: &Config, n: usize) -> Subplot {
 /// direction. Both ends of a band must live in the same chart.
 fn fill_partners(series: &[SeriesConfig], id: &str) -> Vec<String> {
     let fills_to = |s: &SeriesConfig| match &s.render_type {
-        DataRenderType::Line { line } | DataRenderType::ScatterLine { line, .. } => {
-            match &line.fill {
-                Some(LineFill::ToSeries(other)) => Some(other.clone()),
-                _ => None,
-            }
-        }
+        DataRenderType::Xy(renderer::data_config::XySeries {
+            line: Some(line),
+            errors: None,
+            ..
+        }) => match &line.fill {
+            Some(LineFill::ToSeries(other)) => Some(other.clone()),
+            _ => None,
+        },
         _ => None,
     };
     let mut out: Vec<String> = series
@@ -2147,6 +2658,7 @@ fn layers_controls(
     ui.label(egui::RichText::new("Subplots (separate charts, optional axis links)").strong());
     let mut remove_subplot = None;
     let mut fit_subplot = None;
+    let mut place_subplot = None;
     for j in 0..config.subplots.len() {
         ui.push_id(("sp", j), |ui| {
             let sub = &mut config.subplots[j];
@@ -2181,6 +2693,48 @@ fn layers_controls(
             targets.extend((0..j).map(|t| Some(CellRef::Subplot(t))));
             choice(ui, "link X", &mut sub.link_x, &targets);
             choice(ui, "link Y", &mut sub.link_y, &targets);
+            // Its frame in document pixels, anywhere (#205): a drag on the
+            // frame on the base layer does the same.
+            let mut frame = sub.config.chart_area.0;
+            let placed = ui
+                .horizontal(|ui| {
+                    ui.label("frame");
+                    let mut changed = false;
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut frame.x).prefix("x "))
+                        .changed();
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut frame.y).prefix("y "))
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut frame.width)
+                                .prefix("w ")
+                                .range(1..=20_000),
+                        )
+                        .changed();
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut frame.height)
+                                .prefix("h ")
+                                .range(1..=20_000),
+                        )
+                        .changed();
+                    changed
+                })
+                .inner;
+            if placed {
+                place_subplot = Some((j, frame));
+            }
+            ui.horizontal(|ui| {
+                let mut filled = sub.config.plot_background.is_some();
+                if ui.checkbox(&mut filled, "plot background").changed() {
+                    sub.config.plot_background = filled.then_some(Color::WHITE);
+                }
+                if let Some(fill) = sub.config.plot_background.as_mut() {
+                    color(ui, "", fill);
+                }
+            });
             let mut remove_inner = None;
             for k in 0..sub.config.overlays.len() {
                 ui.horizontal(|ui| {
@@ -2199,6 +2753,11 @@ fn layers_controls(
                 status = Some(format!("Removed overlay {k} of subplot {j}"));
             }
         });
+    }
+    if let Some((j, frame)) = place_subplot
+        && let Err(error) = config.set_subplot_area(j, ChartArea(frame))
+    {
+        status = Some(format!("Subplot {j} cannot take that frame: {error:?}"));
     }
     match fit_subplot {
         Some((j, false)) => fit_layer(config, series, r, LayerRef::Subplot(j)),
@@ -2271,7 +2830,7 @@ fn layers_controls(
 /// committed through the registry and exported, so a rejected config fails loudly.
 pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     let e = |e: renderer::FiggyError| e.to_string();
-    let scene = scenes::build(r, SceneKind::Lines).map_err(e)?;
+    let scene = scenes::build(r, SceneKind::Lines, big_data::START_POINTS).map_err(e)?;
     let id = r
         .register_chart(scene.config.clone(), scene.series.clone())
         .map_err(e)?;
@@ -2284,7 +2843,10 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             .map_err(|e| format!("{name}: {e}"))?;
         let chart = Chart::new(r.chart_config(id).unwrap().clone());
         let png = r
-            .export_document_png_bytes(&chart, &series, 1.0)
+            .export_png_blocking(
+                renderer::ExportSource::chart(&chart, &series),
+                renderer::ExportOptions::document(1.0),
+            )
             .map_err(|e| format!("{name} export: {e}"))?;
         step += 1;
         let path = dir.join(format!("{step:02}_{name}.png"));
@@ -2334,32 +2896,145 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
 
     // The field scene with its label workarounds: no box, no level 0.
     {
-        let mut scene = scenes::build(r, SceneKind::Field).map_err(e)?;
-        if let DataRenderType::HeatmapContour { contour, .. } = &mut scene.series[0].render_type {
+        let mut scene = scenes::build(r, SceneKind::Field, big_data::START_POINTS).map_err(e)?;
+        if let DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: _,
+            fill: Some(_),
+            contour: Some(contour),
+            surface: _,
+        }) = &mut scene.series[0].render_type
+        {
             contour.levels.retain(|l| *l != 0.0);
             if let Some(l) = contour.labels.as_mut() {
                 l.bg_color = None;
             }
         }
         let png = r
-            .export_document_png_bytes(&Chart::new(scene.config), &scene.series, 2.0)
+            .export_png_blocking(
+                renderer::ExportSource::chart(&Chart::new(scene.config), &scene.series),
+                renderer::ExportOptions::document(2.0),
+            )
             .map_err(e)?;
         std::fs::write(dir.join("scene_field_clean_2x.png"), png).map_err(|e| e.to_string())?;
         println!("ok  field without box / level 0");
     }
 
     // Every Cartesian scene as it starts, at 1x and 2x.
-    for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_bounded()) {
-        let scene = scenes::build(r, kind).map_err(e)?;
+    for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_radial()) {
+        let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {
             let png = r
-                .export_document_png_bytes(&chart, &scene.series, scale)
+                .export_png_blocking(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
+            let svg = r
+                .export_svg_blocking(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .map_err(e)?;
+            let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
+            std::fs::write(&path, svg).map_err(|e| e.to_string())?;
+            let pdf = r
+                .export_pdf_blocking(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .map_err(e)?;
+            let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
+            std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
         }
-        println!("ok  scene {kind:?}");
+        println!("ok  scene {kind:?} (PNG, SVG, PDF)");
+    }
+
+    // The offset spectra with their group edited through the registry: a
+    // larger step, no skew and the stack reversed, each exported; a member
+    // without a line is refused.
+    {
+        let scene =
+            scenes::build(r, SceneKind::OffsetSpectra, big_data::START_POINTS).map_err(e)?;
+        let id = r
+            .register_chart(scene.config.clone(), scene.series.clone())
+            .map_err(e)?;
+        let mut c = scene.config.clone();
+        let edits: [(&str, fn(&mut renderer::data_config::LineOffsets)); 3] = [
+            ("offsets_step", |o| o.step_y *= 1.5),
+            ("offsets_no_skew", |o| o.step_x = 0.0),
+            ("offsets_reversed", |o| o.series.reverse()),
+        ];
+        for (name, edit) in edits {
+            edit(c.line_offsets.as_mut().expect("the scene has a group"));
+            r.set_chart_config(id, c.clone())
+                .map_err(|e| format!("{name}: {e}"))?;
+            let png = r
+                .export_png_blocking(
+                    renderer::ExportSource::chart(&Chart::new(c.clone()), &scene.series),
+                    renderer::ExportOptions::document(1.0),
+                )
+                .map_err(e)?;
+            std::fs::write(dir.join(format!("{name}.png")), png).map_err(|e| e.to_string())?;
+        }
+        let mut scatter = scene.series.clone();
+        scatter[0].render_type = DataRenderType::Xy(renderer::data_config::XySeries {
+            scatter: Some(scenes::scatter_style(
+                renderer::Color::BLACK,
+                ScatterShape::Circle,
+                3.0,
+            )),
+            line: None,
+            errors: None,
+            stem: None,
+        });
+        if r.set_chart_series(id, scatter).is_ok() {
+            return Err("a line offset member without a line was accepted".into());
+        }
+        r.remove_chart(id).map_err(e)?;
+        println!("ok  offset spectra edits");
+    }
+
+    // The long-label scene as the "Auto layout" button leaves it, committed
+    // through the registry like any edit, at 1x and 2x; a second press
+    // changes nothing.
+    {
+        let scene = scenes::build(r, SceneKind::LongLabels, big_data::START_POINTS).map_err(e)?;
+        let id = r
+            .register_chart(scene.config.clone(), scene.series.clone())
+            .map_err(e)?;
+        let measure = CpuTextMeasure::for_style(&scene.config.draw_style);
+        let laid_out = renderer::layout::auto_layout(&scene.config, &measure);
+        if renderer::layout::auto_layout(&laid_out, &measure) != laid_out {
+            return Err("auto_layout is not idempotent on the long-label scene".into());
+        }
+        r.set_chart_config(id, laid_out).map_err(e)?;
+        let chart = Chart::new(r.chart_config(id).map_err(e)?.clone());
+        for scale in [1.0f32, 2.0] {
+            let png = r
+                .export_png_blocking(
+                    renderer::ExportSource::chart(&chart, &scene.series),
+                    renderer::ExportOptions::document(scale),
+                )
+                .map_err(e)?;
+            let path = dir.join(format!("scene_longlabels_auto_layout_{scale}x.png"));
+            std::fs::write(&path, png).map_err(|e| e.to_string())?;
+        }
+        r.remove_chart(id).map_err(e)?;
+        println!("ok  long labels through auto_layout");
     }
     Ok(())
+}
+
+/// Whether a drag or handle target moves a subplot's frame (#205).
+fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
+    matches!(
+        element,
+        Some(
+            renderer::layout::Element::SubplotFrame(_)
+                | renderer::layout::Element::SubplotFrameEdge(..)
+        )
+    )
 }
