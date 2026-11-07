@@ -1468,6 +1468,19 @@ subplot's `marker`) are additive.
   that built a `ColumnSurfaceLayer` sets `vertices: SURFACE_QUAD_VERTICES`
   and renames `quads` to `instances`.
 
+- **Triangle mesh scenes and guide** ([#210](https://github.com/shim9610/figgy/issues/210)).
+  The playground scenes `SceneKind::TriMesh` (potential flow past a
+  cylinder on a graded annulus mesh, a mesh with a hole: the host's pressure
+  coefficient per node, interpolated across the triangles, with nice
+  contour levels) and `SceneKind::TriSurface` (the same mesh as a matte,
+  wireframed surface in a 3D box, its contours on the floor) join
+  `SceneKind::ALL`, so the decoration oracle, the automatic layout sweep,
+  the vector export sweep and the playground's self-test cover them. The
+  new [triangle mesh guide](crates/renderer/TRIMESH.md) collects the input,
+  the series, the drawing, the 3D surface, the interactions and the tests;
+  the interaction and API guides, the READMEs and the model README name the
+  kind.
+
 - **A frame of more series than a scratch cache holds draws them all.**
   The per-series scratch caches (256 entries each) cleared themselves when
   the 257th series of one frame was prepared, so that frame's layers lost

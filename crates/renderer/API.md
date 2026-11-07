@@ -90,6 +90,14 @@ conversion vector but still copies staging data to GPU storage. It is not a
 promise of zero driver copies. Use the hi/lo path explicitly when precision
 requires it.
 
+A triangle mesh's triangles are a triangle index column:
+`Renderer::upsert_triangles(id, &TriangleSource { indices })` uploads three
+vertex rows per triangle from a `Column<u32>` (or any `ColumnSource` whose
+values are integers up to `u32::MAX`), refusing a count that is not a
+non-zero multiple of three, and `remove_triangles` removes it; a `TriMesh`
+series names it in `triangles`. See the
+[triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md).
+
 Streamed columns (`StreamColumn`) declare `StreamReplay::Sequential` or
 `RandomAccess`. `Unavailable` is rejected: the renderer keeps a bounded working
 set, so exact redraws, zooms and queries read the source again. Every replay

@@ -133,7 +133,7 @@ which is how a host places its own overlay on the box.
 look; `None` (omitted from JSON) takes every default. On a flat chart the
 field is kept and unused.
 
-- **`TriMesh`** (#210) draws a surface over its
+- **`TriMesh`** ([TRIMESH.md](TRIMESH.md), #210) draws a surface over its
   triangles when the series names its height column in
   `SeriesConfig.z_column` (read on `right_y`, as a surface's heights are):
   each triangle's three vertices are placed by `x_column`, `y_column` and

@@ -199,13 +199,21 @@ triangle is outlined inside its edges and a picked level redrawn wider.
 `step_selection` walks the triangles with `dx` and the mesh series with
 `dy`; `selection_details()` reports the triangle's vertex indices and their
 coordinates and values. Decorations, the plot area, the annotation layer,
-overlays and subplots work as on any Cartesian chart.
+overlays and subplots work as on any Cartesian chart. On a 3D chart
+(`Config.view_3d`, [triangle mesh guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TRIMESH.md))
+the mesh is a surface over its triangles and its contours are on the box
+floor: the ID pick answers the triangle the cursor's pixel shows as
+`MeshTriangle` and a floor stroke as `ContourLevel`, never one hidden behind
+the surface; the picked triangle is outlined and brightened over anything in
+front of it; `step_selection` and the details are the flat chart's.
 
-3D charts (`Config.view_3d`, a heatmap drawn as a surface,
+3D charts (`Config.view_3d`, a heatmap or a triangle mesh drawn as a surface,
 [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
 pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
-depth test: a surface answers `PickedData::MatrixCell` for the grid sample
-nearest the fragment inside its quad, never one hidden behind the surface,
+depth test: a heatmap surface answers `PickedData::MatrixCell` for the grid
+sample nearest the fragment inside its quad and a mesh surface
+`PickedData::MeshTriangle` for its triangle, never one hidden behind the
+surface,
 and a floor contour answers its level; a scatter or line series with a
 `z_column` answers `PickedData::Point` for the marker or the segment end
 under the cursor, never a mark behind a surface. The picked sample's patch is

@@ -471,6 +471,44 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
         issue: "#49",
     },
+    // The triangle mesh surface scene is a 3D chart: the Surface rows (#49).
+    Exclusion {
+        scene: "TriSurface",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I2,
+        detail: "box * is * px past the padding from the ink extent*",
+        reason: "a box axis title runs along its slanted edge; its box is the bounding box of \
+                 the turned text box, whose turned corners hold no glyphs",
+        issue: "#210",
+    },
+    Exclusion {
+        scene: "TriSurface",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
+        reason: "the slanted title's turned box, as in I2",
+        issue: "#210",
+    },
+    Exclusion {
+        scene: "TriSurface",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "a 3D chart's data-area drag orbits the camera: every drag is a valid turn",
+        issue: "#210",
+    },
+    Exclusion {
+        scene: "TriSurface",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "the polar drag did not move it",
+        reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
+        issue: "#210",
+    },
     // The 3D vector scene is a 3D chart: the Surface rows (#49).
     Exclusion {
         scene: "Quiver3d",
@@ -1165,6 +1203,8 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::EnergyLevelsU => "EnergyLevelsU",
         SceneKind::EnergyLevelsArAll => "EnergyLevelsArAll",
         SceneKind::Feynman => "Feynman",
+        SceneKind::TriMesh => "TriMesh",
+        SceneKind::TriSurface => "TriSurface",
     }
 }
 
