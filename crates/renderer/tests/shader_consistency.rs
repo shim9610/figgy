@@ -902,6 +902,23 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         ],
         &["arrow_clip", "project_arrow"],
     ),
+    // The surface input layer's interface (#49, #210): the heatmap grid and
+    // the triangle mesh each define the vertex, its fill colour and the
+    // wireframe, pick, selection and patch hooks `surface_entry.wgsl` calls.
+    (
+        &[
+            "data_render/surface_mesh/surface_input_grid.wgsl",
+            "data_render/surface_mesh/surface_input_mesh.wgsl",
+        ],
+        &[
+            "surface_edge_px",
+            "surface_fill_color",
+            "surface_patch",
+            "surface_pick_ids",
+            "surface_selected_vertex",
+            "surface_vertex",
+        ],
+    ),
     (
         &["gpu_pick/line.wgsl", "gpu_pick/no_line.wgsl"],
         &["pick_line_candidate"],
