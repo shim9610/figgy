@@ -868,6 +868,133 @@ fn a_million_triangles_draw_to_the_last() {
     renderer.remove_chart(id).unwrap();
 }
 
+/// Rule 10 and the index lanes: a mesh over `2^24 + 2` vertices draws and
+/// picks a triangle whose indices pass 2^24, where an `f32` index would
+/// round `2^24 + 1` onto `2^24` and collapse the triangle. The three
+/// vertex columns take about 400 MB of pool, so the test is run manually:
+///
+/// `cargo test -p figgy-renderer --features serde,cpu-twin --test tri_mesh_render -- --ignored`
+#[test]
+#[ignore = "large scale: about 400 MB of pool, run manually"]
+fn a_mesh_past_2_pow_24_vertices_draws_and_picks_its_high_triangle() {
+    const HIGH: usize = 1 << 24;
+    let vertices = HIGH + 2;
+    // The shared test device runs with the default limits (128 MiB per
+    // storage binding), which hold 2^24 vertices but not 2^24 + 2: open one
+    // with the adapter's own limits.
+    let instance = test_gpu::instance();
+    let adapter = test_gpu::adapter(&instance);
+    let limits = adapter.limits();
+    let (device, queue) = test_gpu::request_device(
+        &adapter,
+        &wgpu::DeviceDescriptor {
+            required_limits: limits.clone(),
+            ..Default::default()
+        },
+    );
+    let mut renderer = Renderer::try_new(
+        RendererDevice::new(device, queue).expect("figgy poll thread"),
+        wgpu::TextureFormat::Bgra8Unorm,
+        64 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    renderer.enable_gpu_picking().expect("GPU picking");
+    let column_bytes = (vertices as u64) * 8;
+    if column_bytes
+        > limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size)
+    {
+        // A device that cannot hold the column refuses it at registration,
+        // the one failure rule 10 allows.
+        let error = renderer
+            .upsert_column(
+                "mx",
+                &Column {
+                    data: vec![0.0; vertices],
+                },
+            )
+            .expect_err("a column past the device's buffer limit is refused");
+        println!("{vertices} vertices: refused on this device: {error}");
+        return;
+    }
+    // Every vertex but the last three sits off the plot, at (-0.9, -0.9),
+    // value 0; the last three span the lower-left half of the square.
+    let mut xs = vec![-0.9; vertices];
+    let mut ys = vec![-0.9; vertices];
+    let mut vs = vec![0.0; vertices];
+    let corners = [(HIGH - 1, 0.0, 0.0), (HIGH, 2.0, 0.0), (HIGH + 1, 0.0, 2.0)];
+    for (i, x, y) in corners {
+        xs[i] = x;
+        ys[i] = y;
+        vs[i] = field(x, y);
+    }
+    let start = std::time::Instant::now();
+    renderer.upsert_column("mx", &Column { data: xs }).unwrap();
+    renderer.upsert_column("my", &Column { data: ys }).unwrap();
+    renderer.upsert_column("mv", &Column { data: vs }).unwrap();
+    // Triangle 0 names low vertices only (all at the same off-plot point,
+    // so it paints nothing); triangle 1 is the high one.
+    let high = [HIGH as u32 - 1, HIGH as u32, HIGH as u32 + 1];
+    renderer
+        .upsert_triangles(
+            "tris",
+            &TriangleSource {
+                indices: &Column {
+                    data: vec![0, 1, 2, high[0], high[1], high[2]],
+                },
+            },
+        )
+        .unwrap();
+    println!(
+        "{vertices} vertices: upload in {:.1} ms",
+        start.elapsed().as_secs_f64() * 1e3
+    );
+    let bar = colorbar(0.0, 6.0);
+    let chart = wide_chart(Some(bar.clone()));
+    let series = vec![mesh_series(
+        MeshValueLocation::Vertices,
+        Some(fill(Shading::Interpolated, FillMode::Continuous)),
+        None,
+    )];
+    let id = renderer
+        .register_chart(chart.config().clone(), series.clone())
+        .unwrap();
+    assert_eq!(
+        renderer.series_draw_info(id, "mesh").unwrap().drawn_count,
+        2
+    );
+    // At 1x and 2x the high triangle paints the blend of its own three
+    // vertices: an index rounded onto its neighbour would collapse it.
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut renderer, &chart, &series, scale);
+        for (x, y) in [(0.5, 0.5), (1.2, 0.4), (0.3, 1.3)] {
+            let (px, py) = data_to_px(&chart, x, y, f64::from(scale));
+            assert_colour(
+                &img,
+                (px, py),
+                bar.color_for_z(field(x, y)),
+                3,
+                &format!("high triangle at ({x}, {y}) at {scale}x"),
+            );
+        }
+    }
+    // The pick answers the high triangle and its vertex nearest the cursor,
+    // the one at index 2^24.
+    match pick_data_point(&mut renderer, id, &chart, (1.6, 0.2)) {
+        Some(renderer::PickedData::MeshTriangle {
+            triangle_index,
+            vertex_index,
+            ..
+        }) => {
+            assert_eq!(triangle_index, 1);
+            assert_eq!(vertex_index, HIGH);
+        }
+        other => panic!("expected the high triangle, got {other:?}"),
+    }
+    renderer.remove_chart(id).unwrap();
+}
+
 /// Image pixel of data `(x, y)` where the axis chrome places it, through
 /// `axis_fraction` (cuts and scales included) and the scaled layout.
 fn chrome_px(config: &renderer::Config, x: f64, y: f64, scale: f32) -> (u32, u32) {

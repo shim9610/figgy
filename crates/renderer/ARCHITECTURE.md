@@ -488,6 +488,14 @@ When `AxisOptions.scale = Probability(_)` ([#209](https://github.com/shim9610/fi
 - Auto-fit keeps both ends inside `(0, 1)`: an end at 0 or 1 takes the mirror of the other, and the padding is in `F⁻¹` units.
 - Streamed series are refused (rule 8).
 
+### Triangle meshes on the GPU
+
+A `TriMesh` series ([#210](https://github.com/shim9610/figgy/issues/210), [guide](TRIMESH.md)) reads four pool columns: x, y, the values and a triangle index column (three `u32` lanes per triangle, SHADER_COMMON §5.14).
+- Group 2 is the field's layout reinterpreted under `FIELD_FLAG_MESH` (SHADER_COMMON §5.25): the grid table holds the value column, the index column and, on a 3D chart, the height column; the cache, the signature and the eviction are the field's, so no new cache.
+- Draw: one instance per triangle, three vertices, no vertex buffer (`TRI_MESH_SHADER`). The vertex stage reads the triangle's indices and vertices, drops a triangle with an index past the drawn count or an unplaceable vertex, and the fragment blends the values barycentrically; contour lines are the level set of each triangle's linear interpolant. On a 3D chart `TRI_SURFACE_SHADER` places the vertices through the camera, and the floor contours are the mesh module's floor entries.
+- Pick: on a flat chart a one-workgroup compute scan over every triangle (`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) answers the triangle under the cursor, or a contour over it; on a 3D chart the 1×1 ID pass writes kind 2 for the surface and the floor-contour word for its levels. Both read the draw's own group 2 snapshot.
+- The CPU keeps only the pool's scalar statistics of the index column (count, smallest and largest index); registration checks the largest index against the vertex count. Streamed sources are refused (rule 8).
+
 ### Export pipeline
 
 ![Requested-resolution offscreen export, resident or replayed streaming input, row readback and PNG encoding](https://raw.githubusercontent.com/shim9610/figgy/807327081b97d20964cc96ce543dfb93a27499be/crates/renderer/assets/png-export-en.png)
@@ -851,6 +859,14 @@ redraw_pending = false;
 - GPU에서는 `common/probability.wgsl`이 각 표본을 `(hi, lo)` 쌍에서 f32로 `F⁻¹(p)`에 놓는다(SHADER_COMMON §5.24). 0이나 1, 또는 그 바깥의 값은 위치가 없다. 그런 점과 그 점에 닿는 선분은 로그축의 0 이하 표본처럼 생략하고, 면적이나 줄기의 기준선은 그쪽 축 끝에 고정한다.
 - 자동 범위 맞춤은 두 끝을 `(0, 1)` 안에 둔다. 0이나 1인 끝은 다른 끝의 대칭을 쓰고, 여백은 `F⁻¹` 단위로 둔다.
 - 스트리밍 계열은 거부한다(규칙 8).
+
+### GPU의 삼각 메시 처리
+
+`TriMesh` 시리즈([#210](https://github.com/shim9610/figgy/issues/210), [가이드](TRIMESH.md))는 풀의 컬럼 네 개를 읽는다. x, y, 값, 그리고 삼각형 인덱스 컬럼이다(삼각형마다 `u32` 레인 세 개, SHADER_COMMON §5.14).
+- 그룹 2는 필드의 레이아웃을 `FIELD_FLAG_MESH`로 다시 해석한다(SHADER_COMMON §5.25). 격자 표에는 값 컬럼, 인덱스 컬럼, 3D 차트에서는 높이 컬럼이 들어간다. 캐시와 서명, 축출은 필드의 것을 그대로 쓰므로 새 캐시는 없다.
+- 그리기: 삼각형마다 인스턴스 하나, 정점 셋이며 정점 버퍼는 없다(`TRI_MESH_SHADER`). 정점 단계가 삼각형의 인덱스와 정점을 읽고, 그리는 개수를 넘는 인덱스나 놓을 수 없는 정점이 있는 삼각형은 버린다. 조각 단계는 값을 무게중심 좌표로 섞고, 등고선은 삼각형마다 선형 보간의 등위선이다. 3D 차트에서는 `TRI_SURFACE_SHADER`가 정점을 카메라로 놓고, 바닥 등고선은 메시 모듈의 바닥 진입점이 그린다.
+- 피킹: 평면 차트에서는 워크그룹 하나짜리 계산 셰이더가 모든 삼각형을 훑어(`pick_tri_mesh`, `GpuDataPickGeometry::TriMesh`) 커서 아래의 삼각형이나 그 위의 등고선을 답한다. 3D 차트에서는 1×1 ID 패스가 표면에 종류 2를, 바닥 등고선에 등고선 단어를 쓴다. 둘 다 그리기와 같은 그룹 2 스냅샷을 읽는다.
+- CPU는 인덱스 컬럼의 스칼라 통계(개수, 가장 작은 인덱스와 가장 큰 인덱스)만 갖는다. 등록할 때 가장 큰 인덱스를 정점 개수와 비교한다. 스트리밍 계열은 거부한다(규칙 8).
 
 <a id="export-파이프라인"></a>
 
