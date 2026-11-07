@@ -222,6 +222,50 @@ pub struct Subplot {
     /// The same for `left_y` and the target's `left_y`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub link_y: Option<CellRef>,
+    /// What this subplot magnifies, marked on the parent (#205): a window
+    /// rectangle on the parent's plot and connectors to this subplot's plot,
+    /// placed from the SSOT on every draw, so they follow a moved, resized
+    /// or zoomed inset and a parent view change. `None` (default, omitted)
+    /// marks nothing.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub marker: Option<InsetMarker>,
+}
+
+/// The mark of what an inset magnifies (#205), drawn on the parent's
+/// annotation layer under the insets: the window clipped to the parent's
+/// plot, and two connectors from the window's facing corners to the
+/// inset's plot. Not selectable: the inset itself is.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct InsetMarker {
+    /// The window in the parent's data coordinates, `[[x0, x1], [y0, y1]]`.
+    /// `None` (default, omitted) derives it from the inset
+    /// ([`crate::config::Config::inset_window`]).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub window: Option<[[f64; 2]; 2]>,
+    /// The window's border and the connectors.
+    pub line: crate::annotation::AnnotationLineStyle,
+    /// Whether the connectors are drawn. Default `true`.
+    pub connectors: bool,
+}
+
+impl Default for InsetMarker {
+    /// A derived window, a thin grey line and connectors.
+    fn default() -> Self {
+        Self {
+            window: None,
+            line: crate::annotation::AnnotationLineStyle {
+                color: crate::color::Color::from_rgb8(120, 128, 140),
+                width: 1.0,
+                style: crate::line::LineStylePreset::Solid,
+            },
+            connectors: true,
+        }
+    }
 }
 
 impl Default for Subplot {
@@ -232,6 +276,7 @@ impl Default for Subplot {
             series: Vec::new(),
             link_x: None,
             link_y: None,
+            marker: None,
         }
     }
 }

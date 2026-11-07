@@ -45,8 +45,16 @@ mod ternary;
 /// handwritten face (with per-character fallback for glyphs it lacks),
 /// threaded through every measure and placement so layout and raster always
 /// agree. The elements the model places go through
-/// [`emit_element`], with the renderer's measure.
-pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+/// [`emit_element`], with the renderer's measure. `scale` is the display or
+/// export scale `config`'s pixel values carry (1 for a config drawn as
+/// stored): a broken axis snaps its piece frames to whole logical pixels
+/// through it (#205), and nothing else reads it.
+pub fn emit_chart_chrome(
+    config: &Config,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+    scale: f32,
+) {
     let Ok(da) = config.data_area() else { return };
     // The Cartesian walks take the plot rectangle.
     let plot = data_area_rect(&da);
@@ -73,7 +81,7 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
         // not drawn (#141).
         for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
             let cross = crate::layout::axis_cross(config, &side);
-            emit_axis(axis, side, &plot, cross, measure, sink);
+            emit_axis(axis, side, &plot, cross, measure, sink, scale);
         }
         parallel::emit_parallel_axes(config, &da, measure, sink);
     } else {
@@ -93,11 +101,17 @@ pub fn emit_chart_chrome(config: &Config, measure: &dyn MeasureText, sink: &mut 
             (right.as_ref(), Side::Right),
         ] {
             let cross = crate::layout::axis_cross(config, &side);
-            emit_axis(axis, side, &plot, cross, measure, sink);
+            emit_axis(axis, side, &plot, cross, measure, sink, scale);
         }
         // The category group headers past the x axes' labels (#203).
         for side in [Side::Top, Side::Bottom] {
-            emit_part_of(config, &Element::CategoryGroupLabel(side), measure, sink);
+            emit_part_of(
+                config,
+                &Element::CategoryGroupLabel(side),
+                measure,
+                sink,
+                scale,
+            );
         }
     }
 
@@ -140,6 +154,7 @@ pub fn emit_part_of(
     element: &Element,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
+    scale: f32,
 ) -> bool {
     let Ok(da) = config.data_area() else {
         return matches!(
@@ -210,6 +225,7 @@ pub fn emit_part_of(
                 crate::layout::axis_cross(config, side),
                 measure,
                 sink,
+                scale,
             ),
             Side::Left | Side::Right => {}
         },
@@ -255,6 +271,7 @@ pub fn emit_part_of(
                 crate::layout::axis_cross(config, side),
                 measure,
                 sink,
+                scale,
             );
         }
         Element::ColorBarLabel => {

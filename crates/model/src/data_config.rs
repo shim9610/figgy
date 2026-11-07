@@ -7801,6 +7801,7 @@ mod box_plot_tests {
             series: vec!["below".into()],
             link_x: None,
             link_y: None,
+            marker: None,
         });
         // The subplot's own groups decide: stacked there is rejected.
         assert!(config.validate_box_plots(&[boxes("a")]).is_ok());

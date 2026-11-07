@@ -122,7 +122,7 @@ field setters:
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
-| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These and `set_x_range` / `set_y_range` leave a categorical axis (`categories` set) unchanged. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the slots it shows, and the full range clears it. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
 | `FeynmanSeries::auto_layout()` / `Renderer::auto_layout(chart, series_id)` | Write the automatic layout's place into the `at` of every vertex without one (#234), the auto-fit pattern: a display parameter committed into the SSOT, which the host reads back through `chart_series`. Placed vertices are untouched. An error when the layout's solver stops converging or its working memory cannot be allocated. `drag_vertex` (`Renderer::drag_feynman` with `FeynmanHit::Vertex`) commits the layout on the first drag, `drag_bend` sets a line's `bend`, and `drag_label` moves a label's offset in logical pixels, the value-label drag. See [Feynman diagrams](FEYNMAN.md). |
@@ -177,11 +177,13 @@ A Cartesian axis becomes categorical when its `categories` is set: with `n`
 categories it maps the data range `[-0.5, n - 0.5]`, category `i` sits at
 x (or y) `i`, every category has a major tick (and a grid line when that
 axis' major grid is on), and the tick label is `categories[i].label` in the
-axis' `label_style`, thinned like numeric labels when neighbours crowd. Upload
+axis' `label_style`, staggered over rows when neighbours crowd ([#205](https://github.com/shim9610/figgy/issues/205)),
+never thinned. Upload
 the data of a categorical axis as category indices `0..n`. `min`, `max`,
-`major_spacing`, `minor_count` and `label_style.format` are ignored there,
-and `set_x_range` / `set_y_range`, the `auto_fit_*` helpers and view states
-leave the axis unchanged. A categorical axis must be linear; `inverted` walks
+`major_spacing`, `minor_count` and `label_style.format` are ignored there;
+the `auto_fit_*` helpers leave the axis unchanged, and `set_x_range` /
+`set_y_range` and view states set its `category_window`, the slots it shows
+(#205). A categorical axis must be linear; `inverted` walks
 its categories from the far end (the first category at the top of a `left_y`),
 with at least one category and no upper count, whose ids are unique (every
 category draws its value labels); polar axes and the colourbar

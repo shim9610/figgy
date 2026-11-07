@@ -810,6 +810,7 @@ fn a_polar_subplot_draws_its_own_rose() {
         series: vec!["one".into(), "two".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let chart = Chart::new(parent);
     let series = [bars("one", RED), bars("two", BLUE)];

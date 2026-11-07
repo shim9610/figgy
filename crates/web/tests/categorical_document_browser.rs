@@ -136,7 +136,7 @@ async fn a_value_label_picks_selects_and_drags() {
     assert!(!chart.step_selection(1, 0).unwrap());
 
     chart.on_move(6.0, -4.0).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     let [dx, dy] = series[0].value_label_offset(1);
     assert!(dx > 0.0 && dy < 0.0, "the drag wrote ({dx}, {dy})");

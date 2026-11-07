@@ -31,8 +31,8 @@ pub(crate) fn apply_axis_range(
     max: f64,
     scale: &AxisScale,
 ) {
-    // A categorical axis keeps its category range: every range helper (the
-    // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
+    // A categorical axis keeps its category range here: the `auto_fit_*`
+    // family leaves it as is. A view moves it through `apply_view_range`.
     if axis.categories.is_some() {
         return;
     }
@@ -60,6 +60,22 @@ pub(crate) fn apply_axis_range(
             axis.label_style.significant_digits = 3;
         }
     }
+}
+
+/// How a range reaches one axis: [`apply_view_range`] or
+/// [`apply_axis_range`].
+type ApplyRange = fn(&mut AxisOptions, f64, f64, &AxisScale);
+
+/// Apply a view's range to one axis (#205): a categorical axis takes it as
+/// its [`AxisOptions::category_window`] (`None` again for the full range),
+/// a numeric one as [`apply_axis_range`] does.
+pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, scale: &AxisScale) {
+    if let Some(n) = axis.category_count() {
+        let full = (-0.5, n as f64 - 0.5);
+        axis.category_window = ((min, max) != full).then_some([min, max]);
+        return;
+    }
+    apply_axis_range(axis, min, max, scale);
 }
 
 /// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
@@ -280,10 +296,22 @@ pub(crate) fn apply_auto_fit_all(
     }
     let mirror = partner_mirrors(config);
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
-        apply_pair_range([&mut config.bottom_x, &mut config.top_x], mirror, min, max);
+        apply_pair_range(
+            [&mut config.bottom_x, &mut config.top_x],
+            mirror,
+            min,
+            max,
+            apply_axis_range,
+        );
     }
     if let Some((min, max)) = fitted_axis_range(&config.left_y, y_extent, padding_ratio) {
-        apply_pair_range([&mut config.left_y, &mut config.right_y], mirror, min, max);
+        apply_pair_range(
+            [&mut config.left_y, &mut config.right_y],
+            mirror,
+            min,
+            max,
+            apply_axis_range,
+        );
     }
 }
 
@@ -299,15 +327,28 @@ pub(crate) fn apply_auto_fit_all(
 /// then takes the tick settings of its own scale, so where the partner is a
 /// separate axis (the z axis of a 3D chart, the c axis of a ternary one) it
 /// keeps its scale and gets the ticks of it. A categorical axis keeps its
-/// scale and range ([`apply_axis_range`]).
-fn apply_pair_range(pair: [&mut AxisOptions; 2], mirror: bool, min: f64, max: f64) {
+/// scale and range under a fit ([`apply_axis_range`]); a view moves its
+/// window ([`apply_view_range`]). `apply` is the one of the two. A
+/// categorical partner of a numeric main axis is a separate axis whose
+/// range is not in the main axis's units, so it keeps its window under a
+/// view too.
+fn apply_pair_range(
+    pair: [&mut AxisOptions; 2],
+    mirror: bool,
+    min: f64,
+    max: f64,
+    apply: ApplyRange,
+) {
     let [main, partner] = pair;
     if mirror && main.categories.is_none() && partner.categories.is_none() {
         partner.scale = main.scale.clone();
     }
-    for axis in [main, partner] {
-        let scale = axis.scale.clone();
-        apply_axis_range(axis, min, max, &scale);
+    let partner_follows = main.categories.is_some() || partner.categories.is_none();
+    let main_scale = main.scale.clone();
+    apply(main, min, max, &main_scale);
+    if partner_follows {
+        let scale = partner.scale.clone();
+        apply(partner, min, max, &scale);
     }
 }
 
@@ -709,9 +750,16 @@ impl Chart {
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
+        self.x_range(min, max, apply_view_range);
+    }
+
+    /// The X pair's range through `apply`: [`apply_view_range`] for a view,
+    /// which moves a categorical axis' window (#205), [`apply_axis_range`]
+    /// for a fit, which leaves a categorical axis as it is.
+    fn x_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
         self.with_axis_range_change(|c| {
             let mirror = partner_mirrors(c);
-            apply_pair_range([&mut c.bottom_x, &mut c.top_x], mirror, min, max);
+            apply_pair_range([&mut c.bottom_x, &mut c.top_x], mirror, min, max, apply);
         });
     }
 
@@ -720,9 +768,14 @@ impl Chart {
     /// formatting, write only `min` / `max` through
     /// [`Self::with_axis_range_change`] instead.
     pub fn set_y_range(&mut self, min: f64, max: f64) {
+        self.y_range(min, max, apply_view_range);
+    }
+
+    /// The Y pair's range through `apply` (see [`Self::x_range`]).
+    fn y_range(&mut self, min: f64, max: f64, apply: ApplyRange) {
         self.with_axis_range_change(|c| {
             let mirror = partner_mirrors(c);
-            apply_pair_range([&mut c.left_y, &mut c.right_y], mirror, min, max);
+            apply_pair_range([&mut c.left_y, &mut c.right_y], mirror, min, max, apply);
         });
     }
 
@@ -730,6 +783,12 @@ impl Chart {
     /// the overlay counterpart of [`Self::set_y_range`]. Log/linear branching
     /// uses that axis' own scale. A `layer` past the overlay list is a no-op.
     pub fn set_overlay_y_range(&mut self, layer: usize, min: f64, max: f64) {
+        self.overlay_y_range(layer, min, max, apply_view_range);
+    }
+
+    /// Overlay layer `layer`'s Y range through `apply` (see
+    /// [`Self::x_range`]).
+    fn overlay_y_range(&mut self, layer: usize, min: f64, max: f64, apply: ApplyRange) {
         let Some(scale) = self
             .config
             .overlays
@@ -740,7 +799,7 @@ impl Chart {
         };
         self.with_axis_range_change(|c| {
             if let Some(overlay) = c.overlays.get_mut(layer) {
-                apply_axis_range(&mut overlay.y_axis, min, max, &scale);
+                apply(&mut overlay.y_axis, min, max, &scale);
             }
         });
     }
@@ -757,7 +816,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_overlay_y_range(layer, min, max);
+        self.overlay_y_range(layer, min, max, apply_axis_range);
     }
 
     /// Auto-fit overlay layer `layer`'s Y axis to the union range of the
@@ -783,16 +842,16 @@ impl Chart {
     /// linked `bottom_x` writes the root of its link group, so every linked
     /// chart moves with it. An `index` past the subplot list is a no-op.
     pub fn set_subplot_x_range(&mut self, index: usize, min: f64, max: f64) {
-        self.set_subplot_range(index, true, min, max);
+        self.set_subplot_range(index, true, min, max, apply_view_range);
     }
 
     /// Set subplot `index`'s Y range (left + right); see
     /// [`Self::set_subplot_x_range`].
     pub fn set_subplot_y_range(&mut self, index: usize, min: f64, max: f64) {
-        self.set_subplot_range(index, false, min, max);
+        self.set_subplot_range(index, false, min, max, apply_view_range);
     }
 
-    fn set_subplot_range(&mut self, index: usize, x: bool, min: f64, max: f64) {
+    fn set_subplot_range(&mut self, index: usize, x: bool, min: f64, max: f64, apply: ApplyRange) {
         if index >= self.config.subplots.len() {
             return;
         }
@@ -805,7 +864,7 @@ impl Chart {
                 } else {
                     [&mut chart.left_y, &mut chart.right_y]
                 };
-                apply_pair_range(axes, mirror, min, max);
+                apply_pair_range(axes, mirror, min, max, apply);
             };
             match root {
                 crate::CellRef::Parent => pair(config),
@@ -829,7 +888,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_subplot_x_range(index, min, max);
+        self.set_subplot_range(index, true, min, max, apply_axis_range);
     }
 
     /// Fit subplot `index`'s Y axis to a prepared [`FitExtent`] — see
@@ -843,7 +902,7 @@ impl Chart {
         else {
             return;
         };
-        self.set_subplot_y_range(index, min, max);
+        self.set_subplot_range(index, false, min, max, apply_axis_range);
     }
 
     /// Auto-fit subplot `index`'s X axis to the union range of the given
@@ -926,7 +985,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
         };
-        self.set_x_range(min, max);
+        self.x_range(min, max, apply_axis_range);
     }
 
     /// Fit the Y axis to a prepared [`FitExtent`] — see
@@ -938,7 +997,7 @@ impl Chart {
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
             return;
         };
-        self.set_y_range(min, max);
+        self.y_range(min, max, apply_axis_range);
     }
 
     /// Fit the chart's z axis to a prepared extent. The colourbar owns the
@@ -1404,6 +1463,7 @@ mod tests {
             series: vec![],
             link_x: None,
             link_y: None,
+            marker: None,
         });
         for config in [left, subplot] {
             validate_renderer_config(&config).expect("a probability axis draws");
@@ -1727,6 +1787,19 @@ mod tests {
         assert_eq!(c.config().right_y, before);
     }
 
+    /// A view moves the window of a categorical partner of a categorical
+    /// main axis: both edges show the same categories (#205).
+    #[test]
+    fn a_view_moves_both_windows_of_a_categorical_pair() {
+        let mut cfg = dummy_config();
+        cfg.bottom_x.categories = categories(3);
+        cfg.top_x.categories = categories(3);
+        let mut c = Chart::new(cfg);
+        c.set_x_range(0.5, 2.5);
+        assert_eq!(c.config().bottom_x.category_window, Some([0.5, 2.5]));
+        assert_eq!(c.config().top_x.category_window, Some([0.5, 2.5]));
+    }
+
     #[test]
     fn auto_fit_extent_degenerate_is_noop() {
         let mut c = Chart::new(dummy_config());
@@ -1978,14 +2051,14 @@ mod tests {
         assert!(overlay.is_ok(), "{overlay:?}");
     }
 
-    /// The range helpers leave a categorical axis as it is.
+    /// The fit helpers leave a categorical axis as it is; a view's range
+    /// moves its category window (#205), and the full range clears it.
     #[test]
-    fn range_helpers_leave_a_categorical_axis_unchanged() {
+    fn a_categorical_axis_keeps_its_range_on_fits_and_takes_a_view_as_its_window() {
         let mut cfg = dummy_config();
         cfg.bottom_x.categories = categories(3);
         let before = cfg.bottom_x.clone();
         let mut chart = Chart::new(cfg);
-        chart.set_x_range(-10.0, 10.0);
         chart.auto_fit_x_extent(
             &FitExtent {
                 min: 1.0,
@@ -1997,6 +2070,16 @@ mod tests {
         assert_eq!(chart.config().bottom_x, before);
         // The numeric top axis of the pair still follows.
         assert_eq!(chart.config().top_x.min, 1.0 - 0.1);
+        chart.set_x_range(0.5, 2.5);
+        let axis = &chart.config().bottom_x;
+        assert_eq!(axis.category_window, Some([0.5, 2.5]));
+        assert_eq!(
+            (axis.min, axis.max),
+            (before.min, before.max),
+            "min / max kept"
+        );
+        chart.set_x_range(-0.5, 2.5);
+        assert_eq!(chart.config().bottom_x, before);
     }
 
     // The colourbar's z axis goes through the same renderer-side gate as the

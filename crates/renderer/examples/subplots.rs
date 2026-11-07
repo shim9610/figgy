@@ -147,6 +147,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
                 series: vec![sensors[k].0.to_string()],
                 link_x: Some(CellRef::Parent),
                 link_y: None,
+                marker: None,
             };
             subplot.config.legend.visible = false;
             subplot
@@ -231,6 +232,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
         series: series.iter().map(|id| id.to_string()).collect(),
         link_x: None,
         link_y: None,
+        marker: None,
     };
 
     // The document's own chart is the upper-left cell; three subplots fill

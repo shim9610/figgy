@@ -1970,7 +1970,8 @@ fn a_polar_tick_label_selection_boxes_each_label() {
             &measure,
             &mut Parts(&mut |part| if let DrawnPart::Text(r) = part {
                 labels.push(r)
-            })
+            }),
+            1.0
         ));
         assert!(labels.len() >= 4, "{side:?}: {} labels", labels.len());
 
@@ -2120,12 +2121,12 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
     }
 }
 
-/// Crowded category labels are thinned by the numeric labels' rule: every
-/// 2nd, 5th, 10th... label, each kept box half an em clear of the previous
-/// one; a wide axis keeps them all. An empty label keeps its slot and draws
-/// nothing.
+/// Crowded category labels are never thinned (#205): every category is
+/// named, staggered over the fewest rows that keep the labels of each row
+/// clear of each other, a long label's row included. A wide axis keeps them on one row. An empty label keeps its slot
+/// and draws nothing.
 #[test]
-fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
+fn crowded_category_labels_stagger_and_keep_every_name() {
     let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap();
@@ -2165,15 +2166,24 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
         .iter()
         .map(|(t, _)| names.iter().position(|n| n == t).unwrap())
         .collect();
-    assert!(kept.len() >= 2 && kept.len() < names.len(), "{kept:?}");
-    let stride = kept[1] - kept[0];
-    assert!([2, 5].contains(&stride), "{kept:?}");
-    assert!(
-        kept.iter().enumerate().all(|(n, &i)| i == n * stride),
-        "{kept:?}"
-    );
-    for pair in log.0.windows(2) {
-        assert!(pair[1].1.x >= pair[0].1.x + pair[0].1.width + gap - 1e-3);
+    assert_eq!(kept, (0..names.len()).collect::<Vec<_>>(), "every name");
+    let mut rows: Vec<f32> = log.0.iter().map(|(_, b)| b.y).collect();
+    rows.sort_by(f32::total_cmp);
+    rows.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+    assert!(rows.len() > 1 && rows.len() < names.len(), "{rows:?}");
+    for row in &rows {
+        let on_row: Vec<&RectF> = log
+            .0
+            .iter()
+            .filter(|(_, b)| (b.y - row).abs() < 0.5)
+            .map(|(_, b)| b)
+            .collect();
+        for pair in on_row.windows(2) {
+            assert!(
+                pair[1].x >= pair[0].x + pair[0].width + gap - 1e-3,
+                "{pair:?} on row {row}"
+            );
+        }
     }
     let mut all = TextLog::default();
     emit_axis_tick_labels(
@@ -2253,6 +2263,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         None,
         &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &majors,
+        1.0,
         |stroke, a, _| {
             if let AxisStroke::Tick(_) = stroke {
                 ticks.push(a.0);
@@ -2342,6 +2353,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         None,
         &CpuTextMeasure::with_policy(fp),
         &majors,
+        1.0,
         |stroke, a, b| match stroke {
             AxisStroke::Line => line = Some((a, b)),
             AxisStroke::Tick(_) => ticks.push(a),

@@ -1325,6 +1325,7 @@ fn vector_series_draw_inside_their_subplot() {
         series: vec!["arrows".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let series = [points("arrows", pixels(1.0))];
     let img = renderer
@@ -1987,6 +1988,7 @@ fn streamlines_draw_inside_their_subplot() {
         series: vec!["flow".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let series = [thin_streamlines(Some(ARROWS))];
     let img = renderer

@@ -645,6 +645,7 @@ fn stems_draw_on_overlays_subplots_and_broken_axes() {
         series: vec!["ov".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let img = export_document(&mut r, &doc, &series);
     save("subplot_stems", &img);
@@ -668,6 +669,7 @@ fn stems_draw_on_overlays_subplots_and_broken_axes() {
         gap: 0.1,
         mark: BreakMark::None,
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let img = export(&mut r, &broken, &series, 1.0);
     save("broken_stems", &img);

@@ -85,6 +85,7 @@ fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
         gap: 0.1,
         mark: BreakMark::None,
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     config
 }
@@ -257,6 +258,53 @@ fn markers_on_each_piece_land_where_the_chrome_places_them() {
             count_in_rows(&img, gap_rows(&config, scale, 0.0), is(RED)),
             0
         );
+    }
+}
+
+// #205: pieces sized by weight draw each piece at its own scale, in the
+// shader as the chrome places it, and a pick finds what each piece draws.
+#[test]
+fn weighted_pieces_draw_and_pick_where_the_chrome_places_them() {
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let xs = [1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
+    // Clear of the pieces' edges, where a marker is cut by its piece.
+    let ys = [2.0, 5.0, 8.0, 93.0, 95.0, 97.0];
+    upload(&mut r, "x", xs.to_vec());
+    upload(&mut r, "y", ys.to_vec());
+    for sizing in [
+        renderer::config::PieceSizing::Weights(vec![3.0, 1.0]),
+        renderer::config::PieceSizing::Equal,
+    ] {
+        let mut config = config(0.0, 100.0, &[(10.0, 90.0)]);
+        config.left_y.breaks.as_mut().unwrap().sizing = sizing.clone();
+        config.validate().unwrap();
+        assert!(
+            renderer::layout::BreakMap::of(&config.left_y).per_piece()
+                || sizing == renderer::config::PieceSizing::Equal
+        );
+        let series = [markers("m", "x", "y", RED)];
+        for scale in [1.0f32, 2.0] {
+            let img = export(&mut r, &config, &series, scale);
+            for (i, (&x, &v)) in xs.iter().zip(&ys).enumerate() {
+                let (cx, cy) = (col_of(&config, x, scale), row_of(&config, v, scale));
+                let (mx, my) = centroid(&img, cx, cy, 10.0 * scale, is(RED))
+                    .unwrap_or_else(|| panic!("{sizing:?} {scale}x: no marker for y = {v}"));
+                assert!(
+                    (mx - cx).abs() < 1.0 && (my - cy).abs() < 1.0,
+                    "{sizing:?} {scale}x y = {v}: marker at ({mx}, {my}), chrome at ({cx}, {cy})"
+                );
+                assert_eq!(
+                    pick_at(&mut r, &config, &series, (cx, cy), scale),
+                    Some(("m".into(), i)),
+                    "{sizing:?} {scale}x pick y = {v}"
+                );
+            }
+            assert_eq!(
+                count_in_rows(&img, gap_rows(&config, scale, 0.0), is(RED)),
+                0
+            );
+        }
     }
 }
 
@@ -885,6 +933,7 @@ fn overlays_subplots_and_line_offsets_draw_their_pieces() {
             series: vec!["sub".into()],
             link_x: None,
             link_y: None,
+            marker: None,
         });
         document.line_offsets = Some(renderer::data_config::LineOffsets {
             series: vec!["lo0".into(), "lo1".into()],
@@ -1174,6 +1223,7 @@ fn category_bars_cross_a_value_axis_cut() {
                 gap: 0.1,
                 mark: BreakMark::None,
                 frame_each_panel: false,
+                sizing: Default::default(),
             });
             let (x, y) = match direction {
                 CategoryBarDirection::Vertical => {

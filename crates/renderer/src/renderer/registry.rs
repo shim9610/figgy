@@ -60,6 +60,8 @@ impl AxisViewState {
             // The range of a categorical axis (`data_range`).
             categories: _,
             category_groups: _,
+            // The window is the range of a categorical axis (`data_range`).
+            category_window: _,
             // Where the line is drawn, not how data maps.
             cross_at: _,
             // Which ticks a log axis draws, not how data maps.
@@ -88,7 +90,7 @@ impl AxisViewState {
             inverted,
         } = self;
         axis.scale = scale.clone();
-        crate::chart::apply_axis_range(axis, *min, *max, scale);
+        crate::chart::apply_view_range(axis, *min, *max, scale);
         axis.inverted = *inverted;
     }
 }
@@ -201,6 +203,7 @@ impl ChartViewState {
                 series: _,
                 link_x: _,
                 link_y: _,
+                marker: _,
             } = subplot;
             state.apply_to(config);
         }
@@ -293,7 +296,8 @@ pub(super) fn overlay_geometry_equal(left: &Config, right: &Config) -> bool {
 }
 
 /// Whether two axes' breaks map data to the same pixels (#200): the same
-/// cut ranges, style and gap. The mark and the piece frames are chrome.
+/// cut ranges, style, gap and piece sizing (#205). The mark and the piece
+/// frames are chrome.
 pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> bool {
     fn geometry(
         axis: &AxisOptions,
@@ -301,6 +305,7 @@ pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> b
         &[crate::config::AxisBreak],
         crate::config::AxisBreakStyle,
         f32,
+        &crate::config::PieceSizing,
     )> {
         axis.breaks.as_ref().map(|breaks| {
             let crate::config::AxisBreaks {
@@ -310,8 +315,9 @@ pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> b
                 // Drawn on the axis line, not part of the mapping.
                 mark: _,
                 frame_each_panel: _,
+                sizing,
             } = breaks;
-            (ranges.as_slice(), *style, *gap)
+            (ranges.as_slice(), *style, *gap, sizing)
         })
     }
     geometry(left) == geometry(right)
@@ -411,6 +417,29 @@ pub(super) struct ChartDisplay {
     pub(super) placed: Option<PlacedDisplay>,
     /// The series' styles at `placed.scale`, with that scale's bits.
     pub(super) styles: Option<(u32, RegisteredChartStyles)>,
+    /// The placement held by [`Renderer::hold_chart_display`] while the
+    /// host drags a subplot (#205), instead of the surface fit.
+    pub(super) hold: Option<DisplayHold>,
+}
+
+/// A held placement: the scale and the surface position of the parent's
+/// `chart_area` origin, as they were when the hold began.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct DisplayHold {
+    pub(super) scale: f32,
+    pub(super) origin: [i64; 2],
+}
+
+impl ChartDisplay {
+    /// `config` placed on this display: fitted to the surface
+    /// ([`display_config_for_surface`]), or at the held scale and parent
+    /// origin while a hold is on.
+    pub(super) fn place(&self, config: &Config) -> (Config, Rect, f32) {
+        match self.hold {
+            Some(hold) => super::frame::held_display_config(config, hold.scale, hold.origin),
+            None => display_config_for_surface(config, self.surface),
+        }
+    }
 }
 
 /// The stored config scaled and placed on the display surface, for one
@@ -2671,7 +2700,69 @@ impl Renderer {
             surface,
             placed: None,
             styles: None,
+            hold: None,
         });
+        state.revisions.desired = desired;
+        state.revisions.raster = raster;
+        self.visual_revision = visual;
+        Ok(())
+    }
+
+    /// Hold chart `id`'s display placement (`true`) or release it (`false`)
+    /// (#205). While held, the document keeps the scale and the position of
+    /// its parent chart it had when the hold began, so a subplot dragged past
+    /// the document's edge (which grows the document) does not rescale the
+    /// page under the pointer; parts that leave the surface are cut. The
+    /// release fits the document to the surface again. A host holds on a
+    /// press that starts a drag and releases on the pointer's release. A
+    /// chart without a display ([`Self::set_chart_display`]) ignores it.
+    pub fn hold_chart_display(&mut self, id: ChartId, hold: bool) -> Result<()> {
+        let result = self.hold_chart_display_unreported(id, hold);
+        self.reported(result)
+    }
+
+    fn hold_chart_display_unreported(&mut self, id: ChartId, hold: bool) -> Result<()> {
+        let held = {
+            let state = self
+                .chart_states
+                .get(&id)
+                .ok_or(FiggyError::UnknownChart { id })?;
+            let Some(display) = &state.display else {
+                return Ok(());
+            };
+            if display.hold.is_some() == hold {
+                return Ok(());
+            }
+            if hold {
+                let (placed, _, scale) = self.chart_display_config(id)?;
+                let origin = placed.chart_area.0;
+                Some(DisplayHold {
+                    scale,
+                    origin: [i64::from(origin.x), i64::from(origin.y)],
+                })
+            } else {
+                None
+            }
+        };
+        let state = self
+            .chart_states
+            .get(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let desired = state
+            .revisions
+            .desired
+            .successor("chart desired revision")?;
+        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let visual = self.visual_revision.successor("renderer visual revision")?;
+        let state = self
+            .chart_states
+            .get_mut(&id)
+            .ok_or(FiggyError::UnknownChart { id })?;
+        let Some(display) = state.display.as_mut() else {
+            return Ok(());
+        };
+        display.hold = held;
+        display.placed = None;
         state.revisions.desired = desired;
         state.revisions.raster = raster;
         self.visual_revision = visual;
@@ -2708,8 +2799,7 @@ impl Renderer {
                 placed.scale,
             ));
         }
-        let (config, panel_rect, scale) =
-            display_config_for_surface(&state.config, display.surface);
+        let (config, panel_rect, scale) = display.place(&state.config);
         Ok((std::borrow::Cow::Owned(config), panel_rect, scale))
     }
 
@@ -2736,8 +2826,7 @@ impl Renderer {
         let placed = if placed_current {
             None
         } else {
-            let (config, panel_rect, scale) =
-                display_config_for_surface(&state.config, display.surface);
+            let (config, panel_rect, scale) = display.place(&state.config);
             Some(PlacedDisplay {
                 config_revision: state.revisions.config,
                 config,

@@ -222,6 +222,7 @@ fn subplot_config() -> (Config, (u32, u32)) {
         series: vec!["hist".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     (c, (SIZE.0, SIZE.1 * 2))
 }

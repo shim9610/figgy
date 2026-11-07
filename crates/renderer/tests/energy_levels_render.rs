@@ -287,6 +287,7 @@ fn a_continuous_break_moves_the_levels_with_the_axis_and_draws_none_in_the_gap()
         gap: 12.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let mut levels = records();
     // A level inside the cut is not placed.
@@ -451,14 +452,16 @@ fn levels_transitions_and_labels_pick_with_their_rows() {
             }
             other => panic!("{scale}x the arrow between levels: {other:?}"),
         }
-        // The label right of the 60 eV stroke.
-        let (lx, ly) = at(&chart, 2.0 + 0.35, 60.0, scale);
+        // The label of the 60 eV stroke: its column is the last, and the
+        // label would leave the plot on the right, so it is drawn on the
+        // left of the stroke (#205).
+        let (lx, ly) = at(&chart, 2.0 - 0.35, 60.0, scale);
         match pick(
             &mut r,
             &chart,
             &list,
             scale,
-            (lx + (14.0 * scale) as u32, ly),
+            (lx - (14.0 * scale) as u32, ly),
         ) {
             Some(renderer::PickedData::ValueLabel {
                 category_index,
@@ -500,6 +503,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
         gap: 0.2,
         mark: BreakMark::default(),
         frame_each_panel: false,
+        sizing: Default::default(),
     });
     let list = [series("he", records())];
     for scale in [1.0f32, 2.0] {
@@ -694,6 +698,7 @@ fn chart_with_inset() -> Chart {
         series: vec!["inset".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     chart
 }
@@ -812,4 +817,760 @@ fn an_inset_covers_its_parent_and_takes_the_pointer() {
             other => panic!("{scale}x inset pick: {other:?}"),
         }
     }
+}
+
+// #205: insets draw as units in their tree order. An inset listed before
+// the inset it is nested in is still drawn over it, a later sibling covers
+// both, and the pointer goes to the inset drawn on top.
+#[test]
+fn nested_and_overlapping_insets_draw_and_pick_in_tree_order() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    // A, made large enough to hold an inset of its own.
+    chart.config_mut().chart_area.0.width = 640;
+    chart.config_mut().chart_area.0.height = 480;
+    let parent = chart.config().data_area().unwrap().0;
+    chart.config_mut().subplots[0].config.chart_area = ChartArea(Rect {
+        x: parent.x + parent.width - 270,
+        y: parent.y + 10,
+        width: 260,
+        height: 200,
+    });
+    let a = chart.config().subplots[0].config.clone();
+    let a_data = a.data_area().unwrap().0;
+    let filled = |area: Rect, fill: Color| {
+        let mut inset = a.clone();
+        inset.chart_area = ChartArea(area);
+        inset.plot_background = Some(fill);
+        renderer::Subplot {
+            config: inset,
+            series: Vec::new(),
+            link_x: None,
+            link_y: None,
+            marker: None,
+        }
+    };
+    const GREEN: Color = Color::from_rgb8(190, 235, 190);
+    const CREAM: Color = Color::from_rgb8(255, 236, 190);
+    // N, nested in A's data area, listed first.
+    let nested = filled(
+        Rect {
+            x: a_data.x + 1,
+            y: a_data.y + 1,
+            width: a_data.width - 2,
+            height: a_data.height - 2,
+        },
+        GREEN,
+    );
+    let n_data = nested.config.data_area().unwrap().0;
+    // B, a sibling of A, over N's lower-left corner.
+    let b_area = Rect {
+        x: n_data.x + n_data.width / 2 - 160,
+        y: n_data.y - 20,
+        width: 160,
+        height: 120,
+    };
+    let sibling = filled(b_area, CREAM);
+    let b_data = sibling.config.data_area().unwrap().0;
+    chart.config_mut().subplots.insert(0, nested);
+    chart.config_mut().subplots.push(sibling);
+    let list = [series("he", records()), inset_series()];
+    // Points in N alone, in N under B, and in B's plot.
+    let n_only = (n_data.x + n_data.width - 6, n_data.y + 6);
+    let under_b = (b_data.x + b_data.width - 6, n_data.y + n_data.height - 6);
+    assert!(
+        under_b.0 > n_data.x && under_b.1 > b_data.y,
+        "{n_data:?} {b_data:?}"
+    );
+    let config = chart.config();
+    let at = |p: (u32, u32)| config.nested_subplot_at(p.0 as f32 + 0.5, p.1 as f32 + 0.5);
+    let a_area = chart.config().subplots[1].config.chart_area.0;
+    assert!(a_area.within(&parent), "{a_area:?} in {parent:?}");
+    assert_eq!(at(n_only), Some(0), "N over A");
+    assert_eq!(at(under_b), Some(2), "B over N");
+    let a_only = (a_data.x + a_data.width - 1, a.chart_area.0.y + 2);
+    assert_eq!(at(a_only), Some(1), "A outside N");
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let s = |p: (u32, u32)| ((p.0 as f32 * scale) as u32, (p.1 as f32 * scale) as u32);
+        let colour = |p: (u32, u32)| {
+            let (x, y) = s(p);
+            pixel(&img, x, y).to_vec()
+        };
+        assert_eq!(colour(n_only)[..3], [190, 235, 190], "{scale}x N over A");
+        assert_eq!(colour(under_b)[..3], [255, 236, 190], "{scale}x B over N");
+    }
+}
+
+// #205: a categorical axis takes a view's range as its category window.
+// Only the slots inside it are drawn and picked, the annotation space
+// follows it, and the full range clears it again.
+#[test]
+fn a_category_window_draws_and_picks_only_its_slots() {
+    let mut r = renderer();
+    let mut chart = chart();
+    chart.set_x_range(0.5, 2.5);
+    assert_eq!(chart.config().bottom_x.category_window, Some([0.5, 2.5]));
+    assert_eq!(chart.config().validate_chart(), Ok(()));
+    let list = [series("he", records())];
+    let da = chart.config().data_area().unwrap().0;
+    // Category `i` of the window sits at `(i - 0.5) / 2` of the plot.
+    let at = |x: f64, y: f64, scale: f32| {
+        let px = da.x as f64 + (x - 0.5) / 2.0 * da.width as f64;
+        let py = da.y as f64 + (1.0 - y / 100.0) * da.height as f64;
+        (
+            (px * scale as f64).round() as u32,
+            (py * scale as f64).round() as u32,
+        )
+    };
+    {
+        use renderer::AnnotationSpace as _;
+        let space = renderer::annotation::pixel_space_for_config(chart.config());
+        let px = space.value_to_px(renderer::AnnotationAxis::X, 2.0).unwrap();
+        assert!(
+            (px - at(2.0, 0.0, 1.0).0 as f32).abs() <= 1.0,
+            "annotation x {px}"
+        );
+    }
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &list, scale);
+        // Column c at 60 is drawn where the window puts it, and column a's
+        // level (centre -0.25 of the plot) leaves no stroke in the plot.
+        assert!(near(&img, at(2.0, 60.0, scale), 2, is_red), "{scale}x c");
+        let left = (((da.x as f32 + 2.0) * scale) as u32, at(0.0, 20.0, scale).1);
+        assert!(!near(&img, left, 1, is_red), "{scale}x a is outside");
+        // Off the transition's end at the level's centre.
+        match pick(&mut r, &chart, &list, scale, at(2.3, 60.0, scale)) {
+            Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                assert_eq!(bin_index, 3, "{scale}x")
+            }
+            other => panic!("{scale}x window pick: {other:?}"),
+        }
+    }
+    chart.set_x_range(-0.5, 2.5);
+    assert_eq!(chart.config().bottom_x.category_window, None);
+}
+
+fn is_magenta(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 200 && p[2] > 200 && p[1] < 80
+}
+
+// #205: the SSOT marker is drawn on every frame from the inset: the window
+// around the parent slot the inset shows, and connectors that follow the
+// inset when it moves. At 1x and 2x.
+#[test]
+fn the_inset_marker_is_drawn_and_follows_the_inset() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().chart_area.0.width = 640;
+    chart.config_mut().chart_area.0.height = 480;
+    let plot = chart.config().data_area().unwrap().0;
+    // Right of the window around column b, then moved left of it.
+    let place = |x: u32| Rect {
+        x,
+        y: plot.y + 8,
+        width: 160,
+        height: 120,
+    };
+    chart.config_mut().subplots[0].config.chart_area =
+        ChartArea(place(plot.x + plot.width * 2 / 3 + 8));
+    chart.config_mut().subplots[0].marker = Some(renderer::InsetMarker {
+        line: renderer::annotation::AnnotationLineStyle {
+            color: Color::from_rgb8(255, 0, 255),
+            width: 2.0,
+            style: renderer::line::LineStylePreset::Solid,
+        },
+        ..renderer::InsetMarker::default()
+    });
+    let list = [series("he", records()), inset_series()];
+    for moved in [false, true] {
+        if moved {
+            chart.config_mut().subplots[0].config.chart_area = ChartArea(place(plot.x + 4));
+        }
+        let parts = chart.config().inset_marker_parts(0).expect("a marker");
+        let [link, _] = parts.links.expect("connectors");
+        for scale in [1.0f32, 2.0] {
+            let img = export(&mut r, &chart, &list, scale);
+            let s = |p: [f32; 2]| ((p[0] * scale).round() as u32, (p[1] * scale).round() as u32);
+            let w = parts.window;
+            // The window's bottom edge, off the level drawn at its centre.
+            let edge = s([w.x + w.width * 0.25, w.y + w.height]);
+            assert!(
+                near(&img, edge, 2, is_magenta),
+                "{scale}x window, moved {moved}"
+            );
+            // A point a third of the way along the first connector.
+            let along = s([
+                link[0][0] + (link[1][0] - link[0][0]) / 3.0,
+                link[0][1] + (link[1][1] - link[0][1]) / 3.0,
+            ]);
+            assert!(
+                near(&img, along, 2, is_magenta),
+                "{scale}x connector, moved {moved}"
+            );
+        }
+    }
+}
+
+/// The anchor space and text measure of `chart`'s panel at 1x.
+fn layout_of(
+    chart: &Chart,
+    _levels: &EnergyLevelSeries,
+) -> (renderer::annotation::PixelSpace, renderer::CpuTextMeasure) {
+    let config = chart.config();
+    (
+        renderer::annotation::pixel_space_for_config(config),
+        renderer::CpuTextMeasure::for_style(&config.draw_style),
+    )
+}
+
+fn labelled(id: &str, column: &str, energy: f64) -> EnergyLevel {
+    EnergyLevel {
+        label: Some(renderer::text::RichText::plain(id, Color::BLACK, 12.0, "")),
+        ..level(id, column, energy)
+    }
+}
+
+// #205: a crowd that a stack would push far from its strokes collapses
+// its dense run to a bracket, so every drawn label stays within one and a
+// half label heights of its own level; an isolated label is not moved.
+#[test]
+fn a_crowd_collapses_instead_of_fanning_out() {
+    let chart = chart();
+    let mut levels = EnergyLevelSeries::default();
+    // Twelve levels about two thirds of a label apart: too far apart for
+    // the dense-run rule, too close to stack near their strokes.
+    for k in 0..12 {
+        levels
+            .levels
+            .push(labelled(&format!("c{k}"), "b", 20.0 + 4.0 * k as f64));
+    }
+    levels.levels.push(labelled("alone", "b", 92.0));
+    let (space, measure) = layout_of(&chart, &levels);
+    let placement = renderer::energy_levels::LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(&levels, &levels.style, &measure);
+    let label = |i: usize| {
+        placement.label(
+            &levels,
+            &levels.style,
+            &layout,
+            renderer::energy_levels::LabelPart::Level,
+            i,
+            &measure,
+        )
+    };
+    let drawn: Vec<usize> = (0..12).filter(|&i| label(i).is_some()).collect();
+    assert!(drawn.len() < 12, "the crowd collapses: {drawn:?}");
+    assert!(
+        drawn.contains(&0) && drawn.contains(&11),
+        "its ends stay: {drawn:?}"
+    );
+    use renderer::AnnotationSpace as _;
+    for i in (0..levels.levels.len()).filter(|&i| label(i).is_some()) {
+        let rect = label(i).unwrap().rect();
+        let stroke = space
+            .value_to_px(renderer::AnnotationAxis::Y, levels.levels[i].energy)
+            .unwrap();
+        let shift = (rect.y + rect.height / 2.0 - stroke).abs();
+        assert!(
+            shift <= 1.5 * rect.height + 0.5,
+            "label {i} moved {shift} px"
+        );
+    }
+    let alone = label(12).expect("the isolated label").rect();
+    let stroke = space
+        .value_to_px(renderer::AnnotationAxis::Y, 92.0)
+        .unwrap();
+    assert!(
+        (alone.y + alone.height / 2.0 - stroke).abs() < 1.0,
+        "not moved"
+    );
+}
+
+// #205: crowded labels in one column stack clear of each other, and a
+// dense run (strokes closer than half a label) keeps only its first and
+// last labels, joined by a bracket.
+#[test]
+fn crowded_labels_stack_apart_and_dense_runs_collapse() {
+    let chart = chart();
+    let mut levels = EnergyLevelSeries::default();
+    // Five levels a little closer than a label is tall, then a run of
+    // twenty a fraction of a label apart.
+    for k in 0..5 {
+        levels
+            .levels
+            .push(labelled(&format!("a{k}"), "b", 20.0 + 3.0 * k as f64));
+    }
+    for k in 0..20 {
+        levels
+            .levels
+            .push(labelled(&format!("r{k}"), "b", 60.0 + 0.2 * k as f64));
+    }
+    let (space, measure) = layout_of(&chart, &levels);
+    let placement = renderer::energy_levels::LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(&levels, &levels.style, &measure);
+    let label = |i: usize| {
+        placement.label(
+            &levels,
+            &levels.style,
+            &layout,
+            renderer::energy_levels::LabelPart::Level,
+            i,
+            &measure,
+        )
+    };
+    let rects: Vec<_> = (0..levels.levels.len())
+        .filter_map(|i| label(i).map(|t| (i, t.rect())))
+        .collect();
+    // Every drawn label is clear of every other.
+    for (n, (i, a)) in rects.iter().enumerate() {
+        for (j, b) in &rects[n + 1..] {
+            let apart = a.x + a.width <= b.x
+                || b.x + b.width <= a.x
+                || a.y + a.height <= b.y
+                || b.y + b.height <= a.y;
+            assert!(apart, "labels {i} and {j} overlap: {a:?} {b:?}");
+        }
+    }
+    // The spaced five are all drawn; the dense run keeps its ends only.
+    for i in 0..5 {
+        assert!(label(i).is_some(), "label a{i}");
+    }
+    assert!(label(5).is_some() && label(24).is_some(), "the run's ends");
+    assert!((6..24).all(|i| label(i).is_none()), "the run's middle");
+}
+
+// #205: a band fills its run, answers a pick on its fill for its first
+// level, and its label picks as the band part.
+#[test]
+fn a_band_fills_its_run_and_answers_picks() {
+    let mut r = renderer();
+    let chart = chart();
+    let mut levels = records();
+    for (k, e) in [50.0, 52.0, 54.0, 56.0, 58.0].into_iter().enumerate() {
+        levels.levels.push(level(&format!("n{k}"), "b", e));
+    }
+    levels.bands.push(renderer::energy_levels::LevelBand {
+        id: "run".into(),
+        column: "b".into(),
+        first: "n0".into(),
+        last: "n4".into(),
+        label: Some(renderer::text::RichText::plain(
+            "n ≥ 5",
+            Color::BLACK,
+            14.0,
+            "",
+        )),
+        label_offset: [0.0; 2],
+    });
+    levels.style.band.fill = Color::from_rgb8(0, 200, 200);
+    levels.validate().unwrap();
+    let list = [series("he", levels.clone())];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &list, scale);
+        // The fill between two strokes of the run.
+        let (x, y) = at(&chart, 1.0, 51.0, scale);
+        let p = pixel(&img, x, y);
+        assert!(
+            p[0] < 40 && p[1] > 150 && p[2] > 150,
+            "{scale}x band fill {p:?}"
+        );
+        // A pick on the fill answers for the run's first level.
+        let first = levels.levels.iter().position(|l| l.id == "n0").unwrap();
+        match pick(&mut r, &chart, &list, scale, (x, y)) {
+            Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                assert_eq!(bin_index, first, "{scale}x band body")
+            }
+            other => panic!("{scale}x band body: {other:?}"),
+        }
+        // The band's label, right of the band's middle.
+        let (bx, by) = at(&chart, 1.0 + 0.35, 54.0, scale);
+        match pick(
+            &mut r,
+            &chart,
+            &list,
+            scale,
+            (bx + (12.0 * scale) as u32, by),
+        ) {
+            Some(renderer::PickedData::ValueLabel {
+                category_index,
+                part,
+                ..
+            }) => assert_eq!(
+                (category_index, part),
+                (0, Some(renderer::energy_levels::LabelPart::Band)),
+                "{scale}x band label"
+            ),
+            other => panic!("{scale}x band label: {other:?}"),
+        }
+    }
+}
+
+// #205: on the base layer a press on an inset's plot selects its frame. The
+// frame's selection box and its eight handles lie inside the frame, so the
+// box is composited into the inset's own panel wherever the inset is, at 1x
+// and 2x; the parent's plot beside the inset stays the parent's.
+#[test]
+fn a_subplot_frame_selects_and_its_box_lies_inside_the_frame() {
+    use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection};
+    use renderer::layout::RectF;
+    let r = renderer();
+    let chart = chart_with_inset();
+    let config = chart.config();
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    let map = renderer::select::HitMap::for_active_layer(config);
+    let plot = config.subplot_config(0).unwrap().data_area().unwrap().0;
+    let centre = (
+        plot.x as f32 + plot.width as f32 / 2.0,
+        plot.y as f32 + plot.height as f32 / 2.0,
+    );
+    let hit = map
+        .hit_test(config, &measure, centre.0, centre.1)
+        .expect("the inset's plot is hit");
+    assert_eq!(map.get(hit).unwrap().element_id(), "subplot_0:frame");
+    let parent = config.data_area().unwrap().0;
+    let beside = map
+        .hit_test(
+            config,
+            &measure,
+            parent.x as f32 + parent.width as f32 * 0.25,
+            parent.y as f32 + parent.height as f32 * 0.75,
+        )
+        .expect("the parent's plot is hit");
+    assert_eq!(map.get(beside).unwrap().element_id(), "data_area");
+    for scale in [1.0f32, 2.0] {
+        let scaled = Chart::new(config.scaled(scale));
+        let sb = r
+            .selection_box(&scaled, "subplot_0:frame")
+            .expect("a selection box");
+        let frame = RectF::from_rect(&scaled.config().subplots[0].config.chart_area.0);
+        let rect = sb.rect();
+        assert!(
+            rect.x > frame.x
+                && rect.y > frame.y
+                && rect.x + rect.width < frame.x + frame.width
+                && rect.y + rect.height < frame.y + frame.height,
+            "{scale}x box {rect:?} inside frame {frame:?}"
+        );
+        let handles = sb.handles();
+        assert_eq!(handles.len(), 8, "{scale}x");
+        for handle in handles {
+            assert!(
+                frame.contains(handle.x, handle.y)
+                    && frame.contains(handle.x + handle.width, handle.y + handle.height),
+                "{scale}x handle {handle:?} inside frame {frame:?}"
+            );
+        }
+        // Rastered into the inset's own panel, the highlight is drawn.
+        let panel = scaled.config().subplot_config(0).unwrap();
+        let plain =
+            try_raster_chart_layer_to_rgba_with_selection(&panel, AxisLayerKind::Decoration, &[])
+                .unwrap();
+        let selected = try_raster_chart_layer_to_rgba_with_selection(
+            &panel,
+            AxisLayerKind::Decoration,
+            std::slice::from_ref(&sb),
+        )
+        .unwrap();
+        let changed = plain
+            .chunks(4)
+            .zip(selected.chunks(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            changed > 0,
+            "{scale}x the box is drawn in the inset's panel"
+        );
+    }
+}
+
+// #205: a subplot moved out of its parent is a panel of its own: the
+// document grows to hold it, it draws there at 1x and 2x, a base-layer pick
+// in it answers its series and steps over them, the vector exports carry
+// it, and the moved document round-trips.
+#[test]
+fn a_subplot_moved_out_of_its_parent_draws_picks_and_exports_there() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    let list = vec![series("he", records()), inset_series()];
+    let parent = chart.config().chart_area.0;
+    let frame = Rect {
+        x: parent.x + parent.width + 20,
+        y: 30,
+        width: 160,
+        height: 120,
+    };
+    chart
+        .config_mut()
+        .set_subplot_area(0, ChartArea(frame))
+        .unwrap();
+    assert_eq!(chart.config().insets().count(), 0, "a panel of its own");
+    assert_eq!(
+        chart
+            .config()
+            .subplot_at(frame.x as f32 + 80.0, frame.y as f32 + 60.0),
+        Some(0)
+    );
+    assert_eq!(
+        chart
+            .config()
+            .subplot_at(parent.x as f32 + 40.0, parent.y as f32 + 40.0),
+        None
+    );
+    let document = chart.config().document_area();
+    assert_eq!((document.x, document.y), (0, 0));
+    assert_eq!(document.x + document.width, frame.x + frame.width);
+    let inset = chart.config().subplot_config(0).unwrap();
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), list.clone())
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let s = |v: u32| (v as f32 * scale).round() as u32;
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert_eq!(
+            (img.width, img.height),
+            (s(document.width), s(document.height)),
+            "{scale}x document size"
+        );
+        // The parent's lowest level still draws in column a.
+        assert!(
+            near(&img, at(&chart, -0.25, 20.0, scale), 3, is_red),
+            "{scale}x parent"
+        );
+        // The subplot's component at 45 draws in its own axes at the new place.
+        let space = renderer::annotation::pixel_space_for_config(&inset.scaled(scale));
+        use renderer::AnnotationSpace as _;
+        let px = space
+            .value_to_px(renderer::AnnotationAxis::X, -0.25)
+            .unwrap();
+        let py = space
+            .value_to_px(renderer::AnnotationAxis::Y, 45.0)
+            .unwrap();
+        let at_inset = (px.round() as u32, py.round() as u32);
+        assert!(
+            near(&img, at_inset, 3, is_red),
+            "{scale}x the moved subplot's component"
+        );
+        // A base-layer pick there answers the subplot's series.
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [at_inset.0 as f32, at_inset.1 as f32],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: s(document.width),
+                height: s(document.height),
+            },
+            display_scale: scale,
+            max_distance_px: 4.0 * scale,
+        };
+        match test_gpu::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+            Some(renderer::PickedData::HistogramBin {
+                series_id,
+                bin_index,
+                ..
+            }) => assert_eq!((series_id.as_str(), bin_index), ("inset", 2), "{scale}x"),
+            other => panic!("{scale}x pick in the moved subplot: {other:?}"),
+        }
+        let svg = r
+            .export_svg(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        // The subplot's levels are vector strokes of the level colour, in
+        // the subplot's own clipped data slot (#234).
+        assert!(!svg.contains("<image"), "{scale}x svg: no data image");
+        assert!(
+            svg.contains("stroke=\"#ff0000\""),
+            "{scale}x svg: the levels are vector strokes"
+        );
+        let pdf = r
+            .export_pdf(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(pdf.starts_with(b"%PDF"), "{scale}x pdf");
+    }
+    // The base-layer pick's selection steps over the subplot's drawn rows
+    // as any energy-level selection does: the series list is the chart's.
+    let mut stepped = chart.config().clone();
+    stepped.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "inset".into(),
+            bin_index: 2,
+            half: None,
+        }],
+        ..DataSelectionsConfig::default()
+    });
+    assert_eq!(stepped.step_selection(&list, 1, 0, |_| None), Ok(true));
+    assert!(
+        matches!(
+            stepped.picked_data.as_ref().unwrap().refs[0],
+            PickedDataRef::HistogramBin { bin_index: 3, .. }
+        ),
+        "{:?}",
+        stepped.picked_data
+    );
+    assert_eq!(stepped.step_selection(&list, -1, 0, |_| None), Ok(true));
+    assert!(matches!(
+        stepped.picked_data.as_ref().unwrap().refs[0],
+        PickedDataRef::HistogramBin { bin_index: 2, .. }
+    ));
+    r.remove_chart(id).unwrap();
+    let json = serde_json::to_string(chart.config()).unwrap();
+    let back: renderer::config::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(&back, chart.config());
+    assert_eq!(serde_json::to_string(&back).unwrap(), json);
+}
+
+// #205: a frame move is an SSOT edit of the document: the registered chart
+// redraws the inset at its new place at 1x and 2x.
+#[test]
+fn a_moved_frame_redraws_the_inset_where_it_now_is() {
+    let mut r = renderer();
+    let mut chart = chart_with_inset();
+    chart.config_mut().subplots[0].config.plot_background = Some(Color::from_rgb8(255, 250, 200));
+    let list = vec![series("he", records()), inset_series()];
+    let id = r.register_chart(chart.config().clone(), list).unwrap();
+    let before = chart.config().subplots[0].config.chart_area.0;
+    let after = Rect {
+        y: before.y + 60,
+        ..before
+    };
+    // A quarter up the inset's plot, off the component's stroke.
+    let probe = |frame: Rect, scale: f32| {
+        let mut inset = chart.config().subplots[0].config.clone();
+        inset.chart_area = ChartArea(frame);
+        let plot = inset.data_area().unwrap().0;
+        (
+            ((plot.x as f32 + plot.width as f32 * 0.5) * scale).round() as u32,
+            ((plot.y as f32 + plot.height as f32 * 0.75) * scale).round() as u32,
+        )
+    };
+    let is_cream = |p: &[u8]| p[0] >= 250 && p[1] >= 245 && (150..=215).contains(&p[2]);
+    for scale in [1.0f32, 2.0] {
+        let first = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let (x, y) = probe(before, scale);
+        assert!(
+            is_cream(pixel(&first, x, y)),
+            "{scale}x the inset's fill at its first place"
+        );
+        let (x, y) = probe(after, scale);
+        assert!(
+            !is_cream(pixel(&first, x, y)),
+            "{scale}x nothing of it at the next place yet"
+        );
+        let mut moved = chart.config().clone();
+        moved.set_subplot_area(0, ChartArea(after)).unwrap();
+        r.set_chart_config(id, moved).unwrap();
+        let second = r
+            .export_rgba(
+                renderer::ExportSource::Registered(id),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        let (x, y) = probe(after, scale);
+        assert!(
+            is_cream(pixel(&second, x, y)),
+            "{scale}x the fill follows the frame"
+        );
+        let (x, y) = probe(before, scale);
+        assert!(
+            !is_cream(pixel(&second, x, y)),
+            "{scale}x and leaves its first place"
+        );
+        r.set_chart_config(id, chart.config().clone()).unwrap();
+    }
+}
+
+// #205: while a host holds the display placement, a frame moved past the
+// document's edge grows the document without rescaling the page under the
+// pointer; the release fits the document to the surface again.
+#[test]
+fn a_held_display_keeps_its_scale_and_origin_while_a_frame_grows_the_document() {
+    let mut r = renderer();
+    let chart = chart_with_inset();
+    let id = r
+        .register_chart(
+            chart.config().clone(),
+            vec![series("he", records()), inset_series()],
+        )
+        .unwrap();
+    let surface = (WIDTH * 2, HEIGHT * 2);
+    r.set_chart_display(id, Some(surface)).unwrap();
+    let (origin, scale) = {
+        let (placed, _, scale) = r.chart_display_config(id).unwrap();
+        (placed.chart_area.0, scale)
+    };
+    assert_eq!(scale, 2.0);
+    r.hold_chart_display(id, true).unwrap();
+    let far = Rect {
+        x: WIDTH + 20,
+        y: 30,
+        width: 160,
+        height: 120,
+    };
+    let mut moved = chart.config().clone();
+    moved.set_subplot_area(0, ChartArea(far)).unwrap();
+    r.set_chart_config(id, moved.clone()).unwrap();
+    {
+        let (held, _, held_scale) = r.chart_display_config(id).unwrap();
+        assert_eq!(held_scale, 2.0, "the hold keeps the scale");
+        assert_eq!(held.chart_area.0, origin, "and the parent's place");
+        assert_eq!(
+            held.subplots[0].config.chart_area.0,
+            Rect {
+                x: origin.x + far.x * 2,
+                y: origin.y + far.y * 2,
+                width: far.width * 2,
+                height: far.height * 2,
+            },
+            "the subplot is placed at the held scale from the parent's origin"
+        );
+    }
+    r.hold_chart_display(id, false).unwrap();
+    let (_, _, fitted) = r.chart_display_config(id).unwrap();
+    let document = moved.document_area();
+    let (expected, _) = renderer::fit_display_panel((document.width, document.height), surface);
+    assert_eq!(
+        fitted, expected,
+        "released, the document fits the surface again"
+    );
+    assert!(fitted < 2.0);
 }

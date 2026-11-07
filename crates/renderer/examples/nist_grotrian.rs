@@ -369,19 +369,28 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         ],
         offset: [0.0; 2],
     });
-    c.config_mut().bottom_x.out_margin = 100.0;
+    c.config_mut().bottom_x.out_margin = 84.0;
     c.config_mut().bottom_x.categories = Some(categories);
-    c.config_mut().grid.show_major_x = false;
-    c.set_y_range(-0.6, 25.6);
+    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
+    let config = c.config_mut();
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_y = false;
+    config.top_x.tick = renderer::config::TickVisibility::None;
+    config.right_y.tick = renderer::config::TickVisibility::None;
+    // The ground state keeps a thin strip below the break.
+    c.set_y_range(-0.15, 25.2);
+    c.config_mut().left_y.minor_count = 1;
     c.config_mut().left_y.breaks = Some(AxisBreaks {
-        ranges: vec![AxisBreak::new(0.6, 19.4)],
+        ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.04,
+        gap: 0.015,
         mark: BreakMark::default(),
-        frame_each_panel: true,
+        frame_each_panel: false,
+        sizing: Default::default(),
     });
     // The continuum: annotations written from the limits.
-    let top = 25.6;
+    let top = 25.2;
     series.write_continuum(
         &mut c.config_mut().annotations,
         "he",

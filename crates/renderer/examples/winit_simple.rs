@@ -63,13 +63,14 @@ use renderer::{
     Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
-const AXIS_PRESETS: [AxisPreset; 6] = [
+const AXIS_PRESETS: [AxisPreset; 7] = [
     AxisPreset::BoxedInward,
     AxisPreset::BoxedOutward,
     AxisPreset::OpenOutward,
     AxisPreset::OpenInward,
     AxisPreset::Minimal,
     AxisPreset::Hidden,
+    AxisPreset::Grotrian,
 ];
 
 const COLOR_CYCLES: [ColorCycle; 5] = [

@@ -11,6 +11,17 @@
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
 
+// The NIST diagrams the gallery draws, shared with the playground (#205).
+#[allow(dead_code)]
+#[path = "../../examples/support/gallery.rs"]
+mod gallery;
+#[allow(dead_code)]
+#[path = "../../examples/support/grotrian_sets.rs"]
+mod grotrian_sets;
+#[allow(dead_code)]
+#[path = "../../examples/support/nist_csv.rs"]
+mod nist_csv;
+
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;
 use renderer::data_config::{
@@ -76,11 +87,16 @@ pub enum SceneKind {
     PolarHeatmap,
     Quiver3d,
     ProbabilityPaper,
+    /// Ar I, Cu I and U I from the bundled NIST exports (#205).
+    EnergyLevelsAr,
+    EnergyLevelsCu,
+    EnergyLevelsU,
+    EnergyLevelsArAll,
     Feynman,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 40] = [
+    pub const ALL: [SceneKind; 44] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -120,6 +136,10 @@ impl SceneKind {
         SceneKind::PolarHeatmap,
         SceneKind::Quiver3d,
         SceneKind::ProbabilityPaper,
+        SceneKind::EnergyLevelsAr,
+        SceneKind::EnergyLevelsCu,
+        SceneKind::EnergyLevelsU,
+        SceneKind::EnergyLevelsArAll,
         SceneKind::Feynman,
     ];
 
@@ -164,6 +184,10 @@ impl SceneKind {
             SceneKind::PolarHeatmap => "Polar heatmap (radar)",
             SceneKind::Quiver3d => "3D vector field (ABC flow)",
             SceneKind::ProbabilityPaper => "Probability paper (normal, Weibull)",
+            SceneKind::EnergyLevelsAr => "Energy levels (Ar I)",
+            SceneKind::EnergyLevelsCu => "Energy levels (Cu I)",
+            SceneKind::EnergyLevelsU => "Energy levels (U I)",
+            SceneKind::EnergyLevelsArAll => "Energy levels (Ar I, every level)",
             SceneKind::Feynman => "Feynman diagrams",
         }
     }
@@ -205,8 +229,8 @@ impl SceneKind {
                  filled pattern and a marker rose with arc segments; pick the markers."
             }
             SceneKind::CategoryAxis => {
-                "AxisOptions.categories on X: a label per category, thinned when they \
-                 crowd (one is long). Drag the tick labels; pick the markers."
+                "AxisOptions.categories on X: a label per category, staggered over two \
+                 rows when they crowd (one is long). Drag the tick labels; pick the markers."
             }
             SceneKind::BigData => {
                 "Up to 100 million resident points as a line, markers or both, every one \
@@ -349,6 +373,29 @@ impl SceneKind {
                  a log time axis, where the line's slope is the shape parameter. \
                  The host computes the Hazen plotting positions and the fitted \
                  lines. Pick a point; drag the percent tick labels."
+            }
+            SceneKind::EnergyLevelsAr => {
+                "Ar I from the NIST exports: the 3p⁵ 4s and 4p manifolds with 5s, \
+                 3d and 5p under the two ion cores, Paschen labels, the 4p → 4s \
+                 lines of plasma diagnostics, and 3d and 5p as host-declared bands. \
+                 Pick a level, a band or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsCu => {
+                "Cu I below 7 eV: the doublets beside the 3d⁹4s4p quartets drawn as \
+                 bands, the 324.8 / 327.4 nm resonance lines and the 510.6 / 578.2 nm \
+                 copper vapour laser lines. Pick a level or a line; drag a label."
+            }
+            SceneKind::EnergyLevelsU => {
+                "U I in cm⁻¹ by J and parity, from the NIST Handbook levels, with \
+                 lines the host computes from E1-allowed pairs (among them 591.5 nm \
+                 of laser isotope separation) and a thin piece for the limit. Pick a \
+                 level or a line; zoom the J axis."
+            }
+            SceneKind::EnergyLevelsArAll => {
+                "All 503 Ar I levels of the NIST export in twenty-five term \
+                 columns: the Rydberg members from n = 8 to the limit as one band \
+                 per column, the low members labelled, crowds collapsed to brackets. \
+                 Pick a level or a band; zoom into a column."
             }
         }
     }
@@ -553,6 +600,10 @@ pub fn build(
         SceneKind::PolarHeatmap => polar_heatmap(r),
         SceneKind::Quiver3d => quiver_3d(r),
         SceneKind::ProbabilityPaper => probability_paper(r),
+        SceneKind::EnergyLevelsAr => grotrian_scene(grotrian_sets::argon()),
+        SceneKind::EnergyLevelsCu => grotrian_scene(grotrian_sets::copper()),
+        SceneKind::EnergyLevelsU => grotrian_scene(grotrian_sets::uranium()),
+        SceneKind::EnergyLevelsArAll => grotrian_scene(grotrian_sets::argon_all()),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -902,6 +953,7 @@ fn probability_paper(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         series: vec!["failures".into(), "weibull_fit".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     };
     for axis in [&mut times.config.left_y, &mut times.config.right_y] {
         axis.scale = AxisScale::Probability(weibull);
@@ -1665,8 +1717,12 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             }),
         ),
     ];
+    // The crowded labels take two rows (#205): fit the bands to them, as a
+    // host does with `auto_layout`.
+    let config = with_legend(chart.config().clone(), &series);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
     Ok(CartesianScene {
-        config: with_legend(chart.config().clone(), &series),
+        config: renderer::layout::auto_layout(&config, &measure),
         series,
     })
 }
@@ -1874,6 +1930,7 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         series: ids.iter().map(|s| s.to_string()).collect(),
         link_x: None,
         link_y: None,
+        marker: None,
     };
     let rust = Color::from_rgb8(176, 64, 32);
     let green = Color::from_rgb8(40, 140, 90);
@@ -3959,6 +4016,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         series: vec!["peaks_log".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     }];
     let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 100.0);
@@ -4239,6 +4297,27 @@ fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// singlets beside triplets under group headers, the ground state below a
 /// Continuous break, the continuum above the limit and an inset of the
 /// resolved 2p ³P° multiplet. DataLess: nothing is registered.
+/// One of the shared NIST diagrams (`examples/support/grotrian_sets.rs`)
+/// as a scene, its bands fitted with `auto_layout` as the gallery does.
+fn grotrian_scene(
+    built: grotrian_sets::Result<(renderer::Chart, Vec<SeriesConfig>)>,
+) -> Result<CartesianScene, FiggyError> {
+    // The exports are bundled, so a parse failure is a defect of the
+    // repository's data: it is reported and the scene is refused.
+    let (chart, series) = built.map_err(|e| {
+        eprintln!("bundled NIST exports: {e}");
+        FiggyError::InvalidConfig {
+            field: "grotrian_sets",
+            reason: "a bundled NIST export did not parse",
+        }
+    })?;
+    let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+    Ok(CartesianScene {
+        config: renderer::layout::auto_layout(chart.config(), &measure),
+        series,
+    })
+}
+
 /// The Feynman scene (#234): four well-known processes, one per quadrant,
 /// each captioned by an annotation. Their legs are placed by the host and
 /// their internal vertices by the layout, which draws the top-quark
@@ -4529,13 +4608,17 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ],
         ..EnergyLevelSeries::default()
     };
+    // 388.9 nm leaves 3p ³P° across the inset window's edge: its label
+    // sits on the other side of the arrow.
+    if let Some(t) = series.transitions.iter_mut().find(|t| t.id == "388.9") {
+        t.label_offset = [-34.0, 0.0];
+    }
     series.style.level.color = Color::from_rgb8(34, 52, 88);
     series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
 
     let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
     config.legend.visible = false;
-    config.grid.show_major_x = false;
     config.chart_area = ChartArea(Rect {
         x: 0,
         y: 0,
@@ -4591,21 +4674,29 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         ],
         offset: [0.0; 2],
     });
-    config.bottom_x.out_margin = 90.0;
-    config.left_y.min = -0.6;
-    config.left_y.max = 25.6;
+    config.bottom_x.out_margin = 72.0;
+    // The ground state keeps a thin strip below the break.
+    config.left_y.min = -0.15;
+    config.left_y.max = 25.2;
+    config.left_y.minor_count = 1;
     config.left_y.breaks = Some(AxisBreaks {
-        ranges: vec![AxisBreak::new(0.6, 19.4)],
+        ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.04,
+        gap: 0.015,
         mark: renderer::config::BreakMark::default(),
+        // Framed pieces: the frames snap to whole logical pixels (#205).
         frame_each_panel: true,
+        // Sized by the Grotrian preset below.
+        sizing: renderer::config::PieceSizing::ByValue,
     });
+    // A Grotrian diagram reads by its levels: no grid, no mirrored ticks,
+    // and the ground-state strip thin at a scale of its own (#205).
+    config.apply_axis_preset(renderer::AxisPreset::Grotrian);
     series
         .write_continuum(
             &mut config.annotations,
             "he",
-            25.6,
+            25.2,
             Color::from_rgba8(80, 100, 220, 36),
         )
         .map_err(|reason| FiggyError::InvalidConfig {
@@ -4632,7 +4723,9 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.grid.show_major_x = false;
     inset.grid.show_minor_x = false;
     inset.grid.show_minor_y = false;
-    inset.plot_background = Some(Color::from_rgb8(252, 252, 255));
+    inset.grid.show_major_y = false;
+    // Opaque, so the parent's annotations stop at the inset (#203).
+    inset.plot_background = Some(Color::WHITE);
     inset.bottom_x.categories = Some(vec![{
         let mut c = Category::new("3P*", "3P*");
         c.rich_label = tex("3", "P", true);
@@ -4645,44 +4738,24 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     inset.left_y.min = 20.964_04;
     inset.left_y.max = 20.964_26;
     inset.left_y.label_style.font_size = 10.0;
-    inset.left_y.label_style.significant_digits = 8;
+    inset.left_y.label_style.significant_digits = 6;
     for axis in [&mut inset.bottom_x, &mut inset.left_y] {
         axis.minor_count = 0;
     }
     for axis in [&mut inset.top_x, &mut inset.right_y] {
-        axis.line_visible = false;
         axis.tick = renderer::config::TickVisibility::None;
     }
-    inset.left_y.major_spacing = 0.000_05;
-    let window_top = 21.6;
+    inset.left_y.major_spacing = 0.000_1;
     config.subplots.push(renderer::Subplot {
         config: inset,
         series: vec!["he-fine".into()],
         link_x: None,
         link_y: None,
+        // The window is derived from the inset (#205): the 3P* slot at the
+        // inset's energy range, drawn on every frame so it follows the
+        // inset and the view.
+        marker: Some(renderer::InsetMarker::default()),
     });
-    let marker = config
-        .inset_marker(
-            0,
-            (5.6, 6.4),
-            (20.4, window_top),
-            AnnotationLineStyle {
-                color: Color::from_rgb8(120, 128, 140),
-                width: 1.0,
-                style: LineStylePreset::Solid,
-            },
-        )
-        .unwrap_or_default();
-    // A faint wash marks the window as the region the inset magnifies.
-    let mut marker = marker;
-    if let Some(Annotation {
-        kind: AnnotationKind::Rect { style, .. },
-        ..
-    }) = marker.first_mut()
-    {
-        style.fill = Some(Color::from_rgba8(120, 128, 140, 40));
-    }
-    config.annotations.items.extend(marker);
 
     let mut fine_style = series.style.clone();
     fine_style.label_side = renderer::energy_levels::LevelLabelSide::Above;

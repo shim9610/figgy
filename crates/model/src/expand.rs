@@ -676,6 +676,7 @@ impl Config {
                 // The hidden left axis maps the overlay's range.
                 categories: _,
                 category_groups: _,
+                category_window: _,
                 // The hidden left axis draws no line.
                 cross_at: _,
                 // The hidden left axis draws no ticks.
@@ -927,6 +928,7 @@ fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
         // A colourbar axis is never categorical.
         categories: _,
         category_groups: _,
+        category_window: _,
         // The hidden colourbar draws no axis line.
         cross_at: _,
         // The hidden colourbar draws no ticks.
@@ -971,6 +973,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         // group headers name runs of them (#203).
         categories,
         category_groups,
+        category_window,
         // Where the line crosses: each chart's own, like the line style.
         cross_at: _,
         // The log tick ladder is tick spacing too.
@@ -988,6 +991,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.log_ticks = *log_ticks;
     to.categories.clone_from(categories);
     to.category_groups.clone_from(category_groups);
+    to.category_window = *category_window;
     to.breaks.clone_from(breaks);
 }
 
@@ -1002,6 +1006,7 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
         f64,
         bool,
         Option<&'a [Category]>,
+        Option<[f64; 2]>,
         Option<&'a AxisBreaks>,
     );
     fn range(axis: &AxisOptions) -> Range<'_> {
@@ -1027,6 +1032,7 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             minor_tick_length: _,
             categories,
             category_groups: _,
+            category_window,
             // Not linked.
             cross_at: _,
             // Tick spacing travels with the edited range (see above).
@@ -1040,6 +1046,7 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             *max,
             *inverted,
             categories.as_deref(),
+            *category_window,
             breaks.as_ref(),
         )
     }
@@ -1076,6 +1083,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         // overrides by category id against them. It draws no group headers.
         categories,
         category_groups: _,
+        category_window,
         // A hidden axis draws no line.
         cross_at: _,
         // A hidden axis draws no ticks, so its tick policy is the template's.
@@ -1103,6 +1111,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         minor_tick_length,
         categories: _,
         category_groups: _,
+        category_window: _,
         cross_at: _,
         log_ticks,
         breaks: _,
@@ -1128,6 +1137,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         minor_tick_length,
         categories: categories.clone(),
         category_groups: None,
+        category_window: *category_window,
         cross_at: None,
         log_ticks,
         breaks: breaks.clone(),

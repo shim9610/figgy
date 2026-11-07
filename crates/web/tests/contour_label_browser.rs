@@ -450,6 +450,9 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .await
         .expect("export after font generation change");
 
+    // The export multiplies the automatic spacing by its scale: f32::MAX
+    // times a scale whose target fits the device's texture limit overflows.
+    // (An unbounded scale fails on the target's size first, since f27296a.)
     let automatic_overflow = facade_series(f32::MAX, true, false).to_string();
     chart
         .set_series(&automatic_overflow)
@@ -458,9 +461,9 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .frame()
         .expect("frame before export-only scale overflow");
     chart
-        .export_png(f32::INFINITY)
+        .export_png(4.0)
         .await
-        .expect_err("clamped automatic spacing product must overflow");
+        .expect_err("automatic spacing times the export scale must overflow");
     chart.frame().expect("frame after rejected export");
 
     let explicit = facade_series(f32::MAX, true, true).to_string();
@@ -468,7 +471,7 @@ async fn wasm_facade_preserves_state_and_rebuilds_after_font_registration() {
         .set_series(&explicit)
         .expect("finite explicit spacing");
     chart
-        .export_png(f32::INFINITY)
+        .export_png(4.0)
         .await
         .expect("explicit export must not multiply spacing");
 }

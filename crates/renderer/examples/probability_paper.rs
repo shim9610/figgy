@@ -122,6 +122,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
         series: vec!["failures".into(), "weibull_fit".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     };
     for axis in [&mut times.config.left_y, &mut times.config.right_y] {
         axis.scale = AxisScale::Probability(weibull);

@@ -33,7 +33,7 @@ pub use annotation::{
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
     MeasuredText, PixelSpace, ShapeStyle,
 };
-pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
+pub use layer::{AnnotationLayer, CellRef, InsetMarker, LayerRef, OverlayLayer, Subplot};
 pub mod format;
 pub mod layout;
 pub mod legend;
@@ -55,7 +55,7 @@ pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
     AxisBreak, AxisBreakStyle, AxisBreaks, BarAlign, BreakMark, ColorBarOptions, Config,
-    DataSelectionsConfig, MAX_AXIS_BREAK_GAP, MAX_AXIS_BREAKS, PickedDataRef,
+    DataSelectionsConfig, MAX_AXIS_BREAK_GAP, MAX_AXIS_BREAKS, PickedDataRef, PieceSizing,
 };
 pub use data::{Column, ColumnId};
 pub use data_config::{

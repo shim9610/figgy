@@ -8,6 +8,14 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Whether this rect lies inside `outer`, edges included.
+    pub fn within(&self, outer: &Rect) -> bool {
+        self.x >= outer.x
+            && self.y >= outer.y
+            && self.x.saturating_add(self.width) <= outer.x.saturating_add(outer.width)
+            && self.y.saturating_add(self.height) <= outer.y.saturating_add(outer.height)
+    }
+
     pub fn scissor(&self) -> (u32, u32, u32, u32) {
         (self.x, self.y, self.width, self.height)
     }
@@ -20,6 +28,62 @@ impl Rect {
             self.height as f32,
         )
     }
+}
+
+/// The panel of a list that inset `index` is nested in (#203, #205): the
+/// innermost one whose data area holds the inset's panel rect, a panel with
+/// a rect of its own, the first of several that share one. `rects(i)` gives panel `i`'s panel rect and data
+/// area. Panels that share a rect (overlays, members) are never nested in
+/// one another. `None` for a panel of its own.
+pub fn inset_parent(
+    count: usize,
+    rects: impl Fn(usize) -> (Rect, Rect),
+    index: usize,
+) -> Option<usize> {
+    let (rect, _) = rects(index);
+    (0..count)
+        .filter(|&outer| outer != index)
+        .filter_map(|outer| {
+            let (own, data) = rects(outer);
+            (own != rect && rect.within(&data)).then_some((outer, data))
+        })
+        .min_by_key(|&(outer, data)| (u64::from(data.width) * u64::from(data.height), outer))
+        .map(|(outer, _)| outer)
+}
+
+/// The order insets are painted in, bottom to top (#205): a tree walk in
+/// which each inset comes after the panel it is nested in and before its
+/// next sibling, siblings in list order. An inset inside another is drawn
+/// over it, and a later sibling over both. Panels of their own are not in
+/// the walk. A pointer belongs to the last inset of this order that holds
+/// it. The walk allocates nothing; each step scans the list.
+pub fn inset_paint_order<F: Fn(usize) -> (Rect, Rect)>(
+    count: usize,
+    rects: F,
+) -> impl Iterator<Item = usize> {
+    // `None` for a panel of its own, `Some(None)` for a top-level inset and
+    // `Some(Some(p))` for an inset in inset `p`: siblings share it.
+    fn level(
+        count: usize,
+        rects: &impl Fn(usize) -> (Rect, Rect),
+        index: usize,
+    ) -> Option<Option<usize>> {
+        inset_parent(count, rects, index).map(|p| inset_parent(count, rects, p).map(|_| p))
+    }
+    let start = (0..count).find(|&index| level(count, &rects, index) == Some(None));
+    std::iter::successors(start, move |&index| {
+        if let Some(child) = (0..count).find(|&c| inset_parent(count, &rects, c) == Some(index)) {
+            return Some(child);
+        }
+        let mut at = index;
+        loop {
+            let up = level(count, &rects, at)?;
+            if let Some(next) = (at + 1..count).find(|&n| level(count, &rects, n) == Some(up)) {
+                return Some(next);
+            }
+            at = up?;
+        }
+    })
 }
 
 /// Float-precision pixel rect — element bounds, selection boxes, and other

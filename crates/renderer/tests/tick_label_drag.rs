@@ -392,7 +392,8 @@ fn polar_tick_labels_hit_each_drawn_label() {
             &cfg,
             &element,
             &measure,
-            &mut Parts(&mut |p| rects.push(text_rect(p)))
+            &mut Parts(&mut |p| rects.push(text_rect(p))),
+            1.0
         ));
         assert!(rects.len() >= 4, "{side:?}: {} labels", rects.len());
         let name = AxisLabelElement { side: side.clone() }.element_id();
@@ -410,6 +411,7 @@ fn polar_tick_labels_hit_each_drawn_label() {
         &element,
         &measure,
         &mut Parts(&mut |p| rects.push(text_rect(p))),
+        1.0,
     );
     let geometry = cfg.polar_geometry().unwrap();
     let (cx, cy) = (geometry.center[0], geometry.center[1]);

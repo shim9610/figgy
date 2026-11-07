@@ -1147,7 +1147,7 @@ impl FiggyChart {
     }
 
     /// Press on an energy-level label (#203): row `index` of the list `part`
-    /// (`"level"`, `"transition"` or `"limit"`) of series `series_id`, as a
+    /// (`"level"`, `"transition"`, `"limit"` or `"band"`) of series `series_id`, as a
     /// `pick_point` hit names it. The label becomes the typed selection and
     /// the drag starts, as `press_value_label` does; `on_move` writes the
     /// row's `label_offset`. Returns `false` and changes nothing for a row
@@ -1164,6 +1164,7 @@ impl FiggyChart {
             "level" => LabelPart::Level,
             "transition" => LabelPart::Transition,
             "limit" => LabelPart::Limit,
+            "band" => LabelPart::Band,
             _ => return Ok(false),
         };
         let Some(series) = self
@@ -1406,6 +1407,11 @@ impl FiggyChart {
         {
             self.resizing = Some(handle);
             self.dragging = false;
+            self.drag_pointer = self.display_point_to_document(x, y)?;
+            let (horizontal, vertical) = rz.resize_targets(handle);
+            if moves_subplot_frame(horizontal.as_ref()) || moves_subplot_frame(vertical.as_ref()) {
+                self.hold_display()?;
+            }
             return Ok(true);
         }
 
@@ -1431,6 +1437,13 @@ impl FiggyChart {
         self.resizing = None;
         self.dragging = dragging;
         self.drag_pointer = self.display_point_to_document(x, y)?;
+        let frame = new_sel
+            .and_then(|id| self.hitmap.get(id))
+            .and_then(|el| el.as_draggable())
+            .map(|drag| drag.nudge_element());
+        if moves_subplot_frame(frame.as_ref()) {
+            self.hold_display()?;
+        }
         Ok(new_sel.is_some())
     }
 
@@ -1476,8 +1489,10 @@ impl FiggyChart {
         // document draws with.
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         if let Some(handle) = self.resizing {
+            let at = self.drag_pointer;
+            self.drag_pointer = [at[0] + dx, at[1] + dy];
             if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
-                && rz.resize_by(&mut config, &measure, handle, dx, dy) == NudgeResult::Moved
+                && rz.resize_from(&mut config, &measure, handle, at, dx, dy) == NudgeResult::Moved
             {
                 self.replace_chart_config(config)?;
             }
@@ -1495,12 +1510,33 @@ impl FiggyChart {
         Ok(())
     }
 
-    pub fn on_release(&mut self) {
+    /// Pointer release: ends the drag or handle drag, and releases a held
+    /// display placement so a document a subplot drag grew fits the canvas
+    /// again (#205).
+    pub fn on_release(&mut self) -> Result<(), JsValue> {
         self.dragging = false;
         self.resizing = None;
         self.annotation_pointer = false;
         self.value_label_pointer = false;
         self.feynman_pointer = None;
+        if self.display_held {
+            self.display_held = false;
+            self.renderer
+                .hold_chart_display(self.chart_id, false)
+                .map_err(js_err)?;
+        }
+        Ok(())
+    }
+
+    /// Hold the display placement while a subplot frame drags (#205).
+    fn hold_display(&mut self) -> Result<(), JsValue> {
+        if !self.display_held {
+            self.renderer
+                .hold_chart_display(self.chart_id, true)
+                .map_err(js_err)?;
+            self.display_held = true;
+        }
+        Ok(())
     }
 
     /// `true` while a chart element or an annotation is selected.
@@ -1550,4 +1586,15 @@ impl FiggyChart {
     ) -> Result<JsValue, JsValue> {
         Err(JsValue::from_str("stream picking is disabled"))
     }
+}
+
+/// Whether a drag or handle target moves a subplot's frame (#205).
+fn moves_subplot_frame(element: Option<&renderer::layout::Element>) -> bool {
+    matches!(
+        element,
+        Some(
+            renderer::layout::Element::SubplotFrame(_)
+                | renderer::layout::Element::SubplotFrameEdge(..)
+        )
+    )
 }

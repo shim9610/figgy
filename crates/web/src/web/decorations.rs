@@ -17,6 +17,7 @@ pub enum AxisPreset {
     OpenInward,
     Minimal,
     Hidden,
+    Grotrian,
 }
 
 impl From<AxisPreset> for renderer::AxisPreset {
@@ -28,6 +29,7 @@ impl From<AxisPreset> for renderer::AxisPreset {
             AxisPreset::OpenInward => Self::OpenInward,
             AxisPreset::Minimal => Self::Minimal,
             AxisPreset::Hidden => Self::Hidden,
+            AxisPreset::Grotrian => Self::Grotrian,
         }
     }
 }
@@ -660,5 +662,80 @@ impl FiggyChart {
                     value
                 });
         serde_json::to_string(&value).map_err(js_err)
+    }
+}
+
+// ------------------------------------------------------------------
+// Subplot frames (#205): where each subplot sits and its plot background.
+// ------------------------------------------------------------------
+
+#[wasm_bindgen]
+impl FiggyChart {
+    /// Place subplot `index`'s frame at `(x, y)` with `width` x `height`, in
+    /// document pixels (the coordinates of `get_config`'s `chart_area`s):
+    /// anywhere, inside the parent chart (an inset), over another panel or
+    /// beside every one. The subplot's plot must fit in the frame; an error
+    /// leaves the document unchanged. A pointer drag on the frame does the
+    /// same on the base layer.
+    /// JS: `chart.set_subplot_area(0, 120, 80, 320, 240);`
+    pub fn set_subplot_area(
+        &mut self,
+        index: usize,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsValue> {
+        let mut config = self.chart_config()?.clone();
+        let area = renderer::layout::ChartArea(Rect {
+            x,
+            y,
+            width,
+            height,
+        });
+        config.set_subplot_area(index, area).map_err(|error| {
+            js_err(format!("subplot {index} cannot take that frame: {error:?}"))
+        })?;
+        self.replace_chart_config(config)
+    }
+
+    /// Subplot `index`'s frame as JSON `{"x":..,"y":..,"width":..,"height":..}`
+    /// in document pixels.
+    pub fn subplot_area(&self, index: usize) -> Result<String, JsValue> {
+        let subplot = self
+            .chart_config()?
+            .subplots
+            .get(index)
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+        serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
+    }
+
+    /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,
+    /// "a":1}`) or leave it transparent (`null`): an inset usually covers
+    /// the parent's data under it.
+    pub fn set_subplot_background(&mut self, index: usize, json: &str) -> Result<(), JsValue> {
+        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        let mut config = self.chart_config()?.clone();
+        let subplot = config
+            .subplots
+            .get_mut(index)
+            .ok_or_else(|| js_err(format!("no subplot {index}")))?;
+        subplot.config.plot_background = color;
+        self.replace_chart_config(config)
+    }
+
+    /// The subplots that are insets now (nested in another panel's plot),
+    /// bottom to top, as a JSON array of indices.
+    pub fn insets(&self) -> Result<String, JsValue> {
+        let config = self.chart_config()?;
+        let mut json = String::from("[");
+        for (position, index) in config.insets().enumerate() {
+            if position > 0 {
+                json.push(',');
+            }
+            json.push_str(&index.to_string());
+        }
+        json.push(']');
+        Ok(json)
     }
 }

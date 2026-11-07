@@ -1018,6 +1018,7 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
         series: vec!["sub_one".into(), "sub_two".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let mut sub_one = bars("sub_one", GREEN, direction);
     sub_one.y_column = "one".into();

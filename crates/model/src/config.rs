@@ -156,8 +156,9 @@ pub const MAX_AXIS_BREAK_GAP: f32 = 0.2;
 
 /// Ranges cut out of a value axis (#200): the axis draws the rest, each cut
 /// shown as a gap of [`Self::gap`] of the axis length, marked by
-/// [`Self::mark`]. The pieces between the cuts share the axis length in
-/// proportion to their spans (in decades on a logarithmic axis).
+/// [`Self::mark`]. The pieces between the cuts share the axis length as
+/// [`Self::sizing`] says: by default in proportion to their spans (in
+/// decades on a logarithmic axis).
 ///
 /// A cut outside the axis' current range (after a zoom or an auto-fit) has
 /// no effect; one that overlaps an end is cut at the end. See
@@ -183,10 +184,18 @@ pub struct AxisBreaks {
     /// the plot at each edge of each gap, in the axis line's style, so the
     /// pieces read as separate panels. Default `true`, in both styles.
     pub frame_each_panel: bool,
+    /// How the pieces share the axis length (#205). Omitted from JSON when
+    /// it is [`PieceSizing::ByValue`], the default.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "PieceSizing::is_by_value")
+    )]
+    pub sizing: PieceSizing,
 }
 
 impl Default for AxisBreaks {
-    /// No range, `Continuous`, a 3 % gap, slash marks and framed pieces.
+    /// No range, `Continuous`, a 3 % gap, slash marks, framed pieces and
+    /// pieces sized by their spans.
     fn default() -> Self {
         Self {
             ranges: Vec::new(),
@@ -194,7 +203,33 @@ impl Default for AxisBreaks {
             gap: 0.03,
             mark: BreakMark::default(),
             frame_each_panel: true,
+            sizing: PieceSizing::ByValue,
         }
+    }
+}
+
+/// How the pieces of a broken axis share its length (#205), the gaps
+/// aside. With `Equal` or `Weights` each piece has a scale of its own (a
+/// short span can get room to read) and walks its own tick spacing; a mark
+/// that crosses a gap is still the straight line between its drawn points.
+/// Only a `Continuous` axis takes them: a `Panels` axis is refused.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum PieceSizing {
+    /// In proportion to the pieces' spans: one scale for the whole axis.
+    #[default]
+    ByValue,
+    /// Every piece the same length.
+    Equal,
+    /// In proportion to one positive weight per piece, in axis order: one
+    /// more weight than cut ranges.
+    Weights(Vec<f32>),
+}
+
+impl PieceSizing {
+    pub fn is_by_value(&self) -> bool {
+        matches!(self, Self::ByValue)
     }
 }
 
@@ -339,9 +374,9 @@ pub struct AxisOptions {
     /// On a categorical axis `min`, `max`, `major_spacing` and `minor_count`
     /// are ignored (they keep their values and their numeric meaning for when
     /// `categories` is removed again), `label_style.format` and
-    /// `label_style.significant_digits` are ignored, the range helpers
-    /// (`Chart::set_x_range`, the `auto_fit_*` family, a view state) leave the
-    /// axis unchanged, and the renderer rejects a logarithmic `scale` and
+    /// `label_style.significant_digits` are ignored, the `auto_fit_*` family
+    /// leaves the axis unchanged, the helpers that move a view set its
+    /// [`AxisOptions::category_window`] (#205), and the renderer rejects a logarithmic `scale` and
     /// lists outside [`AxisOptions::validate_categories`]' limits. `inverted`
     /// flips the walk: the first category sits at the far end, and the ticks,
     /// labels, grid, data and picks follow the same `axis_fraction`. A polar chart's angle and radius axes and the colourbar axis
@@ -351,6 +386,20 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub categories: Option<Vec<Category>>,
+
+    /// The slots a categorical axis shows (#205): `[from, to]` in category
+    /// coordinates, where category `i` is centred at `i` and its slot runs
+    /// `i - 0.5..i + 0.5`. `None` (the default, omitted from JSON) shows
+    /// every slot, `-0.5..n - 0.5`. Ignored on a numeric axis, where `min` /
+    /// `max` are the range. The helpers that move a view
+    /// (`Chart::set_x_range`, a view state, zoom and pan) set it; the
+    /// `auto_fit_*` family leaves it. Ticks, labels, grid, data, picks and
+    /// annotations follow it through [`AxisOptions::data_range`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub category_window: Option<[f64; 2]>,
 
     /// Group headers over runs of this axis' categories (#203). Drawn on a
     /// categorical `bottom_x` or `top_x`; refused on a numeric axis and on
@@ -529,11 +578,15 @@ impl AxisOptions {
         self.categories.as_ref().map(Vec::len)
     }
 
-    /// The range the axis maps: `[-0.5, n - 0.5]` on a categorical axis with
-    /// `n` categories, `min..max` on a numeric one.
+    /// The range the axis maps: its [`Self::category_window`] on a
+    /// categorical axis with `n` categories, `[-0.5, n - 0.5]` without one,
+    /// and `min..max` on a numeric one.
     pub fn data_range(&self) -> (f64, f64) {
         match self.category_count() {
-            Some(n) => (-0.5, n as f64 - 0.5),
+            Some(n) => match self.category_window {
+                Some([from, to]) => (from, to),
+                None => (-0.5, n as f64 - 0.5),
+            },
             None => (self.min, self.max),
         }
     }
@@ -574,6 +627,17 @@ impl AxisOptions {
         }
         if !(0.0..=MAX_AXIS_BREAK_GAP).contains(&breaks.gap) {
             return Err("a break gap must be between 0 and 0.2 of the axis");
+        }
+        if !breaks.sizing.is_by_value() && breaks.style == AxisBreakStyle::Panels {
+            return Err("only a Continuous broken axis sizes its pieces other than by value");
+        }
+        if let PieceSizing::Weights(weights) = &breaks.sizing {
+            if weights.len() != breaks.ranges.len() + 1 {
+                return Err("piece weights need one weight per piece: one more than cut ranges");
+            }
+            if !weights.iter().all(|w| w.is_finite() && *w > 0.0) {
+                return Err("piece weights must be finite and positive");
+            }
         }
         if let BreakMark::Slash { size, color, width } = &breaks.mark {
             let channels = color.map_or([0.0; 4], |c| [c.r, c.g, c.b, c.a]);
@@ -1504,8 +1568,13 @@ impl Config {
                 series: _,
                 link_x: _,
                 link_y: _,
+                // The marker's line width is pixels.
+                marker,
             } = subplot;
             config.scale_in_place(s);
+            if let Some(marker) = marker.as_mut() {
+                marker.line.width *= s;
+            }
         }
 
         if let Some(picked_data) = picked_data.as_mut() {
@@ -1659,6 +1728,7 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         // (#203); scaled below.
         categories: _,
         category_groups: _,
+        category_window: _,
         // A value of the perpendicular axis.
         cross_at: _,
         // A tick policy, not pixels.
@@ -1672,6 +1742,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         gap: _,
         mark,
         frame_each_panel: _,
+        // Shares of the axis length, not pixels.
+        sizing: _,
     }) = breaks
         && let BreakMark::Slash {
             size,

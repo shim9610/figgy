@@ -983,6 +983,7 @@ fn overlays_and_subplots_draw_their_own_range_groups() {
         series: vec!["below".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let series = [
         ranges("one", RED),

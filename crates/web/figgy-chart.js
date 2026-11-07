@@ -2292,6 +2292,14 @@ export class FiggyChartElement extends HTMLElement {
   set_y_title(text) { return this.#mutateChart("set_y_title", text); }
   set_colorbar_title(text) { return this.#mutateChart("set_colorbar_title", text); }
   set_colorbar_axis(json) { return this.#mutateChart("set_colorbar_axis", json); }
+  set_subplot_area(index, x, y, width, height) {
+    return this.#mutateChart("set_subplot_area", index, x, y, width, height);
+  }
+  subplot_area(index) { return JSON.parse(this.#kernelForCall().subplot_area(index)); }
+  set_subplot_background(index, color) {
+    return this.#mutateChart("set_subplot_background", index, JSON.stringify(color ?? null));
+  }
+  insets() { return JSON.parse(this.#kernelForCall().insets()); }
   apply_axis_preset(preset) { return this.#mutateChart("apply_axis_preset", preset); }
   apply_color_cycle(cycle) { return this.#mutateChart("apply_color_cycle", cycle); }
   get_config() { return this.#kernelForCall().get_config(); }

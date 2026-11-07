@@ -806,6 +806,7 @@ fn polar_and_cartesian_subplots_share_a_document_and_cartesian_pixels_are_unchan
         series: vec!["polar_points".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let mut polar_points = scatter("polar_points", 8.0);
     polar_points.series_id = "polar_points".into();
@@ -1093,7 +1094,8 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
             {
                 outer = Some(r);
             }
-        })
+        }),
+        1.0
     ));
     let label = outer.expect("the ray draws labels");
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
@@ -1144,7 +1146,8 @@ fn radius_labels_survive_rotating_the_ray() {
                 if let DrawnPart::Text(rect) = part {
                     boxes.push(rect);
                 }
-            })
+            }),
+            1.0
         ));
         boxes
     };
@@ -1208,7 +1211,8 @@ fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
                 if let DrawnPart::Text(_) = part {
                     count += 1;
                 }
-            })
+            }),
+            1.0
         ));
         count
     };

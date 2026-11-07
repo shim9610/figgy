@@ -74,7 +74,7 @@ async fn chart_title_hit_press_move_and_release_updates_config_offset() {
         Some("chart_title")
     );
 
-    chart.on_release();
+    chart.on_release().unwrap();
     chart.on_move(11.0, 13.0).expect("move after release");
     assert_eq!(title_offsets(&chart), (18.0, 7.0));
 }
@@ -137,7 +137,7 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
     );
     chart.on_press(title_point.0, title_point.1).unwrap();
     chart.on_move(3.0, 7.0).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     let cfg = chart_config(&chart);
     let title = &cfg.colorbar.as_ref().unwrap().axis.title_option;
     assert_eq!((title.offset_x, title.offset_y), (7.0, -3.0));
@@ -156,7 +156,7 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
     );
     chart.on_press(label_point.0, label_point.1).unwrap();
     chart.on_move(4.0, -2.0).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     let cfg = chart_config(&chart);
     let labels = &cfg.colorbar.as_ref().unwrap().axis.label_style;
     assert_eq!((labels.label_offset_x, labels.label_offset_y), (4.0, -2.0));
@@ -175,7 +175,7 @@ async fn colorbar_axis_labels_and_title_edit_select_and_drag_independently() {
     );
     chart.on_press(axis_point.0, axis_point.1).unwrap();
     chart.on_move(6.0, 99.0).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     assert_eq!(
         chart_config(&chart)
             .colorbar
@@ -230,7 +230,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
         Some("annotation_0")
     );
     chart.on_press(point.0, point.1).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     assert_eq!(chart.selected_annotation(), None);
 
     // Annotations: the item answers on top, a press selects it and a move
@@ -247,7 +247,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
     assert_eq!(chart.selected_annotation(), Some(0));
     assert!(chart.has_selection().unwrap());
     chart.on_move(24.0, 16.0).unwrap();
-    chart.on_release();
+    chart.on_release().unwrap();
     let moved = match &chart_config(&chart).annotations.items[0].kind {
         renderer::AnnotationKind::Text { anchor, .. } => *anchor,
         _ => unreachable!(),
@@ -262,7 +262,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
     assert_eq!(chart.selected_annotation(), None);
 }
 
-/// The drawn box of the first tick label whose rich text starts with `lead`.
+/// The drawn box of the first tick label whose text starts with `lead`.
 struct FindLabel {
     lead: char,
     found: Option<renderer::layout::RectF>,
@@ -270,10 +270,12 @@ struct FindLabel {
 
 impl renderer::sink::Sink for FindLabel {
     fn text(&mut self, _: renderer::sink::Slot, text: &renderer::sink::PlacedText<'_>) {
-        if let renderer::sink::TextRef::Rich(rich) = text.text
-            && self.found.is_none()
-            && rich.segments.first().is_some_and(|s| s.text == self.lead)
-        {
+        // A plain label or a rich one (a power of ten): its first character.
+        let lead = match text.text {
+            renderer::sink::TextRef::Rich(rich) => rich.segments.first().map(|s| s.text),
+            renderer::sink::TextRef::Plain { text, .. } => text.chars().next(),
+        };
+        if self.found.is_none() && lead == Some(self.lead) {
             self.found = Some(text.rect());
         }
     }
@@ -386,7 +388,7 @@ async fn an_adaptive_log_axis_round_trips_and_its_2e4_label_hits_and_drags() {
     );
     assert!(chart.on_press(cx, cy).expect("press the labels"));
     chart.on_move(5.0, 12.0).expect("drag the labels");
-    chart.on_release();
+    chart.on_release().unwrap();
     let cfg = chart_config(&chart);
     let style = &cfg.left_y.label_style;
     assert_eq!((style.label_offset_x, style.label_offset_y), (5.0, 12.0));
@@ -460,8 +462,101 @@ async fn a_broken_axis_round_trips_and_its_upper_labels_hit_and_drag() {
     );
     assert!(chart.on_press(cx, cy).expect("press the labels"));
     chart.on_move(5.0, 12.0).expect("drag the labels");
-    chart.on_release();
+    chart.on_release().unwrap();
     let cfg = chart_config(&chart);
     let moved = label_starting_with(&cfg, Side::Left, '9');
     assert_eq!((moved.x - label.x, moved.y - label.y), (5.0, 12.0));
+}
+
+// #205: on the base layer a subplot's frame is hit on its plot, dragged and
+// resized by whole pixels, placed anywhere by the frame API, and read back.
+#[wasm_bindgen_test(async)]
+async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
+    let mut chart = FiggyChart::create(canvas())
+        .await
+        .expect("FiggyChart.create");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&chart.get_config().expect("get_config")).expect("config json");
+    json["chart_area"] = serde_json::json!({ "x": 0, "y": 0, "width": 960, "height": 640 });
+    let mut inset = json.clone();
+    inset["chart_area"] = serde_json::json!({ "x": 560, "y": 80, "width": 300, "height": 220 });
+    inset["plot_background"] = serde_json::json!({ "r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0 });
+    json["subplots"] = serde_json::json!([{ "config": inset, "series": [] }]);
+    chart
+        .set_config(&json.to_string())
+        .expect("a config with an inset");
+    let cfg = chart_config(&chart);
+    let frame = cfg.subplots[0].config.chart_area.0;
+    assert_eq!(
+        chart.subplot_area(0).unwrap(),
+        serde_json::to_string(&frame).unwrap()
+    );
+    assert_eq!(chart.insets().unwrap(), "[0]");
+    // The canvas is the document's size, so display and document pixels agree.
+    let plot = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
+    let (cx, cy) = (
+        plot.x as f32 + plot.width as f32 / 2.0,
+        plot.y as f32 + plot.height as f32 / 2.0,
+    );
+    assert_eq!(
+        chart.hit_test(cx, cy).unwrap().as_deref(),
+        Some("subplot_0:frame")
+    );
+    assert!(chart.on_press(cx, cy).expect("press the inset's plot"));
+    chart.on_move(30.0, 20.0).expect("drag the frame");
+    chart.on_release().expect("release the frame");
+    let moved = chart_config(&chart).subplots[0].config.chart_area.0;
+    assert_eq!(
+        (moved.x, moved.y, moved.width, moved.height),
+        (frame.x + 30, frame.y + 20, frame.width, frame.height)
+    );
+    // The south-east handle resizes it inward.
+    let bounds: serde_json::Value =
+        serde_json::from_str(&chart.decoration_bounds("subplot_0:frame").unwrap()).unwrap();
+    let handles = bounds["handles"].as_array().expect("handles");
+    assert_eq!(handles.len(), 8);
+    let centre = |h: &serde_json::Value| {
+        (
+            (h[0].as_f64().unwrap() + h[2].as_f64().unwrap() / 2.0) as f32,
+            (h[1].as_f64().unwrap() + h[3].as_f64().unwrap() / 2.0) as f32,
+        )
+    };
+    let (hx, hy) = handles
+        .iter()
+        .map(centre)
+        .max_by(|a, b| (a.0 + a.1).partial_cmp(&(b.0 + b.1)).unwrap())
+        .unwrap();
+    assert!(chart.on_press(hx, hy).expect("press the handle"));
+    chart.on_move(-40.0, -30.0).expect("drag the handle");
+    chart.on_release().expect("release the handle");
+    let resized = chart_config(&chart).subplots[0].config.chart_area.0;
+    assert_eq!(
+        (resized.x, resized.y, resized.width, resized.height),
+        (moved.x, moved.y, moved.width - 40, moved.height - 30)
+    );
+    // The API places the frame anywhere, here beyond the parent's right
+    // edge, where the subplot is a panel of its own.
+    chart
+        .set_subplot_area(0, 1000, 40, 300, 220)
+        .expect("place the frame outside the parent");
+    assert_eq!(
+        chart.subplot_area(0).unwrap(),
+        r#"{"x":1000,"y":40,"width":300,"height":220}"#
+    );
+    assert_eq!(chart.insets().unwrap(), "[]");
+    // A frame too small for its plot is refused and nothing changes.
+    assert!(chart.set_subplot_area(0, 0, 0, 4, 4).is_err());
+    assert_eq!(
+        chart.subplot_area(0).unwrap(),
+        r#"{"x":1000,"y":40,"width":300,"height":220}"#
+    );
+    chart
+        .set_subplot_background(0, "null")
+        .expect("clear the plot background");
+    assert!(
+        chart_config(&chart).subplots[0]
+            .config
+            .plot_background
+            .is_none()
+    );
 }

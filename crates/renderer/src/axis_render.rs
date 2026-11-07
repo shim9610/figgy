@@ -76,6 +76,20 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
     layer: AxisLayerKind,
     selection: &[SelectionBox],
 ) -> crate::Result<Vec<u8>> {
+    try_raster_chart_layer_to_rgba_with_selection_at(config, layer, selection, 1.0)
+}
+
+/// [`try_raster_chart_layer_to_rgba_with_selection`] for a `config` whose
+/// pixel values carry the display or export `scale` (#205): what the
+/// renderer rasters for a placed or exported document, where a broken
+/// axis' piece frames snap to whole logical pixels and then scale, so a 2x
+/// raster is the 1x raster doubled. The plain entry is this one at scale 1.
+pub fn try_raster_chart_layer_to_rgba_with_selection_at(
+    config: &Config,
+    layer: AxisLayerKind,
+    selection: &[SelectionBox],
+    scale: f32,
+) -> crate::Result<Vec<u8>> {
     let raster_cfg = raster_frame_config(config)?;
     let w = raster_cfg.chart_area.0.width;
     let h = raster_cfg.chart_area.0.height;
@@ -86,9 +100,12 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
         });
     };
     match layer {
-        AxisLayerKind::Grid => draw_grid_layer(&mut canvas, &raster_cfg)?,
-        AxisLayerKind::Decoration => draw_decoration_layer(&mut canvas, &raster_cfg)?,
-        AxisLayerKind::All => draw_axes(&mut canvas, &raster_cfg)?,
+        AxisLayerKind::Grid => draw_layers(Some(&mut canvas), None, &raster_cfg, scale)?,
+        AxisLayerKind::Decoration => draw_layers(None, Some(&mut canvas), &raster_cfg, scale)?,
+        AxisLayerKind::All => {
+            draw_layers(Some(&mut canvas), None, &raster_cfg, scale)?;
+            draw_layers(None, Some(&mut canvas), &raster_cfg, scale)?;
+        }
     }
     if matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
         finish_decoration_layer(&mut canvas, config, &raster_cfg, selection);
@@ -107,6 +124,7 @@ pub(crate) fn raster_panel_layers(
     config: &Config,
     selection: &[SelectionBox],
     grid: bool,
+    scale: f32,
 ) -> crate::Result<(Vec<u8>, Vec<u8>)> {
     let raster_cfg = raster_frame_config(config)?;
     let w = raster_cfg.chart_area.0.width;
@@ -120,7 +138,7 @@ pub(crate) fn raster_panel_layers(
         None
     };
     let mut above = Canvas::new(w, h).ok_or_else(allocation_failed)?;
-    draw_layers(below.as_mut(), Some(&mut above), &raster_cfg)?;
+    draw_layers(below.as_mut(), Some(&mut above), &raster_cfg, scale)?;
     finish_decoration_layer(&mut above, config, &raster_cfg, selection);
     Ok((
         below.map(Canvas::into_rgba).unwrap_or_default(),
@@ -178,10 +196,12 @@ fn raster_frame_config(config: &Config) -> crate::Result<Config> {
 /// which may be absent: the one placement pass of every decoration, through
 /// [`emit_chart_chrome`]. The constellation style's deep-space backdrop is
 /// painted first into the slot below the data, in place of the grid.
+/// `scale` is the scale `config`'s pixels carry ([`emit_chart_chrome`]).
 fn draw_layers(
     below: Option<&mut Canvas>,
     above: Option<&mut Canvas>,
     config: &Config,
+    scale: f32,
 ) -> crate::Result<()> {
     let mut below = below;
     if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
@@ -193,7 +213,7 @@ fn draw_layers(
     let stroker = DecoStroker::from_style(&config.draw_style);
     let fp = FontPolicy::for_style(&config.draw_style);
     let mut sink = CanvasSink::new(if backdrop { None } else { below }, above, stroker, fp);
-    emit_chart_chrome(config, &CpuTextMeasure::with_policy(fp), &mut sink);
+    emit_chart_chrome(config, &CpuTextMeasure::with_policy(fp), &mut sink, scale);
     sink.finish()
 }
 
@@ -203,13 +223,13 @@ fn draw_layers(
 /// (the compositing order already puts it under the data): grid lines are
 /// not drawn in that mode — the style declares its own background instead.
 pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
-    draw_layers(Some(canvas), None, config)
+    draw_layers(Some(canvas), None, config, 1.0)
 }
 
 /// Decoration layer — axis lines, tick labels, axis titles, chart title,
 /// legend. Drawn above the data so data never overlaps axis chrome.
 pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
-    draw_layers(None, Some(canvas), config)
+    draw_layers(None, Some(canvas), config, 1.0)
 }
 
 /// Draw the full axis chrome (grid + decoration) into the regions specified

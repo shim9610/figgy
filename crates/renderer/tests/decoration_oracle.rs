@@ -82,9 +82,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use renderer::axis_render::{
-    AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
-};
+use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba_with_selection_at};
 use renderer::drag::DragConfig;
 use renderer::layout::{Element, NudgeResult, RectF, Side};
 use renderer::legend::Legend;
@@ -239,36 +237,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         detail: "*hit another element that has no ink there*axis_*",
         reason: "axis corners, as for the top axis",
         issue: "#38",
-    },
-    Exclusion {
-        scene: "EnergyLevels",
-        layer: "base",
-        element: "axis_left",
-        inv: Inv::I2,
-        detail: "*hit another element that has no ink there*axis_right*",
-        reason: "the broken energy axis's piece frame (#200) runs under the opposite \
-                 axis's inward tick at the gap edge, as in BrokenAxes",
-        issue: "#38",
-    },
-    Exclusion {
-        scene: "EnergyLevels",
-        layer: "annotations",
-        element: "annotation_1",
-        inv: Inv::I2,
-        detail: "*points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the inset window's translucent wash over transition arrows crossing the 2p \
-                 level: three inks at one pixel, and the decoder resolves two at most",
-        issue: "#203",
-    },
-    Exclusion {
-        scene: "EnergyLevels",
-        layer: "annotations",
-        element: "annotation_*",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_*: *stroke outlines are farther than the grab reach from ink*",
-        reason: "a dragged inset connector or window ends under the inset, which is drawn \
-                 over its parent's annotations by design (#203)",
-        issue: "#203",
     },
     Exclusion {
         scene: "BrokenAxes",
@@ -633,6 +601,32 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the polar outer ring is the data boundary and belongs to no element",
         issue: "#47",
     },
+    // A subplot's frame (#205) is grabbed inside the frame by the selection
+    // padding and half a handle, so its selection box and handles lie in the
+    // subplot's own panel: those are UI constants, not pixel dims of the
+    // chart, so `Config::scaled` leaves them.
+    Exclusion {
+        scene: "*",
+        layer: "base",
+        element: "subplot_*:frame",
+        inv: Inv::I5,
+        detail: "bounds * at 2x are * px off * at 1x",
+        reason: "the frame's grab rect is the frame inset by the selection padding and half a \
+                 handle, UI constants the scaled config does not double",
+        issue: "#205",
+    },
+    // The frame goes anywhere, inside the parent chart or outside it, and
+    // the document area follows it (#205): no drag leaves every chart area.
+    Exclusion {
+        scene: "*",
+        layer: "base",
+        element: "subplot_*:frame",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "a subplot frame goes anywhere and the document area follows it: every drag \
+                 is a valid move",
+        issue: "#205",
+    },
 ];
 
 /// Rows only the sweep of the scenes as laid out has: the `LongLabels`
@@ -670,10 +664,78 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         reason: "the labels under their titles, as in I2",
         issue: "#44",
     },
+    Exclusion {
+        scene: "CategoryAxis",
+        layer: "base",
+        element: "tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
+        reason: "the scene's `auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
+                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
+                 for LongLabels' right axis. They stay grabbable elsewhere",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "EnergyLevelsCu",
+        layer: "document",
+        element: "category_groups_bottom",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the headers are centred on their runs at fractional pixels; measured on \
+                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
+                 and the difference is glyph snapping at the two scales, as for the Power \
+                 labels with a mantissa",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "EnergyLevelsU",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "bounds * after the drag, * expected",
+        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+                 plot's edge, so a drag down moves only its lower edge: its bounds grow \
+                 instead of moving",
+        issue: "#205",
+    },
 ];
 
 /// Rows only the `auto_layout` sweep has, which it must still find.
 const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "EnergyLevelsCu",
+        layer: "document",
+        element: "category_groups_bottom",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the headers are centred on their runs at fractional pixels; measured on \
+                 the export, the 2x ink rows lie within half a pixel of the 1x rows doubled, \
+                 and the difference is glyph snapping at the two scales, as for the Power \
+                 labels with a mantissa",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "EnergyLevelsU",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "bounds * after the drag, * expected",
+        reason: "the continuum span reaches past the top of the plot and is drawn cut at the \
+                 plot's edge, so a drag down moves only its lower edge: its bounds grow \
+                 instead of moving",
+        issue: "#205",
+    },
+    Exclusion {
+        scene: "CategoryAxis",
+        layer: "base",
+        element: "tick_labels_bottom",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
+        reason: "`auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
+                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
+                 for LongLabels' right axis. They stay grabbable elsewhere",
+        issue: "#205",
+    },
     Exclusion {
         scene: "LongLabels",
         layer: "base",
@@ -1098,6 +1160,10 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::PolarHeatmap => "PolarHeatmap",
         SceneKind::Quiver3d => "Quiver3d",
         SceneKind::ProbabilityPaper => "ProbabilityPaper",
+        SceneKind::EnergyLevelsAr => "EnergyLevelsAr",
+        SceneKind::EnergyLevelsCu => "EnergyLevelsCu",
+        SceneKind::EnergyLevelsU => "EnergyLevelsU",
+        SceneKind::EnergyLevelsArAll => "EnergyLevelsArAll",
         SceneKind::Feynman => "Feynman",
     }
 }
@@ -1279,7 +1345,11 @@ const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
 /// map: the oracle's side of I7. `cfg` is the document with `layer` active:
 /// a parallel chart (`Config.parallel`, #141) registers one
 /// `parallel_axis_labels_{i}` element per axis after the standard set, in
-/// its base layer and in a parallel subplot's.
+/// its base layer and in a parallel subplot's. The base layer then
+/// registers every subplot (#205), in order: its frame
+/// (`subplot_{i}:frame`) and its own base-layer set but the data area,
+/// each id prefixed `subplot_{i}:`, so an inset answers the pointer where
+/// it is drawn on top of the parent.
 fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     let mut names = match layer {
         LayerRef::Base => standard_names(""),
@@ -1308,6 +1378,22 @@ fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
     };
     if let Some((prefix, axes)) = parallel {
         names.extend((0..axes).map(|i| format!("{prefix}{PARALLEL_AXIS_LABELS}_{i}")));
+    }
+    if layer == LayerRef::Base {
+        for i in 0..cfg.subplots.len() {
+            let prefix = format!("subplot_{i}:");
+            names.push(format!("{prefix}frame"));
+            let Some(mut subplot) = cfg.subplot_config(i) else {
+                continue;
+            };
+            subplot.set_active_layer(LayerRef::Base);
+            names.extend(
+                expected_names(LayerRef::Base, &subplot)
+                    .into_iter()
+                    .filter(|name| name != "data_area")
+                    .map(|name| format!("{prefix}{name}")),
+            );
+        }
     }
     names
 }
@@ -1395,7 +1481,7 @@ fn cartesian_scene(
             scale,
         };
         let phase = Instant::now();
-        let ink = match SceneInk::new(&doc, &codes) {
+        let ink = match SceneInk::new(&doc, &codes, scale) {
             Ok(ink) => ink,
             Err(e) => {
                 report.check(&document, "<raster>", Inv::I7, false, || e);
@@ -1866,13 +1952,18 @@ struct SceneInk {
 }
 
 impl SceneInk {
-    fn new(doc: &Config, codes: &[Code]) -> Result<Self, String> {
-        Self::reusing(doc, codes, None)
+    fn new(doc: &Config, codes: &[Code], scale: f32) -> Result<Self, String> {
+        Self::reusing(doc, codes, None, scale)
     }
 
     /// The ink of `doc`, reusing every panel of `previous` whose config is
     /// unchanged: a drag re-rasters only the panels it moved.
-    fn reusing(doc: &Config, codes: &[Code], previous: Option<&SceneInk>) -> Result<Self, String> {
+    fn reusing(
+        doc: &Config,
+        codes: &[Code],
+        previous: Option<&SceneInk>,
+        scale: f32,
+    ) -> Result<Self, String> {
         let area = doc.document_area();
         let (w, h) = (area.width as usize, area.height as usize);
         let mut panels = Vec::new();
@@ -1893,8 +1984,13 @@ impl SceneInk {
                 panels.push(p.clone());
                 continue;
             }
-            let rgba = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration)
-                .map_err(|e| format!("{layer:?} raster: {e}"))?;
+            let rgba = try_raster_chart_layer_to_rgba_with_selection_at(
+                &config,
+                AxisLayerKind::Decoration,
+                &[],
+                scale,
+            )
+            .map_err(|e| format!("{layer:?} raster: {e}"))?;
             let a = config.chart_area.0;
             let (pw, ph) = (a.width as usize, a.height as usize);
             let local: Vec<usize> = table
@@ -2795,10 +2891,11 @@ fn check_i3(report: &mut Report, at: &At<'_>, measured: &[Measured], ink: &Scene
                 continue;
             }
             report.count(at, "selection rasters", 1);
-            let selected = match try_raster_chart_layer_to_rgba_with_selection(
+            let selected = match try_raster_chart_layer_to_rgba_with_selection_at(
                 &p.config,
                 AxisLayerKind::Decoration,
                 boxes,
+                at.scale,
             ) {
                 Ok(rgba) => rgba,
                 Err(e) => {
@@ -3372,7 +3469,7 @@ fn check_i6(
             }),
         }
         // I2 on the new ink, for the dragged element.
-        let ink2 = match SceneInk::reusing(&moved, codes, Some(ink)) {
+        let ink2 = match SceneInk::reusing(&moved, codes, Some(ink), at.scale) {
             Ok(ink2) => ink2,
             Err(e) => {
                 report.check(at, &m.name, Inv::I6, false, || e);
@@ -4154,6 +4251,12 @@ fn export_annotations(
     hidden: Option<usize>,
 ) -> Result<RasterImage, String> {
     let mut doc = config.clone();
+    // The insets' markers (#205) are drawn on the layer but are no item:
+    // the inset is selectable, not its marker. The items' ink is compared
+    // without them; `energy_levels_render` checks the marker itself.
+    for subplot in &mut doc.subplots {
+        subplot.marker = None;
+    }
     match hidden {
         Some(usize::MAX) => doc.annotations.visible = false,
         Some(i) => doc.annotations.items[i].visible = false,

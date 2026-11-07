@@ -261,8 +261,8 @@ pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
-    ShapeStyle, Subplot,
+    AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, InsetMarker, LayerRef, OverlayLayer,
+    PixelSpace, ShapeStyle, Subplot,
 };
 pub mod decoration;
 

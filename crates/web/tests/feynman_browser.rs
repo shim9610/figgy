@@ -134,7 +134,7 @@ async fn a_diagram_is_laid_out_on_registration_picked_dragged_and_reported() {
     // Press and drag the vertex 20 px up: it moves 20 px in data units.
     assert!(chart.press_feynman("d", "feynman_vertex", 2, None).unwrap());
     chart.on_move(0.0, -20.0).unwrap();
-    chart.on_release();
+    chart.on_release().expect("release");
     let moved = series(&chart).vertices[2].at.unwrap();
     let before = diagram.vertices[2].at.unwrap();
     let plot = config.data_area().unwrap().0;
@@ -157,7 +157,7 @@ async fn a_diagram_is_laid_out_on_registration_picked_dragged_and_reported() {
             .unwrap()
     );
     chart.on_move(0.0, -15.0).unwrap();
-    chart.on_release();
+    chart.on_release().expect("release");
     assert!(series(&chart).propagators[2].bend.is_some());
     let selected = details(&chart).await;
     assert_eq!(selected["particle"], "Photon");
@@ -168,7 +168,7 @@ async fn a_diagram_is_laid_out_on_registration_picked_dragged_and_reported() {
             .unwrap()
     );
     chart.on_move(3.0, 4.0).unwrap();
-    chart.on_release();
+    chart.on_release().expect("release");
     let selected = details(&chart).await;
     assert_eq!(selected["identity"]["kind"], "feynman_label");
     assert_eq!(selected["offset"], serde_json::json!([3.0, 4.0]));

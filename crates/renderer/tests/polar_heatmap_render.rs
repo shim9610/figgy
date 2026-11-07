@@ -1231,6 +1231,7 @@ fn a_polar_heatmap_subplot_draws_its_cells() {
         series: vec!["field".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let doc = Chart::new(parent);
     let series = [field(&ids, GridLayout::Edges, Shading::Flat, None, true)];

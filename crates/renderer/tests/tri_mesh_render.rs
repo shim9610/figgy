@@ -912,6 +912,7 @@ fn a_broken_axis_shades_each_piece_and_leaves_the_gap_empty() {
             gap: 0.1,
             mark: BreakMark::None,
             frame_each_panel: false,
+            sizing: Default::default(),
         });
         let config = chart.config().clone();
         for scale in [1.0f32, 2.0] {
@@ -1576,6 +1577,7 @@ fn a_mesh_subplot_draws_and_picks_its_triangles() {
         series: vec!["mesh".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let doc = Chart::new(document.clone());
     let series = vec![mesh_series(

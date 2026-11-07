@@ -3583,6 +3583,7 @@ fn a_streamed_source_on_a_probability_axis_is_refused() {
         series: vec!["m".into()],
         link_x: None,
         link_y: None,
+        marker: None,
     });
     let cases = [
         ("x", on_x, vec![points.clone()]),

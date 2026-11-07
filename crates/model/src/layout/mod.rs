@@ -16,7 +16,7 @@ pub use geometry::{
     value_in_cut, visible_colorbar_rect,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
-pub use rect::{ChartArea, DataArea, Rect, RectF};
+pub use rect::{ChartArea, DataArea, Rect, RectF, inset_paint_order, inset_parent};
 
 pub use crate::sink::DrawnPart;
 
@@ -353,6 +353,46 @@ fn axis_dims_feasible(axis: &AxisOptions) -> Result<(), LayoutError> {
 }
 
 // Invariant tests (data_area / margins / validate).
+
+#[cfg(test)]
+mod inset_order_tests {
+    use super::{Rect, inset_paint_order, inset_parent};
+
+    fn rect(x: u32, y: u32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    // #205: insets paint as a tree, each after the panel it is nested in
+    // and before that panel's next sibling, whatever their list order.
+    #[test]
+    fn insets_paint_in_tree_order() {
+        // Panel and data rects: 0 the parent, 1 an inset inside inset 2
+        // (listed before it), 2 and 3 insets of 0, 4 an overlay sharing 0's
+        // rect, 5 a panel of its own and 6 its inset.
+        let panels = [
+            (rect(0, 0, 400, 300), rect(40, 20, 340, 250)),
+            (rect(262, 42, 60, 50), rect(272, 44, 46, 40)),
+            (rect(250, 30, 120, 100), rect(260, 40, 100, 80)),
+            (rect(200, 90, 120, 100), rect(210, 100, 100, 80)),
+            (rect(0, 0, 400, 300), rect(40, 20, 340, 250)),
+            (rect(400, 0, 400, 300), rect(440, 20, 340, 250)),
+            (rect(500, 50, 100, 80), rect(510, 60, 80, 60)),
+        ];
+        let rects = |i: usize| panels[i];
+        let order: Vec<usize> = inset_paint_order(panels.len(), rects).collect();
+        assert_eq!(order, [2, 1, 3, 6]);
+        assert_eq!(inset_parent(panels.len(), rects, 1), Some(2));
+        assert_eq!(inset_parent(panels.len(), rects, 2), Some(0));
+        assert_eq!(inset_parent(panels.len(), rects, 4), None);
+        assert_eq!(inset_parent(panels.len(), rects, 0), None);
+        assert_eq!(inset_paint_order(0, rects).count(), 0);
+    }
+}
 
 #[cfg(test)]
 mod tests {

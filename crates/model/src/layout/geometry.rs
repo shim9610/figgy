@@ -261,6 +261,9 @@ pub struct BreakMap {
     knots: [BreakKnot; crate::config::MAX_AXIS_BREAKS],
     count: usize,
     scale: f64,
+    /// Each piece's drawn length per raw length, in axis order (#205):
+    /// all `scale` when the pieces are sized by value.
+    slopes: [f64; crate::config::MAX_AXIS_BREAKS + 1],
 }
 
 impl BreakMap {
@@ -274,6 +277,7 @@ impl BreakMap {
         }; crate::config::MAX_AXIS_BREAKS],
         count: 0,
         scale: 1.0,
+        slopes: [1.0; crate::config::MAX_AXIS_BREAKS + 1],
     };
 
     /// The map of `axis`: its cuts clamped to the range, the ones outside it
@@ -315,11 +319,48 @@ impl BreakMap {
             return Self::IDENTITY;
         }
         map.scale = (1.0 - gaps) / visible;
+        // Each piece's drawn length: by its span, the same for all, or by
+        // its weight (#205). A piece with no span (a cut at an end of the
+        // range) gets none; weights that no longer match the pieces (a cut
+        // dropped outside the range) fall back to the spans.
+        let pieces = map.count + 1;
+        let mut spans = [0.0f64; crate::config::MAX_AXIS_BREAKS + 1];
+        {
+            let mut raw = 0.0;
+            for (k, knot) in map.knots[..map.count].iter().enumerate() {
+                spans[k] = knot.from - raw;
+                raw = knot.to;
+            }
+            spans[map.count] = 1.0 - raw;
+        }
+        let weight = |k: usize| -> f64 {
+            if spans[k] <= 1e-12 {
+                return 0.0;
+            }
+            match &breaks.sizing {
+                crate::config::PieceSizing::ByValue => spans[k],
+                crate::config::PieceSizing::Equal => 1.0,
+                crate::config::PieceSizing::Weights(w) if w.len() == pieces => f64::from(w[k]),
+                crate::config::PieceSizing::Weights(_) => spans[k],
+            }
+        };
+        let total: f64 = (0..pieces).map(weight).sum();
+        if !(total > 0.0) {
+            return Self::IDENTITY;
+        }
+        for k in 0..pieces {
+            let length = weight(k) / total * (1.0 - gaps);
+            map.slopes[k] = if spans[k] > 1e-12 {
+                length / spans[k]
+            } else {
+                map.scale
+            };
+        }
         // Walk the pieces: each knot's gap starts where the piece before it
         // ends.
         let (mut raw, mut drawn) = (0.0, 0.0);
-        for knot in &mut map.knots[..map.count] {
-            knot.start = drawn + (knot.from - raw) * map.scale;
+        for (k, knot) in map.knots[..map.count].iter_mut().enumerate() {
+            knot.start = drawn + (knot.from - raw) * map.slopes[k];
             knot.end = knot.start + gap;
             raw = knot.to;
             drawn = knot.end;
@@ -332,9 +373,26 @@ impl BreakMap {
         &self.knots[..self.count]
     }
 
-    /// The common scale of the pieces: drawn length per raw length.
+    /// The scale of the pieces when they are sized by value: drawn length
+    /// per raw length, the same in every piece. A `Panels` axis, which is
+    /// always sized by value, maps every piece by it.
     pub fn scale(&self) -> f64 {
         self.scale
+    }
+
+    /// The scale of the piece raw `t` lies in (#205): drawn length per raw
+    /// length there. Inside a cut, the piece after it.
+    pub fn scale_at(&self, t: f64) -> f64 {
+        let piece = self.knots().iter().take_while(|k| t >= k.from).count();
+        self.slopes[piece.min(self.count)]
+    }
+
+    /// Whether the pieces have scales of their own (#205): they are not all
+    /// `scale`.
+    pub fn per_piece(&self) -> bool {
+        self.slopes[..=self.count]
+            .iter()
+            .any(|s| (s - self.scale).abs() > 1e-12 * self.scale.abs().max(1.0))
     }
 
     /// Whether the axis has a cut inside its range.
@@ -345,7 +403,7 @@ impl BreakMap {
     /// Where raw `t` is drawn. Monotonic and continuous; outside `0..1` the
     /// first and last pieces extend.
     pub fn remap(&self, t: f64) -> f64 {
-        let (mut raw, mut drawn) = (0.0, 0.0);
+        let (mut raw, mut drawn, mut piece) = (0.0, 0.0, 0);
         for knot in self.knots() {
             if t < knot.from {
                 break;
@@ -356,14 +414,15 @@ impl BreakMap {
             }
             raw = knot.to;
             drawn = knot.end;
+            piece += 1;
         }
-        drawn + (t - raw) * self.scale
+        drawn + (t - raw) * self.slopes[piece]
     }
 
     /// The raw `t` drawn at `drawn`, the inverse of [`Self::remap`], or
     /// `None` inside a gap, where no value is drawn.
     pub fn unmap(&self, drawn: f64) -> Option<f64> {
-        let (mut raw, mut at) = (0.0, 0.0);
+        let (mut raw, mut at, mut piece) = (0.0, 0.0, 0);
         for knot in self.knots() {
             if drawn < knot.start {
                 break;
@@ -373,8 +432,9 @@ impl BreakMap {
             }
             raw = knot.to;
             at = knot.end;
+            piece += 1;
         }
-        Some(raw + (drawn - at) / self.scale)
+        Some(raw + (drawn - at) / self.slopes[piece])
     }
 
     /// The drawn bands of the pieces, `start..end` in axis order before
@@ -2504,6 +2564,116 @@ mod break_map_tests {
         assert!((f64::from(axis_fraction(95.0, &a)) - 0.775).abs() < 1e-6);
         // Inside the cut the value moves straight across the gap.
         assert!((f64::from(axis_fraction(50.0, &a)) - 0.5).abs() < 1e-6);
+    }
+
+    fn sized(mut a: AxisOptions, sizing: crate::config::PieceSizing) -> AxisOptions {
+        if let Some(breaks) = a.breaks.as_mut() {
+            breaks.sizing = sizing;
+        }
+        a
+    }
+
+    // #205: weights share the axis length among the pieces, each piece at
+    // its own scale; remap and unmap stay inverse, and the slope of the
+    // piece a value lies in is its scale.
+    #[test]
+    fn weighted_pieces_take_their_share_at_their_own_scale() {
+        use crate::config::PieceSizing;
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-6;
+        // 0..100 without 10..80: pieces of 10 and 20 raw units.
+        let a = sized(
+            axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
+            PieceSizing::Weights(vec![1.0, 3.0]),
+        );
+        let map = BreakMap::of(&a);
+        assert!(map.per_piece());
+        let pieces: Vec<_> = map.pieces().collect();
+        // 0.9 of the axis split 1 : 3.
+        assert!(close(pieces[0].1 - pieces[0].0, 0.225), "{pieces:?}");
+        assert!(close(pieces[1].1 - pieces[1].0, 0.675), "{pieces:?}");
+        assert!(close(map.scale_at(0.05), 0.225 / 0.1));
+        assert!(close(map.scale_at(0.9), 0.675 / 0.2));
+        for t in [0.0, 0.03, 0.099, 0.81, 0.95, 1.0] {
+            let drawn = map.remap(t);
+            assert!(close(map.unmap(drawn).unwrap(), t), "{t}");
+        }
+        assert!(map.unmap(0.25).is_none(), "inside the gap");
+        // Equal pieces: the same length whatever their spans.
+        let e = BreakMap::of(&sized(
+            axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
+            PieceSizing::Equal,
+        ));
+        let p: Vec<_> = e.pieces().collect();
+        assert!(close(p[0].1 - p[0].0, p[1].1 - p[1].0));
+        // By value: one scale, as before.
+        let v = BreakMap::of(&axis(0.0, 100.0, &[(10.0, 80.0)], 0.1));
+        assert!(!v.per_piece());
+        // Weights that no longer match the pieces (a cut outside the range)
+        // fall back to the spans.
+        let dropped = BreakMap::of(&sized(
+            axis(0.0, 100.0, &[(10.0, 80.0), (200.0, 300.0)], 0.1),
+            PieceSizing::Weights(vec![1.0, 3.0, 5.0]),
+        ));
+        assert!(!dropped.per_piece());
+    }
+
+    // #205: each weighted piece walks its own tick spacing.
+    #[test]
+    fn weighted_pieces_walk_their_own_ticks() {
+        use crate::config::PieceSizing;
+        let mut a = sized(
+            axis(-0.15, 25.2, &[(0.25, 19.6)], 0.04),
+            PieceSizing::Weights(vec![1.0, 9.0]),
+        );
+        a.major_spacing = 5.0;
+        let (pieces, count) = crate::tick::piece_ticks(&a).expect("pieces of their own");
+        assert_eq!(count, 2);
+        // The thin ground piece keeps the axis' spacing (one major, 0); the
+        // tall one takes its own, a major per unit.
+        assert_eq!(pieces[0].spacing, 5.0, "{:?}", &pieces[..count]);
+        assert_eq!(pieces[1].spacing, 1.0, "{:?}", &pieces[..count]);
+        let majors: Vec<f64> = crate::tick::major_ticks(&a).collect();
+        assert_eq!(majors, vec![0.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0]);
+        assert!(!majors.iter().any(|v| *v > 0.25 && *v < 19.6), "{majors:?}");
+        // Sized by value, the axis walks one grid.
+        assert!(crate::tick::piece_ticks(&axis(-0.15, 25.2, &[(0.25, 19.6)], 0.04)).is_none());
+    }
+
+    #[test]
+    fn piece_sizing_is_validated() {
+        use crate::config::{AxisBreakStyle, PieceSizing};
+        let ok = sized(
+            axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
+            PieceSizing::Weights(vec![1.0, 2.0]),
+        );
+        assert!(ok.validate_breaks().is_ok());
+        for bad in [vec![1.0], vec![1.0, 0.0], vec![1.0, f32::NAN]] {
+            let a = sized(
+                axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
+                PieceSizing::Weights(bad),
+            );
+            assert!(a.validate_breaks().is_err());
+        }
+        let mut panels = sized(axis(0.0, 100.0, &[(10.0, 80.0)], 0.1), PieceSizing::Equal);
+        panels.breaks.as_mut().unwrap().style = AxisBreakStyle::Panels;
+        assert!(panels.validate_breaks().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn piece_sizing_serializes_only_when_set() {
+        use crate::config::PieceSizing;
+        let by_value = axis(0.0, 100.0, &[(10.0, 80.0)], 0.1).breaks.unwrap();
+        let json = serde_json::to_value(&by_value).unwrap();
+        assert!(json.get("sizing").is_none(), "{json}");
+        let weighted = crate::config::AxisBreaks {
+            sizing: PieceSizing::Weights(vec![1.0, 9.0]),
+            ..by_value
+        };
+        let json = serde_json::to_value(&weighted).unwrap();
+        assert_eq!(json["sizing"]["weights"], serde_json::json!([1.0, 9.0]));
+        let back: crate::config::AxisBreaks = serde_json::from_value(json).unwrap();
+        assert_eq!(back, weighted);
     }
 
     #[test]

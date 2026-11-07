@@ -8,7 +8,10 @@ use super::*;
 /// the detached-axis offset (`axis.line_offset`, perpendicular to the
 /// axis). The data area and grid stay put; tick positions along the axis are
 /// unaffected. `cross` is where the line crosses the perpendicular axis
-/// ([`crate::layout::axis_cross`]); only the line moves there.
+/// ([`crate::layout::axis_cross`]); only the line moves there. `scale` is
+/// the display or export scale `plot` and the axis' pixel values carry
+/// (1 for a config drawn as stored): a broken axis snaps its piece frames
+/// to whole logical pixels through it (#205).
 pub fn emit_axis(
     axis: &AxisOptions,
     side: Side,
@@ -16,8 +19,9 @@ pub fn emit_axis(
     cross: Option<f32>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
+    scale: f32,
 ) {
-    emit_axis_strokes(axis, side.clone(), plot, cross, measure, sink);
+    emit_axis_strokes(axis, side.clone(), plot, cross, measure, sink, scale);
     emit_axis_tick_labels(axis, side, plot, measure, sink);
 }
 
@@ -25,7 +29,7 @@ pub fn emit_axis(
 /// (`Element::Axis`), from the walk [`each_axis_stroke`] reports, offset by
 /// the detached-axis translation. Tick stroker tags share one running index
 /// per side (majors first, minors after) so every tick gets its own wobble
-/// shape.
+/// shape. `scale` is the scale the pixel values carry ([`emit_axis`]).
 pub fn emit_axis_strokes(
     axis: &AxisOptions,
     side: Side,
@@ -33,6 +37,7 @@ pub fn emit_axis_strokes(
     cross: Option<f32>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
+    scale: f32,
 ) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
     let majors = major_tick_values_for_axis(axis, side.clone(), plot, measure);
@@ -44,6 +49,7 @@ pub fn emit_axis_strokes(
         cross,
         measure,
         &majors,
+        scale,
         |stroke, a, b| {
             let tag = match stroke {
                 AxisStroke::Line => format!("axis_{}", side_tag(&side)),
@@ -163,7 +169,10 @@ pub enum AxisStroke {
 
 /// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
 /// the detached-axis translation: the line (crossing the perpendicular axis
-/// at `cross`), then the major and minor ticks at the edge.
+/// at `cross`), then the major and minor ticks at the edge. `scale` is the
+/// scale the pixel values carry: a broken axis' piece frames are snapped to
+/// whole logical pixels, then scaled (#205), so a 2x frame is the 1x frame
+/// doubled; nothing else reads it.
 pub fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
@@ -171,13 +180,14 @@ pub fn each_axis_stroke(
     cross: Option<f32>,
     measure: &dyn MeasureText,
     majors: &[f64],
+    scale: f32,
     mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
     if axis.line_visible {
         let (p0, p1) = axis_anchor(side.clone(), plot, cross);
         let map = crate::layout::BreakMap::of(axis);
         if map.is_broken() {
-            each_broken_axis_line(axis, &map, side.clone(), plot, p0, p1, &mut each);
+            each_broken_axis_line(axis, &map, side.clone(), plot, p0, p1, scale, &mut each);
         } else {
             each(AxisStroke::Line, p0, p1);
         }
@@ -203,7 +213,10 @@ pub fn each_axis_stroke(
 /// mark when the axis draws one, then with `frame_each_panel` the pieces'
 /// edges along each gap. The pieces' bands
 /// are in visual order: from the left on a horizontal axis and from the
-/// bottom on a vertical one.
+/// bottom on a vertical one. A frame is snapped to whole logical pixels
+/// (`scale` logical pixels per config pixel) and then scaled (#205): its
+/// stroke covers whole pixels at 1x instead of blurring over two rows, and
+/// at 2x it is the 1x stroke doubled.
 fn each_broken_axis_line(
     axis: &AxisOptions,
     map: &crate::layout::BreakMap,
@@ -211,6 +224,7 @@ fn each_broken_axis_line(
     plot: &RectF,
     p0: (f32, f32),
     p1: (f32, f32),
+    scale: f32,
     each: &mut impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
     let horizontal = matches!(side, Side::Top | Side::Bottom);
@@ -255,14 +269,25 @@ fn each_broken_axis_line(
             Side::Bottom => y0 += short,
             Side::Top => y1 -= short,
         }
+        // The frame's centre on the logical pixel grid: a stroke of `w`
+        // logical pixels centred at `k + w / 2` covers whole pixels (the
+        // raster floors a thinner stroke to one pixel), and the same grid
+        // scaled keeps 2x the 1x frame doubled.
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        let half = (axis.line_width / scale).max(1.0) * 0.5;
+        let snap = |v: f32| ((v / scale - half).round() + half) * scale;
         for (k, knot) in map.knots().iter().enumerate() {
             let (a, b) = visual((knot.start, knot.end));
             for (end, f) in [a, b].into_iter().enumerate() {
                 let (x, y) = at(f);
                 let (u, v) = if horizontal {
-                    ((x, y0), (x, y1))
+                    ((snap(x), y0), (snap(x), y1))
                 } else {
-                    ((x0, y), (x1, y))
+                    ((x0, snap(y)), (x1, snap(y)))
                 };
                 each(AxisStroke::Frame(k, end), u, v);
             }
@@ -421,6 +446,7 @@ mod break_tests {
                 None,
                 &NoMeasure,
                 &majors,
+                1.0,
                 |stroke, a, b| match stroke {
                     AxisStroke::Line => lines.push((a, b)),
                     AxisStroke::Break(k, end) => marks.push((k, end, a, b)),
@@ -626,19 +652,23 @@ mod break_tests {
                     None,
                     &NoMeasure,
                     &[],
+                    1.0,
                     |stroke, a, b| {
                         if let AxisStroke::Frame(k, end) = stroke {
                             frames.push((k, end, a, b));
                         }
                     },
                 );
+                // A frame's centre is snapped to the pixel grid (#205).
+                let half = axis.line_width.max(1.0) * 0.5;
+                let snap = |v: f32| (v - half).round() + half;
                 assert_eq!(frames.len(), expected, "{style:?} frame {frame}");
                 let knot = crate::layout::BreakMap::of(&axis).knots()[0];
                 for (k, end, a, b) in frames {
                     assert_eq!(k, 0);
                     let f = if end == 0 { knot.start } else { knot.end } as f32;
                     if matches!(side, Side::Left) {
-                        let y = PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f;
+                        let y = snap(PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f);
                         assert!((a.1 - y).abs() < 1e-3 && (b.1 - y).abs() < 1e-3);
                         let short = axis.line_width;
                         assert_eq!(
@@ -646,7 +676,7 @@ mod break_tests {
                             (PLOT.x + 0.5, PLOT.x + PLOT.width - 0.5 - short)
                         );
                     } else {
-                        let x = PLOT.x + 0.5 + (PLOT.width - 1.0) * f;
+                        let x = snap(PLOT.x + 0.5 + (PLOT.width - 1.0) * f);
                         assert!((a.0 - x).abs() < 1e-3 && (b.0 - x).abs() < 1e-3);
                         let short = axis.line_width;
                         assert_eq!(

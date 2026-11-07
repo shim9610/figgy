@@ -28,35 +28,66 @@ fn cuts_of(breaks: array<vec4<f32>, 6>, info: vec4<f32>, axis: u32) -> AxisCuts 
     return AxisCuts(breaks[3], breaks[4], breaks[5], vec2<f32>(info.y, info.w));
 }
 
-// Where data t is drawn: linear within each piece at the piece scale, linear
-// across each cut onto its gap, so the map is continuous, increasing and
-// one-to-one. Written without a loop over the knots: a dynamic index into a
-// value array is not portable.
+// The scale of the piece from raw `a` (drawn at `da`) to raw `b` (drawn at
+// `db`): its drawn length per raw length (#205), each piece its own. The
+// common scale where the piece has no span.
+fn piece_slope(a: f32, da: f32, b: f32, db: f32, s: f32) -> f32 {
+    if (b - a > 1e-7) {
+        return (db - da) / (b - a);
+    }
+    return s;
+}
+
+// The scale of piece `p` (0 to 3) of the cuts, from the knots that bound it.
+fn cut_piece_slope(c: AxisCuts, p: u32) -> f32 {
+    let n = c.count_scale.x;
+    let s = c.count_scale.y;
+    if (p == 0u) {
+        return piece_slope(0.0, 0.0, c.k0.x, c.k0.z, s);
+    }
+    if (p == 1u) {
+        if (n < 1.5) {
+            return piece_slope(c.k0.y, c.k0.w, 1.0, 1.0, s);
+        }
+        return piece_slope(c.k0.y, c.k0.w, c.k1.x, c.k1.z, s);
+    }
+    if (p == 2u) {
+        if (n < 2.5) {
+            return piece_slope(c.k1.y, c.k1.w, 1.0, 1.0, s);
+        }
+        return piece_slope(c.k1.y, c.k1.w, c.k2.x, c.k2.z, s);
+    }
+    return piece_slope(c.k2.y, c.k2.w, 1.0, 1.0, s);
+}
+
+// Where data t is drawn: linear within each piece at that piece's scale,
+// linear across each cut onto its gap, so the map is continuous, increasing
+// and one-to-one. Written without a loop over the knots: a dynamic index
+// into a value array is not portable.
 fn cut_remap(c: AxisCuts, t: f32) -> f32 {
     let n = c.count_scale.x;
     if (n < 0.5) {
         return t;
     }
-    let s = c.count_scale.y;
     if (t < c.k0.x) {
-        return t * s;
+        return t * cut_piece_slope(c, 0u);
     }
     if (t < c.k0.y) {
         return c.k0.z + (t - c.k0.x) / (c.k0.y - c.k0.x) * (c.k0.w - c.k0.z);
     }
     if (n < 1.5 || t < c.k1.x) {
-        return c.k0.w + (t - c.k0.y) * s;
+        return c.k0.w + (t - c.k0.y) * cut_piece_slope(c, 1u);
     }
     if (t < c.k1.y) {
         return c.k1.z + (t - c.k1.x) / (c.k1.y - c.k1.x) * (c.k1.w - c.k1.z);
     }
     if (n < 2.5 || t < c.k2.x) {
-        return c.k1.w + (t - c.k1.y) * s;
+        return c.k1.w + (t - c.k1.y) * cut_piece_slope(c, 2u);
     }
     if (t < c.k2.y) {
         return c.k2.z + (t - c.k2.x) / (c.k2.y - c.k2.x) * (c.k2.w - c.k2.z);
     }
-    return c.k2.w + (t - c.k2.y) * s;
+    return c.k2.w + (t - c.k2.y) * cut_piece_slope(c, 3u);
 }
 
 // The inverse of `cut_remap`: the data t drawn at `drawn`.
@@ -65,54 +96,70 @@ fn cut_unmap(c: AxisCuts, drawn: f32) -> f32 {
     if (n < 0.5) {
         return drawn;
     }
-    let s = c.count_scale.y;
     if (drawn < c.k0.z) {
-        return drawn / s;
+        return drawn / cut_piece_slope(c, 0u);
     }
     if (drawn < c.k0.w) {
         return c.k0.x + (drawn - c.k0.z) / (c.k0.w - c.k0.z) * (c.k0.y - c.k0.x);
     }
     if (n < 1.5 || drawn < c.k1.z) {
-        return c.k0.y + (drawn - c.k0.w) / s;
+        return c.k0.y + (drawn - c.k0.w) / cut_piece_slope(c, 1u);
     }
     if (drawn < c.k1.w) {
         return c.k1.x + (drawn - c.k1.z) / (c.k1.w - c.k1.z) * (c.k1.y - c.k1.x);
     }
     if (n < 2.5 || drawn < c.k2.z) {
-        return c.k1.y + (drawn - c.k1.w) / s;
+        return c.k1.y + (drawn - c.k1.w) / cut_piece_slope(c, 2u);
     }
     if (drawn < c.k2.w) {
         return c.k2.x + (drawn - c.k2.z) / (c.k2.w - c.k2.z) * (c.k2.y - c.k2.x);
     }
-    return c.k2.y + (drawn - c.k2.w) / s;
+    return c.k2.y + (drawn - c.k2.w) / cut_piece_slope(c, 3u);
 }
 
-// The piece scale: drawn length per data-t length inside a piece, 1 on an
-// unbroken axis. Derivatives (pixels per data unit) multiply by it.
-fn cut_scale(c: AxisCuts) -> f32 {
-    if (c.count_scale.x < 0.5) {
+// The scale of the piece data t lies in: drawn length per data-t length, 1
+// on an unbroken axis. Derivatives (pixels per data unit) multiply by it.
+// Inside a cut, the piece after it.
+fn cut_scale_at(c: AxisCuts, t: f32) -> f32 {
+    let n = c.count_scale.x;
+    if (n < 0.5) {
         return 1.0;
     }
-    return c.count_scale.y;
+    if (t < c.k0.x) {
+        return cut_piece_slope(c, 0u);
+    }
+    if (n < 1.5 || t < c.k1.x) {
+        return cut_piece_slope(c, 1u);
+    }
+    if (n < 2.5 || t < c.k2.x) {
+        return cut_piece_slope(c, 2u);
+    }
+    return cut_piece_slope(c, 3u);
 }
 
-// `prob` is the axis' probability code (`Transform.scale_prob`, #209): on
-// a probability axis `min` / `max` hold `F⁻¹` of the bounds and the sample
-// is placed at `prob_forward`, before the linear and log arithmetic, which
-// stays as it was.
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, prob: f32, panel_scale: f32, panel_offset: f32, cuts: AxisCuts) -> f32 {
+// The raw data t of `v` on an axis: its fraction of the range, in decades
+// on a logarithmic one, before any cut remap. `prob` is the axis'
+// probability code (`Transform.scale_prob`, #209): on a probability axis
+// `min` / `max` hold `F⁻¹` of the bounds and the sample is placed at
+// `prob_forward`, before the linear and log arithmetic, which stays as it
+// was.
+fn axis_data_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, prob: f32) -> f32 {
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     if (prob > 0.5) {
         let prob_num = (prob_forward(v, prob) - min_hi) - min_lo;
-        return fma(cut_remap(cuts, prob_num / range), panel_scale, panel_offset);
+        return prob_num / range;
     }
     let raw = v.x + v.y;
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
     if is_log > 0.5 {
-        return fma(cut_remap(cuts, log_num / range), panel_scale, panel_offset);
+        return log_num / range;
     }
-    let data_t = mix(linear_num / range, log_num / range, is_log);
+    return mix(linear_num / range, log_num / range, is_log);
+}
+
+fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, prob: f32, panel_scale: f32, panel_offset: f32, cuts: AxisCuts) -> f32 {
+    let data_t = axis_data_t(v, min_hi, max_hi, min_lo, max_lo, is_log, prob);
     return fma(cut_remap(cuts, data_t), panel_scale, panel_offset);
 }
 

@@ -65,6 +65,13 @@ pub struct EnergyLevelSeries {
         serde(default, skip_serializing_if = "Vec::is_empty")
     )]
     pub transitions: Vec<Transition>,
+    /// The runs of levels the host shows as bands (#205): a Rydberg series
+    /// near its limit, a dense manifold. No count limit.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub bands: Vec<LevelBand>,
     /// The look of the strokes, arrows and labels.
     #[cfg_attr(
         feature = "serde",
@@ -380,6 +387,9 @@ pub struct EnergyLevelStyle {
     /// `1..=4`.
     #[cfg_attr(feature = "serde", serde(default = "default_picked_scale"))]
     pub picked_width_scale: f32,
+    /// The level bands (#205).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub band: LevelBandStyle,
 }
 
 impl Default for EnergyLevelStyle {
@@ -394,6 +404,7 @@ impl Default for EnergyLevelStyle {
             transition: TransitionArrowStyle::default(),
             label_side: LevelLabelSide::default(),
             picked_width_scale: default_picked_scale(),
+            band: LevelBandStyle::default(),
         }
     }
 }
@@ -501,6 +512,54 @@ pub enum LabelPart {
     Level,
     Transition,
     Limit,
+    /// A level band's label (#205).
+    Band,
+}
+
+/// A run of levels of one column the host shows as one band (#205): a
+/// light fill from its first level to its last, one label beside it, and
+/// the levels inside drawn thin without their own labels. The host chooses
+/// the run, as it chooses the transitions it draws.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct LevelBand {
+    pub id: String,
+    /// The column the band lies in; its levels' column.
+    pub column: String,
+    /// The ids of the band's lowest and highest levels, in either order.
+    pub first: String,
+    pub last: String,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub label: Option<RichText>,
+    /// The label's drag offset, logical pixels.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "is_zero_offset")
+    )]
+    pub label_offset: [f32; 2],
+}
+
+/// The look of the level bands (#205).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct LevelBandStyle {
+    /// The band's fill.
+    pub fill: Color,
+    /// The width of the levels inside a band, logical pixels, in `0..=16`.
+    pub inner_width: f32,
+}
+
+impl Default for LevelBandStyle {
+    fn default() -> Self {
+        Self {
+            fill: Color::from_rgba8(34, 52, 88, 40),
+            inner_width: 0.8,
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -570,7 +629,11 @@ impl EnergyLevelSeries {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.style.validate()?;
         if self.source.is_some() {
-            if !self.levels.is_empty() || !self.limits.is_empty() || !self.transitions.is_empty() {
+            if !self.levels.is_empty()
+                || !self.limits.is_empty()
+                || !self.transitions.is_empty()
+                || !self.bands.is_empty()
+            {
                 return Err("an energy-level series with a source holds no records of its own");
             }
             return Ok(());
@@ -583,6 +646,18 @@ impl EnergyLevelSeries {
         }
         if !ids_unique(self.transitions.iter().map(|t| t.id.as_str())) {
             return Err("transition ids must be non-empty and unique");
+        }
+        if !ids_unique(self.bands.iter().map(|b| b.id.as_str())) {
+            return Err("level band ids must be non-empty and unique");
+        }
+        for band in &self.bands {
+            let in_column = |id: &str| self.level(id).is_some_and(|l| l.column == band.column);
+            if !in_column(&band.first) || !in_column(&band.last) {
+                return Err("a level band's first and last name levels of its column");
+            }
+            if !offset_ok(band.label_offset) {
+                return Err("a level band's label offset is out of range");
+            }
         }
         for level in &self.levels {
             level.validate()?;
@@ -621,6 +696,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.len(),
             LabelPart::Transition => self.transitions.len(),
             LabelPart::Limit => self.limits.len(),
+            LabelPart::Band => self.bands.len(),
         }
     }
 
@@ -631,6 +707,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.get(index).map(|l| l.label_offset),
             LabelPart::Transition => self.transitions.get(index).map(|t| t.label_offset),
             LabelPart::Limit => self.limits.get(index).map(|l| l.label_offset),
+            LabelPart::Band => self.bands.get(index).map(|b| b.label_offset),
         }
     }
 
@@ -644,6 +721,7 @@ impl EnergyLevelSeries {
             LabelPart::Level => self.levels.get_mut(index).map(|l| &mut l.label_offset),
             LabelPart::Transition => self.transitions.get_mut(index).map(|t| &mut t.label_offset),
             LabelPart::Limit => self.limits.get_mut(index).map(|l| &mut l.label_offset),
+            LabelPart::Band => self.bands.get_mut(index).map(|b| &mut b.label_offset),
         };
         let Some(offset) = offset else {
             return reject;
@@ -831,6 +909,9 @@ impl EnergyLevelStyle {
         if !finite_in(self.picked_width_scale, 1.0, 4.0) {
             return Err("picked_width_scale must be in 1..=4");
         }
+        if !color_ok(self.band.fill) || !finite_in(self.band.inner_width, 0.0, 16.0) {
+            return Err("invalid level band style");
+        }
         Ok(())
     }
 }
@@ -914,6 +995,103 @@ pub struct LevelPlacement<'a> {
 
 /// The gap between a stroke's end and its label, logical pixels.
 const LABEL_GAP: f32 = 4.0;
+/// The space kept between two stacked level labels, logical pixels.
+const LABEL_STACK_GAP: f32 = 1.0;
+/// How far a moved label stands off its stroke's end so its leader line
+/// shows, logical pixels.
+const LEADER_RUN: f32 = 10.0;
+/// A run of at least this many labels in one lane whose strokes lie closer
+/// than [`COLLAPSE_SPACING`] of a label's height apart collapses (#205):
+/// its first and last labels stay, joined by a bracket, and the labels
+/// between are not drawn. A Rydberg series near its limit is such a run.
+const COLLAPSE_COUNT: usize = 4;
+const COLLAPSE_SPACING: f32 = 0.5;
+/// How far a stacked label may stand from its own stroke, in label
+/// heights (#205). A stack that would move one of its labels farther is a
+/// crowd, not a cluster: it collapses to its first and last labels joined
+/// by a bracket, as a dense run does, and the rest is stacked again.
+const MAX_LABEL_SHIFT: f32 = 1.5;
+/// The widest share of a level's slot that the arrows meeting one of its
+/// ends spread over, and the most room between two of them, pixels.
+const ARROW_SPREAD: f32 = 0.6;
+const ARROW_STEP: f32 = 12.0;
+/// Where along its arrow a transition label is tried, from the middle out
+/// in steps of a twentieth.
+const LABEL_STOPS: [f32; 17] = [
+    0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65, 0.3, 0.7, 0.25, 0.75, 0.2, 0.8, 0.15, 0.85, 0.1, 0.9,
+];
+
+/// Where the emit and the pick place a series' parts this draw (#205):
+/// each arrow's ends spread across the levels they meet, each level label
+/// stacked clear of the others in its column, and each transition label at
+/// the first free spot along its arrow. Display parameters only (rule 1),
+/// computed from the SSOT and the panel on every raster and pick and
+/// dropped after it: the three lists are the per-raster placement scratch
+/// #205 names (rule 3).
+pub struct LevelLayout {
+    arrows: Vec<Option<([f32; 2], [f32; 2])>>,
+    /// Per label item (the levels, then the bands): its shift from its own
+    /// place, `[run, dy]`; `run` is the leader's horizontal run (zero when
+    /// the label did not move).
+    level_shift: Vec<[f32; 2]>,
+    /// Per label item: the side it is drawn on, the style's or the other
+    /// one for a column whose labels would leave the plot on that side.
+    level_side: Vec<LevelLabelSide>,
+    /// Per level: whether it lies in a band (#205), drawn thin and without
+    /// its label.
+    inner: Vec<bool>,
+    /// Per label item: whether a collapsed run hides it (#205).
+    hidden: Vec<bool>,
+    /// The collapsed runs (#205): the items of each run's first and last
+    /// labels, which a bracket joins.
+    brackets: Vec<(usize, usize)>,
+    transition_spot: Vec<Option<([f32; 2], LevelLabelSide)>>,
+}
+
+/// The room a transition label keeps from the parts around it, pixels.
+const LABEL_CLEARANCE: f32 = 2.0;
+
+/// Whether the segment `a`–`b` passes within [`LABEL_CLEARANCE`] of `rect`
+/// (Liang–Barsky clipping against the grown rectangle).
+fn crosses(a: [f32; 2], b: [f32; 2], rect: crate::layout::RectF) -> bool {
+    let c = LABEL_CLEARANCE;
+    let (x0, y0) = (rect.x - c, rect.y - c);
+    let (x1, y1) = (rect.x + rect.width + c, rect.y + rect.height + c);
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [
+        (-dx, a[0] - x0),
+        (dx, x1 - a[0]),
+        (-dy, a[1] - y0),
+        (dy, y1 - a[1]),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return false;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Whether two rectangles come closer than [`LABEL_CLEARANCE`].
+fn overlaps(a: crate::layout::RectF, b: crate::layout::RectF) -> bool {
+    let c = LABEL_CLEARANCE;
+    a.x < b.x + b.width + c
+        && b.x < a.x + a.width + c
+        && a.y < b.y + b.height + c
+        && b.y < a.y + a.height + c
+}
 
 impl LevelPlacement<'_> {
     fn column_x(&self, column: &str) -> Option<f64> {
@@ -948,30 +1126,554 @@ impl LevelPlacement<'_> {
         Some(([x0, y], [x1, y]))
     }
 
-    /// The arrow of transition row `index`: its tail and its tip (the head
-    /// end under `style.transition.direction`; for `None`, lower then
-    /// upper), or `None` when either level is not drawn.
-    pub fn transition_arrow(
+    /// The level rows transition row `index` joins, lower then upper, with
+    /// both drawn.
+    fn transition_rows(
         &self,
         records: &EnergyLevelSeries,
         style: &EnergyLevelStyle,
         index: usize,
-    ) -> Option<([f32; 2], [f32; 2])> {
+    ) -> Option<(usize, usize)> {
         let transition = records.transitions.get(index)?;
-        let end = |id: &str| -> Option<[f32; 2]> {
+        let row = |id: &str| {
             let row = records.levels.iter().position(|l| l.id == id)?;
-            let (a, b) = self.level_stroke(records, style, row)?;
-            let level = &records.levels[row];
-            let x = self.column_x(&level.column)? + f64::from(transition.x_offset);
-            let px = self.px(AnnotationAxis::X, x).unwrap_or((a[0] + b[0]) / 2.0);
-            Some([px, a[1]])
+            self.level_stroke(records, style, row).map(|_| row)
         };
-        let lower = end(&transition.lower)?;
-        let upper = end(&transition.upper)?;
-        Some(match style.transition.direction {
-            TransitionDirection::Emission => (upper, lower),
-            TransitionDirection::Absorption | TransitionDirection::None => (lower, upper),
+        Some((row(&transition.lower)?, row(&transition.upper)?))
+    }
+
+    /// The arrows of every transition row, their ends spread across the
+    /// levels they meet: the arrows that meet one end of a level are
+    /// ordered by where their other ends lie, so they do not cross there,
+    /// and spaced over [`ARROW_SPREAD`] of the slot, at most [`ARROW_STEP`]
+    /// apart. A host's `x_offset` adds to the spread.
+    fn arrows(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+    ) -> Vec<Option<([f32; 2], [f32; 2])>> {
+        let rows: Vec<Option<(usize, usize)>> = (0..records.transitions.len())
+            .map(|index| self.transition_rows(records, style, index))
+            .collect();
+        let centre = |row: usize| -> Option<([f32; 2], f32)> {
+            let (a, b) = self.level_stroke(records, style, row)?;
+            Some(([(a[0] + b[0]) / 2.0, a[1]], (b[0] - a[0]).abs()))
+        };
+        // Each end's place among the arrows meeting that level: a sort key
+        // per (transition, end), then the rank within the level.
+        let mut ends: Vec<(usize, usize, bool, f32, f32)> = Vec::new();
+        for (index, pair) in rows.iter().enumerate() {
+            let Some((lower, upper)) = *pair else {
+                continue;
+            };
+            for (row, other, is_lower) in [(lower, upper, true), (upper, lower, false)] {
+                if let Some((c, _)) = centre(other) {
+                    ends.push((row, index, is_lower, c[0], c[1]));
+                }
+            }
+        }
+        ends.sort_by(|a, b| {
+            (a.0, a.3, a.4, a.1)
+                .partial_cmp(&(b.0, b.3, b.4, b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut x_of = vec![[f32::NAN; 2]; records.transitions.len()];
+        let mut start = 0;
+        while start < ends.len() {
+            let row = ends[start].0;
+            let end = ends[start..]
+                .iter()
+                .position(|e| e.0 != row)
+                .map_or(ends.len(), |n| start + n);
+            let count = end - start;
+            if let Some((c, width)) = centre(row) {
+                let step = if count > 1 {
+                    (width * ARROW_SPREAD / (count - 1) as f32).min(ARROW_STEP)
+                } else {
+                    0.0
+                };
+                for (k, e) in ends[start..end].iter().enumerate() {
+                    let x = c[0] + (k as f32 - (count - 1) as f32 / 2.0) * step;
+                    x_of[e.1][usize::from(!e.2)] = x;
+                }
+            }
+            start = end;
+        }
+        rows.iter()
+            .enumerate()
+            .map(|(index, pair)| {
+                let (lower, upper) = (*pair)?;
+                let transition = &records.transitions[index];
+                let shift = {
+                    let x = self.column_x(&records.levels[lower].column)?;
+                    let a = self.px(AnnotationAxis::X, x)?;
+                    let b = self.px(AnnotationAxis::X, x + f64::from(transition.x_offset))?;
+                    b - a
+                };
+                let point = |row: usize, slot: usize| -> Option<[f32; 2]> {
+                    let (c, _) = centre(row)?;
+                    let x = x_of[index][slot];
+                    Some([if x.is_finite() { x } else { c[0] } + shift, c[1]])
+                };
+                let lower = point(lower, 0)?;
+                let upper = point(upper, 1)?;
+                Some(match style.transition.direction {
+                    TransitionDirection::Emission => (upper, lower),
+                    TransitionDirection::Absorption | TransitionDirection::None => (lower, upper),
+                })
+            })
+            .collect()
+    }
+
+    /// The fill of band `index` (#205): its column's slot, from its lowest
+    /// to its highest level, half a stroke past each; `None` when either
+    /// level is not drawn.
+    fn band_rect(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        index: usize,
+    ) -> Option<crate::layout::RectF> {
+        let band = records.bands.get(index)?;
+        let stroke = |id: &str| {
+            let row = records.levels.iter().position(|l| l.id == id)?;
+            self.level_stroke(records, style, row)
+        };
+        let (a0, b0) = stroke(&band.first)?;
+        let (a1, _) = stroke(&band.last)?;
+        let half = style.level.width / 2.0;
+        let (top, bottom) = (a0[1].min(a1[1]) - half, a0[1].max(a1[1]) + half);
+        Some(crate::layout::RectF {
+            x: a0[0].min(b0[0]),
+            y: top,
+            width: (b0[0] - a0[0]).abs(),
+            height: bottom - top,
         })
+    }
+
+    /// Which levels lie in a band of their column (#205).
+    fn inner_levels(&self, records: &EnergyLevelSeries, style: &EnergyLevelStyle) -> Vec<bool> {
+        let mut inner = vec![false; records.levels.len()];
+        for (index, band) in records.bands.iter().enumerate() {
+            let Some(rect) = self.band_rect(records, style, index) else {
+                continue;
+            };
+            for (row, level) in records.levels.iter().enumerate() {
+                if level.column != band.column {
+                    continue;
+                }
+                if let Some((a, _)) = self.level_stroke(records, style, row)
+                    && a[1] >= rect.y - 0.01
+                    && a[1] <= rect.y + rect.height + 0.01
+                {
+                    inner[row] = true;
+                }
+            }
+        }
+        inner
+    }
+
+    /// The column label item `item` (a level, then the bands) lies in.
+    fn item_column<'r>(records: &'r EnergyLevelSeries, item: usize) -> Option<&'r str> {
+        let levels = records.levels.len();
+        if item < levels {
+            Some(records.levels[item].column.as_str())
+        } else {
+            records.bands.get(item - levels).map(|b| b.column.as_str())
+        }
+    }
+
+    /// The ends a label item stands beside: a level's stroke, or the
+    /// middle of a band's fill across its slot (its top edge for a label
+    /// above it).
+    fn item_ends(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        item: usize,
+        side: LevelLabelSide,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let levels = records.levels.len();
+        if item < levels {
+            return self.level_stroke(records, style, item);
+        }
+        let rect = self.band_rect(records, style, item - levels)?;
+        let y = match side {
+            LevelLabelSide::Above => rect.y,
+            _ => rect.y + rect.height / 2.0,
+        };
+        Some(([rect.x, y], [rect.x + rect.width, y]))
+    }
+
+    /// The layout of `records` in this placement: see [`LevelLayout`].
+    pub fn layout(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        measure: &dyn crate::text::MeasureText,
+    ) -> LevelLayout {
+        let arrows = self.arrows(records, style);
+        let plot = self.space.plot_rect();
+        let inner = self.inner_levels(records, style);
+        // Label items: the levels, then the bands.
+        let items = records.levels.len() + records.bands.len();
+        // A column whose labels would leave the plot on the style's side
+        // draws them on the other side.
+        let mut level_side = vec![style.label_side; items];
+        let flip = match style.label_side {
+            LevelLabelSide::Right => Some(LevelLabelSide::Left),
+            LevelLabelSide::Left => Some(LevelLabelSide::Right),
+            LevelLabelSide::Above => None,
+        };
+        if let Some(other) = flip {
+            let outside = |rect: crate::layout::RectF| {
+                rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5
+            };
+            let mut flipped: Vec<&str> = Vec::new();
+            for index in 0..items {
+                let Some(column) = Self::item_column(records, index) else {
+                    continue;
+                };
+                if flipped.contains(&column) {
+                    continue;
+                }
+                let leaves = self
+                    .label_on(
+                        records,
+                        style,
+                        &inner,
+                        index,
+                        measure,
+                        [0.0; 2],
+                        style.label_side,
+                    )
+                    .is_some_and(|t| outside(t.rect()));
+                if leaves {
+                    flipped.push(column);
+                }
+            }
+            for (index, side) in level_side.iter_mut().enumerate() {
+                if Self::item_column(records, index).is_some_and(|c| flipped.contains(&c)) {
+                    *side = other;
+                }
+            }
+        }
+        // Level labels: per lane, in order of their strokes, stacked so no
+        // two overlap. A lane is the gap a label is drawn in: right of its
+        // column, left of it (the lane right of the column before), or above
+        // it. A run of overlapping labels becomes one group centred on the
+        // mean of their own places, and a group that then meets the one
+        // above it merges with it.
+        let lane = |index: usize| -> (u8, i64) {
+            let column = Self::item_column(records, index)
+                .and_then(|c| self.column_x(c))
+                .map_or(i64::MIN, |x| x as i64);
+            match level_side[index] {
+                LevelLabelSide::Right => (0, column),
+                LevelLabelSide::Left => (0, column - 1),
+                LevelLabelSide::Above => (1, column),
+            }
+        };
+        let mut level_shift = vec![[0.0f32; 2]; items];
+        let mut hidden = vec![false; items];
+        let mut brackets: Vec<(usize, usize)> = Vec::new();
+        let mut placed: Vec<(usize, f32, f32)> = Vec::new();
+        for index in 0..items {
+            let Some(text) = self.label_at(
+                records,
+                style,
+                &inner,
+                index,
+                measure,
+                [0.0; 2],
+                level_side[index],
+            ) else {
+                continue;
+            };
+            let rect = text.rect();
+            placed.push((index, rect.y + rect.height / 2.0, rect.height));
+        }
+        placed.sort_by(|a, b| {
+            lane(a.0)
+                .cmp(&lane(b.0))
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let mut start = 0;
+        while start < placed.len() {
+            let key = lane(placed[start].0);
+            let end = placed[start..]
+                .iter()
+                .position(|p| lane(p.0) != key)
+                .map_or(placed.len(), |n| start + n);
+            // Collapse the dense runs first: consecutive labels whose strokes
+            // lie closer than half a label apart, at least four of them.
+            let mut kept: Vec<(usize, f32, f32)> = Vec::new();
+            let lane_run = &placed[start..end];
+            let mut k = 0;
+            while k < lane_run.len() {
+                let mut j = k;
+                while j + 1 < lane_run.len()
+                    && (lane_run[j + 1].1 - lane_run[j].1).abs()
+                        < COLLAPSE_SPACING * lane_run[j].2.max(lane_run[j + 1].2)
+                {
+                    j += 1;
+                }
+                if j + 1 - k >= COLLAPSE_COUNT {
+                    for m in &lane_run[k + 1..j] {
+                        hidden[m.0] = true;
+                    }
+                    kept.push(lane_run[k]);
+                    kept.push(lane_run[j]);
+                    brackets.push((lane_run[k].0, lane_run[j].0));
+                } else {
+                    kept.extend_from_slice(&lane_run[k..=j]);
+                }
+                k = j + 1;
+            }
+            // Groups as (first, last, top), in screen order.
+            let stack = |run: &[(usize, f32, f32)]| {
+                let mut groups: Vec<(usize, usize, f32)> = Vec::new();
+                for (k, &(_, centre, height)) in run.iter().enumerate() {
+                    groups.push((k, k, centre - height / 2.0));
+                    while groups.len() > 1 {
+                        let (b0, b1, _) = groups[groups.len() - 1];
+                        let (a0, a1, a_top) = groups[groups.len() - 2];
+                        let a_height: f32 =
+                            run[a0..=a1].iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                        if a_top + a_height <= groups[groups.len() - 1].2 {
+                            break;
+                        }
+                        let members = &run[a0..=b1];
+                        let total: f32 = members.iter().map(|p| p.2 + LABEL_STACK_GAP).sum();
+                        let mean = members.iter().map(|p| p.1).sum::<f32>() / members.len() as f32;
+                        let top = (mean - total / 2.0)
+                            .min(plot.y + plot.height - total)
+                            .max(plot.y);
+                        groups.pop();
+                        groups.pop();
+                        groups.push((a0, b1.max(b0), top));
+                    }
+                }
+                groups
+            };
+            // The farthest a group moves one of its labels, in its tallest
+            // label's heights.
+            let reach = |members: &[(usize, f32, f32)], top: f32| {
+                let tallest = members.iter().map(|p| p.2).fold(0.0f32, f32::max).max(1.0);
+                let mut y = top;
+                let mut far = 0.0f32;
+                for &(_, centre, height) in members {
+                    far = far.max((y + height / 2.0 - centre).abs());
+                    y += height + LABEL_STACK_GAP;
+                }
+                far / tallest
+            };
+            // A crowd collapses to its ends; the rest is stacked again,
+            // until every stack keeps its labels near their strokes. Each
+            // pass hides at least one label, so the walk ends.
+            let mut groups = stack(&kept);
+            loop {
+                let mut collapsed = false;
+                let mut next: Vec<(usize, f32, f32)> = Vec::with_capacity(kept.len());
+                for &(first, last, top) in &groups {
+                    let members = &kept[first..=last];
+                    if members.len() <= 2 || reach(members, top) <= MAX_LABEL_SHIFT {
+                        next.extend_from_slice(members);
+                        continue;
+                    }
+                    // The crowd's dense runs (strokes closer than a label
+                    // apart, three or more) collapse first, so a label
+                    // with room of its own keeps it; a crowd without one
+                    // collapses whole.
+                    let close = |a: &(usize, f32, f32), b: &(usize, f32, f32)| {
+                        (b.1 - a.1).abs() < a.2.max(b.2)
+                    };
+                    let mut runs = 0;
+                    let mut k = 0;
+                    while k < members.len() {
+                        let mut j = k;
+                        while j + 1 < members.len() && close(&members[j], &members[j + 1]) {
+                            j += 1;
+                        }
+                        if j >= k + 2 {
+                            for m in &members[k + 1..j] {
+                                hidden[m.0] = true;
+                            }
+                            next.push(members[k]);
+                            next.push(members[j]);
+                            brackets.push((members[k].0, members[j].0));
+                            runs += 1;
+                        } else {
+                            next.extend_from_slice(&members[k..=j]);
+                        }
+                        k = j + 1;
+                    }
+                    if runs == 0 {
+                        // Drop what this group pushed and collapse it whole.
+                        next.truncate(next.len() - members.len());
+                        for m in &members[1..members.len() - 1] {
+                            hidden[m.0] = true;
+                        }
+                        next.push(members[0]);
+                        next.push(members[members.len() - 1]);
+                        brackets.push((members[0].0, members[members.len() - 1].0));
+                    }
+                    collapsed = true;
+                }
+                if !collapsed {
+                    break;
+                }
+                kept = next;
+                groups = stack(&kept);
+            }
+            let run = &kept[..];
+            for (first, last, top) in groups {
+                let members = &run[first..=last];
+                let moved = last > first;
+                let mut y = top;
+                for &(index, centre, height) in members {
+                    let new_centre = y + height / 2.0;
+                    level_shift[index] =
+                        [if moved { LEADER_RUN } else { 0.0 }, new_centre - centre];
+                    y += height + LABEL_STACK_GAP;
+                }
+            }
+            start = end;
+        }
+        // Transition labels: the first spot along each arrow, right of it
+        // then left, clear of the level labels, the strokes, the other
+        // arrows and the labels placed before it; when none is clear, the
+        // middle.
+        let mut obstacles: Vec<crate::layout::RectF> = Vec::new();
+        for index in 0..records.levels.len() {
+            if let Some((a, b)) = self.level_stroke(records, style, index) {
+                let half = style.level.width / 2.0 + 1.0;
+                obstacles.push(crate::layout::RectF {
+                    x: a[0].min(b[0]),
+                    y: a[1] - half,
+                    width: (b[0] - a[0]).abs(),
+                    height: half * 2.0,
+                });
+            }
+        }
+        for index in 0..records.bands.len() {
+            if let Some(rect) = self.band_rect(records, style, index) {
+                obstacles.push(rect);
+            }
+        }
+        for index in (0..items).filter(|i| !hidden[*i]) {
+            if let Some(text) = self.label_at(
+                records,
+                style,
+                &inner,
+                index,
+                measure,
+                level_shift[index],
+                level_side[index],
+            ) {
+                obstacles.push(text.rect());
+            }
+        }
+        // The strokes and level labels sorted by their tops, so a spot
+        // tests only the ones whose rows can reach it; the transition labels
+        // placed so far are a list of their own.
+        obstacles.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+        let tallest = obstacles.iter().map(|o| o.height).fold(0.0f32, f32::max);
+        let mut placed_labels: Vec<crate::layout::RectF> = Vec::new();
+        let near = |rect: crate::layout::RectF| {
+            let from = obstacles.partition_point(|o| o.y < rect.y - tallest - LABEL_CLEARANCE);
+            let to = obstacles.partition_point(|o| o.y <= rect.y + rect.height + LABEL_CLEARANCE);
+            &obstacles[from..to.max(from)]
+        };
+        let mut transition_spot = vec![None; records.transitions.len()];
+        for (index, transition) in records.transitions.iter().enumerate() {
+            let (Some(text), Some((tail, tip))) = (transition.label.as_ref(), arrows[index]) else {
+                continue;
+            };
+            let at = |t: f32| {
+                [
+                    tail[0] + (tip[0] - tail[0]) * t,
+                    tail[1] + (tip[1] - tail[1]) * t,
+                ]
+            };
+            let block = |t: f32, side: LevelLabelSide| {
+                let p = at(t);
+                Self::label_block(text, measure, p, p[0], side, transition.label_offset).rect()
+            };
+            // The cost of a spot: a label or stroke it overlaps weighs more
+            // than every arrow it crosses together, so a crowded bundle
+            // still keeps its labels apart. The first spot of least cost
+            // wins; a label the host moved stays at the middle.
+            let host_placed = transition.label_offset != [0.0; 2];
+            let cost = |t: f32, side: LevelLabelSide| -> usize {
+                let rect = block(t, side);
+                let hits = near(rect).iter().filter(|o| overlaps(**o, rect)).count()
+                    + placed_labels.iter().filter(|o| overlaps(**o, rect)).count();
+                let reach = |a: [f32; 2], b: [f32; 2]| {
+                    a[0].max(b[0]) >= rect.x - LABEL_CLEARANCE
+                        && a[0].min(b[0]) <= rect.x + rect.width + LABEL_CLEARANCE
+                        && a[1].max(b[1]) >= rect.y - LABEL_CLEARANCE
+                        && a[1].min(b[1]) <= rect.y + rect.height + LABEL_CLEARANCE
+                };
+                let crossings = arrows
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, arrow)| {
+                        *other != index
+                            && arrow.is_some_and(|(a, b)| reach(a, b) && crosses(a, b, rect))
+                    })
+                    .count();
+                hits * (arrows.len() + 1) + crossings
+            };
+            let spot = if host_placed {
+                (at(0.5), LevelLabelSide::Right)
+            } else {
+                let mut best = (usize::MAX, 0.5, LevelLabelSide::Right);
+                'search: for &t in &LABEL_STOPS {
+                    for side in [LevelLabelSide::Right, LevelLabelSide::Left] {
+                        let c = cost(t, side);
+                        if c < best.0 {
+                            best = (c, t, side);
+                            if c == 0 {
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+                (at(best.1), best.2)
+            };
+            let rect = {
+                let p = spot.0;
+                Self::label_block(text, measure, p, p[0], spot.1, transition.label_offset).rect()
+            };
+            placed_labels.push(rect);
+            transition_spot[index] = Some(spot);
+        }
+        // A bracket whose end a later collapse hid is part of the larger
+        // bracket now.
+        brackets.retain(|&(a, b)| !hidden[a] && !hidden[b]);
+        brackets.sort_unstable();
+        brackets.dedup();
+        LevelLayout {
+            arrows,
+            level_shift,
+            level_side,
+            inner,
+            hidden,
+            brackets,
+            transition_spot,
+        }
+    }
+
+    /// The arrow of transition row `index` in `layout`: its tail and its
+    /// tip (the head end under `style.transition.direction`; for `None`,
+    /// lower then upper), or `None` when either level is not drawn.
+    pub fn transition_arrow(
+        &self,
+        layout: &LevelLayout,
+        index: usize,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        layout.arrows.get(index).copied().flatten()
     }
 
     /// The line of limit row `index` across the plot, or `None` outside
@@ -1029,39 +1731,141 @@ impl LevelPlacement<'_> {
         }
     }
 
-    /// The placed label of row `index` of `part`, or `None` when the row
-    /// has no label or is not drawn.
+    /// The label of level row `index` moved by `shift` (`[run, dy]`, see
+    /// [`LevelLayout`]) away from its own place: further out by the run, on
+    /// its side, and down by `dy`.
+    #[allow(clippy::too_many_arguments)]
+    fn label_on<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        inner: &[bool],
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+        shift: [f32; 2],
+        side: LevelLabelSide,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        let levels = records.levels.len();
+        let (text, offset) = if index < levels {
+            if inner.get(index).copied().unwrap_or(false) {
+                return None;
+            }
+            let level = &records.levels[index];
+            (level.label.as_ref()?, level.label_offset)
+        } else {
+            let band = records.bands.get(index - levels)?;
+            (band.label.as_ref()?, band.label_offset)
+        };
+        let (a, b) = self.item_ends(records, style, index, side)?;
+        // A level outside the plot (beyond the energy range) is clipped
+        // away, and so is its label: it is not pulled into the plot.
+        let plot = self.space.plot_rect();
+        if a[1] < plot.y - 0.5 || a[1] > plot.y + plot.height + 0.5 {
+            return None;
+        }
+        let run = match side {
+            LevelLabelSide::Right => shift[0],
+            LevelLabelSide::Left => -shift[0],
+            LevelLabelSide::Above => 0.0,
+        };
+        Some(Self::label_block(
+            text,
+            measure,
+            b,
+            a[0],
+            side,
+            [offset[0] + run, offset[1] + shift[1]],
+        ))
+    }
+
+    /// The label of item `index` (a level, then the bands) on the side
+    /// `layout` gives it.
+    #[allow(clippy::too_many_arguments)]
+    fn label_at<'t>(
+        &self,
+        records: &'t EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        inner: &[bool],
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+        shift: [f32; 2],
+        side: LevelLabelSide,
+    ) -> Option<crate::sink::PlacedText<'t>> {
+        self.label_on(records, style, inner, index, measure, shift, side)
+    }
+
+    /// The leader line from level row `index`'s stroke to its label when
+    /// the layout moved the label, or `None`.
+    fn leader(
+        &self,
+        records: &EnergyLevelSeries,
+        style: &EnergyLevelStyle,
+        layout: &LevelLayout,
+        index: usize,
+        measure: &dyn crate::text::MeasureText,
+    ) -> Option<([f32; 2], [f32; 2])> {
+        let shift = *layout.level_shift.get(index)?;
+        if shift[0] == 0.0 && shift[1].abs() < 0.5 {
+            return None;
+        }
+        let side = *layout.level_side.get(index)?;
+        let (a, b) = self.item_ends(records, style, index, side)?;
+        let rect = self
+            .label_at(records, style, &layout.inner, index, measure, shift, side)?
+            .rect();
+        let mid = rect.y + rect.height / 2.0;
+        Some(match side {
+            LevelLabelSide::Right => ([b[0] + 1.0, b[1]], [rect.x - 1.0, mid]),
+            LevelLabelSide::Left => ([a[0] - 1.0, a[1]], [rect.x + rect.width + 1.0, mid]),
+            LevelLabelSide::Above => (
+                [(a[0] + b[0]) / 2.0, a[1] - 1.0],
+                [rect.x + rect.width / 2.0, rect.y + rect.height + 1.0],
+            ),
+        })
+    }
+
+    /// The placed label of row `index` of `part` in `layout`, or `None`
+    /// when the row has no label or is not drawn.
     pub fn label<'t>(
         &self,
         records: &'t EnergyLevelSeries,
         style: &EnergyLevelStyle,
+        layout: &LevelLayout,
         part: LabelPart,
         index: usize,
         measure: &dyn crate::text::MeasureText,
     ) -> Option<crate::sink::PlacedText<'t>> {
         match part {
-            LabelPart::Level => {
-                let level = records.levels.get(index)?;
-                let (a, b) = self.level_stroke(records, style, index)?;
-                Some(Self::label_block(
-                    level.label.as_ref()?,
-                    measure,
-                    b,
-                    a[0],
-                    style.label_side,
-                    level.label_offset,
-                ))
+            LabelPart::Level | LabelPart::Band => {
+                let item = match part {
+                    LabelPart::Band => records.levels.len() + index,
+                    _ => {
+                        if index >= records.levels.len() {
+                            return None;
+                        }
+                        index
+                    }
+                };
+                if layout.hidden.get(item).copied().unwrap_or(false) {
+                    return None;
+                }
+                let shift = layout.level_shift.get(item).copied().unwrap_or([0.0; 2]);
+                let side = layout
+                    .level_side
+                    .get(item)
+                    .copied()
+                    .unwrap_or(style.label_side);
+                self.label_at(records, style, &layout.inner, item, measure, shift, side)
             }
             LabelPart::Transition => {
                 let transition = records.transitions.get(index)?;
-                let (tail, tip) = self.transition_arrow(records, style, index)?;
-                let mid = [(tail[0] + tip[0]) / 2.0, (tail[1] + tip[1]) / 2.0];
+                let (spot, side) = layout.transition_spot.get(index).copied().flatten()?;
                 Some(Self::label_block(
                     transition.label.as_ref()?,
                     measure,
-                    mid,
-                    mid[0],
-                    LevelLabelSide::Right,
+                    spot,
+                    spot[0],
+                    side,
                     transition.label_offset,
                 ))
             }
@@ -1099,6 +1903,7 @@ impl LevelPlacement<'_> {
     ) {
         use crate::sink::{Slot, StrokeStyle};
         let slot = Slot::Above;
+        let layout = self.layout(records, style, measure);
         for index in 0..records.limits.len() {
             if let Some((a, b)) = self.limit_line(records, index) {
                 let line = &style.limit;
@@ -1122,15 +1927,26 @@ impl LevelPlacement<'_> {
                 width
             }
         };
+        // The bands under their levels (#205).
+        for index in 0..records.bands.len() {
+            if let Some(rect) = self.band_rect(records, style, index) {
+                sink.rect(slot, rect, Some(style.band.fill), None);
+            }
+        }
         for index in 0..records.levels.len() {
             if let Some((a, b)) = self.level_stroke(records, style, index) {
                 let picked = self.picked == Some(PickedRow::Level(index));
+                let width = if layout.inner[index] {
+                    style.band.inner_width
+                } else {
+                    style.level.width
+                };
                 sink.stroke(
                     slot,
                     a,
                     b,
                     &StrokeStyle {
-                        width: widen(picked, style.level.width),
+                        width: widen(picked, width),
                         color: style.level.color,
                         dash: &[],
                         tag: "energy_level",
@@ -1140,7 +1956,7 @@ impl LevelPlacement<'_> {
         }
         let arrow = &style.transition;
         for (index, transition) in records.transitions.iter().enumerate() {
-            let Some((tail, tip)) = self.transition_arrow(records, style, index) else {
+            let Some((tail, tip)) = self.transition_arrow(&layout, index) else {
                 continue;
             };
             let picked = self.picked == Some(PickedRow::Transition(index));
@@ -1184,9 +2000,52 @@ impl LevelPlacement<'_> {
                 );
             }
         }
-        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+        for index in 0..records.levels.len() + records.bands.len() {
+            if let Some((a, b)) = self.leader(records, style, &layout, index, measure) {
+                sink.stroke(
+                    slot,
+                    a,
+                    b,
+                    &StrokeStyle {
+                        width: 0.6,
+                        color: style.level.color,
+                        dash: &[],
+                        tag: "energy_leader",
+                    },
+                );
+            }
+        }
+        // A collapsed run's bracket: from its first stroke to its last,
+        // just past the strokes' ends on the labels' side, with a tick to
+        // each end.
+        for &(lo, hi) in &layout.brackets {
+            let side = layout.level_side[lo];
+            let ends = |item: usize| self.item_ends(records, style, item, side);
+            let (Some((a0, b0)), Some((a1, _))) = (ends(lo), ends(hi)) else {
+                continue;
+            };
+            let (x, tick) = match side {
+                LevelLabelSide::Left => (a0[0] - LABEL_GAP / 2.0, LABEL_GAP / 2.0),
+                _ => (b0[0] + LABEL_GAP / 2.0, -LABEL_GAP / 2.0),
+            };
+            let line = StrokeStyle {
+                width: 0.8,
+                color: style.level.color,
+                dash: &[],
+                tag: "energy_bracket",
+            };
+            sink.stroke(slot, [x, a0[1]], [x, a1[1]], &line);
+            sink.stroke(slot, [x, a0[1]], [x + tick, a0[1]], &line);
+            sink.stroke(slot, [x, a1[1]], [x + tick, a1[1]], &line);
+        }
+        for part in [
+            LabelPart::Level,
+            LabelPart::Band,
+            LabelPart::Transition,
+            LabelPart::Limit,
+        ] {
             for index in 0..records.part_len(part) {
-                if let Some(text) = self.label(records, style, part, index, measure) {
+                if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     sink.text(slot, &text);
                 }
             }
@@ -1235,28 +2094,49 @@ impl LevelPlacement<'_> {
         cursor: [f32; 2],
         max_distance: f32,
     ) -> Option<(LevelHit, f32)> {
+        let layout = self.layout(records, style, measure);
         let mut best: Option<(LevelHit, f32)> = None;
         let mut offer = |hit: LevelHit, distance: f32| {
             if distance <= max_distance && best.is_none_or(|(_, d)| distance <= d) {
                 best = Some((hit, distance));
             }
         };
+        // A band answers for its first level anywhere on its fill; the
+        // levels inside it, offered after, win on their strokes.
+        for (index, band) in records.bands.iter().enumerate() {
+            if let (Some(rect), Some(row)) = (
+                self.band_rect(records, style, index),
+                records.levels.iter().position(|l| l.id == band.first),
+            ) {
+                offer(LevelHit::Level(row), rect_distance(cursor, rect));
+            }
+        }
         for index in 0..records.levels.len() {
             if let Some((a, b)) = self.level_stroke(records, style, index) {
-                let edge = segment_distance(cursor, a, b) - style.level.width / 2.0;
+                let width = if layout.inner[index] {
+                    style.band.inner_width
+                } else {
+                    style.level.width
+                };
+                let edge = segment_distance(cursor, a, b) - width / 2.0;
                 offer(LevelHit::Level(index), edge.max(0.0));
             }
         }
         for index in 0..records.transitions.len() {
-            if let Some((tail, tip)) = self.transition_arrow(records, style, index) {
+            if let Some((tail, tip)) = self.transition_arrow(&layout, index) {
                 let half = style.transition.width.max(style.transition.head_width) / 2.0;
                 let edge = segment_distance(cursor, tail, tip) - half;
                 offer(LevelHit::Transition(index), edge.max(0.0));
             }
         }
-        for part in [LabelPart::Level, LabelPart::Transition, LabelPart::Limit] {
+        for part in [
+            LabelPart::Level,
+            LabelPart::Band,
+            LabelPart::Transition,
+            LabelPart::Limit,
+        ] {
             for index in 0..records.part_len(part) {
-                if let Some(text) = self.label(records, style, part, index, measure) {
+                if let Some(text) = self.label(records, style, &layout, part, index, measure) {
                     offer(
                         LevelHit::Label(part, index),
                         rect_distance(cursor, text.rect()),
@@ -1269,30 +2149,282 @@ impl LevelPlacement<'_> {
 }
 
 impl crate::config::Config {
-    /// The subplot nested in this chart's data area whose chart area holds
-    /// the point `(x, y)` (in this config's pixels), the last such one when
-    /// several do: an inset (#203). A pointer there belongs to that
-    /// subplot, whatever the active layer. `None` when no inset holds it.
+    /// The subplot nested in this chart's data area, or in an inset
+    /// nested there, whose chart area holds the point `(x, y)` (in this
+    /// config's pixels): an inset (#203). When several hold it, the one
+    /// drawn on top answers, the last of [`crate::layout::inset_paint_order`]
+    /// (#205). A pointer there belongs to that subplot, whatever the active
+    /// layer. `None` when no inset holds it.
     pub fn nested_subplot_at(&self, x: f32, y: f32) -> Option<usize> {
-        let plot = self.data_area().ok()?.0;
-        let inside = |r: &crate::layout::Rect, x: f32, y: f32| {
-            x >= r.x as f32
-                && y >= r.y as f32
-                && x < (r.x + r.width) as f32
-                && y < (r.y + r.height) as f32
+        use crate::layout::{Rect, inset_paint_order, inset_parent};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
         };
-        self.subplots
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, subplot)| {
-                let area = subplot.config.chart_area.0;
-                let nested = area.x >= plot.x
-                    && area.y >= plot.y
-                    && area.x + area.width <= plot.x + plot.width
-                    && area.y + area.height <= plot.y + plot.height;
-                (nested && inside(&area, x, y)).then_some(index)
+        // Panel 0 is this chart, panel `i + 1` subplot `i`.
+        let rects = |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        let count = self.subplots.len() + 1;
+        let root = |mut index: usize| {
+            while let Some(parent) = inset_parent(count, rects, index) {
+                index = parent;
+            }
+            index
+        };
+        inset_paint_order(count, rects)
+            .filter(|&index| {
+                let area = rects(index).0;
+                root(index) == 0
+                    && x >= area.x as f32
+                    && y >= area.y as f32
+                    && x < (area.x + area.width) as f32
+                    && y < (area.y + area.height) as f32
             })
+            .last()
+            .map(|index| index - 1)
+    }
+}
+
+impl crate::config::Config {
+    /// The subplot whose frame (`chart_area`) is drawn on top at `(x, y)`
+    /// (in this config's pixels), any subplot at any place (#205): panels of
+    /// their own in list order, then insets in
+    /// [`crate::layout::inset_paint_order`], the order they are painted in.
+    /// A pointer there belongs to that subplot on the base layer, inside the
+    /// parent chart or outside it. `None` when no frame holds it.
+    pub fn subplot_at(&self, x: f32, y: f32) -> Option<usize> {
+        use crate::layout::{Rect, inset_paint_order, inset_parent};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        let holds = |index: usize| {
+            let area = rects(index).0;
+            x >= area.x as f32
+                && y >= area.y as f32
+                && x < (area.x + area.width) as f32
+                && y < (area.y + area.height) as f32
+        };
+        let count = self.subplots.len() + 1;
+        if count == 1 {
+            return None;
+        }
+        inset_paint_order(count, rects)
+            .filter(|&index| index != 0 && holds(index))
+            .last()
+            .or_else(|| {
+                (1..count)
+                    .filter(|&index| inset_parent(count, rects, index).is_none() && holds(index))
+                    .last()
+            })
+            .map(|index| index - 1)
+    }
+}
+
+impl crate::config::Config {
+    /// The subplots that are insets now, nested in another panel's data
+    /// area, in the order they are painted ([`crate::layout::inset_paint_order`],
+    /// #205): bottom to top. A subplot moved out of every data area is a
+    /// panel of its own and is not listed; it still takes the pointer on the
+    /// base layer ([`Self::subplot_at`]).
+    pub fn insets(&self) -> impl Iterator<Item = usize> + '_ {
+        use crate::layout::{Rect, inset_paint_order};
+        let empty = Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+        let rects = move |index: usize| {
+            let config = match index {
+                0 => self,
+                _ => &self.subplots[index - 1].config,
+            };
+            (
+                config.chart_area.0,
+                config.data_area().map_or(empty, |d| d.0),
+            )
+        };
+        inset_paint_order(self.subplots.len() + 1, rects)
+            .filter(|&index| index != 0)
+            .map(|index| index - 1)
+    }
+}
+
+/// Where an inset's marker is drawn on its parent (#205), in the parent's
+/// pixels: the window clipped to the parent's plot and, when the marker
+/// draws them and the inset's plot lies clear of the window, the two
+/// connectors from the window's facing corners to the inset's plot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsetMarkerParts {
+    pub window: crate::layout::RectF,
+    pub links: Option<[[[f32; 2]; 2]; 2]>,
+}
+
+impl crate::config::Config {
+    /// The window subplot `subplot` magnifies, derived from it (#205):
+    /// `[[x0, x1], [y0, y1]]` in this chart's data coordinates. `y` is the
+    /// inset's `left_y` range. On a categorical `bottom_x`, `x` covers the
+    /// slots of this chart's categories that the inset's categories name
+    /// by id (the column whose records an energy-level `Components` view
+    /// shows), cut to the inset's own window; on a numeric one it is the
+    /// inset's `bottom_x` range. `None` when the inset names none of this
+    /// chart's categories or its x axis is of the other kind.
+    pub fn inset_window(&self, subplot: usize) -> Option<[[f64; 2]; 2]> {
+        let inset = self.subplot_config(subplot)?;
+        let (y0, y1) = inset.left_y.data_range();
+        let x = match (&self.bottom_x.categories, &inset.bottom_x.categories) {
+            (Some(parent), Some(own)) => {
+                let (lo, hi) = inset.bottom_x.data_range();
+                let slot = |k: usize| parent.iter().position(|c| c.id == own[k].id);
+                // The parent slot of the inset's first category, and whether
+                // the inset's categories follow it slot by slot.
+                let first = slot(0)?;
+                let consecutive = (0..own.len()).all(|k| slot(k) == Some(first + k));
+                if consecutive {
+                    [first as f64 + lo, first as f64 + hi]
+                } else {
+                    let (a, b) = (0..own.len())
+                        .filter_map(slot)
+                        .fold((usize::MAX, 0), |(a, b), p| (a.min(p), b.max(p)));
+                    [a as f64 - 0.5, b as f64 + 0.5]
+                }
+            }
+            (None, None) => {
+                let (a, b) = inset.bottom_x.data_range();
+                [a, b]
+            }
+            _ => return None,
+        };
+        Some([x, [y0, y1]])
+    }
+
+    /// Where subplot `subplot`'s marker is drawn on this chart (#205), from
+    /// its [`crate::layer::InsetMarker`]: its explicit window or the derived
+    /// one ([`Self::inset_window`]) in this chart's pixels, at least ten
+    /// line widths across and clipped to the plot. `None` for a subplot without a marker, a window that has no
+    /// position or lies outside the plot.
+    pub fn inset_marker_parts(&self, subplot: usize) -> Option<InsetMarkerParts> {
+        use crate::layout::{RectF, axis_fraction};
+        let marker = self.subplots.get(subplot)?.marker.as_ref()?;
+        let [[x0, x1], [y0, y1]] = marker.window.or_else(|| self.inset_window(subplot))?;
+        let plot = RectF::from_rect(&self.data_area().ok()?.0);
+        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x) * plot.width;
+        let py = |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y)) * plot.height;
+        let (a, b) = (px(x0), px(x1));
+        let (c, d) = (py(y0), py(y1));
+        if ![a, b, c, d].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        // A window finer than the parent can show (a fine-structure inset
+        // spans a ten-thousandth of the axis) is drawn at least ten line
+        // widths across, about its centre: how it looks, not where. The
+        // width scales with the export, so 2x is 1x doubled.
+        let least = 10.0 * marker.line.width.max(0.0);
+        let grow = |p: f32, q: f32| {
+            let half = ((q - p).abs().max(least)) / 2.0;
+            let centre = (p + q) / 2.0;
+            (centre - half, centre + half)
+        };
+        let ((a, b), (c, d)) = (grow(a, b), grow(c, d));
+        // Clipped to the plot: a window the view has moved off draws
+        // nothing, one across the plot's edge is cut there.
+        let left = a.min(b).max(plot.x);
+        let right = a.max(b).min(plot.x + plot.width);
+        let top = c.min(d).max(plot.y);
+        let bottom = c.max(d).min(plot.y + plot.height);
+        if left >= right || top >= bottom {
+            return None;
+        }
+        let window = RectF {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        };
+        let inset = RectF::from_rect(&self.subplot_config(subplot)?.data_area().ok()?.0);
+        let links = marker.connectors.then(|| {
+            let (w0, w1) = ((left, top), (right, bottom));
+            let (i0, i1) = (
+                (inset.x, inset.y),
+                (inset.x + inset.width, inset.y + inset.height),
+            );
+            // The window's edge that faces the inset, joined to the
+            // inset's facing edge, corner to corner.
+            if i0.0 >= w1.0 {
+                Some([[[w1.0, w0.1], [i0.0, i0.1]], [[w1.0, w1.1], [i0.0, i1.1]]])
+            } else if i1.0 <= w0.0 {
+                Some([[[w0.0, w0.1], [i1.0, i0.1]], [[w0.0, w1.1], [i1.0, i1.1]]])
+            } else if i1.1 <= w0.1 {
+                Some([[[w0.0, w0.1], [i0.0, i1.1]], [[w1.0, w0.1], [i1.0, i1.1]]])
+            } else if i0.1 >= w1.1 {
+                Some([[[w0.0, w1.1], [i0.0, i0.1]], [[w1.0, w1.1], [i1.0, i0.1]]])
+            } else {
+                None
+            }
+        });
+        Some(InsetMarkerParts {
+            window,
+            links: links.flatten(),
+        })
+    }
+
+    /// Stroke every subplot's marker into `sink` above the data (#205):
+    /// the parts [`Self::inset_marker_parts`] places, tagged
+    /// `"inset_marker"`. The annotation layer draws them, under the insets.
+    pub fn emit_inset_markers(&self, sink: &mut dyn crate::sink::Sink) {
+        use crate::sink::{Slot, StrokeStyle};
+        for (index, subplot) in self.subplots.iter().enumerate() {
+            let (Some(marker), Some(parts)) =
+                (subplot.marker.as_ref(), self.inset_marker_parts(index))
+            else {
+                continue;
+            };
+            if marker.line.width <= 0.0 || marker.line.color.a <= 0.0 {
+                continue;
+            }
+            let style = StrokeStyle {
+                width: marker.line.width,
+                color: marker.line.color,
+                dash: marker.line.style.pattern(),
+                tag: "inset_marker",
+            };
+            let w = parts.window;
+            let corners = [
+                [w.x, w.y],
+                [w.x + w.width, w.y],
+                [w.x + w.width, w.y + w.height],
+                [w.x, w.y + w.height],
+            ];
+            for k in 0..4 {
+                sink.stroke(Slot::Above, corners[k], corners[(k + 1) % 4], &style);
+            }
+            for [from, to] in parts.links.into_iter().flatten() {
+                sink.stroke(Slot::Above, from, to, &style);
+            }
+        }
     }
 }
 
@@ -1303,7 +2435,9 @@ impl crate::config::Config {
     /// the window's corners to the inset's plot (its data area), as ratio
     /// anchors of
     /// this chart's plot (so they stay on the inset as it is drawn now; call
-    /// again after the inset moves). Ids are `inset/{subplot}/window`,
+    /// again after the inset moves). Superseded by
+    /// [`crate::layer::Subplot::marker`] (#205), which is placed on every
+    /// draw and follows the inset. Ids are `inset/{subplot}/window`,
     /// `…/link0` and `…/link1`. `None` for a subplot that is not an inset
     /// of this chart. The list is the helper's output (rule 3).
     pub fn inset_marker(
@@ -1906,6 +3040,106 @@ mod tests {
 }
 
 #[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    fn level(id: &str, column: &str, energy: f64) -> EnergyLevel {
+        EnergyLevel {
+            id: id.into(),
+            column: column.into(),
+            configuration: String::new(),
+            term: String::new(),
+            j: String::new(),
+            g: None,
+            prefix: String::new(),
+            energy,
+            suffix: String::new(),
+            uncertainty: None,
+            reference: String::new(),
+            role: LevelRole::Level,
+            label: None,
+            label_offset: [0.0; 2],
+        }
+    }
+
+    fn band(first: &str, last: &str) -> LevelBand {
+        LevelBand {
+            id: "run".into(),
+            column: "p".into(),
+            first: first.into(),
+            last: last.into(),
+            label: None,
+            label_offset: [0.0; 2],
+        }
+    }
+
+    fn series() -> EnergyLevelSeries {
+        EnergyLevelSeries {
+            levels: vec![
+                level("5p", "p", 1.0),
+                level("6p", "p", 1.5),
+                level("7p", "p", 1.7),
+                level("5s", "s", 1.2),
+            ],
+            bands: vec![band("6p", "7p")],
+            ..EnergyLevelSeries::default()
+        }
+    }
+
+    #[test]
+    fn a_band_names_two_levels_of_its_column() {
+        assert!(series().validate().is_ok());
+        let mut other = series();
+        other.bands[0].last = "5s".into();
+        assert!(other.validate().is_err(), "a level of another column");
+        let mut missing = series();
+        missing.bands[0].first = "9p".into();
+        assert!(missing.validate().is_err(), "no such level");
+        let mut twice = series();
+        twice.bands.push(band("5p", "6p"));
+        assert!(twice.validate().is_err(), "ids must be unique");
+        let mut viewer = EnergyLevelSeries {
+            source: Some("he".into()),
+            ..EnergyLevelSeries::default()
+        };
+        viewer.bands.push(band("6p", "7p"));
+        assert!(viewer.validate().is_err(), "a view holds no records");
+    }
+
+    #[test]
+    fn a_band_label_drags_into_its_offset() {
+        let mut s = series();
+        assert_eq!(s.part_len(LabelPart::Band), 1);
+        assert_eq!(
+            s.drag_label(LabelPart::Band, 0, 3.0, -2.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(s.label_offset(LabelPart::Band, 0), Some([3.0, -2.0]));
+        assert!(matches!(
+            s.drag_label(LabelPart::Band, 1, 1.0, 0.0),
+            NudgeResult::Rejected(_)
+        ));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn bands_round_trip_and_are_omitted_when_empty() {
+        let s = series();
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["bands"][0]["first"], "6p");
+        assert!(json["bands"][0].get("label").is_none());
+        let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+        let none = serde_json::to_value(EnergyLevelSeries::default()).unwrap();
+        assert!(none.get("bands").is_none());
+        assert_eq!(
+            serde_json::to_value(LabelPart::Band).unwrap(),
+            serde_json::json!("band")
+        );
+    }
+}
+
+#[cfg(test)]
 mod category_group_tests {
     use crate::config::{Category, CategoryGroup, CategoryGroups, Config};
     use crate::layout::{Element, NudgeResult};
@@ -2089,5 +3323,123 @@ mod category_group_tests {
         assert!(json["bottom_x"]["category_groups"].get("offset").is_none());
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, config);
+    }
+}
+
+#[cfg(test)]
+mod inset_marker_tests {
+    use crate::config::{Category, Config};
+    use crate::layer::{InsetMarker, Subplot};
+    use crate::layout::{ChartArea, Rect};
+
+    /// A 600 × 400 parent with categories a, b, c over 0..100, and an inset
+    /// at its top right naming `b` over 40..50.
+    fn document() -> Config {
+        let mut config = crate::default::default_config();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 600,
+            height: 400,
+        });
+        config.bottom_x.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        config.left_y.min = 0.0;
+        config.left_y.max = 100.0;
+        let plot = config.data_area().unwrap().0;
+        let mut inset = crate::default::default_config();
+        inset.chart_area = ChartArea(Rect {
+            x: plot.x + plot.width - 200,
+            y: plot.y + 10,
+            width: 190,
+            height: 150,
+        });
+        inset.bottom_x.categories = Some(vec![Category::new("b", "B")]);
+        inset.left_y.min = 40.0;
+        inset.left_y.max = 50.0;
+        config.subplots.push(Subplot {
+            config: inset,
+            marker: Some(InsetMarker::default()),
+            ..Subplot::default()
+        });
+        config
+    }
+
+    // #205: the window is derived from the inset (its categories' slots and
+    // its y range), placed in the parent's pixels, and joined to the inset
+    // from the facing edge.
+    #[test]
+    fn the_window_is_derived_from_the_inset_and_follows_it() {
+        let mut config = document();
+        assert_eq!(config.inset_window(0), Some([[0.5, 1.5], [40.0, 50.0]]));
+        let plot = crate::layout::RectF::from_rect(&config.data_area().unwrap().0);
+        let parts = config.inset_marker_parts(0).expect("a marker");
+        let w = parts.window;
+        assert!((w.x - (plot.x + plot.width / 3.0)).abs() < 0.5, "{w:?}");
+        assert!((w.width - plot.width / 3.0).abs() < 0.5, "{w:?}");
+        assert!((w.y - (plot.y + plot.height * 0.5)).abs() < 0.5, "{w:?}");
+        // The inset is right of the window: right corners to left corners.
+        let inset = config.subplot_config(0).unwrap().data_area().unwrap().0;
+        let [top, bottom] = parts.links.expect("connectors");
+        assert_eq!(
+            top,
+            [[w.x + w.width, w.y], [inset.x as f32, inset.y as f32]]
+        );
+        assert_eq!(bottom[1], [inset.x as f32, (inset.y + inset.height) as f32]);
+        // Moved left of the window, the inset is joined from the left edge.
+        config.subplots[0].config.chart_area.0.x = plot.x as u32 + 4;
+        config.subplots[0].config.chart_area.0.width = 160;
+        let inset = config.subplot_config(0).unwrap().data_area().unwrap().0;
+        let [top, _] = config.inset_marker_parts(0).unwrap().links.unwrap();
+        assert_eq!(
+            top,
+            [[w.x, w.y], [(inset.x + inset.width) as f32, inset.y as f32]]
+        );
+        // No connectors when asked for none.
+        config.subplots[0].marker.as_mut().unwrap().connectors = false;
+        assert_eq!(config.inset_marker_parts(0).unwrap().links, None);
+    }
+
+    // #205: a view that moves the window off the plot draws nothing; one
+    // across the edge is cut there. An explicit window wins, and a window
+    // finer than ten line widths is drawn that wide.
+    #[test]
+    fn the_window_is_clipped_to_the_plot_and_kept_visible() {
+        let mut config = document();
+        let plot = crate::layout::RectF::from_rect(&config.data_area().unwrap().0);
+        config.bottom_x.category_window = Some([1.6, 2.5]);
+        assert_eq!(config.inset_marker_parts(0), None);
+        config.bottom_x.category_window = Some([1.0, 2.5]);
+        let w = config.inset_marker_parts(0).unwrap().window;
+        assert_eq!(w.x, plot.x);
+        config.bottom_x.category_window = None;
+        config.subplots[0].marker.as_mut().unwrap().window = Some([[1.8, 2.2], [10.0, 10.001]]);
+        let w = config.inset_marker_parts(0).unwrap().window;
+        assert!((w.height - 10.0).abs() < 1e-3, "{w:?}");
+        // No marker, no parts; an inset naming no parent category derives
+        // no window.
+        config.subplots[0].marker.as_mut().unwrap().window = None;
+        config.subplots[0].config.bottom_x.categories = Some(vec![Category::new("z", "Z")]);
+        assert_eq!(config.inset_window(0), None);
+        config.subplots[0].marker = None;
+        assert_eq!(config.inset_marker_parts(0), None);
+    }
+
+    #[test]
+    fn the_marker_scales_and_serializes_only_when_set() {
+        let mut config = document();
+        config.scale_in_place(2.0);
+        assert_eq!(config.subplots[0].marker.as_ref().unwrap().line.width, 2.0);
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_string(&Subplot::default()).unwrap();
+            assert!(!json.contains("marker"), "{json}");
+            let json = serde_json::to_string(&config.subplots[0]).unwrap();
+            let back: Subplot = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.marker, config.subplots[0].marker);
+        }
     }
 }
