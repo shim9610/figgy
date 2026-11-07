@@ -462,6 +462,13 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
   (u, v) columns at scattered anchors or from two matrices on a grid, in
   pixel or data scale, optionally coloured through the colourbar.
   [Reference](CONFIG.md#vector-fields) and `vector_field`.
+- **Triangle meshes**: `DataRenderType::TriMesh` draws a colour fill and
+  contour lines over triangles the host gives, and a surface in the box of a
+  3D chart. Upload the vertex coordinates and values as columns and the
+  triangles with `Renderer::upsert_triangles(id, &TriangleSource { indices })`
+  (three vertex rows per triangle, from a `Column<u32>`); the renderer never
+  triangulates. [Guide](TRIMESH.md) and the `TriMesh` / `TriSurface`
+  playground scenes.
 - **Overlay axes, subplots and annotations**: each overlay layer draws its series
   against its own right-hand Y axis; subplots arrange whole charts in a grid with
   linked or twin axes; the annotation layer adds reference lines, spans,
@@ -1001,6 +1008,11 @@ if let Some(ticket) = pending.take() {
 - **벡터장**: `DataRenderType::Vector`는 흩어진 기준점의 (u, v) 컬럼 또는 격자 위 행렬 두 개에서
   표본마다 화살표 하나를 픽셀 또는 데이터 스케일로 그리고, 색상 막대로 색칠할 수 있다.
   [설정](CONFIG.md#벡터장)과 `vector_field` 예제.
+- **삼각 메시**: `DataRenderType::TriMesh`는 호스트가 준 삼각형 위에 색 채움과 등고선을
+  그리고, 3D 차트에서는 상자 안의 표면으로 그린다. 정점 좌표와 값은 컬럼으로 올리고 삼각형은
+  `Renderer::upsert_triangles(id, &TriangleSource { indices })`로 올린다(삼각형마다 정점
+  번호 세 개, `Column<u32>`). 렌더러는 삼각분할을 하지 않는다. [가이드](TRIMESH.md)와
+  플레이그라운드의 `TriMesh`, `TriSurface` 장면.
 - **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
   더한다. 극좌표(레이더 포함)·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,

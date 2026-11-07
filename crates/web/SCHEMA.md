@@ -1262,9 +1262,10 @@ host string per row and `labels.offsets` their drag offsets.
 
 `"view_3d"` on the config (omitted when off) draws a 3D box: `bottom_x` is
 x, `left_y` y and `right_y` z. `"Heatmap"` and `"HeatmapContour"` series
-draw as surfaces and `"Contour"` series on the floor. `"surface"` on a
-heatmap holds its look and is omitted when absent; on a flat chart it is
-kept and unused. A `"Scatter"`, `"Line"` or `"ScatterLine"` series draws
+draw as surfaces and `"Contour"` series on the floor, and so does a
+[`"TriMesh"`](#trimesh-render_type) series over its triangles. `"surface"`
+on a heatmap holds its look and is omitted when absent; on a flat chart it
+is kept and unused. A `"Scatter"`, `"Line"` or `"ScatterLine"` series draws
 its points or trajectory in the box when it names its height column in
 `"z_column"` (omitted when absent; kept and unused on a flat chart):
 
@@ -1521,9 +1522,12 @@ values) or, for face values, `value` (the triangle's), and `at`
 (`"Vertices"` or `"Faces"`); the samples are read back from the GPU columns
 the draw used.
 
-Status: a flat chart draws, picks and highlights the fill and the contours;
-3D charts follow under #210, and until then `set_series` refuses a
-`TriMesh` series on a 3D chart.
+On a 3D chart (`"view_3d"`) the mesh draws as a surface over its triangles:
+the series names its vertex heights in `"z_column"` (rejected when absent),
+`"surface"` holds the look (no `color_matrix`), and the contours draw on the
+box floor. A pick answers the triangle the pixel shows, or a floor contour,
+and the picked triangle's `selection_details()` also carries `z` (the three
+vertex heights).
 
 <a id="radar-render_type"></a>
 
