@@ -193,46 +193,43 @@ pub fn ternary_axis(config: &Config, k: usize) -> &AxisOptions {
 
 impl TernaryOptions {
     /// Validate against the axes the coordinate system reads.
-    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+    pub fn validate(&self, config: &Config) -> Result<(), crate::RuleKind> {
         let axes = [&config.bottom_x, &config.left_y, &config.right_y];
         if axes.iter().any(|a| a.scale != AxisScale::Linear) {
-            return Err("ternary axes (bottom_x, left_y, right_y) must be linear");
+            return Err(crate::RuleKind::TernaryAxisScale);
         }
         if axes.iter().any(|a| a.inverted) {
-            return Err("ternary axes cannot be inverted: each increases clockwise");
+            return Err(crate::RuleKind::TernaryAxisInverted);
         }
         if axes.iter().any(|a| a.categories.is_some()) {
-            return Err("ternary axes cannot be categorical");
+            return Err(crate::RuleKind::TernaryAxisCategorical);
         }
         let max = config.bottom_x.max;
         if axes
             .iter()
             .any(|a| a.min != 0.0 || a.max != max || !(a.max.is_finite() && a.max > 0.0))
         {
-            return Err(
-                "ternary axes span the whole triangle: every axis has min 0 and the same \
-                 positive max (1 or 100)",
-            );
+            return Err(crate::RuleKind::TernaryAxisSpan);
         }
         if !config.overlays.is_empty() {
-            return Err("ternary charts have no overlay layers");
+            return Err(crate::RuleKind::TernaryOverlay);
         }
         if config
             .line_offsets
             .as_ref()
             .is_some_and(|offsets| !offsets.series.is_empty())
         {
-            return Err("ternary charts have no line offsets");
+            return Err(crate::RuleKind::TernaryLineOffsets);
         }
         if !config.draw_style.is_precise() {
-            return Err("ternary charts are drawn in the Precise style only");
+            return Err(crate::RuleKind::TernaryDrawStyle);
         }
         if config
             .subplots
             .iter()
             .any(|s| s.link_x.is_some() || s.link_y.is_some())
         {
-            return Err("ternary charts take no subplot axis links");
+            return Err(crate::RuleKind::TernarySubplotLinks);
         }
         Ok(())
     }
@@ -312,7 +309,7 @@ impl Config {
     }
 
     /// Validate `ternary` against the axes it reads; `None` always passes.
-    pub fn validate_ternary(&self) -> Result<(), &'static str> {
+    pub fn validate_ternary(&self) -> Result<(), crate::RuleKind> {
         match self.ternary() {
             Some(ternary) => ternary.validate(self),
             None => Ok(()),
@@ -324,11 +321,11 @@ impl Config {
     /// ternary series needs a ternary chart. A ternary series names three
     /// distinct component columns and draws markers, a line or both; its
     /// line is linear (no step modes) and has no fill.
-    pub fn validate_ternary_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_ternary_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             match (&item.render_type, self.ternary().is_some()) {
                 (DataRenderType::Ternary { .. }, false) => {
-                    return Err("a ternary series is drawn on a ternary chart (Config.ternary)");
+                    return Err(crate::RuleKind::TernarySeriesNotTernary);
                 }
                 (
                     DataRenderType::Ternary {
@@ -346,15 +343,10 @@ impl Config {
                         || item.x_column == *c_column
                         || item.y_column == *c_column
                     {
-                        return Err(
-                            "a ternary series names three distinct component columns (x_column, \
-                             y_column, c_column)",
-                        );
+                        return Err(crate::RuleKind::TernarySeriesColumns);
                     }
                     if scatter.is_none() && line.is_none() && region.is_none() {
-                        return Err(
-                            "a ternary series draws markers, a line, a region fill or any of them",
-                        );
+                        return Err(crate::RuleKind::TernaryNothingDrawn);
                     }
                     if let Some(region) = region {
                         let finite = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
@@ -364,21 +356,19 @@ impl Config {
                             || !finite(region.color.b)
                             || !finite(region.color.a)
                         {
-                            return Err(
-                                "a ternary region fill's colour and opacity are finite and in 0..=1",
-                            );
+                            return Err(crate::RuleKind::TernaryRegionStyle);
                         }
                     }
                     if let Some(line) = line {
                         if line.interpolation != LineInterpolation::Linear {
-                            return Err("a ternary line is linear: step modes are not drawn");
+                            return Err(crate::RuleKind::TernaryStepLine);
                         }
                         if line.fill.is_some() {
-                            return Err("a ternary line has no fill");
+                            return Err(crate::RuleKind::TernaryLineFill);
                         }
                     }
                 }
-                (_, true) => return Err("a ternary chart draws only ternary series"),
+                (_, true) => return Err(crate::RuleKind::TernaryChartSeriesKind),
                 (_, false) => {}
             }
         }
@@ -510,18 +500,42 @@ mod tests {
             edit(&mut config);
             config.validate_ternary().unwrap_err()
         };
-        assert!(reject(&|c| c.left_y.scale = AxisScale::Logarithmic).contains("linear"));
-        assert!(reject(&|c| c.right_y.inverted = true).contains("inverted"));
-        assert!(reject(&|c| c.bottom_x.min = 10.0).contains("min 0"));
-        assert!(reject(&|c| c.right_y.max = 1.0).contains("same"));
-        assert!(reject(&|c| c.overlays.push(OverlayLayer::default())).contains("overlay"));
+        assert!(
+            reject(&|c| c.left_y.scale = AxisScale::Logarithmic)
+                .to_string()
+                .contains("linear")
+        );
+        assert!(
+            reject(&|c| c.right_y.inverted = true)
+                .to_string()
+                .contains("inverted")
+        );
+        assert!(matches!(
+            reject(&|c| c.bottom_x.min = 10.0),
+            crate::RuleKind::TernaryAxisSpan
+        ));
+        assert!(
+            reject(&|c| c.right_y.max = 1.0)
+                .to_string()
+                .contains("same")
+        );
+        assert!(
+            reject(&|c| c.overlays.push(OverlayLayer::default()))
+                .to_string()
+                .contains("overlay")
+        );
         assert!(
             reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
+                .to_string()
                 .contains("Precise")
         );
         let mut linked = Subplot::default();
         linked.link_x = Some(crate::layer::CellRef::Parent);
-        assert!(reject(&|c| c.subplots.push(linked.clone())).contains("links"));
+        assert!(
+            reject(&|c| c.subplots.push(linked.clone()))
+                .to_string()
+                .contains("links")
+        );
         // The axes may span 0..1 as well as 0..100.
         let mut unit = chart();
         for axis in [&mut unit.bottom_x, &mut unit.left_y, &mut unit.right_y] {
@@ -536,7 +550,10 @@ mod tests {
         let ok = series("t", ternary(Some(scatter()), Some(line())));
         assert_eq!(config.validate_ternary_series(&[ok.clone()]), Ok(()));
         let err = |s: SeriesConfig| config.validate_ternary_series(&[s]).unwrap_err();
-        assert!(err(series("t", ternary(None, None))).contains("markers, a line, a region fill"));
+        assert!(matches!(
+            err(series("t", ternary(None, None))),
+            crate::RuleKind::TernaryNothingDrawn
+        ));
         let mut filled_region = ternary(None, None);
         if let DataRenderType::Ternary { region, .. } = &mut filled_region {
             *region = Some(TernaryRegionStyle::default());
@@ -552,16 +569,28 @@ mod tests {
                 ..TernaryRegionStyle::default()
             });
         }
-        assert!(err(series("t", filled_region)).contains("0..=1"));
+        assert!(
+            err(series("t", filled_region))
+                .to_string()
+                .contains("0..=1")
+        );
         let mut filled = line();
         filled.fill = Some(LineFill::ToBaseline(0.0));
-        assert!(err(series("t", ternary(None, Some(filled)))).contains("no fill"));
+        assert!(
+            err(series("t", ternary(None, Some(filled))))
+                .to_string()
+                .contains("no fill")
+        );
         let mut stepped = line();
         stepped.interpolation = LineInterpolation::StepPost;
-        assert!(err(series("t", ternary(None, Some(stepped)))).contains("linear"));
+        assert!(
+            err(series("t", ternary(None, Some(stepped))))
+                .to_string()
+                .contains("linear")
+        );
         let mut same = ok.clone();
         same.y_column = "c".into();
-        assert!(err(same).contains("three distinct"));
+        assert!(matches!(err(same), crate::RuleKind::TernarySeriesColumns));
         let plain = series(
             "p",
             DataRenderType::Xy(crate::data_config::XySeries {
@@ -571,13 +600,17 @@ mod tests {
                 stem: None,
             }),
         );
-        assert!(err(plain).contains("only ternary series"));
+        assert!(matches!(
+            err(plain),
+            crate::RuleKind::TernaryChartSeriesKind
+        ));
         let mut rectangular = config.clone();
         rectangular.set_ternary(None);
         assert!(
             rectangular
                 .validate_ternary_series(&[ok])
                 .unwrap_err()
+                .to_string()
                 .contains("on a ternary chart")
         );
     }

@@ -426,9 +426,23 @@ async fn edit_and_export(
 ## Errors
 
 Cartesian operations return `FiggyError`; the radial renderer uses
-`RadialError`. `RadarChart::validate` reports a legacy radar document's
-validation error as a `&'static str`. Handle validation/layout/budget errors before
-replacing the last valid display.
+`RadialError`. Handle validation/layout/budget errors before replacing the
+last valid display.
+
+A refused rule is a value, not a string ([#215](https://github.com/shim9610/figgy/issues/215)):
+`FiggyError::InvalidConfig { field, kind }`, `FiggyError::InvalidSeriesConfig
+{ series_id, kind }`, the model's `ConfigError { series_id, field, kind }`,
+`RadialError::Invalid(kind)` and every model `validate` method carry a
+`RuleKind`, one `#[non_exhaustive]` enum for the model and the renderer. A
+host matches the rule it reacts to, for example
+`Err(FiggyError::InvalidSeriesConfig { kind: RuleKind::PolarImage, .. })`;
+rules that report ids, counts or lengths carry them as fields
+(`RuleKind::CategoryBarColumnLength { column, len, categories }`).
+`RuleKind`'s `Display` is the sentence the error printed before, byte for
+byte, and `RuleKind::code` is the variant's name, the stable string the
+browser product puts in a thrown error's `code`. A rule checked while JSON is
+deserialized surfaces as the deserializer's error, whose text is the same
+sentence followed by the position.
 
 ## Construction and prewarming
 

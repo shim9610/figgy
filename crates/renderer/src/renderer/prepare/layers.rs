@@ -11,16 +11,16 @@ fn ternary_region_params(
     y: ColumnHandle,
     c: ColumnHandle,
 ) -> Result<data_render::ternary_region::TernaryRegionParamsGpu> {
-    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series_id.to_owned(),
-        reason: reason.into(),
+        kind: reason,
     };
     let lane = |handle: ColumnHandle| -> Result<u32> {
         if !handle.offset.is_multiple_of(4) {
-            return Err(invalid("region column byte offset is not f32-aligned"));
+            return Err(invalid(crate::RuleKind::RegionColumnAlignment));
         }
         u32::try_from(handle.offset / 4)
-            .map_err(|_| invalid("region column lies past the 32-bit lane range"))
+            .map_err(|_| invalid(crate::RuleKind::RegionColumnLaneOverflow))
     };
     let count = x.len_values.min(y.len_values).min(c.len_values);
     Ok(data_render::ternary_region::TernaryRegionParamsGpu {
@@ -28,15 +28,14 @@ fn ternary_region_params(
         x_base: lane(x)?,
         y_base: lane(y)?,
         c_base: lane(c)?,
-        count: u32::try_from(count)
-            .map_err(|_| invalid("region rows exceed the 32-bit row range"))?,
+        count: u32::try_from(count).map_err(|_| invalid(crate::RuleKind::RegionRowsOverflow))?,
     })
 }
 
 fn ring_scan_too_large(series_id: &str) -> FiggyError {
     FiggyError::InvalidSeriesConfig {
         series_id: series_id.to_owned(),
-        reason: "the region's rows exceed the adapter's dispatch grid".into(),
+        kind: crate::RuleKind::RegionDispatchGrid,
     }
 }
 
@@ -1275,19 +1274,18 @@ impl PrepareContext<'_> {
                             .find(|other| other.series_id == *target)
                             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: format!(
-                                    "line fill references series `{target}`, which is not in \
-                                     this chart"
-                                ),
+                                kind: crate::RuleKind::LineFillTargetMissing {
+                                    target: target.to_string(),
+                                },
                             })?;
                         if target.x_column != cfg.x_column {
                             return Err(FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: format!(
-                                    "line fill to series `{}` requires the same x column: \
-                                     `{}` vs `{}`",
-                                    target.series_id, cfg.x_column, target.x_column
-                                ),
+                                kind: crate::RuleKind::LineFillXColumn {
+                                    target: target.series_id.clone(),
+                                    x_column: cfg.x_column.clone(),
+                                    target_x_column: target.x_column.clone(),
+                                },
                             });
                         }
                         lookup(&target.y_column)?
@@ -1302,9 +1300,7 @@ impl PrepareContext<'_> {
                     style_bg: series.style.area_bg.as_ref().ok_or_else(|| {
                         FiggyError::InvalidSeriesConfig {
                             series_id: cfg.series_id.clone(),
-                            reason: "series style was created without its line fill; \
-                                     recreate the style for the current series config"
-                                .into(),
+                            kind: crate::RuleKind::LineFillStyleMissing,
                         }
                     })?,
                     pool_buffer: column_buffer,
@@ -1416,7 +1412,7 @@ impl PrepareContext<'_> {
                         let Some(column) = sc.point_style_index_column.as_ref() else {
                             return Err(FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: "scatter style map expects an index column".into(),
+                                kind: crate::RuleKind::ScatterStyleMapIndex,
                             });
                         };
                         let h = lookup(column)?;
@@ -1424,10 +1420,11 @@ impl PrepareContext<'_> {
                         if h.len_values < count {
                             return Err(FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: format!(
-                                    "style index column {column:?} has {} values, but scatter uses {count}",
-                                    h.len_values
-                                ),
+                                kind: crate::RuleKind::ScatterStyleIndexShort {
+                                    column: column.to_string(),
+                                    len: h.len_values as u64,
+                                    need: count as u64,
+                                },
                             });
                         }
                         Some(h)
@@ -1538,42 +1535,42 @@ impl PrepareContext<'_> {
                         } else {
                             None
                         };
-                        let errorbar_style_index = match (
-                            precise_errorbar_style_map,
-                            extract_errorbar_style(rt),
-                        ) {
-                            (Some(map), Some(eb)) if map.has_index => {
-                                let Some(column) = eb.error_bar_style_index_column.as_ref() else {
-                                    return Err(FiggyError::InvalidSeriesConfig {
-                                        series_id: cfg.series_id.clone(),
-                                        reason: "errorbar style map expects an index column".into(),
-                                    });
-                                };
-                                let h = lookup(column)?;
-                                let count = [
-                                    x_h.len_values,
-                                    y_h.len_values,
-                                    ey_lo.len_values,
-                                    ey_hi.len_values,
-                                    ex_lo.len_values,
-                                    ex_hi.len_values,
-                                ]
-                                .into_iter()
-                                .min()
-                                .unwrap_or(0);
-                                if h.len_values < count {
-                                    return Err(FiggyError::InvalidSeriesConfig {
-                                        series_id: cfg.series_id.clone(),
-                                        reason: format!(
-                                            "errorbar style index column {column:?} has {} values, but errorbar uses {count}",
-                                            h.len_values
-                                        ),
-                                    });
+                        let errorbar_style_index =
+                            match (precise_errorbar_style_map, extract_errorbar_style(rt)) {
+                                (Some(map), Some(eb)) if map.has_index => {
+                                    let Some(column) = eb.error_bar_style_index_column.as_ref()
+                                    else {
+                                        return Err(FiggyError::InvalidSeriesConfig {
+                                            series_id: cfg.series_id.clone(),
+                                            kind: crate::RuleKind::ErrorBarStyleMapIndex,
+                                        });
+                                    };
+                                    let h = lookup(column)?;
+                                    let count = [
+                                        x_h.len_values,
+                                        y_h.len_values,
+                                        ey_lo.len_values,
+                                        ey_hi.len_values,
+                                        ex_lo.len_values,
+                                        ex_hi.len_values,
+                                    ]
+                                    .into_iter()
+                                    .min()
+                                    .unwrap_or(0);
+                                    if h.len_values < count {
+                                        return Err(FiggyError::InvalidSeriesConfig {
+                                            series_id: cfg.series_id.clone(),
+                                            kind: crate::RuleKind::ErrorBarStyleIndexShort {
+                                                column: column.to_string(),
+                                                len: h.len_values as u64,
+                                                need: count as u64,
+                                            },
+                                        });
+                                    }
+                                    Some(h)
                                 }
-                                Some(h)
-                            }
-                            _ => None,
-                        };
+                                _ => None,
+                            };
                         Some(ColumnErrorBarDraw {
                             pipeline: match precise_errorbar_style_map {
                                 None => errorbar_pipe.ok_or(FiggyError::internal(
@@ -1746,9 +1743,7 @@ impl PrepareContext<'_> {
                             .get(cfg.series_id.as_str())
                             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: "a colour-mapped parallel series needs its value map \
-                                         prepared; recreate the chart's preparation"
-                                    .into(),
+                                kind: crate::RuleKind::ParallelValueMapMissing,
                             })?
                             .buffers
                     }

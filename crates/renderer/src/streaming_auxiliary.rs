@@ -353,7 +353,9 @@ impl Renderer {
                             .column_handle(packed.ranges[index])
                             .map_err(|error| FiggyError::InvalidSeriesConfig {
                                 series_id: series.series_id.clone(),
-                                reason: format!("invalid packed view pick lane: {error:?}"),
+                                kind: crate::RuleKind::PackedPickLane {
+                                    detail: format!("{error:?}"),
+                                },
                             })
                     };
                     let count = u32::try_from(packed.ranges[0].len).map_err(|_| {
@@ -673,7 +675,7 @@ impl Renderer {
         if max_chunk == 0 || max_chunk > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
                 field: "stream operation chunk budget",
-                reason: "must be nonzero and no larger than the initial operation cap",
+                kind: crate::RuleKind::StreamOperationCap,
             });
         }
         draw.max_primitives = max_chunk;
@@ -813,7 +815,9 @@ impl Renderer {
                 chunk.column_handle(columns[index]).map_err(|error| {
                     FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
-                        reason: format!("invalid pick chunk: {error:?}"),
+                        kind: crate::RuleKind::PickChunk {
+                            detail: format!("{error:?}"),
+                        },
                     }
                 })
             };

@@ -3079,7 +3079,7 @@ fn five_fields(rows: usize, base: f64) -> Vec<(&'static str, Column<f64>)> {
 
 fn invalid_reason(result: crate::Result<impl std::fmt::Debug>) -> String {
     match result {
-        Err(crate::FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(crate::FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason.to_string(),
         other => panic!("expected InvalidSeriesConfig, got {other:?}"),
     }
 }
@@ -3494,11 +3494,14 @@ fn a_failed_record_upsert_rolls_the_batch_back() {
             );
             Err::<(), _>(crate::FiggyError::InvalidSeriesConfig {
                 series_id: "box".into(),
-                reason: "injected".into(),
+                kind: crate::RuleKind::NotBoxPlot,
             })
         },
     );
-    assert_eq!(invalid_reason(result), "injected");
+    assert_eq!(
+        invalid_reason(result),
+        crate::RuleKind::NotBoxPlot.to_string()
+    );
     assert_eq!(full_pool_state(&pool), before);
     let record = pool.record("box").unwrap();
     assert_eq!(record.slot().epoch, epoch);

@@ -11,7 +11,7 @@ impl PrepareContext<'_> {
     ) -> Result<()> {
         let unsupported = || FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: "stream pass does not yet support contours or arc-driven stars".into(),
+            kind: crate::RuleKind::StreamedContoursOrStars,
         };
         // Streaming is not extended to images (#139): the three channel
         // grids are read from the resident pool through one table. Named
@@ -19,7 +19,7 @@ impl PrepareContext<'_> {
         if series.render_type.rgb_image().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_IMAGE_REASON.into(),
+                kind: streaming_runtime::STREAMED_IMAGE_REASON.into(),
             });
         }
         let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
@@ -34,9 +34,7 @@ impl PrepareContext<'_> {
         if series.render_type.radar().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "radar series require GPU-resident columns; streamed sources are not \
-                         supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedRadar,
             });
         }
         // Streaming is not extended to parallel coordinates (rule 8, #141):
@@ -44,7 +42,7 @@ impl PrepareContext<'_> {
         if series.render_type.parallel().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
+                kind: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
             });
         }
         // Nor to stems (rule 8, #206), although the error-bar path they
@@ -55,7 +53,7 @@ impl PrepareContext<'_> {
         ) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_STEM_REASON.into(),
+                kind: streaming_runtime::STREAMED_STEM_REASON.into(),
             });
         }
         // Nor to triangle meshes (rule 8, #210): a triangle reads three
@@ -63,28 +61,28 @@ impl PrepareContext<'_> {
         if series.tri_mesh().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
+                kind: streaming_runtime::STREAMED_TRI_MESH_REASON.into(),
             });
         }
         // Nor to energy-level series (rule 8, #203): they are DataLess.
         if series.energy_levels().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
+                kind: streaming_runtime::STREAMED_ENERGY_LEVELS_REASON.into(),
             });
         }
         // Nor to Feynman series (rule 8, #234): they are DataLess.
         if series.feynman().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_FEYNMAN_REASON.into(),
+                kind: streaming_runtime::STREAMED_FEYNMAN_REASON.into(),
             });
         }
         // Streaming is not extended to streamlines (rule 8).
         if series.render_type.streamlines().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_STREAMLINES_REASON.into(),
+                kind: streaming_runtime::STREAMED_STREAMLINES_REASON.into(),
             });
         }
         // Streaming is not extended to broken axes (rule 8, #200).
@@ -95,7 +93,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_BREAK_REASON.into(),
+                kind: streaming_runtime::STREAMED_BREAK_REASON.into(),
             });
         }
         // Nor to probability axes (rule 8, #209).
@@ -106,16 +104,14 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_PROBABILITY_REASON.into(),
+                kind: streaming_runtime::STREAMED_PROBABILITY_REASON.into(),
             });
         }
         // Streaming is not extended to polar charts.
         if config.polar().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "polar charts require GPU-resident columns; streamed sources are \
-                         not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedPolar,
             });
         }
         // Streaming is not extended to categorical axes.
@@ -131,9 +127,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "categorical axes require GPU-resident columns; streamed sources are \
-                         not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedCategoricalAxis,
             });
         }
         // A fill between two series needs index-aligned chunks of two streams,
@@ -146,9 +140,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "line fill and step interpolation require GPU-resident columns; \
-                         streamed sources are not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedLineFillOrStep,
             });
         }
         // Streaming is not extended to vector series: their shader reads the
@@ -156,9 +148,7 @@ impl PrepareContext<'_> {
         if has_vector(&series.render_type) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "vector series require GPU-resident columns; streamed sources are \
-                         not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedVector,
             });
         }
         // Streaming is not extended to category bars: a stack reads the
@@ -166,9 +156,7 @@ impl PrepareContext<'_> {
         if series.render_type.category_bars().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "category bar series require GPU-resident columns; streamed sources are \
-                         not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedCategoryBars,
             });
         }
         // Nor to box plots: a box reads a resident record and ragged column
@@ -176,9 +164,7 @@ impl PrepareContext<'_> {
         if series.render_type.box_plot().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "box plot series require a GPU-resident record, outlier column, violin \
-                         curves and raw point columns; streamed sources are not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedBoxPlot,
             });
         }
         // Nor to range bars: a bar reads its start, whiskers, colour and
@@ -186,7 +172,7 @@ impl PrepareContext<'_> {
         if series.render_type.range_bars().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
+                kind: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
             });
         }
         // Nor to 3D charts: a surface and its floor read their grid from the
@@ -194,9 +180,7 @@ impl PrepareContext<'_> {
         if config.view_3d().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "3D chart series require GPU-resident columns; streamed sources are not \
-                         supported"
-                    .into(),
+                kind: crate::RuleKind::Streamed3d,
             });
         }
         // Nor to hexagonal grids (#134): the lattice is read from resident
@@ -206,7 +190,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_HEXAGONAL_REASON.into(),
+                kind: streaming_runtime::STREAMED_HEXAGONAL_REASON.into(),
             });
         }
         // Nor to ternary series: a sample reads its third component from the
@@ -214,7 +198,7 @@ impl PrepareContext<'_> {
         if series.render_type.ternary_c_column().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: streaming_runtime::STREAMED_TERNARY_REASON.into(),
+                kind: streaming_runtime::STREAMED_TERNARY_REASON.into(),
             });
         }
         // The value maps read index-aligned columns on every draw; streaming
@@ -224,9 +208,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "point colour and size maps require GPU-resident columns; streamed \
-                         sources are not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedPointMaps,
             });
         }
         Ok(())
@@ -317,7 +299,7 @@ impl PrepareContext<'_> {
         if phase == streaming_runtime::StreamDrawPhase::Field {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.config.series_id.clone(),
-                reason: "streamed field requires the bounded tile executor".into(),
+                kind: crate::RuleKind::StreamedFieldExecutor,
             });
         }
         if phase == streaming_runtime::StreamDrawPhase::Line
@@ -329,7 +311,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.config.series_id.clone(),
-                reason: "streamed line requires a prepared canonical arc prefix".into(),
+                kind: crate::RuleKind::StreamedLineArcPrefix,
             });
         }
         let expected = streaming_runtime::stream_phase_columns(series.config, phase);
@@ -337,7 +319,7 @@ impl PrepareContext<'_> {
             .first()
             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                 series_id: series.config.series_id.clone(),
-                reason: "streamed primitive has no supplied columns".into(),
+                kind: crate::RuleKind::StreamedPrimitiveColumns,
             })?;
         let bins = if phase == streaming_runtime::StreamDrawPhase::Histogram {
             if streaming_runtime::histogram_edge_column(series.config)
@@ -367,7 +349,7 @@ impl PrepareContext<'_> {
         {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.config.series_id.clone(),
-                reason: "streamed primitive ranges must describe the same global rows".into(),
+                kind: crate::RuleKind::StreamedPrimitiveRows,
             });
         }
         let specs = [Series {
@@ -395,7 +377,9 @@ impl PrepareContext<'_> {
                     .column_handle(range)
                     .map_err(|error| FiggyError::InvalidSeriesConfig {
                         series_id: series.config.series_id.clone(),
-                        reason: format!("invalid streamed column span: {error:?}"),
+                        kind: crate::RuleKind::StreamedColumnSpan {
+                            detail: format!("{error:?}"),
+                        },
                     })
             },
             Some(phase),

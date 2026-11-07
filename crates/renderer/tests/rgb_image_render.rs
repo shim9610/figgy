@@ -809,7 +809,7 @@ fn registration_names_what_an_image_cannot_read() {
     let reason = |r: &mut Renderer, config: &renderer::Config, series: SeriesConfig| {
         let what = format!("{:?}", series.render_type);
         match r.register_chart(config.clone(), vec![series]) {
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
             other => panic!("registered {what}: {other:?}"),
         }
     };
@@ -819,7 +819,7 @@ fn registration_names_what_an_image_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, chart.config(), short),
-        "an image's channels share one lattice: the same number of columns"
+        renderer::RuleKind::ImageChannelColumns
     );
     let mut turned = flat("img", &ids);
     if let DataRenderType::RgbImage { blue, .. } = &mut turned.render_type {
@@ -827,7 +827,7 @@ fn registration_names_what_an_image_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, chart.config(), turned),
-        "an image's channels share one lattice: the same orientation and grid layout"
+        renderer::RuleKind::ImageChannelLattice
     );
     let mut hexagonal = flat("img", &ids);
     if let DataRenderType::RgbImage { red, .. } = &mut hexagonal.render_type {
@@ -835,7 +835,7 @@ fn registration_names_what_an_image_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, chart.config(), hexagonal),
-        "an image's channels share one lattice: the same orientation and grid layout"
+        renderer::RuleKind::ImageChannelLattice
     );
     for range in [
         [1.0, 1.0],
@@ -852,7 +852,7 @@ fn registration_names_what_an_image_cannot_read() {
         );
         assert_eq!(
             reason(&mut r, chart.config(), bad),
-            "an image's range is finite with a smaller low end",
+            renderer::RuleKind::ImageRange,
             "range {range:?}"
         );
     }
@@ -862,19 +862,19 @@ fn registration_names_what_an_image_cannot_read() {
     }
     assert_eq!(
         reason(&mut r, chart.config(), opaque),
-        "an image's opacity is 0..=1"
+        renderer::RuleKind::ImageOpacity
     );
     let mut three_d = chart.config().clone();
     three_d.set_view_3d(Some(View3d::default()));
     assert_eq!(
         reason(&mut r, &three_d, flat("img", &ids)),
-        "an image draws flat: not on a 3D chart"
+        renderer::RuleKind::View3dImage
     );
     let mut polar = chart.config().clone();
     polar.set_polar(Some(renderer::polar::PolarOptions::default()));
     assert_eq!(
         reason(&mut r, &polar, flat("img", &ids)),
-        "images are not drawn on polar axes"
+        renderer::RuleKind::PolarImage
     );
     let mut unregistered = flat("img", &ids);
     if let DataRenderType::RgbImage { blue, .. } = &mut unregistered.render_type {
@@ -903,12 +903,12 @@ fn registration_names_what_an_image_cannot_read() {
         .register_chart(chart.config().clone(), vec![over_stream])
         .expect("registration admits the columns; the streaming inspector names the rule");
     match r.inspect_streaming_capability(id) {
-        Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+        Err(FiggyError::InvalidSeriesConfig {
+            series_id,
+            kind: reason,
+        }) => {
             assert_eq!(series_id, "img");
-            assert_eq!(
-                reason,
-                "image series require GPU-resident columns; streamed sources are not supported"
-            );
+            assert_eq!(reason, renderer::RuleKind::StreamedImage);
         }
         other => panic!(
             "expected the streamed rejection, got {:?}",
@@ -932,7 +932,9 @@ fn registration_names_what_an_image_cannot_read() {
         ..flat("img", &ids)
     };
     assert!(
-        reason(&mut r, chart.config(), heatmap).starts_with("a field series needs Config.colorbar")
+        reason(&mut r, chart.config(), heatmap)
+            .to_string()
+            .starts_with("a field series needs Config.colorbar")
     );
     let id = r
         .register_chart(chart.config().clone(), vec![flat("img", &ids)])

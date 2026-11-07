@@ -726,9 +726,12 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         .block_on()
         .map(|_| ())
     {
-        Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+        Err(FiggyError::InvalidSeriesConfig {
+            series_id,
+            kind: reason,
+        }) => {
             assert_eq!(series_id, "bins");
-            assert!(reason.contains("polar"), "{reason}");
+            assert!(reason.to_string().contains("polar"), "{reason}");
         }
         other => panic!("histogram on polar axes: {other:?}"),
     }

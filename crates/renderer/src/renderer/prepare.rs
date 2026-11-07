@@ -169,7 +169,7 @@ impl PrepareContext<'_> {
                     .validate_series_on_polar(series.config)
                     .map_err(|reason| FiggyError::InvalidSeriesConfig {
                         series_id: series.config.series_id.clone(),
-                        reason: reason.to_string(),
+                        kind: reason,
                     })?;
                 validate_line_fill(
                     self.pool,
@@ -684,10 +684,12 @@ impl PrepareContext<'_> {
             if handle.len_values < count {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
-                    reason: format!(
-                        "{what} column {column:?} has {} values, but scatter uses {count}",
-                        handle.len_values
-                    ),
+                    kind: crate::RuleKind::PointMapColumnShort {
+                        what: what.to_string(),
+                        column: column.to_string(),
+                        len: handle.len_values as u64,
+                        need: count as u64,
+                    },
                 });
             }
             Ok(handle)
@@ -707,9 +709,7 @@ impl PrepareContext<'_> {
             .get(cfg.series_id.as_str())
             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                 series_id: cfg.series_id.clone(),
-                reason: "point value maps require GPU-resident columns; streamed sources are \
-                         not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedPointValueMap,
             })?;
         Ok((color_value, size_value, Some(&scratch.bind_group)))
     }

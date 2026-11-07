@@ -103,50 +103,41 @@ impl TriMeshSeries {
     /// - contour lines need vertex values and carry no labels;
     /// - the surface look takes no `color_matrix` (the values colour the
     ///   mesh) and its wireframe, gloss and texture are in range.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.triangles.is_empty() {
-            return Err("a triangle mesh names its triangle index column");
+            return Err(crate::RuleKind::TriMeshTriangles);
         }
         if self.values.column.is_empty() {
-            return Err("a triangle mesh names its value column");
+            return Err(crate::RuleKind::TriMeshValues);
         }
         if self.fill.is_none() && self.contour.is_none() {
-            return Err("a triangle mesh draws a fill, contour lines or both");
+            return Err(crate::RuleKind::TriMeshNothingDrawn);
         }
         if self.fill.is_none() && self.surface.is_some() {
-            return Err("a surface look needs the triangle mesh's fill");
+            return Err(crate::RuleKind::TriMeshSurfaceWithoutFill);
         }
         if let Some(fill) = &self.fill {
             match (self.values.at, &fill.shading) {
                 (MeshValueLocation::Vertices, Shading::Flat) => {
-                    return Err(
-                        "vertex values are shaded Interpolated: a flat triangle colour from \
-                         vertex values is host work (give face values)",
-                    );
+                    return Err(crate::RuleKind::TriMeshVertexValuesFlat);
                 }
                 (MeshValueLocation::Faces, Shading::Interpolated) => {
-                    return Err(
-                        "face values are shaded Flat: interpolating them needs vertex values, \
-                         which are host work",
-                    );
+                    return Err(crate::RuleKind::TriMeshFaceValuesInterpolated);
                 }
                 _ => {}
             }
         }
         if let Some(contour) = &self.contour {
             if self.values.at == MeshValueLocation::Faces {
-                return Err(
-                    "contour lines need vertex values: a field constant on each triangle has \
-                     no isolines",
-                );
+                return Err(crate::RuleKind::TriMeshContourFaceValues);
             }
             if contour.labels.is_some() {
-                return Err("contour lines on a triangle mesh have no labels");
+                return Err(crate::RuleKind::TriMeshContourLabels);
             }
         }
         if let Some(surface) = &self.surface {
             if surface.color_matrix.is_some() {
-                return Err("a triangle mesh is coloured by its values: no surface color_matrix");
+                return Err(crate::RuleKind::TriMeshSurfaceColorMatrix);
             }
             crate::view3d::validate_surface_look(surface)?;
         }
@@ -176,38 +167,34 @@ impl Config {
     /// columns, and is drawn on a rectangular or 3D chart, not on polar,
     /// ternary or parallel axes. On a 3D chart it names its height column
     /// (`z_column`) and its fill is continuous, not banded.
-    pub fn validate_tri_mesh_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_tri_mesh_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             let Some(mesh) = item.tri_mesh() else {
                 continue;
             };
             mesh.validate()?;
             if item.x_column.is_empty() || item.y_column.is_empty() {
-                return Err(
-                    "a triangle mesh names its vertex coordinate columns (x_column, y_column)",
-                );
+                return Err(crate::RuleKind::TriMeshVertexColumns);
             }
             if self.polar().is_some() {
-                return Err("a triangle mesh is not drawn on polar axes");
+                return Err(crate::RuleKind::PolarTriMesh);
             }
             if self.ternary().is_some() {
-                return Err("a triangle mesh is not drawn on a ternary chart");
+                return Err(crate::RuleKind::TriMeshTernary);
             }
             if self.parallel().is_some() {
-                return Err("a triangle mesh is not drawn on a parallel chart");
+                return Err(crate::RuleKind::TriMeshParallel);
             }
             if self.view_3d().is_some() {
                 if item.z_column.as_deref().is_none_or(str::is_empty) {
-                    return Err(
-                        "a triangle mesh on a 3D chart names its vertex height column (z_column)",
-                    );
+                    return Err(crate::RuleKind::TriMeshWithoutZColumn);
                 }
                 if mesh
                     .fill
                     .as_ref()
                     .is_some_and(|f| f.mode == FillMode::Bands)
                 {
-                    return Err("a surface's fill is continuous: banded fills are not drawn in 3D");
+                    return Err(crate::RuleKind::View3dBandedSurface);
                 }
             }
         }
@@ -290,58 +277,46 @@ mod tests {
         neither.contour = None;
         assert_eq!(
             neither.validate(),
-            Err("a triangle mesh draws a fill, contour lines or both")
+            Err(crate::RuleKind::TriMeshNothingDrawn)
         );
         let mut look = lines.clone();
         look.surface = Some(SurfaceStyle::default());
         assert_eq!(
             look.validate(),
-            Err("a surface look needs the triangle mesh's fill")
+            Err(crate::RuleKind::TriMeshSurfaceWithoutFill)
         );
         let mut unnamed = both.clone();
         unnamed.triangles.clear();
-        assert_eq!(
-            unnamed.validate(),
-            Err("a triangle mesh names its triangle index column")
-        );
+        assert_eq!(unnamed.validate(), Err(crate::RuleKind::TriMeshTriangles));
         let mut unnamed = both;
         unnamed.values.column.clear();
-        assert_eq!(
-            unnamed.validate(),
-            Err("a triangle mesh names its value column")
-        );
+        assert_eq!(unnamed.validate(), Err(crate::RuleKind::TriMeshValues));
     }
 
     #[test]
     fn the_shading_follows_where_the_values_sit() {
         let mut flat_vertices = mesh(MeshValueLocation::Vertices);
         flat_vertices.fill = Some(fill(Shading::Flat));
-        assert!(
-            flat_vertices
-                .validate()
-                .unwrap_err()
-                .starts_with("vertex values are shaded Interpolated")
-        );
+        assert!(matches!(
+            flat_vertices.validate().unwrap_err(),
+            crate::RuleKind::TriMeshVertexValuesFlat
+        ));
         let mut smooth_faces = mesh(MeshValueLocation::Faces);
         smooth_faces.fill = Some(fill(Shading::Interpolated));
-        assert!(
-            smooth_faces
-                .validate()
-                .unwrap_err()
-                .starts_with("face values are shaded Flat")
-        );
+        assert!(matches!(
+            smooth_faces.validate().unwrap_err(),
+            crate::RuleKind::TriMeshFaceValuesInterpolated
+        ));
     }
 
     #[test]
     fn contours_need_vertex_values_and_carry_no_labels() {
         let mut faces = mesh(MeshValueLocation::Faces);
         faces.contour = Some(contour());
-        assert!(
-            faces
-                .validate()
-                .unwrap_err()
-                .starts_with("contour lines need vertex values")
-        );
+        assert!(matches!(
+            faces.validate().unwrap_err(),
+            crate::RuleKind::TriMeshContourFaceValues
+        ));
         let mut labelled = mesh(MeshValueLocation::Vertices);
         let mut lines = contour();
         lines.labels = Some(ContourLabelConfig {
@@ -358,7 +333,7 @@ mod tests {
         labelled.contour = Some(lines);
         assert_eq!(
             labelled.validate(),
-            Err("contour lines on a triangle mesh have no labels")
+            Err(crate::RuleKind::TriMeshContourLabels)
         );
     }
 
@@ -375,14 +350,17 @@ mod tests {
         });
         assert_eq!(
             coloured.validate(),
-            Err("a triangle mesh is coloured by its values: no surface color_matrix")
+            Err(crate::RuleKind::TriMeshSurfaceColorMatrix)
         );
         let mut glossy = mesh(MeshValueLocation::Vertices);
         glossy.surface = Some(SurfaceStyle {
             gloss: 2.0,
             ..SurfaceStyle::default()
         });
-        assert!(glossy.validate().unwrap_err().contains("gloss"));
+        assert!(matches!(
+            glossy.validate().unwrap_err(),
+            crate::RuleKind::SurfaceMaterialStyle
+        ));
         let mut plain = mesh(MeshValueLocation::Vertices);
         plain.surface = Some(SurfaceStyle::default());
         assert_eq!(plain.validate(), Ok(()));
@@ -398,30 +376,28 @@ mod tests {
         );
         let mut unnamed = item.clone();
         unnamed.y_column.clear();
-        assert!(
-            config
-                .validate_tri_mesh_series(&[unnamed])
-                .unwrap_err()
-                .contains("vertex coordinate columns")
-        );
+        assert!(matches!(
+            config.validate_tri_mesh_series(&[unnamed]).unwrap_err(),
+            crate::RuleKind::TriMeshVertexColumns
+        ));
 
         let mut polar = config.clone();
         polar.set_polar(Some(crate::polar::PolarOptions::default()));
         assert_eq!(
             polar.validate_tri_mesh_series(std::slice::from_ref(&item)),
-            Err("a triangle mesh is not drawn on polar axes")
+            Err(crate::RuleKind::PolarTriMesh)
         );
         let mut ternary = config.clone();
         ternary.set_ternary(Some(crate::ternary::TernaryOptions::default()));
         assert_eq!(
             ternary.validate_tri_mesh_series(std::slice::from_ref(&item)),
-            Err("a triangle mesh is not drawn on a ternary chart")
+            Err(crate::RuleKind::TriMeshTernary)
         );
         let mut parallel = config.clone();
         parallel.set_parallel(Some(crate::parallel::ParallelOptions::default()));
         assert_eq!(
             parallel.validate_tri_mesh_series(std::slice::from_ref(&item)),
-            Err("a triangle mesh is not drawn on a parallel chart")
+            Err(crate::RuleKind::TriMeshParallel)
         );
 
         let mut three_d = config.clone();
@@ -430,6 +406,7 @@ mod tests {
             three_d
                 .validate_tri_mesh_series(std::slice::from_ref(&item))
                 .unwrap_err()
+                .to_string()
                 .contains("(z_column)")
         );
         let mut lifted = item.clone();
@@ -443,7 +420,7 @@ mod tests {
         }
         assert_eq!(
             three_d.validate_tri_mesh_series(&[lifted.clone()]),
-            Err("a surface's fill is continuous: banded fills are not drawn in 3D")
+            Err(crate::RuleKind::View3dBandedSurface)
         );
         // The same banded mesh draws on a flat chart; the height is kept.
         assert_eq!(config.validate_tri_mesh_series(&[lifted]), Ok(()));
@@ -557,14 +534,17 @@ mod tests {
         let error = config.validate_series(&[item]).unwrap_err();
         assert_eq!(error.field, "tri_mesh");
         assert_eq!(error.series_id.as_deref(), Some("mesh"));
-        assert!(error.reason.starts_with("contour lines need vertex values"));
+        assert!(matches!(
+            error.kind,
+            crate::RuleKind::TriMeshContourFaceValues
+        ));
         // On polar axes the chart's polar rule names it too.
         let mut polar = config.clone();
         polar.set_polar(Some(crate::polar::PolarOptions::default()));
         let item = series(mesh(MeshValueLocation::Vertices));
         assert_eq!(
             polar.validate_series_on_polar(&item),
-            Err("a triangle mesh is not drawn on polar axes")
+            Err(crate::RuleKind::PolarTriMesh)
         );
     }
 

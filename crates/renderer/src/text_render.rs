@@ -819,7 +819,7 @@ fn with_glyph_mask_id(
     if !(size <= MAX_GLYPH_PX) {
         return Err(crate::FiggyError::InvalidConfig {
             field: "font size",
-            reason: "a glyph larger than 4096 px (MAX_GLYPH_PX) is not rasterized",
+            kind: crate::RuleKind::GlyphTooLarge,
         });
     }
     let key = (font.key, size.to_bits(), glyph, xbin);

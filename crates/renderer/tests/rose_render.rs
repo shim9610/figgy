@@ -879,7 +879,10 @@ fn a_horizontal_group_on_a_polar_chart_is_refused() {
         .config()
         .validate_category_bars(&series)
         .expect_err("a horizontal rose is refused");
-    assert!(reason.contains("rose"), "{reason}");
+    assert!(
+        matches!(reason, renderer::RuleKind::RoseDirection),
+        "{reason}"
+    );
     assert!(
         r.export_rgba(
             renderer::ExportSource::chart(&chart, &series),

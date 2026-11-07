@@ -3593,8 +3593,8 @@ fn a_streamed_source_on_a_probability_axis_is_refused() {
     // registration refuses it there before the probability rule is reached.
     for (case, config) in [("overlay", overlay), ("subplot", subplot)] {
         match r.register_chart(config, vec![points.clone()]) {
-            Err(renderer::FiggyError::InvalidSeriesConfig { reason, .. }) => {
-                assert!(reason.contains(case), "{case}: {reason}");
+            Err(renderer::FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
+                assert!(reason.to_string().contains(case), "{case}: {reason}");
             }
             other => panic!("{case}: expected a refusal, got {:?}", other.map(|_| ())),
         }
@@ -3606,14 +3606,12 @@ fn a_streamed_source_on_a_probability_axis_is_refused() {
         let result = r.inspect_streaming_capability(id);
         r.remove_chart(id).unwrap();
         match result {
-            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+            Err(renderer::FiggyError::InvalidSeriesConfig {
+                series_id,
+                kind: reason,
+            }) => {
                 assert_eq!(series_id, "m", "{case}");
-                assert_eq!(
-                    reason,
-                    "probability axes require GPU-resident columns; streamed sources are not \
-                     supported",
-                    "{case}"
-                );
+                assert_eq!(reason, renderer::RuleKind::StreamedProbability, "{case}");
             }
             other => panic!(
                 "{case}: expected the streamed rejection, got {:?}",

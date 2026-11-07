@@ -38,60 +38,51 @@ pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
 /// Why a streamed streamline series is rejected: streaming is not extended
 /// to them (CLAUDE.md rule 8).
-pub(crate) const STREAMED_RANGE_BARS_REASON: &str =
-    "range bar series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_RANGE_BARS_REASON: crate::RuleKind = crate::RuleKind::StreamedRangeBars;
 
-pub(crate) const STREAMED_STREAMLINES_REASON: &str =
-    "streamline series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_STREAMLINES_REASON: crate::RuleKind =
+    crate::RuleKind::StreamedStreamlines;
 
 /// Why a streamed hexagonal grid is rejected (CLAUDE.md rule 8, #134).
-pub(crate) const STREAMED_HEXAGONAL_REASON: &str =
-    "hexagonal grids require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_HEXAGONAL_REASON: crate::RuleKind = crate::RuleKind::StreamedHexagonal;
 
 /// Why a streamed ternary series is rejected (CLAUDE.md rule 8).
-pub(crate) const STREAMED_TERNARY_REASON: &str =
-    "ternary series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_TERNARY_REASON: crate::RuleKind = crate::RuleKind::StreamedTernary;
 
 /// Why a streamed series on a broken axis is rejected (CLAUDE.md rule 8,
 /// #200): the gap mask and the `Panels` piece transforms are resident-only.
-pub(crate) const STREAMED_BREAK_REASON: &str =
-    "broken axes require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_BREAK_REASON: crate::RuleKind = crate::RuleKind::StreamedBreak;
 
 /// Why a streamed series on a probability axis is rejected (CLAUDE.md
 /// rule 8, #209): the probability transform is resident-only.
-pub(crate) const STREAMED_PROBABILITY_REASON: &str =
-    "probability axes require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_PROBABILITY_REASON: crate::RuleKind =
+    crate::RuleKind::StreamedProbability;
 
 /// Why a streamed image series is rejected (CLAUDE.md rule 8, #139).
-pub(crate) const STREAMED_IMAGE_REASON: &str =
-    "image series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_IMAGE_REASON: crate::RuleKind = crate::RuleKind::StreamedImage;
 
 /// Why a streamed parallel coordinates series is rejected (CLAUDE.md rule 8,
 /// #141): every row reads one value per axis from the resident pool.
-pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series require GPU-resident columns; streamed sources are not \
-     supported";
+pub(crate) const STREAMED_PARALLEL_REASON: crate::RuleKind = crate::RuleKind::StreamedParallel;
 
 /// Why a streamed triangle mesh series is rejected (CLAUDE.md rule 8,
 /// #210): a triangle reads its three vertices anywhere in the resident
 /// columns, and its indices are a resident triangle index column.
-pub(crate) const STREAMED_TRI_MESH_REASON: &str =
-    "triangle mesh series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_TRI_MESH_REASON: crate::RuleKind = crate::RuleKind::StreamedTriMesh;
 
 /// Why a streamed stem series is rejected (CLAUDE.md rule 8, #206): the
 /// error-bar path the stems reuse streams, but streaming is not extended to
 /// stems.
-pub(crate) const STREAMED_STEM_REASON: &str =
-    "stem series require GPU-resident columns; streamed sources are not supported";
+pub(crate) const STREAMED_STEM_REASON: crate::RuleKind = crate::RuleKind::StreamedStem;
 
 /// Why an energy-level series in a streamed display is rejected (CLAUDE.md
 /// rule 8, #203): it is DataLess, so no stream can feed it.
-pub(crate) const STREAMED_ENERGY_LEVELS_REASON: &str =
-    "energy-level series are DataLess (SSOT only); streamed displays do not draw them";
+pub(crate) const STREAMED_ENERGY_LEVELS_REASON: crate::RuleKind =
+    crate::RuleKind::StreamedEnergyLevels;
 
 /// Why a Feynman series in a streamed display is rejected (CLAUDE.md rule
 /// 8, #234): it is DataLess, so no stream can feed it.
-pub(crate) const STREAMED_FEYNMAN_REASON: &str =
-    "Feynman series are DataLess (SSOT only); streamed displays do not draw them";
+pub(crate) const STREAMED_FEYNMAN_REASON: crate::RuleKind = crate::RuleKind::StreamedFeynman;
 
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
@@ -159,7 +150,7 @@ impl StreamRequestError {
             },
             Self::Scheduler(StreamError::InvalidLimits) => FiggyError::InvalidConfig {
                 field: "streaming limits",
-                reason: "limits must be non-zero and chunk bytes must fit the in-flight budget",
+                kind: crate::RuleKind::StreamLimits,
             },
             Self::Scheduler(StreamError::TooManyJobs) => FiggyError::StateAllocationFailed {
                 resource: "streaming chart slots",
@@ -745,45 +736,67 @@ fn stream_draw_phases(
         }),
         // Streaming is not extended to stems (rule 8, #206);
         // `validate_stream_series` rejects them first, so this is a backstop.
-        DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. }) => Err(FiggyError::InvalidSeriesConfig {
-            series_id: series.series_id.clone(),
-            reason: STREAMED_STEM_REASON.into(),
+        DataRenderType::Xy(crate::data_config::XySeries { stem: Some(_), .. }) => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: STREAMED_STEM_REASON.into(),
+            }
+            .into())
         }
-        .into()),
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => Ok(&[StreamDrawPhase::Line]),
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: None, errors: None, .. }) => Ok(&[StreamDrawPhase::Scatter]),
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: Some(_), errors: None, .. }) => {
-            Ok(&[StreamDrawPhase::Line, StreamDrawPhase::Scatter])
+        DataRenderType::Xy(crate::data_config::XySeries { scatter: None, .. }) => {
+            Ok(&[StreamDrawPhase::Line])
         }
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: None, errors: Some(_), .. }) => {
-            Ok(&[StreamDrawPhase::Errorbar, StreamDrawPhase::Scatter])
-        }
-        DataRenderType::Xy(crate::data_config::XySeries { scatter: Some(_), line: Some(_), errors: Some(_), .. }) => Ok(&[
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: None,
+            errors: None,
+            ..
+        }) => Ok(&[StreamDrawPhase::Scatter]),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: Some(_),
+            errors: None,
+            ..
+        }) => Ok(&[StreamDrawPhase::Line, StreamDrawPhase::Scatter]),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: None,
+            errors: Some(_),
+            ..
+        }) => Ok(&[StreamDrawPhase::Errorbar, StreamDrawPhase::Scatter]),
+        DataRenderType::Xy(crate::data_config::XySeries {
+            scatter: Some(_),
+            line: Some(_),
+            errors: Some(_),
+            ..
+        }) => Ok(&[
             StreamDrawPhase::Errorbar,
             StreamDrawPhase::Line,
             StreamDrawPhase::Scatter,
         ]),
-        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => Ok(if primitives.field {
-            &[StreamDrawPhase::Field]
-        } else {
-            &[]
-        }),
+        DataRenderType::Field(crate::data_config::FieldSeries { contour: None, .. }) => {
+            Ok(if primitives.field {
+                &[StreamDrawPhase::Field]
+            } else {
+                &[]
+            })
+        }
         // Streaming is not extended to images; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
-        DataRenderType::RgbImage { .. } if primitives.field => Err(FiggyError::InvalidSeriesConfig {
-            series_id: series.series_id.clone(),
-            reason: STREAMED_IMAGE_REASON.into(),
+        DataRenderType::RgbImage { .. } if primitives.field => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                kind: STREAMED_IMAGE_REASON.into(),
+            }
+            .into())
         }
-        .into()),
         DataRenderType::RgbImage { .. } => Ok(&[]),
         // Streaming is not extended to vectors; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
         DataRenderType::Vector { .. } if primitives.vector => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason:
-                    "vector series require GPU-resident columns; streamed sources are not supported"
-                        .into(),
+                kind: crate::RuleKind::StreamedVector,
             }
             .into())
         }
@@ -793,8 +806,7 @@ fn stream_draw_phases(
         DataRenderType::CategoryBars { .. } if primitives.category_bars => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "category bar series require GPU-resident columns; streamed sources are not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedCategoryBars,
             }
             .into())
         }
@@ -804,9 +816,7 @@ fn stream_draw_phases(
         DataRenderType::BoxPlot { .. } if primitives.box_plot => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "box plot series require a GPU-resident record, outlier column, violin \
-                         curves and raw point columns; streamed sources are not supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedBoxPlot,
             }
             .into())
         }
@@ -816,7 +826,7 @@ fn stream_draw_phases(
         DataRenderType::RangeBars { .. } if primitives.range_bars => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: STREAMED_RANGE_BARS_REASON.into(),
+                kind: STREAMED_RANGE_BARS_REASON.into(),
             }
             .into())
         }
@@ -826,9 +836,7 @@ fn stream_draw_phases(
         DataRenderType::Radar { .. } if primitives.line || primitives.scatter => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "radar series require GPU-resident columns; streamed sources are not \
-                         supported"
-                    .into(),
+                kind: crate::RuleKind::StreamedRadar,
             }
             .into())
         }
@@ -839,7 +847,7 @@ fn stream_draw_phases(
         DataRenderType::Streamlines { .. } if primitives.line => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: STREAMED_STREAMLINES_REASON.into(),
+                kind: STREAMED_STREAMLINES_REASON.into(),
             }
             .into())
         }
@@ -850,7 +858,7 @@ fn stream_draw_phases(
         DataRenderType::Ternary { .. } if primitives.line || primitives.scatter => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: STREAMED_TERNARY_REASON.into(),
+                kind: STREAMED_TERNARY_REASON.into(),
             }
             .into())
         }
@@ -861,7 +869,7 @@ fn stream_draw_phases(
         DataRenderType::Parallel { .. } if primitives.parallel => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: STREAMED_PARALLEL_REASON.into(),
+                kind: STREAMED_PARALLEL_REASON.into(),
             }
             .into())
         }
@@ -870,7 +878,7 @@ fn stream_draw_phases(
         // (#203); a streamed display that meets one is refused.
         DataRenderType::EnergyLevels(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: STREAMED_ENERGY_LEVELS_REASON.into(),
+            kind: STREAMED_ENERGY_LEVELS_REASON.into(),
         }
         .into()),
         // Nor to triangle meshes (rule 8, #210): a triangle reads three
@@ -878,24 +886,24 @@ fn stream_draw_phases(
         // cursor exists; this is a backstop.
         DataRenderType::TriMesh(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: STREAMED_TRI_MESH_REASON.into(),
+            kind: STREAMED_TRI_MESH_REASON.into(),
         }
         .into()),
         DataRenderType::Feynman(_) => Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: STREAMED_FEYNMAN_REASON.into(),
+            kind: STREAMED_FEYNMAN_REASON.into(),
         }
         .into()),
-        DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. })
-            if primitives.field || primitives.contour =>
-        {
-            Err(FiggyError::InvalidSeriesConfig {
-                series_id: series.series_id.clone(),
-                reason: "stream draw cursor does not yet support field or contour passes".into(),
-            }
-            .into())
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(_), ..
+        }) if primitives.field || primitives.contour => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            kind: crate::RuleKind::StreamDrawCursorField,
         }
-        DataRenderType::Field(crate::data_config::FieldSeries { contour: Some(_), .. }) => Ok(&[]),
+        .into()),
+        DataRenderType::Field(crate::data_config::FieldSeries {
+            contour: Some(_), ..
+        }) => Ok(&[]),
     }
 }
 
@@ -1189,19 +1197,19 @@ pub(crate) fn reject_layered_streaming(config: &Config) -> Result<()> {
     if !config.overlays.is_empty() {
         return Err(FiggyError::InvalidConfig {
             field: "overlays",
-            reason: "nonresident streaming is not supported for a document with overlay layers",
+            kind: crate::RuleKind::NonresidentOverlays,
         });
     }
     if !config.subplots.is_empty() {
         return Err(FiggyError::InvalidConfig {
             field: "subplots",
-            reason: "nonresident streaming is not supported for a document with subplots",
+            kind: crate::RuleKind::NonresidentSubplots,
         });
     }
     if config.has_offset_members() {
         return Err(FiggyError::InvalidConfig {
             field: "line_offsets",
-            reason: "nonresident streaming is not supported for a document with line offsets",
+            kind: crate::RuleKind::NonresidentLineOffsets,
         });
     }
     Ok(())
@@ -2267,7 +2275,7 @@ impl Renderer {
         if !display_scale.is_finite() || display_scale <= 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "stream display scale",
-                reason: "must be finite and positive",
+                kind: crate::RuleKind::NotFinitePositive,
             });
         }
         crate::chart::validate_renderer_config(&render_config)?;
@@ -2696,7 +2704,7 @@ impl Renderer {
         if !display_scale.is_finite() || display_scale <= 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "stream display scale",
-                reason: "must be finite and positive",
+                kind: crate::RuleKind::NotFinitePositive,
             });
         }
         crate::chart::validate_renderer_config(&render_config)?;
@@ -3554,7 +3562,7 @@ impl Renderer {
         if primitives == 0 || primitives > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
                 field: "stream chunk budget",
-                reason: "must be non-zero and no greater than the execution's initial cap",
+                kind: crate::RuleKind::StreamExecutionCap,
             });
         }
         draw.max_primitives = primitives;
@@ -4333,8 +4341,13 @@ impl Renderer {
                     if available < total {
                         return Err(FiggyError::InvalidSeriesConfig {
                             series_id: series.series_id.clone(),
-                            reason: format!("style index column {id:?} has {available} values, but this pass uses {total}"),
-                        }.into());
+                            kind: crate::RuleKind::StreamStyleIndexShort {
+                                column: id.to_string(),
+                                len: available as u64,
+                                need: total as u64,
+                            },
+                        }
+                        .into());
                     }
                 }
                 if total == 0 {

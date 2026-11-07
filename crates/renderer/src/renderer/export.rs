@@ -740,7 +740,7 @@ impl Renderer {
                 .validate_series_on_polar(config)
                 .map_err(|reason| FiggyError::InvalidSeriesConfig {
                     series_id: config.series_id.clone(),
-                    reason: reason.to_string(),
+                    kind: reason,
                 })?;
         }
         chart.config().validate_radar(series).map_err(|reason| {
@@ -749,7 +749,7 @@ impl Renderer {
                     .iter()
                     .find(|s| s.render_type.radar().is_some())
                     .map_or_else(String::new, |s| s.series_id.clone()),
-                reason: reason.to_string(),
+                kind: reason,
             }
         })?;
         chart
@@ -759,7 +759,7 @@ impl Renderer {
                 series_id: series
                     .first()
                     .map_or_else(String::new, |s| s.series_id.clone()),
-                reason: reason.into(),
+                kind: reason,
             })?;
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
@@ -1463,7 +1463,7 @@ fn check_vector_scope(options: ExportOptions) -> Result<()> {
     if options.scope != ExportScope::Document {
         return Err(FiggyError::InvalidConfig {
             field: "ExportOptions.scope",
-            reason: "a vector export renders the whole document",
+            kind: crate::RuleKind::VectorExportWholeDocument,
         });
     }
     Ok(())

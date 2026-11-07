@@ -25,7 +25,8 @@ pub enum FiggyError {
     /// A renderer-owned chart config violates a render invariant.
     InvalidConfig {
         field: &'static str,
-        reason: &'static str,
+        /// Which rule failed; its `Display` is the sentence (#215).
+        kind: crate::RuleKind,
     },
 
     /// CPU raster target allocation failed — typically a zero/oversized area.
@@ -120,7 +121,8 @@ pub enum FiggyError {
     /// render path.
     InvalidSeriesConfig {
         series_id: String,
-        reason: String,
+        /// Which rule failed; its `Display` is the sentence (#215).
+        kind: crate::RuleKind,
     },
 
     /// Handle generation no longer matches after an invalidating pool mutation.
@@ -185,8 +187,8 @@ impl std::fmt::Display for FiggyError {
             Self::InvalidChartArea { width, height } => {
                 write!(f, "invalid chart area: {width}x{height}")
             }
-            Self::InvalidConfig { field, reason } => {
-                write!(f, "invalid chart config field {field}: {reason}")
+            Self::InvalidConfig { field, kind } => {
+                write!(f, "invalid chart config field {field}: {kind}")
             }
             Self::RasterWrapFailed { reason } => write!(f, "raster wrap failed: {reason}"),
             Self::AdapterUnavailable => write!(f, "no compatible wgpu adapter"),
@@ -234,8 +236,8 @@ impl std::fmt::Display for FiggyError {
             Self::StateAllocationFailed { resource, reason } => {
                 write!(f, "{resource} allocation failed: {reason}")
             }
-            Self::InvalidSeriesConfig { series_id, reason } => {
-                write!(f, "invalid series config for {series_id}: {reason}")
+            Self::InvalidSeriesConfig { series_id, kind } => {
+                write!(f, "invalid series config for {series_id}: {kind}")
             }
             Self::StaleHandle {
                 generation,

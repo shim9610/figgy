@@ -518,10 +518,9 @@ impl Renderer {
             if let Some(kind) = self.pool.composite_kind(&source.id) {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: source.id.clone(),
-                    reason: format!(
-                        "the id is {kind}; streaming is not extended to records, ragged and \
-                         triangle columns, which are resident only"
-                    ),
+                    kind: crate::RuleKind::StreamedCompositeId {
+                        kind: kind.to_string(),
+                    },
                 });
             }
             if self.pool.slot(&source.id).is_some()

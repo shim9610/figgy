@@ -246,7 +246,7 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         },
         field => FiggyError::InvalidConfig {
             field,
-            reason: error.reason,
+            kind: error.kind,
         },
     })
 }
@@ -536,10 +536,9 @@ pub fn box_plot_value_extent(
                 .record(record_id)
                 .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: format!(
-                        "box plot record {record_id:?} is not resident: upload it with \
-                             `upsert_record`"
-                    ),
+                    kind: crate::RuleKind::BoxPlotRecordNotResident {
+                        id: record_id.to_string(),
+                    },
                 })?;
             let stats = record.stats();
             for (k, (name, _)) in crate::data_render::BOX_PLOT_RECORD.iter().enumerate() {
@@ -558,10 +557,7 @@ pub fn box_plot_value_extent(
                 .ragged(id)
                 .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: format!(
-                        "box plot ragged column {id:?} is not resident: upload it with \
-                         `upsert_ragged`"
-                    ),
+                    kind: crate::RuleKind::BoxPlotRaggedNotResident { id: id.to_string() },
                 })?;
             let stats = ragged.stats();
             if stats.finite > 0 {
@@ -1899,9 +1895,15 @@ mod tests {
             let mut c = cfg.clone();
             pick(&mut c).segments = broken.clone();
             match validate_renderer_config(&c) {
-                Err(FiggyError::InvalidConfig { field: f, reason }) => {
+                Err(FiggyError::InvalidConfig {
+                    field: f,
+                    kind: reason,
+                }) => {
                     assert_eq!(f, field);
-                    assert_eq!(reason, crate::text::MathErrorKind::UnknownParent.as_str());
+                    assert!(
+                        matches!(reason, crate::RuleKind::InvalidMath { error } if error.kind == crate::text::MathErrorKind::UnknownParent),
+                        "{reason}"
+                    );
                 }
                 other => panic!("{field}: {other:?}"),
             }
@@ -2028,7 +2030,7 @@ mod tests {
             bar,
             Err(FiggyError::InvalidConfig {
                 field: "colorbar.axis",
-                reason: "a colourbar axis cannot be categorical"
+                kind: crate::RuleKind::ColorbarCategorical
             })
         ));
         let overlay = with(&|c| {
@@ -2128,7 +2130,7 @@ mod tests {
             log_at_zero,
             Err(FiggyError::InvalidConfig {
                 field: "colorbar.axis",
-                reason: "logarithmic axis bounds must be positive"
+                kind: crate::RuleKind::LogAxisBounds
             })
         ));
 

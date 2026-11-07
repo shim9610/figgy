@@ -215,7 +215,7 @@ impl PrepareContext<'_> {
                 {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
-                        reason: "rebased selection needs a global-index style map binding".into(),
+                        kind: crate::RuleKind::RebasedSelectionStyleMap,
                     });
                 }
                 let style_index = match (precise_pick_style_map, scatter_cfg) {
@@ -223,7 +223,7 @@ impl PrepareContext<'_> {
                         let Some(column) = scatter.point_style_index_column.as_ref() else {
                             return Err(FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: "scatter style map expects an index column".into(),
+                                kind: crate::RuleKind::ScatterStyleMapIndex,
                             });
                         };
                         let h = lookup(column)?;
@@ -231,10 +231,11 @@ impl PrepareContext<'_> {
                         if h.len_values < count {
                             return Err(FiggyError::InvalidSeriesConfig {
                                 series_id: cfg.series_id.clone(),
-                                reason: format!(
-                                    "style index column {column:?} has {} values, but scatter uses {count}",
-                                    h.len_values
-                                ),
+                                kind: crate::RuleKind::ScatterStyleIndexShort {
+                                    column: column.to_string(),
+                                    len: h.len_values as u64,
+                                    need: count as u64,
+                                },
                             });
                         }
                         Some(h)

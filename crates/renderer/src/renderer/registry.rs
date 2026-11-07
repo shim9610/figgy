@@ -1122,25 +1122,25 @@ pub(super) fn validate_axis_view_state(field: &'static str, axis: &AxisViewState
     if !axis.min.is_finite() || !axis.max.is_finite() {
         return Err(FiggyError::InvalidConfig {
             field,
-            reason: "axis bounds must be finite",
+            kind: crate::RuleKind::AxisBoundsNotFinite,
         });
     }
     if axis.max <= axis.min {
         return Err(FiggyError::InvalidConfig {
             field,
-            reason: "axis max must be greater than min",
+            kind: crate::RuleKind::AxisBoundsOrder,
         });
     }
     if matches!(axis.scale, AxisScale::Logarithmic) && axis.min <= 0.0 {
         return Err(FiggyError::InvalidConfig {
             field,
-            reason: "logarithmic axis bounds must be positive",
+            kind: crate::RuleKind::LogAxisBounds,
         });
     }
     if matches!(axis.scale, AxisScale::Probability(_)) && !(axis.min > 0.0 && axis.max < 1.0) {
         return Err(FiggyError::InvalidConfig {
             field,
-            reason: "probability axis bounds must lie strictly between 0 and 1",
+            kind: crate::RuleKind::ProbabilityAxisBounds,
         });
     }
     Ok(())
@@ -1381,11 +1381,10 @@ pub(super) fn validate_renderer_series(
             if pool.uniform_step(id).is_none() {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: format!(
-                        "a hexagonal grid's {role} coordinates ({id:?}) are uniform: a resident \
-                         column of at least two values, every step equal to the first within \
-                         1e-6"
-                    ),
+                    kind: crate::RuleKind::HexagonalCoordinatesNotUniform {
+                        role: role.to_string(),
+                        column: id.to_string(),
+                    },
                 });
             }
         }
@@ -1394,7 +1393,9 @@ pub(super) fn validate_renderer_series(
         if let Some(Err(e)) = item.label.as_ref().map(|label| label.validate_math()) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: item.series_id.clone(),
-                reason: format!("label: {e}"),
+                kind: crate::RuleKind::InvalidLabel {
+                    detail: e.to_string(),
+                },
             });
         }
         // A DataLess series registers no column (#203, #234): its values
@@ -1415,11 +1416,7 @@ pub(super) fn validate_renderer_series(
                 if !pool.contains_composite(id) {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
-                        reason: format!(
-                            "box plot {id:?} is not a resident record or ragged column: upload \
-                             the record with `upsert_record` and the outliers and violin \
-                             curves with `upsert_ragged`"
-                        ),
+                        kind: crate::RuleKind::BoxPlotNotResident { id: id.to_string() },
                     });
                 }
             }
@@ -1446,9 +1443,7 @@ pub(super) fn validate_renderer_series(
                 if config.colorbar.is_none() {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
-                        reason: "a colour-mapped scatter needs Config.colorbar: it owns the z \
-                                 range and colormap, so without it there is no colour to draw"
-                            .to_string(),
+                        kind: crate::RuleKind::ScatterColorMapNeedsColorbar,
                     });
                 }
             }
@@ -1457,7 +1452,7 @@ pub(super) fn validate_renderer_series(
                 map.validate()
                     .map_err(|reason| FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
-                        reason: reason.to_string(),
+                        kind: reason,
                     })?;
             }
         }
@@ -1475,9 +1470,7 @@ pub(super) fn validate_renderer_series(
         if requires_colorbar(&item.render_type) && config.colorbar.is_none() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: item.series_id.clone(),
-                reason: "a field series needs Config.colorbar: it owns the z range and \
-                         colormap, so without it there is no value to draw"
-                    .to_string(),
+                kind: crate::RuleKind::FieldNeedsColorbar,
             });
         }
         validate_contour_level_count(&item.series_id, &item.render_type)?;
@@ -1494,10 +1487,7 @@ pub(super) fn validate_renderer_series(
                 if config.colorbar.is_none() {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
-                        reason: "a colour-mapped parallel series needs Config.colorbar: it \
-                                 owns the z range and colormap, so without it there is no \
-                                 colour to draw"
-                            .to_string(),
+                        kind: crate::RuleKind::ParallelColorMapNeedsColorbar,
                     });
                 }
             }
@@ -1543,9 +1533,9 @@ pub(super) fn validate_tri_mesh_series(
     item: &SeriesConfig,
     mesh: &crate::tri_mesh::TriMeshSeries,
 ) -> Result<()> {
-    let fail = |reason: String| FiggyError::InvalidSeriesConfig {
+    let fail = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: item.series_id.clone(),
-        reason,
+        kind: reason,
     };
     validate_registered_column(pool, &item.x_column)?;
     validate_registered_column(pool, &item.y_column)?;
@@ -1557,27 +1547,20 @@ pub(super) fn validate_tri_mesh_series(
         validate_registered_column(pool, z)?;
     }
     let stats = pool.triangle_stats(&mesh.triangles).ok_or_else(|| {
-        fail(format!(
-            "triangle mesh {:?} is not a resident triangle index column: upload it with \
-             `upsert_triangles`",
-            mesh.triangles
-        ))
+        fail(crate::RuleKind::TrianglesNotResident {
+            id: mesh.triangles.to_string(),
+        })
     })?;
     if config.colorbar.is_none() {
-        return Err(fail(
-            "a triangle mesh series needs Config.colorbar: it owns the z range and colormap, \
-             so without it there is no value to draw"
-                .into(),
-        ));
+        return Err(fail(crate::RuleKind::TriMeshNeedsColorbar));
     }
     if let Some(contour) = &mesh.contour
         && contour.levels.len() > crate::data_config::MAX_CONTOUR_LEVELS
     {
-        return Err(fail(format!(
-            "contour level count {} exceeds the supported maximum {}",
-            contour.levels.len(),
-            crate::data_config::MAX_CONTOUR_LEVELS
-        )));
+        return Err(fail(crate::RuleKind::ContourLevelCount {
+            count: contour.levels.len() as u64,
+            max: crate::data_config::MAX_CONTOUR_LEVELS as u64,
+        }));
     }
     let len = |id: &str| pool.column_len(id).unwrap_or(0);
     let faces = mesh.values.at == crate::tri_mesh::MeshValueLocation::Faces;
@@ -1598,18 +1581,18 @@ pub(super) fn validate_tri_mesh_series(
     }
     let (vertices, column) = shortest;
     if u64::from(stats.max_index) >= vertices {
-        return Err(fail(format!(
-            "triangle index {} names a vertex past the {vertices} vertices of column {column:?}",
-            stats.max_index
-        )));
+        return Err(fail(crate::RuleKind::TriangleIndexPastVertices {
+            index: u64::from(stats.max_index),
+            vertices,
+            column: column.to_string(),
+        }));
     }
     if faces && len(&mesh.values.column) < u64::from(stats.triangles) {
-        return Err(fail(format!(
-            "face value column {:?} has {} values for {} triangles",
-            mesh.values.column,
-            len(&mesh.values.column),
-            stats.triangles
-        )));
+        return Err(fail(crate::RuleKind::FaceValueColumnShort {
+            column: mesh.values.column.clone(),
+            len: len(&mesh.values.column),
+            triangles: u64::from(stats.triangles),
+        }));
     }
     Ok(())
 }
@@ -1625,18 +1608,15 @@ pub(super) fn validate_streamline_series(
     let Some(streamlines) = item.render_type.streamlines() else {
         return Ok(());
     };
-    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: item.series_id.clone(),
-        reason: reason.to_owned(),
+        kind: reason,
     };
     crate::data_config::validate_streamline_series(item).map_err(invalid)?;
     if let Some(map) = streamlines.color_map {
         validate_registered_column(pool, &map.column)?;
         if config.colorbar.is_none() {
-            return Err(invalid(
-                "colour-mapped streamlines need Config.colorbar: it owns the z range and \
-                 colormap, so without it there is no colour to draw",
-            ));
+            return Err(invalid(crate::RuleKind::StreamlineColorMapNeedsColorbar));
         }
     }
     Ok(())
@@ -1649,25 +1629,25 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
         .validate_polar()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "polar",
-            reason,
+            kind: reason,
         })?;
     config
         .validate_ternary()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "ternary",
-            reason,
+            kind: reason,
         })?;
     config
         .validate_view_3d()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "view_3d",
-            reason,
+            kind: reason,
         })?;
     config
         .validate_parallel()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "parallel",
-            reason,
+            kind: reason,
         })
 }
 
@@ -1679,15 +1659,15 @@ pub(super) fn config_error(error: crate::ConfigError) -> FiggyError {
     match error.series_id {
         Some(series_id) => FiggyError::InvalidSeriesConfig {
             series_id,
-            reason: error.reason.to_string(),
+            kind: error.kind,
         },
         None if error.field == "line_offsets" => FiggyError::InvalidConfig {
             field: error.field,
-            reason: error.reason,
+            kind: error.kind,
         },
         None => FiggyError::InvalidSeriesConfig {
             series_id: String::new(),
-            reason: error.reason.to_string(),
+            kind: error.kind,
         },
     }
 }
@@ -1703,11 +1683,11 @@ pub(super) fn validate_vector_series(
     style: &crate::data_config::VectorStyle,
 ) -> Result<()> {
     use crate::data_config::{VectorColorMap, VectorComponents};
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: item.series_id.clone(),
-        reason,
+        kind: reason,
     };
-    style.validate().map_err(|reason| invalid(reason.into()))?;
+    style.validate().map_err(|reason| invalid(reason))?;
     let grid = match components {
         VectorComponents::Points { u, v, w } => {
             validate_registered_column(pool, u)?;
@@ -1727,9 +1707,7 @@ pub(super) fn validate_vector_series(
                 validate_registered_column(pool, column)?;
             }
             if u.orientation != v.orientation || u.grid_layout != v.grid_layout {
-                return Err(invalid(
-                    "vector u and v grids must share orientation and grid layout".into(),
-                ));
+                return Err(invalid(crate::RuleKind::VectorGridLayout));
             }
             Some(u)
         }
@@ -1744,25 +1722,15 @@ pub(super) fn validate_vector_series(
                 validate_registered_column(pool, column)?;
             }
             if matrix.orientation != u.orientation || matrix.grid_layout != u.grid_layout {
-                return Err(invalid(
-                    "vector colour grid must share the u grid's orientation and grid layout".into(),
-                ));
+                return Err(invalid(crate::RuleKind::VectorColorGridLayout));
             }
         }
         (Some(_), _) => {
-            return Err(invalid(
-                "vector colour map must take the components' form: a column for points, \
-                 a grid for grids"
-                    .into(),
-            ));
+            return Err(invalid(crate::RuleKind::VectorColorMapForm));
         }
     }
     if style.color_map.is_some() && config.colorbar.is_none() {
-        return Err(invalid(
-            "a colour-mapped vector needs Config.colorbar: it owns the z range and colormap, \
-             so without it there is no colour to draw"
-                .into(),
-        ));
+        return Err(invalid(crate::RuleKind::VectorColorMapNeedsColorbar));
     }
     Ok(())
 }
@@ -1780,36 +1748,35 @@ pub(super) fn validate_line_fill<'s>(
     let Some(line) = extract_line(&item.render_type) else {
         return Ok(());
     };
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: item.series_id.clone(),
-        reason,
+        kind: reason,
     };
     match line.fill.as_ref() {
         None => {}
         Some(LineFill::ToBaseline(baseline)) => {
             if !baseline.is_finite() {
-                return Err(invalid("line fill baseline must be finite".into()));
+                return Err(invalid(crate::RuleKind::LineFillBaseline));
             }
         }
         Some(LineFill::ToSeries(target)) => {
             if *target == item.series_id {
-                return Err(invalid(
-                    "line fill cannot reference the series itself".into(),
-                ));
+                return Err(invalid(crate::RuleKind::LineFillSelf));
             }
             let target = series
                 .into_iter()
                 .find(|other| other.series_id == *target)
                 .ok_or_else(|| {
-                    invalid(format!(
-                        "line fill references series `{target}`, which is not in this chart"
-                    ))
+                    invalid(crate::RuleKind::LineFillTargetMissing {
+                        target: target.to_string(),
+                    })
                 })?;
             if target.x_column != item.x_column {
-                return Err(invalid(format!(
-                    "line fill to series `{}` requires the same x column: `{}` vs `{}`",
-                    target.series_id, item.x_column, target.x_column
-                )));
+                return Err(invalid(crate::RuleKind::LineFillXColumn {
+                    target: target.series_id.clone(),
+                    x_column: item.x_column.clone(),
+                    target_x_column: target.x_column.clone(),
+                }));
             }
             validate_registered_column(pool, &target.y_column)?;
         }
@@ -2024,7 +1991,7 @@ impl Renderer {
             .find(|series| series.series_id == series_id)
             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                 series_id: series_id.to_string(),
-                reason: "no series with this id in the chart".to_string(),
+                kind: crate::RuleKind::SeriesNotInChart,
             })?;
         Ok(series_draw_info_from_pool(
             &(&self.pool, &self.streaming_sources),
@@ -2316,9 +2283,7 @@ impl Renderer {
             {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: "a line offset member must be resident: streamed sources are not \
-                             drawn with line offsets"
-                        .into(),
+                    kind: crate::RuleKind::LineOffsetMemberStreamed,
                 });
             }
             let layer = config.layer_of_series(&item.series_id);
@@ -2326,13 +2291,13 @@ impl Renderer {
                 && self.require_resident_series(item).is_err()
             {
                 let reason = if matches!(layer, crate::LayerRef::Overlay(_)) {
-                    "a nonresident streaming series cannot be scaled by an overlay layer"
+                    crate::RuleKind::NonresidentOverlaySeries
                 } else {
-                    "a nonresident streaming series cannot be drawn by a subplot"
+                    crate::RuleKind::NonresidentSubplotSeries
                 };
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: reason.into(),
+                    kind: reason,
                 });
             }
         }
@@ -2363,7 +2328,7 @@ impl Renderer {
         else {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
-                reason: "auto_layout names a Feynman series of the chart".into(),
+                kind: crate::RuleKind::AutoLayoutNotFeynman,
             });
         };
         if !state.series[position]
@@ -2436,9 +2401,7 @@ impl Renderer {
         if let FeynmanHit::Label(..) = drag {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
-                reason:
-                    "a Feynman label moves through FeynmanSeries::drag_label, the value-label drag"
-                        .into(),
+                kind: crate::RuleKind::FeynmanLabelDrag,
             });
         }
         let space = self.series_panel_space(id, series_id)?;
@@ -2453,7 +2416,7 @@ impl Renderer {
         else {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series_id.into(),
-                reason: "drag_feynman names a Feynman series of the chart".into(),
+                kind: crate::RuleKind::DragFeynmanNotFeynman,
             });
         };
         // Configuration only is copied (rule 2).
@@ -2926,7 +2889,7 @@ impl Renderer {
         if view.overlay_y.len() != state.config.overlays.len() {
             return Err(FiggyError::InvalidConfig {
                 field: "overlays",
-                reason: "a view state must carry one Y range per overlay layer",
+                kind: crate::RuleKind::ViewStateOverlayRanges,
             });
         }
         if view.subplots.len() != state.config.subplots.len()
@@ -2941,7 +2904,7 @@ impl Renderer {
         {
             return Err(FiggyError::InvalidConfig {
                 field: "subplots",
-                reason: "a view state must carry one view per subplot, each with one Y range per overlay layer",
+                kind: crate::RuleKind::ViewStateSubplots,
             });
         }
         let mut prospective_config = state.config.clone();
@@ -3980,10 +3943,9 @@ impl Renderer {
         if self.streaming_sources.contains_key(id) {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: id.to_owned(),
-                reason: format!(
-                    "the id is a streamed column; streaming is not extended to records, \
-                     ragged and triangle columns, so {kind} needs a resident id"
-                ),
+                kind: crate::RuleKind::CompositeNeedsResident {
+                    kind: kind.to_string(),
+                },
             });
         }
         Ok(())

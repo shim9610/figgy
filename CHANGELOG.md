@@ -39,6 +39,27 @@ subplot's `marker`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
+  A refused rule is a `RuleKind` value (new module `rule`, re-exported at the
+  crate root): one `#[non_exhaustive]` enum for the model's and the
+  renderer's rules, a unit variant per rule (`PolarImage`,
+  `StemsWithoutMarkers`, `HexagonalShading`, …) and variants with fields for
+  the rules that report ids, counts or lengths
+  (`CategoryBarColumnLength { column, len, categories }`,
+  `InvalidMath { error }`, …). Its `Display` is the sentence the error
+  carried before, byte for byte, and `RuleKind::code` the variant's name.
+  `ConfigError` carries `kind: RuleKind` in place of `reason: &'static str`
+  (`ConfigError::reason()` returns the sentence), and every model
+  `validate` method and validation helper that returned
+  `Result<_, &'static str>` returns `Result<_, RuleKind>`: the axes,
+  categories, breaks, series kinds, styles, annotations, layers, polar,
+  ternary, parallel, 3D, energy-level and Feynman rules, the legacy
+  document readers and `RadialChart::validate`. The `*_REASON` constants
+  (`ContourLabelConfig::INVALID_SPACING_REASON`, …) are `RuleKind` values.
+  Errors are not serialized, so documents are unchanged. Migration: match
+  `err.kind` (or `Err(kind)`) against a `RuleKind` variant instead of
+  comparing strings; code that wants the text calls `to_string()` on it.
+
 - **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
   A DataLess series kind, `DataRenderType::Feynman(FeynmanSeries)`: the
   topology is the data (vertices with an incoming, outgoing or internal
@@ -1346,6 +1367,21 @@ subplot's `marker`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
+  `FiggyError::InvalidConfig { field, kind }` and
+  `FiggyError::InvalidSeriesConfig { series_id, kind }` carry the model's
+  `RuleKind` (re-exported as `renderer::RuleKind`) in place of
+  `reason: &'static str` and `reason: String`; the renderer's own rules
+  (registered columns and their lengths, records, ragged and triangle
+  columns, streamed sources, GPU index spaces, colourbars, line fills, the
+  radial chart) are variants of the same enum, so a host matches one type.
+  `RadialError::Invalid` carries a `RuleKind`. Every message reads as
+  before, byte for byte; a test pins each unit variant's sentence. Migration:
+  replace `InvalidSeriesConfig { reason, .. }` with
+  `InvalidSeriesConfig { kind, .. }` and compare `kind` with a variant (or
+  call `kind.to_string()` for the text); code that built these errors builds
+  them from a `RuleKind`.
 
 - **Feynman diagrams are picked and dragged** ([#234](https://github.com/shim9610/figgy/issues/234)).
   A typed data pick answers for a Feynman series on the CPU over the drawn
@@ -3146,6 +3182,17 @@ subplot's `marker`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
+  A refused rule throws a JS `Error` whose `message` is the rule's sentence
+  (unchanged) and whose `code` is the rule's name (`RuleKind::code`, for
+  example `"ContourLevelCount"` or `"PolarImage"`), so a page branches on
+  `error.code` instead of parsing the text. A rule checked while the JSON
+  is parsed (a contour label `spacing_px` that is not positive, more than one
+  coordinate system, a rich-text segment or math that does not parse) is a
+  JSON parse error and, like every other error, still throws its message as
+  a string. Migration: code that read a rule refusal with
+  `String(error)` or as a plain string reads `error.message`.
 
 - **Feynman diagrams** ([#234](https://github.com/shim9610/figgy/issues/234)).
   `pick_point` answers a Feynman part as `{kind: "feynman_vertex" |

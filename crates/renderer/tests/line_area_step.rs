@@ -830,9 +830,12 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
             )
             .block_on()
         {
-            Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id,
+                kind: reason,
+            }) => {
                 assert_eq!(series_id, "hi");
-                assert!(reason.contains(needle), "{reason}");
+                assert!(reason.to_string().contains(needle), "{reason}");
             }
             other => panic!(
                 "expected an explicit rejection, got {:?}",
@@ -840,8 +843,8 @@ fn fill_between_rejects_mismatched_unknown_and_self_references() {
             ),
         }
         match r.register_chart(chart.config().clone(), series.to_vec()) {
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
-                assert!(reason.contains(needle), "{reason}");
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
+                assert!(reason.to_string().contains(needle), "{reason}");
             }
             other => panic!(
                 "register_chart must reject too, got {:?}",
@@ -902,9 +905,15 @@ fn streamed_series_reject_fill_and_step_interpolation() {
             )
             .unwrap();
         match r.inspect_streaming_capability(id) {
-            Err(FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id,
+                kind: reason,
+            }) => {
                 assert_eq!(series_id, "streamed", "{name}");
-                assert!(reason.contains("GPU-resident"), "{name}: {reason}");
+                assert!(
+                    reason.to_string().contains("GPU-resident"),
+                    "{name}: {reason}"
+                );
             }
             other => panic!("{name}: expected rejection, got {:?}", other.map(|_| ())),
         }

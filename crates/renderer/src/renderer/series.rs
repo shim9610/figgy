@@ -763,12 +763,13 @@ pub(super) fn radar_columns_fit(
     if x_len != n || y_len != n {
         return Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: format!(
-                "a radar series holds one value per category: the angle axis has {n} \
-                 categories, the category index column {:?} {x_len} values and the value \
-                 column {:?} {y_len}",
-                series.x_column, series.y_column
-            ),
+            kind: crate::RuleKind::RadarValueCount {
+                categories: n as u64,
+                index_column: series.x_column.clone(),
+                index_len: x_len as u64,
+                value_column: series.y_column.clone(),
+                value_len: y_len as u64,
+            },
         });
     }
     Ok(())
@@ -801,9 +802,7 @@ fn category_bar_count(config: &Config, series: &SeriesConfig) -> Result<usize> {
         .map(<[_]>::len)
         .ok_or_else(|| FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason:
-                "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones"
-                    .into(),
+            kind: crate::RuleKind::CategoryBarsAxis,
         })
 }
 
@@ -818,10 +817,11 @@ fn category_bar_lane(
     if handle.len_values != n {
         return Err(FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: format!(
-                "category bar column {id:?} has {} values for {n} categories; it needs one per category",
-                handle.len_values
-            ),
+            kind: crate::RuleKind::CategoryBarColumnLength {
+                column: id.to_string(),
+                len: handle.len_values as u64,
+                categories: n as u64,
+            },
         });
     }
     u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
@@ -883,23 +883,22 @@ pub(super) fn build_parallel_data(
     series: &SeriesConfig,
     mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
 ) -> Result<data_render::ParallelData> {
-    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason: reason.to_owned(),
+        kind: reason,
     };
     let (Some(parallel), Some(options)) = (series.render_type.parallel(), config.parallel()) else {
-        return Err(invalid(
-            "a parallel series is drawn on a parallel chart (Config.parallel)",
-        ));
+        return Err(invalid(crate::RuleKind::ParallelSeriesNotParallel));
     };
     if parallel.columns.len() != options.axes.len() || parallel.columns.len() < 2 {
-        return Err(invalid("a parallel series names one column per axis"));
+        return Err(invalid(crate::RuleKind::ParallelSeriesColumnCount));
     }
     let lane = |handle: ColumnHandle| -> Result<u32> {
         if !handle.offset.is_multiple_of(4) {
-            return Err(invalid("parallel column byte offset is not f32-aligned"));
+            return Err(invalid(crate::RuleKind::ParallelColumnAlignment));
         }
-        u32::try_from(handle.offset / 4).map_err(|_| invalid("parallel column lane past u32"))
+        u32::try_from(handle.offset / 4)
+            .map_err(|_| invalid(crate::RuleKind::ParallelColumnLaneOverflow))
     };
     let mut rows = usize::MAX;
     for column in parallel.columns {
@@ -914,9 +913,10 @@ pub(super) fn build_parallel_data(
         None => (0, 0),
     };
     let params = data_render::ParallelParamsGpu {
-        rows: u32::try_from(rows).map_err(|_| invalid("parallel row count past u32"))?,
+        rows: u32::try_from(rows)
+            .map_err(|_| invalid(crate::RuleKind::ParallelRowCountOverflow))?,
         axes: u32::try_from(parallel.columns.len())
-            .map_err(|_| invalid("parallel axis count past u32"))?,
+            .map_err(|_| invalid(crate::RuleKind::ParallelAxisCountOverflow))?,
         color_lane,
         flags,
     };
@@ -976,14 +976,14 @@ pub(super) fn category_bar_params<'c>(
     min_of: impl Fn(&str) -> Option<f64>,
 ) -> Result<data_render::CategoryBarParamsGpu> {
     use crate::data_config::{CategoryBarDirection, CategoryBarMode};
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
     let bars = series
         .render_type
         .category_bars()
-        .ok_or_else(|| invalid("not a category bar series".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NotCategoryBars))?;
     let groups = config.bar_groups.clone().unwrap_or_default();
     let n = category_bar_count(config, series)?;
     let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
@@ -1002,12 +1002,10 @@ pub(super) fn category_bar_params<'c>(
             {
                 return Err(FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
-                    reason: format!(
-                        "a PercentStacked bar group needs non-negative values: the value column \
-                         {values:?} of series {:?} has a negative value; draw it Stacked or \
-                         Grouped instead",
-                        item.series_id
-                    ),
+                    kind: crate::RuleKind::PercentStackedNegative {
+                        column: values.to_string(),
+                        series_id: item.series_id.clone(),
+                    },
                 });
             }
             if item.series_id == series.series_id {
@@ -1016,7 +1014,7 @@ pub(super) fn category_bar_params<'c>(
             Ok(())
         },
     )?;
-    let member = member.ok_or_else(|| invalid("the series is not in its bar group".into()))?;
+    let member = member.ok_or_else(|| invalid(crate::RuleKind::NotInBarGroup))?;
     let members = u32::try_from(members).map_err(|_| FiggyError::GpuResourceLimit {
         resource: "category bar group members",
         requested: members as u64,
@@ -1077,23 +1075,18 @@ pub(super) fn box_plot_params<'c>(
         BOX_LANE_ABSENT, BOX_LANE_MAX_GROUP, BOX_LANE_OUTLIER_GROUPS, BOX_LANE_OUTLIER_OFFSETS,
         BOX_LANE_OUTLIER_VALUES, BOX_PLOT_BASE_VERTICES, BOX_PLOT_LANES, BOX_PLOT_QUAD_VERTICES,
     };
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
     let boxes = series
         .render_type
         .box_plot()
-        .ok_or_else(|| invalid("not a box plot series".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NotBoxPlot))?;
     let groups = config.bar_groups.clone().unwrap_or_default();
     let n = category_bar_categories(config)
         .map(<[_]>::len)
-        .ok_or_else(|| {
-            invalid(
-                "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones"
-                    .into(),
-            )
-        })?;
+        .ok_or_else(|| invalid(crate::RuleKind::BoxPlotsAxis))?;
     let lane = |handle: &ColumnHandle| -> Result<u32> {
         u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
             resource: "box plot column lane",
@@ -1115,20 +1108,21 @@ pub(super) fn box_plot_params<'c>(
         }
     } else {
         let record = pool.record(record_id).ok_or_else(|| {
-            invalid(format!(
-                "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
-            ))
+            invalid(crate::RuleKind::BoxPlotRecordNotResident {
+                id: record_id.to_string(),
+            })
         })?;
         if record.slot().schema != data_render::BOX_PLOT_RECORD {
-            return Err(invalid(format!(
-                "record {record_id:?} is not a box plot record (`BOX_PLOT_RECORD`)"
-            )));
+            return Err(invalid(crate::RuleKind::NotBoxPlotRecord {
+                id: record_id.to_string(),
+            }));
         }
         if record.slot().len as usize != n {
-            return Err(invalid(format!(
-                "box plot record {record_id:?} has {} rows for {n} categories; it needs one per category",
-                record.slot().len
-            )));
+            return Err(invalid(crate::RuleKind::BoxPlotRecordRows {
+                id: record_id.to_string(),
+                rows: u64::from(record.slot().len),
+                categories: n as u64,
+            }));
         }
         for k in 0..data_render::BOX_PLOT_RECORD.len() {
             let value = match record.slot().fields[k].as_deref() {
@@ -1168,15 +1162,14 @@ pub(super) fn box_plot_params<'c>(
     match boxes.outliers {
         Some(id) => {
             let ragged = pool.ragged(id).ok_or_else(|| {
-                invalid(format!(
-                    "box plot outlier column {id:?} is not resident: upload it with `upsert_ragged`"
-                ))
+                invalid(crate::RuleKind::BoxPlotOutliersNotResident { id: id.to_string() })
             })?;
             if ragged.slot().groups as usize != n {
-                return Err(invalid(format!(
-                    "box plot outlier column {id:?} has {} groups for {n} categories; it needs one per category",
-                    ragged.slot().groups
-                )));
+                return Err(invalid(crate::RuleKind::BoxPlotOutlierGroups {
+                    id: id.to_string(),
+                    groups: u64::from(ragged.slot().groups),
+                    categories: n as u64,
+                }));
             }
             set(
                 &mut lanes,
@@ -1208,13 +1201,14 @@ pub(super) fn box_plot_params<'c>(
         }
         members += 1;
     }
-    let member = member.ok_or_else(|| invalid("the series is not in its box group".into()))?;
+    let member = member.ok_or_else(|| invalid(crate::RuleKind::NotInBoxGroup))?;
     let positions = lookup(positions)?;
     if positions.len_values != n {
-        return Err(invalid(format!(
-            "box plot position column {:?} has {} values for {n} categories; it needs one per category",
-            series.x_column, positions.len_values
-        )));
+        return Err(invalid(crate::RuleKind::BoxPlotPositions {
+            column: series.x_column.clone(),
+            len: positions.len_values as u64,
+            categories: n as u64,
+        }));
     }
     params.positions = lane(&positions)?;
     params.count = n as u32;
@@ -1234,7 +1228,7 @@ pub(super) fn box_plot_params<'c>(
     let vertices = max_group
         .checked_mul(BOX_PLOT_QUAD_VERTICES)
         .and_then(|v| v.checked_add(BOX_PLOT_BASE_VERTICES))
-        .ok_or_else(|| invalid("a box plot outlier group is too long to draw".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::BoxOutlierGroupTooLong))?;
     Ok((params, lanes, vertices))
 }
 
@@ -1246,20 +1240,19 @@ fn violin_curve<'p>(
     id: &str,
     n: usize,
 ) -> Result<crate::data_render::column_pool::RaggedRef<'p>> {
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
-    let ragged = pool.ragged(id).ok_or_else(|| {
-        invalid(format!(
-            "violin curve {id:?} is not resident: upload it with `upsert_ragged`"
-        ))
-    })?;
+    let ragged = pool
+        .ragged(id)
+        .ok_or_else(|| invalid(crate::RuleKind::ViolinCurveNotResident { id: id.to_string() }))?;
     if ragged.slot().groups as usize != n {
-        return Err(invalid(format!(
-            "violin curve {id:?} has {} groups for {n} categories; it needs one per category",
-            ragged.slot().groups
-        )));
+        return Err(invalid(crate::RuleKind::ViolinCurveGroups {
+            id: id.to_string(),
+            groups: u64::from(ragged.slot().groups),
+            categories: n as u64,
+        }));
     }
     Ok(ragged)
 }
@@ -1292,17 +1285,17 @@ pub(super) fn violin_params<'c>(
         VIOLIN_HALF_BASE, VIOLIN_HALF_LANES, VIOLIN_LANE_FIRST_SEGMENTS, VIOLIN_LANE_HALVES,
         VIOLIN_LANES, VIOLIN_SIDE_BOTH, VIOLIN_SIDE_HIGH, VIOLIN_SIDE_LOW,
     };
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
     let boxes = series
         .render_type
         .box_plot()
-        .ok_or_else(|| invalid("not a box plot series".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NotBoxPlot))?;
     let violin = boxes
         .violin
-        .ok_or_else(|| invalid("the box plot series draws no violin".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NoViolin))?;
     let (mut params, _, _) =
         box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
     let n = params.count as usize;
@@ -1320,11 +1313,12 @@ pub(super) fn violin_params<'c>(
         let values = ragged.stats().total;
         let density = lookup(&half.density)?;
         if density.len_values != values as usize {
-            return Err(invalid(format!(
-                "violin density {:?} has {} values for the {values} values of curve {:?}; it \
-                 needs one per curve value",
-                half.density, density.len_values, half.curve
-            )));
+            return Err(invalid(crate::RuleKind::ViolinDensityLength {
+                column: half.density.clone(),
+                len: density.len_values as u64,
+                values: u64::from(values),
+                curve: half.curve.clone(),
+            }));
         }
         let count = values;
         let base = VIOLIN_HALF_BASE + h * VIOLIN_HALF_LANES;
@@ -1344,7 +1338,7 @@ pub(super) fn violin_params<'c>(
         }
         segments = segments
             .checked_add(count)
-            .ok_or_else(|| invalid("the violin curves are too long to draw".into()))?;
+            .ok_or_else(|| invalid(crate::RuleKind::ViolinCurvesTooLong))?;
         lanes[VIOLIN_LANE_HALVES] = h as u32 + 1;
     }
     // Every instance reads its category through the curve, not the params.
@@ -1364,15 +1358,15 @@ pub(super) fn box_points_params<'c>(
     pool: &ColumnPool,
     mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
 ) -> Result<(data_render::CategoryBarParamsGpu, [u32; 1])> {
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
     let points = series
         .render_type
         .box_plot()
         .and_then(|b| b.points)
-        .ok_or_else(|| invalid("the box plot series draws no points".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NoBoxPoints))?;
     let (mut params, _, _) =
         box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
     let positions = lookup(&points.positions)?;
@@ -1419,7 +1413,7 @@ pub(super) fn box_extras_data<'c>(
         .box_plot()
         .ok_or_else(|| FiggyError::InvalidSeriesConfig {
             series_id: series.series_id.clone(),
-            reason: "not a box plot series".into(),
+            kind: crate::RuleKind::NotBoxPlot,
         })?;
     let create = |params: &data_render::CategoryBarParamsGpu, lanes: &[u32], style_map| {
         data_render::create_category_bar_data_bind_group(
@@ -1498,14 +1492,14 @@ pub(super) fn range_bar_params<'c>(
         RANGE_COLOR_STATE, RANGE_LANE_COLOR, RANGE_LANE_COLOR_MODE, RANGE_LANE_END,
         RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START, RANGE_LANE_STATES,
     };
-    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+    let invalid = |reason: crate::RuleKind| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
-        reason,
+        kind: reason,
     };
     let bars = series
         .render_type
         .range_bars()
-        .ok_or_else(|| invalid("not a range bar series".into()))?;
+        .ok_or_else(|| invalid(crate::RuleKind::NotRangeBars))?;
     let groups = config.bar_groups.clone().unwrap_or_default();
     let positions = lookup(&series.x_column)?;
     let n = positions.len_values;
@@ -1514,11 +1508,12 @@ pub(super) fn range_bar_params<'c>(
         if handle.len_values != n {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: format!(
-                    "range bar column {id:?} has {} values for the {n} positions of {:?}; it \
-                     needs one per row",
-                    handle.len_values, series.x_column
-                ),
+                kind: crate::RuleKind::RangeBarColumnLength {
+                    column: id.to_string(),
+                    len: handle.len_values as u64,
+                    positions: n as u64,
+                    position_column: series.x_column.clone(),
+                },
             });
         }
         u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
@@ -1569,7 +1564,7 @@ pub(super) fn range_bar_params<'c>(
         }
         members += 1;
     }
-    let member = member.ok_or_else(|| invalid("the series is not in its range group".into()))?;
+    let member = member.ok_or_else(|| invalid(crate::RuleKind::NotInRangeGroup))?;
     let count = u32::try_from(n).map_err(|_| FiggyError::GpuResourceLimit {
         resource: "range bar rows",
         requested: n as u64,
@@ -1630,7 +1625,7 @@ pub(super) fn range_bar_data<'c>(
             .range_bars()
             .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "not a range bar series".into(),
+                kind: crate::RuleKind::NotRangeBars,
             })?;
     let (params, lanes) = range_bar_params(config, group, series, display_scale, lookup)?;
     let style_map =

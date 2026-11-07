@@ -29,12 +29,12 @@ impl BoundedTitleOptions {
             },
         }
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
-        self.text.validate_math().map_err(|e| e.as_str())?;
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
+        self.text
+            .validate_math()
+            .map_err(|error| crate::RuleKind::InvalidMath { error })?;
         if !self.text.within_limits() {
-            return Err(
-                "invalid bounded title: size 6..160, at most 512 characters / 8 lines, finite styles",
-            );
+            return Err(crate::RuleKind::BoundedTitle);
         }
         Ok(())
     }

@@ -315,9 +315,9 @@ impl Annotation {
         a.into_iter().chain(b)
     }
 
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.id.chars().count() > 160 || self.id.chars().any(char::is_control) {
-            return Err("annotation id must be at most 160 characters without control characters");
+            return Err(crate::RuleKind::AnnotationId);
         }
         for text in self.texts() {
             validate_rich_text(text)?;
@@ -330,7 +330,7 @@ impl Annotation {
                     validate_color(b.fill)?;
                     validate_color(b.border_color)?;
                     if !range(b.border_width, 0., 64.) || !range(b.padding, 0., 64.) {
-                        return Err("annotation box border width and padding must be 0..64");
+                        return Err(crate::RuleKind::AnnotationBox);
                     }
                     Ok(())
                 }
@@ -339,7 +339,7 @@ impl Annotation {
             AnnotationKind::Arrow { style, .. } => {
                 style.line.validate()?;
                 if !range(style.head_length, 0., 256.) || !range(style.head_width, 0., 256.) {
-                    return Err("annotation arrow head must be 0..256 logical pixels");
+                    return Err(crate::RuleKind::AnnotationArrowHead);
                 }
                 Ok(())
             }
@@ -348,7 +348,7 @@ impl Annotation {
             }
             AnnotationKind::Polygon { vertices, style } => {
                 if vertices.len() < 3 {
-                    return Err("annotation polygon needs at least three vertices");
+                    return Err(crate::RuleKind::AnnotationPolygon);
                 }
                 style.validate()
             }
@@ -391,7 +391,7 @@ impl Annotation {
 }
 
 impl ShapeStyle {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         self.border.validate()?;
         match self.fill {
             Some(fill) => validate_color(fill),
@@ -413,19 +413,19 @@ fn range(v: f32, lo: f32, hi: f32) -> bool {
     v.is_finite() && (lo..=hi).contains(&v)
 }
 
-fn validate_color(c: Color) -> Result<(), &'static str> {
+fn validate_color(c: Color) -> Result<(), crate::RuleKind> {
     if [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0., 1.)) {
         Ok(())
     } else {
-        Err("annotation colors must be finite 0..1 RGBA")
+        Err(crate::RuleKind::AnnotationColor)
     }
 }
 
 impl AnnotationLineStyle {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         validate_color(self.color)?;
         if !range(self.width, 0., 64.) {
-            return Err("annotation line width must be 0..64 logical pixels");
+            return Err(crate::RuleKind::AnnotationLineWidth);
         }
         Ok(())
     }
@@ -433,12 +433,11 @@ impl AnnotationLineStyle {
 
 /// The rich text limits of [`RichText::within_limits`], shared with chart
 /// titles.
-fn validate_rich_text(t: &RichText) -> Result<(), &'static str> {
-    t.validate_math().map_err(|e| e.as_str())?;
+fn validate_rich_text(t: &RichText) -> Result<(), crate::RuleKind> {
+    t.validate_math()
+        .map_err(|error| crate::RuleKind::InvalidMath { error })?;
     if !t.within_limits() {
-        return Err(
-            "invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles",
-        );
+        return Err(crate::RuleKind::AnnotationText);
     }
     Ok(())
 }
@@ -447,9 +446,9 @@ impl AnnotationLayer {
     /// Reject malformed styles and texts. Non-finite values and anchors are
     /// accepted: the renderer reports them as warnings and skips the item,
     /// so a document keeps serializing while a host edits it.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         if self.items.len() > MAX_ANNOTATIONS {
-            return Err("too many annotations");
+            return Err(crate::RuleKind::AnnotationCount);
         }
         self.items.iter().try_for_each(Annotation::validate)
     }
@@ -2763,9 +2762,6 @@ mod tests {
             ],
             style: ShapeStyle::default(),
         });
-        assert_eq!(
-            two.validate(),
-            Err("annotation polygon needs at least three vertices")
-        );
+        assert_eq!(two.validate(), Err(crate::RuleKind::AnnotationPolygon));
     }
 }

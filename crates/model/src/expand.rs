@@ -184,19 +184,19 @@ impl Config {
     /// subplot, and every series id drawn by at most one subplot and no
     /// parent overlay. Each subplot's own overlays follow
     /// [`Self::validate_overlays`].
-    pub fn validate_subplots(&self) -> Result<(), &'static str> {
+    pub fn validate_subplots(&self) -> Result<(), crate::RuleKind> {
         for (index, subplot) in self.subplots.iter().enumerate() {
             if !subplot.config.subplots.is_empty() {
-                return Err("a subplot cannot have subplots of its own");
+                return Err(crate::RuleKind::SubplotNested);
             }
             if !subplot.config.annotations.is_default() {
-                return Err("the document's annotation layer belongs to the parent, not a subplot");
+                return Err(crate::RuleKind::SubplotAnnotations);
             }
             for link in [subplot.link_x, subplot.link_y].into_iter().flatten() {
                 if let CellRef::Subplot(target) = link
                     && target >= index
                 {
-                    return Err("a subplot link must point at the parent or an earlier subplot");
+                    return Err(crate::RuleKind::SubplotLink);
                 }
             }
             subplot.config.validate_overlays()?;
@@ -213,7 +213,7 @@ impl Config {
                         .iter()
                         .any(|other| other.owns_series(id))
                 {
-                    return Err("a series id may belong to at most one subplot or overlay layer");
+                    return Err(crate::RuleKind::SeriesInManyLayers);
                 }
             }
         }
@@ -413,13 +413,13 @@ impl Config {
     /// Series ids may belong to at most one overlay. Ids with no matching
     /// series declaration are allowed (and ignored), so a document can be
     /// edited before its series are registered.
-    pub fn validate_overlays(&self) -> Result<(), &'static str> {
+    pub fn validate_overlays(&self) -> Result<(), crate::RuleKind> {
         for (index, overlay) in self.overlays.iter().enumerate() {
             for (position, id) in overlay.series.iter().enumerate() {
                 if overlay.series[..position].contains(id)
                     || self.overlays[..index].iter().any(|o| o.owns_series(id))
                 {
-                    return Err("a series id may belong to at most one overlay layer");
+                    return Err(crate::RuleKind::SeriesInManyOverlays);
                 }
             }
         }

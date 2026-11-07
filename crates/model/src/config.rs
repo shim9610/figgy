@@ -532,23 +532,26 @@ impl CategoryGroups {
     /// every run names categories of the axis, first not after last, the
     /// runs in axis order without overlap, valid rich text headers and a
     /// finite offset within [`crate::data_config::MAX_VALUE_LABEL_OFFSET`].
-    pub fn validate(&self, categories: &[Category]) -> Result<(), &'static str> {
+    pub fn validate(&self, categories: &[Category]) -> Result<(), crate::RuleKind> {
         let position = |id: &str| categories.iter().position(|c| c.id == id);
         let mut end: Option<usize> = None;
         for group in &self.groups {
             let (Some(first), Some(last)) = (position(&group.first), position(&group.last)) else {
-                return Err("a category group names categories of its axis");
+                return Err(crate::RuleKind::CategoryGroupCategories);
             };
             if first > last {
-                return Err("a category group's first category comes before its last");
+                return Err(crate::RuleKind::CategoryGroupOrder);
             }
             if end.is_some_and(|end| first <= end) {
-                return Err("category groups run in axis order without overlapping");
+                return Err(crate::RuleKind::CategoryGroupOverlap);
             }
             end = Some(last);
-            group.label.validate_math().map_err(|e| e.as_str())?;
+            group
+                .label
+                .validate_math()
+                .map_err(|error| crate::RuleKind::InvalidMath { error })?;
             if !group.label.within_limits() {
-                return Err("invalid category group label");
+                return Err(crate::RuleKind::CategoryGroupLabel);
             }
         }
         if !self
@@ -556,7 +559,7 @@ impl CategoryGroups {
             .iter()
             .all(|v| v.is_finite() && v.abs() <= crate::data_config::MAX_VALUE_LABEL_OFFSET)
         {
-            return Err("invalid category group offset");
+            return Err(crate::RuleKind::CategoryGroupOffset);
         }
         Ok(())
     }
@@ -597,46 +600,46 @@ impl AxisOptions {
     /// axis; a gap in `0..=`[`MAX_AXIS_BREAK_GAP`]; a mark of finite size in
     /// `0..=64` px and width in `0..=16` px with a colour in range; and a
     /// numeric axis, since a categorical axis has no range to cut.
-    pub fn validate_breaks(&self) -> Result<(), &'static str> {
+    pub fn validate_breaks(&self) -> Result<(), crate::RuleKind> {
         let Some(breaks) = &self.breaks else {
             return Ok(());
         };
         if self.categories.is_some() {
-            return Err("a categorical axis cannot be broken");
+            return Err(crate::RuleKind::BreakCategorical);
         }
         if breaks.ranges.len() > MAX_AXIS_BREAKS {
-            return Err("an axis can cut out at most three ranges");
+            return Err(crate::RuleKind::BreakCount);
         }
         let log = matches!(self.scale, AxisScale::Logarithmic);
         let probability = matches!(self.scale, AxisScale::Probability(_));
         let mut last = f64::NEG_INFINITY;
         for cut in &breaks.ranges {
             if !cut.from.is_finite() || !cut.to.is_finite() || cut.from >= cut.to {
-                return Err("a cut range needs finite bounds with from < to");
+                return Err(crate::RuleKind::BreakRange);
             }
             if log && cut.from <= 0.0 {
-                return Err("a cut range on a logarithmic axis must be positive");
+                return Err(crate::RuleKind::BreakLogRange);
             }
             if probability && !(cut.from > 0.0 && cut.to < 1.0) {
-                return Err("a cut range on a probability axis must lie strictly between 0 and 1");
+                return Err(crate::RuleKind::BreakProbabilityRange);
             }
             if cut.from <= last {
-                return Err("cut ranges must be sorted and must not touch");
+                return Err(crate::RuleKind::BreakOrder);
             }
             last = cut.to;
         }
         if !(0.0..=MAX_AXIS_BREAK_GAP).contains(&breaks.gap) {
-            return Err("a break gap must be between 0 and 0.2 of the axis");
+            return Err(crate::RuleKind::BreakGap);
         }
         if !breaks.sizing.is_by_value() && breaks.style == AxisBreakStyle::Panels {
-            return Err("only a Continuous broken axis sizes its pieces other than by value");
+            return Err(crate::RuleKind::BreakSizing);
         }
         if let PieceSizing::Weights(weights) = &breaks.sizing {
             if weights.len() != breaks.ranges.len() + 1 {
-                return Err("piece weights need one weight per piece: one more than cut ranges");
+                return Err(crate::RuleKind::BreakWeightCount);
             }
             if !weights.iter().all(|w| w.is_finite() && *w > 0.0) {
-                return Err("piece weights must be finite and positive");
+                return Err(crate::RuleKind::BreakWeights);
             }
         }
         if let BreakMark::Slash { size, color, width } = &breaks.mark {
@@ -645,9 +648,7 @@ impl AxisOptions {
                 || !(0.0..=16.0).contains(width)
                 || !channels.iter().all(|c| (0.0..=1.0).contains(c))
             {
-                return Err(
-                    "a break mark needs a size in 0..=64, a width in 0..=16 and a colour in range",
-                );
+                return Err(crate::RuleKind::BreakMark);
             }
         }
         Ok(())
@@ -658,29 +659,28 @@ impl AxisOptions {
     /// unique, ids and labels single-line and at most
     /// [`MAX_CATEGORY_TEXT_CHARS`] characters, and a linear scale. An
     /// inverted categorical axis is valid.
-    pub fn validate_categories(&self) -> Result<(), &'static str> {
+    pub fn validate_categories(&self) -> Result<(), crate::RuleKind> {
         let Some(categories) = &self.categories else {
             return Ok(());
         };
         if categories.is_empty() {
-            return Err("a categorical axis needs at least one category");
+            return Err(crate::RuleKind::CategoriesEmpty);
         }
         for (index, category) in categories.iter().enumerate() {
             if category.id.is_empty()
                 || !category_text_ok(&category.id)
                 || categories[..index].iter().any(|c| c.id == category.id)
             {
-                return Err(
-                    "category ids must be unique, non-empty, single-line and at most 80 characters",
-                );
+                return Err(crate::RuleKind::CategoryIds);
             }
             if !category_text_ok(&category.label) {
-                return Err("category labels must be single-line and at most 80 characters");
+                return Err(crate::RuleKind::CategoryLabels);
             }
             if let Some(rich) = &category.rich_label {
-                rich.validate_math().map_err(|e| e.as_str())?;
+                rich.validate_math()
+                    .map_err(|error| crate::RuleKind::InvalidMath { error })?;
                 if !rich.within_limits() {
-                    return Err("invalid category rich label");
+                    return Err(crate::RuleKind::CategoryRichLabel);
                 }
             }
         }
@@ -689,9 +689,9 @@ impl AxisOptions {
         }
         match self.scale {
             AxisScale::Linear => {}
-            AxisScale::Logarithmic => return Err("a categorical axis cannot be logarithmic"),
+            AxisScale::Logarithmic => return Err(crate::RuleKind::CategoricalLogAxis),
             AxisScale::Probability(_) => {
-                return Err("a categorical axis cannot be a probability axis");
+                return Err(crate::RuleKind::CategoricalProbabilityAxis);
             }
         }
         Ok(())
@@ -2618,7 +2618,7 @@ mod category_axis_tests {
         }
         assert_eq!(
             categorical(0).validate_categories(),
-            Err("a categorical axis needs at least one category")
+            Err(crate::RuleKind::CategoriesEmpty)
         );
         // Every category keeps its tick past the numeric tick budget.
         let ticks: Vec<f64> = major_ticks(&categorical(5000)).collect();
@@ -2628,20 +2628,23 @@ mod category_axis_tests {
 
     #[test]
     fn ids_must_be_unique_non_empty_single_line_and_short() {
-        let ids = "category ids must be unique, non-empty, single-line and at most 80 characters";
-        let labels = "category labels must be single-line and at most 80 characters";
+        let ids = crate::RuleKind::CategoryIds;
+        let labels = crate::RuleKind::CategoryLabels;
         let edit = |f: &dyn Fn(&mut Vec<Category>)| {
             let mut axis = categorical(3);
             f(axis.categories.as_mut().unwrap());
             axis.validate_categories()
         };
-        assert_eq!(edit(&|c| c[1].id.clear()), Err(ids));
-        assert_eq!(edit(&|c| c[2].id = "c0".into()), Err(ids));
-        assert_eq!(edit(&|c| c[0].id = "a\nb".into()), Err(ids));
-        assert_eq!(edit(&|c| c[0].id = "x".repeat(81)), Err(ids));
+        assert_eq!(edit(&|c| c[1].id.clear()), Err(ids.clone()));
+        assert_eq!(edit(&|c| c[2].id = "c0".into()), Err(ids.clone()));
+        assert_eq!(edit(&|c| c[0].id = "a\nb".into()), Err(ids.clone()));
+        assert_eq!(edit(&|c| c[0].id = "x".repeat(81)), Err(ids.clone()));
         assert_eq!(edit(&|c| c[0].id = "x".repeat(80)), Ok(()));
-        assert_eq!(edit(&|c| c[1].label = "two\nlines".into()), Err(labels));
-        assert_eq!(edit(&|c| c[1].label = "é".repeat(81)), Err(labels));
+        assert_eq!(
+            edit(&|c| c[1].label = "two\nlines".into()),
+            Err(labels.clone())
+        );
+        assert_eq!(edit(&|c| c[1].label = "é".repeat(81)), Err(labels.clone()));
         assert_eq!(edit(&|c| c[1].label = "é".repeat(80)), Ok(()));
         // An empty label is a category without tick text.
         assert_eq!(edit(&|c| c[1].label.clear()), Ok(()));
@@ -2653,7 +2656,7 @@ mod category_axis_tests {
         axis.scale = AxisScale::Logarithmic;
         assert_eq!(
             axis.validate_categories(),
-            Err("a categorical axis cannot be logarithmic")
+            Err(crate::RuleKind::CategoricalLogAxis)
         );
         let mut axis = categorical(3);
         axis.inverted = true;
@@ -2908,12 +2911,12 @@ mod axis_break_config_tests {
                     .ranges
                     .push(AxisBreak::new(70.0, 71.0));
                 let error = config.validate_chart().unwrap_err();
-                assert!(error.reason.contains("at most three"), "{error}");
+                assert!(matches!(error.kind, crate::RuleKind::BreakCount), "{error}");
                 continue;
             }
             let error = result.unwrap_err();
             assert_eq!(error.field, "left_y");
-            assert!(error.reason.contains(reason), "{error}");
+            assert!(error.kind.to_string().contains(reason), "{error}");
         }
     }
 
@@ -2934,7 +2937,8 @@ mod axis_break_config_tests {
             config
                 .validate_chart()
                 .unwrap_err()
-                .reason
+                .kind
+                .to_string()
                 .contains("categorical")
         );
         let mut config = default_config();
@@ -2954,7 +2958,8 @@ mod axis_break_config_tests {
         assert!(
             log.validate_chart()
                 .unwrap_err()
-                .reason
+                .kind
+                .to_string()
                 .contains("positive")
         );
     }

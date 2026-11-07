@@ -168,11 +168,11 @@ fn color(c: Color, opaque: bool) -> bool {
     [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0.0, 1.0)) && (!opaque || c.a == 1.0)
 }
 /// A bar is a flat body; see [`crate::Material::supported_on_flat_body`].
-fn bar_material(s: &CategoryBarStyle) -> Result<(), &'static str> {
+fn bar_material(s: &CategoryBarStyle) -> Result<(), crate::RuleKind> {
     if s.material.supported_on_flat_body() {
         Ok(())
     } else {
-        Err("material not supported by bars")
+        Err(crate::RuleKind::CategoricalChartBarMaterial)
     }
 }
 fn style(s: &CategoryBarStyle) -> bool {
@@ -214,19 +214,19 @@ impl CategoricalChart {
             .values
             .get(i)?
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.decorations.validate()?;
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let n = self.categories.len();
         let m = self.series.len();
         if n == 0 || m == 0 {
-            return Err("categorical limits: at least 1 category and 1 series");
+            return Err(crate::RuleKind::CategoricalChartLimits);
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
             if c.id.is_empty() || !text(&c.id, 80) || !text(&c.label, 80) || !ids.insert(&c.id) {
-                return Err("invalid or duplicate category ID/label");
+                return Err(crate::RuleKind::CategoricalChartCategory);
             }
         }
         ids.clear();
@@ -242,12 +242,12 @@ impl CategoricalChart {
                 || !color(s.color, true)
                 || s.style.as_ref().is_some_and(|s| !style(s))
             {
-                return Err("invalid series, value count, color or style");
+                return Err(crate::RuleKind::CategoricalChartSeries);
             }
             if s.values.iter().flatten().any(|v| {
                 !v.is_finite() || (self.mode == CategoryBarMode::PercentStacked && *v < 0.0)
             }) {
-                return Err("values must be finite; percent stacks require nonnegative values");
+                return Err(crate::RuleKind::CategoricalChartValues);
             }
         }
         bar_material(&self.style)?;
@@ -259,15 +259,15 @@ impl CategoricalChart {
             || !color(self.background, false)
             || self.label_decimals > 6
         {
-            return Err("invalid categorical style or layout");
+            return Err(crate::RuleKind::CategoricalChartStyle);
         }
         for s in [&self.title, &self.value_title, &self.category_title] {
             if !text(s, 160) {
-                return Err("titles must be single-line, at most 160 characters");
+                return Err(crate::RuleKind::CategoricalChartTitles);
             }
         }
         if !text(&self.value_suffix, 24) {
-            return Err("invalid value suffix");
+            return Err(crate::RuleKind::CategoricalChartValueSuffix);
         }
         let mut targets = HashSet::new();
         for o in &self.overrides {
@@ -280,12 +280,12 @@ impl CategoricalChart {
                 || o.color.is_some_and(|c| !color(c, true))
                 || o.style.as_ref().is_some_and(|s| !style(s))
             {
-                return Err("invalid or duplicate bar override");
+                return Err(crate::RuleKind::CategoricalChartOverride);
             }
         }
         for t in [&self.hovered, &self.selected].into_iter().flatten() {
             if self.value(t).is_none() {
-                return Err("interaction target is missing or unknown");
+                return Err(crate::RuleKind::CategoricalChartInteractionTarget);
             }
         }
         if self.mode == CategoryBarMode::Stacked {
@@ -301,7 +301,7 @@ impl CategoricalChart {
                     }
                 }
                 if !positive.is_finite() || !negative.is_finite() {
-                    return Err("stack total overflow");
+                    return Err(crate::RuleKind::CategoricalChartStackOverflow);
                 }
             }
         }
@@ -334,7 +334,10 @@ mod tests {
         c.series[1].values[0] = Some(f64::MAX);
         assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::Stacked;
-        assert_eq!(c.validate(), Err("stack total overflow"));
+        assert_eq!(
+            c.validate(),
+            Err(crate::RuleKind::CategoricalChartStackOverflow)
+        );
     }
     #[test]
     fn malformed_payload_is_rejected() {
@@ -356,13 +359,19 @@ mod tests {
         for material in [Material::Toon, Material::Pearl] {
             let mut c = chart();
             c.style.material = material;
-            assert_eq!(c.validate(), Err("material not supported by bars"));
+            assert_eq!(
+                c.validate(),
+                Err(crate::RuleKind::CategoricalChartBarMaterial)
+            );
             let mut c = chart();
             c.series[0].style = Some(CategoryBarStyle {
                 material,
                 ..Default::default()
             });
-            assert_eq!(c.validate(), Err("material not supported by bars"));
+            assert_eq!(
+                c.validate(),
+                Err(crate::RuleKind::CategoricalChartBarMaterial)
+            );
             let mut c = chart();
             let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "s"));
             o.style = Some(CategoryBarStyle {
@@ -370,7 +379,10 @@ mod tests {
                 ..Default::default()
             });
             c.overrides.push(o);
-            assert_eq!(c.validate(), Err("material not supported by bars"));
+            assert_eq!(
+                c.validate(),
+                Err(crate::RuleKind::CategoricalChartBarMaterial)
+            );
         }
         for material in [
             Material::Flat,

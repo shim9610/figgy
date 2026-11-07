@@ -198,9 +198,9 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
     let sunburst = chart.is_sunburst();
     if g >= chart.group_count() {
         return Err(RadialError::Invalid(if sunburst {
-            "sunburst has no such ring"
+            crate::RuleKind::SunburstRing
         } else {
-            "radial chart has no detail circle"
+            crate::RuleKind::RadialNoDetail
         }));
     }
     let (slices, kind, start) = match (sunburst, g, &chart.split) {
@@ -220,7 +220,7 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
             -std::f32::consts::FRAC_PI_2,
         ),
         (false, _, None) => {
-            return Err(RadialError::Invalid("radial chart has no detail circle"));
+            return Err(RadialError::Invalid(crate::RuleKind::RadialNoDetail));
         }
     };
     let (top, bottom) = (area.y, area.y + area.height);
@@ -304,7 +304,9 @@ fn circle<'a>(chart: &'a RadialChart, area: RectF, g: usize) -> Result<Circle<'a
         radius
     };
     if radius < 32.0 {
-        return Err(RadialError::Invalid("radial data area is too small"));
+        return Err(RadialError::Invalid(
+            crate::RuleKind::RadialDataAreaTooSmall,
+        ));
     }
     let center = [
         (left + right) * 0.5,
@@ -952,7 +954,7 @@ pub(super) fn layout(
             1
         },
     )
-    .ok_or(RadialError::Invalid("could not allocate label canvas"))?;
+    .ok_or(RadialError::Invalid(crate::RuleKind::RadialLabelCanvas))?;
     let f = frame(chart, size, scale)?;
     let mut out = Layout {
         sectors: Vec::new(),

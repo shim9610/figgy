@@ -175,10 +175,10 @@ pub(crate) fn emit_feynman(
 /// The renderer error of a Feynman series' model error (its working memory
 /// failing to allocate, or its layout failing to converge): the series'
 /// error, the model's message as the reason, as for a `validate` error.
-pub(crate) fn feynman_error(series_id: &str, error: &'static str) -> FiggyError {
+pub(crate) fn feynman_error(series_id: &str, error: crate::RuleKind) -> FiggyError {
     FiggyError::InvalidSeriesConfig {
         series_id: series_id.into(),
-        reason: error.into(),
+        kind: error,
     }
 }
 

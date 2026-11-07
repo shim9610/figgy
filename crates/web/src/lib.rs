@@ -1391,7 +1391,7 @@ mod web {
     };
     mod columns;
     use columns::{VectorColumns, referenced_columns, vector_columns};
-    mod convert;
+    pub(crate) mod convert;
     pub use convert::{ColorCycle, color_cycle_css};
     use convert::{column_registration_error, js_err, js_safe_u64};
     mod decorations;

@@ -570,7 +570,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     let mut r = renderer();
     let series = [radar("one", "one", RED, outline_and_fill())];
     let invalid = |result: renderer::Result<RasterImage>, what: &str| match result {
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => reason,
         Err(other) => panic!("{what}: {other}"),
         Ok(_) => panic!("{what}: drew"),
     };
@@ -585,7 +585,7 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "rectangular",
     );
-    assert!(reason.contains("polar"), "{reason}");
+    assert!(reason.to_string().contains("polar"), "{reason}");
     // A numeric angle axis.
     let mut numeric = chart(up_clockwise());
     numeric.config_mut().bottom_x.categories = None;
@@ -597,7 +597,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "numeric",
     );
-    assert!(reason.contains("categorical angle axis"), "{reason}");
+    assert!(
+        reason.to_string().contains("categorical angle axis"),
+        "{reason}"
+    );
     // Arc interpolation.
     let arcs = chart(PolarOptions {
         interpolation: PolarInterpolation::Arc { pieces: 4 },
@@ -611,7 +614,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "arcs",
     );
-    assert!(reason.contains("Chord"), "{reason}");
+    assert!(
+        matches!(reason, renderer::RuleKind::RadarInterpolation),
+        "{reason}"
+    );
     // A column that does not hold one value per category.
     r.add_column("short", &col(vec![0.5, 0.5, 0.5])).unwrap();
     let short = [radar("short", "short", RED, outline_and_fill())];
@@ -623,7 +629,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "short",
     );
-    assert!(reason.contains("one value per category"), "{reason}");
+    assert!(
+        reason.to_string().contains("one value per category"),
+        "{reason}"
+    );
     // A label text per category or none.
     let mut labelled = radar("one", "one", RED, outline_and_fill());
     if let DataRenderType::Radar { labels, .. } = &mut labelled.render_type {
@@ -638,7 +647,10 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
         .block_on(),
         "labels",
     );
-    assert!(reason.contains("one string per category"), "{reason}");
+    assert!(
+        reason.to_string().contains("one string per category"),
+        "{reason}"
+    );
     // A polygon grid needs the categorical angle axis too.
     let mut polygon = chart(PolarOptions {
         grid_shape: Some(GridShape::Polygon),

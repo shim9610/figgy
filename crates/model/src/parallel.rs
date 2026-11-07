@@ -129,18 +129,18 @@ impl ParallelAxis {
         axis
     }
 
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
         if !self.min.is_finite() || !self.max.is_finite() || !(self.max > self.min) {
-            return Err("a parallel axis's range is finite with a smaller min");
+            return Err(crate::RuleKind::ParallelAxisRange);
         }
         if self.scale == AxisScale::Logarithmic && self.min <= 0.0 {
-            return Err("a logarithmic parallel axis's range is positive");
+            return Err(crate::RuleKind::ParallelLogAxisRange);
         }
         if matches!(self.scale, AxisScale::Probability(_)) {
-            return Err("a parallel axis is linear or logarithmic: not a probability axis");
+            return Err(crate::RuleKind::ParallelAxisScale);
         }
         if self.label_offset.iter().any(|v| !v.is_finite()) {
-            return Err("a parallel axis's label offset is finite");
+            return Err(crate::RuleKind::ParallelAxisLabelOffset);
         }
         Ok(())
     }
@@ -159,15 +159,15 @@ impl ParallelOptions {
     /// The axis count every reader of a parallel chart relies on: at least
     /// two. Checked when a chart is set (the renderer's registration), where
     /// the other rules of [`Self::validate`] wait for the draw.
-    pub fn validate_axis_count(&self) -> Result<(), &'static str> {
+    pub fn validate_axis_count(&self) -> Result<(), crate::RuleKind> {
         if self.axes.len() < 2 {
-            return Err("a parallel chart has at least two axes");
+            return Err(crate::RuleKind::ParallelAxisCount);
         }
         Ok(())
     }
 
     /// Validate against the axes the coordinate system reads.
-    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+    pub fn validate(&self, config: &Config) -> Result<(), crate::RuleKind> {
         self.validate_axis_count()?;
         for axis in &self.axes {
             axis.validate()?;
@@ -176,9 +176,9 @@ impl ParallelOptions {
             .bottom_x
             .categories
             .as_deref()
-            .ok_or("a parallel chart's bottom_x is categorical: one category per axis")?;
+            .ok_or(crate::RuleKind::ParallelBottomXCategorical)?;
         if categories.len() != self.axes.len() {
-            return Err("a parallel chart's bottom_x has one category per axis");
+            return Err(crate::RuleKind::ParallelBottomXCategories);
         }
         let y = &config.left_y;
         if y.categories.is_some()
@@ -187,29 +187,27 @@ impl ParallelOptions {
             || y.min != 0.0
             || y.max != 1.0
         {
-            return Err(
-                "a parallel chart's left_y spans the normalized band: linear 0..1, not inverted",
-            );
+            return Err(crate::RuleKind::ParallelLeftY);
         }
         if !config.overlays.is_empty() {
-            return Err("parallel charts have no overlay layers");
+            return Err(crate::RuleKind::ParallelOverlay);
         }
         if config
             .line_offsets
             .as_ref()
             .is_some_and(|offsets| !offsets.series.is_empty())
         {
-            return Err("parallel charts have no line offsets");
+            return Err(crate::RuleKind::ParallelLineOffsets);
         }
         if !config.draw_style.is_precise() {
-            return Err("parallel charts are drawn in the Precise style only");
+            return Err(crate::RuleKind::ParallelDrawStyle);
         }
         if config
             .subplots
             .iter()
             .any(|s| s.link_x.is_some() || s.link_y.is_some())
         {
-            return Err("parallel charts take no subplot axis links");
+            return Err(crate::RuleKind::ParallelSubplotLinks);
         }
         Ok(())
     }
@@ -217,7 +215,7 @@ impl ParallelOptions {
 
 impl Config {
     /// Validate `parallel` against the axes it reads; `None` always passes.
-    pub fn validate_parallel(&self) -> Result<(), &'static str> {
+    pub fn validate_parallel(&self) -> Result<(), crate::RuleKind> {
         match self.parallel() {
             Some(parallel) => parallel.validate(self),
             None => Ok(()),
@@ -231,11 +229,11 @@ impl Config {
     /// being its first two (so every reader of a series' coordinate
     /// columns sees registered columns); its line is solid and linear
     /// without a fill; a colour column maps through `Config.colorbar`.
-    pub fn validate_parallel_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+    pub fn validate_parallel_series(&self, series: &[SeriesConfig]) -> Result<(), crate::RuleKind> {
         for item in series {
             match (&item.render_type, self.parallel()) {
                 (DataRenderType::Parallel { .. }, None) => {
-                    return Err("a parallel series is drawn on a parallel chart (Config.parallel)");
+                    return Err(crate::RuleKind::ParallelSeriesNotParallel);
                 }
                 (
                     DataRenderType::Parallel {
@@ -246,38 +244,35 @@ impl Config {
                     Some(parallel),
                 ) => {
                     if columns.len() != parallel.axes.len() {
-                        return Err("a parallel series names one column per axis");
+                        return Err(crate::RuleKind::ParallelSeriesColumnCount);
                     }
                     let [first, second, ..] = columns.as_slice() else {
-                        return Err("a parallel series names one column per axis, at least two");
+                        return Err(crate::RuleKind::ParallelSeriesTooFewColumns);
                     };
                     if columns.iter().any(String::is_empty) {
-                        return Err("a parallel series' axis columns are named");
+                        return Err(crate::RuleKind::ParallelSeriesColumnNames);
                     }
                     if *first != item.x_column || *second != item.y_column {
-                        return Err(
-                            "a parallel series' x_column and y_column are its first two axis \
-                             columns",
-                        );
+                        return Err(crate::RuleKind::ParallelSeriesXY);
                     }
                     if line.interpolation != LineInterpolation::Linear {
-                        return Err("a parallel series' line is linear: no step interpolation");
+                        return Err(crate::RuleKind::ParallelSeriesStepLine);
                     }
                     if line.fill.is_some() {
-                        return Err("a parallel series' line has no area fill");
+                        return Err(crate::RuleKind::ParallelSeriesLineFill);
                     }
                     if line.line_style != LineStylePreset::Solid {
-                        return Err("a parallel series' line is solid");
+                        return Err(crate::RuleKind::ParallelSeriesDashed);
                     }
                     if color_column.as_deref().is_some_and(str::is_empty) {
-                        return Err("a parallel series' colour column is named");
+                        return Err(crate::RuleKind::ParallelSeriesColorColumn);
                     }
                     if color_column.is_some() && self.colorbar.is_none() {
-                        return Err("a parallel series coloured by a column needs Config.colorbar");
+                        return Err(crate::RuleKind::ParallelSeriesColorbar);
                     }
                 }
                 (_, Some(_)) => {
-                    return Err("a parallel chart draws only parallel series");
+                    return Err(crate::RuleKind::ParallelChartSeriesKind);
                 }
                 (_, None) => {}
             }
@@ -379,15 +374,15 @@ mod tests {
         };
         assert_eq!(
             reject(&|c| c.parallel_mut().unwrap().axes.truncate(1)),
-            "a parallel chart has at least two axes"
+            crate::RuleKind::ParallelAxisCount
         );
         assert_eq!(
             reject(&|c| c.parallel_mut().unwrap().axes[0].max = 0.0),
-            "a parallel axis's range is finite with a smaller min"
+            crate::RuleKind::ParallelAxisRange
         );
         assert_eq!(
             reject(&|c| c.parallel_mut().unwrap().axes[2].min = 0.0),
-            "a logarithmic parallel axis's range is positive"
+            crate::RuleKind::ParallelLogAxisRange
         );
         assert_eq!(
             reject(&|c| {
@@ -396,11 +391,11 @@ mod tests {
                 axis.min = 0.1;
                 axis.max = 0.9;
             }),
-            "a parallel axis is linear or logarithmic: not a probability axis"
+            crate::RuleKind::ParallelAxisScale
         );
         assert_eq!(
             reject(&|c| c.bottom_x.categories = None),
-            "a parallel chart's bottom_x is categorical: one category per axis"
+            crate::RuleKind::ParallelBottomXCategorical
         );
         assert_eq!(
             reject(&|c| c
@@ -411,15 +406,15 @@ mod tests {
                 .pop()
                 .map(|_| ())
                 .unwrap()),
-            "a parallel chart's bottom_x has one category per axis"
+            crate::RuleKind::ParallelBottomXCategories
         );
         assert_eq!(
             reject(&|c| c.left_y.max = 2.0),
-            "a parallel chart's left_y spans the normalized band: linear 0..1, not inverted"
+            crate::RuleKind::ParallelLeftY
         );
         assert_eq!(
             reject(&|c| c.overlays.push(Default::default())),
-            "parallel charts have no overlay layers"
+            crate::RuleKind::ParallelOverlay
         );
         let reject_series = |edit: &dyn Fn(&mut SeriesConfig)| {
             let mut s = series(&["a", "b", "c"]);
@@ -432,11 +427,11 @@ mod tests {
                     columns.pop();
                 }
             }),
-            "a parallel series names one column per axis"
+            crate::RuleKind::ParallelSeriesColumnCount
         );
         assert_eq!(
             reject_series(&|s| s.y_column = "c".into()),
-            "a parallel series' x_column and y_column are its first two axis columns"
+            crate::RuleKind::ParallelSeriesXY
         );
         assert_eq!(
             reject_series(&|s| {
@@ -444,7 +439,7 @@ mod tests {
                     line.line_style = LineStylePreset::Dash;
                 }
             }),
-            "a parallel series' line is solid"
+            crate::RuleKind::ParallelSeriesDashed
         );
         assert_eq!(
             reject_series(&|s| {
@@ -452,7 +447,7 @@ mod tests {
                     *color_column = Some("class".into());
                 }
             }),
-            "a parallel series coloured by a column needs Config.colorbar"
+            crate::RuleKind::ParallelSeriesColorbar
         );
         let mut coloured = chart();
         coloured.colorbar = Some(crate::default::default_colorbar_options());
@@ -466,7 +461,7 @@ mod tests {
         let plain = crate::default::default_config();
         assert_eq!(
             plain.validate_parallel_series(&[series(&["a", "b", "c"])]),
-            Err("a parallel series is drawn on a parallel chart (Config.parallel)")
+            Err(crate::RuleKind::ParallelSeriesNotParallel)
         );
         let mut scatter = series(&["a", "b", "c"]);
         scatter.render_type = DataRenderType::Xy(crate::data_config::XySeries {
@@ -477,7 +472,7 @@ mod tests {
         });
         assert_eq!(
             config.validate_parallel_series(&[scatter]),
-            Err("a parallel chart draws only parallel series")
+            Err(crate::RuleKind::ParallelChartSeriesKind)
         );
     }
 
@@ -492,7 +487,7 @@ mod tests {
             config.parallel_mut().unwrap().axes.truncate(count);
             assert_eq!(
                 config.validate_parallel(),
-                Err("a parallel chart has at least two axes")
+                Err(crate::RuleKind::ParallelAxisCount)
             );
             let columns: Vec<String> = ["a"].iter().take(count).map(|c| c.to_string()).collect();
             let item = SeriesConfig {
@@ -510,7 +505,7 @@ mod tests {
             };
             assert_eq!(
                 config.validate_parallel_series(&[item]),
-                Err("a parallel series names one column per axis, at least two"),
+                Err(crate::RuleKind::ParallelSeriesTooFewColumns),
                 "{count} axes"
             );
         }

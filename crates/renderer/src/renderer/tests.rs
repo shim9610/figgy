@@ -1977,11 +1977,11 @@ fn state_test_contour_labels_mut(
 }
 
 fn assert_contour_spacing_error(result: Result<impl Sized>, product: bool) {
-    let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+    let Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) = result else {
         panic!("invalid contour spacing was accepted or returned the wrong error")
     };
     let expected = if product {
-        "automatic contour label spacing_px * scale must be finite and greater than zero"
+        crate::RuleKind::ContourLabelSpacingScaled
     } else {
         crate::data_config::ContourLabelConfig::INVALID_SPACING_REASON
     };
@@ -2037,12 +2037,15 @@ fn state_test_contour_variant(
 }
 
 fn assert_contour_limit_error(result: Result<impl Sized>) {
-    let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+    let Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) = result else {
         panic!("oversized contour was accepted or returned the wrong error")
     };
     assert_eq!(
         reason,
-        "contour level count 1025 exceeds the supported maximum 1024"
+        crate::RuleKind::ContourLevelCount {
+            count: 1025,
+            max: 1024
+        }
     );
 }
 
@@ -2121,7 +2124,7 @@ fn explicit_contour_label_anchors_past_the_limit_are_rejected_without_state_chan
     };
     let limit = crate::data_config::MAX_CONTOUR_LABEL_ANCHORS;
     fn assert_rejected<T>(result: Result<T>) {
-        let Err(FiggyError::InvalidSeriesConfig { reason, .. }) = result else {
+        let Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) = result else {
             panic!("an oversized anchor list was accepted or returned the wrong error")
         };
         assert_eq!(
@@ -2497,10 +2500,10 @@ fn contour_level_validation_is_identical_for_contour_and_heatmap_contour() {
             crate::data_config::MAX_CONTOUR_LEVELS + 1,
         ),
     ];
-    let reasons: Vec<String> = rejected
+    let reasons: Vec<crate::RuleKind> = rejected
         .iter()
         .map(|series| {
-            let FiggyError::InvalidSeriesConfig { reason, .. } =
+            let FiggyError::InvalidSeriesConfig { kind: reason, .. } =
                 validate_contour_level_count(&series.series_id, &series.render_type).unwrap_err()
             else {
                 panic!("wrong contour limit error")
@@ -6469,7 +6472,7 @@ fn value_maps_are_validated_at_registration() {
     let no_colorbar = vec![value_mapped_scatter_series("v", Some("c"), None)];
     assert!(matches!(
         renderer.register_chart(config.clone(), no_colorbar),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("colorbar")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason.to_string().contains("colorbar")
     ));
 
     let mut bad_domain = value_mapped_scatter_series("v", None, Some(("c", SizeScale::Area)));
@@ -6485,7 +6488,7 @@ fn value_maps_are_validated_at_registration() {
     scatter.point_size_map.as_mut().unwrap().domain_max = 0.0;
     assert!(matches!(
         renderer.register_chart(config.clone(), vec![bad_domain]),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
             if reason == crate::data_config::PointSizeMap::INVALID_DOMAIN_REASON
     ));
 
@@ -6535,7 +6538,7 @@ fn value_map_columns_must_cover_every_point() {
     }];
     assert!(matches!(
         renderer.prepare(&items),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("size map")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason.to_string().contains("size map")
     ));
 }
 
@@ -6549,8 +6552,8 @@ fn streamed_series_reject_value_maps() {
     for series in [colour, size] {
         assert!(matches!(
             PrepareContext::validate_stream_series(&config, &series),
-            Err(FiggyError::InvalidSeriesConfig { reason, .. })
-                if reason.contains("streamed sources are not supported")
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+                if reason.to_string().contains("streamed sources are not supported")
         ));
     }
     let plain = test_scatter_style();
@@ -6599,7 +6602,7 @@ fn streamed_series_reject_stems() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
             if reason == streaming_runtime::STREAMED_STEM_REASON
     ));
 }
@@ -6632,7 +6635,7 @@ fn streamed_series_reject_dataless_series() {
         let series = dataless(render_type);
         assert!(matches!(
             PrepareContext::validate_stream_series(&config, &series),
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason == want
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason == want
         ));
     }
 }
@@ -6713,8 +6716,8 @@ fn streamed_series_reject_vectors() {
     let config = basic_errorbar_chart().config().clone();
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &vector_points_series("stream")),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6741,8 +6744,8 @@ fn streamed_series_reject_category_bars() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("category bar") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("category bar") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6771,8 +6774,8 @@ fn streamed_series_reject_box_plots() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("box plot") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("box plot") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6803,8 +6806,8 @@ fn streamed_series_reject_range_bars() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("range bar") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("range bar") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6840,8 +6843,8 @@ fn streamed_series_reject_hexagonal_grids() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("hexagonal") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("hexagonal") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6873,8 +6876,8 @@ fn streamed_series_reject_ternary_series() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("ternary") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("ternary") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6912,9 +6915,9 @@ fn streamed_series_reject_violins_and_raw_points() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("violin") && reason.contains("raw point")
-                && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("violin") && matches!(reason, crate::RuleKind::StreamedBoxPlot)
+                && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6945,8 +6948,8 @@ fn streamed_series_reject_radar() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("radar") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("radar") && reason.to_string().contains("streamed sources are not supported")
     ));
 }
 
@@ -6986,9 +6989,9 @@ fn streamed_sources_reject_streamlines() {
             }
             assert!(matches!(
                 PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { reason, .. })
-                    if reason.contains("streamline")
-                        && reason.contains("streamed sources are not supported")
+                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+                    if reason.to_string().contains("streamline")
+                        && reason.to_string().contains("streamed sources are not supported")
             ));
         }
     }
@@ -7017,7 +7020,7 @@ fn polar_rejects_streamlines() {
     let before = renderer.visual_revision();
     assert!(matches!(
         renderer.set_chart_series(chart, vec![streamline_series("flow", None)]),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("polar")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason.to_string().contains("polar")
     ));
     assert!(renderer.chart_series(chart).unwrap().is_empty());
     assert_eq!(renderer.visual_revision(), before);
@@ -7106,8 +7109,8 @@ fn streamed_series_reject_polar_charts() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &series),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("polar") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
     ));
     // A polar heatmap (#208) is held to the same rule: no new streaming.
     let field = SeriesConfig {
@@ -7134,8 +7137,8 @@ fn streamed_series_reject_polar_charts() {
     };
     assert!(matches!(
         PrepareContext::validate_stream_series(&config, &field),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. })
-            if reason.contains("polar") && reason.contains("streamed sources are not supported")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+            if reason.to_string().contains("polar") && reason.to_string().contains("streamed sources are not supported")
     ));
     config.set_polar(None);
     assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
@@ -7187,9 +7190,9 @@ fn streamed_series_reject_categorical_axes() {
         assert!(
             matches!(
                 PrepareContext::validate_stream_series(&config, &series),
-                Err(FiggyError::InvalidSeriesConfig { reason, .. })
-                    if reason.contains("categorical")
-                        && reason.contains("streamed sources are not supported")
+                Err(FiggyError::InvalidSeriesConfig { kind: reason, .. })
+                    if reason.to_string().contains("categorical")
+                        && reason.to_string().contains("streamed sources are not supported")
             ),
             "axis {index}"
         );
@@ -14619,9 +14622,10 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
         offsets: &offsets,
     };
     let streamed = |result: Result<String>| match result {
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => {
             assert!(
                 reason
+                    .to_string()
                     .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             );
@@ -14644,8 +14648,9 @@ fn records_and_ragged_columns_reject_streaming_both_ways() {
     renderer.upsert_triangles("mesh", &triangles).unwrap();
     for id in ["box", "outliers", "mesh"] {
         match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
-            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => assert!(
+            Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) => assert!(
                 reason
+                    .to_string()
                     .contains("streaming is not extended to records, ragged and triangle columns"),
                 "{reason}"
             ),
@@ -14776,7 +14781,7 @@ fn member_columns_are_owned_by_their_record_or_ragged_column() {
     ));
     assert!(matches!(
         renderer.upsert_record("x", &record),
-        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("the id is a column")
+        Err(FiggyError::InvalidSeriesConfig { kind: reason, .. }) if reason.to_string().contains("the id is a column")
     ));
     assert_eq!(
         renderer.pool().record("box").unwrap().slot().fields[0].as_deref(),
@@ -14988,11 +14993,18 @@ fn series_labels_with_math_validate_at_registration() {
     let label = series.label.as_mut().unwrap();
     label.segments[2].math_parent = Some(crate::text::MathSlot { id: 4, slot: 0 });
     let result = renderer.register_chart(crate::default::default_config(), vec![series]);
-    let Err(FiggyError::InvalidSeriesConfig { series_id, reason }) = result else {
+    let Err(FiggyError::InvalidSeriesConfig {
+        series_id,
+        kind: reason,
+    }) = result
+    else {
         panic!("a malformed label was accepted: {result:?}");
     };
     assert_eq!(series_id, "scatter");
-    assert!(reason.starts_with("label: segment 2"), "{reason}");
+    assert!(
+        reason.to_string().starts_with("label: segment 2"),
+        "{reason}"
+    );
 }
 
 // A chart view whose panel rect is sized differently from the config's chart

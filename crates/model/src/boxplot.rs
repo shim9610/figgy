@@ -57,7 +57,7 @@ impl BoxSummary {
             outliers: vec![],
         }
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         let ordered = [
             self.whisker_low,
             self.q1,
@@ -66,22 +66,22 @@ impl BoxSummary {
             self.whisker_high,
         ];
         if ordered.iter().any(|v| !v.is_finite()) || ordered.windows(2).any(|p| p[0] > p[1]) {
-            return Err("box statistics must be finite and low <= Q1 <= median <= Q3 <= high");
+            return Err(crate::RuleKind::BoxStatsOrder);
         }
         if self.mean.is_some_and(|v| !v.is_finite()) || self.sample_count == Some(0) {
-            return Err("mean must be finite; sample count must be positive when supplied");
+            return Err(crate::RuleKind::BoxStatsMeanOrCount);
         }
         if self.median_ci.is_some_and(|p| {
             !p[0].is_finite() || !p[1].is_finite() || p[0] > self.median || p[1] < self.median
         }) {
-            return Err("median CI must be finite and contain the median");
+            return Err(crate::RuleKind::BoxStatsMedianCi);
         }
         if self
             .outliers
             .iter()
             .any(|v| !v.is_finite() || (*v >= self.whisker_low && *v <= self.whisker_high))
         {
-            return Err("outliers must be finite and strictly outside the whiskers");
+            return Err(crate::RuleKind::BoxStatsOutliers);
         }
         Ok(())
     }
@@ -270,18 +270,18 @@ impl BoxPlotChart {
                 .unwrap_or(&self.style),
         )
     }
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.decorations.validate()?;
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
         if n == 0 || m == 0 {
-            return Err("boxplot limits: at least 1 category and 1 series");
+            return Err(crate::RuleKind::BoxPlotChartLimits);
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
             if c.id.is_empty() || !text(&c.id, 80) || !text(&c.label, 80) || !ids.insert(&c.id) {
-                return Err("invalid category ID/label");
+                return Err(crate::RuleKind::BoxPlotChartCategory);
             }
         }
         ids.clear();
@@ -293,7 +293,7 @@ impl BoxPlotChart {
                 || s.values.len() != n
                 || !color(s.color)
             {
-                return Err("invalid series ID/label, color or value count");
+                return Err(crate::RuleKind::BoxPlotChartSeries);
             }
             if let Some(st) = &s.style {
                 st.validate()?;
@@ -312,18 +312,18 @@ impl BoxPlotChart {
             || !text(&self.font_family, 160)
             || !text(&self.value_suffix, 24)
         {
-            return Err("invalid boxplot layout, font or colors");
+            return Err(crate::RuleKind::BoxPlotChartStyle);
         }
         for s in [&self.title, &self.value_title, &self.category_title] {
             if !text(s, 160) {
-                return Err("invalid title");
+                return Err(crate::RuleKind::BoxPlotChartTitle);
             }
         }
         if self
             .value_range
             .is_some_and(|r| !r[0].is_finite() || !r[1].is_finite() || r[0] >= r[1])
         {
-            return Err("invalid linear value range");
+            return Err(crate::RuleKind::BoxPlotChartValueRange);
         }
         let mut targets = HashSet::new();
         for o in &self.overrides {
@@ -332,7 +332,7 @@ impl BoxPlotChart {
                 || !targets.insert(&o.target)
                 || o.color.is_some_and(|c| !color(c))
             {
-                return Err("invalid or duplicate box override");
+                return Err(crate::RuleKind::BoxPlotChartOverride);
             }
             if let Some(st) = &o.style {
                 st.validate()?;
@@ -346,16 +346,16 @@ impl BoxPlotChart {
                     // exists and its summary is the value read here.
                     let style = self
                         .resolved_style(&target)
-                        .ok_or("internal: a box with a value resolved no style")?;
+                        .ok_or(crate::RuleKind::BoxPlotChartUnresolvedStyle)?;
                     if style.notched && v.median_ci.is_none() {
-                        return Err("notched boxes require an explicit median CI");
+                        return Err(crate::RuleKind::BoxPlotChartNotchWithoutCi);
                     }
                 }
             }
         }
         for t in [&self.hovered, &self.selected].into_iter().flatten() {
             if self.summary(t).is_none() {
-                return Err("unknown or missing interaction target");
+                return Err(crate::RuleKind::BoxPlotChartInteractionTarget);
             }
         }
         Ok(())
@@ -390,13 +390,13 @@ mod tests {
         for material in [Material::Toon, Material::Pearl] {
             let mut c = chart();
             c.style.material = material;
-            assert_eq!(c.validate(), Err("material not supported by boxes"));
+            assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
             let mut c = chart();
             c.series[0].style = Some(BoxPlotStyle {
                 material,
                 ..Default::default()
             });
-            assert_eq!(c.validate(), Err("material not supported by boxes"));
+            assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
             let mut c = chart();
             let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
             o.style = Some(BoxPlotStyle {
@@ -404,7 +404,7 @@ mod tests {
                 ..Default::default()
             });
             c.overrides.push(o);
-            assert_eq!(c.validate(), Err("material not supported by boxes"));
+            assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
         }
         for material in [
             Material::Flat,

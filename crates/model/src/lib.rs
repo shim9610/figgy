@@ -42,10 +42,12 @@ pub mod preset;
 pub mod probability;
 pub mod radial;
 pub mod resize;
+pub mod rule;
 pub mod select;
 pub mod sink;
 pub mod text;
 pub mod tick;
+pub use rule::RuleKind;
 pub mod validate;
 pub use validate::ConfigError;
 

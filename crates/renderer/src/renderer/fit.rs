@@ -710,7 +710,7 @@ impl Renderer {
         if !padding.is_finite() || padding < 0.0 {
             return Err(FiggyError::InvalidConfig {
                 field: "stream auto-fit padding",
-                reason: "padding must be finite and non-negative",
+                kind: crate::RuleKind::FitPadding,
             });
         }
         if self.try_cached_stream_auto_fit(id, padding)? {
@@ -1160,7 +1160,7 @@ impl Renderer {
         if !padding.is_finite() || padding < 0.0 {
             return Err(GpuExtentError::from_figgy(FiggyError::InvalidConfig {
                 field: "auto-fit padding",
-                reason: "padding must be finite and non-negative",
+                kind: crate::RuleKind::FitPadding,
             }));
         }
         let state = self
