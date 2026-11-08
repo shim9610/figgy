@@ -315,10 +315,10 @@ either object automatically in the caller-owned `prepare` path.
 
 | Change | Required work before the next `prepare` |
 | --- | --- |
-| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection(view, chart, panel_rect, Some(element_id))` when displaying a selection: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. |
+| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart, panel rectangle and series. Use `refresh_axis_with_selection(view, chart, panel_rect, Some(element_id), series)` when displaying a selection: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. |
 | Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
 | Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
-| Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |
+| Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected, series)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. The series are what a unit note (`AnnotationKind::SeriesUnit`, #258) reads its unit from; a series edit that changes such a unit advances the annotation stamp. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |
 | Renderer-owned chart ID | Commit edits with `set_chart_config` / `set_chart_series`, refresh the caller-owned view from that registered config, then call `prepare_registered`. This path maintains the series-style cache itself. |
 
 `prepare` updates transforms and derived GPU data; it does **not** rerasterize
@@ -359,7 +359,7 @@ fn prepare_after_series_edit(
     let styles = configs.iter()
         .map(|config| renderer.create_style_for_series(config))
         .collect::<Result<Vec<_>, _>>()?;
-    renderer.refresh_axis(view, chart, panel)?;
+    renderer.refresh_axis(view, chart, panel, configs)?;
     let series: Vec<_> = configs.iter().zip(&styles)
         .map(|(config, style)| Series { config, style })
         .collect();
@@ -633,8 +633,8 @@ Every drag takes a `&dyn MeasureText` (the renderer's `CpuTextMeasure::for_style
 Every chart family carries `annotations: AnnotationLayer` (reference lines,
 spans, text boxes, arrows). Cartesian views rasterize it into two more
 `ChartView` textures: `refresh_axis*` redoes them with the axis raster and
-`Renderer::refresh_annotations(view, chart, panel_rect, selected)` redoes them
-alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
+`Renderer::refresh_annotations(view, chart, panel_rect, selected, series)` redoes
+them alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
 selection changed; `ChartView::annotation_map()` is the layer's hit map. The
 radial renderer returns the layer as `prepare_annotations(chart, size, scale)` →
 `Arc<BoundedAnnotationFrame>`, drawn after the frame with `draw_overlay` (the

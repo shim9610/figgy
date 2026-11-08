@@ -32,12 +32,51 @@ axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 `part`, a category's `rich_label`, the axes' `category_groups`, the
 chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
-breaks' `sizing`, the energy-level `bands` and `band` style and a
-subplot's `marker`) are additive.
+breaks' `sizing`, the energy-level `bands` and `band` style, a
+subplot's `marker`, the energy-level `wavelength_unit` and
+`wavelength_labels` and the `SeriesUnit` annotation kind) are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Wavelength labels written by the renderer, and a unit note** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  A `Transition` holds one wavelength, `wavelength: Option<f64>` and
+  `wavelength_uncertainty: Option<f64>`, in place of `observed_wavelength`,
+  `observed_uncertainty`, `ritz_wavelength` and `ritz_uncertainty`: the
+  host writes the NIST column it chose. `EnergyLevelSeries.wavelength_unit:
+  Option<String>` is the host's unit text (`nm`, `Å`, `nm (air)`; `None`
+  draws no unit anywhere; a view with a `source` holds none, the unit is
+  its records'). `EnergyLevelStyle.wavelength_labels:
+  Option<WavelengthLabels>` gives every transition with a wavelength and
+  no host `label` a drawn label: the value in a `PlainNumberFormat` (at
+  most `MAX_WAVELENGTH_DECIMALS` = 17 fixed decimals), then ` {unit}` with
+  `unit_on_labels`, in the font, size and colour of its `text`. A host
+  `label` wins. `Transition::drawn_label` is the one owner of the choice,
+  and the placement, the emit, the pick, the drag and the vector export
+  read the label through it, so a formatted label is placed, drawn, picked
+  and dragged as a host label is. The renderer formats the host's value
+  and nothing else: it converts no unit and chooses between no values.
+  `AnnotationKind::SeriesUnit { series_id, anchor, align, prefix,
+  box_style }` draws `prefix` and then the `wavelength_unit` of series
+  `series_id` (read on every draw through
+  `energy_levels::wavelength_unit`), in the prefix's style, its box placed
+  by `align: NoteAlign` (nine points: corners, edge middles, centre) on its
+  anchor; with no such series or no unit it draws nothing and is not
+  registered. It is an annotation item: hit, selected, dragged by its
+  anchor, hidden, serialized, scaled and exported as a text item is.
+  `Config::add_unit_note(series_id, corner)` adds one at a corner or edge
+  of the plot and returns its index; `AnnotationLayer::reads_series` and
+  `series_units_differ` tell whether a series edit changes what a note
+  draws. `AnnotationElement` gains `note: Option<RichText>` (the note's
+  text, resolved when the renderer registers the element) and
+  `emit_annotation` takes it. New rules: `WavelengthLabels`,
+  `WavelengthUnit`, `AnnotationSeriesId`. Energy levels are new in this
+  cycle, so no released document carries the replaced fields.
+  **Migration:** write `wavelength` (and `wavelength_uncertainty`) in place
+  of the four line fields; an `AnnotationElement { .. }` literal names
+  `note: None`; an exhaustive `match` on `AnnotationKind` adds a
+  `SeriesUnit { .. }` arm.
 
 - **Energy-level labels keep off other columns** ([#248](https://github.com/shim9610/figgy/issues/248)).
   After stacking, a level or band label that lies on another column's level
@@ -1405,6 +1444,25 @@ subplot's `marker`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Wavelength labels and a unit note** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  The energy-level raster and the SVG and PDF export draw the labels
+  `wavelength_labels` writes, through the same placement as host labels.
+  The annotation layer draws `AnnotationKind::SeriesUnit` notes, reading
+  each one's unit from the chart's series on every raster: the annotation
+  raster takes the series. `Renderer::refresh_annotations`,
+  `refresh_axis`, `refresh_axis_with_selection`,
+  `refresh_axis_with_selection_at` and `create_chart_view_at` take the
+  chart's series as their last argument; `create_chart_view` gives none,
+  so a note draws from the first refresh that does. On a registered chart a
+  series edit that changes the unit a note draws advances the annotation
+  stamp (`ChartRenderStamp::needs_annotation_raster_since`). The radial
+  chart has no series: a note there draws nothing. `NoteAlign` and
+  `WavelengthLabels` are re-exported. The NIST examples and the energy-level
+  scenes label their lines from `wavelength` to one decimal and show the
+  unit once, in a note.
+  **Migration:** pass the series to the five calls above (`&[]` for a chart
+  without unit notes).
 
 - **Gallery findings** ([#259](https://github.com/shim9610/figgy/issues/259)).
   - A 3D floor contour (a heatmap's or a mesh's) is `line_width` wide on
@@ -3233,6 +3291,14 @@ subplot's `marker`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Wavelength labels and a unit note** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  The series JSON carries `wavelength`, `wavelength_uncertainty`,
+  `wavelength_unit` and `wavelength_labels`, and the annotation JSON the
+  `SeriesUnit` kind, which `annotations()` lists as `"SeriesUnit"`.
+  `add_unit_note(series_id, corner)` adds a note at a `NoteAlign` corner
+  (`"BottomRight"`, …) and returns its index. A note is hit, selected,
+  dragged and hidden like a text box.
 
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   A refused rule throws a JS `Error` whose `message` is the rule's sentence

@@ -844,7 +844,7 @@ ratio-anchored one stays put. `Anchor::converted(&space, kind)` switches kinds w
 **Revisions and caches.** `annotations.items` has its own raster revision.
 On registered Cartesian charts `ChartRenderStamp::needs_annotation_raster_since`
 says when to call `Renderer::refresh_annotations(view, chart, panel_rect,
-selected)`, which rewrites the two annotation textures and the annotation hit
+selected, series)`, which rewrites the two annotation textures and the annotation hit
 map and nothing else (`ChartView::layer_stamps()` counts each layer's writes).
 `refresh_axis*` redoes the annotation rasters too, because the anchor space
 follows the axes and the data area, so a host that refreshes the axis raster

@@ -197,9 +197,16 @@ match frame_decision(
                 &display_chart,
                 rect,
                 selected_id.as_deref(), // 선택된 요소 id, 예: Some("data_area")
+                &series,                // 단위 메모(SeriesUnit)가 단위를 읽는 시리즈 (#258)
             )?;
         } else if annotation_dirty {
-            renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
+            renderer.refresh_annotations(
+                &mut view,
+                &display_chart,
+                rect,
+                selected_annotation,
+                &series,
+            )?;
         }
         renderer.draw(clear, &items)?;
 
