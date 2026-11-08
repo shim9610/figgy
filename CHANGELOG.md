@@ -39,6 +39,17 @@ subplot's `marker`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Energy-level labels keep off other columns** ([#248](https://github.com/shim9610/figgy/issues/248)).
+  After stacking, a level or band label that lies on another column's level
+  stroke or band fill, on a limit line, or on another label moves: its
+  stacked group (or collapsed run) as one, or a single label taken out of
+  its stack, to its column's other side, above its stroke (a lone label),
+  or up or down by quarters of a label height (a stack by at most one
+  height, a lone label by two and a half), wherever it overlaps least
+  inside the plot, with a leader line when it moved. A label the host
+  dragged keeps its place. In the bundled He, Ar, Cu, U and every-level Ar
+  scenes no level label overlaps any more (26 overlaps before in Ar, Cu and
+  U, 29 in every-level Ar). No API or serialized field changes.
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   A refused rule is a `RuleKind` value (new module `rule`, re-exported at the
   crate root): one `#[non_exhaustive]` enum for the model's and the
