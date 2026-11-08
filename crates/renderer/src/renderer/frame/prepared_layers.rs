@@ -52,6 +52,7 @@ pub(in crate::renderer) struct PreparedContourItem {
     pub(in crate::renderer) series: Vec<PreparedContourSeries>,
 }
 
+#[derive(Clone, Copy)]
 pub(in crate::renderer) struct PreparedSeriesProducts<'a> {
     pub(in crate::renderer) arcs: &'a [PreparedArcSeries],
     pub(in crate::renderer) contours: &'a [PreparedContourSeries],
