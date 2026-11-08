@@ -1,27 +1,61 @@
 //! Creating the precise (unstyled) pipeline variants a frame's items need.
 
+mod bars;
+mod entries;
+mod fields;
+mod lines;
+mod markers;
+mod vectors;
+
 use super::*;
 
-impl TargetPipelines {
-    #[allow(clippy::too_many_arguments)]
-    pub(in crate::renderer) fn ensure_precise_variants_for_items(
-        &mut self,
-        device: &wgpu::Device,
-        transform_bgl: &wgpu::BindGroupLayout,
-        style_bgl: &wgpu::BindGroupLayout,
-        per_point_style_map_bgl: &wgpu::BindGroupLayout,
-        point_value_map_bgl: &wgpu::BindGroupLayout,
-        [surface_bgl, view3d_value_map_bgl]: [&wgpu::BindGroupLayout; 2],
-        data_selection_bgl: &wgpu::BindGroupLayout,
-        field_bgl: &wgpu::BindGroupLayout,
-        vector_bgl: &wgpu::BindGroupLayout,
-        star_data_bgl: &wgpu::BindGroupLayout,
-        category_bar_data_bgl: &wgpu::BindGroupLayout,
-        parallel_bgl: &wgpu::BindGroupLayout,
-        label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
-        surface_format: wgpu::TextureFormat,
-        items: &[ChartDrawItem<'_>],
-    ) {
+/// The precise pipelines a frame's items need, read from their configs,
+/// series and picks before any pipeline is created.
+struct PreciseNeeds {
+    parallel: bool,
+    parallel_selection: bool,
+    vector_points: bool,
+    vector_grid: bool,
+    vector_path: bool,
+    field: bool,
+    contour: bool,
+    mesh: bool,
+    mesh_contour: bool,
+    mesh_selection: bool,
+    contour_label: bool,
+    line: bool,
+    line_mapped: bool,
+    area: bool,
+    scatter: bool,
+    errorbar: bool,
+    stem: bool,
+    bar: bool,
+    bar_mapped: bool,
+    bar_selection: bool,
+    bar_selection_mapped: bool,
+    category_bars: bool,
+    category_bar_selection: bool,
+    box_plot: bool,
+    box_plot_selection: bool,
+    range_bars: bool,
+    range_bar_selection: bool,
+    violin: bool,
+    violin_selection: bool,
+    box_points: bool,
+    box_point_selection: bool,
+    value_labels: bool,
+    value_label_selection: bool,
+    field_selection: bool,
+    scatter_mapped: bool,
+    errorbar_mapped: bool,
+    pick_ring: bool,
+    pick_ring_mapped: bool,
+    ternary: [bool; TERNARY_PIPELINES],
+    view3d: [bool; VIEW3D_PIPELINES],
+}
+
+impl PreciseNeeds {
+    fn scan(items: &[ChartDrawItem<'_>]) -> Self {
         let mut need_parallel = false;
         let mut need_parallel_selection = false;
         let mut need_vector_points = false;
@@ -243,499 +277,132 @@ impl TargetPipelines {
                 }
             }
         }
-        if need_line && self.line.is_none() {
-            self.line = Some(
-                data_render::create_line_columnar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.line,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
+        Self {
+            parallel: need_parallel,
+            parallel_selection: need_parallel_selection,
+            vector_points: need_vector_points,
+            vector_grid: need_vector_grid,
+            vector_path: need_vector_path,
+            field: need_field,
+            contour: need_contour,
+            mesh: need_mesh,
+            mesh_contour: need_mesh_contour,
+            mesh_selection: need_mesh_selection,
+            contour_label: need_contour_label,
+            line: need_line,
+            line_mapped: need_line_mapped,
+            area: need_area,
+            scatter: need_scatter,
+            errorbar: need_errorbar,
+            stem: need_stem,
+            bar: need_bar,
+            bar_mapped: need_bar_mapped,
+            bar_selection: need_bar_selection,
+            bar_selection_mapped: need_bar_selection_mapped,
+            category_bars: need_category_bars,
+            category_bar_selection: need_category_bar_selection,
+            box_plot: need_box_plot,
+            box_plot_selection: need_box_plot_selection,
+            range_bars: need_range_bars,
+            range_bar_selection: need_range_bar_selection,
+            violin: need_violin,
+            violin_selection: need_violin_selection,
+            box_points: need_box_points,
+            box_point_selection: need_box_point_selection,
+            value_labels: need_value_labels,
+            value_label_selection: need_value_label_selection,
+            field_selection: need_field_selection,
+            scatter_mapped: need_scatter_mapped,
+            errorbar_mapped: need_errorbar_mapped,
+            pick_ring: need_pick_ring,
+            pick_ring_mapped: need_pick_ring_mapped,
+            ternary: need_ternary,
+            view3d: need_view3d,
         }
-        if need_line_mapped && self.line_mapped.is_none() {
-            self.line_mapped = Some(data_render::create_line_mapped_pipeline_with_sample_count(
-                device,
-                &self.shaders.line,
-                transform_bgl,
-                style_bgl,
-                point_value_map_bgl,
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        if need_area && self.area.is_none() {
-            self.area = Some(data_render::create_line_area_pipeline_with_sample_count(
-                device,
-                &self.shaders.line,
-                transform_bgl,
-                style_bgl,
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        for (need, slot, selection) in [
-            (need_parallel, &mut self.line_parallel, false),
-            (
-                need_parallel_selection,
-                &mut self.line_parallel_selection,
-                true,
-            ),
-        ] {
-            if need && slot.is_none() {
-                *slot = Some(
-                    data_render::create_line_parallel_pipeline_with_sample_count(
-                        device,
-                        &self.shaders.line,
-                        transform_bgl,
-                        style_bgl,
-                        parallel_bgl,
-                        surface_format,
-                        self.sample_count,
-                        selection,
-                    ),
-                );
-            }
-        }
-        if need_scatter && self.scatter.is_none() {
-            self.scatter = Some(
-                data_render::create_scatter_columnar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.scatter,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_field && self.field.is_none() {
-            self.field = Some(
-                data_render::create_field_columnar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.field,
-                    transform_bgl,
-                    style_bgl,
-                    field_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        for (needed, pass) in [
-            (need_mesh, data_render::tri_mesh::TriMeshPass::Fill),
-            (
-                need_mesh_contour,
-                data_render::tri_mesh::TriMeshPass::Contour,
-            ),
-        ] {
-            if needed {
-                self.ensure_tri_mesh_pass(
-                    device,
-                    [transform_bgl, style_bgl, field_bgl],
-                    surface_format,
-                    pass,
-                );
-            }
-        }
-        if need_mesh_selection {
-            self.ensure_tri_mesh_pass(
-                device,
-                [transform_bgl, data_selection_bgl, field_bgl],
-                surface_format,
-                data_render::tri_mesh::TriMeshPass::Selection,
-            );
-        }
-        if need_contour && self.contour.is_none() {
-            self.contour = Some(data_render::create_field_columnar_pipeline_with_entry(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                style_bgl,
-                field_bgl,
-                surface_format,
-                self.sample_count,
-                "fs_contour",
-                "figgy field contour pipeline",
-            ));
-        }
-        if need_contour_label
-            && self.contour_labelled.is_none()
-            && let Some(labels) = label_pipelines
-        {
-            self.contour_labelled = Some(data_render::create_labelled_contour_pipeline(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                style_bgl,
-                field_bgl,
-                labels.label_gap_bgl(),
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        if need_contour_label
-            && self.contour_label.is_none()
-            && let Some(labels) = label_pipelines
-        {
-            self.contour_label = Some(labels.render_pipeline(
-                device,
-                transform_bgl,
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        if need_bar && self.bar.is_none() {
-            self.bar = Some(data_render::create_bar_columnar_pipeline_with_sample_count(
-                device,
-                &self.shaders.bar,
-                transform_bgl,
-                style_bgl,
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        if (need_bar || need_bar_mapped) && self.bar_envelope.is_none() {
-            self.bar_envelope = Some(data_render::bar_envelope::Pipelines::new(
-                device,
-                &self.shaders.bar,
-                transform_bgl,
-                style_bgl,
-                per_point_style_map_bgl,
-                surface_format,
-                self.sample_count,
-            ));
-        }
-        if need_bar_mapped && self.bar_mapped.is_none() {
-            self.bar_mapped = Some(
-                data_render::create_bar_columnar_mapped_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_bar_selection && self.bar_selection.is_none() {
-            self.bar_selection = Some(
-                data_render::create_bar_selection_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_bar_selection_mapped && self.bar_selection_mapped.is_none() {
-            self.bar_selection_mapped = Some(
-                data_render::create_bar_selection_mapped_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        for (need, selection) in [
-            (need_category_bars, false),
-            (need_category_bar_selection, true),
-        ] {
-            let slot = if selection {
-                &mut self.bar_category_selection
-            } else {
-                &mut self.bar_category
-            };
-            if need && slot.is_none() {
-                *slot = Some(data_render::create_category_bar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    category_bar_data_bgl,
-                    surface_format,
-                    self.sample_count,
-                    selection,
-                ));
-            }
-        }
-        for (need, selection) in [(need_box_plot, false), (need_box_plot_selection, true)] {
-            let slot = if selection {
-                &mut self.bar_box_plot_selection
-            } else {
-                &mut self.bar_box_plot
-            };
-            if need && slot.is_none() {
-                *slot = Some(data_render::create_box_plot_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    category_bar_data_bgl,
-                    surface_format,
-                    self.sample_count,
-                    selection,
-                ));
-            }
-        }
-        for (need, selection) in [(need_range_bars, false), (need_range_bar_selection, true)] {
-            let slot = if selection {
-                &mut self.bar_range_selection
-            } else {
-                &mut self.bar_range
-            };
-            if need && slot.is_none() {
-                *slot = Some(data_render::create_range_bar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    category_bar_data_bgl,
-                    surface_format,
-                    self.sample_count,
-                    selection,
-                ));
-            }
-        }
-        for (need, points, selection) in [
-            (need_violin, false, false),
-            (need_violin_selection, false, true),
-            (need_box_points, true, false),
-            (need_box_point_selection, true, true),
-        ] {
-            let slot = match (points, selection) {
-                (false, false) => &mut self.bar_violin,
-                (false, true) => &mut self.bar_violin_selection,
-                (true, false) => &mut self.bar_box_points,
-                (true, true) => &mut self.bar_box_point_selection,
-            };
-            if need && slot.is_none() {
-                *slot = Some(data_render::create_violin_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    category_bar_data_bgl,
-                    surface_format,
-                    self.sample_count,
-                    points,
-                    selection,
-                ));
-            }
-        }
-        for (need, selection) in [
-            (need_value_labels, false),
-            (need_value_label_selection, true),
-        ] {
-            let slot = if selection {
-                &mut self.bar_value_label_selection
-            } else {
-                &mut self.bar_value_label
-            };
-            if need && slot.is_none() {
-                // An equal layout to the renderer's own: wgpu compares
-                // layouts by their entries, so its bind groups fit.
-                let value_label_bgl = data_render::create_value_label_bind_group_layout(device);
-                *slot = Some(data_render::create_value_label_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.bar,
-                    transform_bgl,
-                    &value_label_bgl,
-                    per_point_style_map_bgl,
-                    category_bar_data_bgl,
-                    surface_format,
-                    self.sample_count,
-                    selection,
-                ));
-            }
-        }
-        for (need, input) in [
-            (need_vector_points, data_render::vector::VectorInput::Points),
-            (need_vector_grid, data_render::vector::VectorInput::Grid),
-            (need_vector_path, data_render::vector::VectorInput::Path),
-        ] {
-            let slot = match input {
-                data_render::vector::VectorInput::Points => &mut self.vector_points,
-                data_render::vector::VectorInput::Grid => &mut self.vector_grid,
-                data_render::vector::VectorInput::Path => &mut self.vector_path,
-                // A 3D chart's arrows compile with the 3D kinds (#211).
-                data_render::vector::VectorInput::Points3d => continue,
-            };
-            if need && slot.is_none() {
-                *slot = Some(
-                    data_render::vector::create_vector_pipeline_with_sample_count(
-                        device,
-                        self.shaders.vector(input),
-                        transform_bgl,
-                        style_bgl,
-                        vector_bgl,
-                        star_data_bgl,
-                        surface_format,
-                        self.sample_count,
-                        input,
-                    ),
-                );
-            }
-        }
-        if need_field_selection && self.field_selection.is_none() {
-            self.field_selection = Some(
-                data_render::create_field_selection_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.field,
-                    transform_bgl,
-                    data_selection_bgl,
-                    field_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_field_selection
-            && self.field_selection_labelled.is_none()
-            && let Some(labels) = label_pipelines
-        {
-            self.field_selection_labelled = Some(
-                data_render::create_field_selection_labelled_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.field,
-                    transform_bgl,
-                    data_selection_bgl,
-                    field_bgl,
-                    labels.label_gap_bgl(),
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_errorbar && self.errorbar.is_none() {
-            self.errorbar = Some(
-                data_render::create_errorbar_columnar_pipeline_with_sample_count(
-                    device,
-                    &self.shaders.errorbar,
-                    transform_bgl,
-                    style_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
-        if need_stem && self.errorbar_stem.is_none() {
-            self.errorbar_stem = Some(data_render::create_stem_pipeline(
-                device,
-                &self.shaders.errorbar,
-                transform_bgl,
-                style_bgl,
-                surface_format,
-                self.sample_count,
-                "vs_stem",
-            ));
-        }
-        if need_scatter_mapped && self.scatter_mapped.is_none() {
-            self.scatter_mapped = Some(
-                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-                    device,
-                    &self.shaders.scatter,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    point_value_map_bgl,
-                    surface_format,
-                    self.sample_count,
-                    "vs_mapped",
-                    "fs_mapped",
-                    "figgy scatter mapped pipeline",
-                ),
-            );
-        }
-        if need_pick_ring && self.pick_ring.is_none() {
-            self.pick_ring = Some(data_render::create_scatter_columnar_pipeline_with_entries(
-                device,
-                &self.shaders.scatter,
-                transform_bgl,
-                style_bgl,
-                surface_format,
-                self.sample_count,
-                "vs_pick_ring",
-                "fs_pick_ring",
-                "figgy picked point ring pipeline",
-            ));
-        }
-        if need_pick_ring_mapped && self.pick_ring_mapped.is_none() {
-            self.pick_ring_mapped = Some(
-                data_render::create_scatter_columnar_mapped_pipeline_with_entries(
-                    device,
-                    &self.shaders.scatter,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    point_value_map_bgl,
-                    surface_format,
-                    self.sample_count,
-                    "vs_pick_ring_mapped",
-                    "fs_pick_ring",
-                    "figgy picked point mapped ring pipeline",
-                ),
-            );
-        }
-        for kind in TernaryPipeline::ALL {
-            if need_ternary[kind as usize] && self.ternary[kind as usize].is_none() {
-                self.ternary[kind as usize] = Some(create_ternary_pipeline(
-                    kind,
-                    device,
-                    &self.shaders,
-                    [
-                        transform_bgl,
-                        style_bgl,
-                        per_point_style_map_bgl,
-                        point_value_map_bgl,
-                    ],
-                    surface_format,
-                    self.sample_count,
-                ));
-            }
-        }
-        for kind in View3dPipeline::ALL {
-            if need_view3d[kind as usize] {
-                self.ensure_view3d_pass(
-                    device,
-                    [
-                        transform_bgl,
-                        style_bgl,
-                        per_point_style_map_bgl,
-                        surface_bgl,
-                        view3d_value_map_bgl,
-                        vector_bgl,
-                    ],
-                    surface_format,
-                    kind,
-                );
-            }
-        }
-        if need_errorbar_mapped && self.errorbar_mapped.is_none() {
-            self.errorbar_mapped = Some(
-                data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
-                    device,
-                    &self.shaders.errorbar,
-                    transform_bgl,
-                    style_bgl,
-                    per_point_style_map_bgl,
-                    surface_format,
-                    self.sample_count,
-                ),
-            );
-        }
+    }
+}
+
+impl TargetPipelines {
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::renderer) fn ensure_precise_variants_for_items(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        style_bgl: &wgpu::BindGroupLayout,
+        per_point_style_map_bgl: &wgpu::BindGroupLayout,
+        point_value_map_bgl: &wgpu::BindGroupLayout,
+        [surface_bgl, view3d_value_map_bgl]: [&wgpu::BindGroupLayout; 2],
+        data_selection_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
+        star_data_bgl: &wgpu::BindGroupLayout,
+        category_bar_data_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
+        label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        let needs = PreciseNeeds::scan(items);
+        self.create_line_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            point_value_map_bgl,
+            parallel_bgl,
+            surface_format,
+        );
+        self.create_field_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            data_selection_bgl,
+            field_bgl,
+            label_pipelines,
+            surface_format,
+        );
+        self.create_bar_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            category_bar_data_bgl,
+            surface_format,
+        );
+        self.create_vector_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            data_selection_bgl,
+            field_bgl,
+            vector_bgl,
+            star_data_bgl,
+            label_pipelines,
+            surface_format,
+        );
+        self.create_marker_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            point_value_map_bgl,
+            surface_format,
+        );
+        self.create_entry_pipelines(
+            &needs,
+            device,
+            transform_bgl,
+            style_bgl,
+            per_point_style_map_bgl,
+            point_value_map_bgl,
+            surface_bgl,
+            view3d_value_map_bgl,
+            vector_bgl,
+            surface_format,
+        );
     }
 }
