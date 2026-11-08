@@ -1412,12 +1412,15 @@ subplot's `marker`) are additive.
     the strokes running across the view thinned out and broke up below
     about 2 px.
   - A colourbar title that the band's centre would lay over the tick labels
-    sits a label gap past them instead; `auto_layout` places it from the
-    same base.
+    sits a third of the label font past them instead, as far as its band
+    reaches; `auto_layout` places it from the same base.
   - A hexagonal grid takes the nearest centre in the lattice's own metric,
     so a lattice stretched along one axis draws stretched hexagons rather
     than slabs. A lattice regular in data units draws the same cells.
   - The default `AxisBreaks::gap_px` is 8 px.
+  - `PolarOptions.hide_first_radius_label` (default `false`, omitted from
+    JSON) skips the innermost radius ring's label, as on a wind rose's calm
+    circle.
 
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   `FiggyError::InvalidConfig { field, kind }` and

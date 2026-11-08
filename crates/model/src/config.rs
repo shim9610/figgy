@@ -1502,6 +1502,8 @@ impl Config {
                 radial_label_angle_degrees: _,
                 // A ring shape, not a pixel dimension.
                 grid_shape: _,
+                // A switch.
+                hide_first_radius_label: _,
             }) => true,
             None => false,
         };
