@@ -376,7 +376,7 @@ pub enum RuleKind {
     BreakProbabilityRange,
     /// cut ranges must be sorted and must not touch
     BreakOrder,
-    /// a break gap must be between 0 and 0.2 of the axis
+    /// a break gap must be between 0 and 200 px
     BreakGap,
     /// only a Continuous broken axis sizes its pieces other than by value
     BreakSizing,
@@ -1933,7 +1933,7 @@ impl std::fmt::Display for RuleKind {
                 "a cut range on a probability axis must lie strictly between 0 and 1"
             }
             Self::BreakOrder => "cut ranges must be sorted and must not touch",
-            Self::BreakGap => "a break gap must be between 0 and 0.2 of the axis",
+            Self::BreakGap => "a break gap must be between 0 and 200 px",
             Self::BreakSizing => {
                 "only a Continuous broken axis sizes its pieces other than by value"
             }
@@ -3431,7 +3431,7 @@ mod tests {
             ),
             (
                 RuleKind::BreakGap,
-                "a break gap must be between 0 and 0.2 of the axis",
+                "a break gap must be between 0 and 200 px",
             ),
             (
                 RuleKind::BreakSizing,

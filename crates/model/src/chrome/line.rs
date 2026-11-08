@@ -8,20 +8,33 @@ use super::*;
 /// the detached-axis offset (`axis.line_offset`, perpendicular to the
 /// axis). The data area and grid stay put; tick positions along the axis are
 /// unaffected. `cross` is where the line crosses the perpendicular axis
-/// ([`crate::layout::axis_cross`]); only the line moves there. `scale` is
+/// ([`crate::layout::axis_cross`]); only the line moves there. `across` is
+/// the perpendicular axis, whose gaps a broken axis' frames stop at (#249).
+/// `scale` is
 /// the display or export scale `plot` and the axis' pixel values carry
 /// (1 for a config drawn as stored): a broken axis snaps its piece frames
 /// to whole logical pixels through it (#205).
+#[allow(clippy::too_many_arguments)]
 pub fn emit_axis(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
+    across: Option<&AxisOptions>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
     scale: f32,
 ) {
-    emit_axis_strokes(axis, side.clone(), plot, cross, measure, sink, scale);
+    emit_axis_strokes(
+        axis,
+        side.clone(),
+        plot,
+        cross,
+        across,
+        measure,
+        sink,
+        scale,
+    );
     emit_axis_tick_labels(axis, side, plot, measure, sink);
 }
 
@@ -30,11 +43,13 @@ pub fn emit_axis(
 /// the detached-axis translation. Tick stroker tags share one running index
 /// per side (majors first, minors after) so every tick gets its own wobble
 /// shape. `scale` is the scale the pixel values carry ([`emit_axis`]).
+#[allow(clippy::too_many_arguments)]
 pub fn emit_axis_strokes(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
+    across: Option<&AxisOptions>,
     measure: &dyn MeasureText,
     sink: &mut dyn Sink,
     scale: f32,
@@ -47,6 +62,7 @@ pub fn emit_axis_strokes(
         side.clone(),
         plot,
         cross,
+        across,
         measure,
         &majors,
         scale,
@@ -135,9 +151,19 @@ pub fn emit_category_tick_labels(
     );
 }
 
-/// Where `value` falls along its axis ([`crate::layout::axis_fraction`]).
-pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
-    crate::layout::axis_fraction(value, axis)
+/// Where `value` falls along its axis ([`crate::layout::axis_fraction`])
+/// drawn along `side` of `plot`.
+pub fn axis_fraction(value: f64, axis: &AxisOptions, side: &Side, plot: &RectF) -> f32 {
+    crate::layout::axis_fraction(value, axis, axis_len(side, plot))
+}
+
+/// The drawn length of an axis on `side` of `plot` (#249): the plot's
+/// width for an x axis, its height for a y axis.
+pub fn axis_len(side: &Side, plot: &RectF) -> f32 {
+    match side {
+        Side::Top | Side::Bottom => plot.width,
+        Side::Left | Side::Right => plot.height,
+    }
 }
 
 /// The plot rectangle of an integer data area: what the Cartesian axis,
@@ -148,7 +174,7 @@ pub fn data_area_rect(da: &DataArea) -> RectF {
 }
 
 pub fn value_to_screen(value: f64, axis: &AxisOptions, side: Side, plot: &RectF) -> (f32, f32) {
-    point_on_rect_side(axis_fraction(value, axis), &side, plot)
+    point_on_rect_side(axis_fraction(value, axis, &side, plot), &side, plot)
 }
 
 /// Which stroke of an axis a segment is: its line, or tick `i` in the
@@ -169,15 +195,19 @@ pub enum AxisStroke {
 
 /// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
 /// the detached-axis translation: the line (crossing the perpendicular axis
-/// at `cross`), then the major and minor ticks at the edge. `scale` is the
+/// at `cross`), then the major and minor ticks at the edge. `across` is the
+/// perpendicular axis (`bottom_x` for a y axis, `left_y` for an x axis):
+/// a broken axis' piece frames stop at its gaps (#249). `scale` is the
 /// scale the pixel values carry: a broken axis' piece frames are snapped to
 /// whole logical pixels, then scaled (#205), so a 2x frame is the 1x frame
 /// doubled; nothing else reads it.
+#[allow(clippy::too_many_arguments)]
 pub fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
     cross: Option<f32>,
+    across: Option<&AxisOptions>,
     measure: &dyn MeasureText,
     majors: &[f64],
     scale: f32,
@@ -185,9 +215,18 @@ pub fn each_axis_stroke(
 ) {
     if axis.line_visible {
         let (p0, p1) = axis_anchor(side.clone(), plot, cross);
-        let map = crate::layout::BreakMap::of(axis);
+        let map = crate::layout::BreakMap::of(axis, axis_len(&side, plot));
         if map.is_broken() {
-            each_broken_axis_line(axis, &map, side.clone(), plot, p0, p1, scale, &mut each);
+            each_broken_axis_line(
+                axis,
+                &map,
+                side.clone(),
+                plot,
+                (p0, p1),
+                across,
+                scale,
+                &mut each,
+            );
         } else {
             each(AxisStroke::Line, p0, p1);
         }
@@ -200,30 +239,102 @@ pub fn each_axis_stroke(
         .iter()
         .map(|v| (*v, axis.major_tick_length))
         .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)));
+    let map = crate::layout::BreakMap::of(axis, axis_len(&side, plot));
     for (i, (value, length)) in ticks.enumerate() {
-        let pos = value_to_screen(value, axis, side.clone(), plot);
+        let mut pos = value_to_screen(value, axis, side.clone(), plot);
+        // A tick on a piece's end stands on that piece's frame row (#249).
+        let f = f64::from(axis_fraction(value, axis, &side, plot));
+        if let Some(v) = gap_edge_pixel(axis, &map, &side, plot, scale, f) {
+            match side {
+                Side::Top | Side::Bottom => pos.0 = v,
+                Side::Left | Side::Right => pos.1 = v,
+            }
+        }
         if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
             each(AxisStroke::Tick(i), a, b);
         }
     }
 }
 
+/// The centre of a stroke `width` config pixels wide at pixel edge `v`, on
+/// the logical pixel grid of `scale` and inside the piece that lies in pixel
+/// direction `dir` (+1 right or down, -1 left or up) (#249).
+fn snap_into_piece(width: f32, v: f32, dir: f32, scale: f32) -> f32 {
+    let half = (width / scale).max(1.0) * 0.5;
+    ((v / scale).round() + dir * half) * scale
+}
+
+/// `scale` when it is a usable display or export scale, else 1.
+fn usable_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// Where a tick at visual fraction `f` of a broken `axis` on `side` of
+/// `plot` stands when `f` is a gap edge: on the row (or column) of that
+/// piece's frame, inside the piece (#249). `None` off the gap edges.
+fn gap_edge_pixel(
+    axis: &AxisOptions,
+    map: &crate::layout::BreakMap,
+    side: &Side,
+    plot: &RectF,
+    scale: f32,
+    f: f64,
+) -> Option<f32> {
+    if !map.is_broken() {
+        return None;
+    }
+    let horizontal = matches!(side, Side::Top | Side::Bottom);
+    let scale = usable_scale(scale);
+    for knot in map.knots() {
+        let (a, b) = if axis.inverted {
+            (1.0 - knot.end, 1.0 - knot.start)
+        } else {
+            (knot.start, knot.end)
+        };
+        for (closes, edge) in [(true, a), (false, b)] {
+            if (f - edge).abs() > 1e-6 {
+                continue;
+            }
+            let edge = edge as f32;
+            return Some(if horizontal {
+                let dir = if closes { -1.0 } else { 1.0 };
+                snap_into_piece(axis.line_width, plot.x + plot.width * edge, dir, scale)
+            } else {
+                let dir = if closes { 1.0 } else { -1.0 };
+                snap_into_piece(
+                    axis.line_width,
+                    plot.y + plot.height * (1.0 - edge),
+                    dir,
+                    scale,
+                )
+            });
+        }
+    }
+    None
+}
+
 /// The line of a broken axis (#200) from `p0` to `p1` (its
 /// [`axis_anchor`]): one segment per piece, then the slashes of each gap's
 /// mark when the axis draws one, then with `frame_each_panel` the pieces'
-/// edges along each gap. The pieces' bands
+/// edges along each gap, each cut at the gaps of the broken axis `across`
+/// (#249), so the gaps of two broken axes meet as a cross. The pieces' bands
 /// are in visual order: from the left on a horizontal axis and from the
 /// bottom on a vertical one. A frame is snapped to whole logical pixels
 /// (`scale` logical pixels per config pixel) and then scaled (#205): its
 /// stroke covers whole pixels at 1x instead of blurring over two rows, and
 /// at 2x it is the 1x stroke doubled.
+#[allow(clippy::too_many_arguments)]
 fn each_broken_axis_line(
     axis: &AxisOptions,
     map: &crate::layout::BreakMap,
     side: Side,
     plot: &RectF,
-    p0: (f32, f32),
-    p1: (f32, f32),
+    (p0, p1): ((f32, f32), (f32, f32)),
+    across: Option<&AxisOptions>,
     scale: f32,
     each: &mut impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
@@ -245,9 +356,30 @@ fn each_broken_axis_line(
             (a, b)
         }
     };
+    // The display or export scale the frames and the pieces' ends snap to:
+    // a gap edge sits on the logical pixel grid, so the line, the frames and
+    // a 2x export (the 1x one doubled) all end on the same pixel (#249).
+    let scale = usable_scale(scale);
+    let grid = |v: f32| (v / scale).round() * scale;
+    // The pixel of visual fraction `f` across the plot (x, left to right)
+    // or up it (y, bottom to top): where the data pieces end.
+    let plot_x = |f: f64| plot.x + plot.width * f as f32;
+    let plot_y = |f: f64| plot.y + plot.height * (1.0 - f as f32);
+    // A piece's end along the line: the line's own end at the plot's edges,
+    // the gap edge on the pixel grid inside the plot.
+    let end_at = |f: f64| {
+        if f <= 0.0 || f >= 1.0 {
+            return at(f);
+        }
+        if horizontal {
+            (grid(plot_x(f)), p0.1)
+        } else {
+            (p0.0, grid(plot_y(f)))
+        }
+    };
     for band in map.pieces() {
         let (a, b) = visual(band);
-        each(AxisStroke::Line, at(a), at(b));
+        each(AxisStroke::Line, end_at(a), end_at(b));
     }
     if let Some(crate::config::AxisBreaks {
         frame_each_panel: true,
@@ -269,27 +401,85 @@ fn each_broken_axis_line(
             Side::Bottom => y0 += short,
             Side::Top => y1 -= short,
         }
-        // The frame's centre on the logical pixel grid: a stroke of `w`
-        // logical pixels centred at `k + w / 2` covers whole pixels (the
-        // raster floors a thinner stroke to one pixel), and the same grid
-        // scaled keeps 2x the 1x frame doubled.
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
+        // A frame stands on its piece's edge in the plot (where the data
+        // pieces end, `BreakMap` over the plot's width or height), on the
+        // logical pixel grid and inside its own piece: a stroke of `w`
+        // logical pixels centred at `k ± w / 2` covers whole pixels (the
+        // raster floors a thinner stroke to one pixel), the same grid
+        // scaled keeps 2x the 1x frame doubled, and both sides of a gap
+        // keep the gap's own width between their frames (#249).
+        // `dir` is the pixel direction into the piece: +1 right or down.
+        let snap_in = |width: f32, v: f32, dir: f32| snap_into_piece(width, v, dir, scale);
+        // The perpendicular axis' pieces along a frame, as `(from, to)` in
+        // its visual fractions (0 at the left or bottom): the frame is
+        // drawn over each piece and stops at each gap. An unbroken `across`
+        // is one piece.
+        let across_side = if horizontal { Side::Left } else { Side::Bottom };
+        let other = across
+            .map(|o| crate::layout::BreakMap::of(o, axis_len(&across_side, plot)))
+            .filter(crate::layout::BreakMap::is_broken);
+        let other_visual = |(a, b): (f64, f64)| match across {
+            Some(o) if o.inverted => (1.0 - b, 1.0 - a),
+            _ => (a, b),
         };
-        let half = (axis.line_width / scale).max(1.0) * 0.5;
-        let snap = |v: f32| ((v / scale - half).round() + half) * scale;
+        // Where visual fraction `f` of `across` falls along a frame, on the
+        // perpendicular axis' own frame grid when it frames its pieces, so
+        // the two frames meet; the plot's ends stay the frame's own ends.
+        let other_framed = across
+            .and_then(|o| o.breaks.as_ref())
+            .is_some_and(|b| b.frame_each_panel);
+        let other_width = across.map_or(axis.line_width, |o| o.line_width);
+        // `start` is whether `f` starts its piece (the piece lies above or
+        // to the right of it) or ends it.
+        let along = |f: f64, from: f32, to: f32, start: bool| {
+            if f <= 0.0 {
+                return from;
+            }
+            if f >= 1.0 {
+                return to;
+            }
+            let (v, dir) = if horizontal {
+                // A vertical frame runs along the y axis, bottom to top.
+                (plot_y(f), if start { -1.0 } else { 1.0 })
+            } else {
+                (plot_x(f), if start { 1.0 } else { -1.0 })
+            };
+            if other_framed {
+                snap_in(other_width, v, dir)
+            } else {
+                v
+            }
+        };
         for (k, knot) in map.knots().iter().enumerate() {
             let (a, b) = visual((knot.start, knot.end));
             for (end, f) in [a, b].into_iter().enumerate() {
-                let (x, y) = at(f);
+                // End 0 closes the piece before the gap (left or below),
+                // end 1 opens the one after it.
+                let closes = end == 0;
                 let (u, v) = if horizontal {
-                    ((snap(x), y0), (snap(x), y1))
+                    let dir = if closes { -1.0 } else { 1.0 };
+                    let x = snap_in(axis.line_width, plot_x(f), dir);
+                    ((x, y0), (x, y1))
                 } else {
-                    ((x0, snap(y)), (x1, snap(y)))
+                    let dir = if closes { 1.0 } else { -1.0 };
+                    let y = snap_in(axis.line_width, plot_y(f), dir);
+                    ((x0, y), (x1, y))
                 };
-                each(AxisStroke::Frame(k, end), u, v);
+                let Some(other) = &other else {
+                    each(AxisStroke::Frame(k, end), u, v);
+                    continue;
+                };
+                for piece in other.pieces() {
+                    let (from, to) = other_visual(piece);
+                    if horizontal {
+                        // From the bottom (`y1`) to the top (`y0`).
+                        let (lo, hi) = (along(from, y1, y0, true), along(to, y1, y0, false));
+                        each(AxisStroke::Frame(k, end), (u.0, hi), (u.0, lo));
+                    } else {
+                        let (lo, hi) = (along(from, x0, x1, true), along(to, x0, x1, false));
+                        each(AxisStroke::Frame(k, end), (lo, u.1), (hi, u.1));
+                    }
+                }
             }
         }
     }
@@ -306,7 +496,8 @@ fn each_broken_axis_line(
     for (k, knot) in map.knots().iter().enumerate() {
         let (a, b) = visual((knot.start, knot.end));
         for (end, f) in [a, b].into_iter().enumerate() {
-            let (x, y) = at(f);
+            // Centred on the piece's end, where the line stops.
+            let (x, y) = end_at(f);
             let (u, v) = if horizontal {
                 ((x - along, y + across), (x + along, y - across))
             } else {
@@ -345,7 +536,7 @@ pub fn each_colorbar_axis_stroke(
         .map(|v| (*v, axis.major_tick_length))
         .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)));
     for (i, (value, length)) in ticks.enumerate() {
-        let pos = point_on_rect_side(axis_fraction(value, axis), &side, rect);
+        let pos = point_on_rect_side(axis_fraction(value, axis, &side, rect), &side, rect);
         if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
             each(AxisStroke::Tick(i), a, b);
         }
@@ -406,7 +597,7 @@ mod break_tests {
         axis.line_visible = true;
         axis.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(15.0, 85.0)],
-            gap: 0.1,
+            gap_px: 20.0,
             mark,
             ..AxisBreaks::default()
         });
@@ -444,6 +635,7 @@ mod break_tests {
                 Side::Left,
                 &PLOT,
                 None,
+                None,
                 &NoMeasure,
                 &majors,
                 1.0,
@@ -456,10 +648,11 @@ mod break_tests {
             assert_eq!(lines.len(), 2, "one segment per piece");
             assert_eq!(marks.len(), slashes);
             // Neither segment crosses the gap: the lower piece ends where
-            // the gap starts and the upper one begins where it ends.
-            let map = crate::layout::BreakMap::of(&axis);
+            // the gap starts and the upper one begins where it ends, each
+            // on the pixel grid where the data pieces end (#249).
+            let map = crate::layout::BreakMap::of(&axis, PLOT.height);
             let knot = map.knots()[0];
-            let y_at = |f: f64| PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f as f32;
+            let y_at = |f: f64| (PLOT.y + PLOT.height * (1.0 - f as f32)).round();
             let (lower, upper) = (lines[0], lines[1]);
             assert!((lower.1.1 - y_at(knot.start)).abs() < 1e-3, "{lower:?}");
             assert!((upper.0.1 - y_at(knot.end)).abs() < 1e-3, "{upper:?}");
@@ -529,7 +722,7 @@ mod break_tests {
         config.grid.show_major_y = true;
         config.grid.show_minor_x = false;
         config.grid.show_minor_y = false;
-        let map = crate::layout::BreakMap::of(&config.left_y);
+        let map = crate::layout::BreakMap::of(&config.left_y, PLOT.height);
         let knot = map.knots()[0];
         let gap = (
             PLOT.y + PLOT.height * (1.0 - knot.end as f32),
@@ -545,6 +738,7 @@ mod break_tests {
                     segments.push((a, b));
                 }
             }),
+            1.0,
         );
         let vertical: Vec<_> = segments.iter().filter(|(a, b)| a[0] == b[0]).collect();
         assert!(!vertical.is_empty());
@@ -596,8 +790,8 @@ mod break_tests {
                 "{cuts:?}"
             );
             let (a, b) = (
-                crate::layout::BreakMap::of(&top),
-                crate::layout::BreakMap::of(&config.bottom_x),
+                crate::layout::BreakMap::of(&top, PLOT.width),
+                crate::layout::BreakMap::of(&config.bottom_x, PLOT.width),
             );
             // The same gap on screen: mirrored back on an inverted axis.
             let (ka, kb) = (a.knots()[0], b.knots()[0]);
@@ -650,6 +844,7 @@ mod break_tests {
                     side.clone(),
                     &PLOT,
                     None,
+                    None,
                     &NoMeasure,
                     &[],
                     1.0,
@@ -659,16 +854,20 @@ mod break_tests {
                         }
                     },
                 );
-                // A frame's centre is snapped to the pixel grid (#205).
+                // A frame stands on its piece's edge in the plot, snapped to
+                // the pixel grid (#205) and inside its own piece (#249).
                 let half = axis.line_width.max(1.0) * 0.5;
-                let snap = |v: f32| (v - half).round() + half;
                 assert_eq!(frames.len(), expected, "{style:?} frame {frame}");
-                let knot = crate::layout::BreakMap::of(&axis).knots()[0];
+                let len = axis_len(&side, &PLOT);
+                let knot = crate::layout::BreakMap::of(&axis, len).knots()[0];
+                let mut centres = [0.0f32; 2];
                 for (k, end, a, b) in frames {
                     assert_eq!(k, 0);
                     let f = if end == 0 { knot.start } else { knot.end } as f32;
+                    let into = if end == 0 { -1.0 } else { 1.0 };
                     if matches!(side, Side::Left) {
-                        let y = snap(PLOT.y + PLOT.height - 0.5 - (PLOT.height - 1.0) * f);
+                        let y = (PLOT.y + PLOT.height * (1.0 - f)).round() - into * half;
+                        centres[end] = y;
                         assert!((a.1 - y).abs() < 1e-3 && (b.1 - y).abs() < 1e-3);
                         let short = axis.line_width;
                         assert_eq!(
@@ -676,7 +875,8 @@ mod break_tests {
                             (PLOT.x + 0.5, PLOT.x + PLOT.width - 0.5 - short)
                         );
                     } else {
-                        let x = snap(PLOT.x + 0.5 + (PLOT.width - 1.0) * f);
+                        let x = (PLOT.x + PLOT.width * f).round() + into * half;
+                        centres[end] = x;
                         assert!((a.0 - x).abs() < 1e-3 && (b.0 - x).abs() < 1e-3);
                         let short = axis.line_width;
                         assert_eq!(
@@ -685,7 +885,93 @@ mod break_tests {
                         );
                     }
                 }
+                // The clear space between the two frames is the gap's own
+                // width in pixels, to the rounding of its two edges.
+                if expected > 0 {
+                    let clear = (centres[1] - centres[0]).abs() - 2.0 * half;
+                    let gap_px = axis.breaks.as_ref().unwrap().gap_px;
+                    assert!(
+                        (clear - gap_px).abs() <= 1.0,
+                        "{side:?}: {clear} vs {gap_px}"
+                    );
+                }
             }
         }
+    }
+
+    /// #249: when both axes are broken, each frame stops at the other
+    /// axis' gap, on that axis' frame, so the gaps meet as a cross: one
+    /// frame segment per piece of the other axis, none inside its gap.
+    #[test]
+    fn frames_of_two_broken_axes_meet_as_a_cross() {
+        let y = broken(BreakMark::None);
+        let mut x = broken(BreakMark::None);
+        x.line_width = 1.0;
+        let collect = |axis: &AxisOptions, side: Side, across: &AxisOptions| {
+            let mut frames = Vec::new();
+            each_axis_stroke(
+                axis,
+                side,
+                &PLOT,
+                None,
+                Some(across),
+                &NoMeasure,
+                &[],
+                1.0,
+                |stroke, a, b| {
+                    if let AxisStroke::Frame(k, end) = stroke {
+                        frames.push((k, end, a, b));
+                    }
+                },
+            );
+            frames
+        };
+        let half = y.line_width.max(1.0) * 0.5;
+        let knot = crate::layout::BreakMap::of(&x, PLOT.width).knots()[0];
+        let y_knot = crate::layout::BreakMap::of(&y, PLOT.height).knots()[0];
+        // The y axis' frames run along x: two frames, each cut at x's gap.
+        let y_frames = collect(&y, Side::Left, &x);
+        assert_eq!(y_frames.len(), 4, "{y_frames:?}");
+        // x's frames, each inside its own piece (#249).
+        let gap_x = (
+            (PLOT.x + PLOT.width * knot.start as f32).round() - half,
+            (PLOT.x + PLOT.width * knot.end as f32).round() + half,
+        );
+        for (_, _, a, b) in &y_frames {
+            let (lo, hi) = (a.0.min(b.0), a.0.max(b.0));
+            assert!(
+                hi <= gap_x.0 + 1e-3 || lo >= gap_x.1 - 1e-3,
+                "{a:?} {b:?} in {gap_x:?}"
+            );
+        }
+        assert!(
+            y_frames
+                .iter()
+                .any(|(_, _, _, b)| (b.0 - gap_x.0).abs() < 1e-3)
+        );
+        assert!(
+            y_frames
+                .iter()
+                .any(|(_, _, a, _)| (a.0 - gap_x.1).abs() < 1e-3)
+        );
+        // The x axis' frames run along y and stop at y's gap likewise.
+        let x_frames = collect(&x, Side::Bottom, &y);
+        assert_eq!(x_frames.len(), 4, "{x_frames:?}");
+        let gap_y = (
+            (PLOT.y + PLOT.height * (1.0 - y_knot.end as f32)).round() - half,
+            (PLOT.y + PLOT.height * (1.0 - y_knot.start as f32)).round() + half,
+        );
+        for (_, _, a, b) in &x_frames {
+            let (lo, hi) = (a.1.min(b.1), a.1.max(b.1));
+            assert!(
+                hi <= gap_y.0 + 1e-3 || lo >= gap_y.1 - 1e-3,
+                "{a:?} {b:?} in {gap_y:?}"
+            );
+        }
+        // An unbroken axis across leaves each frame whole.
+        let mut plain = crate::default::default_axis_options_x();
+        plain.min = 0.0;
+        plain.max = 100.0;
+        assert_eq!(collect(&y, Side::Left, &plain).len(), 2);
     }
 }

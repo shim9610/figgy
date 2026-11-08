@@ -2,6 +2,8 @@
 //! CPU and composited in the data slot. Every test exports at 1x and 2x.
 
 use test_gpu::BlockOn as _;
+#[path = "support/playground_scenes.rs"]
+mod scenes;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -284,7 +286,7 @@ fn a_continuous_break_moves_the_levels_with_the_axis_and_draws_none_in_the_gap()
     chart.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(25.0, 35.0)],
         style: AxisBreakStyle::Continuous,
-        gap: 12.0,
+        gap_px: 24.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),
@@ -500,7 +502,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
     chart.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(25.0, 35.0)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.2,
+        gap_px: 40.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),
@@ -1573,4 +1575,278 @@ fn a_held_display_keeps_its_scale_and_origin_while_a_frame_grows_the_document() 
         "released, the document fits the surface again"
     );
     assert!(fitted < 2.0);
+}
+
+/// Whether `a` and `b` overlap by more than a hair.
+fn rects_overlap(a: renderer::layout::RectF, b: renderer::layout::RectF) -> bool {
+    a.x < b.x + b.width - 0.5
+        && b.x < a.x + a.width - 0.5
+        && a.y < b.y + b.height - 0.5
+        && b.y < a.y + a.height - 0.5
+}
+
+/// The drawn level and band labels of `records` in `placement` that lie
+/// on a level stroke or band fill of another column, on a limit line or on
+/// another drawn label, and the transition labels that lie on another
+/// drawn label, described.
+fn labels_on_other_columns(
+    placement: &renderer::energy_levels::LevelPlacement<'_>,
+    records: &EnergyLevelSeries,
+    style: &renderer::energy_levels::EnergyLevelStyle,
+    measure: &renderer::CpuTextMeasure,
+) -> Vec<String> {
+    use renderer::energy_levels::LabelPart;
+    use renderer::layout::RectF;
+    let layout = placement.layout(records, style, measure);
+    let half = style.level.width / 2.0;
+    let stroke_rect = |row: usize| {
+        placement
+            .level_stroke(records, style, row)
+            .map(|(a, b)| RectF {
+                x: a[0].min(b[0]),
+                y: a[1] - half,
+                width: (b[0] - a[0]).abs(),
+                height: half * 2.0,
+            })
+    };
+    let row_of = |id: &str| records.levels.iter().position(|l| l.id == id);
+    // Every obstacle with the column it belongs to.
+    let mut obstacles: Vec<(RectF, &str, String)> = Vec::new();
+    for (row, level) in records.levels.iter().enumerate() {
+        if let Some(rect) = stroke_rect(row) {
+            obstacles.push((rect, level.column.as_str(), format!("level {}", level.id)));
+        }
+    }
+    for band in &records.bands {
+        let (Some(first), Some(last)) = (row_of(&band.first), row_of(&band.last)) else {
+            continue;
+        };
+        if let (Some(a), Some(b)) = (stroke_rect(first), stroke_rect(last)) {
+            let top = a.y.min(b.y);
+            let bottom = (a.y + a.height).max(b.y + b.height);
+            obstacles.push((
+                RectF {
+                    x: a.x,
+                    y: top,
+                    width: a.width,
+                    height: bottom - top,
+                },
+                band.column.as_str(),
+                format!("band {}", band.id),
+            ));
+        }
+    }
+    // The limit lines, across the plot: no column owns them.
+    for (index, limit) in records.limits.iter().enumerate() {
+        if let Some((a, b)) = placement.limit_line(records, index) {
+            obstacles.push((
+                RectF {
+                    x: a[0],
+                    y: a[1] - 0.5,
+                    width: b[0] - a[0],
+                    height: 1.0,
+                },
+                "",
+                format!("limit {}", limit.id),
+            ));
+        }
+    }
+    let mut found = Vec::new();
+    let mut drawn: Vec<(String, RectF)> = Vec::new();
+    for (part, len) in [
+        (LabelPart::Level, records.levels.len()),
+        (LabelPart::Band, records.bands.len()),
+        (LabelPart::Transition, records.transitions.len()),
+    ] {
+        for index in 0..len {
+            let Some(text) = placement.label(records, style, &layout, part, index, measure) else {
+                continue;
+            };
+            let (column, id) = match part {
+                LabelPart::Level => (&records.levels[index].column, &records.levels[index].id),
+                LabelPart::Band => (&records.bands[index].column, &records.bands[index].id),
+                _ => {
+                    // A transition label crosses columns: only other labels
+                    // count against it.
+                    let rect = text.rect();
+                    let id = &records.transitions[index].id;
+                    for (name, other) in &drawn {
+                        if rects_overlap(rect, *other) {
+                            found.push(format!("{part:?} {id} on label {name}"));
+                        }
+                    }
+                    drawn.push((format!("{part:?} {id}"), rect));
+                    continue;
+                }
+            };
+            let rect = text.rect();
+            for (obstacle, owner, name) in &obstacles {
+                if *owner != column.as_str() && rects_overlap(rect, *obstacle) {
+                    found.push(format!("{part:?} {id} on {name}"));
+                }
+            }
+            for (name, other) in &drawn {
+                if rects_overlap(rect, *other) {
+                    found.push(format!("{part:?} {id} on label {name}"));
+                }
+            }
+            drawn.push((format!("{part:?} {id}"), rect));
+        }
+    }
+    found
+}
+
+/// The level placement of every energy-level series in `config`'s panels.
+fn each_level_panel(
+    config: &renderer::Config,
+    series: &[SeriesConfig],
+    mut each: impl FnMut(
+        &renderer::energy_levels::LevelPlacement<'_>,
+        &EnergyLevelSeries,
+        &EnergyLevelSeries,
+        &renderer::CpuTextMeasure,
+    ),
+) {
+    let expansion = config.expand().expect("the scene expands");
+    for panel in &expansion.panels {
+        let panel = &panel.config;
+        let Some(categories) = panel.bottom_x.categories.as_deref() else {
+            continue;
+        };
+        let space = renderer::annotation::pixel_space_for_config(panel);
+        let measure = renderer::CpuTextMeasure::for_style(&panel.draw_style);
+        for cfg in series {
+            let Some(levels) = cfg.energy_levels() else {
+                continue;
+            };
+            let records = match &levels.source {
+                None => levels,
+                Some(source) => match series
+                    .iter()
+                    .find(|s| s.series_id == *source)
+                    .and_then(SeriesConfig::energy_levels)
+                {
+                    Some(found) => found,
+                    None => continue,
+                },
+            };
+            let placement = renderer::energy_levels::LevelPlacement {
+                space: &space,
+                categories,
+                view: levels.show,
+                colorbar: panel.colorbar.as_ref(),
+                picked: None,
+            };
+            each(&placement, levels, records, &measure);
+        }
+    }
+}
+
+// #248: a level label that would lie on the next column's band is drawn on
+// its column's other side; the same label dragged by the host keeps its
+// side.
+#[test]
+fn a_label_on_the_next_column_moves_to_its_other_side() {
+    use renderer::energy_levels::{LabelPart, LevelBand};
+    let chart = chart();
+    let long = |id: &str, column: &str, energy: f64| EnergyLevel {
+        label: Some(renderer::text::RichText::plain(
+            "wide label",
+            Color::BLACK,
+            12.0,
+            "",
+        )),
+        ..level(id, column, energy)
+    };
+    let mut levels = EnergyLevelSeries::default();
+    levels.levels.push(long("x", "b", 50.0));
+    for k in 0..6 {
+        levels
+            .levels
+            .push(level(&format!("c{k}"), "c", 40.0 + 4.0 * k as f64));
+    }
+    levels.bands.push(LevelBand {
+        id: "c-band".into(),
+        column: "c".into(),
+        first: "c0".into(),
+        last: "c5".into(),
+        label: None,
+        label_offset: [0.0; 2],
+    });
+    let (space, measure) = layout_of(&chart, &levels);
+    let placement = renderer::energy_levels::LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap(),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let label_x = |levels: &EnergyLevelSeries| {
+        let layout = placement.layout(levels, &levels.style, &measure);
+        placement
+            .label(
+                levels,
+                &levels.style,
+                &layout,
+                LabelPart::Level,
+                0,
+                &measure,
+            )
+            .expect("the label is drawn")
+            .rect()
+    };
+    let (a, _) = placement
+        .level_stroke(&levels, &levels.style, 0)
+        .expect("the level is drawn");
+    // On its right it would reach the band of column c.
+    let mut right = levels.clone();
+    right.style.label_side = renderer::energy_levels::LevelLabelSide::Right;
+    right.levels[0].label_offset = [0.0, 0.5];
+    assert!(
+        !labels_on_other_columns(&placement, &right, &right.style, &measure).is_empty(),
+        "the fixture puts the right-hand label on the band"
+    );
+    let rect = label_x(&right);
+    assert!(rect.x > a[0], "a dragged label keeps its side: {rect:?}");
+    // Undragged, it moves left of its stroke and clear of the band.
+    let rect = label_x(&levels);
+    assert!(
+        rect.x + rect.width <= a[0],
+        "the label is left of its stroke: {rect:?}, stroke from {}",
+        a[0]
+    );
+    assert!(labels_on_other_columns(&placement, &levels, &levels.style, &measure).is_empty());
+}
+
+// #248: in the He, Ar, Cu, U and every-level Ar scenes no drawn level or
+// band label lies on another column's level stroke or band fill, on a limit
+// line, or on another label, and no transition label on another label.
+#[test]
+fn scene_level_labels_stay_off_other_columns() {
+    let mut r = renderer();
+    let mut all = Vec::new();
+    for kind in [
+        scenes::SceneKind::EnergyLevels,
+        scenes::SceneKind::EnergyLevelsAr,
+        scenes::SceneKind::EnergyLevelsCu,
+        scenes::SceneKind::EnergyLevelsU,
+        scenes::SceneKind::EnergyLevelsArAll,
+    ] {
+        let scene = scenes::build(&mut r, kind, 1_000).expect("scene");
+        let mut found = Vec::new();
+        each_level_panel(
+            &scene.config,
+            &scene.series,
+            |placement, levels, records, measure| {
+                found.extend(labels_on_other_columns(
+                    placement,
+                    records,
+                    &levels.style,
+                    measure,
+                ));
+            },
+        );
+        all.extend(found.into_iter().map(|f| format!("{kind:?}: {f}")));
+    }
+    assert!(all.is_empty(), "{all:#?}");
 }

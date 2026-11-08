@@ -1317,10 +1317,10 @@ impl LevelPlacement<'_> {
             LevelLabelSide::Left => Some(LevelLabelSide::Right),
             LevelLabelSide::Above => None,
         };
+        let outside = |rect: crate::layout::RectF| {
+            rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5
+        };
         if let Some(other) = flip {
-            let outside = |rect: crate::layout::RectF| {
-                rect.x < plot.x - 0.5 || rect.x + rect.width > plot.x + plot.width + 0.5
-            };
             let mut flipped: Vec<&str> = Vec::new();
             for index in 0..items {
                 let Some(column) = Self::item_column(records, index) else {
@@ -1369,6 +1369,15 @@ impl LevelPlacement<'_> {
         let mut level_shift = vec![[0.0f32; 2]; items];
         let mut hidden = vec![false; items];
         let mut brackets: Vec<(usize, usize)> = Vec::new();
+        // Per item, its label on each side (right, left, above),
+        // unshifted, measured the first time it is asked for: a shift
+        // only translates it.
+        let unshifted: Vec<[std::cell::OnceCell<Option<crate::layout::RectF>>; 3]> =
+            (0..items).map(|_| Default::default()).collect();
+        // Per item, an item of the stacked group or collapsed run it moves
+        // with (#248): the group's first label, or the first end of the
+        // bracket that hid it.
+        let mut root: Vec<usize> = (0..items).collect();
         let mut placed: Vec<(usize, f32, f32)> = Vec::new();
         for index in 0..items {
             let Some(text) = self.label_at(
@@ -1383,6 +1392,12 @@ impl LevelPlacement<'_> {
                 continue;
             };
             let rect = text.rect();
+            let slot = match level_side[index] {
+                LevelLabelSide::Right => 0,
+                LevelLabelSide::Left => 1,
+                LevelLabelSide::Above => 2,
+            };
+            unshifted[index][slot].get_or_init(|| Some(rect));
             placed.push((index, rect.y + rect.height / 2.0, rect.height));
         }
         placed.sort_by(|a, b| {
@@ -1413,6 +1428,7 @@ impl LevelPlacement<'_> {
                 if j + 1 - k >= COLLAPSE_COUNT {
                     for m in &lane_run[k + 1..j] {
                         hidden[m.0] = true;
+                        root[m.0] = lane_run[k].0;
                     }
                     kept.push(lane_run[k]);
                     kept.push(lane_run[j]);
@@ -1490,6 +1506,7 @@ impl LevelPlacement<'_> {
                         if j >= k + 2 {
                             for m in &members[k + 1..j] {
                                 hidden[m.0] = true;
+                                root[m.0] = members[k].0;
                             }
                             next.push(members[k]);
                             next.push(members[j]);
@@ -1505,6 +1522,7 @@ impl LevelPlacement<'_> {
                         next.truncate(next.len() - members.len());
                         for m in &members[1..members.len() - 1] {
                             hidden[m.0] = true;
+                            root[m.0] = members[0].0;
                         }
                         next.push(members[0]);
                         next.push(members[members.len() - 1]);
@@ -1524,6 +1542,13 @@ impl LevelPlacement<'_> {
                 let moved = last > first;
                 let mut y = top;
                 for &(index, centre, height) in members {
+                    // A group can hold labels of the two columns either
+                    // side of its gap; each column's part is a unit.
+                    let column = Self::item_column(records, index);
+                    root[index] = members
+                        .iter()
+                        .find(|m| Self::item_column(records, m.0) == column)
+                        .map_or(index, |m| m.0);
                     let new_centre = y + height / 2.0;
                     level_shift[index] =
                         [if moved { LEADER_RUN } else { 0.0 }, new_centre - centre];
@@ -1532,10 +1557,25 @@ impl LevelPlacement<'_> {
             }
             start = end;
         }
-        // Transition labels: the first spot along each arrow, right of it
-        // then left, clear of the level labels, the strokes, the other
-        // arrows and the labels placed before it; when none is clear, the
-        // middle.
+        // A bracket whose end a later collapse hid is part of the
+        // larger bracket now.
+        brackets.retain(|&(a, b)| !hidden[a] && !hidden[b]);
+        brackets.sort_unstable();
+        brackets.dedup();
+        // Resolve each item to the root of its unit: a hidden end
+        // points at the end that hid it, which belongs to a group.
+        for item in 0..items {
+            let mut r = root[item];
+            let mut steps = 0;
+            while root[r] != r && steps < items {
+                r = root[r];
+                steps += 1;
+            }
+            root[item] = r;
+        }
+        // The level strokes and band fills, sorted by their tops: the
+        // obstacles a level label keeps clear of (#248) and, with the level
+        // labels added below, a transition label.
         let mut obstacles: Vec<crate::layout::RectF> = Vec::new();
         for index in 0..records.levels.len() {
             if let Some((a, b)) = self.level_stroke(records, style, index) {
@@ -1553,17 +1593,323 @@ impl LevelPlacement<'_> {
                 obstacles.push(rect);
             }
         }
+        obstacles.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+        let rect_of = |item: usize, shift: [f32; 2], side: LevelLabelSide| {
+            let (slot, run) = match side {
+                LevelLabelSide::Right => (0, shift[0]),
+                LevelLabelSide::Left => (1, -shift[0]),
+                LevelLabelSide::Above => (2, 0.0),
+            };
+            unshifted[item][slot]
+                .get_or_init(|| {
+                    self.label_on(records, style, &inner, item, measure, [0.0; 2], side)
+                        .map(|t| t.rect())
+                })
+                .map(|r| crate::layout::RectF {
+                    x: r.x + run,
+                    y: r.y + shift[1],
+                    ..r
+                })
+        };
+        // Labels that lie on a stroke, fill or limit line or meet another
+        // label move (#248): a stacked group or collapsed run as one unit, or one of
+        // its labels alone, to its column's other side, above its stroke,
+        // or up or down, wherever it overlaps least within the plot. A
+        // label beside its own column never reaches that column's strokes
+        // or fill, so they count only above it. A unit with a label the
+        // host moved keeps its place.
+        if flip.is_some() {
+            let tallest = obstacles.iter().map(|o| o.height).fold(0.0f32, f32::max);
+            // The strokes, fills and limit lines a rect overlaps.
+            let hits = |rect: crate::layout::RectF| {
+                let from = obstacles.partition_point(|o| o.y < rect.y - tallest - LABEL_CLEARANCE);
+                let to =
+                    obstacles.partition_point(|o| o.y <= rect.y + rect.height + LABEL_CLEARANCE);
+                let limits = (0..records.limits.len())
+                    .filter_map(|index| self.limit_line(records, index))
+                    .filter(|(a, _)| a[1] > rect.y && a[1] < rect.y + rect.height)
+                    .count();
+                obstacles[from..to.max(from)]
+                    .iter()
+                    .filter(|o| overlaps(**o, rect))
+                    .count()
+                    + limits
+            };
+            let inside = |rect: crate::layout::RectF| {
+                !outside(rect)
+                    && rect.y >= plot.y - 0.5
+                    && rect.y + rect.height <= plot.y + plot.height + 0.5
+            };
+            let host_moved = |item: usize| {
+                let levels = records.levels.len();
+                let offset = if item < levels {
+                    records.levels[item].label_offset
+                } else {
+                    records
+                        .bands
+                        .get(item - levels)
+                        .map_or([0.0; 2], |b| b.label_offset)
+                };
+                offset != [0.0; 2]
+            };
+            // Per item: its drawn rect; and the drawn items sorted by their
+            // tops, so a label meets only the ones whose rows reach it.
+            let mut rects: Vec<Option<crate::layout::RectF>> = (0..items)
+                .map(|item| {
+                    (!hidden[item])
+                        .then(|| rect_of(item, level_shift[item], level_side[item]))
+                        .flatten()
+                })
+                .collect();
+            let mut by_top: Vec<usize> = (0..items).filter(|&i| rects[i].is_some()).collect();
+            let top = |rects: &[Option<crate::layout::RectF>], i: usize| {
+                rects[i].map_or(f32::NEG_INFINITY, |r| r.y)
+            };
+            by_top.sort_by(|&a, &b| {
+                top(&rects, a)
+                    .partial_cmp(&top(&rects, b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let label_height = rects
+                .iter()
+                .flatten()
+                .map(|r| r.height)
+                .fold(0.0f32, f32::max);
+            // Whether two labels share ink: stacked labels stand a gap
+            // apart and never meet.
+            let meets = |a: crate::layout::RectF, b: crate::layout::RectF| {
+                a.x < b.x + b.width
+                    && b.x < a.x + a.width
+                    && a.y < b.y + b.height
+                    && b.y < a.y + a.height
+            };
+            // The overlaps of `members`, the labels `moving` names, when
+            // drawn at `place`: the strokes and fills they lie on and the other
+            // labels they meet; `None` when one would leave the plot.
+            let cost_of = |members: &[usize],
+                           moving: &dyn Fn(usize) -> bool,
+                           rects: &[Option<crate::layout::RectF>],
+                           by_top: &[usize],
+                           place: &dyn Fn(usize) -> Option<crate::layout::RectF>|
+             -> Option<usize> {
+                let mut cost = 0;
+                for &item in members.iter().filter(|&&i| !hidden[i]) {
+                    let Some(rect) = place(item) else {
+                        continue;
+                    };
+                    if !inside(rect) {
+                        return None;
+                    }
+                    cost += hits(rect);
+                    let from = by_top.partition_point(|&o| top(rects, o) < rect.y - label_height);
+                    let to = by_top.partition_point(|&o| top(rects, o) < rect.y + rect.height);
+                    cost += by_top[from..to.max(from)]
+                        .iter()
+                        .filter(|&&other| !moving(other))
+                        .filter_map(|&other| rects[other])
+                        .filter(|other| meets(*other, rect))
+                        .count();
+                }
+                Some(cost)
+            };
+            // A label that ends a bracket stays with its run.
+            let bracket_end = |item: usize| brackets.iter().any(|&(a, b)| a == item || b == item);
+            // The vertical moves a lone label may take, in quarters of a
+            // label height; a stack of several moves by at most
+            // `STACK_NUDGE` heights, so its leaders stay short.
+            const STACK_NUDGE: f32 = 1.0;
+            const NUDGES: [f32; 17] = [
+                0.0, -0.25, 0.25, -0.5, 0.5, -0.75, 0.75, -1.0, 1.0, -1.25, 1.25, -1.5, 1.5, -2.0,
+                2.0, -2.5, 2.5,
+            ];
+            // Sweeps over the units: each takes its first place of least
+            // overlap (a unit, or one label of a stack taken out of it
+            // alone) as soon as one overlaps less, until a sweep moves
+            // nothing. A move lowers the overlaps of what moved, and two
+            // labels that meet count for both, so the strokes and fills
+            // under every label plus the pairs of labels of different
+            // units that meet fall with each move: the sweeps end.
+            let mut by_unit: Vec<usize> = (0..items).collect();
+            loop {
+                by_unit.sort_by_key(|&i| root[i]);
+                let mut swept = false;
+                let mut first = 0;
+                while first < items {
+                    let key = root[by_unit[first]];
+                    let mut past = first + 1;
+                    while past < items && root[by_unit[past]] == key {
+                        past += 1;
+                    }
+                    let chunk = &by_unit[first..past];
+                    first = past;
+                    // The chunk's labels still in its unit: an earlier move
+                    // of this sweep may have taken one out.
+                    let unit = root[chunk[0]];
+                    let mut taken = false;
+                    let lone_count = chunk.iter().filter(|&&i| root[i] == unit).count();
+                    for single in std::iter::once(None).chain(chunk.iter().copied().map(Some)) {
+                        if taken {
+                            break;
+                        }
+                        let unit = match single {
+                            Some(one) => {
+                                if root[one] != unit
+                                    || lone_count < 2
+                                    || hidden[one]
+                                    || bracket_end(one)
+                                    || rects[one].is_none()
+                                {
+                                    continue;
+                                }
+                                unit
+                            }
+                            None => unit,
+                        };
+                        let moving = |i: usize| match single {
+                            Some(one) => i == one,
+                            None => root[i] == unit,
+                        };
+                        let in_unit = |i: &&usize| root[**i] == unit;
+                        if chunk.iter().filter(in_unit).any(|&i| host_moved(i))
+                            || chunk
+                                .iter()
+                                .filter(in_unit)
+                                .any(|&i| level_side[i] == LevelLabelSide::Above)
+                        {
+                            break;
+                        }
+                        let one;
+                        let moved_items: &[usize] = match single {
+                            Some(item) => {
+                                one = [item];
+                                &one[..]
+                            }
+                            None => chunk,
+                        };
+                        let current = |item: usize| if moving(item) { rects[item] } else { None };
+                        let Some(now) = cost_of(moved_items, &moving, &rects, &by_top, &current)
+                        else {
+                            continue;
+                        };
+                        if now == 0 {
+                            // A unit clear of everything has no label that
+                            // is not: its stacked labels never meet.
+                            if single.is_none() {
+                                break;
+                            }
+                            continue;
+                        }
+                        let height = moved_items
+                            .iter()
+                            .filter(|&&i| moving(i))
+                            .filter_map(|&i| rects[i])
+                            .map(|r| r.height)
+                            .fold(0.0f32, f32::max)
+                            .max(1.0);
+                        let side = level_side[moved_items
+                            .iter()
+                            .copied()
+                            .find(|&i| moving(i))
+                            .unwrap_or(unit)];
+                        let other = match side {
+                            LevelLabelSide::Right => LevelLabelSide::Left,
+                            _ => LevelLabelSide::Right,
+                        };
+                        let place_at = |item: usize, to: LevelLabelSide, dy: f32| {
+                            let shift = level_shift[item];
+                            let moved = dy != 0.0 || shift[0] != 0.0;
+                            let shift = match to {
+                                LevelLabelSide::Above => [0.0; 2],
+                                _ => [if moved { LEADER_RUN } else { 0.0 }, shift[1] + dy],
+                            };
+                            (shift, rect_of(item, shift, to))
+                        };
+                        // Nearest first: the other side at the same height,
+                        // a lone label above its stroke, then each nudge on
+                        // either side; a later place must overlap less.
+                        let lone = lone_count == 1 || single.is_some();
+                        let candidates = std::iter::once((other, 0.0))
+                            .chain(lone.then_some((LevelLabelSide::Above, 0.0)))
+                            .chain(
+                                NUDGES[1..]
+                                    .iter()
+                                    .filter(|n| lone || n.abs() <= STACK_NUDGE)
+                                    .flat_map(|&n| [(side, n * height), (other, n * height)]),
+                            );
+                        let mut best: Option<(usize, LevelLabelSide, f32)> = None;
+                        for (to, dy) in candidates {
+                            let place = |item: usize| {
+                                if moving(item) {
+                                    place_at(item, to, dy).1
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(cost) =
+                                cost_of(moved_items, &moving, &rects, &by_top, &place)
+                                && cost < best.map_or(now, |(c, _, _)| c)
+                            {
+                                best = Some((cost, to, dy));
+                                if cost == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        let Some((_, to, dy)) = best else {
+                            continue;
+                        };
+                        // A label taken out of its stack is a unit of its
+                        // own; when it was the stack's root, the rest takes
+                        // its next label.
+                        if let Some(one) = single {
+                            if root[one] == one
+                                && let Some(&next) =
+                                    chunk.iter().find(|&&i| i != one && root[i] == one)
+                            {
+                                for &item in chunk {
+                                    if item != one && root[item] == one {
+                                        root[item] = next;
+                                    }
+                                }
+                            }
+                            root[one] = one;
+                        }
+                        for &item in moved_items {
+                            if single.is_none() && root[item] != unit {
+                                continue;
+                            }
+                            let held = level_shift[item];
+                            let moved = dy != 0.0 || held[0] != 0.0;
+                            let shift = match to {
+                                LevelLabelSide::Above => [0.0; 2],
+                                _ => [if moved { LEADER_RUN } else { 0.0 }, held[1] + dy],
+                            };
+                            level_shift[item] = shift;
+                            level_side[item] = to;
+                            rects[item] =
+                                (!hidden[item]).then(|| rect_of(item, shift, to)).flatten();
+                        }
+                        by_top.sort_by(|&a, &b| {
+                            top(&rects, a)
+                                .partial_cmp(&top(&rects, b))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        swept = true;
+                        taken = single.is_none();
+                    }
+                }
+                if !swept {
+                    break;
+                }
+            }
+        }
+        // Transition labels: the first spot along each arrow, right of it
+        // then left, clear of the level labels, the strokes, the other
+        // arrows and the labels placed before it; when none is clear, the
+        // middle.
         for index in (0..items).filter(|i| !hidden[*i]) {
-            if let Some(text) = self.label_at(
-                records,
-                style,
-                &inner,
-                index,
-                measure,
-                level_shift[index],
-                level_side[index],
-            ) {
-                obstacles.push(text.rect());
+            if let Some(rect) = rect_of(index, level_shift[index], level_side[index]) {
+                obstacles.push(rect);
             }
         }
         // The strokes and level labels sorted by their tops, so a spot
@@ -1641,11 +1987,6 @@ impl LevelPlacement<'_> {
             placed_labels.push(rect);
             transition_spot[index] = Some(spot);
         }
-        // A bracket whose end a later collapse hid is part of the larger
-        // bracket now.
-        brackets.retain(|&(a, b)| !hidden[a] && !hidden[b]);
-        brackets.sort_unstable();
-        brackets.dedup();
         LevelLayout {
             arrows,
             level_shift,
@@ -2323,8 +2664,9 @@ impl crate::config::Config {
         let marker = self.subplots.get(subplot)?.marker.as_ref()?;
         let [[x0, x1], [y0, y1]] = marker.window.or_else(|| self.inset_window(subplot))?;
         let plot = RectF::from_rect(&self.data_area().ok()?.0);
-        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x) * plot.width;
-        let py = |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y)) * plot.height;
+        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x, plot.width) * plot.width;
+        let py =
+            |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y, plot.height)) * plot.height;
         let (a, b) = (px(x0), px(x1));
         let (c, d) = (py(y0), py(y1));
         if ![a, b, c, d].iter().all(|v| v.is_finite()) {

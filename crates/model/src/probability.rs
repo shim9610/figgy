@@ -576,7 +576,7 @@ mod axis_tests {
             let (low, high) = (scale.forward(0.001).unwrap(), scale.forward(0.999).unwrap());
             for p in [0.001, 0.02, 0.5, 0.9, 0.999] {
                 let want = (scale.forward(p).unwrap() - low) / (high - low);
-                let got = f64::from(axis_fraction(p, &a));
+                let got = f64::from(axis_fraction(p, &a, 100.0));
                 assert!((got - want).abs() < 1e-6, "{scale:?} {p}: {got} vs {want}");
             }
             let space = AxisSpace {
@@ -598,7 +598,7 @@ mod axis_tests {
         }
         // Normal and logistic paper are symmetric about 0.5.
         let a = axis(ProbabilityScale::Normal, 0.001, 0.999);
-        assert!((axis_fraction(0.5, &a) - 0.5).abs() < 1e-6);
+        assert!((axis_fraction(0.5, &a, 100.0) - 0.5).abs() < 1e-6);
         assert_eq!(guarded_probability_range(0.0, 2.0), (0.001, 0.999));
     }
 

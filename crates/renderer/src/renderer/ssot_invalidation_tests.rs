@@ -825,10 +825,10 @@ fn break_edits() -> Vec<Edit> {
         Pixels::Changed,
     );
     push(
-        "left_y.breaks.gap",
+        "left_y.breaks.gap_px",
         |c| {
             if let Some(b) = c.left_y.breaks.as_mut() {
-                b.gap = 0.12;
+                b.gap_px = 30.0;
             }
         },
         Work::Packed,

@@ -1003,8 +1003,9 @@ fn a_mesh_past_2_pow_24_vertices_draws_and_picks_its_high_triangle() {
 /// `axis_fraction` (cuts and scales included) and the scaled layout.
 fn chrome_px(config: &renderer::Config, x: f64, y: f64, scale: f32) -> (u32, u32) {
     let da = config.scaled(scale).data_area().unwrap().0;
-    let fx = renderer::layout::axis_fraction(x, &config.bottom_x);
-    let fy = renderer::layout::axis_fraction(y, &config.left_y);
+    let scaled = config.scaled(scale);
+    let fx = renderer::layout::axis_fraction(x, &scaled.bottom_x, da.width as f32);
+    let fy = renderer::layout::axis_fraction(y, &scaled.left_y, da.height as f32);
     (
         (da.x as f64 + da.width as f64 * f64::from(fx)) as u32,
         (da.y as f64 + da.height as f64 * (1.0 - f64::from(fy))) as u32,
@@ -1058,7 +1059,7 @@ fn a_broken_axis_shades_each_piece_and_leaves_the_gap_empty() {
         chart.config_mut().bottom_x.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.8, 1.2)],
             style,
-            gap: 0.1,
+            gap_px: 24.0,
             mark: BreakMark::None,
             frame_each_panel: false,
             sizing: Default::default(),
@@ -1561,8 +1562,8 @@ fn axis_px(
     scale: f32,
 ) -> (u32, u32) {
     let da = config.scaled(scale).data_area().unwrap().0;
-    let fx = renderer::layout::axis_fraction(x, &config.bottom_x);
-    let fy = renderer::layout::axis_fraction(y, y_axis);
+    let fx = renderer::layout::axis_fraction(x, &config.scaled(scale).bottom_x, da.width as f32);
+    let fy = renderer::layout::axis_fraction(y, y_axis, da.height as f32);
     (
         (da.x as f64 + da.width as f64 * f64::from(fx)) as u32,
         (da.y as f64 + da.height as f64 * (1.0 - f64::from(fy))) as u32,

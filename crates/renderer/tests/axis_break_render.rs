@@ -82,7 +82,9 @@ fn config(y_min: f64, y_max: f64, cuts: &[(f64, f64)]) -> renderer::Config {
     config.left_y.breaks = Some(AxisBreaks {
         ranges: cuts.iter().map(|&(a, b)| AxisBreak::new(a, b)).collect(),
         style: AxisBreakStyle::Continuous,
-        gap: 0.1,
+        // 0.1 of this chart's 190 px y axis, the gap these cases were
+        // written for (#249).
+        gap_px: 19.0,
         mark: BreakMark::None,
         frame_each_panel: false,
         sizing: Default::default(),
@@ -183,20 +185,20 @@ fn data_area(config: &renderer::Config, scale: f32) -> (f32, f32, f32, f32) {
 /// The image row of y value `v`, where the axis chrome places it.
 fn row_of(config: &renderer::Config, v: f64, scale: f32) -> f32 {
     let (_, y, _, h) = data_area(config, scale);
-    y + h * (1.0 - renderer::layout::axis_fraction(v, &config.left_y))
+    y + h * (1.0 - renderer::layout::axis_fraction(v, &config.scaled(scale).left_y, h))
 }
 
 /// The image column of x value `v`.
 fn col_of(config: &renderer::Config, v: f64, scale: f32) -> f32 {
     let (x, _, w, _) = data_area(config, scale);
-    x + w * renderer::layout::axis_fraction(v, &config.bottom_x)
+    x + w * renderer::layout::axis_fraction(v, &config.scaled(scale).bottom_x, w)
 }
 
 /// The rows of the gap of the first cut, inset by `inset` pixels.
 fn gap_rows(config: &renderer::Config, scale: f32, inset: f32) -> std::ops::Range<u32> {
-    let map = renderer::layout::BreakMap::of(&config.left_y);
-    let knot = map.knots()[0];
     let (_, y, _, h) = data_area(config, scale);
+    let map = renderer::layout::BreakMap::of(&config.scaled(scale).left_y, h);
+    let knot = map.knots()[0];
     let top = y + h * (1.0 - knot.end as f32);
     let bottom = y + h * (1.0 - knot.start as f32);
     (top + inset).ceil() as u32..(bottom - inset).floor() as u32
@@ -280,7 +282,7 @@ fn weighted_pieces_draw_and_pick_where_the_chrome_places_them() {
         config.left_y.breaks.as_mut().unwrap().sizing = sizing.clone();
         config.validate().unwrap();
         assert!(
-            renderer::layout::BreakMap::of(&config.left_y).per_piece()
+            renderer::layout::BreakMap::cuts(&config.left_y).per_piece()
                 || sizing == renderer::config::PieceSizing::Equal
         );
         let series = [markers("m", "x", "y", RED)];
@@ -879,8 +881,12 @@ fn panel_px(config: &renderer::Config, series_id: &str, x: f64, y: f64, scale: f
     let panel = &expansion.panels[scaled.panel_of_series(series_id)].config;
     let da = panel.data_area().unwrap().0;
     (
-        da.x as f32 + da.width as f32 * renderer::layout::axis_fraction(x, &panel.bottom_x),
-        da.y as f32 + da.height as f32 * (1.0 - renderer::layout::axis_fraction(y, &panel.left_y)),
+        da.x as f32
+            + da.width as f32
+                * renderer::layout::axis_fraction(x, &panel.bottom_x, da.width as f32),
+        da.y as f32
+            + da.height as f32
+                * (1.0 - renderer::layout::axis_fraction(y, &panel.left_y, da.height as f32)),
     )
 }
 
@@ -1217,7 +1223,7 @@ fn category_bars_cross_a_value_axis_cut() {
             let cut = Some(AxisBreaks {
                 ranges: vec![AxisBreak::new(30.0, 85.0)],
                 style,
-                gap: 0.1,
+                gap_px: 24.0,
                 mark: BreakMark::None,
                 frame_each_panel: false,
                 sizing: Default::default(),
@@ -1275,15 +1281,17 @@ fn category_bars_cross_a_value_axis_cut() {
                     .unwrap();
                 }
                 let vertical = direction == CategoryBarDirection::Vertical;
+                let scaled = config.scaled(scale);
                 let axis = if vertical {
-                    &config.left_y
+                    &scaled.left_y
                 } else {
-                    &config.bottom_x
+                    &scaled.bottom_x
                 };
                 let (dx, dy, dw, dh) = data_area(&config, scale);
+                let len = if vertical { dh } else { dw };
                 // The value axis' pixel of `v` and the category centre `k`.
                 let value_px = |v: f64| {
-                    let f = renderer::layout::axis_fraction(v, axis);
+                    let f = renderer::layout::axis_fraction(v, axis, len);
                     if vertical {
                         dy + dh * (1.0 - f)
                     } else {
@@ -1311,7 +1319,7 @@ fn category_bars_cross_a_value_axis_cut() {
                         .collect()
                 };
                 let gap = {
-                    let map = renderer::layout::BreakMap::of(axis);
+                    let map = renderer::layout::BreakMap::of(axis, len);
                     let k = map.knots()[0];
                     let (lo, hi) = (k.start, k.end);
                     let to_px = |t: f64| {

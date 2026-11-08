@@ -2241,8 +2241,8 @@ mod tests {
                 (&member.left_y, &base.left_y),
             ] {
                 let (own, owner) = (
-                    crate::layout::BreakMap::of(own),
-                    crate::layout::BreakMap::of(owner),
+                    crate::layout::BreakMap::of(own, 1000.0),
+                    crate::layout::BreakMap::of(owner, 1000.0),
                 );
                 assert_eq!(own.knots().len(), 1);
                 let (a, b) = (own.knots()[0], owner.knots()[0]);

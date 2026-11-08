@@ -1470,7 +1470,7 @@ fn frames_pieces(cfg: &Config, side: &Side) -> bool {
             frame_each_panel: true,
             ..
         })
-    ) && crate::layout::BreakMap::of(axis_of(cfg, side)).is_broken()
+    ) && crate::layout::BreakMap::cuts(axis_of(cfg, side)).is_broken()
 }
 
 impl Selectable for AxisLabelElement {

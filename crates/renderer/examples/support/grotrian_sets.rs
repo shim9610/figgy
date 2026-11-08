@@ -246,7 +246,7 @@ fn break_sized(
     c.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(from, to)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.015,
+        gap_px: 12.0,
         mark: BreakMark::default(),
         frame_each_panel: true,
         sizing,

@@ -520,7 +520,7 @@ fn spacing_for_pieces(axis: &AxisOptions, spacing: f64) -> f64 {
     if axis.scale != AxisScale::Linear || axis.categories.is_some() {
         return spacing;
     }
-    let map = crate::layout::BreakMap::of(axis);
+    let map = crate::layout::BreakMap::cuts(axis);
     if !map.is_broken() || !(spacing.is_finite() && spacing > 0.0) {
         return spacing;
     }
@@ -1170,7 +1170,7 @@ pub fn piece_ticks(
     if axis.scale != AxisScale::Linear || axis.categories.is_some() || !walkable_range(axis) {
         return None;
     }
-    let map = crate::layout::BreakMap::of(axis);
+    let map = crate::layout::BreakMap::cuts(axis);
     if !map.is_broken() || !map.per_piece() {
         return None;
     }

@@ -118,7 +118,7 @@ fn ring_radius(
     value: f64,
 ) -> f32 {
     let inner = geometry.radius * polar.inner_radius_fraction;
-    inner + (geometry.radius - inner) * axis_fraction(value, axis)
+    inner + (geometry.radius - inner) * crate::layout::axis_fraction(value, axis, geometry.radius)
 }
 
 /// Whether an angle-axis `value` draws: inside the sector, and on a full

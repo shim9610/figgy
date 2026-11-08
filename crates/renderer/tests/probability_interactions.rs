@@ -174,8 +174,9 @@ fn chrome_at(
     scale: f32,
 ) -> (f32, f32) {
     let (ax, ay, aw, ah) = data_area(config, scale);
-    let fx = renderer::layout::axis_fraction(x, &config.bottom_x);
-    let fy = renderer::layout::axis_fraction(y, y_axis.unwrap_or(&config.left_y));
+    let scaled = config.scaled(scale);
+    let fx = renderer::layout::axis_fraction(x, &scaled.bottom_x, aw);
+    let fy = renderer::layout::axis_fraction(y, y_axis.unwrap_or(&scaled.left_y), ah);
     (ax + aw * fx, ay + ah * (1.0 - fy))
 }
 
