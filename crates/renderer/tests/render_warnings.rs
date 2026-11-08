@@ -24,7 +24,7 @@ const PANEL: Rect = Rect {
 fn host_frame(renderer: &mut Renderer, view: &mut ChartView, chart: &mut Chart) -> bool {
     let raster_dirty = chart.consume_raster_dirty();
     if raster_dirty {
-        renderer.refresh_axis(view, chart, PANEL, &[]).unwrap();
+        renderer.refresh_axis(view, chart, PANEL).unwrap();
     }
     raster_dirty
 }

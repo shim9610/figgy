@@ -149,5 +149,6 @@ fn text(text: RichText, x: f32, y: f32) -> Annotation {
         anchor: Anchor::Ratio { x, y },
         text,
         box_style: None,
+        align: Default::default(),
     })
 }

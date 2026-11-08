@@ -9,11 +9,9 @@ impl Renderer {
     /// `chart.config_mut().chart_area` must match `panel_rect` before this
     /// call so the axis raster is drawn correctly. The chart is taken as
     /// stored (scale 1): [`Self::create_chart_view_at`] takes a placed or
-    /// exported one. No series are given, so a unit note
-    /// ([`crate::AnnotationKind::SeriesUnit`]) draws nothing until a refresh
-    /// that takes the series (#258).
+    /// exported one.
     pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
-        self.create_chart_view_at(chart, panel_rect, 1.0, &[])
+        self.create_chart_view_at(chart, panel_rect, 1.0)
     }
 
     /// [`Self::create_chart_view`] for a `chart` whose pixel values carry
@@ -21,14 +19,11 @@ impl Renderer {
     /// broken axis' piece frames to whole logical pixels, then scale, so a
     /// 2x raster is the 1x raster doubled. The view keeps the scale for
     /// [`Self::refresh_axis`] and [`Self::refresh_axis_with_selection`].
-    /// `series` are the chart's series, which a unit note reads its unit
-    /// from (#258); nothing else of them is drawn here.
     pub fn create_chart_view_at(
         &self,
         chart: &Chart,
         panel_rect: Rect,
         scale: f32,
-        series: &[SeriesConfig],
     ) -> Result<ChartView> {
         self.health.check()?;
         let panels = expand_for_render(chart.config())?;
@@ -49,7 +44,7 @@ impl Renderer {
         // pass. One layer per document, on the base view, anchored in the
         // parent's own axis space (the group data area).
         let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
-        let annotations = annotation_raster_for_chart(chart, series, None)?;
+        let annotations = annotation_raster_for_chart(chart, None)?;
         view.annotation_underlay = annotations
             .underlay
             .as_deref()
@@ -180,18 +175,14 @@ impl Renderer {
     /// the items changed or when the annotation selection changed. A panel
     /// rect that differs from the view's moves the anchor space as well, so
     /// that case refreshes every layer like [`Self::refresh_axis`].
-    /// `series` are the chart's series, which a unit note
-    /// ([`crate::AnnotationKind::SeriesUnit`]) reads its unit from on every
-    /// refresh (#258).
     pub fn refresh_annotations(
         &mut self,
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<usize>,
-        series: &[SeriesConfig],
     ) -> Result<()> {
-        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected, series);
+        let result = self.refresh_annotations_unreported(view, chart, panel_rect, selected);
         self.reported(result)
     }
 
@@ -201,15 +192,14 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<usize>,
-        series: &[SeriesConfig],
     ) -> Result<()> {
         self.health.check()?;
         view.annotation_selected = selected;
         if view.panel_rect != panel_rect {
-            return self.refresh_axis(view, chart, panel_rect, series);
+            return self.refresh_axis(view, chart, panel_rect);
         }
         view.advance_content_revision()?;
-        self.refresh_annotation_layers(view, chart, panel_rect, series)
+        self.refresh_annotation_layers(view, chart, panel_rect)
     }
 
     pub(in crate::renderer) fn refresh_annotation_layers(
@@ -217,10 +207,9 @@ impl Renderer {
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
-        series: &[SeriesConfig],
     ) -> Result<()> {
         let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
-        let raster = annotation_raster_for_chart(chart, series, view.annotation_selected)?;
+        let raster = annotation_raster_for_chart(chart, view.annotation_selected)?;
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
             raster.underlay.as_deref(),
@@ -299,18 +288,13 @@ impl Renderer {
     /// `&mut self`: the constellation backdrop cache (`space_bg`) lives on
     /// the renderer and may be (re)baked here — same prepare-phase mutability
     /// rule as `paint`.
-    ///
-    /// The annotation layer is redone too; `series` are the chart's series,
-    /// which a unit note ([`crate::AnnotationKind::SeriesUnit`]) reads its
-    /// unit from (#258).
     pub fn refresh_axis(
         &mut self,
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
-        series: &[SeriesConfig],
     ) -> Result<()> {
-        let result = self.refresh_axis_unreported(view, chart, panel_rect, series);
+        let result = self.refresh_axis_unreported(view, chart, panel_rect);
         self.reported(result)
     }
 
@@ -319,9 +303,8 @@ impl Renderer {
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
-        series: &[SeriesConfig],
     ) -> Result<()> {
-        self.refresh_axis_with_selection(view, chart, panel_rect, None, series)
+        self.refresh_axis_with_selection(view, chart, panel_rect, None)
     }
 
     /// [`Self::refresh_axis`] plus the selection highlight of the element
@@ -338,12 +321,10 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
         selected: Option<&str>,
-        series: &[SeriesConfig],
     ) -> Result<()> {
         let scale = view.display_scale;
-        let result = self.refresh_axis_with_selection_unreported(
-            view, chart, panel_rect, selected, scale, series,
-        );
+        let result =
+            self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected, scale);
         self.reported(result)
     }
 
@@ -359,11 +340,9 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<&str>,
         scale: f32,
-        series: &[SeriesConfig],
     ) -> Result<()> {
-        let result = self.refresh_axis_with_selection_unreported(
-            view, chart, panel_rect, selected, scale, series,
-        );
+        let result =
+            self.refresh_axis_with_selection_unreported(view, chart, panel_rect, selected, scale);
         self.reported(result)
     }
 
@@ -374,7 +353,6 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<&str>,
         scale: f32,
-        series: &[SeriesConfig],
     ) -> Result<()> {
         self.health.check()?;
         view.display_scale = scale;
@@ -426,7 +404,7 @@ impl Renderer {
         // The anchor space follows the axes and the data area, which this
         // refresh may have moved, so the annotation layer is redone here as
         // well; its own revision covers item edits between axis refreshes.
-        self.refresh_annotation_layers(view, chart, panel_rect, series)?;
+        self.refresh_annotation_layers(view, chart, panel_rect)?;
         Ok(())
     }
 

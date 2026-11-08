@@ -27,10 +27,8 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
 /// The annotation raster of a chart at its config's scale: the config
 /// already carries export or display scaling in its pixel dims, exactly as
 /// the axis raster is drawn, so the annotation raster is drawn at 1:1.
-/// Its unit notes read their units from `series` (#258).
 pub(in crate::renderer) fn annotation_raster_for_chart(
     chart: &Chart,
-    series: &[SeriesConfig],
     selected: Option<usize>,
 ) -> Result<crate::annotation::AnnotationRaster> {
     let config = chart.config();
@@ -72,7 +70,6 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         selected,
         policy: crate::text_render::FontPolicy::for_style(draw_style),
         markers: Some(config),
-        series,
     })
 }
 

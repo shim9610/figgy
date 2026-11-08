@@ -1103,7 +1103,6 @@ impl RadialRenderer {
                 selected: None,
                 policy: crate::text_render::FontPolicy::Standard,
                 markers: None,
-                series: &[],
             };
             crate::annotation::emit_annotation_layer(
                 &request,
@@ -1661,7 +1660,6 @@ pub fn written_vector_parts(
             selected: None,
             policy: crate::text_render::FontPolicy::Standard,
             markers: None,
-            series: &[],
         };
         crate::annotation::emit_annotation_layer(
             &request,

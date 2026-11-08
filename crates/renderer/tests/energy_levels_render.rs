@@ -1849,7 +1849,7 @@ fn scene_level_labels_stay_off_other_columns() {
     assert!(all.is_empty(), "{all:#?}");
 }
 
-// Wavelength labels and the unit note (#258) ---------------------------
+// Wavelength labels and the corner note (#258) -------------------------
 
 const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
 const ORANGE: Color = Color::from_rgb8(255, 128, 0);
@@ -1883,25 +1883,23 @@ fn centre_px(rect: renderer::layout::RectF, scale: f32) -> (u32, u32) {
     )
 }
 
-/// Labels written from the wavelengths: one decimal and the unit, in
-/// magenta.
+/// Labels written from the wavelengths: one decimal and the labels' own
+/// unit, `nm`, in magenta.
 fn wavelength_labels() -> renderer::energy_levels::WavelengthLabels {
     renderer::energy_levels::WavelengthLabels {
         format: renderer::format::PlainNumberFormat {
             decimals: Some(1),
             trim_zeros: false,
         },
-        unit_on_labels: true,
+        unit: Some("nm".into()),
         text: renderer::text::RichText::plain("", MAGENTA, 14.0, ""),
     }
 }
 
-/// `records()` with its line at 587.56 nm in a series whose unit is `nm`,
-/// labelled by the renderer.
+/// `records()` with its line at 587.56 nm, labelled by the renderer.
 fn labelled_records() -> EnergyLevelSeries {
     let mut levels = records();
     levels.transitions[0].wavelength = Some(587.56);
-    levels.wavelength_unit = Some("nm".into());
     levels.style.wavelength_labels = Some(wavelength_labels());
     levels
 }
@@ -2006,7 +2004,7 @@ fn a_wavelength_label_draws_picks_and_drags_like_a_host_label() {
 // #258: a picked transition is widened under its formatted label, which
 // draws as it does unpicked, and a picked formatted label draws as an
 // unpicked one, as a host label does. An inset's view of the series writes
-// its components' labels from the source's wavelengths and unit.
+// its components' labels from the source's wavelengths in its own style.
 #[test]
 fn formatted_labels_follow_the_selection_and_the_inset_view() {
     use renderer::energy_levels::LabelPart;
@@ -2077,8 +2075,8 @@ fn formatted_labels_follow_the_selection_and_the_inset_view() {
         wavelength: Some(1083.33),
         ..transition("fine", "mid1", "mid2")
     });
-    // The view's own style asks for the formatted labels; the unit is the
-    // source's.
+    // The view's own style asks for the formatted labels and names their
+    // unit; the wavelengths are the source's.
     let mut view = inset_series();
     if let DataRenderType::EnergyLevels(inset) = &mut view.render_type {
         inset.style.wavelength_labels = Some(wavelength_labels());
@@ -2129,48 +2127,37 @@ fn formatted_labels_follow_the_selection_and_the_inset_view() {
     }
 }
 
-/// `chart` with a unit note of series `he` in the plot's lower-right
-/// corner, its prefix orange: the note's index.
-fn add_note(chart: &mut Chart, series_id: &str) -> usize {
-    let index = chart
-        .config_mut()
-        .add_unit_note(series_id, renderer::NoteAlign::BottomRight);
-    if let renderer::AnnotationKind::SeriesUnit { prefix, .. } =
-        &mut chart.config_mut().annotations.items[index].kind
-    {
-        *prefix = renderer::text::RichText::plain("λ / ", ORANGE, 14.0, "");
-    }
-    index
+/// `chart` with an orange note `λ / nm` in the plot's lower-right corner:
+/// the note's index.
+fn add_note(chart: &mut Chart) -> usize {
+    chart.config_mut().annotations.add_corner_note(
+        renderer::text::RichText::plain("λ / nm", ORANGE, 14.0, ""),
+        renderer::NoteAlign::BottomRight,
+    )
 }
 
-/// The drawn note `index` of `chart` with `series`: its hit id and its
-/// bounds in the annotation map of a view at 1x, `None` when it is not
-/// drawn.
-fn note_bounds(
-    r: &Renderer,
-    chart: &Chart,
-    series: &[SeriesConfig],
-    index: usize,
-) -> Option<renderer::layout::RectF> {
+/// The bounds of drawn note `index` of `chart` in the annotation map of a
+/// view at 1x, `None` when it is not drawn.
+fn note_bounds(r: &Renderer, chart: &Chart, index: usize) -> Option<renderer::layout::RectF> {
     let view = r
-        .create_chart_view_at(chart, chart.config().chart_area.0, 1.0, series)
+        .create_chart_view(chart, chart.config().chart_area.0)
         .unwrap();
     let map = view.annotation_map();
     map.find(index).and_then(|id| map.bounds(id))
 }
 
-// #258: a unit note draws its prefix and the series' unit at the corner
-// its alignment names, is hit, selected without handles and dragged by its
-// anchor through the annotation map, and draws nothing hidden, without a
-// unit or without its series. At 1x and 2x.
+// #258: a corner note is a text item that owns its text: it draws at the
+// corner its alignment names, is hit, selected without handles and dragged
+// by its anchor through the annotation map with its alignment kept, and
+// draws nothing hidden. At 1x and 2x.
 #[test]
-fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
+fn a_corner_note_draws_at_its_corner_and_selects_drags_and_hides() {
     let mut r = renderer();
     let mut chart = chart();
-    let index = add_note(&mut chart, "he");
+    let index = add_note(&mut chart);
     let list = [series("he", labelled_records())];
     let view = r
-        .create_chart_view_at(&chart, chart.config().chart_area.0, 1.0, &list)
+        .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let map = view.annotation_map();
     let id = map.find(index).expect("the note is drawn");
@@ -2183,7 +2170,32 @@ fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
             && (bounds.y + bounds.height - bottom).abs() < 1.5,
         "{bounds:?} in {plot:?}"
     );
-    assert!(bounds.width > 20.0, "the prefix and the unit: {bounds:?}");
+    assert!(bounds.width > 20.0, "the whole text: {bounds:?}");
+    // The other corners and edges: the block inside the plot, the named
+    // point of it on the plot's.
+    for corner in [
+        renderer::NoteAlign::TopLeft,
+        renderer::NoteAlign::Top,
+        renderer::NoteAlign::Left,
+        renderer::NoteAlign::Center,
+    ] {
+        let mut other = Chart::new(chart.config().clone());
+        other.config_mut().annotations.items.truncate(index);
+        let i = other.config_mut().annotations.add_corner_note(
+            renderer::text::RichText::plain("λ / nm", ORANGE, 14.0, ""),
+            corner,
+        );
+        let b = note_bounds(&r, &other, i).expect("drawn");
+        let [fx, fy] = corner.fractions();
+        let at = (
+            plot.x as f32 + fx * plot.width as f32,
+            plot.y as f32 + fy * plot.height as f32,
+        );
+        assert!(
+            (b.x + fx * b.width - at.0).abs() < 1.5 && (b.y + fy * b.height - at.1).abs() < 1.5,
+            "{corner:?}: {b:?} in {plot:?}"
+        );
+    }
     // Hit and selected as one box with no handles.
     let centre = [
         bounds.x + bounds.width / 2.0,
@@ -2195,7 +2207,8 @@ fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
         let img = export(&mut r, &chart, &list, scale);
         assert!(ink_in(&img, bounds, scale, is_orange) > 0, "{scale}x");
     }
-    // Dragged by its anchor: drawn where it now is.
+    // Dragged by its anchor: drawn where it now is, still aligned by its
+    // lower-right corner.
     let mut layer = chart.config().annotations.clone();
     assert_eq!(
         map.drag_by(&mut layer, id, -120.0, -80.0),
@@ -2205,12 +2218,13 @@ fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
     moved.config_mut().annotations = layer;
     assert!(matches!(
         &moved.config().annotations.items[index].kind,
-        renderer::AnnotationKind::SeriesUnit {
+        renderer::AnnotationKind::Text {
             anchor: renderer::Anchor::Ratio { .. },
+            align: renderer::NoteAlign::BottomRight,
             ..
         }
     ));
-    let after = note_bounds(&r, &moved, &list, index).unwrap();
+    let after = note_bounds(&r, &moved, index).unwrap();
     assert!((after.x - (bounds.x - 120.0)).abs() < 1.0, "{after:?}");
     assert!((after.y - (bounds.y - 80.0)).abs() < 1.0, "{after:?}");
     for scale in [1.0f32, 2.0] {
@@ -2218,62 +2232,38 @@ fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
         assert!(ink_in(&img, after, scale, is_orange) > 0, "{scale}x moved");
         assert_eq!(ink_in(&img, bounds, scale, is_orange), 0, "{scale}x old");
     }
-    // Hidden, without a unit, or naming no series: not drawn, not hit and
-    // not reported as a skipped item.
+    // Hidden: not drawn, not hit and not reported as a skipped item.
     let mut hidden = Chart::new(chart.config().clone());
     hidden.config_mut().annotations.items[index].visible = false;
-    let mut no_unit = labelled_records();
-    no_unit.wavelength_unit = None;
-    let mut elsewhere = Chart::new(chart.config().clone());
-    elsewhere.config_mut().annotations.items[index] = {
-        let mut other = Chart::new(chart.config().clone());
-        let i = add_note(&mut other, "absent");
-        other.config().annotations.items[i].clone()
-    };
-    let cases: [(&str, &Chart, Vec<SeriesConfig>); 4] = [
-        ("hidden", &hidden, list.to_vec()),
-        ("no unit", &chart, vec![series("he", no_unit)]),
-        ("absent series", &elsewhere, list.to_vec()),
-        ("no series given", &chart, Vec::new()),
-    ];
-    for (name, c, l) in cases {
-        let view = r
-            .create_chart_view_at(c, c.config().chart_area.0, 1.0, &l)
-            .unwrap();
-        assert_eq!(view.annotation_map().find(index), None, "{name}");
-        assert!(view.render_warnings().is_empty(), "{name}");
-        if name != "no series given" {
-            for scale in [1.0f32, 2.0] {
-                let img = export(&mut r, c, &l, scale);
-                assert_eq!(ink_in(&img, bounds, scale, is_orange), 0, "{name} {scale}x");
-            }
-        }
-    }
-    // A view created without the series draws the note once a refresh
-    // gives them.
-    let mut view = r
-        .create_chart_view(&chart, chart.config().chart_area.0)
+    let view = r
+        .create_chart_view(&hidden, hidden.config().chart_area.0)
         .unwrap();
     assert_eq!(view.annotation_map().find(index), None);
-    r.refresh_annotations(&mut view, &chart, chart.config().chart_area.0, None, &list)
-        .unwrap();
-    assert_eq!(view.annotation_map().find(index), Some(id));
+    assert!(view.render_warnings().is_empty());
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &hidden, &list, scale);
+        assert_eq!(ink_in(&img, bounds, scale, is_orange), 0, "{scale}x hidden");
+    }
 }
 
-// #258: the SVG and PDF exports write the note's prefix and unit and the
-// formatted labels as the raster draws them, at 1x and 2x.
+// #258: the SVG and PDF exports write the corner note and the formatted
+// labels, with or without the labels' unit, as the raster draws them, at
+// 1x and 2x.
 #[test]
-fn svg_and_pdf_exports_write_the_unit_note_and_the_formatted_labels() {
+fn svg_and_pdf_exports_write_the_corner_note_and_the_formatted_labels() {
     let mut r = renderer();
     let mut chart = chart();
-    add_note(&mut chart, "he");
+    add_note(&mut chart);
     let with_unit = |unit: Option<&str>| {
         let mut levels = labelled_records();
-        levels.wavelength_unit = unit.map(Into::into);
+        if let Some(labels) = levels.style.wavelength_labels.as_mut() {
+            labels.unit = unit.map(Into::into);
+        }
         [series("he", levels)]
     };
     // Glyphs drawn in a colour: one `<use>` each.
     let glyphs = |svg: &str, colour: &str| svg.matches(&format!("fill=\"{colour}\"/>")).count();
+    let count = |text: &str| text.chars().count();
     for scale in [1.0f32, 2.0] {
         let mut svg = |unit| {
             r.export_svg(
@@ -2284,20 +2274,24 @@ fn svg_and_pdf_exports_write_the_unit_note_and_the_formatted_labels() {
             .unwrap()
         };
         let (nm, air, none) = (svg(Some("nm")), svg(Some("nm (air)")), svg(None));
-        // One glyph a character: the prefix, then the unit.
-        let count = |text: &str| text.chars().count();
-        assert_eq!(glyphs(&nm, "#ff8000"), count("λ / nm"), "{scale}x the note");
-        assert_eq!(
-            glyphs(&air, "#ff8000"),
-            count("λ / nm (air)"),
-            "{scale}x the longer unit"
-        );
-        assert_eq!(glyphs(&none, "#ff8000"), 0, "{scale}x no unit, no note");
+        // The note writes its own text whatever the labels' unit.
+        for written in [&nm, &air, &none] {
+            assert_eq!(
+                glyphs(written, "#ff8000"),
+                count("λ / nm"),
+                "{scale}x the note"
+            );
+        }
         // The label with its unit, and the number alone without one.
         assert_eq!(
             glyphs(&nm, "#ff00ff"),
             count("587.6 nm"),
             "{scale}x the label"
+        );
+        assert_eq!(
+            glyphs(&air, "#ff00ff"),
+            count("587.6 nm (air)"),
+            "{scale}x the longer unit"
         );
         assert_eq!(
             glyphs(&none, "#ff00ff"),
@@ -2318,21 +2312,21 @@ fn svg_and_pdf_exports_write_the_unit_note_and_the_formatted_labels() {
     }
 }
 
-// #258: an SSOT edit of the unit re-rasterizes the annotation layer and
-// the labels; an edit of the label format re-rasterizes the labels; an
-// edit that changes no unit leaves the annotation layer's revision alone.
+// #258: an SSOT edit of the labels' unit or format redraws the labels and
+// leaves the annotation layer alone; an edit of the note's text
+// re-rasterizes the annotation layer.
 #[test]
-fn unit_and_format_edits_redraw_the_note_and_the_labels() {
+fn label_and_note_edits_redraw_what_they_own() {
     let mut r = renderer();
     let mut chart = chart();
-    let index = add_note(&mut chart, "he");
+    let index = add_note(&mut chart);
     let id = r
         .register_chart(
             chart.config().clone(),
             vec![series("he", labelled_records())],
         )
         .unwrap();
-    let bounds = note_bounds(&r, &chart, &[series("he", labelled_records())], index).unwrap();
+    let bounds = note_bounds(&r, &chart, index).unwrap();
     let registered = |r: &mut Renderer, scale: f32| {
         r.export_rgba(
             renderer::ExportSource::Registered(id),
@@ -2341,36 +2335,40 @@ fn unit_and_format_edits_redraw_the_note_and_the_labels() {
         .block_on()
         .unwrap()
     };
+    let crop = |img: &RasterImage, rect: renderer::layout::RectF, scale: f32| {
+        let mut out = Vec::new();
+        for y in (rect.y * scale) as u32..((rect.y + rect.height) * scale) as u32 {
+            for x in (rect.x * scale) as u32..((rect.x + rect.width) * scale) as u32 {
+                out.extend_from_slice(pixel(img, x, y));
+            }
+        }
+        out
+    };
     let (_, label) = transition_label(&chart, &labelled_records()).unwrap();
     for scale in [1.0f32, 2.0] {
         let before = registered(&mut r, scale);
         let stamp = r.chart_render_stamp(id).unwrap();
-        // The unit: the note and the labels follow.
+        // The labels' unit: the labels follow, the note does not move.
         let mut angstrom = labelled_records();
-        angstrom.wavelength_unit = Some("Å".into());
+        angstrom.style.wavelength_labels.as_mut().unwrap().unit = Some("Å".into());
         r.set_chart_series(id, vec![series("he", angstrom)])
             .unwrap();
         let next = r.chart_render_stamp(id).unwrap();
-        assert!(next.needs_annotation_raster_since(Some(&stamp)), "{scale}x");
+        assert!(
+            !next.needs_annotation_raster_since(Some(&stamp)),
+            "{scale}x"
+        );
         let after = registered(&mut r, scale);
-        let crop = |img: &RasterImage, rect: renderer::layout::RectF| {
-            let mut out = Vec::new();
-            for y in (rect.y * scale) as u32..((rect.y + rect.height) * scale) as u32 {
-                for x in (rect.x * scale) as u32..((rect.x + rect.width) * scale) as u32 {
-                    out.extend_from_slice(pixel(img, x, y));
-                }
-            }
-            out
-        };
-        assert_ne!(crop(&before, bounds), crop(&after, bounds), "{scale}x note");
-        assert_ne!(crop(&before, label), crop(&after, label), "{scale}x label");
-        // A level edit draws the levels again but no unit changed.
-        let mut shifted = labelled_records();
-        shifted.wavelength_unit = Some("Å".into());
-        shifted.levels[1].energy = 41.0;
-        r.set_chart_series(id, vec![series("he", shifted)]).unwrap();
-        let same = r.chart_render_stamp(id).unwrap();
-        assert!(!same.needs_annotation_raster_since(Some(&next)), "{scale}x");
+        assert_ne!(
+            crop(&before, label, scale),
+            crop(&after, label, scale),
+            "{scale}x label"
+        );
+        assert_eq!(
+            crop(&before, bounds, scale),
+            crop(&after, bounds, scale),
+            "{scale}x note"
+        );
         // The format: two decimals redraw the label.
         let mut two = labelled_records();
         two.style
@@ -2381,23 +2379,53 @@ fn unit_and_format_edits_redraw_the_note_and_the_labels() {
             .decimals = Some(2);
         r.set_chart_series(id, vec![series("he", two)]).unwrap();
         let wider = registered(&mut r, scale);
-        assert_ne!(crop(&before, label), crop(&wider, label), "{scale}x format");
+        assert_ne!(
+            crop(&before, label, scale),
+            crop(&wider, label, scale),
+            "{scale}x format"
+        );
         r.set_chart_series(id, vec![series("he", labelled_records())])
             .unwrap();
+        assert_eq!(registered(&mut r, scale).rgba, before.rgba, "{scale}x back");
+        // The note's text: the annotation layer is drawn again.
+        let stamp = r.chart_render_stamp(id).unwrap();
+        let mut config = chart.config().clone();
+        if let renderer::AnnotationKind::Text { text, .. } =
+            &mut config.annotations.items[index].kind
+        {
+            *text = renderer::text::RichText::plain("λ / Å", ORANGE, 14.0, "");
+        }
+        r.set_chart_config(id, config).unwrap();
+        let edited = r.chart_render_stamp(id).unwrap();
+        assert!(
+            edited.needs_annotation_raster_since(Some(&stamp)),
+            "{scale}x"
+        );
+        assert_ne!(
+            crop(&before, bounds, scale),
+            crop(&registered(&mut r, scale), bounds, scale),
+            "{scale}x note text"
+        );
+        r.set_chart_config(id, chart.config().clone()).unwrap();
         assert_eq!(registered(&mut r, scale).rgba, before.rgba, "{scale}x back");
     }
 }
 
-// #258: a document with the new fields and a unit note round-trips and
-// draws the same.
+// #258: a document with formatted labels and a corner note round-trips
+// and draws the same.
 #[test]
 fn a_document_with_formatted_labels_and_a_note_round_trips() {
     let mut r = renderer();
     let mut chart = chart();
-    add_note(&mut chart, "he");
+    add_note(&mut chart);
     let list = vec![series("he", labelled_records())];
     let json = serde_json::to_string(&(chart.config(), &list)).unwrap();
-    assert!(json.contains("\"SeriesUnit\"") && json.contains("\"wavelength_labels\""));
+    assert!(
+        json.contains("\"align\":\"BottomRight\"")
+            && json.contains("\"wavelength_labels\"")
+            && json.contains("\"unit\":\"nm\""),
+        "{json}"
+    );
     let (config, back): (renderer::config::Config, Vec<SeriesConfig>) =
         serde_json::from_str(&json).unwrap();
     assert_eq!(back, list);

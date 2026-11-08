@@ -374,13 +374,12 @@ impl LevelPlacement<'_> {
         // The labels formatted from the wavelengths (#258): the host's
         // labels are borrowed, so only these are built, and nothing is
         // built when the style asks for none.
-        let unit = records.wavelength_unit.as_deref();
         let formatted: Vec<Option<RichText>> = match &style.wavelength_labels {
             None => Vec::new(),
             Some(labels) => records
                 .transitions
                 .iter()
-                .map(|t| match t.drawn_label(Some(labels), unit) {
+                .map(|t| match t.drawn_label(Some(labels)) {
                     Some(std::borrow::Cow::Owned(text)) => Some(text),
                     _ => None,
                 })

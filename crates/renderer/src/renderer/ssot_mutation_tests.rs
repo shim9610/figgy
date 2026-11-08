@@ -74,11 +74,11 @@ impl Host {
         let chart = Chart::new(config.clone());
         if stamp.needs_raster_since(self.stamp.as_ref()) {
             self.r
-                .refresh_axis(&mut self.view, &chart, config.chart_area.0, &[])
+                .refresh_axis(&mut self.view, &chart, config.chart_area.0)
                 .unwrap();
         } else if stamp.needs_annotation_raster_since(self.stamp.as_ref()) {
             self.r
-                .refresh_annotations(&mut self.view, &chart, config.chart_area.0, None, &[])
+                .refresh_annotations(&mut self.view, &chart, config.chart_area.0, None)
                 .unwrap();
         }
         self.stamp = Some(stamp);

@@ -326,13 +326,12 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
     series.style.transition.width = 1.6;
     // Each line labelled with its wavelength to one decimal; the unit is
     // shown once, in a note in the plot's corner (#258).
-    series.wavelength_unit = Some("nm".into());
     series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
         format: renderer::format::PlainNumberFormat {
             decimals: Some(1),
             trim_zeros: false,
         },
-        unit_on_labels: false,
+        unit: None,
         text: RichText::plain("", Color::from_rgb8(150, 90, 0), 11.0, ""),
     });
 
@@ -404,14 +403,14 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         top,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
-    let note = c
-        .config_mut()
-        .add_unit_note("he", renderer::NoteAlign::BottomRight);
+    let note = c.config_mut().annotations.add_corner_note(
+        RichText::plain("Wavelengths in nm", Color::from_rgb8(150, 90, 0), 12.0, ""),
+        renderer::NoteAlign::BottomRight,
+    );
     let plot = c.config().data_area().map(|area| area.0);
-    if let renderer::AnnotationKind::SeriesUnit { anchor, prefix, .. } =
+    if let renderer::AnnotationKind::Text { anchor, .. } =
         &mut c.config_mut().annotations.items[note].kind
     {
-        *prefix = RichText::plain("Wavelengths in ", Color::from_rgb8(150, 90, 0), 12.0, "");
         // Off the plot's frame: the corner's ratio moved in by 10 px.
         if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
             *x -= 10.0 / plot.width.max(1) as f32;

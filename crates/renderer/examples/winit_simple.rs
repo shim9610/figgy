@@ -829,7 +829,6 @@ impl App {
                 &panel.chart,
                 *rect,
                 selected_id.as_deref(),
-                &[],
             ) {
                 eprintln!("[refresh_axis] {e}");
                 return;
@@ -870,7 +869,6 @@ impl App {
                     &panel.chart,
                     panel_rect,
                     selected_id.as_deref(),
-                    &[],
                 ) {
                     eprintln!("[refresh_axis] {e}");
                     return;

@@ -209,6 +209,7 @@ async fn annotation_layer_routes_press_and_drag_by_active_layer() {
         anchor: renderer::Anchor::Ratio { x: 0.4, y: 0.4 },
         text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 14.0, ""),
         box_style: None,
+        align: Default::default(),
     });
     assert_eq!(
         chart

@@ -111,7 +111,7 @@ fn fresh_frame(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
 /// (`None` clears the selection).
 fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selected: Option<&str>) {
     let config = r.chart_config(id).unwrap().clone();
-    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected, &[])
+    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected)
         .unwrap();
 }
 
@@ -726,7 +726,7 @@ fn render_warnings_are_merged_with_a_layer_tag() {
         Err(FiggyError::StaleStateToken { .. })
     ));
     // A refresh grows the view to the document's layer count.
-    r.refresh_axis(&mut short, &Chart::new(config), PANEL, &[])
+    r.refresh_axis(&mut short, &Chart::new(config), PANEL)
         .unwrap();
     assert_eq!(short.overlay_count(), 2);
     assert!(

@@ -268,7 +268,7 @@ impl CallbackTrait for LabCallback {
             };
             if let Err(e) = state
                 .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, rect, &[])
+                .refresh_axis(&mut panel.view, &panel.chart, rect)
             {
                 state.last_error = Some(format!("refresh_axis: {e}"));
                 state.panels[self.panel_idx].prepared = None;

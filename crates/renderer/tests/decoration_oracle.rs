@@ -4321,14 +4321,9 @@ fn export_annotations(
     .map_err(|e| e.to_string())
 }
 
-/// The annotation map of `cfg` (already at its scale), from a chart view
-/// given the document's `series`, which a unit note reads (#258).
-fn annotation_view(
-    r: &Renderer,
-    cfg: &Config,
-    series: &[SeriesConfig],
-) -> Result<renderer::ChartView, String> {
-    r.create_chart_view_at(&Chart::new(cfg.clone()), cfg.chart_area.0, 1.0, series)
+/// The annotation map of `cfg` (already at its scale), from a chart view.
+fn annotation_view(r: &Renderer, cfg: &Config) -> Result<renderer::ChartView, String> {
+    r.create_chart_view(&Chart::new(cfg.clone()), cfg.chart_area.0)
         .map_err(|e| e.to_string())
 }
 
@@ -4427,7 +4422,7 @@ fn check_annotations(
 ) -> AnnotationGeometry {
     let phase = Instant::now();
     let items = config.annotations.items.len();
-    let view = match annotation_view(r, cfg, series) {
+    let view = match annotation_view(r, cfg) {
         Ok(view) => view,
         Err(e) => {
             report.check(at, "<annotations>", Inv::I7, false, || e);
@@ -4576,7 +4571,7 @@ fn check_annotations(
     report.time("annotation layer (I1, I2, I7)", phase);
     if at.scale == 1.0 {
         let phase = Instant::now();
-        annotation_highlights(report, at, r, cfg, series, &measured);
+        annotation_highlights(report, at, r, cfg, &measured);
         report.time("annotation highlights (I3)", phase);
         let phase = Instant::now();
         annotation_drags(report, at, r, config, series, cfg, map, &measured, &exports);
@@ -4588,21 +4583,19 @@ fn check_annotations(
         .collect()
 }
 
-/// Paint `chart`'s view (no series drawn; `series` only feeds the unit
-/// notes, #258) with annotation `selected` highlighted into an offscreen
-/// target and read it back: the on-screen path, where the annotation
-/// highlight is drawn.
+/// Paint `chart`'s view (no series) with annotation `selected` highlighted
+/// into an offscreen target and read it back: the on-screen path, where the
+/// annotation highlight is drawn.
 fn paint_view(
     r: &mut Renderer,
     cfg: &Config,
-    series: &[SeriesConfig],
     selected: Option<usize>,
 ) -> Result<RasterImage, String> {
     let e = |e: renderer::FiggyError| e.to_string();
     let chart = Chart::new(cfg.clone());
     let rect = cfg.chart_area.0;
     let mut view = r.create_chart_view(&chart, rect).map_err(e)?;
-    r.refresh_annotations(&mut view, &chart, rect, selected, series)
+    r.refresh_annotations(&mut view, &chart, rect, selected)
         .map_err(e)?;
     let items = [renderer::ChartDrawItem {
         view: &view,
@@ -4708,10 +4701,9 @@ fn annotation_highlights(
     at: &At<'_>,
     r: &mut Renderer,
     cfg: &Config,
-    series: &[SeriesConfig],
     measured: &[Measured],
 ) {
-    let base = match paint_view(r, cfg, series, None) {
+    let base = match paint_view(r, cfg, None) {
         Ok(image) => image,
         Err(e) => {
             report.check(at, "<annotation paint>", Inv::I3, false, || e);
@@ -4727,7 +4719,7 @@ fn annotation_highlights(
             .trim_start_matches("annotation_")
             .parse::<usize>()
             .unwrap_or(index);
-        let image = match paint_view(r, cfg, series, Some(item)) {
+        let image = match paint_view(r, cfg, Some(item)) {
             Ok(image) => image,
             Err(e) => {
                 report.check(at, &m.name, Inv::I3, false, || e);
@@ -4828,7 +4820,7 @@ fn annotation_drags(
         moved.annotations = layer;
         let mut moved_1x = config.clone();
         moved_1x.annotations = moved.annotations.clone();
-        let view = match annotation_view(r, &moved, series) {
+        let view = match annotation_view(r, &moved) {
             Ok(view) => view,
             Err(e) => {
                 report.check(at, &m.name, Inv::I6, false, || e);

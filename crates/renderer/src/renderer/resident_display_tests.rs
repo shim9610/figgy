@@ -220,7 +220,7 @@ fn painted_like_direct(r: &Renderer, mut frame: PreparedFrame, samples: u32) -> 
 /// (`None` clears the selection).
 fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selected: Option<&str>) {
     let config = r.chart_config(id).unwrap().clone();
-    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected, &[])
+    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected)
         .unwrap();
 }
 
@@ -323,6 +323,7 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
                         anchor: Anchor::Ratio { x: 0.2, y: 0.2 },
                         text: text("note"),
                         box_style: None,
+                        align: Default::default(),
                     }))
             }),
         ),
@@ -712,7 +713,6 @@ fn fresh_pixels(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Vec
         &Chart::new(scene.config.clone()),
         PANEL,
         scene.selection,
-        &[],
     )
     .unwrap();
     let frame = prepare(&mut r, id, &view);
@@ -764,6 +764,7 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
                         },
                         text: text("note"),
                         box_style: None,
+                        align: Default::default(),
                     }));
             } else {
                 c.annotations.items.pop();
@@ -922,7 +923,6 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
                 &Chart::new(scene.config.clone()),
                 PANEL,
                 scene.selection,
-                &[],
             )
             .unwrap();
             let frame = prepare(&mut r, id, &view);

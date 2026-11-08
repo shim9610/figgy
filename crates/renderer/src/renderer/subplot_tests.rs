@@ -165,7 +165,7 @@ fn refresh(
             .unwrap_or_else(|| panic!("{element} has no selection box"))
             .rect()
     });
-    r.refresh_axis_with_selection(view, &chart, panel, element, &[])
+    r.refresh_axis_with_selection(view, &chart, panel, element)
         .unwrap();
     drawn
 }
@@ -407,6 +407,7 @@ fn annotations_stay_in_the_parent_of_a_subplot_document() {
         anchor: Anchor::Ratio { x: 0.4, y: 0.3 },
         text: RichText::plain("note", Color::BLACK, 10.0, ""),
         box_style: Some(Default::default()),
+        align: Default::default(),
     })];
     let annotated = fresh_frame(&config);
     let pixels = differing(&plain, &annotated);
@@ -1057,7 +1058,7 @@ fn rendered_panels_match_the_panel_layers_through_every_edit() {
         let config = shaped(overlays, members);
         r.set_chart_config(id, config.clone()).unwrap();
         let chart = Chart::new(r.chart_config(id).unwrap().clone());
-        r.refresh_axis_with_selection(&mut view, &chart, config.chart_area.0, Some("legend"), &[])
+        r.refresh_axis_with_selection(&mut view, &chart, config.chart_area.0, Some("legend"))
             .unwrap();
         let panels = expand_for_render(chart.config()).unwrap();
         assert_eq!(panels.len(), 1 + overlays + members);

@@ -1348,7 +1348,7 @@ impl Renderer {
         let updated = if snapshot.config == config {
             Ok(())
         } else {
-            self.refresh_axis(&mut snapshot.view, &chart, panel, &snapshot.series)
+            self.refresh_axis(&mut snapshot.view, &chart, panel)
                 .and_then(|()| self.update_transform(&snapshot.view, &chart))
         };
         if let Err(error) = updated {

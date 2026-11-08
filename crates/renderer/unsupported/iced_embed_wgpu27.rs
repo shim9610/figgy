@@ -440,7 +440,6 @@ impl shader::Primitive for FiggyPrimitive {
                 &panel.chart,
                 self.panel_rect_px,
                 selected_id.as_deref(),
-                &[],
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
@@ -459,7 +458,6 @@ impl shader::Primitive for FiggyPrimitive {
                     &panel.chart,
                     cur,
                     selected_id.as_deref(),
-                    &[],
                 ) {
                     eprintln!("[figgy] refresh_axis failed: {e}");
                     return;

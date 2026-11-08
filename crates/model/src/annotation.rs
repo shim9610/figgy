@@ -201,13 +201,22 @@ pub enum AnnotationKind {
         to: f64,
         fill: Color,
     },
-    /// A text block whose top-left corner sits at `anchor`. With a box
-    /// style the block is padded and framed; the anchor is the frame's
-    /// top-left corner. Drawn on the overlay, anywhere in the panel.
+    /// A text block whose point `align` (by default its top-left corner)
+    /// sits at `anchor`. With a box style the block is padded and framed;
+    /// the anchor is then that point of the frame. Drawn on the overlay,
+    /// anywhere in the panel. [`AnnotationLayer::add_corner_note`] puts one
+    /// in a corner of the plot, such as the unit of a chart's values (#258).
     Text {
         anchor: Anchor,
         text: RichText,
         box_style: Option<BoxStyle>,
+        /// Which point of the block sits on the anchor (#258). The default,
+        /// `TopLeft`, is omitted.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "NoteAlign::is_top_left")
+        )]
+        align: NoteAlign,
     },
     /// A shaft from `from` to `to` with a head at `to`, and an optional
     /// label centred beside the shaft's midpoint. Drawn on the overlay.
@@ -240,26 +249,11 @@ pub enum AnnotationKind {
         #[cfg_attr(feature = "serde", serde(default))]
         style: ShapeStyle,
     },
-    /// A unit note (#258): `prefix` followed by the `wavelength_unit` of
-    /// the energy-level series `series_id`, in the prefix's font, size and
-    /// colour, its box placed by `align` on `anchor`. The unit keeps one
-    /// owner, the series: the note reads it on every draw. It draws
-    /// nothing, and is not hit-registered, while the series is absent or
-    /// has no unit. Drawn on the overlay, anywhere in the panel, as a text
-    /// item is; with a box style the box is padded and framed.
-    SeriesUnit {
-        series_id: String,
-        anchor: Anchor,
-        #[cfg_attr(feature = "serde", serde(default))]
-        align: NoteAlign,
-        prefix: RichText,
-        box_style: Option<BoxStyle>,
-    },
 }
 
-/// Which point of a note's box sits on its anchor (#258): a corner, the
+/// Which point of a text block sits on its anchor (#258): a corner, the
 /// middle of an edge or the centre. A ratio anchor of `(1, 1)` with
-/// `BottomRight` puts the box in the plot's lower-right corner, `(0.5, 0)`
+/// `BottomRight` puts the block in the plot's lower-right corner, `(0.5, 0)`
 /// with `Top` at the middle of its top edge, and so on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -277,7 +271,7 @@ pub enum NoteAlign {
 }
 
 impl NoteAlign {
-    /// The point of the box on the anchor, as fractions of its width and
+    /// The point of the block on the anchor, as fractions of its width and
     /// height from its top-left corner: `[0, 0]` for `TopLeft`, `[1, 1]`
     /// for `BottomRight`. The same fractions of the plot are the ratio
     /// anchor of the matching corner or edge.
@@ -294,35 +288,29 @@ impl NoteAlign {
         };
         [x, y]
     }
+
+    #[cfg(feature = "serde")]
+    fn is_top_left(&self) -> bool {
+        *self == Self::TopLeft
+    }
 }
 
-/// The text a unit note draws: `prefix`, then `unit` in the prefix's font,
-/// size and colour (#258).
-pub fn series_unit_text(prefix: &RichText, unit: &str) -> RichText {
-    let mut text = prefix.clone();
-    text.segments
-        .extend(crate::text::rich_segments_from_text(unit));
-    text
-}
-
-impl crate::config::Config {
-    /// Add a unit note for the energy-level series `series_id` at the
-    /// plot's `corner` (#258): an [`AnnotationKind::SeriesUnit`] whose ratio
-    /// anchor is that corner or edge of the plot ([`NoteAlign::fractions`])
-    /// and whose box sits inside it, with the prefix `λ / `, no box and the
-    /// item visible. Returns the item's index in `annotations.items`.
-    pub fn add_unit_note(&mut self, series_id: &str, corner: NoteAlign) -> usize {
+impl AnnotationLayer {
+    /// Add a text note at the plot's `corner` (#258), such as the unit of
+    /// the chart's values: a [`AnnotationKind::Text`] whose ratio anchor is
+    /// that corner or edge of the plot ([`NoteAlign::fractions`]) and whose
+    /// block sits inside it, with no box and the item visible. The note
+    /// owns its text; it is an ordinary text item and is moved, selected,
+    /// hidden and edited as one. Returns its index in `items`.
+    pub fn add_corner_note(&mut self, text: RichText, corner: NoteAlign) -> usize {
         let [x, y] = corner.fractions();
-        self.annotations
-            .items
-            .push(Annotation::new(AnnotationKind::SeriesUnit {
-                series_id: series_id.into(),
-                anchor: Anchor::Ratio { x, y },
-                align: corner,
-                prefix: RichText::plain("λ / ", Color::from_rgb8(40, 40, 40), 12.0, ""),
-                box_style: None,
-            }));
-        self.annotations.items.len() - 1
+        self.items.push(Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Ratio { x, y },
+            text,
+            box_style: None,
+            align: corner,
+        }));
+        self.items.len() - 1
     }
 }
 
@@ -395,7 +383,6 @@ impl Annotation {
             | AnnotationKind::Polygon { .. } => (None, None),
             AnnotationKind::Text { text, .. } => (Some(text), None),
             AnnotationKind::Arrow { text, .. } => (text.as_ref(), None),
-            AnnotationKind::SeriesUnit { prefix, .. } => (Some(prefix), None),
         };
         a.into_iter().chain(b)
     }
@@ -410,20 +397,17 @@ impl Annotation {
         match &self.kind {
             AnnotationKind::ReferenceLine { style, .. } => style.validate(),
             AnnotationKind::Span { fill, .. } => validate_color(*fill),
-            AnnotationKind::Text { box_style, .. } => validate_box(box_style.as_ref()),
-            AnnotationKind::SeriesUnit {
-                series_id,
-                box_style,
-                ..
-            } => {
-                if series_id.is_empty()
-                    || series_id.chars().count() > 160
-                    || series_id.chars().any(char::is_control)
-                {
-                    return Err(crate::RuleKind::AnnotationSeriesId);
+            AnnotationKind::Text { box_style, .. } => match box_style {
+                Some(b) => {
+                    validate_color(b.fill)?;
+                    validate_color(b.border_color)?;
+                    if !range(b.border_width, 0., 64.) || !range(b.padding, 0., 64.) {
+                        return Err(crate::RuleKind::AnnotationBox);
+                    }
+                    Ok(())
                 }
-                validate_box(box_style.as_ref())
-            }
+                None => Ok(()),
+            },
             AnnotationKind::Arrow { style, .. } => {
                 style.line.validate()?;
                 if !range(style.head_length, 0., 256.) || !range(style.head_width, 0., 256.) {
@@ -456,11 +440,6 @@ impl Annotation {
             AnnotationKind::Span { .. } => {}
             AnnotationKind::Text {
                 text, box_style, ..
-            }
-            | AnnotationKind::SeriesUnit {
-                prefix: text,
-                box_style,
-                ..
             } => {
                 scale_rich_text(text, s);
                 if let Some(b) = box_style {
@@ -491,20 +470,6 @@ impl ShapeStyle {
             None => Ok(()),
         }
     }
-}
-
-/// A text box's frame: finite colours, a border width and a padding in
-/// `0..=64`.
-fn validate_box(box_style: Option<&BoxStyle>) -> Result<(), crate::RuleKind> {
-    let Some(b) = box_style else {
-        return Ok(());
-    };
-    validate_color(b.fill)?;
-    validate_color(b.border_color)?;
-    if !range(b.border_width, 0., 64.) || !range(b.padding, 0., 64.) {
-        return Err(crate::RuleKind::AnnotationBox);
-    }
-    Ok(())
 }
 
 fn scale_rich_text(text: &mut RichText, s: f32) {
@@ -573,30 +538,6 @@ impl AnnotationLayer {
             Some(DecorationId::Annotation(index)) => Some(*index),
             _ => None,
         }
-    }
-    /// Whether an item of the layer reads a series: a unit note (#258).
-    pub fn reads_series(&self) -> bool {
-        self.items
-            .iter()
-            .any(|item| matches!(item.kind, AnnotationKind::SeriesUnit { .. }))
-    }
-
-    /// Whether a unit note of the layer draws another unit under the
-    /// series list `after` than under `before` (#258): the SSOT edit of a
-    /// series that re-rasterizes the annotation layer. A walk over the
-    /// items, nothing stored.
-    pub fn series_units_differ(
-        &self,
-        before: &[crate::data_config::SeriesConfig],
-        after: &[crate::data_config::SeriesConfig],
-    ) -> bool {
-        self.items.iter().any(|item| match &item.kind {
-            AnnotationKind::SeriesUnit { series_id, .. } => {
-                crate::energy_levels::wavelength_unit(before, series_id)
-                    != crate::energy_levels::wavelength_unit(after, series_id)
-            }
-            _ => false,
-        })
     }
 }
 
@@ -982,11 +923,6 @@ pub struct AnnotationElement {
     /// Set on the nudge-path copies a handle drag produces; `None` moves the
     /// whole item.
     pub handle: Option<AnnotationHandle>,
-    /// The text a [`AnnotationKind::SeriesUnit`] item draws
-    /// ([`series_unit_text`]): its prefix and its series' unit, read from
-    /// the series when the renderer registers the element on a draw.
-    /// `None` for every other kind.
-    pub note: Option<RichText>,
 }
 
 /// Gap between an arrow's shaft and its label, in em of the label's font.
@@ -1048,7 +984,7 @@ impl AnnotationElement {
         let mut all: Option<RectF> = None;
         let text_only = matches!(
             cfg.items.get(self.index).map(|item| &item.kind),
-            Some(AnnotationKind::Text { .. } | AnnotationKind::SeriesUnit { .. })
+            Some(AnnotationKind::Text { .. })
         );
         AnnotationElement::emit(
             self,
@@ -1185,18 +1121,12 @@ impl AnnotationElement {
             let mut text = self.text.as_ref();
             self.space.each_piece_rect(|piece| {
                 if let Some(part) = clip_to_piece(&geometry, &piece) {
-                    emit_annotation(&item.kind, &part, text.take(), None, sink);
+                    emit_annotation(&item.kind, &part, text.take(), sink);
                 }
             });
             return true;
         }
-        emit_annotation(
-            &item.kind,
-            &geometry,
-            self.text.as_ref(),
-            self.note.as_ref(),
-            sink,
-        );
+        emit_annotation(&item.kind, &geometry, self.text.as_ref(), sink);
         true
     }
 }
@@ -1367,18 +1297,7 @@ pub fn geometry(
                 },
             }))
         }
-        AnnotationKind::Text { anchor, .. } => {
-            let p = space.anchor_to_px(anchor)?;
-            let size = text_size?;
-            let rect = RectF {
-                x: p[0],
-                y: p[1],
-                width: size[0],
-                height: size[1],
-            };
-            inside_panel(space, &rect).then_some(AnnotationGeometry::Text(rect))
-        }
-        AnnotationKind::SeriesUnit { anchor, align, .. } => {
+        AnnotationKind::Text { anchor, align, .. } => {
             let p = space.anchor_to_px(anchor)?;
             let size = text_size?;
             let [fx, fy] = align.fractions();
@@ -1544,8 +1463,7 @@ fn placed_label<'a>(text: &'a RichText, rect: RectF, measured: &MeasuredText) ->
 }
 
 /// Place what the raster paints for `kind` at `geometry` into `sink`,
-/// `text` being the measured label or text block and `note` the text a
-/// unit note draws (`None` for every other kind): spans below the data,
+/// `text` being the measured label or text block: spans below the data,
 /// everything else above. The raster draws exactly these parts, and the
 /// item's bounds, hit test and selection box are computed from them, so
 /// what is selectable is what is drawn. A stroke or head with no width or
@@ -1554,7 +1472,6 @@ pub fn emit_annotation(
     kind: &AnnotationKind,
     geometry: &AnnotationGeometry,
     text: Option<&MeasuredText>,
-    note: Option<&RichText>,
     sink: &mut dyn Sink,
 ) {
     if let (Some(style), AnnotationGeometry::Polygon(points)) = (kind.shape_style(), geometry) {
@@ -1599,10 +1516,36 @@ pub fn emit_annotation(
                 ..
             },
             AnnotationGeometry::Text(rect),
-        ) => emit_text_box(*rect, box_style.as_ref(), content, text, sink),
-        (AnnotationKind::SeriesUnit { box_style, .. }, AnnotationGeometry::Text(rect)) => {
-            if let Some(content) = note {
-                emit_text_box(*rect, box_style.as_ref(), content, text, sink);
+        ) => {
+            let rect = *rect;
+            if let Some(b) = box_style {
+                sink.rect(Slot::Above, rect, (b.fill.a > 0.0).then_some(b.fill), None);
+                if b.border_width > 0.0 && b.border_color.a > 0.0 {
+                    // The border is stroked inside the box.
+                    sink.rect(
+                        Slot::Above,
+                        rect.expanded(-b.border_width * 0.5),
+                        None,
+                        Some(Border {
+                            color: b.border_color,
+                            width: b.border_width,
+                            tag: "annotation_box",
+                        }),
+                    );
+                }
+            } else {
+                sink.rect(Slot::Above, rect, None, None);
+            }
+            if let Some(t) = text {
+                sink.text(
+                    Slot::Above,
+                    &PlacedText {
+                        text: TextRef::Rich(content),
+                        origin: (rect.x + t.padding, rect.y + t.padding + t.ascent),
+                        extents: t.extents(),
+                        rotation: None,
+                    },
+                );
             }
         }
         (
@@ -1652,47 +1595,6 @@ pub fn emit_annotation(
     }
 }
 
-/// A text box at `rect`: its frame when it has a box style (the border
-/// stroked inside it), else an empty part that keeps the box selectable,
-/// then `content` at the measured `text`'s baseline.
-fn emit_text_box(
-    rect: RectF,
-    box_style: Option<&BoxStyle>,
-    content: &RichText,
-    text: Option<&MeasuredText>,
-    sink: &mut dyn Sink,
-) {
-    if let Some(b) = box_style {
-        sink.rect(Slot::Above, rect, (b.fill.a > 0.0).then_some(b.fill), None);
-        if b.border_width > 0.0 && b.border_color.a > 0.0 {
-            // The border is stroked inside the box.
-            sink.rect(
-                Slot::Above,
-                rect.expanded(-b.border_width * 0.5),
-                None,
-                Some(Border {
-                    color: b.border_color,
-                    width: b.border_width,
-                    tag: "annotation_box",
-                }),
-            );
-        }
-    } else {
-        sink.rect(Slot::Above, rect, None, None);
-    }
-    if let Some(t) = text {
-        sink.text(
-            Slot::Above,
-            &PlacedText {
-                text: TextRef::Rich(content),
-                origin: (rect.x + t.padding, rect.y + t.padding + t.ascent),
-                extents: t.extents(),
-                rotation: None,
-            },
-        );
-    }
-}
-
 fn stroke_style<'a>(style: &'a AnnotationLineStyle, tag: &'a str) -> StrokeStyle<'a> {
     StrokeStyle {
         width: style.width,
@@ -1729,12 +1631,9 @@ impl Selectable<AnnotationLayer> for AnnotationElement {
     /// A line, span or arrow outlines its parts (a diagonal or a long thin
     /// stroke has no useful box); a text item is one box.
     fn outlines_parts(&self, cfg: &AnnotationLayer) -> bool {
-        cfg.items.get(self.index).is_some_and(|item| {
-            !matches!(
-                item.kind,
-                AnnotationKind::Text { .. } | AnnotationKind::SeriesUnit { .. }
-            )
-        })
+        cfg.items
+            .get(self.index)
+            .is_some_and(|item| !matches!(item.kind, AnnotationKind::Text { .. }))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable<AnnotationLayer>> {
@@ -1841,9 +1740,7 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
                 };
                 cfg.nudge(self.with_handle(part), measure, dx, dy)
             }
-            AnnotationKind::Text { .. }
-            | AnnotationKind::SeriesUnit { .. }
-            | AnnotationKind::Polygon { .. } => reject,
+            AnnotationKind::Text { .. } | AnnotationKind::Polygon { .. } => reject,
             // A box shape's handle takes both motion components through one
             // nudge, as an arrow's endpoint does.
             AnnotationKind::Rect { .. } | AnnotationKind::Ellipse { .. } => cfg.nudge(
@@ -1993,6 +1890,7 @@ impl DragConfig for AnnotationLayer {
                     anchor,
                     text,
                     box_style,
+                    align,
                 },
                 None,
             ) => {
@@ -2006,28 +1904,7 @@ impl DragConfig for AnnotationLayer {
                     anchor: next,
                     text: text.clone(),
                     box_style: box_style.clone(),
-                }
-            }
-            // A unit note moves its anchor, as a text box does (#258).
-            (
-                AnnotationKind::SeriesUnit {
-                    series_id,
-                    anchor,
-                    align,
-                    prefix,
-                    box_style,
-                },
-                None,
-            ) => {
-                let Some(next) = moved_anchor(anchor) else {
-                    return reject;
-                };
-                AnnotationKind::SeriesUnit {
-                    series_id: series_id.clone(),
-                    anchor: next,
                     align: *align,
-                    prefix: prefix.clone(),
-                    box_style: box_style.clone(),
                 }
             }
             (
@@ -2307,7 +2184,6 @@ mod tests {
                 em: 12.,
             }),
             handle: None,
-            note: None,
         }
     }
 
@@ -2404,6 +2280,7 @@ mod tests {
             anchor: Anchor::Ratio { x: 1.1, y: 0. },
             text: text("a"),
             box_style: None,
+            align: Default::default(),
         };
         assert!(geometry(&text, &s, Some([20., 10.])).is_some());
         assert_eq!(geometry(&text, &s, Some([200., 10.])), None);
@@ -2444,6 +2321,7 @@ mod tests {
                     anchor: Anchor::Data { x: 5., y: 10. },
                     text: text("note"),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.1, y: 0.1 },
@@ -2576,6 +2454,7 @@ mod tests {
                     anchor: Anchor::Ratio { x: 0.5, y: 0.5 },
                     text: text("t"),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.5, y: 0.5 },
@@ -2637,6 +2516,7 @@ mod tests {
             },
             text: text("inf"),
             box_style: Some(BoxStyle::default()),
+            align: Default::default(),
         }));
         layer.validate().unwrap();
         assert!(!layer.is_default());
@@ -2660,11 +2540,13 @@ mod tests {
                     text: a,
                     box_style: Some(ba),
                     anchor: aa,
+                    ..
                 },
                 AnnotationKind::Text {
                     text: b,
                     box_style: Some(bb),
                     anchor: ab,
+                    ..
                 },
             ) => {
                 assert_eq!(a.font_size, b.font_size * 2.);
@@ -2964,21 +2846,20 @@ mod tests {
         assert_eq!(two.validate(), Err(crate::RuleKind::AnnotationPolygon));
     }
 
-    fn unit_note(align: NoteAlign) -> AnnotationKind {
-        AnnotationKind::SeriesUnit {
-            series_id: "he".into(),
+    fn aligned(align: NoteAlign) -> AnnotationKind {
+        AnnotationKind::Text {
             anchor: Anchor::Ratio { x: 1., y: 1. },
-            align,
-            prefix: text("λ / "),
+            text: text("λ / nm"),
             box_style: None,
+            align,
         }
     }
 
-    /// A unit note (#258): its box placed by its alignment on its anchor,
-    /// hit and outlined as one box with no handles, dragged by its anchor,
-    /// and drawing nothing hidden or without its unit.
+    /// A text block's alignment (#258): its box placed by the alignment on
+    /// its anchor, hit and outlined as one box with no handles, dragged by
+    /// its anchor with the alignment kept, and drawing nothing hidden.
     #[test]
-    fn a_unit_note_places_by_alignment_hits_drags_and_hides() {
+    fn an_aligned_text_places_hits_drags_and_hides() {
         let s = space();
         let size = [40., 14.];
         // The plot is x 50..350, y 20..220; the anchor its lower-right
@@ -2991,23 +2872,18 @@ mod tests {
             (NoteAlign::Bottom, 330., 206.),
         ] {
             assert_eq!(
-                geometry(&unit_note(align), &s, Some(size)),
+                geometry(&aligned(align), &s, Some(size)),
                 Some(AnnotationGeometry::Text(RectF {
                     x,
                     y,
                     width: 40.,
-                    height: 14.
+                    height: 14.,
                 })),
                 "{align:?}"
             );
         }
-        // No measured text (no unit): nothing is placed.
-        assert_eq!(geometry(&unit_note(NoteAlign::TopLeft), &s, None), None);
-        let mut layer = shape(unit_note(NoteAlign::BottomRight));
-        let e = AnnotationElement {
-            note: Some(series_unit_text(&text("λ / "), "nm")),
-            ..element(0, Some(size))
-        };
+        let mut layer = shape(aligned(NoteAlign::BottomRight));
+        let e = element(0, Some(size));
         let drawn = RectF {
             x: 310.,
             y: 206.,
@@ -3019,25 +2895,14 @@ mod tests {
         assert!(!e.contains(&layer, &NoMeasure, 100., 100.));
         assert!(!e.outlines_parts(&layer));
         let selection = e.selection_box(&layer, &NoMeasure).unwrap();
-        assert!(selection.handles().is_empty(), "a note has no handles");
-        assert!(matches!(
-            e.resize_by(&mut layer, &NoMeasure, ResizeHandle::W, 5., 0.),
-            NudgeResult::Rejected(_)
-        ));
-        // The same element without its unit draws and hits nothing.
-        let bare = AnnotationElement {
-            note: None,
-            ..e.clone()
-        };
-        assert_eq!(bare.bounds(&layer, &NoMeasure), None);
-        assert!(!bare.contains(&layer, &NoMeasure, 330., 213.));
-        // A drag moves the anchor, keeping its kind; one off the panel is
-        // refused.
+        assert!(selection.handles().is_empty(), "a text box has no handles");
+        // A drag moves the anchor and keeps the alignment; one off the
+        // panel is refused.
         assert_eq!(
             e.drag_by(&mut layer, &NoMeasure, -100., -50.),
             NudgeResult::Moved
         );
-        let AnnotationKind::SeriesUnit { anchor, align, .. } = &layer.items[0].kind else {
+        let AnnotationKind::Text { anchor, align, .. } = &layer.items[0].kind else {
             unreachable!()
         };
         assert!(ratio_near(anchor, 2. / 3., 0.75), "{anchor:?}");
@@ -3052,150 +2917,78 @@ mod tests {
         layer.items[0].visible = false;
         assert_eq!(e.geometry(&layer), None);
         assert_eq!(e.bounds(&layer, &NoMeasure), None);
-        // The prefix styles the unit.
-        let note = series_unit_text(&text("λ / "), "nm");
-        let chars: String = note.segments.iter().map(|s| s.text).collect();
-        assert_eq!(chars, "λ / nm");
-        assert_eq!((note.font_size, note.color), (12., Color::BLACK));
     }
 
+    /// The corner-note helper (#258) places an ordinary text item at a
+    /// corner or an edge of the plot, its block inside it.
     #[test]
-    fn a_unit_note_validates_scales_and_reads_its_series() {
-        let mut layer = shape(AnnotationKind::SeriesUnit {
-            series_id: "he".into(),
-            anchor: Anchor::Ratio { x: 0., y: 0. },
-            align: NoteAlign::TopLeft,
-            prefix: text("λ / "),
-            box_style: Some(BoxStyle::default()),
-        });
-        assert_eq!(layer.validate(), Ok(()));
-        let edit = |f: &dyn Fn(&mut AnnotationKind)| {
-            let mut bad = layer.clone();
-            f(&mut bad.items[0].kind);
-            bad.validate()
-        };
-        let series_id = |id: &str| {
-            let id = id.to_string();
-            move |kind: &mut AnnotationKind| {
-                if let AnnotationKind::SeriesUnit { series_id, .. } = kind {
-                    *series_id = id.clone();
-                }
-            }
-        };
-        assert_eq!(
-            edit(&series_id("")),
-            Err(crate::RuleKind::AnnotationSeriesId)
-        );
-        assert_eq!(
-            edit(&series_id("a\nb")),
-            Err(crate::RuleKind::AnnotationSeriesId)
-        );
-        assert_eq!(
-            edit(&|kind| {
-                if let AnnotationKind::SeriesUnit { box_style, .. } = kind {
-                    box_style.as_mut().unwrap().padding = -1.;
-                }
-            }),
-            Err(crate::RuleKind::AnnotationBox)
-        );
-        assert_eq!(
-            edit(&|kind| {
-                if let AnnotationKind::SeriesUnit { prefix, .. } = kind {
-                    prefix.font_size = 2.;
-                }
-            }),
-            Err(crate::RuleKind::AnnotationText)
-        );
-        layer.scale_in_place(2.);
-        let AnnotationKind::SeriesUnit {
-            prefix, box_style, ..
-        } = &layer.items[0].kind
-        else {
-            unreachable!()
-        };
-        assert_eq!(prefix.font_size, 24.);
-        assert_eq!(box_style.as_ref().unwrap().padding, 8.);
-
-        // The helper places a note at a corner or an edge of the plot.
+    fn a_corner_note_is_an_aligned_text_item() {
         let mut config = crate::default::default_config();
-        assert!(!config.annotations.reads_series());
-        assert_eq!(config.add_unit_note("he", NoteAlign::BottomRight), 0);
-        assert_eq!(config.add_unit_note("he", NoteAlign::Top), 1);
-        let anchors: Vec<(Anchor, NoteAlign)> = config
+        assert_eq!(
+            config
+                .annotations
+                .add_corner_note(text("λ / nm"), NoteAlign::BottomRight),
+            0
+        );
+        assert_eq!(
+            config
+                .annotations
+                .add_corner_note(text("λ / Å"), NoteAlign::Top),
+            1
+        );
+        let placed: Vec<(Anchor, NoteAlign, String)> = config
             .annotations
             .items
             .iter()
             .map(|item| match &item.kind {
-                AnnotationKind::SeriesUnit { anchor, align, .. } => (*anchor, *align),
+                AnnotationKind::Text {
+                    anchor,
+                    align,
+                    text,
+                    box_style: None,
+                } => (
+                    *anchor,
+                    *align,
+                    text.segments.iter().map(|s| s.text).collect(),
+                ),
                 _ => unreachable!(),
             })
             .collect();
         assert_eq!(
-            anchors,
+            placed,
             [
-                (Anchor::Ratio { x: 1., y: 1. }, NoteAlign::BottomRight),
-                (Anchor::Ratio { x: 0.5, y: 0. }, NoteAlign::Top),
+                (
+                    Anchor::Ratio { x: 1., y: 1. },
+                    NoteAlign::BottomRight,
+                    "λ / nm".to_string()
+                ),
+                (
+                    Anchor::Ratio { x: 0.5, y: 0. },
+                    NoteAlign::Top,
+                    "λ / Å".to_string()
+                ),
             ]
         );
-        assert!(config.annotations.reads_series());
+        assert!(config.annotations.items.iter().all(|item| item.visible));
         assert_eq!(config.annotations.validate(), Ok(()));
-
-        // The unit is read from the series: an edit of it, and only of
-        // it, changes what the note draws.
-        let series = |unit: Option<&str>| {
-            vec![crate::data_config::SeriesConfig {
-                series_id: "he".into(),
-                source_id: None,
-                label: None,
-                x_column: String::new(),
-                y_column: String::new(),
-                z_column: None,
-                render_type: crate::data_config::DataRenderType::EnergyLevels(
-                    crate::energy_levels::EnergyLevelSeries {
-                        wavelength_unit: unit.map(Into::into),
-                        ..Default::default()
-                    },
-                ),
-            }]
-        };
-        let layer = &config.annotations;
-        let nm = series(Some("nm"));
-        assert!(!layer.series_units_differ(&nm, &nm));
-        assert!(layer.series_units_differ(&nm, &series(Some("Å"))));
-        assert!(layer.series_units_differ(&nm, &series(None)));
-        assert!(layer.series_units_differ(&nm, &[]), "the series removed");
-        assert!(!layer.series_units_differ(&series(None), &[]));
-        assert!(!AnnotationLayer::default().series_units_differ(&nm, &[]));
     }
 
     #[cfg(feature = "serde")]
     #[test]
-    fn a_unit_note_round_trips() {
-        let item = Annotation::new(AnnotationKind::SeriesUnit {
-            series_id: "he".into(),
-            anchor: Anchor::Ratio { x: 1., y: 1. },
-            align: NoteAlign::BottomRight,
-            prefix: text("λ / "),
-            box_style: Some(BoxStyle::default()),
-        });
+    fn a_text_alignment_round_trips_and_the_default_is_omitted() {
+        let item = Annotation::new(aligned(NoteAlign::BottomRight));
         let json = serde_json::to_value(&item).unwrap();
-        assert_eq!(json["kind"]["SeriesUnit"]["series_id"], "he");
-        assert_eq!(json["kind"]["SeriesUnit"]["align"], "BottomRight");
+        assert_eq!(json["kind"]["Text"]["align"], "BottomRight");
         let back: Annotation = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back, item);
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
-        // The alignment defaults to the top-left corner.
-        let bare: Annotation = serde_json::from_str(
-            r#"{"kind":{"SeriesUnit":{"series_id":"he","anchor":{"Ratio":{"x":0.0,"y":0.0}},"prefix":{"segments":[],"color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"font_size":12.0,"font":""},"box_style":null}}}"#,
-        )
-        .unwrap();
-        assert!(matches!(
-            bare.kind,
-            AnnotationKind::SeriesUnit {
-                align: NoteAlign::TopLeft,
-                box_style: None,
-                ..
-            }
-        ));
+        // A top-left block writes no alignment, so a document written
+        // before #258 reads and writes back unchanged.
+        let plain = Annotation::new(aligned(NoteAlign::TopLeft));
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json["kind"]["Text"].get("align").is_none());
+        let back: Annotation = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, plain);
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
     }
 }

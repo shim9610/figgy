@@ -197,16 +197,9 @@ match frame_decision(
                 &display_chart,
                 rect,
                 selected_id.as_deref(), // 선택된 요소 id, 예: Some("data_area")
-                &series,                // 단위 메모(SeriesUnit)가 단위를 읽는 시리즈 (#258)
             )?;
         } else if annotation_dirty {
-            renderer.refresh_annotations(
-                &mut view,
-                &display_chart,
-                rect,
-                selected_annotation,
-                &series,
-            )?;
+            renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
         }
         renderer.draw(clear, &items)?;
 
@@ -1132,7 +1125,9 @@ compass name, e.g. `"W"`), `annotation_vertex(index, x, y)` (a polygon's vertex
 handle under the point, `"v3"`, or `undefined`),
 `drag_annotation(index, dx, dy, handle | null)` (returns `false` for a rejected
 move; `handle` is a compass name or a vertex name), `add_annotation(json)` (returns the new
-index), `set_annotation(index, json)`, `remove_annotation(index)`,
+index), `add_corner_note(text_json, corner)` (#258: a `Text` item owning the
+`RichText` JSON `text_json`, placed at the plot's `corner`, a `NoteAlign` name
+such as `"BottomRight"`; returns its index), `set_annotation(index, json)`, `remove_annotation(index)`,
 `set_annotations_visible(bool)`, `pointer_to_anchor(x, y, "Data" | "Ratio")`
 (the `Anchor` at a point as a JSON string, or the JSON string `"null"` when
 the point has no such position, for example a `Data` anchor on a chart without

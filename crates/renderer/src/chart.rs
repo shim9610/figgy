@@ -1917,6 +1917,7 @@ mod tests {
                     ..crate::text::RichText::plain("", Color::BLACK, 12.0, "")
                 },
                 box_style: None,
+                align: Default::default(),
             },
         ));
         assert!(matches!(

@@ -168,7 +168,7 @@ pub enum RuleKind {
     LevelBandStyle,
     /// invalid wavelength labels: a text of size 6..160 and at most 17 decimals
     WavelengthLabels,
-    /// a wavelength\_unit is one line of at most 160 characters
+    /// a wavelength label unit is one line of at most 160 characters
     WavelengthUnit,
     /// an energy-level series reads no columns: x\_column and y\_column stay empty
     EnergyLevelsColumns,
@@ -672,8 +672,6 @@ pub enum RuleKind {
     TernaryChartSeriesKind,
     /// annotation id must be at most 160 characters without control characters
     AnnotationId,
-    /// a series unit note names a series id of 1..=160 characters without control characters
-    AnnotationSeriesId,
     /// annotation box border width and padding must be 0..64
     AnnotationBox,
     /// annotation arrow head must be 0..256 logical pixels
@@ -1473,7 +1471,6 @@ impl RuleKind {
             Self::TernaryLineFill => "TernaryLineFill",
             Self::TernaryChartSeriesKind => "TernaryChartSeriesKind",
             Self::AnnotationId => "AnnotationId",
-            Self::AnnotationSeriesId => "AnnotationSeriesId",
             Self::AnnotationBox => "AnnotationBox",
             Self::AnnotationArrowHead => "AnnotationArrowHead",
             Self::AnnotationPolygon => "AnnotationPolygon",
@@ -1798,7 +1795,7 @@ impl std::fmt::Display for RuleKind {
             Self::WavelengthLabels => {
                 "invalid wavelength labels: a text of size 6..160 and at most 17 decimals"
             }
-            Self::WavelengthUnit => "a wavelength_unit is one line of at most 160 characters",
+            Self::WavelengthUnit => "a wavelength label unit is one line of at most 160 characters",
             Self::EnergyLevelsColumns => {
                 "an energy-level series reads no columns: x_column and y_column stay empty"
             }
@@ -2225,9 +2222,6 @@ impl std::fmt::Display for RuleKind {
             Self::TernaryChartSeriesKind => "a ternary chart draws only ternary series",
             Self::AnnotationId => {
                 "annotation id must be at most 160 characters without control characters"
-            }
-            Self::AnnotationSeriesId => {
-                "a series unit note names a series id of 1..=160 characters without control characters"
             }
             Self::AnnotationBox => "annotation box border width and padding must be 0..64",
             Self::AnnotationArrowHead => "annotation arrow head must be 0..256 logical pixels",
@@ -3061,7 +3055,7 @@ mod tests {
             ),
             (
                 RuleKind::WavelengthUnit,
-                "a wavelength_unit is one line of at most 160 characters",
+                "a wavelength label unit is one line of at most 160 characters",
             ),
             (
                 RuleKind::EnergyLevelsColumns,
@@ -4009,10 +4003,6 @@ mod tests {
             (
                 RuleKind::AnnotationId,
                 "annotation id must be at most 160 characters without control characters",
-            ),
-            (
-                RuleKind::AnnotationSeriesId,
-                "a series unit note names a series id of 1..=160 characters without control characters",
             ),
             (
                 RuleKind::AnnotationBox,

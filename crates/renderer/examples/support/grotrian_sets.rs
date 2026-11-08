@@ -271,34 +271,32 @@ fn spec(id: &str, series: EnergyLevelSeries) -> SeriesConfig {
 
 /// The diagrams' look. The lines are labelled with their wavelengths in nm
 /// to one decimal, written by the renderer from each transition's
-/// `wavelength`; the unit is shown once, in a note (#258).
+/// `wavelength`; the unit is shown once, in a corner note (#258).
 fn styled(mut series: EnergyLevelSeries) -> EnergyLevelSeries {
     series.style.level.color = LEVEL;
     series.style.level.width = 2.2;
     series.style.transition.color = ARROW;
     series.style.transition.width = 1.3;
-    series.wavelength_unit = Some("nm".into());
     series.style.wavelength_labels = Some(WavelengthLabels {
         format: PlainNumberFormat {
             decimals: Some(1),
             trim_zeros: false,
         },
-        unit_on_labels: false,
+        unit: None,
         text: RichText::plain("", WAVELENGTH, 15.0, ""),
     });
     series
 }
 
-/// The unit note of series `id` at the plot's `corner`, ten pixels in from
-/// it, in the wavelength labels' colour (#258).
-fn unit_note(c: &mut Chart, id: &str, corner: renderer::NoteAlign) {
+/// The wavelengths' unit at the plot's `corner`, ten pixels in from it, in
+/// the wavelength labels' colour: a text note that owns its text (#258).
+fn unit_note(c: &mut Chart, corner: renderer::NoteAlign) {
     let plot = c.config().data_area().map(|area| area.0);
     let config = c.config_mut();
-    let index = config.add_unit_note(id, corner);
-    if let renderer::AnnotationKind::SeriesUnit { anchor, prefix, .. } =
-        &mut config.annotations.items[index].kind
+    let text = RichText::plain("Wavelengths in nm", WAVELENGTH, 15.0, "");
+    let index = config.annotations.add_corner_note(text, corner);
+    if let renderer::AnnotationKind::Text { anchor, .. } = &mut config.annotations.items[index].kind
     {
-        *prefix = RichText::plain("Wavelengths in ", WAVELENGTH, 15.0, "");
         // Off the plot's frame: the corner's ratio moved in by 10 px.
         if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
             let inward = |f: &mut f32, len: u32| {
@@ -448,7 +446,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
         25.2,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
-    unit_note(&mut c, "he", renderer::NoteAlign::BottomRight);
+    unit_note(&mut c, renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("he", series)]))
 }
 
@@ -565,7 +563,7 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
         16.0,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
-    unit_note(&mut c, "ar", renderer::NoteAlign::BottomRight);
+    unit_note(&mut c, renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("ar", series)]))
 }
 
@@ -736,7 +734,7 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         8.2,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
-    unit_note(&mut c, "cu", renderer::NoteAlign::BottomRight);
+    unit_note(&mut c, renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("cu", series)]))
 }
 
@@ -870,6 +868,6 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         52_000.0,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
-    unit_note(&mut c, "u", renderer::NoteAlign::BottomRight);
+    unit_note(&mut c, renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("u", series)]))
 }

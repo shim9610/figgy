@@ -97,18 +97,6 @@ pub struct EnergyLevelSeries {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub source: Option<String>,
-    /// The unit of the transitions' `wavelength`, as the host writes it:
-    /// `nm`, `Å`, `nm (air)`. The renderer draws it after a formatted label
-    /// ([`WavelengthLabels::unit_on_labels`]) and in a unit note
-    /// ([`AnnotationKind::SeriesUnit`]); it converts nothing. `None` (the
-    /// default, omitted) draws no unit anywhere. One line of at most
-    /// [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters. A series with a
-    /// `source` keeps it `None`: the unit belongs to the records.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub wavelength_unit: Option<String>,
 }
 
 /// One level: a row of a NIST levels file.
@@ -323,7 +311,8 @@ pub struct Transition {
     /// overlap.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_zero"))]
     pub x_offset: f32,
-    /// The line's wavelength in the series' `wavelength_unit`: the NIST
+    /// The line's wavelength, in the unit the host names where it draws
+    /// one ([`WavelengthLabels::unit`], a text annotation): the NIST
     /// column the host chose (`obs_wl`, `ritz_wl`, in air or vacuum). The
     /// renderer formats it for a drawn label
     /// ([`EnergyLevelStyle::wavelength_labels`]) and never converts or
@@ -422,10 +411,15 @@ pub struct WavelengthLabels {
     /// trailing zeros are trimmed.
     #[cfg_attr(feature = "serde", serde(default))]
     pub format: crate::format::PlainNumberFormat,
-    /// Append ` {unit}` (the series' `wavelength_unit`) to each label. No
-    /// unit is appended when the series has none.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
-    pub unit_on_labels: bool,
+    /// The unit written after each number, as the host writes it: `nm`,
+    /// `Å`, `nm (air)`. The labels own it; the renderer converts nothing.
+    /// `None` (the default, omitted) or empty writes the number alone. One
+    /// line of at most [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub unit: Option<String>,
     /// The look of the drawn labels: the font, size and colour of this
     /// text, the style a host label carries. Its segments are not drawn;
     /// the label's characters are the formatted wavelength.
@@ -436,7 +430,7 @@ impl Default for WavelengthLabels {
     fn default() -> Self {
         Self {
             format: crate::format::PlainNumberFormat::AUTO,
-            unit_on_labels: false,
+            unit: None,
             text: RichText::plain("", Color::from_rgb8(40, 40, 40), 11.0, ""),
         }
     }
@@ -462,18 +456,20 @@ impl WavelengthLabels {
         {
             return Err(crate::RuleKind::WavelengthLabels);
         }
+        if let Some(unit) = &self.unit
+            && !text_ok(unit)
+        {
+            return Err(crate::RuleKind::WavelengthUnit);
+        }
         Ok(())
     }
 
     /// The label of a transition at `wavelength`: the value in
-    /// [`Self::format`], then ` {unit}` when [`Self::unit_on_labels`] is set
-    /// and `unit` is a unit, in the font, size and colour of
-    /// [`Self::text`].
-    pub fn label(&self, wavelength: f64, unit: Option<&str>) -> RichText {
+    /// [`Self::format`], then ` {unit}` when [`Self::unit`] is a unit, in
+    /// the font, size and colour of [`Self::text`].
+    pub fn label(&self, wavelength: f64) -> RichText {
         let mut text = self.format.format(wavelength);
-        if self.unit_on_labels
-            && let Some(unit) = unit.filter(|u| !u.is_empty())
-        {
+        if let Some(unit) = self.unit.as_deref().filter(|u| !u.is_empty()) {
             text.push(' ');
             text.push_str(unit);
         }
@@ -723,17 +719,11 @@ impl EnergyLevelSeries {
     /// holds no records. No list has a count limit (rule 10).
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
-        if let Some(unit) = &self.wavelength_unit
-            && !text_ok(unit)
-        {
-            return Err(crate::RuleKind::WavelengthUnit);
-        }
         if self.source.is_some() {
             if !self.levels.is_empty()
                 || !self.limits.is_empty()
                 || !self.transitions.is_empty()
                 || !self.bands.is_empty()
-                || self.wavelength_unit.is_some()
             {
                 return Err(crate::RuleKind::EnergyLevelsSourceWithRecords);
             }
@@ -950,19 +940,18 @@ impl Transition {
     /// The label drawn beside this transition's arrow (#258), the one
     /// owner of the choice: the host's `label` when it has one; else, when
     /// `labels` is set and the transition has a `wavelength`, that value
-    /// written by [`WavelengthLabels::label`] with `unit`; else none. The
+    /// written by [`WavelengthLabels::label`]; else none. The
     /// placement, the drag, the pick, the picked highlight and the vector
     /// export all read the label through it.
     pub fn drawn_label(
         &self,
         labels: Option<&WavelengthLabels>,
-        unit: Option<&str>,
     ) -> Option<std::borrow::Cow<'_, RichText>> {
         if let Some(label) = &self.label {
             return Some(std::borrow::Cow::Borrowed(label));
         }
         let (labels, wavelength) = (labels?, self.wavelength?);
-        Some(std::borrow::Cow::Owned(labels.label(wavelength, unit)))
+        Some(std::borrow::Cow::Owned(labels.label(wavelength)))
     }
 
     fn validate(&self) -> Result<(), crate::RuleKind> {
@@ -1464,22 +1453,6 @@ pub fn drawn_records<'a>(
             .and_then(SeriesConfig::energy_levels)
             .filter(|source| source.source.is_none()),
     }
-}
-
-/// The wavelength unit the energy-level series `series_id` of `series`
-/// draws (#258): the `wavelength_unit` of the records it draws (its own, or
-/// its source's). `None` when no energy-level series of the list has that
-/// id, its source holds no records, or the unit is `None` or empty. A unit
-/// note ([`AnnotationKind::SeriesUnit`]) reads it on every draw.
-pub fn wavelength_unit<'a>(series: &'a [SeriesConfig], series_id: &str) -> Option<&'a str> {
-    let own = series
-        .iter()
-        .find(|s| s.series_id == series_id)?
-        .energy_levels()?;
-    drawn_records(own, series)?
-        .wavelength_unit
-        .as_deref()
-        .filter(|unit| !unit.is_empty())
 }
 
 impl EnergyLevelSeries {
@@ -2060,13 +2033,13 @@ mod wavelength_label_tests {
         }
     }
 
-    fn labels(decimals: Option<u8>, unit_on_labels: bool) -> WavelengthLabels {
+    fn labels(decimals: Option<u8>, unit: Option<&str>) -> WavelengthLabels {
         WavelengthLabels {
             format: PlainNumberFormat {
                 decimals,
                 trim_zeros: false,
             },
-            unit_on_labels,
+            unit: unit.map(Into::into),
             text: RichText::plain("", Color::from_rgb8(150, 90, 0), 11.0, "serif"),
         }
     }
@@ -2080,11 +2053,10 @@ mod wavelength_label_tests {
                 line("t", "low", "high", Some(1083.034)),
                 line("bare", "low", "high", None),
             ],
-            wavelength_unit: Some("nm".into()),
             ..EnergyLevelSeries::default()
         };
         records.transitions[1].x_offset = 0.4;
-        records.style.wavelength_labels = Some(labels(Some(1), true));
+        records.style.wavelength_labels = Some(labels(Some(1), Some("nm")));
         records
     }
 
@@ -2118,31 +2090,27 @@ mod wavelength_label_tests {
     #[test]
     fn a_wavelength_is_written_in_the_format_and_a_host_label_wins() {
         let t = line("t", "a", "b", Some(1083.034));
-        let text = |labels: &WavelengthLabels, unit| {
-            chars(&t.drawn_label(Some(labels), unit).expect("a label"))
-        };
-        assert_eq!(text(&labels(Some(1), false), Some("nm")), "1083.0");
-        assert_eq!(text(&labels(Some(3), false), None), "1083.034");
-        assert_eq!(text(&labels(Some(0), false), None), "1083");
-        assert_eq!(text(&labels(None, false), None), "1083.034");
+        let text =
+            |labels: &WavelengthLabels| chars(&t.drawn_label(Some(labels)).expect("a label"));
+        assert_eq!(text(&labels(Some(1), None)), "1083.0");
+        assert_eq!(text(&labels(Some(3), None)), "1083.034");
+        assert_eq!(text(&labels(Some(0), None)), "1083");
+        assert_eq!(text(&labels(None, None)), "1083.034");
         let trimmed = WavelengthLabels {
             format: PlainNumberFormat {
                 decimals: Some(4),
                 trim_zeros: true,
             },
-            ..labels(None, false)
+            ..labels(None, None)
         };
-        assert_eq!(text(&trimmed, None), "1083.034");
-        // The unit is appended only when asked for and when there is one.
-        assert_eq!(text(&labels(Some(1), true), Some("nm")), "1083.0 nm");
-        assert_eq!(
-            text(&labels(Some(1), true), Some("nm (air)")),
-            "1083.0 nm (air)"
-        );
-        assert_eq!(text(&labels(Some(1), true), None), "1083.0");
-        assert_eq!(text(&labels(Some(1), true), Some("")), "1083.0");
+        assert_eq!(text(&trimmed), "1083.034");
+        // The labels' own unit follows the number; none or an empty one
+        // writes the number alone.
+        assert_eq!(text(&labels(Some(1), Some("nm"))), "1083.0 nm");
+        assert_eq!(text(&labels(Some(1), Some("nm (air)"))), "1083.0 nm (air)");
+        assert_eq!(text(&labels(Some(1), Some(""))), "1083.0");
         // The labels' font, size and colour.
-        let drawn = t.drawn_label(Some(&labels(Some(1), false)), None).unwrap();
+        let drawn = t.drawn_label(Some(&labels(Some(1), None))).unwrap();
         assert_eq!(
             (drawn.font_size, drawn.color, drawn.font.as_str()),
             (11.0, Color::from_rgb8(150, 90, 0), "serif")
@@ -2153,15 +2121,15 @@ mod wavelength_label_tests {
             label: Some(RichText::plain("He 1083", Color::BLACK, 12.0, "")),
             ..t.clone()
         };
-        let drawn = host.drawn_label(Some(&labels(Some(1), true)), Some("nm"));
+        let drawn = host.drawn_label(Some(&labels(Some(1), Some("nm"))));
         assert!(matches!(&drawn, Some(std::borrow::Cow::Borrowed(_))));
         assert_eq!(chars(&drawn.unwrap()), "He 1083");
         // No wavelength or no labels: no label.
         assert_eq!(
-            line("u", "a", "b", None).drawn_label(Some(&labels(Some(1), true)), Some("nm")),
+            line("u", "a", "b", None).drawn_label(Some(&labels(Some(1), Some("nm")))),
             None
         );
-        assert_eq!(t.drawn_label(None, Some("nm")), None);
+        assert_eq!(t.drawn_label(None), None);
     }
 
     #[test]
@@ -2230,8 +2198,22 @@ mod wavelength_label_tests {
         assert_eq!(placed(&records).unwrap().0, "He");
         // No unit: the number alone, and nothing else changes.
         let mut bare = self::records();
-        bare.wavelength_unit = None;
-        assert_eq!(placed(&bare).unwrap().0, "1083.0");
+        bare.style.wavelength_labels = Some(labels(Some(1), None));
+        let layout = placement.layout(&bare, &bare.style, &Fixed);
+        let label = placement
+            .label(
+                &bare,
+                &bare.style,
+                &layout,
+                LabelPart::Transition,
+                0,
+                &Fixed,
+            )
+            .expect("labelled without a unit");
+        let crate::sink::TextRef::Rich(text) = label.text else {
+            panic!("a rich label")
+        };
+        assert_eq!(chars(text), "1083.0");
         // No labels style: the host's labels only.
         let mut off = self::records();
         off.style.wavelength_labels = None;
@@ -2253,11 +2235,11 @@ mod wavelength_label_tests {
             r.validate()
         };
         assert_eq!(
-            check(&|r| r.wavelength_unit = Some("n\nm".into())),
+            check(&|r| r.style.wavelength_labels.as_mut().unwrap().unit = Some("n\nm".into())),
             Err(crate::RuleKind::WavelengthUnit)
         );
         assert_eq!(
-            check(&|r| r.wavelength_unit = Some("m".repeat(161))),
+            check(&|r| r.style.wavelength_labels.as_mut().unwrap().unit = Some("m".repeat(161))),
             Err(crate::RuleKind::WavelengthUnit)
         );
         assert_eq!(
@@ -2276,44 +2258,6 @@ mod wavelength_label_tests {
             check(&|r| r.transitions[0].wavelength = Some(f64::NAN)),
             Err(crate::RuleKind::TransitionValues)
         );
-        // A view of another series holds no unit: the unit is the records'.
-        let view = EnergyLevelSeries {
-            source: Some("he".into()),
-            wavelength_unit: Some("nm".into()),
-            ..EnergyLevelSeries::default()
-        };
-        assert_eq!(
-            view.validate(),
-            Err(crate::RuleKind::EnergyLevelsSourceWithRecords)
-        );
-    }
-
-    #[test]
-    fn the_unit_is_read_from_the_records_a_series_draws() {
-        let spec = |id: &str, levels: EnergyLevelSeries| SeriesConfig {
-            series_id: id.into(),
-            source_id: None,
-            label: None,
-            x_column: String::new(),
-            y_column: String::new(),
-            z_column: None,
-            render_type: crate::data_config::DataRenderType::EnergyLevels(levels),
-        };
-        let view = EnergyLevelSeries {
-            source: Some("he".into()),
-            ..EnergyLevelSeries::default()
-        };
-        let list = [spec("he", records()), spec("inset", view)];
-        assert_eq!(wavelength_unit(&list, "he"), Some("nm"));
-        assert_eq!(wavelength_unit(&list, "inset"), Some("nm"), "its source's");
-        assert_eq!(wavelength_unit(&list, "absent"), None);
-        assert_eq!(wavelength_unit(&list[1..], "inset"), None, "no source");
-        let mut none = records();
-        none.wavelength_unit = None;
-        assert_eq!(wavelength_unit(&[spec("he", none)], "he"), None);
-        let mut empty = records();
-        empty.wavelength_unit = Some(String::new());
-        assert_eq!(wavelength_unit(&[spec("he", empty)], "he"), None);
     }
 
     #[cfg(feature = "serde")]
@@ -2321,7 +2265,6 @@ mod wavelength_label_tests {
     fn the_new_fields_round_trip_and_are_omitted_when_unset() {
         let full = records();
         let json = serde_json::to_value(&full).unwrap();
-        assert_eq!(json["wavelength_unit"], "nm");
         assert_eq!(json["transitions"][0]["wavelength"], 1083.034);
         assert!(json["transitions"][1].get("wavelength").is_none());
         assert!(
@@ -2329,33 +2272,23 @@ mod wavelength_label_tests {
                 .get("wavelength_uncertainty")
                 .is_none()
         );
-        let labels = &json["style"]["wavelength_labels"];
-        assert_eq!(labels["format"]["decimals"], 1);
-        assert_eq!(labels["unit_on_labels"], true);
+        let written = &json["style"]["wavelength_labels"];
+        assert_eq!(written["format"]["decimals"], 1);
+        assert_eq!(written["unit"], "nm");
         let back: EnergyLevelSeries = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back, full);
         assert_eq!(serde_json::to_value(&back).unwrap(), json);
         // Unset, nothing is written, and a document without them parses.
         let mut plain = full.clone();
-        plain.wavelength_unit = None;
         plain.style.wavelength_labels = None;
         let json = serde_json::to_value(&plain).unwrap();
-        assert!(json.get("wavelength_unit").is_none());
         assert!(json.get("style").is_none(), "a default style is omitted");
         let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
         assert_eq!(back, plain);
-        let mut no_unit_flag = labels_json();
-        no_unit_flag
-            .as_object_mut()
-            .unwrap()
-            .remove("unit_on_labels");
-        let parsed: WavelengthLabels = serde_json::from_value(no_unit_flag).unwrap();
-        assert!(!parsed.unit_on_labels);
-    }
-
-    #[cfg(feature = "serde")]
-    fn labels_json() -> serde_json::Value {
-        serde_json::to_value(labels(Some(2), true)).unwrap()
+        let no_unit = serde_json::to_value(labels(Some(2), None)).unwrap();
+        assert!(no_unit.get("unit").is_none(), "no unit is omitted");
+        let parsed: WavelengthLabels = serde_json::from_value(no_unit).unwrap();
+        assert_eq!(parsed.unit, None);
     }
 }
 
