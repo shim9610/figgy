@@ -213,6 +213,7 @@ area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 | `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
 | `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up). Dragging the ray turns it |
 | `grid_shape: Option<GridShape>` | How the rings join: `Circle` (default, `None`, key absent in JSON) draws circles; `Polygon` joins each ring and the outer ring with chords at the categories of a categorical angle axis (the radar spider web) and needs one |
+| `hide_first_radius_label: bool` | Skip the innermost radius ring's label, as on the calm circle of a wind rose; the ring and its tick still draw. Default `false`, key absent in JSON ([#259](https://github.com/shim9610/figgy/issues/259)) |
 
 **Categorical angle axis.** With `bottom_x.categories` set, the angle axis
 is categorical: category `i` of `n` sits at `i / n` of the turn (or of
@@ -1548,6 +1549,7 @@ pub struct Config {
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
 | `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 반직선의 화면 방향(도). 기본 90(위). 반직선을 드래그하면 바뀐다 |
 | `grid_shape: Option<GridShape>` | 고리를 잇는 모양. `Circle`(기본, `None`, JSON에서 키 생략)은 원을 그리고, `Polygon`은 범주형 각도 축의 범주마다 현으로 각 고리와 바깥 고리를 잇는다(레이더의 거미줄 격자). 범주형 각도 축이 필요하다 |
+| `hide_first_radius_label: bool` | 가장 안쪽 반지름 고리의 라벨을 그리지 않는다. 바람장미의 무풍 원 가장자리처럼 쓴다. 고리와 눈금은 그대로 그린다. 기본값 `false`, JSON에서 키 생략([#259](https://github.com/shim9610/figgy/issues/259)) |
 
 **범주형 각도 축.** `bottom_x.categories`가 있으면 각도 축은 범주형이다. `n`개 중 `i`번째 범주는
 `zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴(또는 `sector`)의 `i / n` 자리에 놓이므로

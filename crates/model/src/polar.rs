@@ -161,6 +161,14 @@ pub struct PolarOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub grid_shape: Option<GridShape>,
+    /// Skip the label of the innermost radius ring (#259): in a wind rose it
+    /// sits on the edge of the calm circle. The ring and its tick still draw.
+    /// `false` (the default) is omitted from JSON.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "std::ops::Not::not")
+    )]
+    pub hide_first_radius_label: bool,
 }
 
 impl Default for PolarOptions {
@@ -174,6 +182,7 @@ impl Default for PolarOptions {
             interpolation: PolarInterpolation::Chord,
             radial_label_angle_degrees: 90.0,
             grid_shape: None,
+            hide_first_radius_label: false,
         }
     }
 }
@@ -694,6 +703,7 @@ mod tests {
             interpolation: PolarInterpolation::Arc { pieces: 12 },
             radial_label_angle_degrees: 45.0,
             grid_shape: Some(GridShape::Polygon),
+            hide_first_radius_label: true,
         }));
         let text = serde_json::to_string(&polar).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
@@ -703,6 +713,11 @@ mod tests {
         // their bytes.
         let default_text = serde_json::to_string(&PolarOptions::default()).unwrap();
         assert!(!default_text.contains("grid_shape"), "{default_text}");
+        assert!(
+            !default_text.contains("hide_first_radius_label"),
+            "{default_text}"
+        );
+        assert!(text.contains(r#""hide_first_radius_label":true"#), "{text}");
         let circle: PolarOptions =
             serde_json::from_value(serde_json::json!({ "grid_shape": "Circle" })).unwrap();
         assert_eq!(circle.grid_shape, Some(GridShape::Circle));
