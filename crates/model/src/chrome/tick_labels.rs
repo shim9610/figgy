@@ -498,6 +498,33 @@ pub fn emit_colorbar_tick_labels(
     });
 }
 
+/// How far past the strip's outer edge on `side` the colourbar's tick
+/// labels reach, in pixels: the outer edge of the farthest label, before the
+/// detached-axis translation (the title is placed before it too). Zero when
+/// no label is drawn. The title keeps clear of this reach (#259).
+pub fn colorbar_labels_reach(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    measure: &dyn MeasureText,
+) -> f32 {
+    let majors = major_tick_values(axis);
+    let mut reach = 0.0_f32;
+    each_colorbar_tick_label(axis, side.clone(), rect, measure, &majors, |text, pos| {
+        let (origin, m) = tick_label_placement(&text, pos, side.clone(), axis, measure);
+        let past = match side {
+            Side::Right => origin.0 + m.width - (rect.x + rect.width),
+            Side::Left => rect.x - origin.0,
+            Side::Bottom => origin.1 + m.descent - (rect.y + rect.height),
+            Side::Top => rect.y - (origin.1 - m.ascent),
+        };
+        if past.is_finite() {
+            reach = reach.max(past);
+        }
+    });
+    reach
+}
+
 /// Every tick label the axis on `side` draws, with its tick position, in
 /// draw order, before the detached-axis translation.
 pub fn each_axis_tick_label(

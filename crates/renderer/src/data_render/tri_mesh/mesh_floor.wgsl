@@ -4,10 +4,12 @@
 // floor, as a heatmap's do (`field_columnar.wgsl::vs_floor`): `vs_tri_floor`
 // places each triangle's vertices at `t.z = 0` through the camera
 // (`project_box`), carrying the values and the gradient the flat draw
-// carries (`mesh_triangle`, `mesh_gradient_px`), so the stroke's width is
-// measured in floor-plane pixels, as a heatmap's floor contours are (#49
-// D7), and the draw and the 1×1 ID pick (whose camera maps the cursor pixel
-// onto its target) agree. `fs_tri_floor` is the flat contour fragment
+// carries (`mesh_triangle`, `mesh_gradient_px`). The fragment carries the
+// stroke's half-width to the floor through the screen gradient of its value
+// (`mesh_floor_screen_scale`), so a floor stroke is `line_width_px` wide on
+// screen whichever way it runs, as a heatmap's floor contours are (#259),
+// and the draw and the 1×1 ID pick (whose camera maps the cursor pixel onto
+// its target) agree. `fs_tri_floor` is the flat contour fragment
 // (`mesh_contour_paint`) with the floor clipped to the box, and
 // `fs_tri_floor_pick` writes what the pick reads: the series with the top
 // bit marking a floor contour, the level painted and the triangle.
@@ -81,8 +83,22 @@ fn mesh_floor_visible(floor_t: vec2<f32>) -> bool {
     return box_visible(vec3<f32>(floor_t, 0.0));
 }
 
+/// The screen gradient of the fragment's value over its floor-plane
+/// gradient (`in.values2.z`): how many floor pixels across the isoline make
+/// one screen pixel here. Taken before any discard, in uniform control flow.
+/// One where either is degenerate.
+fn mesh_floor_screen_scale(in: MeshOut) -> f32 {
+    let z = mesh_fragment_value(in).z;
+    let f = z.x + z.y;
+    let screen = length(vec2<f32>(dpdx(f), dpdy(f)));
+    let floor = in.values2.z;
+    let scale = screen / floor;
+    return select(1.0, scale, f32_is_finite(scale) && scale > 0.0 && floor > 0.0);
+}
+
 @fragment
 fn fs_tri_floor(in: MeshOut) -> @location(0) vec4<f32> {
+    mesh_floor_width_scale = mesh_floor_screen_scale(in);
     if (!mesh_floor_visible(in.floor_t)) {
         discard;
     }
@@ -94,6 +110,7 @@ fn fs_tri_floor(in: MeshOut) -> @location(0) vec4<f32> {
 /// painted at the pixel and the triangle it lies in.
 @fragment
 fn fs_tri_floor_pick(in: MeshOut) -> @location(0) vec4<u32> {
+    mesh_floor_width_scale = mesh_floor_screen_scale(in);
     let paint = mesh_contour_paint(in);
     if (!mesh_floor_visible(in.floor_t) || paint.level == 0xffffffffu) {
         discard;

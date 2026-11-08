@@ -1404,12 +1404,14 @@ fn emit_colorbar_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn S
         return;
     }
     let m = measure.measure_rich(&to.text);
+    let reach = crate::chrome::colorbar_labels_reach(&bar.axis, bar.side.clone(), &rect, measure);
     let placement = colorbar_title_placement(
         bar.side.clone(),
         &rect,
         &bar.axis,
         (to.offset_x, to.offset_y),
         m,
+        reach,
     );
     sink.text(
         Slot::Above,

@@ -968,6 +968,7 @@ impl Config {
             sector: None,
             inner_radius_fraction: 0.0,
             interpolation: PolarInterpolation::Chord,
+            hide_first_radius_label: false,
         }));
 
         let GridOptions {

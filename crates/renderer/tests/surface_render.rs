@@ -388,6 +388,78 @@ fn contours_draw_and_pick_on_the_floor() {
     }
 }
 
+/// A floor isoline is `line_width` wide on screen whichever way it runs
+/// (#259): where the circle runs across the view the floor is foreshortened,
+/// and a stroke measured in floor-plane pixels came out much thinner there
+/// than where it runs up the screen.
+#[test]
+fn floor_contours_keep_their_screen_width_in_every_direction() {
+    let mut r = renderer();
+    upload_grid(&mut r, 41, 33, ridge);
+    let config = chart_3d();
+    let mut contour = contour_config(vec![0.5]);
+    contour.line.line_width = 2.0;
+    let series = vec![SeriesConfig {
+        series_id: "floor".into(),
+        render_type: DataRenderType::Field(renderer::data_config::FieldSeries {
+            matrix: matrix(41),
+            fill: None,
+            contour: Some(contour),
+            surface: None,
+        }),
+        ..surface_series(41, Shading::Interpolated, None)
+    }];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("surface-floor-contour-width", &img);
+    let radius = (0.05f64 * std::f64::consts::LN_2).sqrt();
+    let on_screen = |a: f64| {
+        let p = config
+            .project_3d([0.5 + radius * a.cos(), 0.4 + radius * a.sin(), 0.0])
+            .unwrap();
+        (p[0], p[1])
+    };
+    // The stroke's width across its screen tangent at angle `a` of the
+    // circle: the red coverage summed along the screen normal.
+    let width_at = |a: f64| {
+        let p = on_screen(a);
+        let (q0, q1) = (on_screen(a - 1e-3), on_screen(a + 1e-3));
+        let (tx, ty) = (q1.0 - q0.0, q1.1 - q0.1);
+        let len = tx.hypot(ty);
+        let (nx, ny) = (-ty / len, tx / len);
+        let mut sum = 0.0;
+        let step = 0.25;
+        let mut d = -8.0;
+        while d <= 8.0 {
+            let px = pixel(&img, (p.0 + nx * d, p.1 + ny * d));
+            let cover = (f64::from(px[0]) - f64::from(px[1])).max(0.0) / 255.0;
+            sum += cover * f64::from(px[3]) / 255.0 * step;
+            d += step;
+        }
+        sum
+    };
+    let widths: Vec<(f64, f64)> = (0..16)
+        .map(|k| {
+            let a = f64::from(k) / 16.0 * std::f64::consts::TAU;
+            (a, width_at(a))
+        })
+        .collect();
+    let (min, max) = widths
+        .iter()
+        .fold((f64::INFINITY, 0.0f64), |(lo, hi), (_, w)| {
+            (lo.min(*w), hi.max(*w))
+        });
+    assert!(
+        min > 1.2,
+        "every stroke is about 2 px wide on screen: {widths:?}"
+    );
+    // Pixel sampling spreads a 2 px stroke over 1.6 to 2.5; measured in
+    // floor-plane pixels the same circle ran from 0 (broken) to 1.3.
+    assert!(
+        max / min < 1.75,
+        "the widths agree across directions: {widths:?}"
+    );
+}
+
 /// An opaque surface covers the floor contours under it; a translucent one
 /// shows them through.
 #[test]

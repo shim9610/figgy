@@ -327,6 +327,62 @@ fn every_cell_is_painted_to_its_voronoi_edge() {
     );
 }
 
+/// A lattice stretched along y (here 25 times the regular row pitch) with
+/// the y range stretched with it draws the same cells: the nearest centre is
+/// taken in the lattice's own metric, so the cells are stretched hexagons
+/// and each still reaches its Voronoi edge with all six neighbours, rather
+/// than becoming slabs (#259).
+#[test]
+fn a_stretched_lattice_draws_stretched_hexagons() {
+    const S: f64 = 25.0;
+    let mut r = renderer();
+    let x = col_f64(xs());
+    let y = col_f64(ys().into_iter().map(|v| v * S).collect());
+    let grid: Vec<Column<f64>> = (0..COLS)
+        .map(|c| col_f64((0..ROWS).map(|row| z(c, row)).collect()))
+        .collect();
+    let ids: Vec<String> = (0..COLS).map(|k| format!("hz{k}")).collect();
+    let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("hx", &x), ("hy", &y)];
+    for (id, column) in ids.iter().zip(&grid) {
+        batch.push((id.as_str(), column));
+    }
+    r.add_columns(&batch).expect("grid upload");
+    let mut chart = chart();
+    chart.set_y_range(0.0, 6.5 * S);
+    let bar = colorbar();
+    let series = [hexbin(&ids, MatrixOrientation::ColumnsAreX)];
+    let img = r
+        .export_rgba(
+            renderer::ExportSource::chart(&chart, &series),
+            renderer::ExportOptions::panel(1.0),
+        )
+        .block_on()
+        .unwrap();
+    save("hexbin-stretched", &img);
+    let at = |(x, y): (f64, f64)| data_to_px(&chart, x, y * S, 1.0);
+    let (c, row) = (2i64, 1i64);
+    assert_colour_at(
+        &img,
+        at(center(c, row)),
+        bar.color_for_z(z(c as usize, row as usize)),
+        "the centre of (2, 1)",
+    );
+    for (k, n) in neighbors(c, row).into_iter().enumerate() {
+        assert_colour_at(
+            &img,
+            at(towards(c, row, n, 0.45)),
+            bar.color_for_z(z(c as usize, row as usize)),
+            &format!("0.45 of the way to neighbour {k} {n:?} is still (2, 1)"),
+        );
+        assert_colour_at(
+            &img,
+            at(towards(c, row, n, 0.55)),
+            bar.color_for_z(z(n.0 as usize, n.1 as usize)),
+            &format!("0.55 of the way to neighbour {k} {n:?} is the neighbour"),
+        );
+    }
+}
+
 /// `ColumnsAreY` reads the same lattice transposed: the constituent columns
 /// are the rows.
 #[test]
