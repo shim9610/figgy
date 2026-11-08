@@ -5,6 +5,7 @@
 use super::*;
 
 mod data_pick;
+mod data_pick_series;
 mod descriptors;
 mod energy_levels;
 mod entry;
