@@ -36,6 +36,7 @@ pub use line_offsets::*;
 pub use radar::*;
 pub use range_bars::*;
 pub use vector::*;
+#[cfg(feature = "serde")]
 pub(crate) use wire::*;
 pub use xy::*;
 /// One series — which columns to draw, with which render type and style.
