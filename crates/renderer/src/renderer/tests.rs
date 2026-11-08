@@ -15191,7 +15191,7 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
         include_str!("streaming.rs"),
         include_str!("style.rs"),
         include_str!("preparation.rs"),
-        include_str!("device.rs"),
+        include_str!("device/renderer_prewarm.rs"),
         include_str!("../streaming_runtime.rs"),
     ];
     let mut wrapped = 0;
