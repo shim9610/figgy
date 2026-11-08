@@ -90,6 +90,61 @@ actual native renderer output. GIFs show exported animation frames.
 
 Milkyway uses line-only series; Constellation places stars at the source samples.
 
+**Charts new in 0.19**
+
+**Ternary · 3D surface · 3D vectors · Triangle mesh**
+
+<p>
+  <a href="crates/renderer/examples/ternary.rs"><img src="crates/renderer/assets/gallery-ternary.png" alt="Soil texture triangle with three cores" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-surface.png" alt="3D terrain surface with a trail" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-quiver3d.png" alt="3D vector field of a vortex" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trimesh.png" alt="Stress around a hole on a triangle mesh" width="23%" align="top"></a>
+</p>
+
+**Triangle surface · Hexbin · Colour image · Polar heatmap**
+
+<p>
+  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trisurf.png" alt="Drum vibration mode as a 3D triangle surface" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-hexbin.png" alt="Hexbin of taxi pickups" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-imshow.png" alt="Planetary nebula as an RGB image" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-heatmap.png" alt="Directional wave spectrum on polar axes" width="23%" align="top"></a>
+</p>
+
+**Wind rose · Sunburst · Parallel coordinates · Split violins**
+
+<p>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-rose.png" alt="Wind rose" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-sunburst.png" alt="Sunburst of electricity generation" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/parallel.rs"><img src="crates/renderer/assets/gallery-parallel.png" alt="Parallel coordinates of a hyperparameter sweep" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-violin.png" alt="Split violins of reaction times" width="23%" align="top"></a>
+</p>
+
+**Raincloud · Waterfall · Candlesticks · Gantt**
+
+<p>
+  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-raincloud.png" alt="Raincloud plot of commute times" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-waterfall.png" alt="Profit bridge waterfall" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-candlestick.png" alt="Candlestick chart with a moving average" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-gantt.png" alt="Gantt chart of a release plan" width="23%" align="top"></a>
+</p>
+
+**Shapes · Stems · Lollipop · Broken axis**
+
+<p>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-shapes.png" alt="Flow cytometry gates as shape annotations" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-stem.png" alt="Stem plot of a filter impulse response" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-lollipop.png" alt="Ranked lollipop chart" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/broken_axes.rs"><img src="crates/renderer/assets/gallery-broken-axes.png" alt="Gamma spectrum on a broken axis" width="23%" align="top"></a>
+</p>
+
+**Energy levels · Feynman diagrams · Probability paper**
+
+<p>
+  <a href="crates/renderer/examples/nist_grotrian_gallery.rs"><img src="crates/renderer/assets/gallery-grotrian.png" alt="Grotrian diagram of He I" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/feynman.rs"><img src="crates/renderer/assets/gallery-feynman.png" alt="Six Feynman diagrams" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/probability_paper.rs"><img src="crates/renderer/assets/gallery-probability.png" alt="Probability paper" width="23%" align="top"></a>
+</p>
+
 [Six editable visual recipes](crates/renderer/GALLERY.md#visual-concepts) show how
 palettes, axes, materials and labels restyle charts built with the same APIs.
 

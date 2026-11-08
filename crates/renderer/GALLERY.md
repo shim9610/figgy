@@ -68,6 +68,37 @@ The same examples also write plain feature checks that are not in the README:
 data units coloured by a third matrix, and `mixed-axes.png` puts a twin Y axis
 inside a subplot.
 
+## Charts new in 0.19
+
+Each 0.19 chart kind has a designed scene drawn by its example (#250), with the shared chrome of the feature scenes. The examples compute every value they draw (rule 1): bins, densities, running totals, plotting positions, fits and layouts are the host's; the renderer draws the supplied data.
+
+| Output | Example and function | Scene |
+|---|---|---|
+| `gallery-ternary.png` | [ternary.rs](examples/ternary.rs), `render` | The USDA soil texture triangle: twelve texture classes as filled region polygons named by text annotations, and three soil cores sampled every 10 cm as lines whose markers grow with depth (`point_size_map`) |
+| `gallery-surface.png` | [surface_3d.rs](examples/surface_3d.rs), `terrain` | Two summits and a saddle as a lit, wireframed 3D surface on a 61 × 61 grid (`view_3d`), floor contours in the ramp's colours, and a trail with waypoints as 3D line and marker series with a `z_column` |
+| `gallery-quiver3d.png` | [surface_3d.rs](examples/surface_3d.rs), `vortex` | A Burgers vortex sampled on a 9 × 9 × 3 lattice: one arrow per sample along (u, v, w), coloured by a host speed column through the colourbar |
+| `gallery-trimesh.png` | [trimesh.rs](examples/trimesh.rs), `plate` | Von Mises stress around a hole in a plate under tension (Kirsch's solution) on the host's graded mesh: interpolated fill, contour lines and the mesh edges as a faint line series |
+| `gallery-trisurf.png` | [trimesh.rs](examples/trimesh.rs), `drum` | The (2, 2) mode of a circular drum on a disc mesh, a lit and wireframed 3D triangle surface on a diverging ramp, with floor contours |
+| `gallery-hexbin.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `hexbin` | 100,000 taxi pickups the host bins into counts on a hexagonal lattice (`GridLayout::Hexagonal`), on a log colourbar; empty cells are NaN |
+| `gallery-imshow.png` | [heatmap_contours.rs](examples/heatmap_contours.rs), `imshow` | A planetary nebula as one `RgbImage`: three host-composited channel grids on one lattice of square pixels, interpolated, with field stars |
+| `gallery-polar-heatmap.png` | [polar_plot.rs](examples/polar_plot.rs), `wave_spectrum` | A directional wave spectrum as annular cells: direction on a compass axis, frequency outward, energy in dB, with labelled polar contours |
+| `gallery-rose.png` | [polar_plot.rs](examples/polar_plot.rs), `wind_rose` | A wind rose: a year's hours from 16 directions as category bars stacked outward in four speed bands |
+| `gallery-sunburst.png` | [radial_gallery.rs](examples/radial_gallery.rs), `sunburst` | A sunburst of electricity generation: groups at the centre, sources on the middle ring and technologies outside, each share relative to its parent |
+| `gallery-parallel.png` | [parallel.rs](examples/parallel.rs), `render` | A 120-run hyperparameter sweep across six axes (two of them logarithmic), each run coloured by its validation accuracy through the colourbar, the best drawn last |
+| `gallery-violin.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `violins` | Split violins: reaction times under four memory loads, rested on the left half and after 24 h awake on the right; each half is the host's density curve as a ragged column |
+| `gallery-raincloud.png` | [boxplot_gallery.rs](examples/boxplot_gallery.rs), `raincloud` | Horizontal rainclouds of commute time by mode: the host's half violin above a quartile box, the raw samples jittered below |
+| `gallery-waterfall.png` | [range_bars.rs](examples/range_bars.rs), `waterfall` | A profit bridge: the host's running totals as start and end columns, increases and decreases coloured by direction, subtotal and totals flagged, connectors between the steps |
+| `gallery-candlestick.png` | [range_bars.rs](examples/range_bars.rs), `candlestick` | 64 days of synthetic prices on a date axis: open–close bodies, low–high wicks and the host's 20-day moving average |
+| `gallery-gantt.png` | [range_bars.rs](examples/range_bars.rs), `gantt` | A release plan on six rows over a date axis: a state column colours each task and a progress column shades its finished part |
+| `gallery-shapes.png` | [overlay_axes.rs](examples/overlay_axes.rs), `shapes` | 4000 flow cytometry events with shape annotations as gates: an ellipse, a rectangle, a polygon and a dashed outline, labelled in text boxes |
+| `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
+| `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
+| `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
+| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), `main` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, labelled transitions, the ground state below a broken energy axis |
+| `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
+
+`readme_gallery` writes them with the other images; each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
+
 ## Visual concepts
 
 [`gallery_concepts.rs`](examples/gallery_concepts.rs) renders six complete chart
@@ -288,6 +319,8 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 은하수 미리보기는 두 곡선을 `Line`으로 등록하므로 곡선을 따라 별과 성운 띠만 그린다. 산점도 기호가 없어 행성이 나타나지 않고, 오차 막대가 없어 제트도 나타나지 않는다. `planet_rim = 0`은 행성을 없애는 설정이 아니다. 예제의 옵션 값은 이 미리보기에만 적용되며 렌더러 기본값은 바꾸지 않는다.
 
 수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
+
+0.19에 추가된 차트(삼각 좌표, 3D 곡면과 3D 화살표, 삼각 메시와 3D 삼각 메시, 육각 빈, 컬러 이미지, 극좌표 히트맵, 장미 차트, 선버스트, 평행 좌표, 반쪽 바이올린, 레인클라우드, 폭포·캔들스틱·간트, 도형 주석, 줄기·롤리팝, 축 끊기, 에너지 준위, 파인만 도표)는 [위 표](#charts-new-in-019)의 예제가 그린다. 예제가 그리는 값(구간별 개수, 밀도, 누적 합, 플로팅 위치, 적합선, 배치)은 모두 예제가 계산하고 렌더러는 받은 데이터만 그린다. `readme_gallery`가 다른 그림과 함께 이 그림들도 만들고, 예제마다 따로 실행할 수도 있다.
 
 가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.
 
