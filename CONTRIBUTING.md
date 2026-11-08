@@ -90,8 +90,10 @@ do not update unrelated dependencies to fix a local setup problem.
 Work on a branch or fork, open a PR against `master` and fill in each section of
 the [pull request template](.github/PULL_REQUEST_TEMPLATE.md). Keep the change focused,
 explain the user-visible behavior, and report which checks ran and any gaps.
-New documentation and example explanations should be in English; retain existing
-Korean documentation. Public API or behavior changes need corresponding guide,
+New documentation and example explanations should be in English; retain the
+Korean sections of the guides. `README.ko.md` is a short Korean entry page that
+links to the English README for the gallery, the chart table and the examples,
+so new features are added to `README.md` only. Public API or behavior changes need corresponding guide,
 example and changelog updates. The maintainer coordinates release version bumps.
 
 A new chart or feature implements and tests every existing interaction below.
