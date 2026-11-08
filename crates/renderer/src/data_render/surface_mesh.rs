@@ -423,7 +423,7 @@ impl SurfacePass {
             (SurfacePass::Draw, _) => ("vs_main", "fs_main"),
             (SurfacePass::Selected, _) => ("vs_selected", "fs_selected"),
             (SurfacePass::Pick, _) => ("vs_main", "fs_pick"),
-            (SurfacePass::FloorContour, SurfaceInput::Grid) => ("vs_floor", "fs_contour"),
+            (SurfacePass::FloorContour, SurfaceInput::Grid) => ("vs_floor", "fs_floor_contour"),
             (SurfacePass::FloorContourPick, SurfaceInput::Grid) => {
                 ("vs_floor", "fs_floor_contour_pick")
             }
