@@ -71,8 +71,6 @@ fn colorbar_title(chart: &mut Chart, title: &str, ink: Color) {
     if let Some(bar) = chart.config_mut().colorbar.as_mut() {
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text = RichText::plain(title, ink, 19., "");
-        // Clear of the tick labels.
-        bar.axis.title_option.offset_y = -11.;
     }
 }
 
@@ -135,9 +133,9 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     tx.push(summit[0]);
     ty.push(summit[1]);
     tz.push(height(summit[0], summit[1]) + 0.06);
-    r.add_column("trail-x", &column(tx))?;
-    r.add_column("trail-y", &column(ty))?;
-    r.add_column("trail-z", &column(tz))?;
+    r.add_column("hike-x", &column(tx))?;
+    r.add_column("hike-y", &column(ty))?;
+    r.add_column("hike-z", &column(tz))?;
     let stops = [trailhead, saddle, summit];
     r.add_column("stop-x", &column(stops.iter().map(|p| p[0]).collect()))?;
     r.add_column("stop-y", &column(stops.iter().map(|p| p[1]).collect()))?;
@@ -203,8 +201,8 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     let trail_red = rgb(206, 44, 58);
     let mut trail = series(
         "trail",
-        "trail-x",
-        "trail-y",
+        "hike-x",
+        "hike-y",
         DataRenderType::Xy(XySeries {
             scatter: None,
             line: Some(line(trail_red, 3.5)),
@@ -212,7 +210,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
             stem: None,
         }),
     );
-    trail.z_column = Some("trail-z".into());
+    trail.z_column = Some("hike-z".into());
     let mut waypoints = series(
         "waypoints",
         "stop-x",

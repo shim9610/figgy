@@ -72,8 +72,6 @@ fn colorbar_title(chart: &mut Chart, title: &str, ink: Color) {
     if let Some(bar) = chart.config_mut().colorbar.as_mut() {
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text = RichText::plain(title, ink, 19., "");
-        // Clear of the tick labels.
-        bar.axis.title_option.offset_y = -11.;
         bar.axis.label_style.significant_digits = 1;
     }
 }

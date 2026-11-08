@@ -458,9 +458,6 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
         bar.axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text = RichText::plain("Energy (dB)", ink, 19.0, "");
-        // Clear of the tick labels: the title's local y runs away from the
-        // strip on a right-hand bar.
-        bar.axis.title_option.offset_y = -28.0;
     }
     let image = export(r, &chart, &series, bg)?;
     save(&image, bg, &out.join("gallery-polar-heatmap.png"))
@@ -566,6 +563,8 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
             // Along the south-south-east spoke: the labels sit on its left,
             // over the quiet south-east.
             radial_label_angle_degrees: -67.5,
+            // No 0% on the calm circle's edge (#259).
+            hide_first_radius_label: true,
             ..PolarOptions::default()
         }));
         config.bar_groups = Some(BarGroups {

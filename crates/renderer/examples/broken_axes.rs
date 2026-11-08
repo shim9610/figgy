@@ -102,7 +102,6 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
     config.bottom_x.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(760., 1080.)],
         style: AxisBreakStyle::Continuous,
-        gap_px: 22.,
         mark: BreakMark::Slash {
             size: 14.,
             color: Some(ink),

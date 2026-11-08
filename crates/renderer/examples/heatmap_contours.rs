@@ -283,9 +283,6 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
     bar.offset_x = -26.0;
     bar.axis.title_option.visible = true;
     bar.axis.title_option.text = RichText::plain("Pickups per cell", ink, 19.0, "");
-    // Clear of the tick labels: the title's local y runs away from the strip
-    // on a right-hand bar.
-    bar.axis.title_option.offset_y = -24.0;
     let image = styled::export(r, &chart, &specs, bg)?;
     styled::save(&image, bg, &out.join("gallery-hexbin.png"))
 }
