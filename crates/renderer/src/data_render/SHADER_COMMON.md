@@ -543,14 +543,16 @@ With the flag set, `field_cell_sample`, `field_pick_cell` and
 the lattice's origin and pitches are `x[0]`, `y[0]`, `x[1] − x[0]`,
 `y[1] − y[0]` read from the pool (`hex_lattice`), the cell of column `c`,
 row `r` is centred at `(x[c], y[r] + (c & 1) · py / 2)` (`hex_center_t`),
-and the fragment's cell is the nearest centre, in the data metric
-(`hex_data_offset`: axis fractions scaled by the axis ranges over the panel
-share, so the cell is the host's bin whatever the axes' pixel scales), among
+and the fragment's cell is the nearest centre, in the lattice's own metric
+(`hex_lattice_offset`: axis fractions scaled so the pitches are those of the
+regular hexagon of unit side, 1.5 across the columns and √3 along them; on a
+lattice regular in data units this is the data metric up to a uniform scale,
+and on any other the cells are stretched hexagons, #259), among
 the column nearest its x, the row nearest its y in that column and that
 cell's six neighbours (`hex_neighbor`). A candidate past the lattice's edge
 stays a rival and never answers, so a border cell is a whole hexagon. The
 selection outline is `width_px` inside the nearest of the six bisectors
-(`hex_edge_distance_px`, the bisector's data-metric normal scaled into
+(`hex_edge_distance_px`, the bisector's lattice-metric normal scaled into
 pixels). Nothing per cell is stored; the lookup is O(1) per fragment.
 
 **Colour images** (`FIELD_RGB`, `DataRenderType::RgbImage`, #139). The
