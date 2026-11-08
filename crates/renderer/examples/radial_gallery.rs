@@ -1,4 +1,6 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
+//! `sunburst` builds `gallery-sunburst.png`: a flat sunburst, slices with
+//! `children` drawn as nested rings (source group, source, technology).
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use renderer::{
     Color, Material, RendererDevice, encode_png,
@@ -37,6 +39,86 @@ fn base() -> RadialChart {
     };
     chart
 }
+/// A flat sunburst: a year's electricity generation by source group at the
+/// centre, the sources around it and their technologies outside. Every node
+/// keeps its share of its parent's span; the leaves on the inner rings leave
+/// the outer ring empty past them.
+fn sunburst() -> RadialChart {
+    let node =
+        |label: &str, value: f64, rgb: (u8, u8, u8), children: Vec<RadialSlice>| RadialSlice {
+            children,
+            ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
+        };
+    let leaf = |label: &str, value: f64, rgb: (u8, u8, u8)| node(label, value, rgb, vec![]);
+    let mut chart = RadialChart {
+        kind: RadialKind::Donut { inner_radius: 0.14 },
+        labels: RadialLabels::Outside,
+        label_format: RadialLabelFormat::NamePercent,
+        label_decimals: 0,
+        label_color: Color::from_rgb8(40, 44, 52),
+        slices: vec![
+            node(
+                "Renewables",
+                46.0,
+                (38, 140, 112),
+                vec![
+                    node(
+                        "Wind",
+                        20.0,
+                        (72, 172, 140),
+                        vec![
+                            leaf("Onshore", 13.0, (118, 196, 166)),
+                            leaf("Offshore", 7.0, (160, 214, 190)),
+                        ],
+                    ),
+                    node(
+                        "Solar",
+                        12.0,
+                        (104, 186, 128),
+                        vec![
+                            leaf("Utility", 8.0, (146, 206, 160)),
+                            leaf("Rooftop", 4.0, (186, 226, 192)),
+                        ],
+                    ),
+                    leaf("Hydro", 10.0, (130, 200, 196)),
+                    leaf("Bio", 4.0, (176, 220, 214)),
+                ],
+            ),
+            node(
+                "Fossil",
+                38.0,
+                (196, 112, 64),
+                vec![
+                    node(
+                        "Gas",
+                        26.0,
+                        (222, 146, 96),
+                        vec![
+                            leaf("Combined cycle", 21.0, (236, 174, 128)),
+                            leaf("Peakers", 5.0, (246, 204, 168)),
+                        ],
+                    ),
+                    leaf("Coal", 9.0, (188, 160, 146)),
+                    leaf("Oil", 3.0, (214, 196, 184)),
+                ],
+            ),
+            leaf("Nuclear", 16.0, (128, 110, 196)),
+        ],
+        ..Default::default()
+    };
+    chart.set_title_text("Electricity generation / group, source, technology");
+    // A sunburst draws flat: no tilt and no depth.
+    chart.style = RadialStyle {
+        material: Material::Flat,
+        gap_degrees: 0.6,
+        inner_corner: 0.012,
+        outer_corner: 0.012,
+        gloss: 0.15,
+        ..Default::default()
+    };
+    chart
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::args_os()
         .nth(1)
@@ -140,6 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     });
     cases.push(("pie-of-pie".into(), split));
+    cases.push(("gallery-sunburst".into(), sunburst()));
     // Deterministic time samples: host calls the same model transition on pointer events.
     let mut hover = base();
     hover.set_title_text("Hover lift / Search");
