@@ -93,7 +93,10 @@ follow-up.
 ## Working rules
 
 - Everything committed is in English: code, comments, docs, commit messages,
-  issues and PRs. Keep existing Korean documentation.
+  issues and PRs. Keep the Korean sections of the guides. `README.ko.md` stays
+  a short Korean entry page (introduction, install, quick start and links);
+  it does not mirror the English README's gallery, chart table or example
+  list, which live in `README.md` only.
 - Follow `CONTRIBUTING.md`: `cargo fmt --all`, `python3 ci/verify.py static`,
   and the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 - Shared shader code lives in `crates/renderer/src/data_render/common/`, one
