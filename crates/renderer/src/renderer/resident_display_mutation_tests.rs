@@ -776,7 +776,7 @@ impl Panel {
     fn refresh(&mut self) {
         let config = self.r.chart_config(self.id).unwrap().clone();
         self.r
-            .refresh_axis(&mut self.view, &Chart::new(config), self.rect)
+            .refresh_axis(&mut self.view, &Chart::new(config), self.rect, &[])
             .unwrap();
     }
 
@@ -820,7 +820,7 @@ impl Panel {
         let config = self.r.chart_config(self.id).unwrap().clone();
         if self
             .r
-            .refresh_axis(&mut self.view, &Chart::new(config), self.rect)
+            .refresh_axis(&mut self.view, &Chart::new(config), self.rect, &[])
             .is_err()
         {
             return Outcome::Rejected;

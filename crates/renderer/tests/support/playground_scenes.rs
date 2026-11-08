@@ -4750,19 +4750,13 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         id: format!("{nm}"),
         lower: lower.into(),
         upper: upper.into(),
-        label: Some(RichText::plain(
-            &format!("{nm:.1}"),
-            Color::from_rgb8(150, 90, 0),
-            10.0,
-            "",
-        )),
+        // Written by the renderer from the wavelength (#258).
+        label: None,
         label_offset: [0.0; 2],
         value: None,
         x_offset,
-        observed_wavelength: Some(nm),
-        observed_uncertainty: None,
-        ritz_wavelength: None,
-        ritz_uncertainty: None,
+        wavelength: Some(nm),
+        wavelength_uncertainty: None,
         intensity: String::new(),
         aki: None,
         accuracy: String::new(),
@@ -4805,6 +4799,17 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     series.style.level.color = Color::from_rgb8(34, 52, 88);
     series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
+    // The wavelengths labelled to one decimal, the unit once in a note
+    // (#258).
+    series.wavelength_unit = Some("nm".into());
+    series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
+        format: renderer::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit_on_labels: false,
+        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 10.0, ""),
+    });
 
     let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
     config.legend.visible = false;
@@ -4892,6 +4897,20 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             field: "annotations",
             kind,
         })?;
+    // The unit of the wavelength labels, once, read from the series on
+    // every draw (#258).
+    let note = config.add_unit_note("he", renderer::NoteAlign::BottomRight);
+    let plot = config.data_area().map(|area| area.0);
+    if let renderer::AnnotationKind::SeriesUnit { anchor, prefix, .. } =
+        &mut config.annotations.items[note].kind
+    {
+        *prefix = RichText::plain("Wavelengths in ", Color::from_rgb8(150, 90, 0), 11.0, "");
+        // Off the plot's frame: the corner's ratio moved in by 10 px.
+        if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
+            *x -= 10.0 / plot.width.max(1) as f32;
+            *y -= 10.0 / plot.height.max(1) as f32;
+        }
+    }
 
     // The inset over the two spare columns on the right: the 2p ³P°
     // components, 0.13 meV apart, on their own energy axis.

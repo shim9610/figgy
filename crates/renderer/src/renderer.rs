@@ -413,7 +413,7 @@ impl Renderer {
     // fn prepare(&self, _dev, _queue, _enc, res: &mut CallbackResources) -> Vec<CommandBuffer> {
     //     let s = res.get_mut::<FiggyState>().unwrap();
     //     if s.chart.consume_raster_dirty() {
-    //         s.renderer.refresh_axis(&mut s.view, &s.chart, rect).unwrap();
+    //         s.renderer.refresh_axis(&mut s.view, &s.chart, rect, &[]).unwrap();
     //     }
     //     let items = build_items(&s.view, &s.chart, &s.series);
     //     s.prepared = s.renderer.prepare(&items).ok(); // token into a state field

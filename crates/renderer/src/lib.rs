@@ -224,7 +224,7 @@ pub mod energy_levels {
 }
 pub use model::energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelRole,
-    LevelView, Transition, TransitionDirection,
+    LevelView, Transition, TransitionDirection, WavelengthLabels,
 };
 /// Triangle mesh fields (#210): the [`DataRenderType::TriMesh`] series, its
 /// value location and look.
@@ -261,8 +261,8 @@ pub use model::decoration::{DecorationId, DecorationLayout, DecorationOffset};
 pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, InsetMarker, LayerRef, OverlayLayer,
-    PixelSpace, ShapeStyle, Subplot,
+    AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, InsetMarker, LayerRef, NoteAlign,
+    OverlayLayer, PixelSpace, ShapeStyle, Subplot,
 };
 pub mod decoration;
 

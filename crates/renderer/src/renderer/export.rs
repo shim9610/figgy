@@ -807,7 +807,7 @@ impl Renderer {
         let scaled_chart = Chart::new(scaled_config);
 
         // 2) Temp ChartView with scaled axis textures, at the export scale.
-        let view = self.create_chart_view_at(&scaled_chart, panel_rect, scale)?;
+        let view = self.create_chart_view_at(&scaled_chart, panel_rect, scale, series)?;
 
         // 3) Series styles — line_width also scales (extracted from render_type).
         let scaled_styles: Vec<ChartStyle> = series

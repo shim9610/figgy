@@ -8068,13 +8068,13 @@ fn space_background_rebakes_only_on_key_change() {
     let mut view = r.create_chart_view(&chart, rect).unwrap();
     assert_eq!(view.grid_space_gen, None, "fresh view starts unstamped");
 
-    r.refresh_axis(&mut view, &chart, rect).unwrap();
+    r.refresh_axis(&mut view, &chart, rect, &[]).unwrap();
     assert_eq!(r.space_bg.as_ref().map(|s| s.bake_gen), Some(1));
     assert_eq!(view.grid_space_gen, Some(1));
 
     // Range-only change (pan/zoom): cache hit — no rebake, no restamp.
     chart.set_x_range(0.0, 2.0);
-    r.refresh_axis(&mut view, &chart, rect).unwrap();
+    r.refresh_axis(&mut view, &chart, rect, &[]).unwrap();
     assert_eq!(
         r.space_bg.as_ref().map(|s| s.bake_gen),
         Some(1),
@@ -8086,7 +8086,7 @@ fn space_background_rebakes_only_on_key_change() {
     if let crate::config::DrawStyle::Milkyway(c) = &mut chart.config_mut().draw_style {
         c.seed = 7;
     }
-    r.refresh_axis(&mut view, &chart, rect).unwrap();
+    r.refresh_axis(&mut view, &chart, rect, &[]).unwrap();
     assert_eq!(
         r.space_bg.as_ref().map(|s| s.bake_gen),
         Some(2),
@@ -8096,7 +8096,7 @@ fn space_background_rebakes_only_on_key_change() {
 
     // Leaving the style un-stamps the view; the slot itself is retained.
     chart.config_mut().draw_style = crate::config::DrawStyle::Precise;
-    r.refresh_axis(&mut view, &chart, rect).unwrap();
+    r.refresh_axis(&mut view, &chart, rect, &[]).unwrap();
     assert_eq!(view.grid_space_gen, None);
     assert_eq!(r.space_bg.as_ref().map(|s| s.bake_gen), Some(2));
 }
@@ -10287,7 +10287,7 @@ fn prepared_frame_owns_inputs_and_rejects_resource_staleness() {
         Err(FiggyError::StalePreparedFrame { .. })
     ));
     assert!(r.validate_prepared(&second_view_token).is_ok());
-    r.refresh_axis(&mut view_reuse, &chart, chart.config().chart_area.0)
+    r.refresh_axis(&mut view_reuse, &chart, chart.config().chart_area.0, &[])
         .unwrap();
     assert!(matches!(
         r.validate_prepared(&second_view_token),
@@ -11825,7 +11825,9 @@ fn panel_resize_charges_the_replacement_before_releasing_the_old_one() {
         height: 480,
     };
     chart.config_mut().chart_area = crate::layout::ChartArea(big_rect);
-    renderer.refresh_axis(&mut view, &chart, big_rect).unwrap();
+    renderer
+        .refresh_axis(&mut view, &chart, big_rect, &[])
+        .unwrap();
 
     let during = renderer.gpu_memory_usage();
     let big = 640 * 480 * 4 * 2;
@@ -15036,18 +15038,18 @@ fn chart_view_size_mismatch_is_an_error() {
     );
 
     let mut view = renderer.create_chart_view(&chart, area).unwrap();
-    let result = renderer.refresh_axis(&mut view, &chart, wider);
+    let result = renderer.refresh_axis(&mut view, &chart, wider, &[]);
     assert!(
         matches!(result, Err(FiggyError::InvalidChartArea { .. })),
         "a mismatched refresh was accepted: {result:?}"
     );
-    let result = renderer.refresh_annotations(&mut view, &chart, wider, None);
+    let result = renderer.refresh_annotations(&mut view, &chart, wider, None, &[]);
     assert!(
         matches!(result, Err(FiggyError::InvalidChartArea { .. })),
         "a mismatched annotation refresh was accepted: {result:?}"
     );
     // The matching size still refreshes.
-    renderer.refresh_axis(&mut view, &chart, area).unwrap();
+    renderer.refresh_axis(&mut view, &chart, area, &[]).unwrap();
 }
 
 // A lost device is reported by every wait instead of wgpu's fatal poll

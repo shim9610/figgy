@@ -1442,6 +1442,14 @@ impl FiggyChart {
         // scaled/letterboxed display chart derived from it.
         let (display_config, panel_rect, display_scale) = self.display_config()?;
         let display_chart = Chart::new(display_config.into_owned());
+        // A unit note reads its series' unit on every raster (#258). The
+        // renderer owns the series, so they are copied for the refresh, and
+        // only when the annotation layer has a note.
+        let note_series: Vec<SeriesConfig> = if display_chart.config().annotations.reads_series() {
+            self.chart_series()?.to_vec()
+        } else {
+            Vec::new()
+        };
         if refresh_raster {
             let selected_id: Option<String> = self
                 .chart_selection()?
@@ -1453,6 +1461,7 @@ impl FiggyChart {
                     panel_rect,
                     selected_id.as_deref(),
                     display_scale,
+                    &note_series,
                 )
                 .map_err(js_err)?;
         }
@@ -1465,6 +1474,7 @@ impl FiggyChart {
                     &display_chart,
                     panel_rect,
                     self.selected_annotation,
+                    &note_series,
                 )
                 .map_err(js_err)?;
         }

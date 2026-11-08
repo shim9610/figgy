@@ -280,19 +280,15 @@ fn parse(levels_csv: &str, lines_csv: &str) -> Result<EnergyLevelSeries> {
             id: format!("{wl:.2}"),
             lower,
             upper,
-            label: Some(RichText::plain(
-                &format!("{wl:.1}"),
-                Color::from_rgb8(150, 90, 0),
-                11.0,
-                "",
-            )),
+            // The renderer writes the label from the wavelength (#258).
+            label: None,
             label_offset: [0.0; 2],
             value: a,
             x_offset: 0.0,
-            observed_wavelength: number(&field(row, obs)),
-            observed_uncertainty: None,
-            ritz_wavelength: number(&field(row, ritz)),
-            ritz_uncertainty: None,
+            // The host chooses the column: the observed wavelength, else
+            // the Ritz one.
+            wavelength: Some(wl),
+            wavelength_uncertainty: None,
             intensity: field(row, intens),
             aki: a,
             accuracy: field(row, acc),
@@ -328,6 +324,17 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
     series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
     series.style.transition.width = 1.6;
+    // Each line labelled with its wavelength to one decimal; the unit is
+    // shown once, in a note in the plot's corner (#258).
+    series.wavelength_unit = Some("nm".into());
+    series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
+        format: renderer::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit_on_labels: false,
+        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 11.0, ""),
+    });
 
     let mut c = chart("He I energy levels", "", "Energy (eV)", (1100, 780));
     // Singlets, a spacer, then triplets, each term label drawn as a term
@@ -397,6 +404,20 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         top,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
+    let note = c
+        .config_mut()
+        .add_unit_note("he", renderer::NoteAlign::BottomRight);
+    let plot = c.config().data_area().map(|area| area.0);
+    if let renderer::AnnotationKind::SeriesUnit { anchor, prefix, .. } =
+        &mut c.config_mut().annotations.items[note].kind
+    {
+        *prefix = RichText::plain("Wavelengths in ", Color::from_rgb8(150, 90, 0), 12.0, "");
+        // Off the plot's frame: the corner's ratio moved in by 10 px.
+        if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
+            *x -= 10.0 / plot.width.max(1) as f32;
+            *y -= 10.0 / plot.height.max(1) as f32;
+        }
+    }
     let spec = SeriesConfig {
         series_id: "he".into(),
         source_id: None,

@@ -97,6 +97,18 @@ pub struct EnergyLevelSeries {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub source: Option<String>,
+    /// The unit of the transitions' `wavelength`, as the host writes it:
+    /// `nm`, `Å`, `nm (air)`. The renderer draws it after a formatted label
+    /// ([`WavelengthLabels::unit_on_labels`]) and in a unit note
+    /// ([`AnnotationKind::SeriesUnit`]); it converts nothing. `None` (the
+    /// default, omitted) draws no unit anywhere. One line of at most
+    /// [`MAX_ENERGY_LEVEL_FIELD_CHARS`] characters. A series with a
+    /// `source` keeps it `None`: the unit belongs to the records.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub wavelength_unit: Option<String>,
 }
 
 /// One level: a row of a NIST levels file.
@@ -283,8 +295,10 @@ pub struct Transition {
     pub lower: String,
     /// The id of the upper level (NIST `k`).
     pub upper: String,
-    /// The drawn label beside the arrow (a wavelength the host wrote); none
-    /// draws no label.
+    /// The drawn label beside the arrow, written by the host. It wins over
+    /// a label formatted from `wavelength`
+    /// ([`EnergyLevelStyle::wavelength_labels`]); with neither, no label is
+    /// drawn. [`Transition::drawn_label`] decides which one is drawn.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
@@ -309,30 +323,23 @@ pub struct Transition {
     /// overlap.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_zero"))]
     pub x_offset: f32,
-    /// NIST `obs_wl` (observed wavelength) in the host's unit.
+    /// The line's wavelength in the series' `wavelength_unit`: the NIST
+    /// column the host chose (`obs_wl`, `ritz_wl`, in air or vacuum). The
+    /// renderer formats it for a drawn label
+    /// ([`EnergyLevelStyle::wavelength_labels`]) and never converts or
+    /// chooses it (rule 1).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub observed_wavelength: Option<f64>,
-    /// NIST `unc_obs_wl`.
+    pub wavelength: Option<f64>,
+    /// The uncertainty of `wavelength`, in the same unit (NIST `unc_obs_wl`
+    /// or `unc_ritz_wl`).
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
     )]
-    pub observed_uncertainty: Option<f64>,
-    /// NIST `ritz_wl` (Ritz wavelength).
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub ritz_wavelength: Option<f64>,
-    /// NIST `unc_ritz_wl`.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
-    pub ritz_uncertainty: Option<f64>,
+    pub wavelength_uncertainty: Option<f64>,
     /// NIST `intens` as written, flags included (`1*`, `50 bl`).
     #[cfg_attr(
         feature = "serde",
@@ -394,6 +401,89 @@ pub struct EnergyLevelStyle {
     /// The level bands (#205).
     #[cfg_attr(feature = "serde", serde(default))]
     pub band: LevelBandStyle,
+    /// Labels formatted from each transition's `wavelength` (#258): set,
+    /// every transition with a wavelength and no host `label` gets one.
+    /// `None` (the default, omitted) draws only the host's labels.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub wavelength_labels: Option<WavelengthLabels>,
+}
+
+/// How a transition's `wavelength` is written as its drawn label (#258).
+/// The renderer formats the host's value for display and nothing else: it
+/// converts no unit and chooses between no values (rule 1).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WavelengthLabels {
+    /// The number's form: fixed decimals (at most
+    /// [`MAX_WAVELENGTH_DECIMALS`]) or the automatic form, and whether
+    /// trailing zeros are trimmed.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub format: crate::format::PlainNumberFormat,
+    /// Append ` {unit}` (the series' `wavelength_unit`) to each label. No
+    /// unit is appended when the series has none.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
+    pub unit_on_labels: bool,
+    /// The look of the drawn labels: the font, size and colour of this
+    /// text, the style a host label carries. Its segments are not drawn;
+    /// the label's characters are the formatted wavelength.
+    pub text: RichText,
+}
+
+impl Default for WavelengthLabels {
+    fn default() -> Self {
+        Self {
+            format: crate::format::PlainNumberFormat::AUTO,
+            unit_on_labels: false,
+            text: RichText::plain("", Color::from_rgb8(40, 40, 40), 11.0, ""),
+        }
+    }
+}
+
+/// The most fixed decimals a wavelength label prints: past it an `f64`
+/// carries no more digits. A text-length limit, not a count.
+pub const MAX_WAVELENGTH_DECIMALS: u8 = 17;
+
+impl WavelengthLabels {
+    fn validate(&self) -> Result<(), crate::RuleKind> {
+        let style = RichText::plain(
+            "0",
+            self.text.color,
+            self.text.font_size,
+            self.text.font.clone(),
+        );
+        if self
+            .format
+            .decimals
+            .is_some_and(|d| d > MAX_WAVELENGTH_DECIMALS)
+            || !style.within_limits()
+        {
+            return Err(crate::RuleKind::WavelengthLabels);
+        }
+        Ok(())
+    }
+
+    /// The label of a transition at `wavelength`: the value in
+    /// [`Self::format`], then ` {unit}` when [`Self::unit_on_labels`] is set
+    /// and `unit` is a unit, in the font, size and colour of
+    /// [`Self::text`].
+    pub fn label(&self, wavelength: f64, unit: Option<&str>) -> RichText {
+        let mut text = self.format.format(wavelength);
+        if self.unit_on_labels
+            && let Some(unit) = unit.filter(|u| !u.is_empty())
+        {
+            text.push(' ');
+            text.push_str(unit);
+        }
+        RichText::plain(
+            &text,
+            self.text.color,
+            self.text.font_size,
+            self.text.font.clone(),
+        )
+    }
 }
 
 impl Default for EnergyLevelStyle {
@@ -409,6 +499,7 @@ impl Default for EnergyLevelStyle {
             label_side: LevelLabelSide::default(),
             picked_width_scale: default_picked_scale(),
             band: LevelBandStyle::default(),
+            wavelength_labels: None,
         }
     }
 }
@@ -632,11 +723,17 @@ impl EnergyLevelSeries {
     /// holds no records. No list has a count limit (rule 10).
     pub fn validate(&self) -> Result<(), crate::RuleKind> {
         self.style.validate()?;
+        if let Some(unit) = &self.wavelength_unit
+            && !text_ok(unit)
+        {
+            return Err(crate::RuleKind::WavelengthUnit);
+        }
         if self.source.is_some() {
             if !self.levels.is_empty()
                 || !self.limits.is_empty()
                 || !self.transitions.is_empty()
                 || !self.bands.is_empty()
+                || self.wavelength_unit.is_some()
             {
                 return Err(crate::RuleKind::EnergyLevelsSourceWithRecords);
             }
@@ -850,16 +947,28 @@ impl IonizationLimit {
 }
 
 impl Transition {
+    /// The label drawn beside this transition's arrow (#258), the one
+    /// owner of the choice: the host's `label` when it has one; else, when
+    /// `labels` is set and the transition has a `wavelength`, that value
+    /// written by [`WavelengthLabels::label`] with `unit`; else none. The
+    /// placement, the drag, the pick, the picked highlight and the vector
+    /// export all read the label through it.
+    pub fn drawn_label(
+        &self,
+        labels: Option<&WavelengthLabels>,
+        unit: Option<&str>,
+    ) -> Option<std::borrow::Cow<'_, RichText>> {
+        if let Some(label) = &self.label {
+            return Some(std::borrow::Cow::Borrowed(label));
+        }
+        let (labels, wavelength) = (labels?, self.wavelength?);
+        Some(std::borrow::Cow::Owned(labels.label(wavelength, unit)))
+    }
+
     fn validate(&self) -> Result<(), crate::RuleKind> {
-        let optional = [
-            self.value,
-            self.observed_wavelength,
-            self.ritz_wavelength,
-            self.aki,
-        ];
+        let optional = [self.value, self.wavelength, self.aki];
         if optional.iter().any(|v| v.is_some_and(|v| !v.is_finite()))
-            || !non_negative(self.observed_uncertainty)
-            || !non_negative(self.ritz_uncertainty)
+            || !non_negative(self.wavelength_uncertainty)
         {
             return Err(crate::RuleKind::TransitionValues);
         }
@@ -911,6 +1020,9 @@ impl EnergyLevelStyle {
         }
         if !color_ok(self.band.fill) || !finite_in(self.band.inner_width, 0.0, 16.0) {
             return Err(crate::RuleKind::LevelBandStyle);
+        }
+        if let Some(labels) = &self.wavelength_labels {
+            labels.validate()?;
         }
         Ok(())
     }
@@ -1354,6 +1466,22 @@ pub fn drawn_records<'a>(
     }
 }
 
+/// The wavelength unit the energy-level series `series_id` of `series`
+/// draws (#258): the `wavelength_unit` of the records it draws (its own, or
+/// its source's). `None` when no energy-level series of the list has that
+/// id, its source holds no records, or the unit is `None` or empty. A unit
+/// note ([`AnnotationKind::SeriesUnit`]) reads it on every draw.
+pub fn wavelength_unit<'a>(series: &'a [SeriesConfig], series_id: &str) -> Option<&'a str> {
+    let own = series
+        .iter()
+        .find(|s| s.series_id == series_id)?
+        .energy_levels()?;
+    drawn_records(own, series)?
+        .wavelength_unit
+        .as_deref()
+        .filter(|unit| !unit.is_empty())
+}
+
 impl EnergyLevelSeries {
     /// Whether level row `index` is drawn in `view`.
     pub fn level_drawn(&self, index: usize, view: LevelView) -> bool {
@@ -1500,10 +1628,8 @@ mod tests {
             label_offset: [0.0; 2],
             value: None,
             x_offset: 0.0,
-            observed_wavelength: None,
-            observed_uncertainty: None,
-            ritz_wavelength: None,
-            ritz_uncertainty: None,
+            wavelength: None,
+            wavelength_uncertainty: None,
             intensity: String::new(),
             aki: None,
             accuracy: String::new(),
@@ -1561,7 +1687,7 @@ mod tests {
             }],
             transitions: vec![
                 Transition {
-                    observed_wavelength: Some(1083.0),
+                    wavelength: Some(1083.0),
                     aki: Some(1.0216e7),
                     accuracy: "AAA".into(),
                     intensity: "1*".into(),
@@ -1866,6 +1992,370 @@ mod tests {
         other.limits[0].id = "other".into();
         assert!(other.write_continuum(&mut full, "he", 30.0, fill).is_err());
         assert_eq!(full, before);
+    }
+}
+
+#[cfg(test)]
+mod wavelength_label_tests {
+    use super::*;
+    use crate::annotation::{AnnotationSpace, AxisMap, AxisSpace, PixelSpace};
+    use crate::config::Category;
+    use crate::format::PlainNumberFormat;
+    use crate::layout::{BreakMap, RectF};
+    use crate::sink::{DrawnPart, Parts};
+    use crate::text::{MeasureText, TextExtents};
+
+    /// Eight pixels a character, 10 up and 3 down.
+    struct Fixed;
+    impl MeasureText for Fixed {
+        fn measure_rich(&self, rt: &RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * 8.0,
+                ascent: 10.0,
+                descent: 3.0,
+            }
+        }
+    }
+
+    fn chars(text: &RichText) -> String {
+        text.segments.iter().map(|s| s.text).collect()
+    }
+
+    fn level(id: &str, column: &str, energy: f64) -> EnergyLevel {
+        EnergyLevel {
+            id: id.into(),
+            column: column.into(),
+            configuration: String::new(),
+            term: String::new(),
+            j: String::new(),
+            g: None,
+            prefix: String::new(),
+            energy,
+            suffix: String::new(),
+            uncertainty: None,
+            reference: String::new(),
+            role: LevelRole::Level,
+            label: None,
+            label_offset: [0.0; 2],
+        }
+    }
+
+    fn line(id: &str, lower: &str, upper: &str, wavelength: Option<f64>) -> Transition {
+        Transition {
+            id: id.into(),
+            lower: lower.into(),
+            upper: upper.into(),
+            label: None,
+            label_offset: [0.0; 2],
+            value: None,
+            x_offset: 0.0,
+            wavelength,
+            wavelength_uncertainty: None,
+            intensity: String::new(),
+            aki: None,
+            accuracy: String::new(),
+            line_type: String::new(),
+            tp_reference: String::new(),
+            line_reference: String::new(),
+        }
+    }
+
+    fn labels(decimals: Option<u8>, unit_on_labels: bool) -> WavelengthLabels {
+        WavelengthLabels {
+            format: PlainNumberFormat {
+                decimals,
+                trim_zeros: false,
+            },
+            unit_on_labels,
+            text: RichText::plain("", Color::from_rgb8(150, 90, 0), 11.0, "serif"),
+        }
+    }
+
+    /// Two levels of two columns and two lines: one with a wavelength, one
+    /// without.
+    fn records() -> EnergyLevelSeries {
+        let mut records = EnergyLevelSeries {
+            levels: vec![level("low", "a", 2.0), level("high", "b", 20.0)],
+            transitions: vec![
+                line("t", "low", "high", Some(1083.034)),
+                line("bare", "low", "high", None),
+            ],
+            wavelength_unit: Some("nm".into()),
+            ..EnergyLevelSeries::default()
+        };
+        records.transitions[1].x_offset = 0.4;
+        records.style.wavelength_labels = Some(labels(Some(1), true));
+        records
+    }
+
+    fn space() -> PixelSpace {
+        PixelSpace {
+            panel: RectF {
+                x: 0.,
+                y: 0.,
+                width: 600.,
+                height: 400.,
+            },
+            plot: RectF {
+                x: 50.,
+                y: 20.,
+                width: 500.,
+                height: 360.,
+            },
+            x: AxisSpace {
+                map: AxisMap::Index { count: 2 },
+                inverted: false,
+                breaks: BreakMap::IDENTITY,
+            },
+            y: AxisSpace {
+                map: AxisMap::Linear { min: 0., max: 25. },
+                inverted: false,
+                breaks: BreakMap::IDENTITY,
+            },
+        }
+    }
+
+    #[test]
+    fn a_wavelength_is_written_in_the_format_and_a_host_label_wins() {
+        let t = line("t", "a", "b", Some(1083.034));
+        let text = |labels: &WavelengthLabels, unit| {
+            chars(&t.drawn_label(Some(labels), unit).expect("a label"))
+        };
+        assert_eq!(text(&labels(Some(1), false), Some("nm")), "1083.0");
+        assert_eq!(text(&labels(Some(3), false), None), "1083.034");
+        assert_eq!(text(&labels(Some(0), false), None), "1083");
+        assert_eq!(text(&labels(None, false), None), "1083.034");
+        let trimmed = WavelengthLabels {
+            format: PlainNumberFormat {
+                decimals: Some(4),
+                trim_zeros: true,
+            },
+            ..labels(None, false)
+        };
+        assert_eq!(text(&trimmed, None), "1083.034");
+        // The unit is appended only when asked for and when there is one.
+        assert_eq!(text(&labels(Some(1), true), Some("nm")), "1083.0 nm");
+        assert_eq!(
+            text(&labels(Some(1), true), Some("nm (air)")),
+            "1083.0 nm (air)"
+        );
+        assert_eq!(text(&labels(Some(1), true), None), "1083.0");
+        assert_eq!(text(&labels(Some(1), true), Some("")), "1083.0");
+        // The labels' font, size and colour.
+        let drawn = t.drawn_label(Some(&labels(Some(1), false)), None).unwrap();
+        assert_eq!(
+            (drawn.font_size, drawn.color, drawn.font.as_str()),
+            (11.0, Color::from_rgb8(150, 90, 0), "serif")
+        );
+        assert!(matches!(drawn, std::borrow::Cow::Owned(_)));
+        // A host label wins, borrowed as it is.
+        let host = Transition {
+            label: Some(RichText::plain("He 1083", Color::BLACK, 12.0, "")),
+            ..t.clone()
+        };
+        let drawn = host.drawn_label(Some(&labels(Some(1), true)), Some("nm"));
+        assert!(matches!(&drawn, Some(std::borrow::Cow::Borrowed(_))));
+        assert_eq!(chars(&drawn.unwrap()), "He 1083");
+        // No wavelength or no labels: no label.
+        assert_eq!(
+            line("u", "a", "b", None).drawn_label(Some(&labels(Some(1), true)), Some("nm")),
+            None
+        );
+        assert_eq!(t.drawn_label(None, Some("nm")), None);
+    }
+
+    #[test]
+    fn a_formatted_label_is_placed_drawn_picked_and_dragged_as_a_host_label() {
+        let space = space();
+        let categories = [Category::new("a", "a"), Category::new("b", "b")];
+        let placement = LevelPlacement {
+            space: &space,
+            categories: &categories,
+            view: LevelView::Main,
+            colorbar: None,
+            picked: None,
+        };
+        let mut records = records();
+        let style = records.style.clone();
+        let placed = |records: &EnergyLevelSeries| {
+            let layout = placement.layout(records, &style, &Fixed);
+            let label = placement.label(records, &style, &layout, LabelPart::Transition, 0, &Fixed);
+            label.map(|l| {
+                let crate::sink::TextRef::Rich(text) = l.text else {
+                    panic!("a rich label")
+                };
+                (chars(text), l.rect())
+            })
+        };
+        let (text, rect) = placed(&records).expect("the line with a wavelength is labelled");
+        assert_eq!(text, "1083.0 nm");
+        let layout = placement.layout(&records, &style, &Fixed);
+        assert!(
+            placement
+                .label(&records, &style, &layout, LabelPart::Transition, 1, &Fixed)
+                .is_none(),
+            "a line without a wavelength has no label"
+        );
+        // The emit draws it where the placement puts it.
+        let mut texts = Vec::new();
+        placement.emit(
+            &records,
+            &style,
+            &Fixed,
+            &mut Parts(&mut |part| {
+                if let DrawnPart::Text(r) = part {
+                    texts.push(r);
+                }
+            }),
+        );
+        assert_eq!(texts, [rect]);
+        // The pick answers it as the transition's value label.
+        let centre = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+        assert_eq!(
+            placement.pick(&records, &style, &Fixed, centre, 4.0),
+            Some((LevelHit::Label(LabelPart::Transition, 0), 0.0))
+        );
+        // A host-placed label keeps its place, and a drag moves it by the
+        // delta, as a host label.
+        records.transitions[0].label_offset = [0.0, 1.0];
+        let (_, held) = placed(&records).unwrap();
+        assert_eq!(
+            records.drag_label(LabelPart::Transition, 0, 5.0, 7.0),
+            NudgeResult::Moved
+        );
+        let (_, moved) = placed(&records).unwrap();
+        assert!((moved.x - held.x - 5.0).abs() < 1e-3 && (moved.y - held.y - 7.0).abs() < 1e-3);
+        // A host label wins over the formatted one.
+        records.transitions[0].label = Some(RichText::plain("He", Color::BLACK, 12.0, ""));
+        assert_eq!(placed(&records).unwrap().0, "He");
+        // No unit: the number alone, and nothing else changes.
+        let mut bare = self::records();
+        bare.wavelength_unit = None;
+        assert_eq!(placed(&bare).unwrap().0, "1083.0");
+        // No labels style: the host's labels only.
+        let mut off = self::records();
+        off.style.wavelength_labels = None;
+        let layout = placement.layout(&off, &off.style, &Fixed);
+        assert!(
+            placement
+                .label(&off, &off.style, &layout, LabelPart::Transition, 0, &Fixed)
+                .is_none()
+        );
+        let _ = space.plot_rect();
+    }
+
+    #[test]
+    fn the_unit_and_the_labels_validate() {
+        assert_eq!(records().validate(), Ok(()));
+        let check = |edit: &dyn Fn(&mut EnergyLevelSeries)| {
+            let mut r = records();
+            edit(&mut r);
+            r.validate()
+        };
+        assert_eq!(
+            check(&|r| r.wavelength_unit = Some("n\nm".into())),
+            Err(crate::RuleKind::WavelengthUnit)
+        );
+        assert_eq!(
+            check(&|r| r.wavelength_unit = Some("m".repeat(161))),
+            Err(crate::RuleKind::WavelengthUnit)
+        );
+        assert_eq!(
+            check(&|r| r.style.wavelength_labels.as_mut().unwrap().format.decimals = Some(18)),
+            Err(crate::RuleKind::WavelengthLabels)
+        );
+        assert_eq!(
+            check(&|r| r.style.wavelength_labels.as_mut().unwrap().text.font_size = 2.0),
+            Err(crate::RuleKind::WavelengthLabels)
+        );
+        assert_eq!(
+            check(&|r| r.transitions[0].wavelength_uncertainty = Some(-1.0)),
+            Err(crate::RuleKind::TransitionValues)
+        );
+        assert_eq!(
+            check(&|r| r.transitions[0].wavelength = Some(f64::NAN)),
+            Err(crate::RuleKind::TransitionValues)
+        );
+        // A view of another series holds no unit: the unit is the records'.
+        let view = EnergyLevelSeries {
+            source: Some("he".into()),
+            wavelength_unit: Some("nm".into()),
+            ..EnergyLevelSeries::default()
+        };
+        assert_eq!(
+            view.validate(),
+            Err(crate::RuleKind::EnergyLevelsSourceWithRecords)
+        );
+    }
+
+    #[test]
+    fn the_unit_is_read_from_the_records_a_series_draws() {
+        let spec = |id: &str, levels: EnergyLevelSeries| SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: String::new(),
+            y_column: String::new(),
+            z_column: None,
+            render_type: crate::data_config::DataRenderType::EnergyLevels(levels),
+        };
+        let view = EnergyLevelSeries {
+            source: Some("he".into()),
+            ..EnergyLevelSeries::default()
+        };
+        let list = [spec("he", records()), spec("inset", view)];
+        assert_eq!(wavelength_unit(&list, "he"), Some("nm"));
+        assert_eq!(wavelength_unit(&list, "inset"), Some("nm"), "its source's");
+        assert_eq!(wavelength_unit(&list, "absent"), None);
+        assert_eq!(wavelength_unit(&list[1..], "inset"), None, "no source");
+        let mut none = records();
+        none.wavelength_unit = None;
+        assert_eq!(wavelength_unit(&[spec("he", none)], "he"), None);
+        let mut empty = records();
+        empty.wavelength_unit = Some(String::new());
+        assert_eq!(wavelength_unit(&[spec("he", empty)], "he"), None);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_new_fields_round_trip_and_are_omitted_when_unset() {
+        let full = records();
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["wavelength_unit"], "nm");
+        assert_eq!(json["transitions"][0]["wavelength"], 1083.034);
+        assert!(json["transitions"][1].get("wavelength").is_none());
+        assert!(
+            json["transitions"][0]
+                .get("wavelength_uncertainty")
+                .is_none()
+        );
+        let labels = &json["style"]["wavelength_labels"];
+        assert_eq!(labels["format"]["decimals"], 1);
+        assert_eq!(labels["unit_on_labels"], true);
+        let back: EnergyLevelSeries = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, full);
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+        // Unset, nothing is written, and a document without them parses.
+        let mut plain = full.clone();
+        plain.wavelength_unit = None;
+        plain.style.wavelength_labels = None;
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("wavelength_unit").is_none());
+        assert!(json.get("style").is_none(), "a default style is omitted");
+        let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
+        assert_eq!(back, plain);
+        let mut no_unit_flag = labels_json();
+        no_unit_flag
+            .as_object_mut()
+            .unwrap()
+            .remove("unit_on_labels");
+        let parsed: WavelengthLabels = serde_json::from_value(no_unit_flag).unwrap();
+        assert!(!parsed.unit_on_labels);
+    }
+
+    #[cfg(feature = "serde")]
+    fn labels_json() -> serde_json::Value {
+        serde_json::to_value(labels(Some(2), true)).unwrap()
     }
 }
 

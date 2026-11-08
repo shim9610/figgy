@@ -67,6 +67,38 @@ pub struct LevelLayout {
     /// labels, which a bracket joins.
     brackets: Vec<(usize, usize)>,
     transition_spot: Vec<Option<([f32; 2], LevelLabelSide)>>,
+    /// Per transition: the label [`Transition::drawn_label`] formatted
+    /// from its wavelength this draw (#258), `None` for a host label or no
+    /// label. The label text the raster builds, dropped with the layout.
+    formatted: Vec<Option<RichText>>,
+}
+
+impl LevelLayout {
+    /// The label drawn beside transition row `index` of `records`: the
+    /// one [`Transition::drawn_label`] chose, the host's or the formatted
+    /// one.
+    fn transition_text<'t>(
+        &'t self,
+        records: &'t EnergyLevelSeries,
+        index: usize,
+    ) -> Option<&'t RichText> {
+        transition_text(records, &self.formatted, index)
+    }
+}
+
+/// The label drawn beside transition row `index`: the host's label of
+/// `records` or the formatted one of `formatted` (only one is set; see
+/// [`Transition::drawn_label`]).
+fn transition_text<'t>(
+    records: &'t EnergyLevelSeries,
+    formatted: &'t [Option<RichText>],
+    index: usize,
+) -> Option<&'t RichText> {
+    let transition = records.transitions.get(index)?;
+    transition
+        .label
+        .as_ref()
+        .or_else(|| formatted.get(index)?.as_ref())
 }
 
 /// The room a transition label keeps from the parts around it, pixels.
@@ -339,6 +371,21 @@ impl LevelPlacement<'_> {
         measure: &dyn crate::text::MeasureText,
     ) -> LevelLayout {
         let arrows = self.arrows(records, style);
+        // The labels formatted from the wavelengths (#258): the host's
+        // labels are borrowed, so only these are built, and nothing is
+        // built when the style asks for none.
+        let unit = records.wavelength_unit.as_deref();
+        let formatted: Vec<Option<RichText>> = match &style.wavelength_labels {
+            None => Vec::new(),
+            Some(labels) => records
+                .transitions
+                .iter()
+                .map(|t| match t.drawn_label(Some(labels), unit) {
+                    Some(std::borrow::Cow::Owned(text)) => Some(text),
+                    _ => None,
+                })
+                .collect(),
+        };
         let plot = self.space.plot_rect();
         let inner = self.inner_levels(records, style);
         // Label items: the levels, then the bands.
@@ -414,6 +461,7 @@ impl LevelPlacement<'_> {
         }
         let transition_spot = self.place_transition_labels(
             records,
+            &formatted,
             measure,
             &arrows,
             obstacles,
@@ -430,6 +478,7 @@ impl LevelPlacement<'_> {
             hidden,
             brackets,
             transition_spot,
+            formatted,
         }
     }
 
@@ -1047,6 +1096,7 @@ impl LevelPlacement<'_> {
     fn place_transition_labels(
         &self,
         records: &EnergyLevelSeries,
+        formatted: &[Option<RichText>],
         measure: &dyn crate::text::MeasureText,
         arrows: &[Option<([f32; 2], [f32; 2])>],
         mut obstacles: Vec<crate::layout::RectF>,
@@ -1074,7 +1124,9 @@ impl LevelPlacement<'_> {
         };
         let mut transition_spot = vec![None; records.transitions.len()];
         for (index, transition) in records.transitions.iter().enumerate() {
-            let (Some(text), Some((tail, tip))) = (transition.label.as_ref(), arrows[index]) else {
+            let (Some(text), Some((tail, tip))) =
+                (transition_text(records, formatted, index), arrows[index])
+            else {
                 continue;
             };
             let at = |t: f32| {
@@ -1304,7 +1356,7 @@ impl LevelPlacement<'_> {
         &self,
         records: &'t EnergyLevelSeries,
         style: &EnergyLevelStyle,
-        layout: &LevelLayout,
+        layout: &'t LevelLayout,
         part: LabelPart,
         index: usize,
         measure: &dyn crate::text::MeasureText,
@@ -1335,7 +1387,7 @@ impl LevelPlacement<'_> {
                 let transition = records.transitions.get(index)?;
                 let (spot, side) = layout.transition_spot.get(index).copied().flatten()?;
                 Some(Self::label_block(
-                    transition.label.as_ref()?,
+                    layout.transition_text(records, index)?,
                     measure,
                     spot,
                     spot[0],

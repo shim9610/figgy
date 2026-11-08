@@ -69,10 +69,8 @@ fn transition(id: &str, lower: &str, upper: &str) -> Transition {
         label_offset: [0.0; 2],
         value: None,
         x_offset: 0.0,
-        observed_wavelength: None,
-        observed_uncertainty: None,
-        ritz_wavelength: None,
-        ritz_uncertainty: None,
+        wavelength: None,
+        wavelength_uncertainty: None,
         intensity: String::new(),
         aki: None,
         accuracy: String::new(),
@@ -1849,4 +1847,565 @@ fn scene_level_labels_stay_off_other_columns() {
         all.extend(found.into_iter().map(|f| format!("{kind:?}: {f}")));
     }
     assert!(all.is_empty(), "{all:#?}");
+}
+
+// Wavelength labels and the unit note (#258) ---------------------------
+
+const MAGENTA: Color = Color::from_rgb8(255, 0, 255);
+const ORANGE: Color = Color::from_rgb8(255, 128, 0);
+
+fn is_orange(p: &[u8]) -> bool {
+    p[3] > 200 && p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60
+}
+
+/// The pixels of `img` inside the logical `rect` drawn at `scale` for which
+/// `pred` holds.
+fn ink_in(
+    img: &RasterImage,
+    rect: renderer::layout::RectF,
+    scale: f32,
+    pred: fn(&[u8]) -> bool,
+) -> usize {
+    let x0 = (rect.x * scale).floor().max(0.0) as u32;
+    let y0 = (rect.y * scale).floor().max(0.0) as u32;
+    let x1 = (((rect.x + rect.width) * scale).ceil() as u32).min(img.width);
+    let y1 = (((rect.y + rect.height) * scale).ceil() as u32).min(img.height);
+    (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| pred(pixel(img, x, y)))
+        .count()
+}
+
+fn centre_px(rect: renderer::layout::RectF, scale: f32) -> (u32, u32) {
+    (
+        ((rect.x + rect.width / 2.0) * scale).round() as u32,
+        ((rect.y + rect.height / 2.0) * scale).round() as u32,
+    )
+}
+
+/// Labels written from the wavelengths: one decimal and the unit, in
+/// magenta.
+fn wavelength_labels() -> renderer::energy_levels::WavelengthLabels {
+    renderer::energy_levels::WavelengthLabels {
+        format: renderer::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit_on_labels: true,
+        text: renderer::text::RichText::plain("", MAGENTA, 14.0, ""),
+    }
+}
+
+/// `records()` with its line at 587.56 nm in a series whose unit is `nm`,
+/// labelled by the renderer.
+fn labelled_records() -> EnergyLevelSeries {
+    let mut levels = records();
+    levels.transitions[0].wavelength = Some(587.56);
+    levels.wavelength_unit = Some("nm".into());
+    levels.style.wavelength_labels = Some(wavelength_labels());
+    levels
+}
+
+/// The drawn label of transition 0 of `levels` in the main view of
+/// `chart`, at 1x: its characters and its rectangle.
+fn transition_label(
+    chart: &Chart,
+    levels: &EnergyLevelSeries,
+) -> Option<(String, renderer::layout::RectF)> {
+    use renderer::energy_levels::{LabelPart, LevelPlacement};
+    let (space, measure) = layout_of(chart, levels);
+    let placement = LevelPlacement {
+        space: &space,
+        categories: chart.config().bottom_x.categories.as_deref().unwrap_or(&[]),
+        view: LevelView::Main,
+        colorbar: None,
+        picked: None,
+    };
+    let layout = placement.layout(levels, &levels.style, &measure);
+    let text = placement.label(
+        levels,
+        &levels.style,
+        &layout,
+        LabelPart::Transition,
+        0,
+        &measure,
+    )?;
+    let renderer::sink::TextRef::Rich(rich) = text.text else {
+        return None;
+    };
+    Some((rich.segments.iter().map(|s| s.text).collect(), text.rect()))
+}
+
+// #258: a label the renderer writes from a transition's wavelength is
+// drawn, picked as the transition's value label and moved by its drag
+// offset, exactly as a host label; a host label wins over it. At 1x and
+// 2x.
+#[test]
+fn a_wavelength_label_draws_picks_and_drags_like_a_host_label() {
+    use renderer::energy_levels::LabelPart;
+    let mut r = renderer();
+    let chart = chart();
+    let mut levels = labelled_records();
+    let (text, rect) = transition_label(&chart, &levels).expect("a formatted label");
+    assert_eq!(text, "587.6 nm");
+    let mut unlabelled = labelled_records();
+    unlabelled.style.wavelength_labels = None;
+    assert_eq!(transition_label(&chart, &unlabelled), None);
+    let picked_label = |r: &mut Renderer, levels: &EnergyLevelSeries, rect, scale| match pick(
+        r,
+        &chart,
+        &[series("he", levels.clone())],
+        scale,
+        centre_px(rect, scale),
+    ) {
+        Some(renderer::PickedData::ValueLabel {
+            category_index,
+            part,
+            ..
+        }) => (category_index, part),
+        other => panic!("{scale}x the label: {other:?}"),
+    };
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &[series("he", levels.clone())], scale);
+        assert!(
+            ink_in(&img, rect, scale, is_magenta) > 0,
+            "{scale}x the label is drawn"
+        );
+        let none = export(&mut r, &chart, &[series("he", unlabelled.clone())], scale);
+        assert_eq!(ink_in(&none, rect, scale, is_magenta), 0, "{scale}x");
+        assert_eq!(
+            picked_label(&mut r, &levels, rect, scale),
+            (0, Some(LabelPart::Transition)),
+            "{scale}x"
+        );
+    }
+    // Dragged: drawn and picked where its offset puts it.
+    assert_eq!(
+        levels.drag_label(LabelPart::Transition, 0, 30.0, -40.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    let (_, moved) = transition_label(&chart, &levels).unwrap();
+    assert!(
+        (moved.x - rect.x).abs() > 10.0 || (moved.y - rect.y).abs() > 10.0,
+        "{rect:?} -> {moved:?}"
+    );
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &[series("he", levels.clone())], scale);
+        assert!(ink_in(&img, moved, scale, is_magenta) > 0, "{scale}x moved");
+        assert_eq!(
+            picked_label(&mut r, &levels, moved, scale),
+            (0, Some(LabelPart::Transition)),
+            "{scale}x moved"
+        );
+    }
+    // A host label wins over the formatted one.
+    levels.transitions[0].label = Some(renderer::text::RichText::plain("He", BLUE, 14.0, ""));
+    assert_eq!(transition_label(&chart, &levels).unwrap().0, "He");
+}
+
+// #258: a picked transition is widened under its formatted label, which
+// draws as it does unpicked, and a picked formatted label draws as an
+// unpicked one, as a host label does. An inset's view of the series writes
+// its components' labels from the source's wavelengths and unit.
+#[test]
+fn formatted_labels_follow_the_selection_and_the_inset_view() {
+    use renderer::energy_levels::LabelPart;
+    let mut r = renderer();
+    let mut chart = chart();
+    let levels = labelled_records();
+    let (_, rect) = transition_label(&chart, &levels).unwrap();
+    let list = [series("he", levels.clone())];
+    let select = |chart: &mut Chart, reference: Option<PickedDataRef>| {
+        chart.config_mut().picked_data = reference.map(|reference| DataSelectionsConfig {
+            refs: vec![reference],
+            ..DataSelectionsConfig::default()
+        });
+    };
+    for scale in [1.0f32, 2.0] {
+        select(&mut chart, None);
+        let plain = export(&mut r, &chart, &list, scale);
+        select(
+            &mut chart,
+            Some(PickedDataRef::ValueLabel {
+                source_id: None,
+                series_id: "he".into(),
+                category_index: 0,
+                part: Some(LabelPart::Transition),
+            }),
+        );
+        let label_picked = export(&mut r, &chart, &list, scale);
+        assert_eq!(
+            ink_in(&label_picked, rect, scale, is_magenta),
+            ink_in(&plain, rect, scale, is_magenta),
+            "{scale}x a picked label draws as an unpicked one"
+        );
+        select(
+            &mut chart,
+            Some(PickedDataRef::Point {
+                source_id: None,
+                series_id: "he".into(),
+                point_index: 0,
+            }),
+        );
+        let arrow_picked = export(&mut r, &chart, &list, scale);
+        let whole = renderer::layout::RectF {
+            x: 0.0,
+            y: 0.0,
+            width: WIDTH as f32,
+            height: HEIGHT as f32,
+        };
+        assert!(
+            ink_in(&arrow_picked, whole, scale, is_green) > ink_in(&plain, whole, scale, is_green),
+            "{scale}x the picked arrow is wider"
+        );
+        assert!(
+            ink_in(&arrow_picked, rect, scale, is_magenta) > 0,
+            "{scale}x the label stays"
+        );
+    }
+    // The inset draws the components and a line between two of them,
+    // labelled from the source's records.
+    let chart = chart_with_inset();
+    let mut levels = labelled_records();
+    levels.levels.push(EnergyLevel {
+        role: LevelRole::Component {
+            multiplet: "mid".into(),
+        },
+        ..level("mid2", "b", 46.0)
+    });
+    levels.transitions.push(Transition {
+        wavelength: Some(1083.33),
+        ..transition("fine", "mid1", "mid2")
+    });
+    // The view's own style asks for the formatted labels; the unit is the
+    // source's.
+    let mut view = inset_series();
+    if let DataRenderType::EnergyLevels(inset) = &mut view.render_type {
+        inset.style.wavelength_labels = Some(wavelength_labels());
+    }
+    let list = [series("he", levels), view];
+    let mut inset_labels = Vec::new();
+    each_level_panel(
+        chart.config(),
+        &list,
+        |placement, levels, records, measure| {
+            if levels.source.is_none() {
+                return;
+            }
+            let layout = placement.layout(records, &levels.style, measure);
+            if let Some(text) = placement.label(
+                records,
+                &levels.style,
+                &layout,
+                LabelPart::Transition,
+                1,
+                measure,
+            ) && let renderer::sink::TextRef::Rich(rich) = text.text
+            {
+                let chars: String = rich.segments.iter().map(|s| s.text).collect();
+                inset_labels.push((chars, text.rect()));
+            }
+        },
+    );
+    // The helper walks every panel; the inset's label starts in its frame.
+    let frame = chart.config().subplots[0].config.chart_area.0;
+    inset_labels.retain(|(_, r)| r.x >= frame.x as f32 && r.x < (frame.x + frame.width) as f32);
+    let [(text, rect)] = &inset_labels[..] else {
+        panic!("one inset label in {frame:?}: {inset_labels:?}");
+    };
+    assert_eq!(text, "1083.3 nm");
+    for scale in [1.0f32, 2.0] {
+        let img = r
+            .export_rgba(
+                renderer::ExportSource::chart(&chart, &list),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap();
+        assert!(
+            ink_in(&img, *rect, scale, is_magenta) > 0,
+            "{scale}x the inset's label"
+        );
+    }
+}
+
+/// `chart` with a unit note of series `he` in the plot's lower-right
+/// corner, its prefix orange: the note's index.
+fn add_note(chart: &mut Chart, series_id: &str) -> usize {
+    let index = chart
+        .config_mut()
+        .add_unit_note(series_id, renderer::NoteAlign::BottomRight);
+    if let renderer::AnnotationKind::SeriesUnit { prefix, .. } =
+        &mut chart.config_mut().annotations.items[index].kind
+    {
+        *prefix = renderer::text::RichText::plain("λ / ", ORANGE, 14.0, "");
+    }
+    index
+}
+
+/// The drawn note `index` of `chart` with `series`: its hit id and its
+/// bounds in the annotation map of a view at 1x, `None` when it is not
+/// drawn.
+fn note_bounds(
+    r: &Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    index: usize,
+) -> Option<renderer::layout::RectF> {
+    let view = r
+        .create_chart_view_at(chart, chart.config().chart_area.0, 1.0, series)
+        .unwrap();
+    let map = view.annotation_map();
+    map.find(index).and_then(|id| map.bounds(id))
+}
+
+// #258: a unit note draws its prefix and the series' unit at the corner
+// its alignment names, is hit, selected without handles and dragged by its
+// anchor through the annotation map, and draws nothing hidden, without a
+// unit or without its series. At 1x and 2x.
+#[test]
+fn the_unit_note_draws_at_a_corner_and_selects_drags_and_hides() {
+    let mut r = renderer();
+    let mut chart = chart();
+    let index = add_note(&mut chart, "he");
+    let list = [series("he", labelled_records())];
+    let view = r
+        .create_chart_view_at(&chart, chart.config().chart_area.0, 1.0, &list)
+        .unwrap();
+    let map = view.annotation_map();
+    let id = map.find(index).expect("the note is drawn");
+    let bounds = map.bounds(id).unwrap();
+    let plot = chart.config().data_area().unwrap().0;
+    // In the plot's lower-right corner.
+    let (right, bottom) = ((plot.x + plot.width) as f32, (plot.y + plot.height) as f32);
+    assert!(
+        (bounds.x + bounds.width - right).abs() < 1.5
+            && (bounds.y + bounds.height - bottom).abs() < 1.5,
+        "{bounds:?} in {plot:?}"
+    );
+    assert!(bounds.width > 20.0, "the prefix and the unit: {bounds:?}");
+    // Hit and selected as one box with no handles.
+    let centre = [
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    ];
+    assert_eq!(map.hit_test(centre), Some(id));
+    assert!(map.selection_box(id).unwrap().handles().is_empty());
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &list, scale);
+        assert!(ink_in(&img, bounds, scale, is_orange) > 0, "{scale}x");
+    }
+    // Dragged by its anchor: drawn where it now is.
+    let mut layer = chart.config().annotations.clone();
+    assert_eq!(
+        map.drag_by(&mut layer, id, -120.0, -80.0),
+        Some(renderer::layout::NudgeResult::Moved)
+    );
+    let mut moved = Chart::new(chart.config().clone());
+    moved.config_mut().annotations = layer;
+    assert!(matches!(
+        &moved.config().annotations.items[index].kind,
+        renderer::AnnotationKind::SeriesUnit {
+            anchor: renderer::Anchor::Ratio { .. },
+            ..
+        }
+    ));
+    let after = note_bounds(&r, &moved, &list, index).unwrap();
+    assert!((after.x - (bounds.x - 120.0)).abs() < 1.0, "{after:?}");
+    assert!((after.y - (bounds.y - 80.0)).abs() < 1.0, "{after:?}");
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &moved, &list, scale);
+        assert!(ink_in(&img, after, scale, is_orange) > 0, "{scale}x moved");
+        assert_eq!(ink_in(&img, bounds, scale, is_orange), 0, "{scale}x old");
+    }
+    // Hidden, without a unit, or naming no series: not drawn, not hit and
+    // not reported as a skipped item.
+    let mut hidden = Chart::new(chart.config().clone());
+    hidden.config_mut().annotations.items[index].visible = false;
+    let mut no_unit = labelled_records();
+    no_unit.wavelength_unit = None;
+    let mut elsewhere = Chart::new(chart.config().clone());
+    elsewhere.config_mut().annotations.items[index] = {
+        let mut other = Chart::new(chart.config().clone());
+        let i = add_note(&mut other, "absent");
+        other.config().annotations.items[i].clone()
+    };
+    let cases: [(&str, &Chart, Vec<SeriesConfig>); 4] = [
+        ("hidden", &hidden, list.to_vec()),
+        ("no unit", &chart, vec![series("he", no_unit)]),
+        ("absent series", &elsewhere, list.to_vec()),
+        ("no series given", &chart, Vec::new()),
+    ];
+    for (name, c, l) in cases {
+        let view = r
+            .create_chart_view_at(c, c.config().chart_area.0, 1.0, &l)
+            .unwrap();
+        assert_eq!(view.annotation_map().find(index), None, "{name}");
+        assert!(view.render_warnings().is_empty(), "{name}");
+        if name != "no series given" {
+            for scale in [1.0f32, 2.0] {
+                let img = export(&mut r, c, &l, scale);
+                assert_eq!(ink_in(&img, bounds, scale, is_orange), 0, "{name} {scale}x");
+            }
+        }
+    }
+    // A view created without the series draws the note once a refresh
+    // gives them.
+    let mut view = r
+        .create_chart_view(&chart, chart.config().chart_area.0)
+        .unwrap();
+    assert_eq!(view.annotation_map().find(index), None);
+    r.refresh_annotations(&mut view, &chart, chart.config().chart_area.0, None, &list)
+        .unwrap();
+    assert_eq!(view.annotation_map().find(index), Some(id));
+}
+
+// #258: the SVG and PDF exports write the note's prefix and unit and the
+// formatted labels as the raster draws them, at 1x and 2x.
+#[test]
+fn svg_and_pdf_exports_write_the_unit_note_and_the_formatted_labels() {
+    let mut r = renderer();
+    let mut chart = chart();
+    add_note(&mut chart, "he");
+    let with_unit = |unit: Option<&str>| {
+        let mut levels = labelled_records();
+        levels.wavelength_unit = unit.map(Into::into);
+        [series("he", levels)]
+    };
+    // Glyphs drawn in a colour: one `<use>` each.
+    let glyphs = |svg: &str, colour: &str| svg.matches(&format!("fill=\"{colour}\"/>")).count();
+    for scale in [1.0f32, 2.0] {
+        let mut svg = |unit| {
+            r.export_svg(
+                renderer::ExportSource::chart(&chart, &with_unit(unit)),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        let (nm, air, none) = (svg(Some("nm")), svg(Some("nm (air)")), svg(None));
+        // One glyph a character: the prefix, then the unit.
+        let count = |text: &str| text.chars().count();
+        assert_eq!(glyphs(&nm, "#ff8000"), count("λ / nm"), "{scale}x the note");
+        assert_eq!(
+            glyphs(&air, "#ff8000"),
+            count("λ / nm (air)"),
+            "{scale}x the longer unit"
+        );
+        assert_eq!(glyphs(&none, "#ff8000"), 0, "{scale}x no unit, no note");
+        // The label with its unit, and the number alone without one.
+        assert_eq!(
+            glyphs(&nm, "#ff00ff"),
+            count("587.6 nm"),
+            "{scale}x the label"
+        );
+        assert_eq!(
+            glyphs(&none, "#ff00ff"),
+            count("587.6"),
+            "{scale}x the number alone"
+        );
+        let mut pdf = |unit| {
+            r.export_pdf(
+                renderer::ExportSource::chart(&chart, &with_unit(unit)),
+                renderer::ExportOptions::document(scale),
+            )
+            .block_on()
+            .unwrap()
+        };
+        let (a, b) = (pdf(Some("nm")), pdf(None));
+        assert!(a.starts_with(b"%PDF") && b.starts_with(b"%PDF"));
+        assert_ne!(a, b, "{scale}x the PDF writes the unit");
+    }
+}
+
+// #258: an SSOT edit of the unit re-rasterizes the annotation layer and
+// the labels; an edit of the label format re-rasterizes the labels; an
+// edit that changes no unit leaves the annotation layer's revision alone.
+#[test]
+fn unit_and_format_edits_redraw_the_note_and_the_labels() {
+    let mut r = renderer();
+    let mut chart = chart();
+    let index = add_note(&mut chart, "he");
+    let id = r
+        .register_chart(
+            chart.config().clone(),
+            vec![series("he", labelled_records())],
+        )
+        .unwrap();
+    let bounds = note_bounds(&r, &chart, &[series("he", labelled_records())], index).unwrap();
+    let registered = |r: &mut Renderer, scale: f32| {
+        r.export_rgba(
+            renderer::ExportSource::Registered(id),
+            renderer::ExportOptions::panel(scale),
+        )
+        .block_on()
+        .unwrap()
+    };
+    let (_, label) = transition_label(&chart, &labelled_records()).unwrap();
+    for scale in [1.0f32, 2.0] {
+        let before = registered(&mut r, scale);
+        let stamp = r.chart_render_stamp(id).unwrap();
+        // The unit: the note and the labels follow.
+        let mut angstrom = labelled_records();
+        angstrom.wavelength_unit = Some("Å".into());
+        r.set_chart_series(id, vec![series("he", angstrom)])
+            .unwrap();
+        let next = r.chart_render_stamp(id).unwrap();
+        assert!(next.needs_annotation_raster_since(Some(&stamp)), "{scale}x");
+        let after = registered(&mut r, scale);
+        let crop = |img: &RasterImage, rect: renderer::layout::RectF| {
+            let mut out = Vec::new();
+            for y in (rect.y * scale) as u32..((rect.y + rect.height) * scale) as u32 {
+                for x in (rect.x * scale) as u32..((rect.x + rect.width) * scale) as u32 {
+                    out.extend_from_slice(pixel(img, x, y));
+                }
+            }
+            out
+        };
+        assert_ne!(crop(&before, bounds), crop(&after, bounds), "{scale}x note");
+        assert_ne!(crop(&before, label), crop(&after, label), "{scale}x label");
+        // A level edit draws the levels again but no unit changed.
+        let mut shifted = labelled_records();
+        shifted.wavelength_unit = Some("Å".into());
+        shifted.levels[1].energy = 41.0;
+        r.set_chart_series(id, vec![series("he", shifted)]).unwrap();
+        let same = r.chart_render_stamp(id).unwrap();
+        assert!(!same.needs_annotation_raster_since(Some(&next)), "{scale}x");
+        // The format: two decimals redraw the label.
+        let mut two = labelled_records();
+        two.style
+            .wavelength_labels
+            .as_mut()
+            .unwrap()
+            .format
+            .decimals = Some(2);
+        r.set_chart_series(id, vec![series("he", two)]).unwrap();
+        let wider = registered(&mut r, scale);
+        assert_ne!(crop(&before, label), crop(&wider, label), "{scale}x format");
+        r.set_chart_series(id, vec![series("he", labelled_records())])
+            .unwrap();
+        assert_eq!(registered(&mut r, scale).rgba, before.rgba, "{scale}x back");
+    }
+}
+
+// #258: a document with the new fields and a unit note round-trips and
+// draws the same.
+#[test]
+fn a_document_with_formatted_labels_and_a_note_round_trips() {
+    let mut r = renderer();
+    let mut chart = chart();
+    add_note(&mut chart, "he");
+    let list = vec![series("he", labelled_records())];
+    let json = serde_json::to_string(&(chart.config(), &list)).unwrap();
+    assert!(json.contains("\"SeriesUnit\"") && json.contains("\"wavelength_labels\""));
+    let (config, back): (renderer::config::Config, Vec<SeriesConfig>) =
+        serde_json::from_str(&json).unwrap();
+    assert_eq!(back, list);
+    assert_eq!(&config, chart.config());
+    assert_eq!(serde_json::to_string(&(&config, &back)).unwrap(), json);
+    for scale in [1.0f32, 2.0] {
+        let a = export(&mut r, &chart, &list, scale);
+        let b = export(&mut r, &Chart::new(config.clone()), &back, scale);
+        assert_eq!(a.rgba, b.rgba, "{scale}x");
+    }
 }

@@ -3311,7 +3311,7 @@ fn decoration_refresh_recomposes_display_without_resetting_stream_cursor() {
         config.bottom_x.label_style.color = Color::new(0.1, 0.7, 0.3, 1.0);
     });
     r.set_chart_config(a, chart.config().clone()).unwrap();
-    r.refresh_axis(&mut view, &chart, panel).unwrap();
+    r.refresh_axis(&mut view, &chart, panel, &[]).unwrap();
 
     assert!(
         r.refresh_chart_stream_display(job, &view).unwrap(),
@@ -6046,8 +6046,13 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
             wait_stream_slots(&mut r, 0);
             if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
                 let fitted = r.chart_config(chart).unwrap().clone();
-                r.refresh_axis(&mut view, &Chart::new(fitted.clone()), fitted.chart_area.0)
-                    .unwrap();
+                r.refresh_axis(
+                    &mut view,
+                    &Chart::new(fitted.clone()),
+                    fitted.chart_area.0,
+                    &[],
+                )
+                .unwrap();
             }
             let status = r.stream_status(chart).unwrap();
             assert!(
@@ -6645,7 +6650,7 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                 wait_stream_slots(&mut r, 0);
                 if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
                     let c = r.chart_config(id).unwrap().clone();
-                    r.refresh_axis(&mut view, &Chart::new(c.clone()), c.chart_area.0)
+                    r.refresh_axis(&mut view, &Chart::new(c.clone()), c.chart_area.0, &[])
                         .unwrap();
                 }
                 r.prepare_registered(&[RegisteredChartDrawItem {

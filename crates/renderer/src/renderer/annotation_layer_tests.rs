@@ -230,7 +230,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
     assert!(after.needs_draw_since(Some(&before)));
     assert!(!after.needs_raster_since(Some(&before)));
     assert!(after.needs_annotation_raster_since(Some(&before)));
-    r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, None)
+    r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, None, &[])
         .unwrap();
     assert_eq!(
         view.layer_stamps(),
@@ -284,7 +284,7 @@ fn annotation_edits_refresh_only_their_layer_and_match_fresh_renders() {
     let after = r.chart_render_stamp(id).unwrap();
     assert!(after.needs_raster_since(Some(&before)));
     assert!(!after.needs_annotation_raster_since(Some(&before)));
-    r.refresh_axis(&mut view, &Chart::new(chrome.clone()), PANEL)
+    r.refresh_axis(&mut view, &Chart::new(chrome.clone()), PANEL, &[])
         .unwrap();
     assert_eq!(
         view.layer_stamps(),
@@ -425,7 +425,7 @@ fn view_map_drags_write_anchors_that_round_trip() {
         _ => unreachable!(),
     }
     r.set_chart_config(id, config.clone()).unwrap();
-    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, Some(2))
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, Some(2), &[])
         .unwrap();
     let after = view
         .annotation_map()
@@ -435,7 +435,7 @@ fn view_map_drags_write_anchors_that_round_trip() {
     assert_eq!(view.annotation_selected(), Some(2));
     // The selection box lives on the overlay: pixels change, no other layer.
     let selected = paint(&mut r, id, &view);
-    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, None)
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, None, &[])
         .unwrap();
     assert_ne!(selected, paint(&mut r, id, &view));
     assert_eq!(view.layer_stamps().decoration, 1);
@@ -607,7 +607,7 @@ fn fresh_selected(config: &Config, selected: Option<usize>) -> Vec<u8> {
     let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, selected)
+    r.refresh_annotations(&mut view, &Chart::new(config.clone()), PANEL, selected, &[])
         .unwrap();
     paint(&mut r, id, &view)
 }
@@ -789,7 +789,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         else {
             panic!("the text box did not answer");
         };
-        r.refresh_annotations(&mut view, &Chart::new(active.clone()), PANEL, Some(2))
+        r.refresh_annotations(&mut view, &Chart::new(active.clone()), PANEL, Some(2), &[])
             .unwrap();
         chrome_unchanged(&view);
         assert_eq!(view.layer_stamps().annotations, stamps.annotations + 1);
@@ -847,7 +847,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         let after = r.chart_render_stamp(id).unwrap();
         assert!(!after.needs_raster_since(Some(&before)));
         assert!(after.needs_annotation_raster_since(Some(&before)));
-        r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, Some(2))
+        r.refresh_annotations(&mut view, &Chart::new(edited.clone()), PANEL, Some(2), &[])
             .unwrap();
         chrome_unchanged(&view);
         assert_eq!(paint(&mut r, id, &view), fresh_selected(&edited, Some(2)));
@@ -885,7 +885,7 @@ fn layer_switches_and_routed_drags_keep_the_other_caches_and_paint_fresh_bytes()
         assert!(!after.needs_raster_since(Some(&before)));
         assert!(!after.needs_annotation_raster_since(Some(&before)));
         let last = r.chart_config(id).unwrap().clone();
-        r.refresh_annotations(&mut view, &Chart::new(last.clone()), PANEL, None)
+        r.refresh_annotations(&mut view, &Chart::new(last.clone()), PANEL, None, &[])
             .unwrap();
         chrome_unchanged(&view);
         assert_eq!(paint(&mut r, id, &view), fresh(&last));

@@ -93,7 +93,12 @@ impl Renderer {
             view,
             selection,
             raster,
-            annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
+            annotation: annotation_series_revision(
+                annotation_config_revision(annotation_before, &state.config, &config)?,
+                &config,
+                &state.series,
+                &series,
+            )?,
         };
 
         let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(

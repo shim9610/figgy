@@ -483,7 +483,7 @@ impl DemoState {
         self.renderer
             .set_chart_config(self.chart_id, self.chart.config().clone())?;
         self.renderer
-            .refresh_axis(&mut self.view, &self.chart, panel_rect)?;
+            .refresh_axis(&mut self.view, &self.chart, panel_rect, &[])?;
         self.surface_size = surface_size;
         if let Some(request) = restart {
             self.pending_start = Some(request);

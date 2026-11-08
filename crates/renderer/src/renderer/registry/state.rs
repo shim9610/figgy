@@ -150,6 +150,23 @@ pub(in crate::renderer) fn annotation_config_revision(
     }
 }
 
+/// The annotation revision after a series edit from `before` to `after`
+/// under `config` (#258): it advances when a unit note of the layer now
+/// draws another unit, so the annotation layer is re-rasterized with the
+/// series it reads.
+pub(in crate::renderer) fn annotation_series_revision(
+    current: RenderRevision,
+    config: &Config,
+    before: &[SeriesConfig],
+    after: &[SeriesConfig],
+) -> Result<RenderRevision> {
+    if config.annotations.series_units_differ(before, after) {
+        current.successor("chart annotation revision")
+    } else {
+        Ok(current)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(in crate::renderer) struct ChartRevisions {
     pub(in crate::renderer) desired: RenderRevision,

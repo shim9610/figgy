@@ -30,7 +30,7 @@ use model::annotation::geometry;
 pub use model::annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationGeometry,
     AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, MeasuredText, PixelSpace, emit_annotation,
+    AxisSpace, BoxStyle, MeasuredText, NoteAlign, PixelSpace, emit_annotation, series_unit_text,
 };
 use model::drag::DragConfig;
 use model::select::SelectionGeometry;
@@ -349,6 +349,10 @@ pub(crate) struct RasterRequest<'a> {
     /// The document whose subplots' markers the layer draws (#205), after
     /// its items; `None` for a chart without subplots (the radial chart).
     pub markers: Option<&'a crate::config::Config>,
+    /// The document's series, which a unit note reads its unit from
+    /// (#258); empty for a chart without series (the radial chart), where
+    /// a unit note draws nothing.
+    pub series: &'a [crate::SeriesConfig],
 }
 
 /// Measure a text block in logical pixels: the renderer's glyph stack at
@@ -409,7 +413,7 @@ fn skip_reason(
                 AnnotationSkip::OutOfRange
             }
         }
-        AnnotationKind::Text { anchor, .. } => {
+        AnnotationKind::Text { anchor, .. } | AnnotationKind::SeriesUnit { anchor, .. } => {
             if text_size.is_none() {
                 AnnotationSkip::EmptyText
             } else if !finite_anchor(anchor) {
@@ -637,6 +641,17 @@ pub(crate) fn emit_annotation_layer(
         if !item.visible {
             continue;
         }
+        // A unit note reads its series' unit on every draw (#258); with no
+        // such series or no unit it draws nothing and is not registered.
+        let note = match &item.kind {
+            AnnotationKind::SeriesUnit {
+                series_id, prefix, ..
+            } => match crate::energy_levels::wavelength_unit(request.series, series_id) {
+                Some(unit) => Some(series_unit_text(prefix, unit)),
+                None => continue,
+            },
+            _ => None,
+        };
         let measured = match &item.kind {
             AnnotationKind::ReferenceLine { label, .. } => label
                 .as_ref()
@@ -656,6 +671,14 @@ pub(crate) fn emit_annotation_layer(
             AnnotationKind::Arrow { text, .. } => text
                 .as_ref()
                 .and_then(|t| measure(t, 0.0, scale, request.policy)),
+            AnnotationKind::SeriesUnit { box_style, .. } => note.as_ref().and_then(|t| {
+                measure(
+                    t,
+                    box_style.as_ref().map_or(0.0, |b| b.padding),
+                    scale,
+                    request.policy,
+                )
+            }),
         };
         let text_size = measured.map(|m| m.size);
         if geometry(&item.kind, &space, text_size).is_none() {
@@ -670,6 +693,7 @@ pub(crate) fn emit_annotation_layer(
             space,
             text: measured,
             handle: None,
+            note,
         };
         element.emit(request.layer, sink);
         placed(Ok(element));
@@ -914,6 +938,7 @@ impl RasterKey {
             policy: *policy,
             // The radial chart has no subplots to mark.
             markers: None,
+            series: &[],
         }
     }
 }
@@ -1110,6 +1135,7 @@ mod tests {
             selected: None,
             policy: FontPolicy::Standard,
             markers: None,
+            series: &[],
         })
         .unwrap()
         .map;
@@ -1157,12 +1183,14 @@ mod tests {
             space: space(),
             text: None,
             handle: None,
+            note: None,
         });
         map.register(AnnotationElement {
             index: 1,
             space: space(),
             text: None,
             handle: None,
+            note: None,
         })
     }
 
@@ -1228,6 +1256,7 @@ mod tests {
                 selected: Some(1),
                 policy: FontPolicy::Standard,
                 markers: None,
+                series: &[],
             })
             .unwrap();
             let underlay = raster.underlay.expect("span draws an underlay");
@@ -1325,6 +1354,7 @@ mod tests {
             selected: None,
             policy: FontPolicy::Standard,
             markers: None,
+            series: &[],
         })
         .unwrap();
         assert!(raster.underlay.is_none());

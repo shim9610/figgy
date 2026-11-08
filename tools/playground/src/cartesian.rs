@@ -337,7 +337,7 @@ impl CartesianHost {
         let chart = Chart::new(d.config.clone());
         let view = match self.view.take() {
             Some(v) => v,
-            None => match r.create_chart_view_at(&chart, d.panel, d.scale) {
+            None => match r.create_chart_view_at(&chart, d.panel, d.scale, &series) {
                 Ok(v) => {
                     self.raster_dirty = true;
                     v
@@ -362,6 +362,7 @@ impl CartesianHost {
                     d.panel,
                     selected.as_deref(),
                     d.scale,
+                    &series,
                 )
             {
                 self.error = Some(format!("refresh: {e}"));
@@ -371,7 +372,13 @@ impl CartesianHost {
         }
         if view.annotation_selected() != self.selected_annotation
             && let Err(e) =
-                r.refresh_annotations(&mut view, &chart, d.panel, self.selected_annotation)
+                r.refresh_annotations(
+                    &mut view,
+                    &chart,
+                    d.panel,
+                    self.selected_annotation,
+                    &series,
+                )
         {
             self.error = Some(format!("annotations: {e}"));
         }

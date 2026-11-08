@@ -28,7 +28,9 @@ use renderer::config::{
 };
 use renderer::energy_levels::{
     EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelBand, LevelRole, Transition,
+    WavelengthLabels,
 };
+use renderer::format::PlainNumberFormat;
 use renderer::text::RichText;
 use renderer::{Chart, Color, DataRenderType, SeriesConfig};
 
@@ -83,14 +85,13 @@ fn transition(id: &str, lower: &str, upper: &str, nm: f64, aki: Option<f64>) -> 
         id: id.into(),
         lower: lower.into(),
         upper: upper.into(),
-        label: Some(RichText::plain(&format!("{nm:.1}"), WAVELENGTH, 15.0, "")),
+        // The renderer writes the label from the wavelength (#258).
+        label: None,
         label_offset: [0.0; 2],
         value: aki,
         x_offset: 0.0,
-        observed_wavelength: Some(nm),
-        observed_uncertainty: None,
-        ritz_wavelength: None,
-        ritz_uncertainty: None,
+        wavelength: Some(nm),
+        wavelength_uncertainty: None,
         intensity: String::new(),
         aki,
         accuracy: String::new(),
@@ -268,12 +269,50 @@ fn spec(id: &str, series: EnergyLevelSeries) -> SeriesConfig {
     }
 }
 
+/// The diagrams' look. The lines are labelled with their wavelengths in nm
+/// to one decimal, written by the renderer from each transition's
+/// `wavelength`; the unit is shown once, in a note (#258).
 fn styled(mut series: EnergyLevelSeries) -> EnergyLevelSeries {
     series.style.level.color = LEVEL;
     series.style.level.width = 2.2;
     series.style.transition.color = ARROW;
     series.style.transition.width = 1.3;
+    series.wavelength_unit = Some("nm".into());
+    series.style.wavelength_labels = Some(WavelengthLabels {
+        format: PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit_on_labels: false,
+        text: RichText::plain("", WAVELENGTH, 15.0, ""),
+    });
     series
+}
+
+/// The unit note of series `id` at the plot's `corner`, ten pixels in from
+/// it, in the wavelength labels' colour (#258).
+fn unit_note(c: &mut Chart, id: &str, corner: renderer::NoteAlign) {
+    let plot = c.config().data_area().map(|area| area.0);
+    let config = c.config_mut();
+    let index = config.add_unit_note(id, corner);
+    if let renderer::AnnotationKind::SeriesUnit { anchor, prefix, .. } =
+        &mut config.annotations.items[index].kind
+    {
+        *prefix = RichText::plain("Wavelengths in ", WAVELENGTH, 15.0, "");
+        // Off the plot's frame: the corner's ratio moved in by 10 px.
+        if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
+            let inward = |f: &mut f32, len: u32| {
+                let step = 10.0 / len.max(1) as f32;
+                if *f < 0.5 {
+                    *f += step;
+                } else if *f > 0.5 {
+                    *f -= step;
+                }
+            };
+            inward(x, plot.width);
+            inward(y, plot.height);
+        }
+    }
 }
 
 // He I -----------------------------------------------------------------
@@ -409,6 +448,7 @@ pub fn helium() -> Result<(Chart, Vec<SeriesConfig>)> {
         25.2,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
+    unit_note(&mut c, "he", renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("he", series)]))
 }
 
@@ -525,6 +565,7 @@ pub fn argon() -> Result<(Chart, Vec<SeriesConfig>)> {
         16.0,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
+    unit_note(&mut c, "ar", renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("ar", series)]))
 }
 
@@ -695,6 +736,7 @@ pub fn copper() -> Result<(Chart, Vec<SeriesConfig>)> {
         8.2,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
+    unit_note(&mut c, "cu", renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("cu", series)]))
 }
 
@@ -757,7 +799,7 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         }
     }
     transitions.retain(|t| {
-        let nm = t.observed_wavelength.unwrap_or(0.0);
+        let nm = t.wavelength.unwrap_or(0.0);
         [591.54, 436.2, 415.4, 394.4, 424.2, 404.3]
             .iter()
             .any(|c| (nm - c).abs() < 0.6)
@@ -828,5 +870,6 @@ pub fn uranium() -> Result<(Chart, Vec<SeriesConfig>)> {
         52_000.0,
         Color::from_rgba8(80, 100, 220, 36),
     )?;
+    unit_note(&mut c, "u", renderer::NoteAlign::BottomRight);
     Ok((c, vec![spec("u", series)]))
 }

@@ -249,7 +249,7 @@ impl CallbackTrait for LabCallback {
             if let Err(e) =
                 state
                     .renderer
-                    .refresh_axis(&mut state.view, &state.chart, self.panel_rect_px)
+                    .refresh_axis(&mut state.view, &state.chart, self.panel_rect_px, &[])
             {
                 eprintln!("[lab] refresh_axis failed: {e}");
                 state.prepared = None;
@@ -264,9 +264,10 @@ impl CallbackTrait for LabCallback {
             // the current config every frame.
             let _ = state.chart.consume_data_dirty();
             if raster_dirty
-                && let Err(e) = state
-                    .renderer
-                    .refresh_axis(&mut state.view, &state.chart, cur_rect)
+                && let Err(e) =
+                    state
+                        .renderer
+                        .refresh_axis(&mut state.view, &state.chart, cur_rect, &[])
             {
                 eprintln!("[lab] refresh_axis failed: {e}");
                 state.prepared = None;

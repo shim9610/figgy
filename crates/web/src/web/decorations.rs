@@ -44,6 +44,7 @@ pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static 
         renderer::AnnotationKind::Rect { .. } => "Rect",
         renderer::AnnotationKind::Ellipse { .. } => "Ellipse",
         renderer::AnnotationKind::Polygon { .. } => "Polygon",
+        renderer::AnnotationKind::SeriesUnit { .. } => "SeriesUnit",
     }
 }
 
@@ -551,6 +552,22 @@ impl FiggyChart {
         let mut config = self.chart_config()?.clone();
         config.annotations.items.push(item);
         let index = config.annotations.items.len() - 1;
+        self.replace_chart_config(config)?;
+        Ok(index as u32)
+    }
+
+    /// Append a unit note for the energy-level series `series_id` at the
+    /// plot's `corner` (a `NoteAlign` name: `"TopLeft"`, `"Top"`, ...,
+    /// `"BottomRight"`) and return its index (#258). The note draws
+    /// `λ / ` and the series' `wavelength_unit`, read on every draw, and
+    /// nothing while the series has no unit; edit it with `set_annotation`.
+    /// JS: `const i = chart.add_unit_note("he", "BottomRight");`
+    pub fn add_unit_note(&mut self, series_id: &str, corner: &str) -> Result<u32, JsValue> {
+        let corner: renderer::NoteAlign =
+            serde_json::from_value(serde_json::Value::String(corner.into()))
+                .map_err(|_| js_err("unknown note corner"))?;
+        let mut config = self.chart_config()?.clone();
+        let index = config.add_unit_note(series_id, corner);
         self.replace_chart_config(config)?;
         Ok(index as u32)
     }

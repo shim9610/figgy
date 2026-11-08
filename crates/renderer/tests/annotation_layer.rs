@@ -812,3 +812,45 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     }
     r.end_frame();
 }
+
+// #258: a unit note reads the unit of an energy-level series; the radial
+// chart has no series, so the note names an absent one there: it draws
+// nothing, is not registered in the hit map and is not reported as a
+// skipped item, while the other items draw as before. At 1x and 2x.
+#[test]
+fn a_unit_note_without_its_series_draws_nothing() {
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = RadialRenderer::try_new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let plain = annotated_radial();
+    let mut noted = annotated_radial();
+    let index = noted.annotations.items.len();
+    noted
+        .annotations
+        .items
+        .push(Annotation::new(AnnotationKind::SeriesUnit {
+            series_id: "he".into(),
+            anchor: Anchor::Ratio { x: 1., y: 1. },
+            align: NoteAlign::BottomRight,
+            prefix: text("λ / "),
+            box_style: Some(BoxStyle::default()),
+        }));
+    assert_eq!(noted.annotations.validate(), Ok(()));
+    for scale in [1., 2.] {
+        let a = r.prepare_annotations(&noted, SIZE, scale).unwrap();
+        assert_eq!(a.annotations().find(index), None, "{scale}x");
+        assert_eq!(a.annotations().entries().count(), 2, "{scale}x");
+        assert!(a.render_warnings().is_empty(), "{scale}x");
+        let with = r
+            .export_rgba(&noted, SIZE, renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
+        let without = r
+            .export_rgba(&plain, SIZE, renderer::ExportOptions::document(scale))
+            .block_on()
+            .unwrap();
+        assert!(with.rgba == without.rgba, "{scale}x the note drew pixels");
+    }
+    r.end_frame();
+}

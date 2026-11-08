@@ -476,6 +476,7 @@ impl CallbackTrait for FiggyCallback {
                 &panel.chart,
                 self.panel_rect_px,
                 selected_id.as_deref(),
+                &[],
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 panel.prepared = None;
@@ -494,6 +495,7 @@ impl CallbackTrait for FiggyCallback {
                     &panel.chart,
                     cur_rect,
                     selected_id.as_deref(),
+                    &[],
                 )
             {
                 eprintln!("[figgy] refresh_axis failed: {e}");
