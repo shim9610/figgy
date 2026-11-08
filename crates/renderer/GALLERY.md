@@ -94,7 +94,7 @@ Each 0.19 chart kind has a designed scene drawn by its example (#250), with the 
 | `gallery-stem.png` | [stem.rs](examples/stem.rs), `impulse_response` | The 41 taps of a windowed-sinc low-pass filter as stems from zero, over the ideal sinc they approximate |
 | `gallery-lollipop.png` | [stem.rs](examples/stem.rs), `lollipop` | A ranked lollipop chart of tree canopy change in twelve districts: horizontal stems from zero on a categorical axis |
 | `gallery-broken-axes.png` | [broken_axes.rs](examples/broken_axes.rs), `gamma_spectrum` | A gamma-ray spectrum of Cs-137 and Co-60 with the energy axis cut between 760 and 1080 keV, so both peak groups keep a readable scale |
-| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), `main` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, labelled transitions, the ground state below a broken energy axis |
+| `gallery-grotrian.png` | [nist_grotrian_gallery.rs](examples/nist_grotrian_gallery.rs), `main` | A Grotrian diagram of He I from NIST data: singlet and triplet term columns, transitions labelled with their wavelengths to one decimal, the unit once in a corner note, the ground state below a broken energy axis |
 | `gallery-feynman.png` | [feynman.rs](examples/feynman.rs), `render` | Six processes on cards: annihilation, Compton scattering, gluon fusion through a top loop, beta decay through a W, the electron's one-loop vertex and a three-jet event |
 
 `readme_gallery` writes them with the other images; each example also runs on its own (`cargo run --locked -p figgy-renderer --example <name> -- target/<name>`).
