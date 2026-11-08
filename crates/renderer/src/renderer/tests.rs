@@ -15177,7 +15177,11 @@ fn every_windowed_call_reports_its_own_gpu_errors() {
     // Every other call is the `Renderer`'s (#160): each public method that
     // records GPU work wraps its body (`*_unreported`) with the check.
     let renderer_sources = [
-        include_str!("registry.rs"),
+        include_str!("registry/charts.rs"),
+        include_str!("registry/chart_state.rs"),
+        include_str!("registry/columns.rs"),
+        include_str!("registry/sources.rs"),
+        include_str!("registry/pool.rs"),
         include_str!("picking.rs"),
         include_str!("fit.rs"),
         include_str!("frame.rs"),
