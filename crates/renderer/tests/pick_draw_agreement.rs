@@ -3397,7 +3397,11 @@ fn inverted_and_broken_probability_axes_place_points_as_their_chrome() {
         let cfg = chart.config().clone();
         let da = cfg.data_area().expect("data area").0;
         for (index, (&x, &p)) in xs.iter().zip(&ps).enumerate() {
-            let fraction = f64::from(renderer::layout::axis_fraction(p, &cfg.left_y));
+            let fraction = f64::from(renderer::layout::axis_fraction(
+                p,
+                &cfg.left_y,
+                da.height as f32,
+            ));
             let expected = (
                 axis_px(&cfg.bottom_x, x, da.x as f64, da.width as f64),
                 (da.y + da.height) as f64 - fraction * da.height as f64,

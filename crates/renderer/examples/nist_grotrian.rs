@@ -384,7 +384,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
     c.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.015,
+        gap_px: 12.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),

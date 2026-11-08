@@ -4169,7 +4169,7 @@ fn broken_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         Some(AxisBreaks {
             ranges: vec![AxisBreak::new(from, to)],
             style,
-            gap: 0.03,
+            gap_px: 12.0,
             ..AxisBreaks::default()
         })
     };
@@ -4871,7 +4871,7 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.015,
+        gap_px: 12.0,
         mark: renderer::config::BreakMark::default(),
         // Framed pieces: the frames snap to whole logical pixels (#205).
         frame_each_panel: true,

@@ -666,7 +666,7 @@ fn stems_draw_on_overlays_subplots_and_broken_axes() {
     broken.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(40.0, 60.0)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.1,
+        gap_px: 24.0,
         mark: BreakMark::None,
         frame_each_panel: false,
         sizing: Default::default(),

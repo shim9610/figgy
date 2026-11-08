@@ -78,8 +78,8 @@ fn axis_bands(
     [((u32, u32), f64); crate::config::MAX_AXIS_BREAKS + 1],
     usize,
 ) {
-    let map = crate::layout::BreakMap::of(axis);
-    let panels = crate::data_render::panels_scale(axis);
+    let map = crate::layout::BreakMap::of(axis, len as f32);
+    let panels = crate::data_render::panels_scale(axis, len as f32);
     let mut out = [((0u32, len), 0.0); crate::config::MAX_AXIS_BREAKS + 1];
     let mut count = 0;
     let px = |t: f64| (t.clamp(0.0, 1.0) * f64::from(len)).round() as u32;

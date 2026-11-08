@@ -2664,8 +2664,9 @@ impl crate::config::Config {
         let marker = self.subplots.get(subplot)?.marker.as_ref()?;
         let [[x0, x1], [y0, y1]] = marker.window.or_else(|| self.inset_window(subplot))?;
         let plot = RectF::from_rect(&self.data_area().ok()?.0);
-        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x) * plot.width;
-        let py = |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y)) * plot.height;
+        let px = |v: f64| plot.x + axis_fraction(v, &self.bottom_x, plot.width) * plot.width;
+        let py =
+            |v: f64| plot.y + (1.0 - axis_fraction(v, &self.left_y, plot.height)) * plot.height;
         let (a, b) = (px(x0), px(x1));
         let (c, d) = (py(y0), py(y1));
         if ![a, b, c, d].iter().all(|v| v.is_finite()) {

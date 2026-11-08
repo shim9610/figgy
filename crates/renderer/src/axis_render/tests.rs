@@ -1674,7 +1674,7 @@ fn colorbar_ticks_match_the_strip_ramp() {
                 let normalized = bar
                     .normalized_z(*z)
                     .unwrap_or_else(|| panic!("{z} is inside [{min}, {max}]"));
-                let mut on_screen = axis_fraction(*z, &bar.axis);
+                let mut on_screen = crate::layout::axis_fraction(*z, &bar.axis, 100.0);
                 if inverted {
                     on_screen = 1.0 - on_screen;
                 }
@@ -2261,6 +2261,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         Side::Bottom,
         &data_area_rect(&da),
         None,
+        None,
         &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &majors,
         1.0,
@@ -2306,6 +2307,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         &data_area_rect(&da),
         &CpuTextMeasure::with_policy(FontPolicy::Standard),
         &mut grid,
+        1.0,
     );
     let major_x: Vec<f32> = grid
         .0
@@ -2350,6 +2352,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         &cfg.bottom_x,
         Side::Bottom,
         &plot,
+        None,
         None,
         &CpuTextMeasure::with_policy(fp),
         &majors,

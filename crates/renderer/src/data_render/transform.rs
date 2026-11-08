@@ -98,22 +98,24 @@ pub const NO_BREAKS: [[f32; 4]; 6] = [[0.0; 4]; 6];
 pub const NO_BREAK_INFO: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 /// `(breaks, break_info)` of [`ScatterTransform`] for the x axis `x` and
-/// the y axis `y`: their [`crate::layout::BreakMap`]s in the shader's `t`,
+/// the y axis `y`, drawn `lens` (the data area's width and height) long
+/// (#249): their [`crate::layout::BreakMap`]s in the shader's `t`,
 /// mirrored on an inverted axis, where the shader's `t` runs from the
 /// axis' far end.
 pub(crate) fn break_constants(
     x: &crate::config::AxisOptions,
     y: &crate::config::AxisOptions,
+    lens: [f32; 2],
 ) -> ([[f32; 4]; 6], [f32; 4]) {
     let mut breaks = NO_BREAKS;
     let mut info = NO_BREAK_INFO;
     for (axis, options) in [x, y].into_iter().enumerate() {
         // A `Panels` axis has no cut remap: each piece is drawn at its own
         // linear map ([`panels_scale`], `DataPieces`).
-        if panels_scale(options).is_some() {
+        if panels_scale(options, lens[axis]).is_some() {
             continue;
         }
-        let map = crate::layout::BreakMap::of(options);
+        let map = crate::layout::BreakMap::of(options, lens[axis]);
         let knots = map.knots();
         info[axis] = knots.len() as f32;
         info[2 + axis] = map.scale() as f32;
@@ -137,16 +139,17 @@ pub(crate) fn break_constants(
 }
 
 /// The piece scale of a broken axis drawn as [`AxisBreakStyle::Panels`]
-/// (#200), `None` for any other axis. Such an axis' transform maps data at
+/// (#200) drawn `len` logical pixels long, `None` for any other axis. Such
+/// an axis' transform maps data at
 /// its first piece's linear map (the shader's `t` times this scale) and each
 /// piece is drawn with that map moved by the piece's shift, so every piece
 /// keeps its own linear scale and a mark crossing a gap is clipped at each
 /// piece's edge.
 ///
 /// [`AxisBreakStyle::Panels`]: crate::config::AxisBreakStyle::Panels
-pub(crate) fn panels_scale(axis: &crate::config::AxisOptions) -> Option<f64> {
+pub(crate) fn panels_scale(axis: &crate::config::AxisOptions, len: f32) -> Option<f64> {
     let style = axis.breaks.as_ref()?.style;
-    let map = crate::layout::BreakMap::of(axis);
+    let map = crate::layout::BreakMap::of(axis, len);
     (style == crate::config::AxisBreakStyle::Panels && map.is_broken()).then(|| map.scale())
 }
 
@@ -340,18 +343,22 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (data_min_y, data_max_y) = orient_axis(data_min_y, data_max_y, config.left_y.inverted);
     // A `Panels` axis maps at its first piece's linear map: `t` times the
     // piece scale, a range shortened by that factor from its start.
-    let at_first_piece = |min: f64, max: f64, axis: &crate::config::AxisOptions| {
-        panels_scale(axis).map_or(max, |scale| min + (max - min) / scale)
+    // The axes' drawn lengths (#249): the data area's width and height.
+    let lens = config
+        .data_area()
+        .map_or([0.0; 2], |area| [area.0.width as f32, area.0.height as f32]);
+    let at_first_piece = |min: f64, max: f64, axis: &crate::config::AxisOptions, len: f32| {
+        panels_scale(axis, len).map_or(max, |scale| min + (max - min) / scale)
     };
-    let data_max_x = at_first_piece(data_min_x, data_max_x, &config.bottom_x);
-    let data_max_y = at_first_piece(data_min_y, data_max_y, &config.left_y);
+    let data_max_x = at_first_piece(data_min_x, data_max_x, &config.bottom_x, lens[0]);
+    let data_max_y = at_first_piece(data_min_y, data_max_y, &config.left_y, lens[1]);
     let (min_x_hi, min_x_lo) = crate::data::split_f64_to_f32_pair(data_min_x);
     let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(data_max_x);
     let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);
     let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
     let (polar_angle, polar_extent) = transform_constants(config);
     let (ternary_lt, ternary_r) = ternary_constants(config, *ca, chart_w, chart_h);
-    let (breaks, break_info) = break_constants(&config.bottom_x, &config.left_y);
+    let (breaks, break_info) = break_constants(&config.bottom_x, &config.left_y, lens);
     ScatterTransform {
         data_min: [min_x_hi, min_y_hi],
         data_max: [max_x_hi, max_y_hi],

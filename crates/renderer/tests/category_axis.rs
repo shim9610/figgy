@@ -254,9 +254,9 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     let da = cfg.data_area().unwrap();
     let plot = RectF::from_rect(&da);
     let at = |i: usize| {
-        let x = plot.x + axis_fraction(i as f64, &cfg.bottom_x) * plot.width;
-        let y =
-            plot.y + plot.height - axis_fraction(1.0 + (i % 3) as f64, &cfg.left_y) * plot.height;
+        let x = plot.x + axis_fraction(i as f64, &cfg.bottom_x, plot.width) * plot.width;
+        let y = plot.y + plot.height
+            - axis_fraction(1.0 + (i % 3) as f64, &cfg.left_y, plot.height) * plot.height;
         (x, y)
     };
     let id = r.register_chart(cfg.clone(), series.clone()).unwrap();
@@ -328,7 +328,7 @@ fn data_on_a_categorical_axis_picks_and_highlights_at_its_category() {
     for i in 0..7 {
         let t = space.x.fraction(i as f64).unwrap() as f32;
         assert!(
-            (t - axis_fraction(i as f64, &cfg.bottom_x)).abs() < 1e-6,
+            (t - axis_fraction(i as f64, &cfg.bottom_x, plot.width)).abs() < 1e-6,
             "{i}"
         );
     }

@@ -55,12 +55,16 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
         if config.polar().is_some() || config.ternary().is_some() || config.view_3d().is_some() {
             (AxisSpace::NONE, AxisSpace::NONE)
         } else {
-            (axis_space(&config.bottom_x), axis_space(&config.left_y))
+            (
+                axis_space(&config.bottom_x, plot.width),
+                axis_space(&config.left_y, plot.height),
+            )
         };
     PixelSpace { panel, plot, x, y }
 }
 
-fn axis_space(axis: &AxisOptions) -> AxisSpace {
+/// The anchor space of `axis` drawn `len` logical pixels long (#249).
+fn axis_space(axis: &AxisOptions, len: f32) -> AxisSpace {
     let map = match axis.scale {
         // Category `i` is centred at coordinate `i`, where category bars
         // and boxes are centred.
@@ -88,7 +92,7 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
     AxisSpace {
         map,
         inverted: axis.inverted,
-        breaks: crate::layout::BreakMap::of(axis),
+        breaks: crate::layout::BreakMap::of(axis, len),
     }
 }
 

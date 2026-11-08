@@ -907,7 +907,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
     chart.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(0.55, 0.62)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.2,
+        gap_px: 40.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),
@@ -1282,7 +1282,7 @@ fn the_vector_parts_are_clipped_to_each_break_piece() {
     chart.config_mut().bottom_x.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(0.45, 0.55)],
         style: AxisBreakStyle::Continuous,
-        gap: 12.0,
+        gap_px: 24.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),

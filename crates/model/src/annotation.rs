@@ -2024,11 +2024,11 @@ mod tests {
         axis.inverted = inverted;
         axis.breaks = Some(crate::config::AxisBreaks {
             ranges: vec![crate::config::AxisBreak::new(4.0, 6.0)],
-            gap: 0.1,
+            gap_px: 30.0,
             ..Default::default()
         });
         let mut space = space();
-        space.x.breaks = BreakMap::of(&axis);
+        space.x.breaks = BreakMap::of(&axis, space.plot.width);
         space.x.inverted = inverted;
         space
     }

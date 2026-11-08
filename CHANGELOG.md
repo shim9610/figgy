@@ -50,6 +50,33 @@ subplot's `marker`) are additive.
   dragged keeps its place. In the bundled He, Ar, Cu, U and every-level Ar
   scenes no level label overlaps any more (26 overlaps before in Ar, Cu and
   U, 29 in every-level Ar). No API or serialized field changes.
+- **Break gaps in pixels; two broken axes meet as a cross** ([#249](https://github.com/shim9610/figgy/issues/249)).
+  `AxisBreaks.gap` (a fraction of the axis length) is replaced by
+  `gap_px: f32`, the gap's width in logical pixels (default 12, at most
+  `MAX_AXIS_BREAK_GAP_PX` = 200; `Config::scaled` scales it), so the x and
+  y gaps of one chart are the same width whatever the plot's aspect.
+  Both were added in this unreleased cycle (#200), so no released document
+  carries `gap`. Placing a value now needs the axis' drawn length:
+  `layout::BreakMap::of(axis, len)` and `layout::axis_fraction(value,
+  axis, len)` take it (the data area's width for x, its height for y), and
+  `chrome::line::axis_fraction(value, axis, side, plot)` and
+  `chrome::line::axis_len(side, plot)` give it from the plot;
+  `BreakMap::cuts(axis)` is the gap-free map for questions that need no
+  length (is a value in a cut, the per-piece tick plan). When both axes
+  are broken and frame their pieces, each frame stops at the other axis'
+  gap, so the gaps meet as a cross instead of one frame running across the
+  other's gap: `chrome::line::emit_axis`, `emit_axis_strokes` and
+  `each_axis_stroke` take the perpendicular axis (`across:
+  Option<&AxisOptions>`). Each frame now stands inside its own piece at
+  the piece's pixel edge, so the clear space between two frames is the
+  gap's own width; the axis line's pieces and their slashes end on the
+  same pixel edge, a tick at a piece's end stands on that piece's frame
+  row, and a grid line on a gap edge stays inside its piece
+  (`chrome::grid::emit_grid` takes the display or export `scale`), so a 2x
+  export stays the 1x one doubled.
+  **Migration:** replace `gap: f` with `gap_px: f * axis_length_px` (or
+  drop it for the 12 px default), and pass the axis length to `BreakMap::of`
+  and `layout::axis_fraction`.
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   A refused rule is a `RuleKind` value (new module `rule`, re-exported at the
   crate root): one `#[non_exhaustive]` enum for the model's and the
@@ -1209,11 +1236,11 @@ subplot's `marker`) are additive.
 - **Broken axes** ([#200](https://github.com/shim9610/figgy/issues/200)).
   `AxisOptions` gains `breaks: Option<AxisBreaks>`: ranges cut out of a
   value axis. `AxisBreaks { ranges: Vec<AxisBreak { from, to }>, style,
-  gap, mark, frame_each_panel }` with `AxisBreakStyle::{Continuous, Panels}`
+  gap_px, mark, frame_each_panel }` with `AxisBreakStyle::{Continuous, Panels}`
   and `BreakMark::{None, Slash { size, color: Option<Color>, width }}`
   (`None` draws in the axis line's colour); `MAX_AXIS_BREAKS`
-  (3) cuts per axis and gaps up to `MAX_AXIS_BREAK_GAP` (0.2) of the axis
-  length. `AxisOptions::validate_breaks` (called by `Config::validate`)
+  (3) cuts per axis and gaps up to `MAX_AXIS_BREAK_GAP_PX` (200 logical
+  pixels, #249). `AxisOptions::validate_breaks` (called by `Config::validate`)
   refuses non-finite, empty, unsorted or overlapping ranges, non-positive
   ones on a log axis and an out-of-range gap; breaks on `top_x`,
   `right_y` or a colourbar axis, and on polar, ternary, 3D or parallel

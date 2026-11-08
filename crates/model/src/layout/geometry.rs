@@ -152,7 +152,7 @@ pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
 /// colourbar's `ColorBarOptions::normalized_z` is the clamped z→colour twin.
 /// A non-finite value, or a non-positive one on a logarithmic axis, has no
 /// position and maps to the axis start.
-pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
+pub fn axis_fraction(value: f64, axis: &AxisOptions, len: f32) -> f32 {
     let t = if axis.categories.is_some() {
         // A categorical axis is linear over its category range.
         let (min, max) = axis.data_range();
@@ -161,7 +161,7 @@ pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
         raw_axis_t(value, axis)
     }
     .unwrap_or(0.0);
-    let t = BreakMap::of(axis).remap(t);
+    let t = BreakMap::of(axis, len).remap(t);
     let t = if axis.inverted { 1.0 - t } else { t };
     t as f32
 }
@@ -202,7 +202,7 @@ pub fn mirrored_breaks(
     if axis.breaks.is_some()
         || axis.categories.is_some()
         || partner.categories.is_some()
-        || !BreakMap::of(partner).is_broken()
+        || !BreakMap::cuts(partner).is_broken()
     {
         return None;
     }
@@ -229,7 +229,7 @@ pub fn mirrored_breaks(
 /// clamped to the range as [`BreakMap::of`] clamps them: such a value is not
 /// drawn, so no tick, grid line or tick label is placed at it.
 pub fn value_in_cut(axis: &AxisOptions, value: f64) -> bool {
-    let map = BreakMap::of(axis);
+    let map = BreakMap::cuts(axis);
     if !map.is_broken() {
         return false;
     }
@@ -280,18 +280,45 @@ impl BreakMap {
         slopes: [1.0; crate::config::MAX_AXIS_BREAKS + 1],
     };
 
-    /// The map of `axis`: its cuts clamped to the range, the ones outside it
-    /// dropped. A categorical axis, a value range without a position and
-    /// cuts past [`MAX_AXIS_BREAKS`](crate::config::MAX_AXIS_BREAKS) (refused
-    /// by validation) leave the identity.
-    pub fn of(axis: &AxisOptions) -> Self {
+    /// The map of `axis` drawn `len` logical pixels long (the data area's
+    /// width for an x axis, its height for a y axis): its cuts clamped to
+    /// the range, the ones outside it dropped, each gap
+    /// [`AxisBreaks::gap_px`](crate::config::AxisBreaks::gap_px) of `len`
+    /// (#249). A categorical axis, a value range without a position, cuts
+    /// past [`MAX_AXIS_BREAKS`](crate::config::MAX_AXIS_BREAKS) (refused by
+    /// validation) and gaps that leave the pieces no room leave the
+    /// identity.
+    pub fn of(axis: &AxisOptions, len: f32) -> Self {
+        let Some(breaks) = axis.breaks.as_ref() else {
+            return Self::IDENTITY;
+        };
+        if !(len.is_finite() && len > 0.0) {
+            return Self::IDENTITY;
+        }
+        let gap = f64::from(
+            breaks
+                .gap_px
+                .clamp(0.0, crate::config::MAX_AXIS_BREAK_GAP_PX),
+        ) / f64::from(len);
+        Self::with_gap(axis, gap)
+    }
+
+    /// Where `axis`' cuts lie, the gaps aside: the map of [`Self::of`] with
+    /// gaps of no width (#249). What depends only on the cut ranges and the
+    /// sizing reads it without the axis' drawn length: whether the axis is
+    /// cut, the pieces' raw spans, the tick plan.
+    pub fn cuts(axis: &AxisOptions) -> Self {
+        Self::with_gap(axis, 0.0)
+    }
+
+    /// The map of `axis` with each gap `gap` of the axis length.
+    fn with_gap(axis: &AxisOptions, gap: f64) -> Self {
         let Some(breaks) = axis.breaks.as_ref() else {
             return Self::IDENTITY;
         };
         if axis.categories.is_some() || breaks.ranges.len() > crate::config::MAX_AXIS_BREAKS {
             return Self::IDENTITY;
         }
-        let gap = f64::from(breaks.gap.clamp(0.0, crate::config::MAX_AXIS_BREAK_GAP));
         let mut map = Self::IDENTITY;
         let mut removed = 0.0;
         let mut last = 0.0f64;
@@ -2533,13 +2560,17 @@ mod break_map_tests {
     use crate::config::{AxisBreak, AxisBreakStyle, AxisBreaks, AxisOptions, AxisScale};
     use crate::default::default_axis_options_y;
 
+    /// The drawn length of the axes these tests map (#249): a gap of
+    /// `gap` of it is `gap * LEN` pixels.
+    const LEN: f32 = 1000.0;
+
     fn axis(min: f64, max: f64, cuts: &[(f64, f64)], gap: f32) -> AxisOptions {
         let mut axis = default_axis_options_y();
         axis.min = min;
         axis.max = max;
         axis.breaks = Some(AxisBreaks {
             ranges: cuts.iter().map(|&(a, b)| AxisBreak::new(a, b)).collect(),
-            gap,
+            gap_px: gap * LEN,
             ..AxisBreaks::default()
         });
         axis
@@ -2549,7 +2580,7 @@ mod break_map_tests {
     fn one_cut_splits_the_axis_into_two_pieces_and_a_gap() {
         // 0..100 without 10..90: two pieces of 10 each share 1 - 0.1.
         let a = axis(0.0, 100.0, &[(10.0, 90.0)], 0.1);
-        let map = BreakMap::of(&a);
+        let map = BreakMap::of(&a, LEN);
         assert!(map.is_broken());
         // The gap is an f32 fraction, so compare at its precision.
         let close = |x: f64, y: f64| (x - y).abs() < 1e-6;
@@ -2558,12 +2589,12 @@ mod break_map_tests {
         assert_eq!(pieces.len(), 2);
         assert!(close(pieces[0].0, 0.0) && close(pieces[0].1, 0.45));
         assert!(close(pieces[1].0, 0.55) && close(pieces[1].1, 1.0));
-        assert!(close(f64::from(axis_fraction(5.0, &a)), 0.225));
-        assert!(close(f64::from(axis_fraction(10.0, &a)), 0.45));
-        assert!(close(f64::from(axis_fraction(90.0, &a)), 0.55));
-        assert!((f64::from(axis_fraction(95.0, &a)) - 0.775).abs() < 1e-6);
+        assert!(close(f64::from(axis_fraction(5.0, &a, LEN)), 0.225));
+        assert!(close(f64::from(axis_fraction(10.0, &a, LEN)), 0.45));
+        assert!(close(f64::from(axis_fraction(90.0, &a, LEN)), 0.55));
+        assert!((f64::from(axis_fraction(95.0, &a, LEN)) - 0.775).abs() < 1e-6);
         // Inside the cut the value moves straight across the gap.
-        assert!((f64::from(axis_fraction(50.0, &a)) - 0.5).abs() < 1e-6);
+        assert!((f64::from(axis_fraction(50.0, &a, LEN)) - 0.5).abs() < 1e-6);
     }
 
     fn sized(mut a: AxisOptions, sizing: crate::config::PieceSizing) -> AxisOptions {
@@ -2585,7 +2616,7 @@ mod break_map_tests {
             axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
             PieceSizing::Weights(vec![1.0, 3.0]),
         );
-        let map = BreakMap::of(&a);
+        let map = BreakMap::of(&a, LEN);
         assert!(map.per_piece());
         let pieces: Vec<_> = map.pieces().collect();
         // 0.9 of the axis split 1 : 3.
@@ -2599,21 +2630,24 @@ mod break_map_tests {
         }
         assert!(map.unmap(0.25).is_none(), "inside the gap");
         // Equal pieces: the same length whatever their spans.
-        let e = BreakMap::of(&sized(
-            axis(0.0, 100.0, &[(10.0, 80.0)], 0.1),
-            PieceSizing::Equal,
-        ));
+        let e = BreakMap::of(
+            &sized(axis(0.0, 100.0, &[(10.0, 80.0)], 0.1), PieceSizing::Equal),
+            LEN,
+        );
         let p: Vec<_> = e.pieces().collect();
         assert!(close(p[0].1 - p[0].0, p[1].1 - p[1].0));
         // By value: one scale, as before.
-        let v = BreakMap::of(&axis(0.0, 100.0, &[(10.0, 80.0)], 0.1));
+        let v = BreakMap::of(&axis(0.0, 100.0, &[(10.0, 80.0)], 0.1), LEN);
         assert!(!v.per_piece());
         // Weights that no longer match the pieces (a cut outside the range)
         // fall back to the spans.
-        let dropped = BreakMap::of(&sized(
-            axis(0.0, 100.0, &[(10.0, 80.0), (200.0, 300.0)], 0.1),
-            PieceSizing::Weights(vec![1.0, 3.0, 5.0]),
-        ));
+        let dropped = BreakMap::of(
+            &sized(
+                axis(0.0, 100.0, &[(10.0, 80.0), (200.0, 300.0)], 0.1),
+                PieceSizing::Weights(vec![1.0, 3.0, 5.0]),
+            ),
+            LEN,
+        );
         assert!(!dropped.per_piece());
     }
 
@@ -2684,7 +2718,7 @@ mod break_map_tests {
             &[(1.0, 20.0), (30.0, 31.0), (60.0, 100.0)],
             0.04,
         );
-        let map = BreakMap::of(&a);
+        let map = BreakMap::of(&a, LEN);
         assert_eq!(map.knots().len(), 3);
         let mut last = f64::NEG_INFINITY;
         for i in -100..=1100 {
@@ -2710,37 +2744,37 @@ mod break_map_tests {
     fn a_logarithmic_axis_is_cut_in_decades() {
         let mut a = axis(1.0, 1e6, &[(10.0, 1e4)], 0.0);
         a.scale = AxisScale::Logarithmic;
-        let map = BreakMap::of(&a);
+        let map = BreakMap::of(&a, LEN);
         // Six decades without three leave one decade and two: a third and
         // two thirds of the axis.
         let pieces: Vec<_> = map.pieces().collect();
         assert!((pieces[0].1 - 1.0 / 3.0).abs() < 1e-12, "{pieces:?}");
-        assert!((f64::from(axis_fraction(1e5, &a)) - 2.0 / 3.0).abs() < 1e-6);
+        assert!((f64::from(axis_fraction(1e5, &a, LEN)) - 2.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]
     fn cuts_outside_the_range_do_nothing_and_ends_are_clamped() {
         let a = axis(0.0, 10.0, &[(20.0, 30.0)], 0.1);
-        assert_eq!(BreakMap::of(&a), BreakMap::IDENTITY);
-        assert!((f64::from(axis_fraction(5.0, &a)) - 0.5).abs() < 1e-7);
+        assert_eq!(BreakMap::of(&a, LEN), BreakMap::IDENTITY);
+        assert!((f64::from(axis_fraction(5.0, &a, LEN)) - 0.5).abs() < 1e-7);
         // A cut over the lower end leaves one piece and one gap.
         let a = axis(0.0, 10.0, &[(-5.0, 2.0)], 0.1);
-        let map = BreakMap::of(&a);
+        let map = BreakMap::of(&a, LEN);
         assert_eq!(map.knots().len(), 1);
         assert!(map.knots()[0].from == 0.0 && map.knots()[0].start == 0.0);
         // A cut over the whole range leaves nothing to draw: the identity.
         let a = axis(0.0, 10.0, &[(-5.0, 20.0)], 0.1);
-        assert_eq!(BreakMap::of(&a), BreakMap::IDENTITY);
+        assert_eq!(BreakMap::of(&a, LEN), BreakMap::IDENTITY);
     }
 
     #[test]
     fn both_styles_share_the_piece_layout_and_inverted_mirrors_it() {
         let mut a = axis(0.0, 100.0, &[(10.0, 90.0)], 0.1);
-        let continuous = axis_fraction(95.0, &a);
+        let continuous = axis_fraction(95.0, &a, LEN);
         a.breaks.as_mut().unwrap().style = AxisBreakStyle::Panels;
-        assert_eq!(axis_fraction(95.0, &a), continuous);
+        assert_eq!(axis_fraction(95.0, &a, LEN), continuous);
         a.inverted = true;
-        assert!((axis_fraction(95.0, &a) - (1.0 - continuous)).abs() < 1e-6);
+        assert!((axis_fraction(95.0, &a, LEN) - (1.0 - continuous)).abs() < 1e-6);
     }
 
     #[test]
@@ -2748,9 +2782,9 @@ mod break_map_tests {
         let mut a = default_axis_options_y();
         a.min = -3.0;
         a.max = 7.0;
-        let before = axis_fraction(1.5, &a);
+        let before = axis_fraction(1.5, &a, LEN);
         a.breaks = Some(AxisBreaks::default());
-        assert_eq!(axis_fraction(1.5, &a), before);
-        assert_eq!(BreakMap::of(&a), BreakMap::IDENTITY);
+        assert_eq!(axis_fraction(1.5, &a, LEN), before);
+        assert_eq!(BreakMap::of(&a, LEN), BreakMap::IDENTITY);
     }
 }

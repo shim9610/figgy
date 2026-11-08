@@ -259,6 +259,17 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#38",
     },
     Exclusion {
+        scene: "EnergyLevels*",
+        layer: "*",
+        element: "axis_left",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there ({\"axis_right\": 1})*",
+        reason: "a piece frame of the broken energy axis stands inside its piece (#249) and \
+                 ends a line width short of the right axis line, whose box takes the frame's \
+                 last pixel at 2x, as at the axis corners",
+        issue: "#38",
+    },
+    Exclusion {
         scene: "*",
         layer: "*",
         element: "*axis_*",

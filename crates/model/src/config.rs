@@ -149,13 +149,13 @@ impl LogTickPolicy {
 /// renderer's transform.
 pub const MAX_AXIS_BREAKS: usize = 3;
 
-/// The widest gap a cut range may be drawn as, as a fraction of the axis
-/// length ([`AxisBreaks::gap`]). Three gaps at this width leave 40 % of the
-/// axis to its pieces.
-pub const MAX_AXIS_BREAK_GAP: f32 = 0.2;
+/// The widest gap a cut range may be drawn as, in logical pixels
+/// ([`AxisBreaks::gap_px`], #249). An axis too short for its gaps is drawn
+/// unbroken.
+pub const MAX_AXIS_BREAK_GAP_PX: f32 = 200.0;
 
 /// Ranges cut out of a value axis (#200): the axis draws the rest, each cut
-/// shown as a gap of [`Self::gap`] of the axis length, marked by
+/// shown as a gap of [`Self::gap_px`] logical pixels, marked by
 /// [`Self::mark`]. The pieces between the cuts share the axis length as
 /// [`Self::sizing`] says: by default in proportion to their spans (in
 /// decades on a logarithmic axis).
@@ -174,10 +174,11 @@ pub struct AxisBreaks {
     /// [`MAX_AXIS_BREAKS`].
     pub ranges: Vec<AxisBreak>,
     pub style: AxisBreakStyle,
-    /// The width of each gap as a fraction of the axis length, in
-    /// `0..=`[`MAX_AXIS_BREAK_GAP`]. A fraction rather than pixels, so the
-    /// 2x export is the 1x layout doubled.
-    pub gap: f32,
+    /// The width of each gap in logical pixels, in
+    /// `0..=`[`MAX_AXIS_BREAK_GAP_PX`] (#249), so the gaps of two broken
+    /// axes of different lengths are equally wide. The export scale scales
+    /// it, so the 2x export is the 1x layout doubled.
+    pub gap_px: f32,
     /// What marks each gap on the axis line.
     pub mark: BreakMark,
     /// Whether each piece draws its own frame along the gaps: a line across
@@ -194,13 +195,13 @@ pub struct AxisBreaks {
 }
 
 impl Default for AxisBreaks {
-    /// No range, `Continuous`, a 3 % gap, slash marks, framed pieces and
+    /// No range, `Continuous`, a 12 px gap, slash marks, framed pieces and
     /// pieces sized by their spans.
     fn default() -> Self {
         Self {
             ranges: Vec::new(),
             style: AxisBreakStyle::default(),
-            gap: 0.03,
+            gap_px: 12.0,
             mark: BreakMark::default(),
             frame_each_panel: true,
             sizing: PieceSizing::ByValue,
@@ -597,7 +598,7 @@ impl AxisOptions {
     /// The rules [`Self::breaks`] is held to (#200); an axis without breaks
     /// always passes. At most [`MAX_AXIS_BREAKS`] finite ranges with
     /// `from < to`, sorted and not touching, positive on a logarithmic
-    /// axis; a gap in `0..=`[`MAX_AXIS_BREAK_GAP`]; a mark of finite size in
+    /// axis; a gap in `0..=`[`MAX_AXIS_BREAK_GAP_PX`] px; a mark of finite size in
     /// `0..=64` px and width in `0..=16` px with a colour in range; and a
     /// numeric axis, since a categorical axis has no range to cut.
     pub fn validate_breaks(&self) -> Result<(), crate::RuleKind> {
@@ -628,7 +629,7 @@ impl AxisOptions {
             }
             last = cut.to;
         }
-        if !(0.0..=MAX_AXIS_BREAK_GAP).contains(&breaks.gap) {
+        if !(0.0..=MAX_AXIS_BREAK_GAP_PX).contains(&breaks.gap_px) {
             return Err(crate::RuleKind::BreakGap);
         }
         if !breaks.sizing.is_by_value() && breaks.style == AxisBreakStyle::Panels {
@@ -1733,26 +1734,29 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         cross_at: _,
         // A tick policy, not pixels.
         log_ticks: _,
-        // The gap is a fraction of the axis; the mark is in pixels.
+        // The gap and the mark are in pixels (#249).
         breaks,
     } = axis;
     if let Some(AxisBreaks {
         ranges: _,
         style: _,
-        gap: _,
+        gap_px,
         mark,
         frame_each_panel: _,
         // Shares of the axis length, not pixels.
         sizing: _,
     }) = breaks
-        && let BreakMark::Slash {
+    {
+        *gap_px *= s;
+        if let BreakMark::Slash {
             size,
             color: _,
             width,
         } = mark
-    {
-        *size *= s;
-        *width *= s;
+        {
+            *size *= s;
+            *width *= s;
+        }
     }
     let LabelStyle {
         visible: _,
@@ -2673,13 +2677,13 @@ mod category_axis_tests {
         inverted.inverted = true;
         assert_eq!(inverted.data_range(), upright.data_range());
         for i in 0..3 {
-            let a = crate::layout::axis_fraction(i as f64, &inverted);
-            let b = crate::layout::axis_fraction((2 - i) as f64, &upright);
+            let a = crate::layout::axis_fraction(i as f64, &inverted, 100.0);
+            let b = crate::layout::axis_fraction((2 - i) as f64, &upright, 100.0);
             assert!((a - b).abs() < 1e-6, "category {i}: {a} vs {b}");
         }
         // The first category's slot is the far end of the axis.
-        assert!((crate::layout::axis_fraction(-0.5, &inverted) - 1.0).abs() < 1e-6);
-        assert!((crate::layout::axis_fraction(0.0, &inverted) - 5.0 / 6.0).abs() < 1e-6);
+        assert!((crate::layout::axis_fraction(-0.5, &inverted, 100.0) - 1.0).abs() < 1e-6);
+        assert!((crate::layout::axis_fraction(0.0, &inverted, 100.0) - 5.0 / 6.0).abs() < 1e-6);
     }
 
     /// Category `i` at `i`, majors at every category, no minors, whatever
@@ -2701,11 +2705,11 @@ mod category_axis_tests {
         assert_eq!(major_ticks(&categorical(0)).count(), 0);
         // The positions sit in the middle of equal slots.
         for (i, expected) in [(0, 0.5 / 7.0), (3, 3.5 / 7.0), (6, 6.5 / 7.0)] {
-            let t = axis_fraction(f64::from(i), &axis);
+            let t = axis_fraction(f64::from(i), &axis, 100.0);
             assert!((t - expected as f32).abs() < 1e-6, "{i}: {t}");
         }
-        assert_eq!(axis_fraction(-0.5, &axis), 0.0);
-        assert_eq!(axis_fraction(6.5, &axis), 1.0);
+        assert_eq!(axis_fraction(-0.5, &axis, 100.0), 0.0);
+        assert_eq!(axis_fraction(6.5, &axis, 100.0), 1.0);
     }
 
     #[test]
@@ -2884,7 +2888,7 @@ mod axis_break_config_tests {
             (|b| b.ranges.reverse(), "sorted"),
             (|b| b.ranges[1].from = 20.0, "touch"),
             (|b| b.ranges[0].to = 5.0, "from < to"),
-            (|b| b.gap = 0.3, "gap"),
+            (|b| b.gap_px = 300.0, "gap"),
             (
                 |b| {
                     b.mark = BreakMark::Slash {
@@ -2986,11 +2990,11 @@ mod axis_break_config_tests {
         let parsed: Config = serde_json::from_value(json).unwrap();
         let breaks = parsed.left_y.breaks.unwrap();
         assert_eq!(breaks.style, AxisBreakStyle::Continuous);
-        assert_eq!(breaks.gap, AxisBreaks::default().gap);
+        assert_eq!(breaks.gap_px, AxisBreaks::default().gap_px);
     }
 
     #[test]
-    fn the_export_scale_scales_the_mark_but_not_the_gap() {
+    fn the_export_scale_scales_the_mark_and_the_gap() {
         let mut config = default_config();
         config.left_y.breaks = Some(broken());
         let mut scaled = config.clone();
@@ -2999,7 +3003,7 @@ mod axis_break_config_tests {
             config.left_y.breaks.as_ref().unwrap(),
             scaled.left_y.breaks.as_ref().unwrap(),
         );
-        assert_eq!(a.gap, b.gap);
+        assert_eq!(b.gap_px, a.gap_px * 2.0);
         let (
             BreakMark::Slash { size, width, .. },
             BreakMark::Slash {

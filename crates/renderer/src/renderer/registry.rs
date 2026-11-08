@@ -311,13 +311,13 @@ pub(super) fn break_geometry_equal(left: &AxisOptions, right: &AxisOptions) -> b
             let crate::config::AxisBreaks {
                 ranges,
                 style,
-                gap,
+                gap_px,
                 // Drawn on the axis line, not part of the mapping.
                 mark: _,
                 frame_each_panel: _,
                 sizing,
             } = breaks;
-            (ranges.as_slice(), *style, *gap, sizing)
+            (ranges.as_slice(), *style, *gap_px, sizing)
         })
     }
     geometry(left) == geometry(right)

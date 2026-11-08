@@ -151,7 +151,7 @@ pub fn prune_numeric_labels(
     let grid = (ladder.is_none()
         && axis.scale == crate::config::AxisScale::Linear
         && axis.categories.is_none()
-        && crate::layout::BreakMap::of(axis).is_broken()
+        && crate::layout::BreakMap::cuts(axis).is_broken()
         && crate::tick::piece_ticks(axis).is_none())
     .then(|| {
         crate::tick::major_ticks(axis)
@@ -556,7 +556,7 @@ pub fn each_colorbar_tick_label(
         return;
     }
     for label in visible_numeric_labels(axis, side.clone(), measure, majors, |value| {
-        point_on_rect_side(axis_fraction(value, axis), &side, rect)
+        point_on_rect_side(axis_fraction(value, axis, &side, rect), &side, rect)
     }) {
         each(label.text.as_tick_text(), label.position);
     }

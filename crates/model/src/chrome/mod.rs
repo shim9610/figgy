@@ -81,7 +81,7 @@ pub fn emit_chart_chrome(
         // not drawn (#141).
         for (axis, side) in [(&config.top_x, Side::Top), (&config.bottom_x, Side::Bottom)] {
             let cross = crate::layout::axis_cross(config, &side);
-            emit_axis(axis, side, &plot, cross, measure, sink, scale);
+            emit_axis(axis, side, &plot, cross, None, measure, sink, scale);
         }
         parallel::emit_parallel_axes(config, &da, measure, sink);
     } else {
@@ -89,7 +89,7 @@ pub fn emit_chart_chrome(
         if let Some(fill) = config.plot_background {
             sink.rect(crate::sink::Slot::Below, plot, Some(fill), None);
         }
-        emit_grid(config, &plot, measure, sink);
+        emit_grid(config, &plot, measure, sink, scale);
         let (top, right) = (
             drawn_axis(config, &Side::Top),
             drawn_axis(config, &Side::Right),
@@ -101,7 +101,8 @@ pub fn emit_chart_chrome(
             (right.as_ref(), Side::Right),
         ] {
             let cross = crate::layout::axis_cross(config, &side);
-            emit_axis(axis, side, &plot, cross, measure, sink, scale);
+            let across = across_axis(config, &side);
+            emit_axis(axis, side, &plot, cross, across, measure, sink, scale);
         }
         // The category group headers past the x axes' labels (#203).
         for side in [Side::Top, Side::Bottom] {
@@ -223,6 +224,7 @@ pub fn emit_part_of(
                 side.clone(),
                 &data_area_rect(&da),
                 crate::layout::axis_cross(config, side),
+                None,
                 measure,
                 sink,
                 scale,
@@ -269,6 +271,7 @@ pub fn emit_part_of(
                 side.clone(),
                 &data_area_rect(&da),
                 crate::layout::axis_cross(config, side),
+                across_axis(config, side),
                 measure,
                 sink,
                 scale,
@@ -417,4 +420,14 @@ pub fn drawn_colorbar<'a>(
     _da: &DataArea,
 ) -> Option<(&'a crate::config::ColorBarOptions, RectF)> {
     visible_colorbar_rect(config)
+}
+
+/// The axis across a rectangular chart's `side` (#249): `left_y` for an x
+/// axis and `bottom_x` for a y axis, whose gaps a broken axis' piece frames
+/// stop at.
+fn across_axis<'c>(config: &'c Config, side: &Side) -> Option<&'c AxisOptions> {
+    Some(match side {
+        Side::Top | Side::Bottom => &config.left_y,
+        Side::Left | Side::Right => &config.bottom_x,
+    })
 }

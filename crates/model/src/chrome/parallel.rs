@@ -76,6 +76,7 @@ pub fn emit_parallel_axis_strokes(
         Side::Left,
         &plot,
         None,
+        None,
         measure,
         &majors,
         1.0,

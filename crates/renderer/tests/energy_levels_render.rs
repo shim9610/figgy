@@ -286,7 +286,7 @@ fn a_continuous_break_moves_the_levels_with_the_axis_and_draws_none_in_the_gap()
     chart.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(25.0, 35.0)],
         style: AxisBreakStyle::Continuous,
-        gap: 12.0,
+        gap_px: 24.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),
@@ -502,7 +502,7 @@ fn a_pick_inside_a_break_gap_answers_nothing() {
     chart.config_mut().left_y.breaks = Some(AxisBreaks {
         ranges: vec![AxisBreak::new(25.0, 35.0)],
         style: AxisBreakStyle::Continuous,
-        gap: 0.2,
+        gap_px: 40.0,
         mark: BreakMark::default(),
         frame_each_panel: false,
         sizing: Default::default(),
