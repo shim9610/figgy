@@ -2104,6 +2104,7 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             )
             .expect("valid TeX"),
             box_style: Some(Default::default()),
+            align: Default::default(),
         }),
         Annotation::new(AnnotationKind::Arrow {
             from: Anchor::Ratio { x: 0.55, y: 0.45 },
@@ -2267,6 +2268,7 @@ fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 },
                 text: RichText::plain(&format!("{} K", 300 + 25 * k), Color::BLACK, 12.0, ""),
                 box_style: None,
+                align: Default::default(),
             })
         })
         .collect();
@@ -4666,6 +4668,7 @@ fn feynman(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 anchor: Anchor::Data { x, y },
                 text: tex(text, 20.0),
                 box_style: None,
+                align: Default::default(),
             }));
     }
     let config = with_math_title(config, "Feynman diagrams");
@@ -4750,19 +4753,13 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         id: format!("{nm}"),
         lower: lower.into(),
         upper: upper.into(),
-        label: Some(RichText::plain(
-            &format!("{nm:.1}"),
-            Color::from_rgb8(150, 90, 0),
-            10.0,
-            "",
-        )),
+        // Written by the renderer from the wavelength (#258).
+        label: None,
         label_offset: [0.0; 2],
         value: None,
         x_offset,
-        observed_wavelength: Some(nm),
-        observed_uncertainty: None,
-        ritz_wavelength: None,
-        ritz_uncertainty: None,
+        wavelength: Some(nm),
+        wavelength_uncertainty: None,
         intensity: String::new(),
         aki: None,
         accuracy: String::new(),
@@ -4805,6 +4802,16 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     series.style.level.color = Color::from_rgb8(34, 52, 88);
     series.style.level.width = 2.5;
     series.style.transition.color = Color::from_rgb8(214, 120, 20);
+    // The wavelengths labelled to one decimal, the unit once in a note
+    // (#258).
+    series.style.wavelength_labels = Some(renderer::energy_levels::WavelengthLabels {
+        format: renderer::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: false,
+        },
+        unit: None,
+        text: RichText::plain("", Color::from_rgb8(150, 90, 0), 10.0, ""),
+    });
 
     let mut config = base_config("He I energy levels (NIST ASD)", "", "Energy (eV)");
     config.legend.visible = false;
@@ -4892,6 +4899,21 @@ fn energy_levels(_: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             field: "annotations",
             kind,
         })?;
+    // The unit of the wavelength labels, once, in a corner note that owns
+    // its text (#258).
+    let note = config.annotations.add_corner_note(
+        RichText::plain("Wavelengths in nm", Color::from_rgb8(150, 90, 0), 11.0, ""),
+        renderer::NoteAlign::BottomRight,
+    );
+    let plot = config.data_area().map(|area| area.0);
+    if let renderer::AnnotationKind::Text { anchor, .. } = &mut config.annotations.items[note].kind
+    {
+        // Off the plot's frame: the corner's ratio moved in by 10 px.
+        if let (renderer::Anchor::Ratio { x, y }, Ok(plot)) = (anchor, plot) {
+            *x -= 10.0 / plot.width.max(1) as f32;
+            *y -= 10.0 / plot.height.max(1) as f32;
+        }
+    }
 
     // The inset over the two spare columns on the right: the 2p ³P°
     // components, 0.13 meV apart, on their own energy axis.

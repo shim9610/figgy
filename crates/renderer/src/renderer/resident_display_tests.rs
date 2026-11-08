@@ -323,6 +323,7 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
                         anchor: Anchor::Ratio { x: 0.2, y: 0.2 },
                         text: text("note"),
                         box_style: None,
+                        align: Default::default(),
                     }))
             }),
         ),
@@ -763,6 +764,7 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
                         },
                         text: text("note"),
                         box_style: None,
+                        align: Default::default(),
                     }));
             } else {
                 c.annotations.items.pop();

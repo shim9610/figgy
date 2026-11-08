@@ -1200,6 +1200,7 @@ mod tests {
                     anchor: Anchor::Ratio { x: 0.1, y: 0.1 },
                     text: RichText::plain("", Color::BLACK, 10., ""),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Data { x: 1., y: 0.1 },
@@ -1213,6 +1214,7 @@ mod tests {
                         anchor: Anchor::Ratio { x: 0.1, y: 0.1 },
                         text: RichText::plain("hidden", Color::BLACK, 10., ""),
                         box_style: None,
+                        align: Default::default(),
                     })
                 },
             ],
@@ -1302,11 +1304,13 @@ mod tests {
                     anchor: Anchor::Data { x: 1., y: 1. },
                     text: RichText::plain("data", Color::BLACK, 10., ""),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Text {
                     anchor: Anchor::Ratio { x: 0.2, y: 0.2 },
                     text: RichText::plain("ratio", Color::BLACK, 10., ""),
                     box_style: Some(BoxStyle::default()),
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Span {
                     axis: AnnotationAxis::X,

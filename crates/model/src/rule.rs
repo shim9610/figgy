@@ -166,6 +166,10 @@ pub enum RuleKind {
     EnergyLevelsPickedWidth,
     /// invalid level band style
     LevelBandStyle,
+    /// invalid wavelength labels: a text of size 6..160 and at most 17 decimals
+    WavelengthLabels,
+    /// a wavelength label unit is one line of at most 160 characters
+    WavelengthUnit,
     /// an energy-level series reads no columns: x\_column and y\_column stay empty
     EnergyLevelsColumns,
     /// an energy-level series cannot be its own source
@@ -1214,6 +1218,8 @@ impl RuleKind {
             Self::TransitionArrow => "TransitionArrow",
             Self::EnergyLevelsPickedWidth => "EnergyLevelsPickedWidth",
             Self::LevelBandStyle => "LevelBandStyle",
+            Self::WavelengthLabels => "WavelengthLabels",
+            Self::WavelengthUnit => "WavelengthUnit",
             Self::EnergyLevelsColumns => "EnergyLevelsColumns",
             Self::EnergyLevelsSelfSource => "EnergyLevelsSelfSource",
             Self::EnergyLevelsChart => "EnergyLevelsChart",
@@ -1786,6 +1792,10 @@ impl std::fmt::Display for RuleKind {
             Self::TransitionArrow => "invalid transition arrow style",
             Self::EnergyLevelsPickedWidth => "picked_width_scale must be in 1..=4",
             Self::LevelBandStyle => "invalid level band style",
+            Self::WavelengthLabels => {
+                "invalid wavelength labels: a text of size 6..160 and at most 17 decimals"
+            }
+            Self::WavelengthUnit => "a wavelength label unit is one line of at most 160 characters",
             Self::EnergyLevelsColumns => {
                 "an energy-level series reads no columns: x_column and y_column stay empty"
             }
@@ -3039,6 +3049,14 @@ mod tests {
                 "picked_width_scale must be in 1..=4",
             ),
             (RuleKind::LevelBandStyle, "invalid level band style"),
+            (
+                RuleKind::WavelengthLabels,
+                "invalid wavelength labels: a text of size 6..160 and at most 17 decimals",
+            ),
+            (
+                RuleKind::WavelengthUnit,
+                "a wavelength label unit is one line of at most 160 characters",
+            ),
             (
                 RuleKind::EnergyLevelsColumns,
                 "an energy-level series reads no columns: x_column and y_column stay empty",

@@ -1796,6 +1796,7 @@ fn an_annotation_draws_over_the_mesh() {
             border_width: 1.0,
             padding: 6.0,
         }),
+        align: Default::default(),
     })];
     let series = vec![mesh_series(
         MeshValueLocation::Vertices,

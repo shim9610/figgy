@@ -1276,6 +1276,7 @@ fn annotations_on_a_polar_heatmap() {
                 border_width: 1.0,
                 padding: 6.0,
             }),
+            align: Default::default(),
         })
     };
     chart.config_mut().annotations.items = vec![

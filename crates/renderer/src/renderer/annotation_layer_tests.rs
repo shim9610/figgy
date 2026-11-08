@@ -72,6 +72,7 @@ fn annotated_config() -> Config {
                 border_width: 1.0,
                 padding: 12.0,
             }),
+            align: Default::default(),
         }),
         Annotation::new(AnnotationKind::Arrow {
             from: Anchor::Data { x: 1.2, y: 0.2 },

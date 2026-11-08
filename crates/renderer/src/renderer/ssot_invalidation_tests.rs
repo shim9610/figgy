@@ -1442,6 +1442,7 @@ fn baseline_with_annotations() -> Config {
             anchor: Anchor::Ratio { x: 0.1, y: 0.1 },
             text: text.clone(),
             box_style: Some(Default::default()),
+            align: Default::default(),
         }),
         Annotation::new(AnnotationKind::Arrow {
             from: Anchor::Data { x: 0.2, y: 0.3 },
