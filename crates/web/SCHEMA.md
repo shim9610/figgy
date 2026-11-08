@@ -22,7 +22,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | 트리 | 파일 |
 |---|---|
 | `Config` (축·제목·격자·범례) | `crates/model/src/config.rs` |
-| `SeriesConfig` (시리즈 선언) | `crates/model/src/data_config.rs` |
+| `SeriesConfig` (시리즈 선언) | `crates/model/src/data_config/` (`mod.rs`와 차트 종류별 파일) |
 | `Color` | `crates/model/src/color.rs` |
 | `ColorMap` (연속 색상표) | `crates/model/src/colormap.rs` |
 | `RichText` / `RichSegment` | `crates/model/src/text.rs` |
