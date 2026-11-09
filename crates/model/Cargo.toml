@@ -30,4 +30,9 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = "1"
 
 [features]
+default = ["helpers"]
+# Host conveniences: `Default` on the document types and the `default`
+# module's functions (#266). The model and renderer libraries build without
+# it, so their own code cannot fall back on a default.
+helpers = []
 serde = ["dep:serde"]

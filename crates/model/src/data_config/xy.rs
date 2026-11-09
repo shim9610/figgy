@@ -33,7 +33,10 @@ pub struct Stem {
     /// `Horizontal`: stems along x. The column roles never swap.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "is_vertical_stem")
+        serde(
+            default = "crate::defaults::category_bar_direction",
+            skip_serializing_if = "is_vertical_stem"
+        )
     )]
     pub direction: CategoryBarDirection,
     /// The stroke colour.
@@ -44,7 +47,10 @@ pub struct Stem {
     /// dash starts at its baseline.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "is_solid_stem")
+        serde(
+            default = "crate::defaults::line_style_preset",
+            skip_serializing_if = "is_solid_stem"
+        )
     )]
     pub line_style: crate::line::LineStylePreset,
 }
@@ -56,7 +62,7 @@ pub(super) fn is_vertical_stem(direction: &CategoryBarDirection) -> bool {
 
 #[cfg(feature = "serde")]
 pub(super) fn is_solid_stem(style: &crate::line::LineStylePreset) -> bool {
-    *style == crate::line::LineStylePreset::default()
+    *style == crate::defaults::line_style_preset()
 }
 
 impl Stem {
@@ -140,24 +146,16 @@ pub enum LineFill {
     ToSeries(SeriesRef),
 }
 
-impl Default for LineFill {
-    /// `ToBaseline(0.0)`.
-    fn default() -> Self {
-        Self::ToBaseline(0.0)
-    }
-}
-
 /// How consecutive samples of a line series are connected.
 ///
 /// A step mode draws every segment as axis-aligned pieces instead of one
 /// straight segment. Dash phase, picking and the arc-length scan all follow the
 /// stepped path, so a dashed step line keeps its pattern around every corner
 /// and a pick on a riser still resolves to one of the two source indices.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineInterpolation {
     /// Straight segments between consecutive samples.
-    #[default]
     Linear,
     /// The value changes at the *start* of each segment: a vertical riser at
     /// `x[i]` up to `y[i + 1]`, then a horizontal run to `x[i + 1]`.
@@ -204,23 +202,12 @@ pub struct DataLineStyleConfig {
     /// from JSON at that default.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LineInterpolation::is_linear")
+        serde(
+            default = "crate::defaults::line_interpolation",
+            skip_serializing_if = "LineInterpolation::is_linear"
+        )
     )]
     pub interpolation: LineInterpolation,
-}
-
-impl Default for DataLineStyleConfig {
-    /// A solid, opaque black, 1 px line with no fill and linear interpolation.
-    fn default() -> Self {
-        Self {
-            line_style: LineStylePreset::Solid,
-            line_color: Color::BLACK,
-            line_width: 1.0,
-            fill: None,
-            fill_color: None,
-            interpolation: crate::data_config::LineInterpolation::Linear,
-        }
-    }
 }
 
 impl DataLineStyleConfig {
@@ -293,12 +280,11 @@ pub struct PointColorMap {
 }
 
 /// How a size value becomes a marker radius.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SizeScale {
     /// The value is proportional to marker area (the radius grows with its
     /// square root), which is how bubble sizes are read.
-    #[default]
     Area,
     /// The value is proportional to the radius.
     Radius,
@@ -325,7 +311,7 @@ pub struct PointSizeMap {
     /// The marker radius at `domain_max`, in logical pixels.
     pub max_px: f32,
     /// Whether the value is proportional to marker area or radius.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::size_scale"))]
     pub scale: SizeScale,
 }
 
@@ -385,7 +371,7 @@ impl PointSizeMap {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataScatterPointStyleConfig {
     #[cfg_attr(
@@ -413,7 +399,7 @@ pub struct DataScatterPointStyleOverride {
     pub style: DataScatterPointStyleConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataErrorBarPointStyleConfig {
     #[cfg_attr(

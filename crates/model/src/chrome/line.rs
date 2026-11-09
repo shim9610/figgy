@@ -574,7 +574,6 @@ mod break_tests {
     //! drawn per piece and a slash pair at each gap.
     use super::*;
     use crate::config::{AxisBreak, AxisBreaks, BreakMark};
-    use crate::default::default_axis_options_y;
     use crate::text::{RichText, TextExtents};
 
     struct NoMeasure;
@@ -589,7 +588,7 @@ mod break_tests {
     }
 
     fn broken(mark: BreakMark) -> AxisOptions {
-        let mut axis = default_axis_options_y();
+        let mut axis = crate::defaults::axis_options_y();
         axis.min = 0.0;
         axis.max = 100.0;
         axis.major_spacing = 10.0;
@@ -599,7 +598,7 @@ mod break_tests {
             ranges: vec![AxisBreak::new(15.0, 85.0)],
             gap_px: 20.0,
             mark,
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         axis
     }
@@ -626,7 +625,7 @@ mod break_tests {
 
     #[test]
     fn the_line_is_drawn_per_piece_with_a_slash_pair_per_gap() {
-        for (mark, slashes) in [(BreakMark::None, 0), (BreakMark::default(), 2)] {
+        for (mark, slashes) in [(BreakMark::None, 0), (crate::defaults::break_mark(), 2)] {
             let axis = broken(mark);
             let majors = major_tick_values_for_axis(&axis, Side::Left, &PLOT, &NoMeasure);
             let (mut lines, mut marks) = (Vec::new(), Vec::new());
@@ -713,7 +712,7 @@ mod break_tests {
     /// gap, and every line reaches both outer edges.
     #[test]
     fn grid_lines_leave_the_gaps_empty() {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 10.0;
         config.bottom_x.major_spacing = 1.0;
@@ -764,12 +763,12 @@ mod break_tests {
     /// no tick in a gap.
     #[test]
     fn a_top_or_right_axis_takes_its_partners_cuts() {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 100.0;
         config.bottom_x.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(20.0, 70.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         // The top axis in other units (twice the bottom's), the right axis
         // mirroring an unbroken left axis.
@@ -814,10 +813,10 @@ mod break_tests {
         let right = crate::chrome::drawn_axis(&config, &Side::Right);
         assert_eq!(right.breaks, None, "the left axis is unbroken");
         // An axis with cuts of its own keeps them.
-        config.top_x.breaks = Some(AxisBreaks::default());
+        config.top_x.breaks = Some(crate::defaults::axis_breaks());
         assert_eq!(
             crate::chrome::drawn_axis(&config, &Side::Top).breaks,
-            Some(AxisBreaks::default())
+            Some(crate::defaults::axis_breaks())
         );
     }
 
@@ -969,7 +968,7 @@ mod break_tests {
             );
         }
         // An unbroken axis across leaves each frame whole.
-        let mut plain = crate::default::default_axis_options_x();
+        let mut plain = crate::defaults::axis_options_x();
         plain.min = 0.0;
         plain.max = 100.0;
         assert_eq!(collect(&y, Side::Left, &plain).len(), 2);

@@ -792,12 +792,12 @@ mod tests {
             emit_polar_radius_labels(config, &da, &Measure, &mut crate::sink::Parts(&mut each));
             rects
         };
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.set_polar(Some(crate::polar::PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         let all = labels(&config);
         assert!(all.len() >= 3, "{all:?}");
         let mut hidden = config.clone();

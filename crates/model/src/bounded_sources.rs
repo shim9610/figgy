@@ -509,7 +509,7 @@ fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
         axis.line_width = 1.0;
     };
 
-    let mut config = crate::default::default_config();
+    let mut config = crate::defaults::config();
     let mut category_axis = config.bottom_x.clone();
     style_axis(&mut category_axis, chrome.category_title);
     category_axis.categories = Some(chrome.categories.to_vec());
@@ -596,7 +596,7 @@ fn legacy_selection(
     series_id: &str,
 ) {
     if let Some(index) = categories.iter().position(|c| c.id == category_id) {
-        let mut picked = DataSelectionsConfig::default();
+        let mut picked = DataSelectionsConfig::empty();
         picked.refs.push(PickedDataRef::HistogramBin {
             source_id: None,
             series_id: series_id.to_owned(),
@@ -901,7 +901,7 @@ impl Config {
     /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         let text = |s: &str| {
             RichText::plain(
                 s,
@@ -1021,7 +1021,11 @@ impl Config {
                 z_column: None,
                 render_type: DataRenderType::Radar {
                     color: s.color,
-                    style: s.style.clone().unwrap_or_default().resolved_from(style),
+                    style: s
+                        .style
+                        .clone()
+                        .unwrap_or_else(crate::defaults::radar_series_style)
+                        .resolved_from(style),
                     labels: RadarSeriesLabels {
                         placement: chart.labels,
                         decimals: chart.label_decimals,
@@ -1057,7 +1061,7 @@ impl Config {
             && let Some(category) = selected.category_id.as_deref()
             && let Some(index) = chart.categories.iter().position(|c| c.id == category)
         {
-            let mut picked = DataSelectionsConfig::default();
+            let mut picked = DataSelectionsConfig::empty();
             picked.refs.push(PickedDataRef::Point {
                 source_id: None,
                 series_id: selected.series_id.clone(),
@@ -1128,7 +1132,7 @@ mod tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         }
     }
 
@@ -1197,7 +1201,7 @@ mod tests {
         c.style.material = Material::Paper;
         c.series[1].style = Some(CategoryBarStyle {
             corner_radius: 0.0,
-            ..Default::default()
+            ..crate::defaults::category_bar_style()
         });
         let (_, series, _) = Config::from_categorical(&c);
         assert_eq!(bars(&series[0]).color, c.series[0].color);
@@ -1514,7 +1518,7 @@ mod box_tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::box_plot_chart()
         }
     }
 
@@ -1671,7 +1675,7 @@ mod box_tests {
         c.style.material = Material::Paper;
         c.series[1].style = Some(BoxPlotStyle {
             outlier_shape: BoxOutlierShape::Square,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c", "s"));
         o.color = Some(Color::WHITE);
@@ -1863,7 +1867,7 @@ mod radar_tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::radar_chart()
         }
     }
 
@@ -1980,7 +1984,7 @@ mod radar_tests {
             line_width_px: Some(1.5),
             fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
             marker: Some(RadarMarker::None),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         });
         let (_, series, _) = Config::from_radar(&c);
         let a = radar(&series[0]);

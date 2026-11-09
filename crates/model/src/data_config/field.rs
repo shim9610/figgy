@@ -152,33 +152,18 @@ pub enum FillMode {
 }
 
 #[cfg(feature = "serde")]
-pub(super) fn default_image_range() -> [f64; 2] {
-    [0.0, 1.0]
-}
-
-#[cfg(feature = "serde")]
-pub(super) fn default_image_shading() -> Shading {
-    Shading::Flat
-}
-
-#[cfg(feature = "serde")]
-pub(super) fn default_image_opacity() -> f32 {
-    1.0
-}
-
-#[cfg(feature = "serde")]
 pub(super) fn is_default_image_range(range: &[f64; 2]) -> bool {
-    *range == default_image_range()
+    *range == crate::defaults::image_range()
 }
 
 #[cfg(feature = "serde")]
 pub(super) fn is_default_image_shading(shading: &Shading) -> bool {
-    *shading == default_image_shading()
+    *shading == crate::defaults::image_shading()
 }
 
 #[cfg(feature = "serde")]
 pub(super) fn is_default_image_opacity(opacity: &f32) -> bool {
-    *opacity == default_image_opacity()
+    *opacity == crate::defaults::image_opacity()
 }
 
 /// Whether a cell is one colour or interpolated across its corners.
@@ -377,7 +362,10 @@ pub struct ContourLabelConfig {
     /// Text colour, independent of the contour stroke and any per-level ramp
     /// colours. Labels are annotations; changing a line palette must not make
     /// their typography unreadable.
-    #[cfg_attr(feature = "serde", serde(default = "default_contour_label_color"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::contour_label_color")
+    )]
     pub color: Color,
     pub format: LabelFormat,
     pub significant_digits: u8,
@@ -422,11 +410,6 @@ pub struct ContourLabelConfig {
     /// also the contour-line gap around a transparent label.
     #[cfg_attr(feature = "serde", serde(default))]
     pub bg_padding_px: f32,
-}
-
-#[cfg(feature = "serde")]
-pub(super) fn default_contour_label_color() -> Color {
-    Color::BLACK
 }
 
 impl ContourLabelConfig {

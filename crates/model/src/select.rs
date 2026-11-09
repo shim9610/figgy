@@ -825,7 +825,10 @@ impl SubplotElement {
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,
-                annotations: std::mem::take(&mut stored.annotations),
+                annotations: std::mem::replace(
+                    &mut stored.annotations,
+                    crate::layer::AnnotationLayer::empty(),
+                ),
                 bar_groups,
                 line_offsets,
                 plot_background,
@@ -1967,7 +1970,6 @@ pub(crate) mod tests {
     }
 
     use super::*;
-    use crate::default::default_config;
     use crate::layout::{ChartArea, Rect, colorbar_rect};
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
 
@@ -2040,7 +2042,7 @@ pub(crate) mod tests {
     }
 
     fn cfg_800x600() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2052,7 +2054,7 @@ pub(crate) mod tests {
 
     fn cfg_with_overlay() -> Config {
         let mut cfg = cfg_800x600();
-        let mut overlay = crate::layer::OverlayLayer::default();
+        let mut overlay = crate::defaults::overlay_layer();
         overlay.y_axis.title_option.visible = true;
         overlay.y_axis.title_option.text = RichText::plain("Pressure", Color::BLACK, 12.0, "");
         overlay.y_axis.out_margin = 100.0;
@@ -2120,7 +2122,7 @@ pub(crate) mod tests {
     /// overlay, and a Y axis linked to the parent's.
     fn cfg_with_subplot() -> Config {
         let mut cfg = cfg_800x600();
-        let mut subplot = crate::layer::Subplot::default();
+        let mut subplot = crate::defaults::subplot();
         subplot.config.chart_area = ChartArea(Rect {
             x: 0,
             y: 600,
@@ -2131,7 +2133,7 @@ pub(crate) mod tests {
         subplot.config.bottom_x.max = 20.0;
         subplot.config.overlays.push(crate::layer::OverlayLayer {
             series: vec!["level".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         subplot.series = vec!["flow".into()];
         subplot.link_y = Some(crate::layer::CellRef::Parent);
@@ -2144,7 +2146,7 @@ pub(crate) mod tests {
     fn cfg_with_inset() -> Config {
         let mut cfg = cfg_with_subplot();
         let data = cfg.data_area().unwrap().0;
-        let mut inset = crate::layer::Subplot::default();
+        let mut inset = crate::defaults::subplot();
         inset.config.chart_area = ChartArea(Rect {
             x: data.x + 60,
             y: data.y + 40,
@@ -2450,7 +2452,7 @@ pub(crate) mod tests {
     fn overlay_legend_is_selectable_only_when_present() {
         let mut cfg = cfg_with_overlay();
         cfg.set_active_layer(LayerRef::Overlay(0));
-        let mut legend = crate::default::default_legend();
+        let mut legend = crate::defaults::legend();
         legend.visible = true;
         legend.content = RichText {
             segments: rich_segments_from_text("P"),
@@ -2707,7 +2709,7 @@ pub(crate) mod tests {
 
     fn cfg_with_colorbar(side: Side) -> Config {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::default::default_colorbar_options();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg

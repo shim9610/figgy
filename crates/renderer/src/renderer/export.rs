@@ -167,11 +167,18 @@ pub(crate) fn pop_scope_now(scope: wgpu::ErrorScopeGuard) -> Result<Option<wgpu:
 /// the group data area); for a document without overlays or subplots the two
 /// produce byte-identical images. Vector exports (SVG, PDF) render the whole
 /// document. A radial chart has one panel, so both scopes are the same there.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExportScope {
     Panel,
-    #[default]
     Document,
+}
+
+/// The whole document, the scope a host gets by default (#266).
+#[cfg(feature = "helpers")]
+impl Default for ExportScope {
+    fn default() -> Self {
+        Self::Document
+    }
 }
 
 /// How an export renders: its [`ExportScope`], its `scale` and its
@@ -190,23 +197,25 @@ pub struct ExportOptions {
     pub clear: crate::color::Color,
 }
 
+/// The whole document at scale 1 on a transparent background
+/// ([`ExportOptions::document`]`(1.0)`), for hosts (#266).
+#[cfg(feature = "helpers")]
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self {
-            scope: ExportScope::Document,
-            scale: 1.0,
-            clear: crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
-        }
+        Self::document(1.0)
     }
 }
 
 impl ExportOptions {
+    /// The transparent background every export starts from.
+    const TRANSPARENT: crate::color::Color = crate::color::Color::new(0.0, 0.0, 0.0, 0.0);
+
     /// One panel at `scale`, on a transparent background.
     pub fn panel(scale: f32) -> Self {
         Self {
             scope: ExportScope::Panel,
             scale,
-            ..Self::default()
+            clear: Self::TRANSPARENT,
         }
     }
 
@@ -215,7 +224,7 @@ impl ExportOptions {
         Self {
             scope: ExportScope::Document,
             scale,
-            ..Self::default()
+            clear: Self::TRANSPARENT,
         }
     }
 

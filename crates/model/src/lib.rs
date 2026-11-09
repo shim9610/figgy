@@ -15,7 +15,11 @@ pub use coordinates::Coordinates;
 pub mod data;
 pub mod data_config;
 pub mod decoration;
-pub mod default;
+mod defaults;
+#[cfg(feature = "helpers")]
+pub mod helpers;
+#[cfg(feature = "helpers")]
+pub use helpers::default;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;

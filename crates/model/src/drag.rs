@@ -260,14 +260,13 @@ impl Draggable for ColorBarTitleElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
     use crate::layout::{ChartArea, NudgeReject, Rect, Side};
     use crate::select::SelectionGeometry;
     use crate::select::tests::LaysOut;
     use crate::text::rich_segments_from_text;
 
     fn cfg_800x600() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -427,7 +426,7 @@ mod tests {
         use crate::select::ColorBarElement;
 
         let mut cfg = cfg_800x600();
-        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        cfg.colorbar = Some(crate::defaults::color_bar_options());
         let margins_before = cfg.margins();
         let area_before = cfg.data_area().expect("data area");
 
@@ -483,7 +482,7 @@ mod tests {
     #[test]
     fn colorbar_detail_drags_update_only_the_z_axis_fields() {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::default::default_colorbar_options();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = Side::Right;
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text =
@@ -523,7 +522,7 @@ mod tests {
 
     fn polar_cfg() -> Config {
         let mut cfg = cfg_800x600();
-        cfg.set_polar(Some(crate::polar::PolarOptions::default()));
+        cfg.set_polar(Some(crate::defaults::polar_options()));
         cfg
     }
 

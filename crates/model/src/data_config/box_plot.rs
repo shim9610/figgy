@@ -23,20 +23,18 @@ impl BoxPlotTarget {
 
 /// Which value labels a box shows: none, its median, or its median and its
 /// sample count.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotLabels {
-    #[default]
     None,
     Median,
     MedianAndCount,
 }
 
 /// The shape of a box's outlier markers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxOutlierShape {
-    #[default]
     Circle,
     Square,
 }
@@ -47,7 +45,7 @@ pub enum BoxOutlierShape {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::box_plot_style")
 )]
 pub struct BoxPlotStyle {
     /// A box is a flat body: [`Material::supported_on_flat_body`] decides.
@@ -82,39 +80,6 @@ pub struct BoxPlotStyle {
     pub gloss: f32,
     /// The brightness a picked box gains.
     pub emphasis_brightness: f32,
-}
-
-impl Default for BoxPlotStyle {
-    fn default() -> Self {
-        let ink = Color::from_rgb8(32, 46, 60);
-        Self {
-            material: Material::Matte,
-            corner_radius: 0.0,
-            outline: true,
-            outline_width: 1.2,
-            outline_color: ink,
-            median_width: 1.2,
-            median_color: ink,
-            whisker_width: 1.2,
-            whisker_color: ink,
-            caps: true,
-            cap_ratio: 0.5,
-            notched: false,
-            notch_depth: 0.22,
-            show_mean: false,
-            mean_size: 7.0,
-            mean_color: Color::from_rgb8(180, 45, 45),
-            show_outliers: true,
-            outlier_size: 7.0,
-            outlier_color: ink,
-            outlier_shape: BoxOutlierShape::Circle,
-            outlier_filled: false,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            gloss: 0.45,
-            emphasis_brightness: 0.08,
-        }
-    }
 }
 
 impl BoxPlotStyle {
@@ -220,18 +185,16 @@ pub struct Violin {
     pub body: ViolinBody,
     /// The share of the slot's thickness the box takes, `0..=1`, centred on
     /// the member's middle; 0 hides the box.
-    #[cfg_attr(feature = "serde", serde(default = "Violin::default_box_width"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::violin_box_width")
+    )]
     pub box_width: f32,
 }
 
 impl Violin {
     /// The box takes a quarter of the slot by default.
-    pub const DEFAULT_BOX_WIDTH: f32 = 0.25;
-
-    #[cfg(feature = "serde")]
-    fn default_box_width() -> f32 {
-        Self::DEFAULT_BOX_WIDTH
-    }
+    pub const DEFAULT_BOX_WIDTH: f32 = crate::defaults::violin_box_width();
 
     /// A violin of `body` with the default box width.
     pub fn new(body: ViolinBody) -> Self {
@@ -309,7 +272,7 @@ pub struct ViolinHalf {
     /// The density drawn at the full half width of the slot; a larger
     /// density is drawn wider. Finite and positive ([`Self::fit_density_scale`]).
     pub density_scale: f64,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::violin_style"))]
     pub style: ViolinStyle,
 }
 
@@ -334,7 +297,7 @@ impl ViolinHalf {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::violin_style")
 )]
 pub struct ViolinStyle {
     /// The fill, opaque; `None` takes the series' colour (or a box
@@ -344,17 +307,6 @@ pub struct ViolinStyle {
     pub outline: bool,
     pub outline_width: f32,
     pub outline_color: Color,
-}
-
-impl Default for ViolinStyle {
-    fn default() -> Self {
-        Self {
-            fill: None,
-            outline: true,
-            outline_width: 1.2,
-            outline_color: Color::from_rgb8(32, 46, 60),
-        }
-    }
 }
 
 /// The raw points of a [`DataRenderType::BoxPlot`] series: one marker per
@@ -370,7 +322,10 @@ impl Default for ViolinStyle {
 pub struct BoxPoints {
     pub positions: ColumnId,
     pub values: ColumnId,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::box_points_style")
+    )]
     pub style: BoxPointsStyle,
 }
 
@@ -380,7 +335,7 @@ pub struct BoxPoints {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::box_points_style")
 )]
 pub struct BoxPointsStyle {
     pub color: Color,
@@ -394,19 +349,6 @@ pub struct BoxPointsStyle {
     /// Where the centre line sits from the member's middle, `-1..=1` of the
     /// half slot: negative on the low side, positive on the high side.
     pub offset: f32,
-}
-
-impl Default for BoxPointsStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::from_rgb8(32, 46, 60),
-            size: 4.0,
-            shape: BoxOutlierShape::Circle,
-            filled: true,
-            jitter: 0.5,
-            offset: 0.0,
-        }
-    }
 }
 
 /// The most characters one drawn box label may have.
@@ -426,7 +368,7 @@ pub const MAX_BOX_PLOT_LABEL_CHARS: usize = 160;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::box_plot_series_labels")
 )]
 pub struct BoxPlotSeriesLabels {
     pub placement: BoxPlotLabels,
@@ -443,18 +385,6 @@ pub struct BoxPlotSeriesLabels {
     /// ([`SeriesConfig::drag_value_label`]).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub offsets: Vec<[f32; 2]>,
-}
-
-impl Default for BoxPlotSeriesLabels {
-    fn default() -> Self {
-        Self {
-            placement: BoxPlotLabels::None,
-            decimals: 1,
-            value_suffix: String::new(),
-            text: Vec::new(),
-            offsets: Vec::new(),
-        }
-    }
 }
 
 /// The fields of a [`DataRenderType::BoxPlot`] series, borrowed.

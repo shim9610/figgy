@@ -34,7 +34,10 @@ pub struct RichText {
     /// JSON round-trips unchanged.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "TextAlign::is_left")
+        serde(
+            default = "crate::defaults::text_align",
+            skip_serializing_if = "TextAlign::is_left"
+        )
     )]
     pub align: TextAlign,
 }
@@ -47,12 +50,11 @@ pub struct RichText {
 /// or all. The block's measured envelope is therefore the same for every
 /// alignment, so selection and hit boxes need no change, and single-line text
 /// (no slack) is unaffected. Tab-column cells move with their line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextAlign {
     /// Every line starts at the block's left edge — the layout all text had
     /// before alignment existed.
-    #[default]
     Left,
     /// Each line is centred on the block.
     Center,
@@ -328,7 +330,7 @@ mod rich_text_serde {
         color: Color,
         font_size: f32,
         font: String,
-        #[serde(default)]
+        #[serde(default = "crate::defaults::text_align")]
         align: TextAlign,
     }
 
@@ -859,7 +861,7 @@ mod tests {
 
     #[test]
     fn align_spends_none_half_or_all_of_the_slack() {
-        assert_eq!(TextAlign::default(), TextAlign::Left);
+        assert_eq!(crate::defaults::text_align(), TextAlign::Left);
         assert_eq!(TextAlign::Left.line_offset(100.0, 40.0), 0.0);
         assert_eq!(TextAlign::Center.line_offset(100.0, 40.0), 30.0);
         assert_eq!(TextAlign::Right.line_offset(100.0, 40.0), 60.0);

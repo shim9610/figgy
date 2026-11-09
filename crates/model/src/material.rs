@@ -12,11 +12,10 @@
 ///
 /// Not `#[non_exhaustive]`: an exhaustive `match` stops compiling when a
 /// material is added, which is the intended upgrade signal.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Material {
     /// The fill color, unlit. Ignores every material parameter.
-    #[default]
     Flat,
     Matte,
     Ceramic,
@@ -73,7 +72,7 @@ mod tests {
         for (kind, material) in ALL.into_iter().enumerate() {
             assert_eq!(material as usize, kind);
         }
-        assert_eq!(Material::default(), Material::Flat);
+        assert_eq!(crate::defaults::material(), Material::Flat);
     }
 
     #[cfg(feature = "serde")]

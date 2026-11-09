@@ -25,7 +25,7 @@ use super::*;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::line_offsets")
 )]
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
@@ -48,17 +48,6 @@ pub struct LineOffsets {
 #[cfg(feature = "serde")]
 pub(super) fn is_zero_step(step: &f64) -> bool {
     *step == 0.0
-}
-
-impl Default for LineOffsets {
-    /// No members and no steps.
-    fn default() -> Self {
-        Self {
-            series: Vec::new(),
-            step_y: 0.0,
-            step_x: 0.0,
-        }
-    }
 }
 
 impl LineOffsets {

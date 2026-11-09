@@ -190,13 +190,12 @@ pub enum RadialLabels {
 }
 
 /// Label content is independent of placement and can be overridden per slice.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadialLabelFormat {
     Name,
     Value,
     Percent,
-    #[default]
     NamePercent,
     NameValue,
     ValuePercent,
@@ -212,17 +211,6 @@ pub struct RadialOutline {
     /// Logical pixels, independent of DPR/export scale.
     pub width: f32,
     pub color: Color,
-}
-impl Default for RadialOutline {
-    fn default() -> Self {
-        Self {
-            rim: false,
-            separators: false,
-            emphasis: false,
-            width: 1.0,
-            color: Color::new(0.08, 0.12, 0.2, 1.0),
-        }
-    }
 }
 
 /// Index in the original array (including zero-valued slices). group 1 is
@@ -254,15 +242,7 @@ pub struct RadialInteraction {
     /// Linear progress in 0..1. Rendering applies smoothstep via [`Self::amount`].
     pub hover_progress: f32,
 }
-impl Default for RadialInteraction {
-    fn default() -> Self {
-        Self {
-            hovered: None,
-            selected: None,
-            hover_progress: 0.0,
-        }
-    }
-}
+
 impl RadialInteraction {
     /// Host supplies elapsed seconds; no wall clock, browser, or permanent animation loop.
     /// Exit completes before a different slice enters. Returns whether state changed.
@@ -308,7 +288,7 @@ impl RadialInteraction {
 /// Defaults are flat/top-down; setting a material does not enable extrusion.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::radial_style"))]
 pub struct RadialStyle {
     pub material: Material,
     /// Orthographic camera tilt, 0..65 degrees. Zero is an undistorted top view.
@@ -365,7 +345,7 @@ impl RadialStyle {
             hover_brightness,
             gloss,
             texture_angle_degrees,
-        } = Self::default();
+        } = crate::defaults::radial_style();
         Self {
             material: Material::Ceramic,
             tilt_degrees: 55.0,
@@ -388,26 +368,83 @@ impl RadialStyle {
     }
 }
 
-impl Default for RadialStyle {
-    fn default() -> Self {
+impl RadialStyle {
+    /// This style as the key of the label raster (#266): the fields the
+    /// raster draws with (tilt, depth, shadow, hover lift) kept, every
+    /// surface field the GPU alone draws set to its documented default, so
+    /// two styles that differ only in GPU appearance key the same raster.
+    pub fn label_raster_key(&self) -> Self {
+        let RadialStyle {
+            tilt_degrees,
+            depth,
+            shadow,
+            hover_lift,
+            // Surface appearance: GPU work, never on the label raster.
+            material: _,
+            bevel: _,
+            gap_degrees: _,
+            roughness: _,
+            texture_strength: _,
+            texture_scale: _,
+            light: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline: _,
+            hover_brightness: _,
+            gloss: _,
+            texture_angle_degrees: _,
+        } = self;
+        let RadialStyle {
+            tilt_degrees: _,
+            depth: _,
+            shadow: _,
+            hover_lift: _,
+            material,
+            bevel,
+            gap_degrees,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            inner_corner,
+            outer_corner,
+            outline,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = crate::defaults::radial_style();
         Self {
-            material: Material::Flat,
-            tilt_degrees: 0.0,
-            depth: 0.0,
-            bevel: 0.015,
-            gap_degrees: 0.0,
-            roughness: 0.35,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            light: [-0.5, -0.6, 1.0],
-            shadow: false,
-            inner_corner: 0.0,
-            outer_corner: 0.0,
-            outline: RadialOutline::default(),
-            hover_lift: 0.08,
-            hover_brightness: 0.04,
-            gloss: 0.55,
-            texture_angle_degrees: 0.0,
+            material,
+            tilt_degrees: *tilt_degrees,
+            depth: *depth,
+            bevel,
+            gap_degrees,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: *shadow,
+            inner_corner,
+            outer_corner,
+            outline,
+            hover_lift: *hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        }
+    }
+}
+
+impl RadialInteraction {
+    /// This interaction as the key of the label raster (#266): itself when
+    /// the raster draws labels that move with it, the documented default
+    /// otherwise, so hover settings that move nothing on the raster key the
+    /// same raster.
+    pub fn label_raster_key(&self, labels_move: bool) -> Self {
+        if labels_move {
+            self.clone()
+        } else {
+            crate::defaults::radial_interaction()
         }
     }
 }
@@ -427,7 +464,10 @@ pub struct RadialSplit {
 #[cfg_attr(feature = "serde", serde(from = "radial_wire::RadialChartWire"))]
 pub struct RadialChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// The chart's title, the shared rich chart title; `None` draws none.
     /// Its position remains in `decorations`: the offsets and `top_margin`
@@ -452,13 +492,19 @@ pub struct RadialChart {
     /// overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::defaults::layer_ref",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::defaults::annotation_layer",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     pub slices: Vec<RadialSlice>,
@@ -468,47 +514,27 @@ pub struct RadialChart {
     pub split: Option<RadialSplit>,
     pub style: RadialStyle,
     pub labels: RadialLabels,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_label_format")
+    )]
     pub label_format: RadialLabelFormat,
-    #[cfg_attr(feature = "serde", serde(default = "default_decimals"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_label_decimals")
+    )]
     pub label_decimals: usize,
     #[cfg_attr(feature = "serde", serde(default))]
     pub value_suffix: String,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_interaction")
+    )]
     pub interaction: RadialInteraction,
     pub font_family: String,
     pub font_size: f32,
     pub label_color: Color,
     pub background: Color,
-}
-impl Default for RadialChart {
-    fn default() -> Self {
-        Self {
-            decorations: Default::default(),
-            chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
-            slices: Vec::new(),
-            kind: RadialKind::Pie,
-            start_angle_degrees: -90.0,
-            split: None,
-            style: RadialStyle::default(),
-            labels: RadialLabels::Outside,
-            label_format: RadialLabelFormat::NamePercent,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            interaction: RadialInteraction::default(),
-            font_family: "sans-serif".into(),
-            font_size: 16.0,
-            label_color: Color::new(0.12, 0.16, 0.22, 1.0),
-            background: Color::WHITE,
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-fn default_decimals() -> usize {
-    1
 }
 
 /// The document form a [`RadialChart`] is read from: its own fields, and
@@ -521,16 +547,16 @@ mod radial_wire {
     /// the legacy `title`.
     #[derive(serde::Deserialize)]
     pub(super) struct RadialChartWire {
-        #[serde(default)]
+        #[serde(default = "crate::defaults::decoration_layout")]
         decorations: crate::DecorationLayout,
         /// The plain title of a document written before 0.19.
         #[serde(default)]
         title: String,
         #[serde(default, with = "crate::bounded_title::bounded_title_wire")]
         chart_title: Option<crate::config::ChartTitleOptions>,
-        #[serde(default)]
+        #[serde(default = "crate::defaults::layer_ref")]
         active_layer: crate::LayerRef,
-        #[serde(default)]
+        #[serde(default = "crate::defaults::annotation_layer")]
         annotations: crate::AnnotationLayer,
         slices: Vec<RadialSlice>,
         kind: RadialKind,
@@ -538,13 +564,13 @@ mod radial_wire {
         split: Option<RadialSplit>,
         style: RadialStyle,
         labels: RadialLabels,
-        #[serde(default)]
+        #[serde(default = "crate::defaults::radial_label_format")]
         label_format: RadialLabelFormat,
-        #[serde(default = "default_decimals")]
+        #[serde(default = "crate::defaults::radial_label_decimals")]
         label_decimals: usize,
         #[serde(default)]
         value_suffix: String,
-        #[serde(default)]
+        #[serde(default = "crate::defaults::radial_interaction")]
         interaction: RadialInteraction,
         font_family: String,
         font_size: f32,
@@ -1087,7 +1113,7 @@ mod tests {
                 RadialSlice::new("A", 87.0, Color::WHITE),
                 RadialSlice::new("Other", 13.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
     #[test]
@@ -1099,7 +1125,7 @@ mod tests {
                 RadialSlice::new("B", 2.0, Color::WHITE),
                 RadialSlice::new("C", 3.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         let (m, d) = (RadialTarget::main, RadialTarget::detail);
         let walk = |c: &mut RadialChart, backwards: bool, steps: usize| {
@@ -1181,7 +1207,7 @@ mod tests {
             let mut c = chart();
             c.slices[0].style = Some(RadialStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::radial_style()
             });
             assert_eq!(c.validate(), Ok(()), "{material:?}");
         }
@@ -1236,7 +1262,7 @@ mod tests {
                 ),
                 node("R&D", 40.0, vec![node("Lab", 40.0, vec![])]),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
 
@@ -1435,7 +1461,7 @@ mod editing_contract {
                 RadialSlice::new("A", 20.0, Color::WHITE),
                 RadialSlice::new("B", 80.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         let a = RadialTarget::main(0);
         chart.label_decimals = 0;
@@ -1453,7 +1479,7 @@ mod editing_contract {
         assert_eq!(chart.interaction.hover_progress, 0.25);
         assert!(chart.interaction.amount(a) > 0.0);
         chart.interaction.animate_hover(None, 1.0, 0.2);
-        assert_eq!(chart.interaction, RadialInteraction::default());
+        assert_eq!(chart.interaction, crate::defaults::radial_interaction());
         chart.interaction.selected = Some(a);
         assert_eq!(chart.interaction.amount(a), 1.0);
         chart.slice_mut(a).unwrap().color = Color::from_rgb8(20, 120, 240);
@@ -1466,11 +1492,11 @@ mod editing_contract {
     fn invalid_overrides_are_rejected_before_rendering() {
         let mut chart = RadialChart {
             slices: vec![RadialSlice::new("A", 1.0, Color::WHITE)],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         chart.slices[0].style = Some(RadialStyle {
             outer_corner: f32::NAN,
-            ..Default::default()
+            ..crate::defaults::radial_style()
         });
         assert!(chart.validate().is_err());
         chart.slices[0].style = None;
@@ -1494,7 +1520,7 @@ mod editing_contract {
             label_format: RadialLabelFormat::NameValuePercent,
             label_decimals: 0,
             value_suffix: " kg".into(),
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
     fn texts(chart: &RadialChart) -> Vec<Option<&str>> {
@@ -1597,7 +1623,7 @@ mod editing_contract {
             label_format: RadialLabelFormat::ValuePercent,
             label_decimals: 6,
             value_suffix: "x".repeat(24),
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         largest.format_labels();
         assert_eq!(largest.validate(), Ok(()));
@@ -1710,7 +1736,7 @@ mod editing_contract {
     fn editing_options_roundtrip_and_old_snapshots_default() {
         let mut chart = RadialChart {
             slices: vec![RadialSlice::new("A", 1.0, Color::WHITE)],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         chart.style.outer_corner = 0.05;
         chart.style.material = Material::SatinMetal;

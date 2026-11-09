@@ -88,11 +88,11 @@ pub struct DecorationOffset {
     /// Chart-local logical pixels, independent of DPR/export scale.
     pub offset: [f32; 2],
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::decoration_layout")
 )]
 pub struct DecorationLayout {
     /// Explicit plot region in logical pixels. None uses the measured automatic
@@ -102,6 +102,7 @@ pub struct DecorationLayout {
     /// Decoration selection is separate from data selection and hover.
     pub selected: Option<DecorationId>,
 }
+
 impl DecorationLayout {
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.offsets
@@ -390,7 +391,7 @@ mod tests {
             let back: DecorationId = serde_json::from_str(&json).unwrap();
             assert_eq!(back, id, "{json}");
         }
-        let mut layout = DecorationLayout::default();
+        let mut layout = crate::defaults::decoration_layout();
         layout.selected = Some(DecorationId::Annotation(4));
         let json = serde_json::to_string(&layout).unwrap();
         let back: DecorationLayout = serde_json::from_str(&json).unwrap();
@@ -428,7 +429,7 @@ mod tests {
         ] {
             let mut state = DecorationLayout {
                 data_area: Some(original),
-                ..Default::default()
+                ..crate::defaults::decoration_layout()
             };
             assert_eq!(
                 e.resize_by(&mut state, &NoMeasure, handle, 7., 9.),
@@ -448,7 +449,7 @@ mod tests {
         }
         let mut state = DecorationLayout {
             data_area: Some(original),
-            ..Default::default()
+            ..crate::defaults::decoration_layout()
         };
         let before = state.clone();
         for (dx, dy) in [
@@ -489,14 +490,14 @@ mod tests {
     }
     #[test]
     fn drag_rejects_nonfinite_and_outside_moves_atomically() {
-        let mut state = DecorationLayout::default();
+        let mut state = crate::defaults::decoration_layout();
         let axis = element(DecorationId::Axis(Side::Left));
         for delta in [[f32::NAN, 0.], [0., f32::INFINITY], [-21., 0.], [1000., 0.]] {
             assert!(matches!(
                 axis.drag_by(&mut state, &NoMeasure, delta[0], delta[1]),
                 NudgeResult::Rejected(_)
             ));
-            assert_eq!(state, DecorationLayout::default());
+            assert_eq!(state, crate::defaults::decoration_layout());
         }
         assert_eq!(
             axis.drag_by(&mut state, &NoMeasure, 5., 80.),
@@ -531,10 +532,10 @@ mod tests {
     #[allow(deprecated)]
     fn old_documents_default_positions_and_all_models_preserve_edits() {
         for mut value in [
-            serde_json::to_value(crate::RadialChart::default()).unwrap(),
-            serde_json::to_value(crate::CategoricalChart::default()).unwrap(),
-            serde_json::to_value(crate::BoxPlotChart::default()).unwrap(),
-            serde_json::to_value(crate::RadarChart::default()).unwrap(),
+            serde_json::to_value(crate::defaults::radial_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::categorical_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::box_plot_chart()).unwrap(),
+            serde_json::to_value(crate::defaults::radar_chart()).unwrap(),
         ] {
             value.as_object_mut().unwrap().remove("decorations");
             assert!(value.get("decorations").is_none());
@@ -544,41 +545,41 @@ mod tests {
                     serde_json::from_value::<crate::RadialChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else if value.get("mode").is_some() {
                 assert_eq!(
                     serde_json::from_value::<crate::CategoricalChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else if value.get("direction").is_some() {
                 assert_eq!(
                     serde_json::from_value::<crate::BoxPlotChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             } else {
                 assert_eq!(
                     serde_json::from_value::<crate::RadarChart>(value)
                         .unwrap()
                         .decorations,
-                    DecorationLayout::default()
+                    crate::defaults::decoration_layout()
                 );
             }
         }
-        let mut state = DecorationLayout::default();
+        let mut state = crate::defaults::decoration_layout();
         element(DecorationId::ChartTitle).drag_by(&mut state, &NoMeasure, 4., 6.);
         state.selected = Some(DecorationId::ChartTitle);
-        let mut radial = crate::RadialChart::default();
+        let mut radial = crate::defaults::radial_chart();
         radial.decorations = state.clone();
-        let mut categorical = crate::CategoricalChart::default();
+        let mut categorical = crate::defaults::categorical_chart();
         categorical.decorations = state.clone();
-        let mut boxplot = crate::BoxPlotChart::default();
+        let mut boxplot = crate::defaults::box_plot_chart();
         boxplot.decorations = state.clone();
-        let mut radar = crate::RadarChart::default();
+        let mut radar = crate::defaults::radar_chart();
         radar.decorations = state;
         assert_eq!(
             serde_json::from_str::<crate::RadialChart>(&serde_json::to_string(&radial).unwrap())

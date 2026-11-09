@@ -34,7 +34,7 @@ use std::f32::consts::PI;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
 /// [module documentation](self).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanSeries {
     /// The vertices, in the host's order. External legs end at `Incoming`
@@ -53,13 +53,19 @@ pub struct FeynmanSeries {
     /// The look of the lines, markers and arrows.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "FeynmanStyle::is_default")
+        serde(
+            default = "crate::defaults::feynman_style",
+            skip_serializing_if = "FeynmanStyle::is_default"
+        )
     )]
     pub style: FeynmanStyle,
     /// How the automatic layout places the unplaced vertices.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "FeynmanLayout::is_default")
+        serde(
+            default = "crate::defaults::feynman_layout",
+            skip_serializing_if = "FeynmanLayout::is_default"
+        )
     )]
     pub layout: FeynmanLayout,
 }
@@ -74,7 +80,10 @@ pub struct FeynmanVertex {
     /// and the default marker, nothing else.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "VertexRole::is_internal")
+        serde(
+            default = "crate::defaults::vertex_role",
+            skip_serializing_if = "VertexRole::is_internal"
+        )
     )]
     pub role: VertexRole,
     /// The position in data units of the series' x and y axes; `None`
@@ -127,11 +136,10 @@ impl FeynmanVertex {
 }
 
 /// What a vertex is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VertexRole {
     /// An interaction point.
-    #[default]
     Internal,
     /// The start of an incoming external leg: on the early side of the
     /// time direction.
@@ -242,11 +250,10 @@ impl Propagator {
 }
 
 /// The particle a propagator carries: its stroke.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParticleLine {
     /// A plain line.
-    #[default]
     Plain,
     /// A solid line with an arrow along it.
     Fermion,
@@ -298,7 +305,13 @@ impl ParticleLine {
 pub struct MomentumArrow {
     pub label: RichText,
     /// Which side of the line, facing along it from `from` to `to`.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_left"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default = "crate::defaults::momentum_side",
+            skip_serializing_if = "is_left"
+        )
+    )]
     pub side: MomentumSide,
     /// Point the arrow from `to` to `from`.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
@@ -312,10 +325,9 @@ pub struct MomentumArrow {
 }
 
 /// A side of a propagator, facing along it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MomentumSide {
-    #[default]
     Left,
     Right,
 }
@@ -323,7 +335,7 @@ pub enum MomentumSide {
 /// The look of a Feynman series, in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::feynman_style"))]
 pub struct FeynmanStyle {
     /// The line colour, opaque: the series colour and its legend swatch.
     pub color: Color,
@@ -353,23 +365,12 @@ pub struct FeynmanStyle {
 /// `color` at that width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::feynman_picked"))]
 pub struct FeynmanPicked {
     /// The colour, channels in `0..=1`.
     pub color: Color,
     /// The extra width, logical pixels, `0..=16`.
     pub width_extra_px: f32,
-}
-
-impl Default for FeynmanPicked {
-    /// The selection highlight colour of the document's default picked
-    /// data, two pixels wider.
-    fn default() -> Self {
-        Self {
-            color: Color::from_rgb8(255, 215, 0),
-            width_extra_px: 2.0,
-        }
-    }
 }
 
 /// The amplitude and wavelength of a wave or a coil, logical pixels.
@@ -380,33 +381,10 @@ pub struct Wiggle {
     pub wavelength: f32,
 }
 
-impl Default for FeynmanStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::from_rgb8(30, 30, 30),
-            width: 1.5,
-            wave: Wiggle {
-                amplitude: 4.0,
-                wavelength: 12.0,
-            },
-            coil: Wiggle {
-                amplitude: 5.0,
-                wavelength: 9.0,
-            },
-            head_length: 9.0,
-            head_width: 7.0,
-            dot_radius: 3.0,
-            loop_radius: 18.0,
-            fan_step: 90.0,
-            picked: FeynmanPicked::default(),
-        }
-    }
-}
-
 impl FeynmanStyle {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == crate::defaults::feynman_style()
     }
 
     fn validate(&self) -> Result<(), crate::RuleKind> {
@@ -435,28 +413,27 @@ impl FeynmanStyle {
 }
 
 /// The direction time runs in: where the layout puts the legs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimeDirection {
     /// Incoming legs on the left, outgoing on the right.
-    #[default]
     LeftToRight,
     /// Incoming legs at the bottom, outgoing at the top.
     BottomToTop,
 }
 
 /// How the automatic layout places the unplaced vertices.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanLayout {
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::time_direction"))]
     pub direction: TimeDirection,
 }
 
 impl FeynmanLayout {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == crate::defaults::feynman_layout()
     }
 }
 

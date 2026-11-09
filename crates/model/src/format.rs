@@ -45,9 +45,12 @@ pub enum LabelFormat {
 ///
 /// `Plain` ignores the axis scale, spacing and significant digits: the text
 /// depends on the value alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::plain_number_format")
+)]
 pub struct PlainNumberFormat {
     /// Fixed decimal places, or `None` for the automatic form.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -107,55 +110,53 @@ fn trim_fraction_zeros(text: String) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampUnit {
-    #[default]
     Seconds,
     Milliseconds,
     Microseconds,
     Nanoseconds,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampZone {
-    #[default]
     Utc,
     /// Fixed offset from UTC in minutes. Korea Standard Time is 540.
     FixedOffsetMinutes(i32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampLabelMode {
-    #[default]
     Auto,
     /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f and %%.
     Pattern(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionalSecondDigits {
-    #[default]
     Auto,
     Fixed(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampTickPolicy {
     /// Calendar-aware ticks such as minutes, hours, days, months, and years.
-    #[default]
     AutoCalendar,
     /// Reuse the numeric `major_spacing` / `minor_count` tick walkers.
     NumericSpacing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::timestamp_label_format")
+)]
 pub struct TimestampLabelFormat {
     pub unit: TimestampUnit,
     pub timezone: TimestampZone,
@@ -225,7 +226,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
 
     // Result must be in 1..=15.
     #[test]
@@ -303,7 +303,10 @@ mod tests {
         ] {
             assert_eq!(PlainNumberFormat::AUTO.format(value), text, "{value:?}");
         }
-        assert_eq!(PlainNumberFormat::default(), PlainNumberFormat::AUTO);
+        assert_eq!(
+            crate::defaults::plain_number_format(),
+            PlainNumberFormat::AUTO
+        );
         // `trim_zeros` does not change the automatic form.
         let trimmed = PlainNumberFormat {
             decimals: None,
@@ -364,7 +367,7 @@ mod tests {
     // auto_significant_digits should mutate only the sig field.
     #[test]
     fn auto_sig_changes_only_sig_field() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         cfg.top_x.auto_significant_digits();
         let mut expected = before.clone();
@@ -380,7 +383,7 @@ mod tests {
     // auto_significant_digits_all should also mutate only sig fields.
     #[test]
     fn auto_sig_all_changes_only_sig_fields() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         cfg.auto_significant_digits_all();
         assert!(cfg.top_x.label_style.significant_digits >= 1);

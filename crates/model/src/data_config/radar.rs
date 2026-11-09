@@ -3,24 +3,22 @@
 use super::*;
 
 /// The marker drawn at every vertex of a radar series.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarMarker {
     /// No marker.
     None,
     /// A filled circle (the default).
-    #[default]
     Circle,
     /// A filled square.
     Square,
 }
 
 /// Which vertices of a radar series carry value labels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarLabels {
     /// No data labels (the default).
-    #[default]
     None,
     /// Every vertex of every series.
     Values,
@@ -33,11 +31,11 @@ pub enum RadarLabels {
 /// `DEFAULT_*` constants), and a legacy [`RadarChart`](crate::radar::RadarChart)
 /// series reads an unset field from its chart style
 /// ([`Self::resolved_from`]).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::radar_series_style")
 )]
 pub struct RadarSeriesStyle {
     /// Outline width in logical pixels, `0..=12`; zero draws no outline.
@@ -133,7 +131,7 @@ impl RadarSeriesStyle {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::radar_series_labels")
 )]
 pub struct RadarSeriesLabels {
     pub placement: RadarLabels,
@@ -150,18 +148,6 @@ pub struct RadarSeriesLabels {
     /// ([`SeriesConfig::drag_value_label`]).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub offsets: Vec<[f32; 2]>,
-}
-
-impl Default for RadarSeriesLabels {
-    fn default() -> Self {
-        Self {
-            placement: RadarLabels::None,
-            decimals: 1,
-            value_suffix: String::new(),
-            text: Vec::new(),
-            offsets: Vec::new(),
-        }
-    }
 }
 
 /// The most characters of one radar value label.

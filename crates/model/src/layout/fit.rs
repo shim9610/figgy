@@ -347,15 +347,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::{default_colorbar_options, default_config};
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps
     }
 
     fn config_with_colorbar(side: Side) -> Config {
-        let mut cfg = default_config();
-        let mut bar = default_colorbar_options();
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg
@@ -364,7 +363,7 @@ mod tests {
     // After a successful fit_to_data_area, data_area() must equal target (within rounding).
     #[test]
     fn fit_to_data_area_matches_target() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let target = DataArea(Rect {
             x: 150,
             y: 150,
@@ -383,7 +382,7 @@ mod tests {
     // On error, state must be unchanged (transactional).
     #[test]
     fn fit_to_data_area_err_preserves_state() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let bad = DataArea(Rect {
             x: 0,
@@ -398,8 +397,8 @@ mod tests {
 
     #[test]
     fn a_subplot_area_is_set_anywhere_and_refused_when_its_plot_cannot_fit() {
-        let mut cfg = default_config();
-        let mut subplot = crate::layer::Subplot::default();
+        let mut cfg = crate::defaults::config();
+        let mut subplot = crate::defaults::subplot();
         subplot.config.chart_area = ChartArea(Rect {
             x: 10,
             y: 10,
@@ -429,7 +428,7 @@ mod tests {
 
     #[test]
     fn resize_chart_area_err_preserves_state() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let tiny = ChartArea(Rect {
             x: 0,
@@ -446,7 +445,7 @@ mod tests {
     // so total margin doesn't scale exactly by r — only the flex part does.
     #[test]
     fn resize_chart_area_scaled_scales_flex_not_tick() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let out0_top = cfg.top_x.out_margin;
         let tick0_top = cfg.top_x.major_tick_length;
         let out0_left = cfg.left_y.out_margin;
@@ -476,7 +475,7 @@ mod tests {
 
     #[test]
     fn set_side_margin_basic() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         cfg.set_side_margin(Side::Left, 100.0).unwrap();
         let m = cfg.margins();
         assert!(approx_eq(m.left, 100.0, 1e-3));
@@ -485,7 +484,7 @@ mod tests {
     // set_side_margin must not change tick length.
     #[test]
     fn set_side_margin_keeps_tick_fixed() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let tick0 = cfg.left_y.major_tick_length;
         cfg.set_side_margin(Side::Left, 150.0).unwrap();
         assert!(approx_eq(cfg.left_y.major_tick_length, tick0, 1e-3));
@@ -493,7 +492,7 @@ mod tests {
 
     #[test]
     fn set_margins_success() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let m = Margins {
             top: 100.0,
             bottom: 80.0,
@@ -512,7 +511,7 @@ mod tests {
     // fit / resize must leave tick lengths (both major and minor) untouched.
     #[test]
     fn fit_keeps_tick_lengths_fixed() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let maj0 = cfg.left_y.major_tick_length;
         let min0 = cfg.left_y.minor_tick_length;
 
@@ -531,7 +530,7 @@ mod tests {
 
     #[test]
     fn resize_keeps_tick_lengths_fixed() {
-        let mut cfg = default_config();
+        let mut cfg = crate::defaults::config();
         let maj0 = cfg.top_x.major_tick_length;
         let min0 = cfg.top_x.minor_tick_length;
 

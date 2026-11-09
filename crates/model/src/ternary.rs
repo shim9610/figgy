@@ -35,9 +35,9 @@ use crate::text::TextExtents;
 /// The ternary coordinate system of a `Config`. It has no field in this
 /// release: it is the switch that turns the chart into a triangle, and
 /// later options (such as a partial triangle) join it additively.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::ternary_options"))]
 pub struct TernaryOptions {}
 
 /// The fill of the closed regions a ternary series outlines: phase fields,
@@ -52,21 +52,15 @@ pub struct TernaryOptions {}
 /// as a line's area fill is.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::ternary_region_style")
+)]
 pub struct TernaryRegionStyle {
     /// The fill colour; its alpha multiplies `opacity`.
     pub color: Color,
     /// `0..=1`.
     pub opacity: f32,
-}
-
-impl Default for TernaryRegionStyle {
-    fn default() -> Self {
-        Self {
-            color: Color::new(0.3, 0.5, 0.8, 1.0),
-            opacity: 0.35,
-        }
-    }
 }
 
 impl TernaryRegionStyle {
@@ -383,12 +377,12 @@ mod tests {
     use crate::data_config::{
         DataLineStyleConfig, DataScatterStyleConfig, LineFill, LineInterpolation,
     };
-    use crate::layer::{OverlayLayer, Subplot};
+
     use crate::line::LineStylePreset;
     use crate::{Color, ScatterShape};
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::defaults::config();
         for axis in [
             &mut config.bottom_x,
             &mut config.left_y,
@@ -520,16 +514,17 @@ mod tests {
                 .contains("same")
         );
         assert!(
-            reject(&|c| c.overlays.push(OverlayLayer::default()))
+            reject(&|c| c.overlays.push(crate::defaults::overlay_layer()))
                 .to_string()
                 .contains("overlay")
         );
         assert!(
-            reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
-                .to_string()
-                .contains("Precise")
+            reject(&|c| c.draw_style =
+                crate::config::DrawStyle::Sketch(crate::defaults::sketch_options()))
+            .to_string()
+            .contains("Precise")
         );
-        let mut linked = Subplot::default();
+        let mut linked = crate::defaults::subplot();
         linked.link_x = Some(crate::layer::CellRef::Parent);
         assert!(
             reject(&|c| c.subplots.push(linked.clone()))
@@ -556,7 +551,7 @@ mod tests {
         ));
         let mut filled_region = ternary(None, None);
         if let DataRenderType::Ternary { region, .. } = &mut filled_region {
-            *region = Some(TernaryRegionStyle::default());
+            *region = Some(crate::defaults::ternary_region_style());
         }
         assert_eq!(
             config.validate_ternary_series(&[series("t", filled_region.clone())]),
@@ -566,7 +561,7 @@ mod tests {
         if let DataRenderType::Ternary { region, .. } = &mut filled_region {
             *region = Some(TernaryRegionStyle {
                 opacity: 2.0,
-                ..TernaryRegionStyle::default()
+                ..crate::defaults::ternary_region_style()
             });
         }
         assert!(
@@ -625,7 +620,7 @@ mod tests {
                 series_id: "t".into(),
                 point_index: 1,
             }],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
         let len = |id: &str| match id {
             "a" => Some(10),
@@ -689,7 +684,7 @@ mod tests {
         assert_eq!(back, s);
         let partial: TernaryRegionStyle = serde_json::from_str("{\"opacity\":0.2}").unwrap();
         assert_eq!(partial.opacity, 0.2);
-        assert_eq!(partial.color, TernaryRegionStyle::default().color);
+        assert_eq!(partial.color, crate::defaults::ternary_region_style().color);
     }
 
     #[test]

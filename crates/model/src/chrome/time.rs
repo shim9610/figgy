@@ -681,19 +681,18 @@ fn div_ceil_i32(a: i32, b: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
     use crate::format::{TimestampLabelFormat, TimestampLabelMode};
 
     #[test]
     fn unix_seconds_format_utc_and_offset() {
-        let utc = TimestampLabelFormat::default();
+        let utc = crate::defaults::timestamp_label_format();
         let text = format_timestamp_numeric_tick(0.0, &utc, 0.0, 10.0, 1.0).unwrap();
         assert_eq!(text, "00:00:00");
 
         let kst = TimestampLabelFormat {
             timezone: TimestampZone::FixedOffsetMinutes(540),
             label: TimestampLabelMode::Pattern("%Y-%m-%d %H:%M:%S".into()),
-            ..TimestampLabelFormat::default()
+            ..crate::defaults::timestamp_label_format()
         };
         let text = format_timestamp_numeric_tick(0.0, &kst, 0.0, 10.0, 1.0).unwrap();
         assert_eq!(text, "1970-01-01 09:00:00");
@@ -701,17 +700,17 @@ mod tests {
 
     #[test]
     fn subsecond_labels_choose_fraction_digits() {
-        let cfg = TimestampLabelFormat::default();
+        let cfg = crate::defaults::timestamp_label_format();
         let text = format_timestamp_numeric_tick(1.25, &cfg, 1.0, 2.0, 0.05).unwrap();
         assert_eq!(text, "00:00:01.25");
     }
 
     #[test]
     fn calendar_plan_respects_measured_extent() {
-        let mut axis = default_config().bottom_x;
+        let mut axis = crate::defaults::config().bottom_x;
         axis.min = 0.0;
         axis.max = 3_600.0;
-        axis.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
+        axis.label_style.format = LabelFormat::Timestamp(crate::defaults::timestamp_label_format());
         let plan = build_timestamp_tick_plan(&axis, 200.0, 8.0, |s| s.len() as f32 * 8.0)
             .expect("timestamp plan");
         assert!(
@@ -726,7 +725,7 @@ mod tests {
     fn month_ticks_follow_calendar_boundaries() {
         let cfg = TimestampLabelFormat {
             label: TimestampLabelMode::Pattern("%Y-%m-%d".into()),
-            ..TimestampLabelFormat::default()
+            ..crate::defaults::timestamp_label_format()
         };
         let jan_15 = value_from_local_parts(
             DateTimeParts {
@@ -754,7 +753,7 @@ mod tests {
             &cfg,
         )
         .unwrap();
-        let mut axis = default_config().bottom_x;
+        let mut axis = crate::defaults::config().bottom_x;
         axis.min = jan_15;
         axis.max = may_15;
         axis.label_style.format = LabelFormat::Timestamp(cfg);

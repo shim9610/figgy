@@ -878,7 +878,7 @@ mod tests {
                 line: Some(DataLineStyleConfig {
                     fill: Some(LineFill::ToSeries("other".into())),
                     fill_color: Some(blue),
-                    ..DataLineStyleConfig::default()
+                    ..crate::defaults::data_line_style_config()
                 }),
                 errors: None,
                 stem: None,

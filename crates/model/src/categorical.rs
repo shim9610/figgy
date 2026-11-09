@@ -73,11 +73,14 @@ pub type CategoryBarMaterial = crate::Material;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "crate::defaults::categorical_chart")
 )]
 pub struct CategoricalChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -91,13 +94,19 @@ pub struct CategoricalChart {
     /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::defaults::layer_ref",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::defaults::annotation_layer",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     pub categories: Vec<Category>,
@@ -125,39 +134,7 @@ pub struct CategoricalChart {
     pub text_color: Color,
     pub background: Color,
 }
-impl Default for CategoricalChart {
-    fn default() -> Self {
-        Self {
-            decorations: Default::default(),
-            title: String::new(),
-            chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
-            categories: vec![],
-            series: vec![],
-            mode: CategoryBarMode::Grouped,
-            direction: CategoryBarDirection::Vertical,
-            style: CategoryBarStyle::default(),
-            overrides: vec![],
-            hovered: None,
-            selected: None,
-            labels: CategoryBarLabels::Auto,
-            label_format: CategoryBarLabelFormat::Value,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            value_title: String::new(),
-            category_title: String::new(),
-            grid: true,
-            legend: true,
-            group_width: 0.7,
-            bar_gap: 3.0,
-            font_family: "sans-serif".into(),
-            font_size: 14.0,
-            text_color: Color::from_rgb8(35, 45, 65),
-            background: Color::WHITE,
-        }
-    }
-}
+
 fn text(s: &str, max: usize) -> bool {
     s.chars().count() <= max && !s.chars().any(char::is_control)
 }
@@ -319,7 +296,7 @@ mod tests {
                 BarSeries::new("s", "S", vec![Some(2.0), None], Color::WHITE),
                 BarSeries::new("t", "T", vec![Some(3.0), Some(0.0)], Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         }
     }
     #[test]
@@ -366,7 +343,7 @@ mod tests {
             let mut c = chart();
             c.series[0].style = Some(CategoryBarStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::category_bar_style()
             });
             assert_eq!(
                 c.validate(),
@@ -376,7 +353,7 @@ mod tests {
             let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "s"));
             o.style = Some(CategoryBarStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::category_bar_style()
             });
             c.overrides.push(o);
             assert_eq!(
@@ -423,7 +400,7 @@ mod tests {
             series: (0..m)
                 .map(|i| BarSeries::new(format!("s{i}"), "Series", vec![Some(1.); n], Color::WHITE))
                 .collect(),
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         };
         // No category cap (#107): 65 and 300 categories are accepted.
         // No bar cap either: 33 x 16 and 64 x 9 pass the old 512 entries.
@@ -472,7 +449,7 @@ mod tests {
             Box::new(|s| s.emphasis_brightness = 0.51),
         ];
         for edit in edits {
-            let mut invalid = CategoryBarStyle::default();
+            let mut invalid = crate::defaults::category_bar_style();
             edit(&mut invalid);
             let mut c = chart();
             c.style = invalid.clone();

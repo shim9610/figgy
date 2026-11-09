@@ -23,11 +23,10 @@ pub struct RangeWhiskers {
 }
 
 /// How the bars of a [`DataRenderType::RangeBars`] series are filled.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RangeColor {
     /// Every bar in the series colour.
-    #[default]
     Single,
     /// By the direction of the bar's given ends: `up` when end ≥ start,
     /// else `down`; a bar whose `total` flag column reads 1 takes the total
