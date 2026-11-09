@@ -1225,6 +1225,7 @@ impl CartesianHost {
                             anchor: Anchor::Data { x: cx, y: cy },
                             text: RichText::plain("note", Color::BLACK, 15.0, ""),
                             box_style: Some(Default::default()),
+                            align: Default::default(),
                         });
                     }
                     if ui.button("+ Arrow").clicked() {

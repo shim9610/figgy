@@ -327,6 +327,7 @@ impl RadialHost {
                             anchor: Anchor::Ratio { x: 0.5, y: 0.5 },
                             text: RichText::plain("note", Color::BLACK, 15.0, ""),
                             box_style: Some(Default::default()),
+                            align: Default::default(),
                         },
                     );
                 }
