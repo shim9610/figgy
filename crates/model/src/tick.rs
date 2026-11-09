@@ -2397,7 +2397,7 @@ mod piece_spacing_tests {
         assert_eq!(effective_major_spacing(&axis), 20.0);
         axis.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(30.0, 85.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         assert_eq!(effective_major_spacing(&axis), 10.0);
         let majors: Vec<f64> = major_ticks(&axis)
@@ -2407,7 +2407,7 @@ mod piece_spacing_tests {
         // A piece of 0.3 units on a 0..100 axis.
         axis.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.3, 99.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         let step = effective_major_spacing(&axis);
         assert!(step <= 0.2 + 1e-12, "{step}");
@@ -2435,7 +2435,7 @@ mod zoomed_break_tests {
             axis.breaks = Some(crate::config::AxisBreaks {
                 ranges: vec![crate::config::AxisBreak::new(0.25, 19.6)],
                 sizing: sizing.clone(),
-                ..Default::default()
+                ..crate::defaults::axis_breaks()
             });
             assert_eq!(super::effective_major_spacing(&axis), 0.5, "{sizing:?}");
             let majors = super::major_ticks(&axis).count();

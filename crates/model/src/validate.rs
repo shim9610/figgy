@@ -409,6 +409,7 @@ mod tests {
     use super::*;
     use crate::color::Color;
     use crate::data_config::{DataScatterStyleConfig, ScatterShape};
+    #[cfg(feature = "serde")]
     use crate::polar::PolarOptions;
 
     fn scatter(id: &str) -> SeriesConfig {
@@ -495,20 +496,20 @@ mod tests {
         let mut bare = with(stem.clone());
         if let DataRenderType::Xy(XySeries { scatter, line, .. }) = &mut bare.render_type {
             *scatter = None;
-            *line = Some(crate::data_config::DataLineStyleConfig::default());
+            *line = Some(crate::defaults::data_line_style_config());
         }
         assert_eq!(reason(bare), crate::RuleKind::StemsWithoutMarkers);
 
         let mut polar = crate::defaults::config();
         polar.bottom_x.min = 0.0;
         polar.bottom_x.max = 360.0;
-        polar.set_polar(Some(PolarOptions::default()));
+        polar.set_polar(Some(crate::defaults::polar_options()));
         assert_eq!(
             polar.validate_series_on_polar(&with(stem.clone())),
             Err(crate::RuleKind::PolarStems)
         );
         let mut three_d = crate::defaults::config();
-        three_d.set_view_3d(Some(crate::view3d::View3d::default()));
+        three_d.set_view_3d(Some(crate::defaults::view3d()));
         let mut tall = with(stem.clone());
         tall.z_column = Some("z".into());
         assert_eq!(
@@ -532,10 +533,10 @@ mod tests {
         let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
-        config.set_polar(Some(PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         let mut vector = scatter("v");
         vector.render_type = DataRenderType::Streamlines {
-            line: crate::data_config::DataLineStyleConfig::default(),
+            line: crate::defaults::data_line_style_config(),
             arrows: None,
             color_map: None,
         };
@@ -568,7 +569,7 @@ mod tests {
             }),
             contour: contour.then(|| ContourConfig {
                 levels: vec![0.5],
-                line: crate::data_config::DataLineStyleConfig::default(),
+                line: crate::defaults::data_line_style_config(),
                 per_level_color: None,
                 labels: None,
             }),
@@ -583,7 +584,7 @@ mod tests {
     fn a_polar_heatmap_is_held_to_its_rules() {
         use crate::data_config::GridLayout;
         let mut config = crate::defaults::config();
-        config.set_polar(Some(PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         for layout in [GridLayout::Edges, GridLayout::Centers] {
             for contour in [false, true] {
                 assert_eq!(
@@ -613,7 +614,7 @@ mod tests {
         config.set_polar(Some(PolarOptions {
             inner_radius_fraction: 0.1,
             clockwise: true,
-            ..PolarOptions::default()
+            ..crate::defaults::polar_options()
         }));
         let series = vec![polar_field(GridLayout::Edges, true)];
         let config_json = serde_json::to_string(&config).unwrap();

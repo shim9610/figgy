@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn base_is_the_default_layer() {
-        assert_eq!(LayerRef::default(), LayerRef::Base);
+        assert_eq!(crate::defaults::layer_ref(), LayerRef::Base);
         assert!(LayerRef::Base.is_base());
         assert!(!LayerRef::Overlay(0).is_base());
         assert!(!LayerRef::Annotations.is_base());
@@ -268,7 +268,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn subplots_round_trip_and_omit_their_defaults() {
-        let json = serde_json::to_value(Subplot::default()).unwrap();
+        let json = serde_json::to_value(crate::defaults::subplot()).unwrap();
         assert!(json.get("config").is_some());
         for key in ["series", "link_x", "link_y"] {
             assert!(json.get(key).is_none(), "{key}: {json}");
@@ -277,7 +277,7 @@ mod tests {
             series: vec!["flow".into()],
             link_x: Some(CellRef::Parent),
             link_y: Some(CellRef::Subplot(0)),
-            ..Default::default()
+            ..crate::defaults::subplot()
         };
         let json = serde_json::to_value(&subplot).unwrap();
         assert_eq!(json["link_x"], serde_json::json!("Parent"));
@@ -304,7 +304,7 @@ mod tests {
         let mut active = LayerRef::Base;
         let mut decorations = crate::DecorationLayout {
             selected: Some(DecorationId::Legend),
-            ..Default::default()
+            ..crate::defaults::decoration_layout()
         };
         // An overlay is stored as `Base`, which is no change: the selection stays.
         assert_eq!(
@@ -338,7 +338,7 @@ mod tests {
         use crate::decoration::DecorationId;
         macro_rules! check {
             ($chart:ty, $data:expr) => {{
-                let mut c = <$chart>::default();
+                let mut c = crate::defaults::radial_chart();
                 let select_data: fn(&mut $chart) = $data;
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 c.active_layer = LayerRef::Overlay(1);
@@ -358,7 +358,7 @@ mod tests {
                     assert_eq!(json["active_layer"], serde_json::json!("Annotations"));
                     let back: $chart = serde_json::from_value(json).unwrap();
                     assert_eq!(back, c);
-                    let mut legacy = serde_json::to_value(<$chart>::default()).unwrap();
+                    let mut legacy = serde_json::to_value(crate::defaults::radial_chart()).unwrap();
                     assert!(legacy.get("active_layer").is_none());
                     legacy["active_layer"] = serde_json::json!({ "Overlay": 0 });
                     let read: $chart = serde_json::from_value(legacy).unwrap();
@@ -377,8 +377,8 @@ mod tests {
     #[allow(deprecated)]
     fn legacy_documents_read_their_active_layer() {
         macro_rules! check {
-            ($chart:ty) => {{
-                let mut c = <$chart>::default();
+            ($new:expr) => {{
+                let mut c = $new;
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 c.active_layer = LayerRef::Overlay(1);
                 assert_eq!(c.active_layer(), LayerRef::Base);
@@ -386,14 +386,14 @@ mod tests {
                 assert_eq!(c.active_layer(), LayerRef::Annotations);
             }};
         }
-        check!(crate::categorical::CategoricalChart);
-        check!(crate::boxplot::BoxPlotChart);
-        check!(crate::radar::RadarChart);
+        check!(crate::defaults::categorical_chart());
+        check!(crate::defaults::box_plot_chart());
+        check!(crate::defaults::radar_chart());
     }
 
     #[test]
     fn annotation_layer_defaults_to_visible() {
-        let layer = AnnotationLayer::default();
+        let layer = crate::defaults::annotation_layer();
         assert!(layer.visible);
         assert!(layer.is_default());
         assert!(
@@ -421,14 +421,14 @@ mod tests {
 
     #[test]
     fn overlay_layer_defaults_to_an_unassigned_right_axis() {
-        let layer = OverlayLayer::default();
+        let layer = crate::defaults::overlay_layer();
         assert_eq!(layer.y_axis, crate::defaults::axis_options_y());
         assert!(layer.series.is_empty());
         assert!(layer.legend.is_none());
         assert!(!layer.owns_series("a"));
         let layer = OverlayLayer {
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         };
         assert!(layer.owns_series("a"));
         assert!(!layer.owns_series("b"));
@@ -437,17 +437,17 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn overlay_layer_omits_its_optional_keys_and_round_trips() {
-        let json = serde_json::to_value(OverlayLayer::default()).unwrap();
+        let json = serde_json::to_value(crate::defaults::overlay_layer()).unwrap();
         assert!(json.get("y_axis").is_some());
         assert!(json.get("series").is_none(), "{json}");
         assert!(json.get("legend").is_none(), "{json}");
         let back: OverlayLayer = serde_json::from_value(json).unwrap();
-        assert_eq!(back, OverlayLayer::default());
+        assert_eq!(back, crate::defaults::overlay_layer());
 
         let layer = OverlayLayer {
             series: vec!["pressure".into()],
             legend: Some(crate::defaults::legend()),
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         };
         let json = serde_json::to_value(&layer).unwrap();
         assert_eq!(json["series"], serde_json::json!(["pressure"]));
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(back, layer);
         // A document written with only the axis still parses.
         let partial: OverlayLayer = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
-        assert_eq!(partial.y_axis, OverlayLayer::default().y_axis);
+        assert_eq!(partial.y_axis, crate::defaults::overlay_layer().y_axis);
         assert_eq!(partial.series, vec!["a".to_string()]);
     }
 
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn annotation_layer_reads_missing_keys_as_defaults() {
         let layer: AnnotationLayer = serde_json::from_str("{}").unwrap();
-        assert_eq!(layer, AnnotationLayer::default());
+        assert_eq!(layer, crate::defaults::annotation_layer());
         let hidden: AnnotationLayer = serde_json::from_str(r#"{"visible":false}"#).unwrap();
         assert!(!hidden.visible);
         assert_eq!(

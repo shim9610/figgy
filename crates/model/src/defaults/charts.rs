@@ -109,9 +109,7 @@ pub(crate) const fn grid_shape() -> GridShape {
 /// The documented default of [`ParallelOptions`]: the value a document that
 /// omits it takes.
 pub(crate) fn parallel_options() -> ParallelOptions {
-    ParallelOptions {
-        axes: Default::default(),
-    }
+    ParallelOptions { axes: Vec::new() }
 }
 
 /// The documented default of [`PolarInterpolation`]: the value a document that

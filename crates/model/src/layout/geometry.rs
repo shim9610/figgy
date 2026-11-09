@@ -1663,7 +1663,7 @@ mod tests {
         config.left_y.cross_at = Some(0.5);
         assert_eq!(axis_cross(&config, &Side::Left), Some(0.5));
         // Polar charts draw no Cartesian axis lines.
-        config.set_polar(Some(crate::polar::PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         assert_eq!(axis_cross(&config, &Side::Left), None);
     }
 
@@ -2542,7 +2542,7 @@ mod tests {
 
         let mut kept = long_cfg.clone();
         kept.left_y.label_style.format =
-            LabelFormat::Timestamp(crate::format::TimestampLabelFormat::default());
+            LabelFormat::Timestamp(crate::defaults::timestamp_label_format());
         kept.bottom_x.categories = Some(vec![
             crate::config::Category::new("a", "A"),
             crate::config::Category::new("b", "B"),
@@ -2623,12 +2623,12 @@ mod tests {
     fn auto_layout_fits_overlay_and_subplot_bands() {
         let measure = Labels;
         let mut cfg = crate::defaults::config();
-        let mut overlay = crate::layer::OverlayLayer::default();
+        let mut overlay = crate::defaults::overlay_layer();
         overlay.y_axis.title_option.visible = true;
         overlay.y_axis.title_option.text.segments = crate::text::rich_segments_from_text("p");
         let right = cfg.margins().right;
         cfg.overlays.push(overlay);
-        let mut sub = crate::layer::Subplot::default();
+        let mut sub = crate::defaults::subplot();
         sub.config = with_titles("Optical depth");
         sub.config.chart_area = ChartArea(Rect {
             x: 1000,
@@ -2670,7 +2670,7 @@ mod break_map_tests {
         axis.breaks = Some(AxisBreaks {
             ranges: cuts.iter().map(|&(a, b)| AxisBreak::new(a, b)).collect(),
             gap_px: gap * LEN,
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         axis
     }
@@ -2882,7 +2882,7 @@ mod break_map_tests {
         a.min = -3.0;
         a.max = 7.0;
         let before = axis_fraction(1.5, &a, LEN);
-        a.breaks = Some(AxisBreaks::default());
+        a.breaks = Some(crate::defaults::axis_breaks());
         assert_eq!(axis_fraction(1.5, &a, LEN), before);
         assert_eq!(BreakMap::of(&a, LEN), BreakMap::IDENTITY);
     }

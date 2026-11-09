@@ -522,7 +522,7 @@ mod tests {
 
     fn polar_cfg() -> Config {
         let mut cfg = cfg_800x600();
-        cfg.set_polar(Some(crate::polar::PolarOptions::default()));
+        cfg.set_polar(Some(crate::defaults::polar_options()));
         cfg
     }
 

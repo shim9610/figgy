@@ -382,7 +382,7 @@ mod tests {
                 vec![1.0, 2.0, 3.0],
                 Color::WHITE,
             )],
-            ..Default::default()
+            ..crate::defaults::radar_chart()
         }
     }
     #[test]
@@ -457,7 +457,7 @@ mod tests {
         let mut c = chart();
         c.series[0].style = Some(RadarSeriesStyle {
             marker: Some(RadarMarker::Square),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         });
         c.style.grid_shape = RadarGridShape::Circle;
         c.selected = Some(RadarTarget::vertex("s", "b"));

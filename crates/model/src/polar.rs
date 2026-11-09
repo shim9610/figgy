@@ -427,13 +427,13 @@ mod tests {
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.set_polar(Some(PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         config
     }
 
     #[test]
     fn screen_angles_follow_zero_direction_and_unit() {
-        let mut polar = PolarOptions::default();
+        let mut polar = crate::defaults::polar_options();
         assert!((polar.screen_angle(90.0) - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         polar.clockwise = true;
         polar.zero_angle_degrees = 90.0;
@@ -505,7 +505,7 @@ mod tests {
         c.left_y.scale = AxisScale::Probability(crate::config::ProbabilityScale::Normal);
         assert_eq!(c.validate_polar(), Err(crate::RuleKind::PolarRadiusScale));
         let mut c = config.clone();
-        c.overlays.push(crate::layer::OverlayLayer::default());
+        c.overlays.push(crate::defaults::overlay_layer());
         assert!(c.validate_polar().is_err());
         let mut c = config.clone();
         c.polar_mut().unwrap().zero_angle_degrees = f64::NAN;
@@ -523,7 +523,7 @@ mod tests {
             zero_angle_degrees: 30.0,
             clockwise: true,
             sector: Some([-45.0, 200.0]),
-            ..PolarOptions::default()
+            ..crate::defaults::polar_options()
         };
         let map = polar.angle_map(&config.bottom_x);
         for value in [-45.0, 0.0, 12.5, 200.0] {
@@ -551,7 +551,7 @@ mod tests {
         let mut polar = PolarOptions {
             zero_angle_degrees: 90.0,
             clockwise: true,
-            ..PolarOptions::default()
+            ..crate::defaults::polar_options()
         };
         let quarter = std::f64::consts::FRAC_PI_2;
         let map = polar.angle_map(&config.bottom_x);
@@ -582,7 +582,7 @@ mod tests {
         assert!((map.radians_per_value - std::f64::consts::PI / 4.0).abs() < 1e-12);
         assert_eq!(
             config.polar_angle_map(),
-            Some(PolarOptions::default().angle_map(&config.bottom_x))
+            Some(crate::defaults::polar_options().angle_map(&config.bottom_x))
         );
     }
 
@@ -691,7 +691,7 @@ mod tests {
         assert!(text.contains(r#""grid_shape":"Polygon""#), "{text}");
         // The default grid shape is omitted, so earlier documents keep
         // their bytes.
-        let default_text = serde_json::to_string(&PolarOptions::default()).unwrap();
+        let default_text = serde_json::to_string(&crate::defaults::polar_options()).unwrap();
         assert!(!default_text.contains("grid_shape"), "{default_text}");
         assert!(
             !default_text.contains("hide_first_radius_label"),
@@ -708,7 +708,7 @@ mod tests {
             partial,
             PolarOptions {
                 clockwise: true,
-                ..Default::default()
+                ..crate::defaults::polar_options()
             }
         );
     }

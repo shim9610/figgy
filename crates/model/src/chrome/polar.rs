@@ -797,7 +797,7 @@ mod tests {
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
         config.left_y.max = 10.0;
-        config.set_polar(Some(crate::polar::PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         let all = labels(&config);
         assert!(all.len() >= 3, "{all:?}");
         let mut hidden = config.clone();

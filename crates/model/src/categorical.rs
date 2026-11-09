@@ -296,7 +296,7 @@ mod tests {
                 BarSeries::new("s", "S", vec![Some(2.0), None], Color::WHITE),
                 BarSeries::new("t", "T", vec![Some(3.0), Some(0.0)], Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         }
     }
     #[test]
@@ -343,7 +343,7 @@ mod tests {
             let mut c = chart();
             c.series[0].style = Some(CategoryBarStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::category_bar_style()
             });
             assert_eq!(
                 c.validate(),
@@ -353,7 +353,7 @@ mod tests {
             let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "s"));
             o.style = Some(CategoryBarStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::category_bar_style()
             });
             c.overrides.push(o);
             assert_eq!(
@@ -400,7 +400,7 @@ mod tests {
             series: (0..m)
                 .map(|i| BarSeries::new(format!("s{i}"), "Series", vec![Some(1.); n], Color::WHITE))
                 .collect(),
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         };
         // No category cap (#107): 65 and 300 categories are accepted.
         // No bar cap either: 33 x 16 and 64 x 9 pass the old 512 entries.
@@ -449,7 +449,7 @@ mod tests {
             Box::new(|s| s.emphasis_brightness = 0.51),
         ];
         for edit in edits {
-            let mut invalid = CategoryBarStyle::default();
+            let mut invalid = crate::defaults::category_bar_style();
             edit(&mut invalid);
             let mut c = chart();
             c.style = invalid.clone();

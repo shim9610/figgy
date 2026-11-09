@@ -465,7 +465,7 @@ mod tests {
         cfg.left_y.max = 25.0;
         cfg.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.5, 10.0), AxisBreak::new(12.0, 20.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         cfg.apply_axis_preset(AxisPreset::Grotrian);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
@@ -487,7 +487,7 @@ mod tests {
         panels.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.5, 10.0)],
             style: AxisBreakStyle::Panels,
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         panels.apply_axis_preset(AxisPreset::Grotrian);
         assert_eq!(

@@ -2069,7 +2069,7 @@ mod tests {
         axis.breaks = Some(crate::config::AxisBreaks {
             ranges: vec![crate::config::AxisBreak::new(4.0, 6.0)],
             gap_px: 30.0,
-            ..Default::default()
+            ..crate::defaults::axis_breaks()
         });
         let mut space = space();
         space.x.breaks = BreakMap::of(&axis, space.plot.width);
@@ -2118,7 +2118,7 @@ mod tests {
             let line = |axis, value| AnnotationKind::ReferenceLine {
                 axis,
                 value,
-                style: Default::default(),
+                style: crate::defaults::annotation_line_style(),
                 label: None,
             };
             clipped(&line(AnnotationAxis::Y, 10.0), &mut parts);
@@ -2135,7 +2135,7 @@ mod tests {
             color: Color::BLACK,
             font_size: 12.,
             font: String::new(),
-            align: Default::default(),
+            align: crate::defaults::text_align(),
         }
     }
 
@@ -2205,7 +2205,7 @@ mod tests {
         let line = AnnotationKind::ReferenceLine {
             axis: AnnotationAxis::X,
             value: 2.,
-            style: Default::default(),
+            style: crate::defaults::annotation_line_style(),
             label: None,
         };
         assert_eq!(
@@ -2218,7 +2218,7 @@ mod tests {
         let outside = AnnotationKind::ReferenceLine {
             axis: AnnotationAxis::X,
             value: 12.,
-            style: Default::default(),
+            style: crate::defaults::annotation_line_style(),
             label: None,
         };
         assert_eq!(geometry(&outside, &s, None), None);
@@ -2249,7 +2249,7 @@ mod tests {
             anchor: Anchor::Ratio { x: 1.1, y: 0. },
             text: text("a"),
             box_style: None,
-            align: Default::default(),
+            align: crate::defaults::note_align(),
         };
         assert!(geometry(&text, &s, Some([20., 10.])).is_some());
         assert_eq!(geometry(&text, &s, Some([200., 10.])), None);
@@ -2257,7 +2257,7 @@ mod tests {
         let arrow = AnnotationKind::Arrow {
             from: Anchor::Data { x: 0., y: 1. },
             to: Anchor::Data { x: 10., y: 1000. },
-            style: Default::default(),
+            style: crate::defaults::arrow_style(),
             text: None,
         };
         assert_eq!(
@@ -2277,7 +2277,7 @@ mod tests {
                 Annotation::new(AnnotationKind::ReferenceLine {
                     axis: AnnotationAxis::X,
                     value: 2.,
-                    style: Default::default(),
+                    style: crate::defaults::annotation_line_style(),
                     label: None,
                 }),
                 Annotation::new(AnnotationKind::Span {
@@ -2290,12 +2290,12 @@ mod tests {
                     anchor: Anchor::Data { x: 5., y: 10. },
                     text: text("note"),
                     box_style: None,
-                    align: Default::default(),
+                    align: crate::defaults::note_align(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.1, y: 0.1 },
                     to: Anchor::Ratio { x: 0.5, y: 0.5 },
-                    style: Default::default(),
+                    style: crate::defaults::arrow_style(),
                     text: None,
                 }),
             ],
@@ -2423,12 +2423,12 @@ mod tests {
                     anchor: Anchor::Ratio { x: 0.5, y: 0.5 },
                     text: text("t"),
                     box_style: None,
-                    align: Default::default(),
+                    align: crate::defaults::note_align(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.5, y: 0.5 },
                     to: Anchor::Ratio { x: 0.2, y: 0.9 },
-                    style: Default::default(),
+                    style: crate::defaults::arrow_style(),
                     text: None,
                 }),
             ],
@@ -2469,13 +2469,13 @@ mod tests {
 
     #[test]
     fn validation_rejects_malformed_styles_but_not_nonfinite_values() {
-        let mut layer = AnnotationLayer::default();
+        let mut layer = crate::defaults::annotation_layer();
         layer
             .items
             .push(Annotation::new(AnnotationKind::ReferenceLine {
                 axis: AnnotationAxis::Y,
                 value: f64::NAN,
-                style: Default::default(),
+                style: crate::defaults::annotation_line_style(),
                 label: Some(text("nan")),
             }));
         layer.items.push(Annotation::new(AnnotationKind::Text {
@@ -2484,8 +2484,8 @@ mod tests {
                 y: 0.,
             },
             text: text("inf"),
-            box_style: Some(BoxStyle::default()),
-            align: Default::default(),
+            box_style: Some(crate::defaults::box_style()),
+            align: crate::defaults::note_align(),
         }));
         layer.validate().unwrap();
         assert!(!layer.is_default());
@@ -2553,7 +2553,7 @@ mod tests {
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Data { x: 1., y: 2. },
                     to: Anchor::Ratio { x: 0.5, y: 0.5 },
-                    style: Default::default(),
+                    style: crate::defaults::arrow_style(),
                     text: Some(text("peak")),
                 }),
             ],
@@ -2564,7 +2564,7 @@ mod tests {
         let back: AnnotationLayer = serde_json::from_value(json).unwrap();
         assert_eq!(back, layer);
         assert_eq!(
-            serde_json::to_string(&AnnotationLayer::default()).unwrap(),
+            serde_json::to_string(&crate::defaults::annotation_layer()).unwrap(),
             r#"{"visible":true}"#
         );
         // A shape round-trips with its default style omitted.
@@ -2574,7 +2574,7 @@ mod tests {
                 Anchor::Ratio { x: 0.5, y: 0.5 },
                 Anchor::Data { x: 3., y: 4. },
             ],
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let json = serde_json::to_value(&shape).unwrap();
         assert_eq!(
@@ -2592,7 +2592,7 @@ mod tests {
             AnnotationKind::Rect {
                 from: Anchor::Ratio { x: 0.1, y: 0.1 },
                 to: Anchor::Ratio { x: 0.4, y: 0.3 },
-                style: ShapeStyle::default(),
+                style: crate::defaults::shape_style(),
             }
         );
     }
@@ -2622,7 +2622,7 @@ mod tests {
                 y: 0.15,
             },
             to: Anchor::Ratio { x: 0.5, y: 0.65 },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let e = element(0, None);
         let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&rect) else {
@@ -2652,7 +2652,7 @@ mod tests {
                 y: 0.15,
             },
             to: Anchor::Ratio { x: 0.5, y: 0.65 },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&ellipse) else {
             panic!("an ellipse places a polygon");
@@ -2672,7 +2672,7 @@ mod tests {
                 Anchor::Ratio { x: 0.25, y: 0.5 },
                 Anchor::Ratio { x: 0.0, y: 0.5 },
             ],
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         assert!(e.contains(&l, &NoMeasure, 60., 30.)); // the top arm
         assert!(e.contains(&l, &NoMeasure, 60., 110.)); // the left arm
@@ -2682,7 +2682,7 @@ mod tests {
         let straddling = shape(AnnotationKind::Rect {
             from: Anchor::Ratio { x: 0.8, y: 0.2 },
             to: Anchor::Ratio { x: 1.3, y: 0.4 },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&straddling) else {
             panic!("the straddling rectangle places a polygon");
@@ -2692,7 +2692,7 @@ mod tests {
         let outside = shape(AnnotationKind::Rect {
             from: Anchor::Ratio { x: 1.1, y: 0.2 },
             to: Anchor::Ratio { x: 1.3, y: 0.4 },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         assert_eq!(e.geometry(&outside), None);
         // A data anchor on a chart without value axes has no geometry.
@@ -2706,7 +2706,7 @@ mod tests {
         let data = shape(AnnotationKind::Rect {
             from: Anchor::Data { x: 1., y: 10. },
             to: Anchor::Data { x: 3., y: 100. },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let on_no_axes = AnnotationElement {
             space: no_axes,
@@ -2728,7 +2728,7 @@ mod tests {
                 y: 0.15,
             },
             to: Anchor::Data { x: 5., y: 10. },
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         let before = rect.clone();
         assert_eq!(
@@ -2781,7 +2781,7 @@ mod tests {
                 Anchor::Ratio { x: 0.5, y: 0.1 },
                 Anchor::Ratio { x: 0.5, y: 0.5 },
             ],
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         assert_eq!(e.hit_vertex(&poly, 200., 120.), Some(2));
         assert_eq!(e.hit_vertex(&poly, 150., 150.), None);
@@ -2810,7 +2810,7 @@ mod tests {
                 Anchor::Ratio { x: 0.1, y: 0.1 },
                 Anchor::Ratio { x: 0.5, y: 0.1 },
             ],
-            style: ShapeStyle::default(),
+            style: crate::defaults::shape_style(),
         });
         assert_eq!(two.validate(), Err(crate::RuleKind::AnnotationPolygon));
     }

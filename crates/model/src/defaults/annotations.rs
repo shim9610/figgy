@@ -58,9 +58,9 @@ pub(crate) fn box_style() -> BoxStyle {
 /// omits it takes.
 pub(crate) fn decoration_layout() -> DecorationLayout {
     DecorationLayout {
-        data_area: Default::default(),
-        offsets: Default::default(),
-        selected: Default::default(),
+        data_area: None,
+        offsets: Vec::new(),
+        selected: None,
     }
 }
 
@@ -104,9 +104,9 @@ pub(crate) fn overlay_layer() -> OverlayLayer {
 /// omits it takes.
 pub(crate) fn shape_style() -> ShapeStyle {
     ShapeStyle {
-        fill: Default::default(),
+        fill: None,
         border: annotation_line_style(),
-        below: Default::default(),
+        below: false,
     }
 }
 

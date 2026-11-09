@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn a_subplot_area_is_set_anywhere_and_refused_when_its_plot_cannot_fit() {
         let mut cfg = crate::defaults::config();
-        let mut subplot = crate::layer::Subplot::default();
+        let mut subplot = crate::defaults::subplot();
         subplot.config.chart_area = ChartArea(Rect {
             x: 10,
             y: 10,

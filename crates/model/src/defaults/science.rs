@@ -17,13 +17,13 @@ use crate::*;
 /// omits it takes.
 pub(crate) fn energy_level_series() -> EnergyLevelSeries {
     EnergyLevelSeries {
-        levels: Default::default(),
-        limits: Default::default(),
-        transitions: Default::default(),
-        bands: Default::default(),
+        levels: Vec::new(),
+        limits: Vec::new(),
+        transitions: Vec::new(),
+        bands: Vec::new(),
         style: energy_level_style(),
         show: level_view(),
-        source: Default::default(),
+        source: None,
     }
 }
 
@@ -66,8 +66,8 @@ pub(crate) fn feynman_picked() -> FeynmanPicked {
 /// omits it takes.
 pub(crate) fn feynman_series() -> FeynmanSeries {
     FeynmanSeries {
-        vertices: Default::default(),
-        propagators: Default::default(),
+        vertices: Vec::new(),
+        propagators: Vec::new(),
         style: feynman_style(),
         layout: feynman_layout(),
     }

@@ -154,11 +154,17 @@ def static():
     # Host defaults are for hosts (#266): the model and renderer libraries
     # build without the `helpers` feature, so their own code cannot fall back
     # on `Default` or the `default` module. Native and WASM, with and without
-    # serde (serde reads omitted fields through each type's own source).
+    # serde (serde reads omitted fields through `crate::defaults`).
     for target in ([], ["--target", "wasm32-unknown-unknown"]):
         for features in ([], ["--features", "serde"]):
             run(["cargo", "check", "--locked", "-p", PACKAGES[0], "-p", PACKAGES[1], "--lib",
                  "--no-default-features", *features, *target])
+    # Their unit tests too: inside the crates a test reads `crate::defaults`
+    # like product code, never `Default` (#266). The tests need serde; the
+    # renderer's also need the CPU twins.
+    run(["cargo", "check", "--locked", "-p", PACKAGES[0], "-p", PACKAGES[1], "--lib",
+         "--profile", "test", "--no-default-features", "--features",
+         f"{PACKAGES[0]}/serde,{PACKAGES[1]}/serde,{PACKAGES[1]}/cpu-twin"])
     # Compile the browser tests too; running them needs a WebGPU browser.
     # Every WASM test target is named `*_browser`; the other tests are native.
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",

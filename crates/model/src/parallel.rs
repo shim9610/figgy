@@ -414,7 +414,7 @@ mod tests {
             crate::RuleKind::ParallelLeftY
         );
         assert_eq!(
-            reject(&|c| c.overlays.push(Default::default())),
+            reject(&|c| c.overlays.push(crate::defaults::overlay_layer())),
             crate::RuleKind::ParallelOverlay
         );
         let reject_series = |edit: &dyn Fn(&mut SeriesConfig)| {

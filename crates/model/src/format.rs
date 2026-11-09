@@ -303,7 +303,10 @@ mod tests {
         ] {
             assert_eq!(PlainNumberFormat::AUTO.format(value), text, "{value:?}");
         }
-        assert_eq!(PlainNumberFormat::default(), PlainNumberFormat::AUTO);
+        assert_eq!(
+            crate::defaults::plain_number_format(),
+            PlainNumberFormat::AUTO
+        );
         // `trim_zeros` does not change the automatic form.
         let trimmed = PlainNumberFormat {
             decimals: None,

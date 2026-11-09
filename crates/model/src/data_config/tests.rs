@@ -21,11 +21,11 @@ mod vector_style_tests {
 
     #[test]
     fn validation_rejects_bad_pixels_and_scales() {
-        assert_eq!(style(VectorScale::default()).validate(), Ok(()));
-        let mut bad = style(VectorScale::default());
+        assert_eq!(style(crate::defaults::vector_scale()).validate(), Ok(()));
+        let mut bad = style(crate::defaults::vector_scale());
         bad.width_px = -1.0;
         assert_eq!(bad.validate(), Err(VectorStyle::INVALID_PIXELS_REASON));
-        let mut bad = style(VectorScale::default());
+        let mut bad = style(crate::defaults::vector_scale());
         bad.head_width_px = f32::NAN;
         assert_eq!(bad.validate(), Err(VectorStyle::INVALID_PIXELS_REASON));
         let bad = style(VectorScale::Data { factor: 0.0 });
@@ -451,7 +451,7 @@ mod serde_tests {
 
         let baseline = DataLineStyleConfig {
             fill: Some(LineFill::ToBaseline(-1.0)),
-            ..DataLineStyleConfig::default()
+            ..crate::defaults::data_line_style_config()
         };
         let json = serde_json::to_value(&baseline).expect("serialize baseline fill");
         assert_eq!(json["fill"], serde_json::json!({ "ToBaseline": -1.0 }));
@@ -897,7 +897,7 @@ mod serde_tests {
         errored["render_type"] = serde_json::json!({
             "LineScatterErrorbarXY": {
                 "scatter": base_series_json()["render_type"]["Scatter"]["scatter"],
-                "line": serde_json::to_value(super::DataLineStyleConfig::default()).unwrap(),
+                "line": serde_json::to_value(crate::defaults::data_line_style_config()).unwrap(),
                 "err_x": { "Symmetric": { "column": "ex" } },
                 "err_y": { "Symmetric": { "column": "ey" } },
                 "err_style": {
@@ -932,10 +932,10 @@ mod line_style_tests {
 
     #[test]
     fn line_fill_defaults_to_the_zero_baseline_and_the_line_colour_at_quarter_alpha() {
-        assert_eq!(LineFill::default(), LineFill::ToBaseline(0.0));
+        assert_eq!(crate::defaults::line_fill(), LineFill::ToBaseline(0.0));
         let line = DataLineStyleConfig {
             line_color: Color::from_rgba(0.2, 0.4, 0.6, 0.8),
-            ..DataLineStyleConfig::default()
+            ..crate::defaults::data_line_style_config()
         };
         assert_eq!(
             line.effective_fill_color(),
@@ -950,7 +950,7 @@ mod line_style_tests {
 
     #[test]
     fn the_default_interpolation_is_linear() {
-        assert!(LineInterpolation::default().is_linear());
+        assert!(crate::defaults::line_interpolation().is_linear());
     }
 }
 
@@ -1243,8 +1243,8 @@ mod category_bar_tests {
             z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color: Color::from_rgb8(40, 120, 200),
-                style: CategoryBarStyle::default(),
-                labels: CategoryBarSeriesLabels::default(),
+                style: crate::defaults::category_bar_style(),
+                labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
             },
@@ -1298,7 +1298,7 @@ mod category_bar_tests {
         let mut config = chart(3);
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..Default::default()
+            ..crate::defaults::bar_groups()
         });
         assert!(config.validate_category_bars(&[bars("a")]).is_err());
         config.left_y.categories = Some(categories(3));
@@ -1344,23 +1344,23 @@ mod category_bar_tests {
         for groups in [
             BarGroups {
                 group_width: 0.05,
-                ..Default::default()
+                ..crate::defaults::bar_groups()
             },
             BarGroups {
                 group_width: 0.96,
-                ..Default::default()
+                ..crate::defaults::bar_groups()
             },
             BarGroups {
                 bar_gap: -1.0,
-                ..Default::default()
+                ..crate::defaults::bar_groups()
             },
             BarGroups {
                 bar_gap: f32::NAN,
-                ..Default::default()
+                ..crate::defaults::bar_groups()
             },
             BarGroups {
                 bar_gap: 24.5,
-                ..Default::default()
+                ..crate::defaults::bar_groups()
             },
         ] {
             assert!(groups.validate().is_err(), "{groups:?}");
@@ -1370,12 +1370,12 @@ mod category_bar_tests {
             let mut config = chart(3);
             config.subplots.push(Subplot {
                 config: chart(3),
-                ..Default::default()
+                ..crate::defaults::subplot()
             });
             config.subplots[0].config.bar_groups = Some(groups);
             assert!(config.validate_category_bars(&[]).is_err());
         }
-        assert_eq!(BarGroups::default().validate(), Ok(()));
+        assert_eq!(crate::defaults::bar_groups().validate(), Ok(()));
     }
 
     #[test]
@@ -1383,7 +1383,7 @@ mod category_bar_tests {
         let mut config = chart(3);
         config.overlays.push(OverlayLayer {
             series: vec!["b".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert_eq!(
             config.validate_category_bars(&[bars("a"), bars("b")]),
@@ -1391,7 +1391,7 @@ mod category_bar_tests {
         );
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..Default::default()
+            ..crate::defaults::bar_groups()
         });
         config.left_y.categories = Some(categories(3));
         config.bottom_x.categories = None;
@@ -1408,7 +1408,7 @@ mod category_bar_tests {
         config.subplots.push(Subplot {
             config: chart(2),
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::subplot()
         });
         assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
         // The parent has no categorical axis for a series of its own.
@@ -1419,7 +1419,7 @@ mod category_bar_tests {
         );
         assert_eq!(
             config.bar_groups_of(crate::layer::LayerRef::Subplot(0)),
-            BarGroups::default()
+            crate::defaults::bar_groups()
         );
     }
 
@@ -1428,11 +1428,11 @@ mod category_bar_tests {
     #[test]
     fn polar_charts_draw_vertical_roses_only() {
         let mut config = chart(3);
-        config.set_polar(Some(Default::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         assert_eq!(
             config.validate_category_bars(&[bars("a")]),
@@ -1467,7 +1467,7 @@ mod category_bar_tests {
             edit(&mut s, |style, _| change(style));
             assert!(validate_category_bar_series(&s, &cats).is_err());
             let mut s = bars("a");
-            let mut style = CategoryBarStyle::default();
+            let mut style = crate::defaults::category_bar_style();
             change(&mut style);
             let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c0", "a"));
             o.style = Some(style);
@@ -1545,7 +1545,7 @@ mod category_bar_tests {
         let mut line = bars("l");
         line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
-            line: Some(DataLineStyleConfig::default()),
+            line: Some(crate::defaults::data_line_style_config()),
             errors: None,
             stem: None,
         });
@@ -1653,7 +1653,7 @@ mod category_bar_tests {
         let mut line = bars("a");
         line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
-            line: Some(DataLineStyleConfig::default()),
+            line: Some(crate::defaults::data_line_style_config()),
             errors: None,
             stem: None,
         });
@@ -1670,7 +1670,7 @@ mod category_bar_tests {
         o.color = Some(Color::WHITE);
         o.style = Some(CategoryBarStyle {
             material: Material::Paper,
-            ..Default::default()
+            ..crate::defaults::category_bar_style()
         });
         o.labels = Some(CategoryBarLabels::Inside);
         o.label_format = Some(CategoryBarLabelFormat::Percent);
@@ -1688,8 +1688,8 @@ mod category_bar_tests {
         });
         let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
         let bars = parsed.render_type.category_bars().unwrap();
-        assert_eq!(bars.style, &CategoryBarStyle::default());
-        assert_eq!(bars.labels, &CategoryBarSeriesLabels::default());
+        assert_eq!(bars.style, &crate::defaults::category_bar_style());
+        assert_eq!(bars.labels, &crate::defaults::category_bar_series_labels());
         assert!(bars.overrides.is_empty());
         let written = serde_json::to_value(&parsed).unwrap();
         let fields = &written["render_type"]["CategoryBars"];
@@ -1715,7 +1715,7 @@ mod category_bar_tests {
         let text = serde_json::to_string(&edited).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&text).unwrap(), edited);
         let groups: BarGroups = serde_json::from_str("{}").unwrap();
-        assert_eq!(groups, BarGroups::default());
+        assert_eq!(groups, crate::defaults::bar_groups());
     }
 
     /// `log_ticks` is written only when it is not the default, so a
@@ -1789,7 +1789,7 @@ mod category_bar_tests {
 mod box_plot_tests {
     use super::*;
     use crate::config::{Config, DataSelectionsConfig, PickedDataRef};
-    use crate::layer::{OverlayLayer, Subplot};
+    use crate::layer::Subplot;
 
     fn categories(n: usize) -> Vec<Category> {
         (0..n)
@@ -1807,8 +1807,8 @@ mod box_plot_tests {
             z_column: None,
             render_type: DataRenderType::BoxPlot {
                 color: Color::from_rgb8(40, 120, 200),
-                style: BoxPlotStyle::default(),
-                labels: BoxPlotSeriesLabels::default(),
+                style: crate::defaults::box_plot_style(),
+                labels: crate::defaults::box_plot_series_labels(),
                 outliers: None,
                 overrides: None,
                 violin: None,
@@ -1855,7 +1855,7 @@ mod box_plot_tests {
         let mut plain = boxes("a");
         plain.render_type = DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
-            line: Some(DataLineStyleConfig::default()),
+            line: Some(crate::defaults::data_line_style_config()),
             errors: None,
             stem: None,
         });
@@ -1873,7 +1873,7 @@ mod box_plot_tests {
         for mode in [CategoryBarMode::Stacked, CategoryBarMode::PercentStacked] {
             config.bar_groups = Some(BarGroups {
                 mode,
-                ..BarGroups::default()
+                ..crate::defaults::bar_groups()
             });
             assert!(
                 config
@@ -1884,7 +1884,7 @@ mod box_plot_tests {
                 "{mode:?}"
             );
         }
-        config.bar_groups = Some(BarGroups::default());
+        config.bar_groups = Some(crate::defaults::bar_groups());
         assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
     }
 
@@ -1893,7 +1893,7 @@ mod box_plot_tests {
         let mut config = chart(3);
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         assert!(config.validate_box_plots(&[boxes("a")]).is_err());
         config.left_y.categories = Some(categories(3));
@@ -1911,7 +1911,7 @@ mod box_plot_tests {
             Err(crate::RuleKind::BoxPlotsValueAxis)
         );
         let mut polar = chart(3);
-        polar.set_polar(Some(Default::default()));
+        polar.set_polar(Some(crate::defaults::polar_options()));
         assert_eq!(
             polar.validate_box_plots(&[boxes("a")]),
             Err(crate::RuleKind::PolarBoxPlot)
@@ -1937,8 +1937,8 @@ mod box_plot_tests {
         let bars = SeriesConfig {
             render_type: DataRenderType::CategoryBars {
                 color: Color::from_rgb8(1, 2, 3),
-                style: CategoryBarStyle::default(),
-                labels: CategoryBarSeriesLabels::default(),
+                style: crate::defaults::category_bar_style(),
+                labels: crate::defaults::category_bar_series_labels(),
                 label_format: CategoryBarLabelFormat::Value,
                 overrides: None,
             },
@@ -1953,12 +1953,12 @@ mod box_plot_tests {
     #[test]
     fn horizontal_boxes_stay_off_overlays_and_subplots_have_their_own_groups() {
         let mut config = chart(3);
-        config.overlays.push(OverlayLayer::default());
+        config.overlays.push(crate::defaults::overlay_layer());
         config.overlays[0].series.push("over".into());
         assert_eq!(config.validate_box_plots(&[boxes("over")]), Ok(()));
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         config.left_y.categories = Some(categories(3));
         assert!(
@@ -1972,7 +1972,7 @@ mod box_plot_tests {
         let mut sub = chart(2);
         sub.bar_groups = Some(BarGroups {
             mode: CategoryBarMode::Stacked,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         config.subplots.push(Subplot {
             config: sub,
@@ -2054,7 +2054,7 @@ mod box_plot_tests {
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c0", "a"));
         o.style = Some(BoxPlotStyle {
             cap_ratio: 2.0,
-            ..BoxPlotStyle::default()
+            ..crate::defaults::box_plot_style()
         });
         overrides(&mut s).push(o);
         assert!(validate_box_plot_series(&s, &cats).is_err());
@@ -2124,7 +2124,7 @@ mod box_plot_tests {
         .unwrap();
         assert_eq!(
             minimal.render_type.box_plot().unwrap().style,
-            &BoxPlotStyle::default()
+            &crate::defaults::box_plot_style()
         );
     }
 
@@ -2133,7 +2133,7 @@ mod box_plot_tests {
             curve: curve.into(),
             density: format!("{curve}.density"),
             density_scale: 0.4,
-            style: ViolinStyle::default(),
+            style: crate::defaults::violin_style(),
         }
     }
 
@@ -2151,7 +2151,7 @@ mod box_plot_tests {
         points.get_or_insert_with(|| BoxPoints {
             positions: "p.cat".into(),
             values: "p.value".into(),
-            style: BoxPointsStyle::default(),
+            style: crate::defaults::box_points_style(),
         })
     }
 
@@ -2322,7 +2322,7 @@ mod box_plot_tests {
                 series_id: "a".into(),
                 point_index: 4,
             }],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         let len = |id: &str| match id {
             "p.cat" => Some(10),
@@ -2393,7 +2393,7 @@ mod box_plot_tests {
         let ViolinBody::Symmetric(h) = &minimal.body else {
             unreachable!()
         };
-        assert_eq!(h.style, ViolinStyle::default());
+        assert_eq!(h.style, crate::defaults::violin_style());
     }
 }
 
@@ -2402,7 +2402,7 @@ mod radar_tests {
     use super::*;
     use crate::config::Config;
     use crate::layer::Subplot;
-    use crate::polar::{PolarInterpolation, PolarOptions};
+    use crate::polar::PolarInterpolation;
 
     fn categories(n: usize) -> Vec<Category> {
         (0..n)
@@ -2420,15 +2420,15 @@ mod radar_tests {
             z_column: None,
             render_type: DataRenderType::Radar {
                 color: Color::from_rgb8(40, 120, 200),
-                style: RadarSeriesStyle::default(),
-                labels: RadarSeriesLabels::default(),
+                style: crate::defaults::radar_series_style(),
+                labels: crate::defaults::radar_series_labels(),
             },
         }
     }
 
     fn polar_config(n: usize) -> Config {
         let mut config = crate::defaults::config();
-        config.set_polar(Some(PolarOptions::default()));
+        config.set_polar(Some(crate::defaults::polar_options()));
         config.bottom_x.categories = Some(categories(n));
         config
     }
@@ -2502,7 +2502,7 @@ mod radar_tests {
         config.subplots.push(Subplot {
             config: cell,
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::subplot()
         });
         assert_eq!(config.validate_radar(&[radar("a")]), Ok(()));
         assert!(
@@ -2560,8 +2560,8 @@ mod radar_tests {
         let mut series = radar("a");
         series.render_type = DataRenderType::Radar {
             color: Color::new(0.0, 0.0, 1.5, 1.0),
-            style: RadarSeriesStyle::default(),
-            labels: RadarSeriesLabels::default(),
+            style: crate::defaults::radar_series_style(),
+            labels: crate::defaults::radar_series_labels(),
         };
         assert!(check(series).is_err());
         let mut series = radar("a");
@@ -2572,7 +2572,7 @@ mod radar_tests {
     #[test]
     #[allow(deprecated)] // reads the legacy radar document's style
     fn unset_style_fields_take_the_defaults() {
-        let style = RadarSeriesStyle::default();
+        let style = crate::defaults::radar_series_style();
         let color = Color::from_rgba(0.2, 0.4, 0.6, 0.8);
         assert_eq!(style.line_width(), 2.0);
         assert_eq!(style.marker(), RadarMarker::Circle);
@@ -2584,7 +2584,7 @@ mod radar_tests {
             marker: RadarMarker::Square,
             marker_size_px: 9.0,
             emphasis_brightness: 0.1,
-            ..Default::default()
+            ..crate::defaults::radar_style()
         };
         let resolved = style.resolved_from(&chart);
         assert_eq!(resolved.line_width_px, Some(3.0));
@@ -2594,7 +2594,7 @@ mod radar_tests {
         assert_eq!(resolved.fill, None);
         let own = RadarSeriesStyle {
             marker: Some(RadarMarker::None),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         }
         .resolved_from(&chart);
         assert_eq!(own.marker, Some(RadarMarker::None));
@@ -2633,7 +2633,7 @@ mod radar_tests {
             line_width_px: Some(0.0),
             marker: Some(RadarMarker::None),
             fill_opacity: Some(0.0),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         };
         let r = bare.render_type.radar().unwrap();
         assert_eq!(r.line_style().line_color.a, 0.0, "no outline at width 0");
@@ -2690,10 +2690,13 @@ mod radar_tests {
             "Radar": {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
         }))
         .unwrap();
-        assert_eq!(minimal.radar().unwrap().style, &RadarSeriesStyle::default());
+        assert_eq!(
+            minimal.radar().unwrap().style,
+            &crate::defaults::radar_series_style()
+        );
         assert_eq!(
             minimal.radar().unwrap().labels,
-            &RadarSeriesLabels::default()
+            &crate::defaults::radar_series_labels()
         );
         *style_mut(&mut series) = RadarSeriesStyle {
             line_width_px: Some(3.0),
@@ -2717,7 +2720,7 @@ mod radar_tests {
         // written as before and the two new ones are omitted while unset.
         let legacy = RadarSeriesStyle {
             marker: Some(RadarMarker::None),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         };
         assert_eq!(
             serde_json::to_string(&legacy).unwrap(),
@@ -2747,7 +2750,7 @@ mod step_selection_tests {
     fn line() -> DataRenderType {
         DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
-            line: Some(DataLineStyleConfig::default()),
+            line: Some(crate::defaults::data_line_style_config()),
             errors: None,
             stem: None,
         })
@@ -2771,9 +2774,9 @@ mod step_selection_tests {
     fn bars() -> DataRenderType {
         DataRenderType::CategoryBars {
             color: Color::BLACK,
-            style: CategoryBarStyle::default(),
-            labels: CategoryBarSeriesLabels::default(),
-            label_format: CategoryBarLabelFormat::default(),
+            style: crate::defaults::category_bar_style(),
+            labels: crate::defaults::category_bar_series_labels(),
+            label_format: crate::defaults::category_bar_label_format(),
             overrides: None,
         }
     }
@@ -2781,8 +2784,8 @@ mod step_selection_tests {
     fn boxes() -> DataRenderType {
         DataRenderType::BoxPlot {
             color: Color::BLACK,
-            style: BoxPlotStyle::default(),
-            labels: BoxPlotSeriesLabels::default(),
+            style: crate::defaults::box_plot_style(),
+            labels: crate::defaults::box_plot_series_labels(),
             outliers: None,
             overrides: None,
             violin: None,
@@ -2805,7 +2808,7 @@ mod step_selection_tests {
                 color: Color::BLACK,
                 width_px: 1.0,
                 scale: VectorScale::Pixels { px_per_unit: 1.0 },
-                pivot: VectorPivot::default(),
+                pivot: crate::defaults::vector_pivot(),
                 head_length_px: 4.0,
                 head_width_px: 4.0,
                 min_length_px: 0.0,
@@ -2818,7 +2821,7 @@ mod step_selection_tests {
         let mut config = crate::defaults::config();
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![reference],
-            ..Default::default()
+            ..crate::defaults::data_selections_config()
         });
         config
     }
@@ -2980,7 +2983,7 @@ mod step_selection_tests {
         // Horizontal bars run their categories along `dy`.
         config.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..Default::default()
+            ..crate::defaults::bar_groups()
         });
         config.overlays.clear();
         let horizontal = [
@@ -3100,8 +3103,8 @@ mod step_selection_tests {
     #[test]
     fn step_selection_walks_streamline_vertices() {
         let streamlines = DataRenderType::Streamlines {
-            line: DataLineStyleConfig::default(),
-            arrows: Some(StreamlineArrows::default()),
+            line: crate::defaults::data_line_style_config(),
+            arrows: Some(crate::defaults::streamline_arrows()),
             color_map: Some(PointColorMap {
                 column: "speed".into(),
             }),
@@ -3204,21 +3207,21 @@ mod step_selection_tests {
         assert_eq!(
             LineOffsets {
                 series: many,
-                ..Default::default()
+                ..crate::defaults::line_offsets()
             }
             .validate(),
             Ok(())
         );
         assert!(
             rejected(group(&["a"]), |c| {
-                c.set_polar(Some(crate::polar::PolarOptions::default()))
+                c.set_polar(Some(crate::defaults::polar_options()))
             }),
             "polar"
         );
         assert!(
             rejected(group(&["a"]), |c| c.subplots.push(crate::layer::Subplot {
                 series: vec!["a".into()],
-                ..Default::default()
+                ..crate::defaults::subplot()
             })),
             "drawn by a subplot"
         );
@@ -3258,7 +3261,7 @@ mod streamline_tests {
             render_type: DataRenderType::Streamlines {
                 line: DataLineStyleConfig {
                     line_width: 1.5,
-                    ..DataLineStyleConfig::default()
+                    ..crate::defaults::data_line_style_config()
                 },
                 arrows,
                 color_map: color.map(|column| PointColorMap {
@@ -3271,7 +3274,7 @@ mod streamline_tests {
     #[test]
     fn streamline_rules_hold_the_line_and_the_arrows() {
         assert_eq!(validate_streamline_series(&streamlines(None, None)), Ok(()));
-        let full = streamlines(Some(StreamlineArrows::default()), Some("speed"));
+        let full = streamlines(Some(crate::defaults::streamline_arrows()), Some("speed"));
         assert_eq!(validate_streamline_series(&full), Ok(()));
         let edit = |f: fn(&mut DataLineStyleConfig)| {
             let mut series = full.clone();
@@ -3286,19 +3289,19 @@ mod streamline_tests {
         for arrows in [
             StreamlineArrows {
                 spacing_px: 0.0,
-                ..StreamlineArrows::default()
+                ..crate::defaults::streamline_arrows()
             },
             StreamlineArrows {
                 spacing_px: f32::NAN,
-                ..StreamlineArrows::default()
+                ..crate::defaults::streamline_arrows()
             },
             StreamlineArrows {
                 head_length_px: -1.0,
-                ..StreamlineArrows::default()
+                ..crate::defaults::streamline_arrows()
             },
             StreamlineArrows {
                 head_width_px: f32::INFINITY,
-                ..StreamlineArrows::default()
+                ..crate::defaults::streamline_arrows()
             },
             // A head longer than the spacing would overlap the next.
             StreamlineArrows {
@@ -3321,7 +3324,7 @@ mod streamline_tests {
         let mut line = full;
         line.render_type = DataRenderType::Xy(crate::data_config::XySeries {
             scatter: None,
-            line: Some(DataLineStyleConfig::default()),
+            line: Some(crate::defaults::data_line_style_config()),
             errors: None,
             stem: None,
         });
@@ -3330,10 +3333,10 @@ mod streamline_tests {
 
     #[test]
     fn a_streamline_series_draws_its_line_in_the_line_colour() {
-        let series = streamlines(Some(StreamlineArrows::default()), None);
+        let series = streamlines(Some(crate::defaults::streamline_arrows()), None);
         let flow = series.render_type.streamlines().unwrap();
         assert_eq!(flow.line.line_width, 1.5);
-        assert_eq!(flow.arrows, Some(&StreamlineArrows::default()));
+        assert_eq!(flow.arrows, Some(&crate::defaults::streamline_arrows()));
         assert_eq!(flow.color_map, None);
         let mut cycled = series.clone();
         crate::preset::ColorCycle::Vivid.apply_to_series(&mut cycled, 1);
@@ -3348,7 +3351,7 @@ mod streamline_tests {
     pub(super) fn streamlines_round_trip() {
         for series in [
             streamlines(None, None),
-            streamlines(Some(StreamlineArrows::default()), None),
+            streamlines(Some(crate::defaults::streamline_arrows()), None),
             streamlines(
                 Some(StreamlineArrows {
                     spacing_px: 64.5,
@@ -3395,14 +3398,14 @@ mod range_bar_tests {
             z_column: None,
             render_type: DataRenderType::RangeBars {
                 color: Color::from_rgb8(40, 120, 200),
-                style: CategoryBarStyle::default(),
+                style: crate::defaults::category_bar_style(),
                 start: format!("{id}.start"),
                 whiskers: None,
                 color_by: RangeColor::Single,
                 progress: None,
                 connector: None,
                 slot_width: None,
-                labels: CategoryBarSeriesLabels::default(),
+                labels: crate::defaults::category_bar_series_labels(),
             },
         }
     }
@@ -3510,21 +3513,21 @@ mod range_bar_tests {
         let config = chart();
         // Polar charts draw none.
         let mut polar = config.clone();
-        polar.set_polar(Some(Default::default()));
+        polar.set_polar(Some(crate::defaults::polar_options()));
         assert!(polar.validate_range_bars(&[ranges("one")]).is_err());
         // The group stands side by side.
         let mut stacked = config.clone();
         stacked.bar_groups = Some(BarGroups {
             mode: CategoryBarMode::Stacked,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         assert!(stacked.validate_range_bars(&[ranges("one")]).is_err());
         // A layer draws one kind of bars.
         let mut bars = ranges("bars");
         bars.render_type = DataRenderType::CategoryBars {
             color: Color::BLACK,
-            style: CategoryBarStyle::default(),
-            labels: CategoryBarSeriesLabels::default(),
+            style: crate::defaults::category_bar_style(),
+            labels: crate::defaults::category_bar_series_labels(),
             label_format: CategoryBarLabelFormat::Value,
             overrides: None,
         };
@@ -3551,12 +3554,12 @@ mod range_bar_tests {
         let mut overlay = config.clone();
         overlay.bar_groups = Some(BarGroups {
             direction: CategoryBarDirection::Horizontal,
-            ..BarGroups::default()
+            ..crate::defaults::bar_groups()
         });
         overlay.left_y.categories = overlay.bottom_x.categories.take();
         overlay.overlays.push(OverlayLayer {
             series: vec!["one".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert!(overlay.validate_range_bars(&[ranges("one")]).is_err());
         // A subplot's own axes decide for its range bars.
@@ -3564,7 +3567,7 @@ mod range_bar_tests {
         parent.subplots.push(Subplot {
             config: chart(),
             series: vec!["one".into()],
-            ..Default::default()
+            ..crate::defaults::subplot()
         });
         assert_eq!(parent.validate_range_bars(&[ranges("one")]), Ok(()));
     }
@@ -3702,7 +3705,7 @@ mod range_bar_tests {
         };
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![pick("one", 0)],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
         // Rows: the shortest column of the series bounds them.
         let len = |c: &str| match c {
@@ -3762,7 +3765,7 @@ mod range_bar_tests {
         let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
         let bars = parsed.render_type.range_bars().unwrap();
         assert_eq!(bars.color_by, &RangeColor::Single);
-        assert_eq!(bars.style, &CategoryBarStyle::default());
+        assert_eq!(bars.style, &crate::defaults::category_bar_style());
         assert!(bars.whiskers.is_none() && bars.progress.is_none() && bars.connector.is_none());
         let again = serde_json::to_string(&parsed).unwrap();
         assert_eq!(
@@ -3782,7 +3785,6 @@ mod hexagonal_tests {
     use crate::color::Color;
     use crate::config::AxisScale;
     use crate::line::LineStylePreset;
-    use crate::view3d::View3d;
 
     fn matrix(layout: GridLayout) -> MatrixRef {
         MatrixRef {
@@ -3887,7 +3889,7 @@ mod hexagonal_tests {
                     scale: VectorScale::Pixels { px_per_unit: 1.0 },
                     head_length_px: 4.0,
                     head_width_px: 3.0,
-                    pivot: Default::default(),
+                    pivot: crate::defaults::vector_pivot(),
                     min_length_px: 0.0,
                     color_map: None,
                 },
@@ -3908,7 +3910,7 @@ mod hexagonal_tests {
             broken.bottom_x.breaks = Some(crate::config::AxisBreaks {
                 ranges: vec![crate::config::AxisBreak::new(0.2, 0.4)],
                 style,
-                ..Default::default()
+                ..crate::defaults::axis_breaks()
             });
             let expected = match style {
                 crate::config::AxisBreakStyle::Continuous => {
@@ -3923,7 +3925,7 @@ mod hexagonal_tests {
             );
         }
         let mut three_d = config.clone();
-        three_d.set_view_3d(Some(View3d::default()));
+        three_d.set_view_3d(Some(crate::defaults::view3d()));
         let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];
         assert_eq!(
             three_d.validate_hexagonal_series(&hex),
@@ -3940,7 +3942,6 @@ mod hexagonal_tests {
 #[cfg(test)]
 mod image_tests {
     use super::{DataRenderType, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Shading};
-    use crate::view3d::View3d;
 
     fn matrix(ch: &str, orientation: MatrixOrientation, layout: GridLayout) -> MatrixRef {
         MatrixRef {
@@ -4017,7 +4018,7 @@ mod image_tests {
             );
         }
         let mut three_d = config.clone();
-        three_d.set_view_3d(Some(View3d::default()));
+        three_d.set_view_3d(Some(crate::defaults::view3d()));
         let flat = [image([0.0, 1.0], 1.0)];
         assert_eq!(
             three_d.validate_rgb_image_series(&flat),

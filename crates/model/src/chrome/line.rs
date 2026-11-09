@@ -598,7 +598,7 @@ mod break_tests {
             ranges: vec![AxisBreak::new(15.0, 85.0)],
             gap_px: 20.0,
             mark,
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         axis
     }
@@ -625,7 +625,7 @@ mod break_tests {
 
     #[test]
     fn the_line_is_drawn_per_piece_with_a_slash_pair_per_gap() {
-        for (mark, slashes) in [(BreakMark::None, 0), (BreakMark::default(), 2)] {
+        for (mark, slashes) in [(BreakMark::None, 0), (crate::defaults::break_mark(), 2)] {
             let axis = broken(mark);
             let majors = major_tick_values_for_axis(&axis, Side::Left, &PLOT, &NoMeasure);
             let (mut lines, mut marks) = (Vec::new(), Vec::new());
@@ -768,7 +768,7 @@ mod break_tests {
         config.bottom_x.max = 100.0;
         config.bottom_x.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(20.0, 70.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         // The top axis in other units (twice the bottom's), the right axis
         // mirroring an unbroken left axis.
@@ -813,10 +813,10 @@ mod break_tests {
         let right = crate::chrome::drawn_axis(&config, &Side::Right);
         assert_eq!(right.breaks, None, "the left axis is unbroken");
         // An axis with cuts of its own keeps them.
-        config.top_x.breaks = Some(AxisBreaks::default());
+        config.top_x.breaks = Some(crate::defaults::axis_breaks());
         assert_eq!(
             crate::chrome::drawn_axis(&config, &Side::Top).breaks,
-            Some(AxisBreaks::default())
+            Some(crate::defaults::axis_breaks())
         );
     }
 

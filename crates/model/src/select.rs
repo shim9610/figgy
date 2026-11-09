@@ -2054,7 +2054,7 @@ pub(crate) mod tests {
 
     fn cfg_with_overlay() -> Config {
         let mut cfg = cfg_800x600();
-        let mut overlay = crate::layer::OverlayLayer::default();
+        let mut overlay = crate::defaults::overlay_layer();
         overlay.y_axis.title_option.visible = true;
         overlay.y_axis.title_option.text = RichText::plain("Pressure", Color::BLACK, 12.0, "");
         overlay.y_axis.out_margin = 100.0;
@@ -2122,7 +2122,7 @@ pub(crate) mod tests {
     /// overlay, and a Y axis linked to the parent's.
     fn cfg_with_subplot() -> Config {
         let mut cfg = cfg_800x600();
-        let mut subplot = crate::layer::Subplot::default();
+        let mut subplot = crate::defaults::subplot();
         subplot.config.chart_area = ChartArea(Rect {
             x: 0,
             y: 600,
@@ -2133,7 +2133,7 @@ pub(crate) mod tests {
         subplot.config.bottom_x.max = 20.0;
         subplot.config.overlays.push(crate::layer::OverlayLayer {
             series: vec!["level".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         subplot.series = vec!["flow".into()];
         subplot.link_y = Some(crate::layer::CellRef::Parent);
@@ -2146,7 +2146,7 @@ pub(crate) mod tests {
     fn cfg_with_inset() -> Config {
         let mut cfg = cfg_with_subplot();
         let data = cfg.data_area().unwrap().0;
-        let mut inset = crate::layer::Subplot::default();
+        let mut inset = crate::defaults::subplot();
         inset.config.chart_area = ChartArea(Rect {
             x: data.x + 60,
             y: data.y + 40,

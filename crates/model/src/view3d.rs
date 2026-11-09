@@ -756,7 +756,7 @@ mod tests {
 
     fn chart() -> Config {
         let mut config = crate::defaults::config();
-        config.set_view_3d(Some(View3d::default()));
+        config.set_view_3d(Some(crate::defaults::view3d()));
         config
     }
 
@@ -902,14 +902,15 @@ mod tests {
             crate::RuleKind::View3dBoxAspectOutOfRange
         ));
         assert!(
-            reject(&|c| c.overlays.push(crate::layer::OverlayLayer::default()))
+            reject(&|c| c.overlays.push(crate::defaults::overlay_layer()))
                 .to_string()
                 .contains("overlay")
         );
         assert!(
-            reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
-                .to_string()
-                .contains("Precise")
+            reject(&|c| c.draw_style =
+                crate::config::DrawStyle::Sketch(crate::defaults::sketch_options()))
+            .to_string()
+            .contains("Precise")
         );
         assert!(
             reject(&|c| c.bottom_x.categories = Some(vec![crate::config::Category::new("a", "A")]))
@@ -936,7 +937,7 @@ mod tests {
             z_column: z.map(Into::into),
             render_type: DataRenderType::Xy(crate::data_config::XySeries {
                 scatter: None,
-                line: Some(crate::data_config::DataLineStyleConfig::default()),
+                line: Some(crate::defaults::data_line_style_config()),
                 errors: None,
                 stem: None,
             }),
@@ -967,7 +968,7 @@ mod tests {
         document.subplots = vec![crate::layer::Subplot {
             config: three_d.clone(),
             series: vec!["inner".into()],
-            ..crate::layer::Subplot::default()
+            ..crate::defaults::subplot()
         }];
         assert_eq!(
             document.drawn_z_column(&point("inner", Some("z"))),
@@ -980,7 +981,7 @@ mod tests {
         crate::data_config::VectorStyle {
             color: Color::BLACK,
             width_px: 1.5,
-            scale: crate::data_config::VectorScale::default(),
+            scale: crate::defaults::vector_scale(),
             pivot: crate::data_config::VectorPivot::Tail,
             head_length_px: 8.0,
             head_width_px: 6.0,
@@ -1075,7 +1076,7 @@ mod tests {
                     series_id: "s".into(),
                     point_index: 0,
                 }],
-                ..Default::default()
+                ..crate::defaults::data_selections_config()
             });
             assert_eq!(
                 config.step_selection(std::slice::from_ref(&arrows), 100, 0, len),
@@ -1126,7 +1127,7 @@ mod tests {
             }),
             ..scatter_3d.clone()
         };
-        let plain = crate::data_config::DataLineStyleConfig::default();
+        let plain = crate::defaults::data_line_style_config();
         assert_eq!(
             config.validate_view3d_series(&[line(plain.clone())]),
             Ok(())
@@ -1178,7 +1179,7 @@ mod tests {
             flat.validate_view3d_series(&[
                 scatter,
                 scatter_3d,
-                heatmap(Some(SurfaceStyle::default()))
+                heatmap(Some(crate::defaults::surface_style()))
             ]),
             Ok(())
         );
@@ -1195,7 +1196,7 @@ mod tests {
         assert!(matches!(err(banded), crate::RuleKind::View3dBandedSurface));
         let wrong = SurfaceStyle {
             color_matrix: Some(matrix(2)),
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         };
         assert!(
             err(heatmap(Some(wrong)))
@@ -1204,7 +1205,7 @@ mod tests {
         );
         let bright = SurfaceStyle {
             gloss: 2.0,
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         };
         assert!(matches!(
             err(heatmap(Some(bright))),
@@ -1267,7 +1268,7 @@ mod tests {
                 color: Color::BLACK,
                 width: 1.0,
             }),
-            ..SurfaceStyle::default()
+            ..crate::defaults::surface_style()
         }));
         let json = serde_json::to_string(&styled).unwrap();
         assert!(

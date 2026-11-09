@@ -51,8 +51,8 @@ pub(crate) const fn math_style() -> MathStyle {
 /// omits it takes.
 pub(crate) fn plain_number_format() -> PlainNumberFormat {
     PlainNumberFormat {
-        decimals: Default::default(),
-        trim_zeros: Default::default(),
+        decimals: None,
+        trim_zeros: false,
     }
 }
 

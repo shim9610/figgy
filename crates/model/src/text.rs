@@ -861,7 +861,7 @@ mod tests {
 
     #[test]
     fn align_spends_none_half_or_all_of_the_slack() {
-        assert_eq!(TextAlign::default(), TextAlign::Left);
+        assert_eq!(crate::defaults::text_align(), TextAlign::Left);
         assert_eq!(TextAlign::Left.line_offset(100.0, 40.0), 0.0);
         assert_eq!(TextAlign::Center.line_offset(100.0, 40.0), 30.0);
         assert_eq!(TextAlign::Right.line_offset(100.0, 40.0), 60.0);

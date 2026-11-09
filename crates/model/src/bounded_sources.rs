@@ -1132,7 +1132,7 @@ mod tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::categorical_chart()
         }
     }
 
@@ -1201,7 +1201,7 @@ mod tests {
         c.style.material = Material::Paper;
         c.series[1].style = Some(CategoryBarStyle {
             corner_radius: 0.0,
-            ..Default::default()
+            ..crate::defaults::category_bar_style()
         });
         let (_, series, _) = Config::from_categorical(&c);
         assert_eq!(bars(&series[0]).color, c.series[0].color);
@@ -1518,7 +1518,7 @@ mod box_tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::box_plot_chart()
         }
     }
 
@@ -1675,7 +1675,7 @@ mod box_tests {
         c.style.material = Material::Paper;
         c.series[1].style = Some(BoxPlotStyle {
             outlier_shape: BoxOutlierShape::Square,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c", "s"));
         o.color = Some(Color::WHITE);
@@ -1867,7 +1867,7 @@ mod radar_tests {
                     Color::from_rgb8(0, 0, 200),
                 ),
             ],
-            ..Default::default()
+            ..crate::defaults::radar_chart()
         }
     }
 
@@ -1984,7 +1984,7 @@ mod radar_tests {
             line_width_px: Some(1.5),
             fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
             marker: Some(RadarMarker::None),
-            ..Default::default()
+            ..crate::defaults::radar_series_style()
         });
         let (_, series, _) = Config::from_radar(&c);
         let a = radar(&series[0]);

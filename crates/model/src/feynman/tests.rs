@@ -64,7 +64,7 @@ fn s_channel() -> FeynmanSeries {
             line("p3", "v2", "mu-", ParticleLine::Fermion),
             line("p4", "mu+", "v2", ParticleLine::Fermion),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     }
 }
 
@@ -152,7 +152,7 @@ fn a_planar_box_diagram_is_drawn_without_crossings() {
             line("g", "v3", "out1", ParticleLine::Fermion),
             line("h", "v4", "out2", ParticleLine::Fermion),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     };
     let p = diagram.positions().unwrap();
     let row = |id: &str| diagram.vertex_row(id).unwrap();
@@ -179,7 +179,7 @@ fn a_vacuum_bubble_is_placed_on_a_circle() {
             line("x", "a", "b", ParticleLine::Fermion),
             line("y", "b", "a", ParticleLine::Fermion),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     };
     let p = diagram.positions().unwrap();
     let distance = ((p[0][0] - p[1][0]).powi(2) + (p[0][1] - p[1][1]).powi(2)).sqrt();
@@ -201,7 +201,7 @@ fn vertices_that_land_on_one_point_are_spread() {
             line("3", "in", "b", ParticleLine::Plain),
             line("4", "b", "out", ParticleLine::Plain),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     };
     let p = diagram.positions().unwrap();
     assert_eq!(p[1], [0.5, 0.5]);
@@ -320,7 +320,7 @@ fn parallel_lines_fan_and_an_explicit_bend_arcs() {
             line("x", "a", "b", ParticleLine::Fermion),
             line("y", "b", "a", ParticleLine::Fermion),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     };
     diagram.vertices[0].at = Some([0.25, 0.5]);
     diagram.vertices[1].at = Some([0.75, 0.5]);
@@ -358,7 +358,7 @@ fn any_number_of_parallel_lines_fan_apart_within_the_widest_bend() {
             propagators: (0..count)
                 .map(|k| line(&format!("p{k}"), "a", "b", ParticleLine::Photon))
                 .collect(),
-            ..FeynmanSeries::default()
+            ..crate::defaults::feynman_series()
         };
         diagram.vertices[0].at = Some([0.25, 0.5]);
         diagram.vertices[1].at = Some([0.75, 0.5]);
@@ -549,7 +549,7 @@ fn step_selection_walks_the_rows_and_the_series() {
             series_id: "a".into(),
             vertex_index: 1,
         }],
-        ..Default::default()
+        ..crate::defaults::data_selections_config()
     });
     let none = |_: &str| None;
     assert_eq!(config.step_selection(&list, 2, 0, none), Ok(true));
@@ -661,7 +661,7 @@ fn every_particle_between(x0: f64, x1: f64, y: f64, dy: f64) -> FeynmanSeries {
         ParticleLine::DoubleLine,
         ParticleLine::Fermion,
     ];
-    let mut diagram = FeynmanSeries::default();
+    let mut diagram = crate::defaults::feynman_series();
     for (k, particle) in particles.into_iter().enumerate() {
         let (a, b) = (format!("a{k}"), format!("b{k}"));
         let y = y + dy * k as f64;
@@ -758,7 +758,7 @@ fn thousands_of_parallel_lines_each_take_their_own_arc() {
             propagators: (0..count)
                 .map(|k| line(&format!("p{k}"), "a", "b", ParticleLine::Plain))
                 .collect(),
-            ..FeynmanSeries::default()
+            ..crate::defaults::feynman_series()
         };
         diagram.vertices[0].at = Some([0.25, 0.5]);
         diagram.vertices[1].at = Some([0.75, 0.5]);
@@ -805,7 +805,7 @@ fn a_short_line_and_a_line_near_another_vertex_still_pick() {
             // Passes 5 px under the unrelated vertex c, 2 px past its dot.
             line("long", "d", "c", ParticleLine::Plain),
         ],
-        ..FeynmanSeries::default()
+        ..crate::defaults::feynman_series()
     };
     diagram.vertices[0].at = Some([0.5, 0.8]);
     diagram.vertices[1].at = Some([0.56, 0.8]);
@@ -871,7 +871,7 @@ fn the_layout_solves_at_any_magnitude_and_on_long_ladders() {
     }
     // Long ladders: the stall rule does not stop a valid solve.
     for rungs in [10usize, 100, 1_000, 3_000] {
-        let mut diagram = FeynmanSeries::default();
+        let mut diagram = crate::defaults::feynman_series();
         for (id, role) in [
             ("ia", VertexRole::Incoming),
             ("ib", VertexRole::Incoming),

@@ -1113,7 +1113,7 @@ mod tests {
                 RadialSlice::new("A", 87.0, Color::WHITE),
                 RadialSlice::new("Other", 13.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
     #[test]
@@ -1125,7 +1125,7 @@ mod tests {
                 RadialSlice::new("B", 2.0, Color::WHITE),
                 RadialSlice::new("C", 3.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         let (m, d) = (RadialTarget::main, RadialTarget::detail);
         let walk = |c: &mut RadialChart, backwards: bool, steps: usize| {
@@ -1207,7 +1207,7 @@ mod tests {
             let mut c = chart();
             c.slices[0].style = Some(RadialStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::radial_style()
             });
             assert_eq!(c.validate(), Ok(()), "{material:?}");
         }
@@ -1262,7 +1262,7 @@ mod tests {
                 ),
                 node("R&D", 40.0, vec![node("Lab", 40.0, vec![])]),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
 
@@ -1461,7 +1461,7 @@ mod editing_contract {
                 RadialSlice::new("A", 20.0, Color::WHITE),
                 RadialSlice::new("B", 80.0, Color::WHITE),
             ],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         let a = RadialTarget::main(0);
         chart.label_decimals = 0;
@@ -1479,7 +1479,7 @@ mod editing_contract {
         assert_eq!(chart.interaction.hover_progress, 0.25);
         assert!(chart.interaction.amount(a) > 0.0);
         chart.interaction.animate_hover(None, 1.0, 0.2);
-        assert_eq!(chart.interaction, RadialInteraction::default());
+        assert_eq!(chart.interaction, crate::defaults::radial_interaction());
         chart.interaction.selected = Some(a);
         assert_eq!(chart.interaction.amount(a), 1.0);
         chart.slice_mut(a).unwrap().color = Color::from_rgb8(20, 120, 240);
@@ -1492,11 +1492,11 @@ mod editing_contract {
     fn invalid_overrides_are_rejected_before_rendering() {
         let mut chart = RadialChart {
             slices: vec![RadialSlice::new("A", 1.0, Color::WHITE)],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         chart.slices[0].style = Some(RadialStyle {
             outer_corner: f32::NAN,
-            ..Default::default()
+            ..crate::defaults::radial_style()
         });
         assert!(chart.validate().is_err());
         chart.slices[0].style = None;
@@ -1520,7 +1520,7 @@ mod editing_contract {
             label_format: RadialLabelFormat::NameValuePercent,
             label_decimals: 0,
             value_suffix: " kg".into(),
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         }
     }
     fn texts(chart: &RadialChart) -> Vec<Option<&str>> {
@@ -1623,7 +1623,7 @@ mod editing_contract {
             label_format: RadialLabelFormat::ValuePercent,
             label_decimals: 6,
             value_suffix: "x".repeat(24),
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         largest.format_labels();
         assert_eq!(largest.validate(), Ok(()));
@@ -1736,7 +1736,7 @@ mod editing_contract {
     fn editing_options_roundtrip_and_old_snapshots_default() {
         let mut chart = RadialChart {
             slices: vec![RadialSlice::new("A", 1.0, Color::WHITE)],
-            ..Default::default()
+            ..crate::defaults::radial_chart()
         };
         chart.style.outer_corner = 0.05;
         chart.style.material = Material::SatinMetal;

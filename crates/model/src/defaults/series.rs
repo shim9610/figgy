@@ -149,11 +149,11 @@ pub(crate) fn category_bar_style() -> CategoryBarStyle {
 /// omits it takes.
 pub(crate) fn data_bar_bin_style_config() -> DataBarBinStyleConfig {
     DataBarBinStyleConfig {
-        fill_color: Default::default(),
-        border_color: Default::default(),
-        border_width: Default::default(),
-        gap_px: Default::default(),
-        width_ratio: Default::default(),
+        fill_color: None,
+        border_color: None,
+        border_width: None,
+        gap_px: None,
+        width_ratio: None,
     }
 }
 
@@ -161,10 +161,10 @@ pub(crate) fn data_bar_bin_style_config() -> DataBarBinStyleConfig {
 /// omits it takes.
 pub(crate) fn data_error_bar_point_style_config() -> DataErrorBarPointStyleConfig {
     DataErrorBarPointStyleConfig {
-        error_bar_color: Default::default(),
-        error_bar_width: Default::default(),
-        error_bar_cap_size: Default::default(),
-        cap_width: Default::default(),
+        error_bar_color: None,
+        error_bar_width: None,
+        error_bar_cap_size: None,
+        cap_width: None,
     }
 }
 
@@ -185,9 +185,9 @@ pub(crate) fn data_line_style_config() -> DataLineStyleConfig {
 /// omits it takes.
 pub(crate) fn data_scatter_point_style_config() -> DataScatterPointStyleConfig {
     DataScatterPointStyleConfig {
-        point_color: Default::default(),
-        point_shape: Default::default(),
-        point_size: Default::default(),
+        point_color: None,
+        point_shape: None,
+        point_size: None,
     }
 }
 
@@ -241,11 +241,11 @@ pub(crate) fn radar_series_labels() -> RadarSeriesLabels {
 /// omits it takes.
 pub(crate) fn radar_series_style() -> RadarSeriesStyle {
     RadarSeriesStyle {
-        line_width_px: Default::default(),
-        fill: Default::default(),
-        marker: Default::default(),
-        marker_size_px: Default::default(),
-        fill_opacity: Default::default(),
+        line_width_px: None,
+        fill: None,
+        marker: None,
+        marker_size_px: None,
+        fill_opacity: None,
     }
 }
 

@@ -1355,7 +1355,7 @@ mod tests {
             r#""Fixed""#
         );
         // The root's style: text by default (D8), display on request.
-        assert_eq!(MathStyle::default(), MathStyle::Text);
+        assert_eq!(crate::defaults::math_style(), MathStyle::Text);
         for style in [MathStyle::Text, MathStyle::Display] {
             let node = MathNode {
                 id: 0,
@@ -1466,10 +1466,10 @@ mod tests {
                     anchor: crate::annotation::Anchor::Ratio { x: 0.5, y: 0.5 },
                     text: broken.clone(),
                     box_style: None,
-                    align: Default::default(),
+                    align: crate::defaults::note_align(),
                 },
             )],
-            ..Default::default()
+            ..crate::defaults::annotation_layer()
         };
         assert!(malformed(layer.validate()));
         let title = crate::bounded_title::BoundedTitleOptions {
@@ -1477,7 +1477,7 @@ mod tests {
             text: broken.clone(),
         };
         assert!(malformed(title.validate()));
-        let mut radial = crate::radial::RadialChart::default();
+        let mut radial = crate::defaults::radial_chart();
         radial.chart_title = Some(crate::config::ChartTitleOptions {
             text: broken,
             ..radial.resolved_title()

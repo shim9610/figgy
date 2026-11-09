@@ -627,7 +627,7 @@ mod axis_tests {
                 Box::new(|c: &mut crate::config::Config| {
                     c.left_y.breaks = Some(crate::config::AxisBreaks {
                         ranges: vec![crate::config::AxisBreak::new(0.2, 1.2)],
-                        ..Default::default()
+                        ..crate::defaults::axis_breaks()
                     })
                 }),
                 "a cut range on a probability axis",

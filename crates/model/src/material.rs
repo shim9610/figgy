@@ -72,7 +72,7 @@ mod tests {
         for (kind, material) in ALL.into_iter().enumerate() {
             assert_eq!(material as usize, kind);
         }
-        assert_eq!(Material::default(), Material::Flat);
+        assert_eq!(crate::defaults::material(), Material::Flat);
     }
 
     #[cfg(feature = "serde")]

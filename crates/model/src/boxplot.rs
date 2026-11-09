@@ -360,7 +360,7 @@ mod tests {
                 vec![Some(BoxSummary::new(1., 2., 3., 4., 5.)), None],
                 Color::WHITE,
             )],
-            ..Default::default()
+            ..crate::defaults::box_plot_chart()
         }
     }
     #[test]
@@ -372,14 +372,14 @@ mod tests {
             let mut c = chart();
             c.series[0].style = Some(BoxPlotStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::box_plot_style()
             });
             assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
             let mut c = chart();
             let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
             o.style = Some(BoxPlotStyle {
                 material,
-                ..Default::default()
+                ..crate::defaults::box_plot_style()
             });
             c.overrides.push(o);
             assert_eq!(c.validate(), Err(crate::RuleKind::BoxMaterial));
@@ -399,7 +399,7 @@ mod tests {
             c.style.material = material;
             assert_eq!(c.validate(), Ok(()), "{material:?}");
         }
-        assert_eq!(BoxPlotStyle::default().material, Material::Matte);
+        assert_eq!(crate::defaults::box_plot_style().material, Material::Matte);
     }
     #[test]
     fn summaries_reject_invalid_order_nonfinite_and_nonoutliers() {
@@ -442,14 +442,14 @@ mod tests {
         c.style.notched = false;
         c.series[0].style = Some(BoxPlotStyle {
             notched: true,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         assert!(c.validate().is_err());
         c.series[0].style = None;
         let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
         o.style = Some(BoxPlotStyle {
             notched: true,
-            ..Default::default()
+            ..crate::defaults::box_plot_style()
         });
         c.overrides.push(o);
         assert!(c.validate().is_err());
@@ -516,7 +516,7 @@ mod tests {
         ] {
             for level in 0..3 {
                 let mut c = chart();
-                let mut st = BoxPlotStyle::default();
+                let mut st = crate::defaults::box_plot_style();
                 edit(&mut st);
                 match level {
                     0 => c.style = st,

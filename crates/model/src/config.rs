@@ -1328,7 +1328,8 @@ pub struct Config {
     /// side by side, stacked or stacked to 100 %, the bar direction, the
     /// group width and the gap
     /// ([`BarGroups`](crate::data_config::BarGroups)). `None` (key absent in
-    /// JSON) reads as `BarGroups::default()`. It applies to the base layer
+    /// JSON) reads as the documented default, resolved by
+    /// [`Config::effective_bar_groups`]. It applies to the base layer
     /// and to every overlay, whose category bar series form groups of their
     /// own; a subplot has its own field. Charts without
     /// [`DataRenderType::CategoryBars`](crate::data_config::DataRenderType::CategoryBars)
@@ -2043,7 +2044,7 @@ mod serde_tests {
         );
         assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
         cfg.line_offsets.as_mut().unwrap().step_x = -0.25;
-        let mut subplot = crate::layer::Subplot::default();
+        let mut subplot = crate::defaults::subplot();
         subplot.config.line_offsets = cfg.line_offsets.clone();
         cfg.subplots.push(subplot);
         let json = serde_json::to_value(&cfg).unwrap();
@@ -2067,23 +2068,23 @@ mod serde_tests {
     // also exist on the radial chart and the legacy documents.
     #[allow(deprecated)]
     fn layer_fields_default_and_are_omitted_from_json() {
-        use crate::{AnnotationLayer, LayerRef};
+        use crate::LayerRef;
         let json = default_config_json();
         assert!(json.get("active_layer").is_none(), "{json}");
         assert!(json.get("annotations").is_none(), "{json}");
         assert!(json.get("overlays").is_none(), "{json}");
         let cfg: Config = serde_json::from_value(json).expect("pre-layer document parses");
         assert_eq!(cfg.active_layer, LayerRef::Base);
-        assert_eq!(cfg.annotations, AnnotationLayer::default());
+        assert_eq!(cfg.annotations, crate::defaults::annotation_layer());
 
         let mut cfg = crate::defaults::config();
         cfg.active_layer = LayerRef::Overlay(1);
         cfg.annotations.visible = false;
         cfg.overlays.push(crate::layer::OverlayLayer {
             series: vec!["b".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
-        cfg.overlays.push(crate::layer::OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         let json = serde_json::to_value(&cfg).unwrap();
         assert_eq!(json["active_layer"], serde_json::json!({ "Overlay": 1 }));
         assert_eq!(json["annotations"], serde_json::json!({ "visible": false }));
@@ -2095,25 +2096,25 @@ mod serde_tests {
         for (name, json) in [
             (
                 "radial",
-                serde_json::to_value(crate::radial::RadialChart::default()).unwrap(),
+                serde_json::to_value(crate::defaults::radial_chart()).unwrap(),
             ),
             (
                 "categorical",
-                serde_json::to_value(crate::categorical::CategoricalChart::default()).unwrap(),
+                serde_json::to_value(crate::defaults::categorical_chart()).unwrap(),
             ),
             (
                 "boxplot",
-                serde_json::to_value(crate::boxplot::BoxPlotChart::default()).unwrap(),
+                serde_json::to_value(crate::defaults::box_plot_chart()).unwrap(),
             ),
             (
                 "radar",
-                serde_json::to_value(crate::radar::RadarChart::default()).unwrap(),
+                serde_json::to_value(crate::defaults::radar_chart()).unwrap(),
             ),
         ] {
             assert!(json.get("active_layer").is_none(), "{name}: {json}");
             assert!(json.get("annotations").is_none(), "{name}: {json}");
         }
-        let mut radial = crate::radial::RadialChart::default();
+        let mut radial = crate::defaults::radial_chart();
         radial.active_layer = LayerRef::Annotations;
         let json = serde_json::to_value(&radial).unwrap();
         assert_eq!(json["active_layer"], serde_json::json!("Annotations"));
@@ -2143,7 +2144,7 @@ mod serde_tests {
             .insert("draw_style".into(), serde_json::json!({ "mode": "sketch" }));
         let cfg: Config = serde_json::from_value(json).expect("tag-only sketch object parses");
         let s = *cfg.draw_style.sketch().expect("sketch enabled");
-        assert_eq!(s, SketchOptions::default());
+        assert_eq!(s, crate::defaults::sketch_options());
         // Pin the stock values themselves, not just Default == Default.
         assert_eq!(s.amplitude_px, 1.5);
         assert_eq!(s.wavelength_px, 60.0);
@@ -2161,7 +2162,7 @@ mod serde_tests {
             cfg.draw_style,
             DrawStyle::Sketch(SketchOptions {
                 seed: 7,
-                ..SketchOptions::default()
+                ..crate::defaults::sketch_options()
             })
         );
     }
@@ -2201,7 +2202,10 @@ mod serde_tests {
             .unwrap()
             .insert("picked_points".into(), serde_json::json!({}));
         let cfg: Config = serde_json::from_value(json).expect("tag-only picked_points parses");
-        assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
+        assert_eq!(
+            cfg.picked_data,
+            Some(crate::defaults::data_selections_config())
+        );
         let written = serde_json::to_value(&cfg).unwrap();
         assert!(written.get("picked_points").is_none(), "{written}");
     }
@@ -2243,7 +2247,7 @@ mod serde_tests {
                 highlight_color: crate::color::Color::from_rgba(0.0, 1.0, 0.0, 1.0),
                 outline_width_px: 3.0,
                 point_radius_extra_px: 2.5,
-                ..DataSelectionsConfig::default()
+                ..crate::defaults::data_selections_config()
             })
         );
     }
@@ -2297,7 +2301,7 @@ mod serde_tests {
     #[test]
     fn scale_scales_picked_data_pixel_dimensions() {
         let mut cfg = crate::defaults::config();
-        cfg.picked_data = Some(DataSelectionsConfig::default());
+        cfg.picked_data = Some(crate::defaults::data_selections_config());
         cfg.scale_in_place(2.0);
         let picked = cfg.picked_data.expect("picked data");
         assert_eq!(picked.outline_width_px, 4.0);
@@ -2311,7 +2315,10 @@ mod serde_tests {
             .unwrap()
             .insert("picked_data".into(), serde_json::json!({}));
         let cfg: Config = serde_json::from_value(json).expect("empty picked_data parses");
-        assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
+        assert_eq!(
+            cfg.picked_data,
+            Some(crate::defaults::data_selections_config())
+        );
     }
 
     fn typed_picked_data_round_trips_with_minimal_provenance() {
@@ -2343,7 +2350,7 @@ mod serde_tests {
                     y_index: 8,
                 },
             ],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
 
         let json = serde_json::to_value(&cfg).expect("serialize typed selections");
@@ -2359,7 +2366,7 @@ mod serde_tests {
     #[test]
     fn scale_scales_typed_selection_pixel_dimensions() {
         let mut cfg = crate::defaults::config();
-        cfg.picked_data = Some(DataSelectionsConfig::default());
+        cfg.picked_data = Some(crate::defaults::data_selections_config());
         cfg.scale_in_place(2.0);
         let picked = cfg.picked_data.expect("picked data");
         assert_eq!(picked.outline_width_px, 4.0);
@@ -2373,7 +2380,7 @@ mod serde_tests {
         let cfg: Config = serde_json::from_value(json).expect("tag-only constellation parses");
         assert_eq!(
             cfg.draw_style,
-            super::DrawStyle::Constellation(super::ConstellationOptions::default()),
+            super::DrawStyle::Constellation(crate::defaults::constellation_options()),
         );
     }
 
@@ -2383,7 +2390,7 @@ mod serde_tests {
         let cfg: Config = serde_json::from_value(json).expect("tag-only milkyway parses");
         assert_eq!(
             cfg.draw_style,
-            super::DrawStyle::Milkyway(super::MilkywayOptions::default()),
+            super::DrawStyle::Milkyway(crate::defaults::milkyway_options()),
         );
     }
 
@@ -2442,17 +2449,17 @@ mod serde_tests {
         check(
             "sketch",
             SketchOptions::PARAM_SPECS,
-            serde_json::to_value(SketchOptions::default()).unwrap(),
+            serde_json::to_value(crate::defaults::sketch_options()).unwrap(),
         );
         check(
             "milkyway",
             MilkywayOptions::PARAM_SPECS,
-            serde_json::to_value(MilkywayOptions::default()).unwrap(),
+            serde_json::to_value(crate::defaults::milkyway_options()).unwrap(),
         );
         check(
             "constellation",
             ConstellationOptions::PARAM_SPECS,
-            serde_json::to_value(ConstellationOptions::default()).unwrap(),
+            serde_json::to_value(crate::defaults::constellation_options()).unwrap(),
         );
         assert_eq!(super::DrawStyle::param_specs_for_mode("nope"), None);
         assert_eq!(
@@ -2813,12 +2820,14 @@ mod picked_data_wire {
 #[cfg(test)]
 mod axis_break_config_tests {
     //! The rules and the serialized form of [`AxisBreaks`] (#200).
-    use super::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Color, Config};
+    use super::{AxisBreak, AxisBreaks, BreakMark, Color};
+    #[cfg(feature = "serde")]
+    use super::{AxisBreakStyle, Config};
 
     fn broken() -> AxisBreaks {
         AxisBreaks {
             ranges: vec![AxisBreak::new(10.0, 20.0), AxisBreak::new(40.0, 50.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         }
     }
 
@@ -2895,7 +2904,8 @@ mod axis_break_config_tests {
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         config.left_y.breaks = Some(broken());
-        config.coordinates = crate::coordinates::Coordinates::Polar(Default::default());
+        config.coordinates =
+            crate::coordinates::Coordinates::Polar(crate::defaults::polar_options());
         assert_eq!(config.validate_chart().unwrap_err().field, "coordinates");
         let mut log = crate::defaults::config();
         log.left_y.scale = super::AxisScale::Logarithmic;
@@ -2903,7 +2913,7 @@ mod axis_break_config_tests {
         log.left_y.max = 1e6;
         log.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(-1.0, 10.0)],
-            ..AxisBreaks::default()
+            ..crate::defaults::axis_breaks()
         });
         assert!(
             log.validate_chart()
@@ -2936,7 +2946,7 @@ mod axis_break_config_tests {
         let parsed: Config = serde_json::from_value(json).unwrap();
         let breaks = parsed.left_y.breaks.unwrap();
         assert_eq!(breaks.style, AxisBreakStyle::Continuous);
-        assert_eq!(breaks.gap_px, AxisBreaks::default().gap_px);
+        assert_eq!(breaks.gap_px, crate::defaults::axis_breaks().gap_px);
     }
 
     #[test]

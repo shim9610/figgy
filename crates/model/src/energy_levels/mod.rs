@@ -1634,7 +1634,7 @@ mod tests {
                 transition("j2", "2s3S", "2p3P2"),
                 transition("j1", "2s3S", "2p3P1"),
             ],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         }
     }
 
@@ -1718,7 +1718,7 @@ mod tests {
             EnergyLevelSeries {
                 source: Some("inset".into()),
                 show: LevelView::Components,
-                ..EnergyLevelSeries::default()
+                ..crate::defaults::energy_level_series()
             },
         );
         assert!(config.validate_series(&[view]).is_err());
@@ -1728,7 +1728,7 @@ mod tests {
     fn no_list_has_a_count_limit() {
         // Past every bound the code has had: the 1024 annotation items and
         // the 64 radial slices (rule 10).
-        let mut levels = EnergyLevelSeries::default();
+        let mut levels = crate::defaults::energy_level_series();
         for i in 0..5_000 {
             levels.levels.push(level(&format!("l{i}"), "1S", i as f64));
         }
@@ -1781,7 +1781,7 @@ mod tests {
     fn selected(config: &mut Config, reference: PickedDataRef) {
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![reference],
-            ..DataSelectionsConfig::default()
+            ..crate::defaults::data_selections_config()
         });
     }
 
@@ -1798,7 +1798,7 @@ mod tests {
                 EnergyLevelSeries {
                     source: Some("he".into()),
                     show: LevelView::Components,
-                    ..EnergyLevelSeries::default()
+                    ..crate::defaults::energy_level_series()
                 },
             ),
         ];
@@ -1889,7 +1889,7 @@ mod tests {
         assert_eq!(lo, 20.964_086_889_08, "the centroid is not drawn there");
         assert_eq!(hi, 24.587_389_011, "the limits are drawn in every view");
         assert_eq!(
-            EnergyLevelSeries::default().energy_extent(LevelView::Main),
+            crate::defaults::energy_level_series().energy_extent(LevelView::Main),
             None
         );
     }
@@ -2018,7 +2018,7 @@ mod wavelength_label_tests {
                 line("t", "low", "high", Some(1083.034)),
                 line("bare", "low", "high", None),
             ],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         };
         records.transitions[1].x_offset = 0.4;
         records.style.wavelength_labels = Some(labels(Some(1), Some("nm")));
@@ -2300,7 +2300,7 @@ mod band_tests {
                 level("5s", "s", 1.2),
             ],
             bands: vec![band("6p", "7p")],
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         }
     }
 
@@ -2318,7 +2318,7 @@ mod band_tests {
         assert!(twice.validate().is_err(), "ids must be unique");
         let mut viewer = EnergyLevelSeries {
             source: Some("he".into()),
-            ..EnergyLevelSeries::default()
+            ..crate::defaults::energy_level_series()
         };
         viewer.bands.push(band("6p", "7p"));
         assert!(viewer.validate().is_err(), "a view holds no records");
@@ -2348,7 +2348,7 @@ mod band_tests {
         assert!(json["bands"][0].get("label").is_none());
         let back: EnergyLevelSeries = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
-        let none = serde_json::to_value(EnergyLevelSeries::default()).unwrap();
+        let none = serde_json::to_value(crate::defaults::energy_level_series()).unwrap();
         assert!(none.get("bands").is_none());
         assert_eq!(
             serde_json::to_value(LabelPart::Band).unwrap(),
@@ -2547,7 +2547,7 @@ mod category_group_tests {
 #[cfg(test)]
 mod inset_marker_tests {
     use crate::config::{Category, Config};
-    use crate::layer::{InsetMarker, Subplot};
+    use crate::layer::Subplot;
     use crate::layout::{ChartArea, Rect};
 
     /// A 600 × 400 parent with categories a, b, c over 0..100, and an inset
@@ -2580,8 +2580,8 @@ mod inset_marker_tests {
         inset.left_y.max = 50.0;
         config.subplots.push(Subplot {
             config: inset,
-            marker: Some(InsetMarker::default()),
-            ..Subplot::default()
+            marker: Some(crate::defaults::inset_marker()),
+            ..crate::defaults::subplot()
         });
         config
     }
@@ -2653,7 +2653,7 @@ mod inset_marker_tests {
         assert_eq!(config.subplots[0].marker.as_ref().unwrap().line.width, 2.0);
         #[cfg(feature = "serde")]
         {
-            let json = serde_json::to_string(&Subplot::default()).unwrap();
+            let json = serde_json::to_string(&crate::defaults::subplot()).unwrap();
             assert!(!json.contains("marker"), "{json}");
             let json = serde_json::to_string(&config.subplots[0]).unwrap();
             let back: Subplot = serde_json::from_str(&json).unwrap();

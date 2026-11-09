@@ -659,11 +659,10 @@ mod tests {
     // overlays are untouched.
     #[test]
     fn overlay_axes_widen_only_the_shared_right_margin() {
-        use crate::layer::OverlayLayer;
         let base = crate::defaults::config();
         let own = base.margins();
         let mut cfg = base.clone();
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         let band = |cfg: &Config, i: usize| {
             cfg.overlays[i].y_axis.out_margin + cfg.overlays[i].y_axis.major_tick_length
         };
@@ -682,7 +681,7 @@ mod tests {
         assert_eq!(cfg.margins(), own);
 
         // The widest of several overlays wins.
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         cfg.overlays[1].y_axis.out_margin = 70.0;
         assert_eq!(cfg.margins().right, band(&cfg, 1));
     }
@@ -691,10 +690,9 @@ mod tests {
     // group band: every overlay band is pulled inside the parent's.
     #[test]
     fn data_area_writes_set_the_group_right_band() {
-        use crate::layer::OverlayLayer;
         use crate::layout::{Element, FitStrategy};
         let mut cfg = crate::defaults::config();
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         let before = cfg.data_area().unwrap().0;
         assert_eq!(
             cfg.nudge(Element::DataAreaEdge(Side::Right), &LaysOut, 20.0, 0.0),
@@ -724,7 +722,7 @@ mod tests {
     fn validate_rejects_a_degenerate_overlay_axis() {
         use crate::layer::OverlayLayer;
         let mut cfg = crate::defaults::config();
-        cfg.overlays.push(OverlayLayer::default());
+        cfg.overlays.push(crate::defaults::overlay_layer());
         assert!(cfg.validate().is_ok());
         let mut reversed = cfg.clone();
         reversed.overlays[0].y_axis.max = reversed.overlays[0].y_axis.min;
@@ -736,7 +734,7 @@ mod tests {
         shared.overlays[0].series = vec!["a".into()];
         shared.overlays.push(OverlayLayer {
             series: vec!["a".into()],
-            ..Default::default()
+            ..crate::defaults::overlay_layer()
         });
         assert_eq!(shared.validate(), Err(LayoutError::Infeasible));
     }
@@ -779,7 +777,7 @@ mod tests {
                 cfg.colorbar = Some(bar);
             }
             if next() < 0.5 {
-                let mut overlay = crate::layer::OverlayLayer::default();
+                let mut overlay = crate::defaults::overlay_layer();
                 overlay.y_axis.out_margin = next() * 150.0;
                 cfg.overlays.push(overlay);
             }
