@@ -456,38 +456,43 @@ fn optional(value: Option<f64>) -> f64 {
     value.unwrap_or(f64::NAN)
 }
 
-// An f64 column writes the (hi, lo) split on both paths: it keeps about 48
+// The values themselves: a slice of the host's memory, written straight into
+// mapped staging and never copied on the CPU (rules 2 and 5). A `Column`, a
+// `Vec` and a borrowed slice all upload through these, so
+// `add_column("x", &xs)` takes the host's vector as it is (#265).
+//
+// An f64 slice writes the (hi, lo) split on both paths: it keeps about 48
 // bits on the GPU, not f32's 24 (#107), and streamed windows use the same
 // split (the maintainer's exception to rule 8 for upload precision).
-impl ColumnSource for Column<f64> {
+impl ColumnSource for [f64] {
     fn len(&self) -> usize {
-        self.data.len()
+        <[f64]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_values(&self.data, dst, |value| value);
+        write_all_values(self, dst, |value| value);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_value_range(&self.data, start, dst, |value| value)
+        write_value_range(self, start, dst, |value| value)
     }
 }
 
-impl HiLoColumnSource for Column<f64> {
+impl HiLoColumnSource for [f64] {
     fn len(&self) -> usize {
-        self.data.len()
+        <[f64]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_values(&self.data, dst, |value| value);
+        write_all_values(self, dst, |value| value);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_value_range(&self.data, start, dst, |value| value)
+        write_value_range(self, start, dst, |value| value)
     }
 }
 
@@ -495,53 +500,143 @@ impl HiLoColumnSource for Column<f64> {
 // value is written as the f64 `(hi, lo)` split, which holds every `u32`
 // exactly, so an index column stores every index up to `u32::MAX` in its
 // `u32` lane (SHADER_COMMON.md §5.14).
-impl ColumnSource for Column<u32> {
+impl ColumnSource for [u32] {
     fn len(&self) -> usize {
-        self.data.len()
+        <[u32]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_values(&self.data, dst, f64::from);
+        write_all_values(self, dst, f64::from);
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_value_range(&self.data, start, dst, f64::from)
+        write_value_range(self, start, dst, f64::from)
     }
 }
 
-impl ColumnSource for Column<f32> {
+impl ColumnSource for [f32] {
     fn len(&self) -> usize {
-        self.data.len()
+        <[f32]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, |value| (value, 0.0));
+        write_all_with(self, dst, |value| (value, 0.0));
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, |value| (value, 0.0))
+        write_range_with(self, start, dst, |value| (value, 0.0))
     }
 }
 
-impl HiLoColumnSource for Column<f32> {
+impl HiLoColumnSource for [f32] {
     fn len(&self) -> usize {
-        self.data.len()
+        <[f32]>::len(self)
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_with(&self.data, dst, |value| (value, 0.0));
+        write_all_with(self, dst, |value| (value, 0.0));
     }
     fn write_pair_range(
         &self,
         start: u64,
         dst: &mut ColumnPairWriter<'_>,
     ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_range_with(&self.data, start, dst, |value| (value, 0.0))
+        write_range_with(self, start, dst, |value| (value, 0.0))
     }
 }
+
+// A missing value is NaN (#107), written with the f64 `(hi, lo)` split.
+impl ColumnSource for [Option<f64>] {
+    fn len(&self) -> usize {
+        <[Option<f64>]>::len(self)
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_values(self, dst, optional);
+    }
+    fn write_pair_range(
+        &self,
+        start: u64,
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_value_range(self, start, dst, optional)
+    }
+}
+
+impl HiLoColumnSource for [Option<f64>] {
+    fn len(&self) -> usize {
+        <[Option<f64>]>::len(self)
+    }
+    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+        write_all_values(self, dst, optional);
+    }
+    fn write_pair_range(
+        &self,
+        start: u64,
+        dst: &mut ColumnPairWriter<'_>,
+    ) -> std::result::Result<(), ColumnRangeWriteError> {
+        write_value_range(self, start, dst, optional)
+    }
+}
+
+/// The containers a host holds its values in, each uploading through its
+/// slice: a [`Column`], a `Vec` and a borrowed slice (#265). Arrays are left
+/// out on purpose: a trait `len` on `[T; N]` would shadow the slice's `len`
+/// in any scope that imports these traits.
+macro_rules! slice_backed_source {
+    ($trait:ident for $($value:ty),+) => {$(
+        impl $trait for Column<$value> {
+            fn len(&self) -> usize {
+                self.data.len()
+            }
+            fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+                $trait::write_pairs(self.data.as_slice(), dst)
+            }
+            fn write_pair_range(
+                &self,
+                start: u64,
+                dst: &mut ColumnPairWriter<'_>,
+            ) -> std::result::Result<(), ColumnRangeWriteError> {
+                $trait::write_pair_range(self.data.as_slice(), start, dst)
+            }
+        }
+        impl $trait for Vec<$value> {
+            fn len(&self) -> usize {
+                <[$value]>::len(self)
+            }
+            fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+                $trait::write_pairs(self.as_slice(), dst)
+            }
+            fn write_pair_range(
+                &self,
+                start: u64,
+                dst: &mut ColumnPairWriter<'_>,
+            ) -> std::result::Result<(), ColumnRangeWriteError> {
+                $trait::write_pair_range(self.as_slice(), start, dst)
+            }
+        }
+        impl $trait for &[$value] {
+            fn len(&self) -> usize {
+                <[$value]>::len(self)
+            }
+            fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
+                $trait::write_pairs(*self, dst)
+            }
+            fn write_pair_range(
+                &self,
+                start: u64,
+                dst: &mut ColumnPairWriter<'_>,
+            ) -> std::result::Result<(), ColumnRangeWriteError> {
+                $trait::write_pair_range(*self, start, dst)
+            }
+        }
+    )+};
+}
+
+slice_backed_source!(ColumnSource for f64, f32, u32, Option<f64>);
+slice_backed_source!(HiLoColumnSource for f64, f32, Option<f64>);
 
 /// The borrowed values of a converted legacy document
 /// (`Config::from_categorical`'s uploads): written straight from the
@@ -573,38 +668,6 @@ impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
     }
     fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
         self.for_each(|index, value| dst.write_value(index, value));
-    }
-}
-
-impl ColumnSource for Column<Option<f64>> {
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_values(&self.data, dst, optional);
-    }
-    fn write_pair_range(
-        &self,
-        start: u64,
-        dst: &mut ColumnPairWriter<'_>,
-    ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_value_range(&self.data, start, dst, optional)
-    }
-}
-
-impl HiLoColumnSource for Column<Option<f64>> {
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-    fn write_pairs(&self, dst: &mut ColumnPairWriter<'_>) {
-        write_all_values(&self.data, dst, optional);
-    }
-    fn write_pair_range(
-        &self,
-        start: u64,
-        dst: &mut ColumnPairWriter<'_>,
-    ) -> std::result::Result<(), ColumnRangeWriteError> {
-        write_value_range(&self.data, start, dst, optional)
     }
 }
 
@@ -646,6 +709,59 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    // A `Vec`, a borrowed slice and a `Column` upload the same pairs and
+    // statistics through both traits, whole and by range (#265).
+    #[test]
+    fn vecs_and_slices_upload_as_their_column_does() {
+        let values = vec![1e9f64 + 0.25, -2.5, f64::NAN, 4.0];
+        let column = Column {
+            data: values.clone(),
+        };
+        let slice: &[f64] = &values;
+        let expected = scalar_upload(&column);
+        assert_eq!(
+            format!("{:?}", scalar_upload(&values)),
+            format!("{expected:?}")
+        );
+        assert_eq!(
+            format!("{:?}", scalar_upload(&slice)),
+            format!("{expected:?}")
+        );
+        let expected = hilo_upload(&column);
+        assert_eq!(
+            format!("{:?}", hilo_upload(&values)),
+            format!("{expected:?}")
+        );
+        assert_eq!(
+            format!("{:?}", hilo_upload(&slice)),
+            format!("{expected:?}")
+        );
+        let range =
+            |source: &dyn ColumnSource| upload(2, |dst| source.write_pair_range(1, dst).unwrap());
+        let expected = range(&column);
+        assert_eq!(format!("{:?}", range(&values)), format!("{expected:?}"));
+        assert_eq!(format!("{:?}", range(&slice)), format!("{expected:?}"));
+
+        let narrow = vec![0.5f32, 1.5];
+        let narrow_column = Column {
+            data: narrow.clone(),
+        };
+        assert_eq!(scalar_upload(&narrow), scalar_upload(&narrow_column));
+        assert_eq!(hilo_upload(&narrow.as_slice()), hilo_upload(&narrow_column));
+        let gaps = vec![Some(1.5), None];
+        assert_eq!(
+            format!("{:?}", hilo_upload(&gaps)),
+            format!("{:?}", hilo_upload(&Column { data: gaps.clone() }))
+        );
+        let indices = vec![0u32, u32::MAX];
+        assert_eq!(
+            scalar_upload(&indices),
+            scalar_upload(&Column {
+                data: indices.clone()
+            })
+        );
     }
 
     #[test]

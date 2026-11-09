@@ -142,16 +142,13 @@ let mut renderer = Renderer::for_window_blocking(
     16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
 ).unwrap();
 
-// renderer.add_column takes `&dyn ColumnSource`.
-// Implement the trait on your own type (see `ColumnSource` section below) — Vec, ndarray,
-// polars Series, mmap, anything. Built-in `Column<f64>` works too.
+// renderer.add_column takes `&dyn ColumnSource`. A `Vec` or slice of f64,
+// f32, u32 or Option<f64> uploads as it is; implement the trait on your own
+// type (see `ColumnSource` section below) for ndarray, polars Series, mmap, anything.
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    renderer::Column { data }
-}
-renderer.add_column("x", &column(xs)).unwrap();
-renderer.add_column("y", &column(ys)).unwrap();
+renderer.add_column("x", &xs).unwrap();
+renderer.add_column("y", &ys).unwrap();
 
 // Chart — builder pattern.
 let mut config = default::default_config();
@@ -223,7 +220,7 @@ pub trait ColumnSource {
 }
 ```
 
-**Built-in implementors**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+**Built-in implementors**: `Column<T>`, `Vec<T>`, `[T]` and `&[T]` for `T` = `f64`, `f32`, `u32` and `Option<f64>` (`None` → NaN). They write straight from the host's memory into mapped staging, with no copy. Arrays are not implementors: pass `&arr.as_slice()`.
 
 ```rust
 pub trait HiLoColumnSource {
@@ -242,7 +239,7 @@ pub trait HiLoColumnSource {
 }
 ```
 
-`Column<f64>`, `Column<f32>` and `Column<Option<f64>>` also implement
+The `f64`, `f32` and `Option<f64>` implementors also implement
 `HiLoColumnSource`; browser hosts should pass a
 `Float64Array` through `register_column_f64` for the first upload and
 `update_register_column_f64` for an explicit replacement when using timestamp
@@ -761,16 +758,13 @@ let mut renderer = Renderer::for_window_blocking(
     16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
 ).unwrap();
 
-// renderer.add_column은 `&dyn ColumnSource`를 받는다.
-// 사용하는 데이터 타입에 트레이트를 구현하면(아래 `ColumnSource` 절 참고) Vec, ndarray,
-// polars Series, mmap 등 어떤 데이터든 넘길 수 있다. 기본 제공 `Column<f64>`를 써도 된다.
+// renderer.add_column은 `&dyn ColumnSource`를 받는다. f64, f32, u32, Option<f64>의
+// `Vec`이나 슬라이스는 그대로 넘긴다. ndarray, polars Series, mmap 같은 다른 데이터는
+// 그 타입에 트레이트를 구현해 넘긴다(아래 `ColumnSource` 절 참고).
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    renderer::Column { data }
-}
-renderer.add_column("x", &column(xs)).unwrap();
-renderer.add_column("y", &column(ys)).unwrap();
+renderer.add_column("x", &xs).unwrap();
+renderer.add_column("y", &ys).unwrap();
 
 // Chart — 빌더 패턴.
 let mut config = default::default_config();
@@ -817,7 +811,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `writer.write_value(index, v)`로 f64를 기록하면 `(hi, lo)`로 나눠 쓰고 통계에는 `v` 자체를 반영한다. `writer.write_pair(index, hi, lo)`는 `hi as f64 + lo as f64`를 반영한다. 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
 
-큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 `Column` 타입 세 가지는 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
+큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 구현체 중 `f64`, `f32`, `Option<f64>`를 담는 것은 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
 
 `add_column` / `add_hilo_column`은 새 ID를 등록할 때 사용한다. 기존 ID의 데이터를 교체하려면 `upsert_column` / `upsert_hilo_column`을 사용한다. `Renderer`는 새 풀 상태, 영향을 받는 차트의 리비전, 피킹 캐시와 정리 작업을 모두 준비한 뒤 한꺼번에 반영한다. 준비 중 오류가 나면 기존 상태를 유지한다.
 
@@ -842,7 +836,7 @@ pub trait ColumnSource {
 }
 ```
 
-**기본 제공 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+**기본 제공 구현체**: `T`가 `f64`, `f32`, `u32`, `Option<f64>`일 때의 `Column<T>`, `Vec<T>`, `[T]`, `&[T]` (`None` → NaN). 호스트 메모리에서 매핑된 스테이징 버퍼로 복사 없이 바로 쓴다. 배열은 구현체가 아니므로 `&arr.as_slice()`로 넘긴다.
 
 사용자 정의 `ColumnSource`는 값을 기록하는 `write_pairs`를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 난다. 소스는 값만 기록하고 통계는 넘기지 않는다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 그래서 통계가 데이터와 어긋날 수 없다. `HiLoColumnSource`도 같은 이름의 메서드로 `(hi, lo)` 쌍을 기록한다.
 

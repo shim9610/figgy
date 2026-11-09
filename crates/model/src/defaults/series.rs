@@ -306,8 +306,9 @@ pub(crate) fn histogram_bar_width_ratio() -> f32 {
     1.0
 }
 
-/// [`ContourLabelConfig::color`] where a document omits it.
-#[cfg(feature = "serde")]
+/// [`ContourLabelConfig::color`] where a document omits it, and the host
+/// default label colour (`crate::helpers`).
+#[cfg(any(feature = "serde", feature = "helpers"))]
 pub(crate) fn contour_label_color() -> Color {
     Color::BLACK
 }

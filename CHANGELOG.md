@@ -40,6 +40,8 @@ annotation's `align`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Host defaults for the series styles and the chart frame** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `Default` now covers `Config`, `ChartTitleOptions`, `AxisTitleOptions`, `GridOptions`, `ColorBarOptions`, `Legend` and `ChartArea` (each the value `default` builds), and the series styles a document always spells out: `Stem`, `DataScatterStyleConfig`, `DataErrorBarStyleConfig`, `DataBarStyleConfig`, `VectorStyle`, `FieldFillConfig`, `ContourLabelConfig`, `RangeConnector` and `SurfaceWireframe`. Strokes take the black, 1 px ink of the line default; bars fill with the first colour of the balanced palette. `AxisOptions` and `LabelStyle` have none, since their default differs by axis. Product code cannot read them (#266).
+
 - **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
   - **One source, one folder.** Every serialized type with a default now spells it once, in the crate-private `defaults/` folder (one file per area: frame, series, annotations, chart families, science, text): the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]`, the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`) and the ten field defaults that serde read from functions scattered over the model. `#[serde(default)]` reads them through `default = "crate::defaults::name"`. `Violin::DEFAULT_BOX_WIDTH` keeps its value, now read from there. Documents parse and serialize exactly as before.
   - **New `helpers` feature (on by default).** Host conveniences live in the `helpers/` folder behind it: `impl Default` on those types and the `default` module (now `figgy_model::helpers::default`, still reachable as `figgy_model::default`). The model's and the renderer's own code, their unit tests included, cannot fall back on a default: `ci/verify.py static` builds both libraries and their unit tests without it.
@@ -1445,6 +1447,8 @@ annotation's `align`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **`Vec`s and slices upload as they are** ([#265](https://github.com/shim9610/figgy/issues/265)). `ColumnSource` is implemented for `[T]`, `&[T]` and `Vec<T>` with `T` = `f64`, `f32`, `u32` and `Option<f64>`, and `HiLoColumnSource` for the `f64`, `f32` and `Option<f64>` ones, so `add_column("x", &xs)` takes the host's vector without a `Column` wrapper. Values go straight from host memory into mapped staging. `Column<T>` now uploads through the same slice implementations. Arrays are not implementors: a trait `len` on `[T; N]` would shadow the slice's.
 
 - **No default fallbacks in the renderer; `helpers` feature** ([#266](https://github.com/shim9610/figgy/issues/266)).
   - The renderer depends on the model without `helpers` and forwards its own `helpers` feature, which is on by default.
