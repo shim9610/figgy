@@ -71,6 +71,54 @@ impl Chart {
         self
     }
 
+    /// The chart with `annotation` appended to its annotation layer.
+    pub fn with_annotation(mut self, annotation: crate::Annotation) -> Self {
+        self.config_mut().annotations.items.push(annotation);
+        self
+    }
+
+    /// The chart with the tick labels of `bottom_x` and `left_y` written in
+    /// `format`; call it after `set_x_range` / `set_y_range`, which choose one.
+    pub fn with_label_format(mut self, format: crate::format::LabelFormat) -> Self {
+        let config = self.config_mut();
+        config.bottom_x.label_style.format = format.clone();
+        config.left_y.label_style.format = format;
+        self
+    }
+
+    /// The chart with all four grid lines (major and minor, x and y) off.
+    pub fn without_grid(mut self) -> Self {
+        let grid = &mut self.config_mut().grid;
+        grid.show_major_x = false;
+        grid.show_major_y = false;
+        grid.show_minor_x = false;
+        grid.show_minor_y = false;
+        self
+    }
+
+    /// The chart with its colour bar's axis title shown as plain `text` in
+    /// the title's current style; without a colour bar nothing changes.
+    pub fn with_colorbar_title(mut self, text: &str) -> Self {
+        if let Some(bar) = self.config_mut().colorbar.as_mut() {
+            let title = &mut bar.axis.title_option;
+            title.text.segments = crate::text::rich_segments_from_text(text);
+            title.visible = true;
+        }
+        self
+    }
+
+    /// The chart in the polar coordinates `polar` (`Config::set_polar`).
+    pub fn with_polar(mut self, polar: crate::PolarOptions) -> Self {
+        self.config_mut().set_polar(Some(polar));
+        self
+    }
+
+    /// The chart with `subplot` appended to its subplots.
+    pub fn with_subplot(mut self, subplot: crate::Subplot) -> Self {
+        self.config_mut().subplots.push(subplot);
+        self
+    }
+
     /// One legend entry per labelled series, in order: its symbol from the
     /// series itself ([`crate::legend::series_symbol_segments`], so a colour
     /// is written once) and its label. Unlabelled series get no entry. The

@@ -7,8 +7,10 @@
 //! takes every default from its one crate-private source and never falls back
 //! on `Default`.
 
+mod chart_parts;
 pub mod default;
 mod defaults;
 mod series;
+mod series_family;
 mod series_style;
 pub mod theme;

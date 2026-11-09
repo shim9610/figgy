@@ -368,3 +368,91 @@ fn a_headless_radial_renderer_draws_a_titled_chart() {
         .unwrap();
     assert!(png.starts_with(b"\x89PNG"));
 }
+
+// The chart part builders write the document: annotations appended, the
+// tick label format on both value axes, every grid line off, the colour
+// bar's title, polar coordinates and a subplot. The document validates and
+// draws.
+#[test]
+fn chart_part_builders_write_the_document() {
+    use renderer::format::LabelFormat;
+    use renderer::{Anchor, Annotation, AnnotationAxis, CellRef, PolarOptions, Subplot};
+
+    let red = Color::from_rgb8(200, 30, 30);
+    let mut chart = Chart::sized(480, 320)
+        .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.5, red, 1.5))
+        .with_annotation(Annotation::span(
+            AnnotationAxis::X,
+            2.0,
+            4.0,
+            red.with_alpha(0.15),
+        ))
+        .with_annotation(Annotation::text(
+            Anchor::Ratio { x: 0.05, y: 0.05 },
+            "note",
+            red,
+            16.0,
+        ))
+        .without_grid();
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(-1.2, 1.2);
+    // `set_x_range` / `set_y_range` choose a format, so the format follows.
+    let chart = chart.with_label_format(LabelFormat::Degrees);
+    let config = chart.config();
+    assert_eq!(config.annotations.items.len(), 3);
+    assert_eq!(config.bottom_x.label_style.format, LabelFormat::Degrees);
+    assert_eq!(config.left_y.label_style.format, LabelFormat::Degrees);
+    let grid = &config.grid;
+    assert!(!grid.show_major_x && !grid.show_major_y);
+    assert!(!grid.show_minor_x && !grid.show_minor_y);
+    assert!(config.validate().is_ok(), "{:?}", config.validate());
+
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let (x, y) = sine();
+    renderer.add_column("x", &x).unwrap();
+    renderer.add_column("y", &y).unwrap();
+    let series = [SeriesConfig::line("sine", "x", "y")];
+    for scale in [1.0, 2.0] {
+        let png = renderer
+            .export_png_blocking(
+                ExportSource::Chart {
+                    chart: &chart,
+                    series: &series,
+                },
+                ExportOptions::document(scale),
+            )
+            .unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    // Without a colour bar the title builder changes nothing; with one it
+    // shows the title in the axis title's style.
+    let plain = Chart::sized(200, 120);
+    assert_eq!(
+        plain.config(),
+        Chart::sized(200, 120).with_colorbar_title("z").config()
+    );
+    let mut barred = Chart::sized(200, 120);
+    barred.config_mut().colorbar = Some(renderer::default::default_colorbar_options());
+    let barred = barred.with_colorbar_title("Speed");
+    let title = &barred.config().colorbar.as_ref().unwrap().axis.title_option;
+    assert!(title.visible);
+    let text: String = title.text.segments.iter().map(|s| s.text).collect();
+    assert_eq!(text, "Speed");
+
+    let polar = Chart::sized(300, 300).with_polar(PolarOptions::default());
+    assert_eq!(polar.config().polar(), Some(&PolarOptions::default()));
+
+    let cell = Chart::placed(480, 0, 480, 320).config().clone();
+    let overlay = renderer::config::AxisOptions::overlay_y("Current (A)", red);
+    let document = Chart::sized(960, 320)
+        .with_overlay(overlay, &["current"])
+        .with_subplot(Subplot::new(cell.clone(), &["b"]).with_link_x(CellRef::Parent));
+    let config = document.config();
+    assert_eq!(config.subplots.len(), 1);
+    assert_eq!(config.subplots[0].config, cell);
+    assert_eq!(config.subplots[0].series, ["b"]);
+    assert_eq!(config.subplots[0].link_x, Some(CellRef::Parent));
+    assert_eq!(config.overlays[0].y_axis.label_style.color, red);
+    assert!(config.validate().is_ok(), "{:?}", config.validate());
+}

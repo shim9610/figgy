@@ -192,13 +192,21 @@ impl SeriesConfig {
     // Point maps.
 
     /// Colour each marker of an x-y or ternary series by `column` through
-    /// the chart's colour bar, or each polyline of a parallel series.
+    /// the chart's colour bar, or each polyline of a parallel series, each
+    /// streamline or each arrow of a point vector series (a grid series
+    /// takes a colour grid through [`Self::style_vectors`]).
     pub fn color_by(mut self, column: impl Into<ColumnId>) -> Self {
         let column = column.into();
         if let DataRenderType::Parallel { color_column, .. } = &mut self.render_type {
             *color_column = Some(column);
         } else if let DataRenderType::Streamlines { color_map, .. } = &mut self.render_type {
             *color_map = Some(PointColorMap { column });
+        } else if let DataRenderType::Vector {
+            components: VectorComponents::Points { .. },
+            style,
+        } = &mut self.render_type
+        {
+            style.color_map = Some(crate::data_config::VectorColorMap::Column(column));
         } else if let Some(scatter) = self.markers() {
             scatter.point_color_map = Some(PointColorMap { column });
         }
