@@ -1,10 +1,10 @@
 //! `layout::auto_layout` (#44) through the renderer's text measure: pure and
 //! idempotent on every catalogue scene and released config document, data
-//! untouched, documents that already clear kept as they are, and an
-//! auto-laid-out document as an ordinary SSOT (serialization, the registry's
-//! invalidation, hit testing). The no-overlap property on drawn pixels at 1x
-//! and 2x, and drag, selection and export on every scene, are the decoration
-//! oracle's `auto_layout_*` tests.
+//! untouched, the bands of the default and released documents set exactly
+//! to what they hold (#270), and an auto-laid-out document as an ordinary
+//! SSOT (serialization, the registry's invalidation, hit testing). The
+//! no-overlap property on drawn pixels at 1x and 2x, and drag, selection and
+//! export on every scene, are the decoration oracle's `auto_layout_*` tests.
 #![cfg(not(target_arch = "wasm32"))]
 
 use test_gpu::BlockOn as _;
@@ -180,14 +180,43 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
     out
 }
 
-// The default document already clears, so it is returned as it is: 0 px.
-// So are the released config documents of every model version (their
-// chrome: margins, offsets, formats), except the changes listed.
+// Every band of the default document and of the released config documents
+// of every model version (their chrome: margins, offsets, formats) is set to
+// exactly what it holds (#270), smaller or larger than the document had it:
+// the changes listed, and nothing else.
+//
+// - The default document: the bottom and left bands shrink to their labels
+//   and the 8 px edge padding (no axis titles); the top band holds the pixel
+//   of the top y label that runs past the top tick, and the right band the
+//   last x label's overhang past the right tick, each with the padding; the
+//   empty chart title gets no band.
+// - `config-default` (0.10.0 and 0.11.0) is the same document with an 8 px
+//   right band, which grows to the overhang.
+// - `config-series` is the default with a right-hand colourbar: its band
+//   shrinks to its labels and the padding (no title).
+// - `config-edited` shows the top labels (the band grows to their reach and
+//   the padding), puts each axis title beside its labels in a band set to
+//   labels, gap, title and padding (the bottom title moves 6 px outward, the
+//   left one 25 px), holds the last x label's overhang past the 8 px right
+//   tick, shrinks the bottom colourbar's band to its labels, its title (a
+//   third of the label font past them) and the padding, and pads its
+//   two-line 30 px title by 0.3 em above and below.
 #[cfg(feature = "serde")]
 #[test]
-fn auto_layout_keeps_the_default_and_the_released_config_documents() {
+fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands() {
     let default = renderer::default::default_config();
-    assert_eq!(laid_out(&default), default);
+    let out = laid_out(&default);
+    assert_eq!(laid_out(&out), out, "default: not idempotent");
+    assert_eq!(
+        layout_changes(&default, &out),
+        [
+            "top_x.out_margin 8 -> 9",
+            "bottom_x.out_margin 80 -> 24",
+            "left_y.out_margin 110 -> 48",
+            "right_y.out_margin 32 -> 21",
+            "chart_title.top_margin 32 -> 0",
+        ]
+    );
     let mut seen = Vec::new();
     for (name, cfg) in released_configs() {
         let out = laid_out(&cfg);
@@ -197,18 +226,49 @@ fn auto_layout_keeps_the_default_and_the_released_config_documents() {
             seen.push(format!("{name}: {change}"));
         }
     }
-    // The edited documents of 0.10.0 and 0.11.0 set a 48 px title band for a
-    // taller title (fitted to 60 px), show the top labels in an 8 px band
-    // and centre a left title less than the gap from its labels, which moves
-    // 10 px outward. Every other released config is kept to the pixel.
-    let expected: &[&str] = &[
-        "model-0.10.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.10.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
-        "model-0.10.0-config-edited.json: chart_title.top_margin 48 -> 60",
-        "model-0.11.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.11.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
-        "model-0.11.0-config-edited.json: chart_title.top_margin 48 -> 60",
-    ];
+    let mut expected = Vec::new();
+    for version in ["0.10.0", "0.11.0"] {
+        for (doc, changes) in [
+            (
+                "default",
+                &[
+                    "top_x.out_margin 8 -> 9",
+                    "bottom_x.out_margin 80 -> 24",
+                    "left_y.out_margin 110 -> 48",
+                    "right_y.out_margin 8 -> 21",
+                    "chart_title.top_margin 32 -> 0",
+                ][..],
+            ),
+            (
+                "edited",
+                &[
+                    "top_x.out_margin 8 -> 16",
+                    "bottom_x.out_margin 80 -> 47",
+                    "bottom_x.title_option.offset_y 0 -> 6",
+                    "left_y.out_margin 120 -> 89",
+                    "left_y.title_option.offset_y 0 -> -25",
+                    "right_y.out_margin 8 -> 14",
+                    "colorbar.axis.out_margin 60 -> 45",
+                    "chart_title.top_margin 48 -> 74",
+                ][..],
+            ),
+            (
+                "series",
+                &[
+                    "top_x.out_margin 8 -> 9",
+                    "bottom_x.out_margin 80 -> 24",
+                    "left_y.out_margin 110 -> 48",
+                    "right_y.out_margin 8 -> 21",
+                    "colorbar.axis.out_margin 60 -> 54",
+                    "chart_title.top_margin 32 -> 0",
+                ][..],
+            ),
+        ] {
+            for change in changes {
+                expected.push(format!("model-{version}-config-{doc}.json: {change}"));
+            }
+        }
+    }
     assert_eq!(seen, expected);
 }
 
@@ -271,10 +331,15 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
         out.left_y.label_style.format,
         renderer::format::LabelFormat::Power
     );
-    // The 110 px band the host set holds the labels and the title beside
-    // them: the band is kept and the title moves outward by its offset.
-    assert_eq!(out.left_y.out_margin, scene.config.left_y.out_margin);
+    // The band is set to exactly the labels, the gap, the title beside them
+    // and the 8 px edge padding: the title moves outward by its offset and
+    // ends the padding (within the pixel the offset is rounded to) from the
+    // chart edge.
+    assert!(out.left_y.out_margin < scene.config.left_y.out_margin);
     assert!(out.left_y.title_option.offset_y < 0.0);
+    let title = rects(&out, Element::AxisTitle(Side::Left))[0];
+    let edge_gap = title.x - out.chart_area.x as f32;
+    assert!((7.0..=9.0).contains(&edge_gap), "{edge_gap}");
 }
 
 // An auto-laid-out document is an ordinary SSOT: it serializes and parses

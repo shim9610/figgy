@@ -722,19 +722,29 @@ annotation's `align`) are additive.
   setting, a series, an annotation or a pick. A `Decimal` or `Plain`,
   non-categorical axis whose labels print more than five digits (`0.00300`)
   or are wider than five ems switches to `LabelFormat::Power`; each band's
-  `out_margin` grows, never shrinks, to the labels' reach, `LABEL_GAP`, the
-  title's thickness and `LABEL_GAP` again (a band that already holds them,
-  or a side with neither labels nor a title, is kept); a title that does not
+  `out_margin` is set to exactly what it holds, smaller or larger
+  ([#270](https://github.com/shim9610/figgy/issues/270)): the labels' reach,
+  `LABEL_GAP`, the title's thickness and an 8 px edge padding, or the
+  padding alone on a side that holds nothing, where the labels include the
+  side's category group headers and the end labels of the perpendicular
+  axes that run past the plot; a title that does not
   clear its labels by `LABEL_GAP` inside its band gets the `offset_y` that
   puts it `LABEL_GAP` past them, and one that already clears, centred or
   offset by the host, stays; overlay axes and the colourbar's axis follow the
-  same rule, the title band follows `fit_chart_title_margin`, a
+  same rule, the chart title band is the title's height and 0.3 em of its
+  font (at least the edge padding) above and below it, 0 without a title, a
   legend over the colourbar goes to the first corner that clears it, and
   each subplot is laid out as its own chart. No serialized field is added.
   Not covered: overlay axes drawn over each other, polar angle labels against
-  radius labels, and labels at a corner, which run along their axes. Call it
-  again after an auto-fit or a zoom: the range helpers reset a linear axis to
-  `Decimal`.
+  radius labels, and labels that collide along an axis or at a corner. Call
+  it again after an auto-fit or a zoom: the range helpers reset a linear axis
+  to `Decimal`.
+- **`auto_layout` fits bands both ways**
+  ([#270](https://github.com/shim9610/figgy/issues/270)). Bands shrink as
+  well as grow, end 8 px past what they hold, and hold the overhang of the
+  perpendicular end labels and the category group headers; the chart title
+  band is padded by 0.3 em above and below, 0 without a title.
+  `fit_chart_title_margin` (`with_title`, `set_title`) is unchanged.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),
   [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
@@ -3888,11 +3898,14 @@ entries above describe the changes.
   oracle sweep runs every Cartesian scene through `auto_layout` and holds it
   to I1 to I7 (`auto_layout_i1` … `auto_layout_i7`). `tests/auto_layout.rs`
   checks purity and idempotence on every scene, untouched data fields, the
-  default config and the released config documents (only the 0.10.0 and
-  0.11.0 edited documents change, listed), a serde round trip and
+  bands of the default config and the released config documents (every
+  change listed), a serde round trip and
   `set_chart_config`; the model unit tests pin the band rule, offsets,
   formats, the colourbar, the legend, overlays and subplots with a stub
-  measure, and the web crate `autoLayout`.
+  measure, and the web crate `autoLayout`. With #270 they also cover a band
+  shrinking to its labels, the chart title's padding and a title-less chart,
+  the perpendicular labels' overhang, category group headers, a hidden frame
+  and a ternary chart.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
   The model pins the plan's golden ladders, majors and minors (with guarded
   and extreme ranges), a sweep where every `Decades(n)` ladder draws the

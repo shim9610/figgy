@@ -775,15 +775,16 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#205",
     },
     Exclusion {
-        scene: "CategoryAxis",
-        layer: "base",
-        element: "tick_labels_bottom",
+        scene: "*",
+        layer: "*",
+        element: "*tick_labels_bottom",
         inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
-        reason: "`auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
-                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
-                 for LongLabels' right axis. They stay grabbable elsewhere",
-        issue: "#205",
+        detail: "after the drag, I2 of *tick_labels_bottom: *({\"*axis_title_bottom\": *",
+        reason: "`auto_layout` sets the bottom band exactly and puts the title the gap (4 px) \
+                 past the labels (or the staggered labels' outer row); the (+7, +5) drag moves \
+                 the labels down under the title's padded box, as for LongLabels' right axis. \
+                 They stay grabbable elsewhere",
+        issue: "#270",
     },
     Exclusion {
         scene: "LongLabels",
@@ -807,14 +808,66 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
                  on the twin axes' overlay. They stay grabbable elsewhere",
         issue: "#44",
     },
+    // The `Annotations` scene's arrow past its tip (the shared exclusions'
+    // rows) at the data area the exact bands give it: one point and one
+    // pixel fewer.
     Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "colorbar_tick_labels",
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
+        inv: Inv::I2,
+        detail: "3 points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of colorbar_tick_labels: *({\"colorbar_title\": *",
-        reason: "the colourbar's labels dragged under its title, as for the right axis",
-        issue: "#44",
+        detail: "after the drag, I2 of annotation_3: 3 points of stroke outlines*",
+        reason: "the arrow shaft past the tip, as in I2",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I2,
+        detail: "3 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 3})*",
+        reason: "the span's pixels under the arrow shaft's band past the tip",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_0: 3 of * ({\"annotation_3\": 3})*",
+        reason: "the span under the arrow shaft past the tip, as in I2",
+        issue: "#47",
+    },
+    // A 3D chart's right (z) title is placed along the box edge, at the
+    // fractional position the box in the exact bands' data area gives it.
+    Exclusion {
+        scene: "Surface",
+        layer: "document",
+        element: "axis_title_right",
+        inv: Inv::I5,
+        detail: "*of its * ink pixels*differ by more than*box-filtered*",
+        reason: "the short title on the box edge lands at the fractional position the box in \
+                 the exact bands' data area gives it; its 2x extent halved stays within the \
+                 bound, and the ink difference is glyph snapping at the two scales",
+        issue: "#270",
+    },
+    Exclusion {
+        scene: "Quiver3d",
+        layer: "document",
+        element: "axis_title_right",
+        inv: Inv::I5,
+        detail: "*of its * ink pixels*differ by more than*box-filtered*",
+        reason: "the z title on the box edge, as for Surface",
+        issue: "#270",
     },
 ];
 
