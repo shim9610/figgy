@@ -42,6 +42,8 @@ annotation's `align`) are additive.
 
 - **Series constructors and modifiers** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` gains one constructor per chart family (`line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`, and `of_kind`), each naming its columns and drawing with the host style defaults. Chainable modifiers set the common fields: `label`, `color`, `width`, `dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal` and `z`. `MatrixRef::columns_are_x`, `columns_are_y` and `with_layout` name a matrix. These are methods on the document types: the series stays the single source of truth.
 
+- **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `model::theme` holds `Theme`: a look written into the document once, never stored as a name. `ChromeTheme` covers the chart and plot fills, the draw style, the axis frame (`AxisPreset`), axis, label, title and legend colours, fonts and sizes, the grid, the legend box, the colourbar outline and the selection highlight. `SeriesTheme` has one part per family: a `ColorCycle`, line widths and marker sizes, bars, boxes and violins, field colour maps and contour labels, vectors, radar, range bars, ternary regions, 3D surfaces, energy levels, Feynman diagrams and the radial chart. Built in: `light` (the documented default), `dark`, `paper`, `dashboard` and `sketch`, also through `Theme::named`. `Theme::apply(&mut config, &mut series, SubplotScope)` writes the chrome of the chart, its overlays and the chosen subplots, and styles the series drawn there; the legend symbols follow the new series look. `apply_chrome`, `style_series` and `apply_radial` apply one part. A theme keeps ranges, scales, label formats, categories, axis breaks, the chart area, offsets, all text, the annotation layer, the layer structure, series ids, columns and labels, and the selection's refs. Energy-level and Feynman charts keep their own frame.
+
 - **A fill for the whole chart area** ([#265](https://github.com/shim9610/figgy/issues/265)). `Config::background: Option<Color>` paints the chart area under everything the chart draws: the plot fill, the grid, the data and the decorations. `None` (key absent in JSON) is the transparent chart area every document had, so older documents read and write as before. A subplot fills its own chart area from its own `background`; overlay layers and line-offset members draw none. In the Milkyway style the deep-space backdrop takes its place, as it takes the plot fill's. An exhaustive `Config { .. }` literal or pattern adds `background`.
 
 - **Host defaults for the series styles and the chart frame** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `Default` now covers `Config`, `ChartTitleOptions`, `AxisTitleOptions`, `GridOptions`, `ColorBarOptions`, `Legend` and `ChartArea` (each the value `default` builds), and the series styles a document always spells out: `Stem`, `DataScatterStyleConfig`, `DataErrorBarStyleConfig`, `DataBarStyleConfig`, `VectorStyle`, `FieldFillConfig`, `ContourLabelConfig`, `RangeConnector` and `SurfaceWireframe`. Strokes take the black, 1 px ink of the line default; bars fill with the first colour of the balanced palette. `AxisOptions` and `LabelStyle` have none, since their default differs by axis. Product code cannot read them (#266).
@@ -1460,6 +1462,8 @@ annotation's `align`) are additive.
   - A failed `prepare_registered` (an unknown chart) redraws no view.
   - A view made with `create_chart_view` and drawn by `prepare_registered` is not redrawn on its first frame when the stored chart matches: a redraw whose panel and annotation raster keys all match uploads nothing, and a registered chart's annotation edit redraws the annotation layer alone. A view with fewer overlay layers than the stored chart grows on the next prepare instead of failing with `StaleStateToken`.
   - **Migration:** build the item with `view: &mut view, chart: &chart` (wrap a bare `Config` in `Chart::new`), pass `&mut [..]`, set the selection with `chart.select(..)` instead of `refresh_axis_with_selection`, and drop the host's dirty-flag `refresh_axis` branch.
+
+- **Chart themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `renderer::theme` re-exports the model's themes, `Chart::apply_theme(&theme, &mut series, SubplotScope)` applies one to the chart and its series and refits the layout to the new text sizes, and `Chart::with_theme(&theme)` applies the chrome alone and fits.
 
 - **Chart conveniences** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::sized(width, height)` (the documented default look with that chart area), `with_legend_from(&series)` (one entry per labelled series, its symbol from the series through `legend::series_symbol_segments`, so a colour is written once) and `fit_layout()` (`layout::auto_layout` with the chart's own font measure).
 
@@ -3315,6 +3319,14 @@ annotation's `align`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)).
+  `FiggyChart.apply_theme(name, subplots)` and `<figgy-chart>`'s
+  `apply_theme(name, subplots = "all")` apply a built-in theme (`light`,
+  `dark`, `paper`, `dashboard` or `sketch`) to the chart, its overlays and
+  the series drawn there, then refit the layout; `subplots` is `"all"`,
+  `"none"` or a JSON array of indices. `FiggyBoundedChart.apply_theme(name)`
+  themes a radial chart. An unknown name or a bad list changes nothing.
 
 - **A chart background** ([#265](https://github.com/shim9610/figgy/issues/265)).
   The config JSON takes an optional `background` colour that fills the whole

@@ -656,7 +656,7 @@ impl SeriesConfig {
 
     /// Visit every line style the series draws: its line, contour lines,
     /// streamlines or parallel polylines.
-    fn for_each_line(&mut self, mut visit: impl FnMut(&mut DataLineStyleConfig)) {
+    pub(crate) fn for_each_line(&mut self, mut visit: impl FnMut(&mut DataLineStyleConfig)) {
         match &mut self.render_type {
             DataRenderType::Xy(XySeries {
                 line: Some(line), ..

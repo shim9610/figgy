@@ -206,3 +206,65 @@ fn the_chart_background_is_an_additive_key() {
     assert_eq!(back, filled_config);
     assert_eq!(serde_json::to_string(&back).unwrap(), filled);
 }
+
+// A theme writes its look into the chart and its series and refits the
+// layout to its text sizes; the themed chart exports at 1x and 2x with the
+// theme's background and series colours.
+#[test]
+fn a_themed_chart_exports_with_its_look() {
+    use renderer::theme::{SubplotScope, Theme};
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let (x, y) = sine();
+    renderer.add_column("x", &x).unwrap();
+    renderer.add_column("y", &y).unwrap();
+    let theme = Theme::dark();
+    let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+    let mut chart = Chart::sized(480, 320)
+        .with_title("A sine wave")
+        .with_legend_from(&series);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(-1.2, 1.2);
+    chart.apply_theme(&theme, &mut series, SubplotScope::All);
+
+    let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+    let fitted = renderer::layout::auto_layout(chart.config(), &measure);
+    assert_eq!(
+        chart.config(),
+        &fitted,
+        "the layout is fitted after the theme"
+    );
+    assert_eq!(chart.config().background, theme.chrome.background);
+    assert_eq!(
+        (chart.config().bottom_x.min, chart.config().bottom_x.max),
+        (0.0, 10.0)
+    );
+
+    let bg = theme.chrome.background.unwrap();
+    let expected = [bg.r, bg.g, bg.b].map(|c| (c * 255.0).round() as u8);
+    for scale in [1.0f32, 2.0] {
+        let png = renderer
+            .export_png_blocking(
+                ExportSource::Chart {
+                    chart: &chart,
+                    series: &series,
+                },
+                ExportOptions::document(scale),
+            )
+            .unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut rgba).unwrap();
+        let corner = (2 * info.width as usize + 2) * 4;
+        assert_eq!(rgba[corner..corner + 3], expected, "{scale}x");
+        // The series draws in its cycle colour somewhere on the chart.
+        let line = theme.series.cycle.color(0);
+        let target = [line.r, line.g, line.b].map(|c| (c * 255.0).round() as i32);
+        assert!(
+            rgba.chunks_exact(4)
+                .any(|p| (0..3).all(|i| (i32::from(p[i]) - target[i]).abs() <= 8)),
+            "{scale}x: no pixel in the series colour"
+        );
+    }
+}

@@ -33,17 +33,19 @@ replace `version` with `path = "../figgy/crates/renderer"`. Code written for
 [migration notes](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170).
 
 Copy the complete [line example](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/line.rs)
-into `src/main.rs` and run `cargo run`. It creates a device, uploads two columns,
-draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening a window.
+into `src/main.rs` and run `cargo run`. It creates a headless renderer, uploads two
+columns, draws axes and a sine wave, and writes a 960 × 600 `line.png` without opening
+a window.
 The crate root page of the API documentation shows the example after this
 README. From a source checkout, run
 `cargo run --locked -p figgy-renderer --example line -- line.png`.
 
-The application needs its own `wgpu` dependency for this example and no async
-executor: it requests the adapter and device with `gpu::request_adapter_blocking`
-and `gpu::request_device_blocking` and exports with `export_rgba_blocking`. A host
-with an async executor awaits the `_async` requests and `export_rgba` instead,
-which the device bundle's poll thread completes.
+The example needs no async executor and no `wgpu` dependency of its own: it
+uses the `helpers` feature (on by default), whose `Renderer::headless_blocking`
+makes the instance, adapter and device, and whose `save_blocking` exports and
+writes the file in the format its extension names. A host with an async executor
+awaits `Renderer::headless` and the `export_*` calls instead, which the device
+bundle's poll thread completes.
 Hosts that already own a matching wgpu 30 device/queue can share them through
 `RendererDevice`. They do not need a second device or a particular GUI toolkit.
 

@@ -60,6 +60,15 @@ impl JsErrorSource for wgpu::RequestDeviceError {}
 impl JsErrorSource for wgpu::RequestAdapterError {}
 impl JsErrorSource for wgpu::CreateSurfaceError {}
 
+/// The built-in theme `name` (#265), or an error naming the choices.
+pub(crate) fn theme_named(name: &str) -> Result<renderer::theme::Theme, JsValue> {
+    renderer::theme::Theme::named(name).ok_or_else(|| {
+        js_err(format!(
+            "no theme {name:?}: use light, dark, paper, dashboard or sketch"
+        ))
+    })
+}
+
 pub(crate) fn js_err(e: impl JsErrorSource) -> JsValue {
     let message = e.to_string();
     let Some(kind) = e.rule() else {

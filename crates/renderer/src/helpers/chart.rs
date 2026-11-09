@@ -1,6 +1,7 @@
-//! Chart conveniences: a sized chart, a legend from the series, and
-//! margins fitted to the text (#265).
+//! Chart conveniences: a sized chart, a theme, a legend from the series,
+//! and margins fitted to the text (#265).
 
+use crate::theme::{SubplotScope, Theme};
 use crate::{Chart, SeriesConfig};
 
 impl Chart {
@@ -36,6 +37,30 @@ impl Chart {
             );
         }
         config.legend.visible = true;
+        self
+    }
+
+    /// Apply `theme` to the chart and its series ([`Theme::apply`]): the
+    /// chrome of the chart, its overlays and the subplots `subplots` names,
+    /// and the series drawn there. The layout is then fitted to the new text
+    /// sizes ([`Self::fit_layout`]).
+    pub fn apply_theme(
+        &mut self,
+        theme: &Theme,
+        series: &mut [SeriesConfig],
+        subplots: SubplotScope,
+    ) {
+        theme.apply(self.config_mut(), series, subplots);
+        self.fit_layout();
+    }
+
+    /// The chart with `theme`'s chrome on it and on every subplot, its
+    /// layout fitted. Its series take the theme through
+    /// [`Theme::style_series`], or together with the chart through
+    /// [`Self::apply_theme`].
+    pub fn with_theme(mut self, theme: &Theme) -> Self {
+        theme.apply_chrome(self.config_mut(), SubplotScope::All);
+        self.fit_layout();
         self
     }
 

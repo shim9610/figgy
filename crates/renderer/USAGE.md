@@ -623,6 +623,47 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   labelled series with the series' own symbol; `fit_layout()` fits the axis
   bands and margins to their labels (`layout::auto_layout`).
 
+### Themes
+
+A theme (`renderer::theme::Theme`, `helpers` feature) writes a whole look into
+the document once. It is a value, not a name the document stores: after it is
+applied, the document holds plain values and stays the single source of truth.
+
+```rust
+use renderer::theme::{SubplotScope, Theme};
+
+let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // refits the layout too
+```
+
+- Built in: `Theme::light()` (the documented default look), `dark()`,
+  `paper()` (open frame, no grid, grayscale-safe), `dashboard()` (no axis
+  lines or ticks, horizontal grid, large text) and `sketch()` (hand-drawn
+  strokes). `Theme::named("dark")` looks one up by name. Every field is public,
+  so a host edits a copy before applying it.
+- A theme writes the chrome (`ChromeTheme`): the chart and plot fills, the
+  draw style, the axis frame (`AxisPreset`), axis, tick-label, title and legend
+  colours, fonts and sizes, the grid, the legend box, the colourbar outline and
+  the selection highlight. It writes each series' family part (`SeriesTheme`):
+  colours through its `ColorCycle`, stroke widths, marker sizes and the
+  family's materials. Energy-level and Feynman charts keep a frame of their
+  own (`Grotrian`, `Hidden`).
+- It keeps axis ranges, scales, tick spacing, label formats, categories,
+  axis breaks, the chart area, every offset, all text content, the annotation
+  layer, the overlay and subplot structure, series ids, columns and labels,
+  and the selection itself.
+- Overlays take the theme with their chart. `SubplotScope` chooses the
+  subplots: `None`, `All` or `Only(&[indices])`; a series drawn in a subplot
+  outside the scope keeps its look.
+- `Chart::apply_theme` refits the layout to the new text sizes
+  (`fit_layout`). `Chart::with_theme(&theme)` applies the chrome alone and
+  fits; style the series with `theme.style_series(&mut series, index)`.
+  `theme.apply(&mut config, &mut series, scope)` works on a bare `Config` and
+  leaves the layout to the host. `theme.apply_radial(&mut radial_chart)`
+  themes a radial chart.
+- Applying the same theme twice changes nothing more.
+
 ### PNG export (memory only — saving is the caller's job)
 
 ```rust
@@ -1209,6 +1250,40 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 - `Chart::sized(width, height)`는 기본 모양에 그 크기의 차트 영역을 준 차트다.
   `with_legend_from(&series)`는 라벨이 있는 시리즈마다 그 시리즈의 기호로 범례 항목을 하나씩 더하고,
   `fit_layout()`은 축 띠와 여백을 라벨과 제목에 맞춘다(`layout::auto_layout`).
+
+### 테마
+
+테마(`renderer::theme::Theme`, `helpers` 기능)는 차트 전체의 모양을 문서에 한 번 써 넣는다.
+문서에 이름으로 저장되는 것이 아니라 값이다. 적용하고 나면 문서에는 평범한 값만 남고, 문서가 계속
+하나뿐인 원본(SSOT)으로 남는다.
+
+```rust
+use renderer::theme::{SubplotScope, Theme};
+
+let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // 레이아웃도 다시 맞춘다
+```
+
+- 내장 테마는 `Theme::light()`(문서에 적힌 기본 모양), `dark()`, `paper()`(열린 축 틀, 격자 없음,
+  흑백 인쇄에 안전), `dashboard()`(축선·눈금 없음, 가로 격자, 큰 글자), `sketch()`(손으로 그린 선)다.
+  `Theme::named("dark")`로 이름으로 찾을 수 있다. 모든 필드가 공개되어 있어서 복사본을 고친 뒤
+  적용해도 된다.
+- 테마가 쓰는 것은 크롬(`ChromeTheme`)이다. 차트와 플롯 배경, 그리기 스타일, 축 틀(`AxisPreset`),
+  축·눈금 라벨·제목·범례의 색과 글꼴과 크기, 격자, 범례 상자, 색상 막대 테두리, 선택 강조가
+  여기에 든다. 시리즈마다 계열별 부분(`SeriesTheme`)도 쓴다. `ColorCycle`에 따른 색, 선 굵기,
+  마커 크기, 계열별 재질이다. 에너지 준위 차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을
+  유지한다.
+- 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든 오프셋, 모든 텍스트
+  내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택 자체는 그대로 둔다.
+- 오버레이는 차트와 함께 테마를 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
+  `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
+- `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
+  `Chart::with_theme(&theme)`는 크롬만 적용하고 맞추며, 시리즈는
+  `theme.style_series(&mut series, index)`로 꾸민다. `theme.apply(&mut config, &mut series, scope)`는
+  `Config`에 바로 적용하고 레이아웃은 호스트에게 맡긴다. `theme.apply_radial(&mut radial_chart)`은
+  원형 차트에 적용한다.
+- 같은 테마를 두 번 적용해도 더 바뀌는 것은 없다.
 
 ### PNG 내보내기
 

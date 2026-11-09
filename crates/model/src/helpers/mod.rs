@@ -10,3 +10,4 @@
 pub mod default;
 mod defaults;
 mod series;
+pub mod theme;
