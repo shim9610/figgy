@@ -20,7 +20,7 @@ use renderer::{
     Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, Chart, Color, Renderer,
     SeriesConfig,
     config::{Category, LegendCorner},
-    data_config::{CategoryBarDirection, DataRenderType, ScatterShape, Stem, XySeries},
+    data_config::ScatterShape,
     format::{LabelFormat, PlainNumberFormat},
     line::LineStylePreset,
 };
@@ -31,16 +31,6 @@ use styled::{cartesian, export, rgb, save};
 /// `color` with alpha `a`.
 fn faded(color: Color, a: f32) -> Color {
     Color::from_rgba(color.r, color.g, color.b, a)
-}
-
-/// The stem of a stem series, for the fields no modifier sets.
-fn stem_of(series: &mut SeriesConfig) -> &mut Stem {
-    match &mut series.render_type {
-        DataRenderType::Xy(XySeries {
-            stem: Some(stem), ..
-        }) => stem,
-        _ => unreachable!("a stem series"),
-    }
 }
 
 /// The normalised sinc, sin(pi x) / (pi x).
@@ -88,12 +78,12 @@ fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
         .color(faded(sand, 0.9))
         .width(2.)
         .dash(LineStylePreset::Dash);
-    let mut taps = SeriesConfig::stem("taps", "stem-n", "stem-h")
+    let taps = SeriesConfig::stem("taps", "stem-n", "stem-h")
         .label("Taps h[n], Hamming window")
         .color(teal)
         .width(2.5)
-        .marker(ScatterShape::CircleFilled, 10.);
-    stem_of(&mut taps).color = faded(teal, 0.75);
+        .marker(ScatterShape::CircleFilled, 10.)
+        .stem_color(faded(teal, 0.75));
     let specs = [ideal, taps];
     chart.set_x_range(-21.5, 21.5);
     chart.set_y_range(-0.1, 0.45);
@@ -187,7 +177,7 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
         }
         r.add_column(format!("lollipop-{id}-row"), &rows)?;
         r.add_column(format!("lollipop-{id}-change"), &change)?;
-        let mut lollipops = SeriesConfig::stem(
+        let lollipops = SeriesConfig::stem(
             id,
             format!("lollipop-{id}-change"),
             format!("lollipop-{id}-row"),
@@ -195,8 +185,8 @@ fn lollipop(r: &mut Renderer, out: &Path) -> Result {
         .label(label)
         .color(color)
         .width(4.)
-        .marker(ScatterShape::CircleFilled, 18.);
-        stem_of(&mut lollipops).direction = CategoryBarDirection::Horizontal;
+        .marker(ScatterShape::CircleFilled, 18.)
+        .horizontal();
         specs.push(lollipops);
     }
     chart = chart.with_legend_from(&specs);

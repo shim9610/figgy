@@ -17,13 +17,7 @@ use std::path::Path;
 /// `document` as a Cartesian chart of category bars, exported to `name.png`.
 fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &str) -> Result {
     document.validate()?;
-    let (mut config, series, uploads) = Config::from_categorical(document);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: 900,
-        height: 620,
-    });
+    let (config, series, uploads) = Config::from_categorical(document);
     // The previous document's columns go; the positions come first, then
     // the value columns as one batch.
     for upload in &uploads {
@@ -54,9 +48,9 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         && (document.labels == CategoryBarLabels::Outside
             || (document.labels == CategoryBarLabels::Auto
                 && document.mode == CategoryBarMode::Grouped));
-    let mut chart = Chart::new(config);
+    let mut chart = Chart::new(config).with_area(0, 0, 900, 620);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-    let mut config = chart.config().clone();
+    let config = chart.config_mut();
     let value = if horizontal {
         &mut config.bottom_x
     } else {
@@ -76,7 +70,7 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
     let path = directory.join(format!("{name}.png"));
     r.save_blocking(
-        ExportSource::chart(&Chart::new(config), &series),
+        ExportSource::chart(&chart, &series),
         ExportOptions::panel(1.0),
         &path,
     )?;

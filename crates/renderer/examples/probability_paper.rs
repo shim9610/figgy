@@ -84,9 +84,8 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     }
 
     let cell = |x: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut chart = Chart::sized(600, 800);
+        let mut chart = Chart::placed(x, 0, 600, 800);
         let config = chart.config_mut();
-        config.chart_area.0.x = x;
         chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 28.;
         config.left_y.out_margin = 120.;

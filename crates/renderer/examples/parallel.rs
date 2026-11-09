@@ -16,7 +16,6 @@ use gallery::Result;
 use renderer::{
     BarAlign, ColorMap, Renderer, SeriesConfig,
     config::{AxisScale, Category, TickVisibility},
-    data_config::DataRenderType,
     layout::Side,
     parallel::{ParallelAxis, ParallelOptions},
     text::RichText,
@@ -79,13 +78,12 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         let values: Vec<f64> = runs.iter().map(|run| run[k]).collect();
         r.add_column(format!("sweep-{id}"), &values)?;
     }
-    let mut lines = SeriesConfig::parallel("runs", ids.map(|id| format!("sweep-{id}")))
-        .color(ink)
-        .width(1.2);
-    if let DataRenderType::Parallel { color_column, .. } = &mut lines.render_type {
-        *color_column = Some("sweep-accuracy".into());
-    }
-    let specs = [lines];
+    let specs = [
+        SeriesConfig::parallel("runs", ids.map(|id| format!("sweep-{id}")))
+            .color(ink)
+            .width(1.2)
+            .color_by("sweep-accuracy"),
+    ];
 
     let config = chart.config_mut();
     config.bottom_x.categories = Some(

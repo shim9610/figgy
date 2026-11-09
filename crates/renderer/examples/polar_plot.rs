@@ -25,12 +25,11 @@ mod gallery;
 mod styled;
 
 use renderer::{
-    Color, ColorMap, DataRenderType, Renderer, SeriesConfig,
+    Color, ColorMap, Renderer, SeriesConfig,
     config::Category,
     data_config::{
-        BarGroups, CategoryBarMode, CategoryBarStyle, ContourConfig, ContourLabelConfig,
-        DataLineStyleConfig, FieldFillConfig, FieldSeries, GridLayout, MatrixRef, ScatterShape,
-        Shading, XySeries,
+        BarGroups, CategoryBarMode, CategoryBarStyle, ContourLabelConfig, GridLayout, MatrixRef,
+        ScatterShape, Shading,
     },
     format::{LabelFormat, PlainNumberFormat},
     line::LineStylePreset,
@@ -39,18 +38,6 @@ use renderer::{
 };
 use std::{f64::consts::PI, path::Path};
 use styled::{cartesian, colorbar, export, rgb, rgba, save};
-
-/// A line series' fill in a colour of its own (`fill_to` fills in the
-/// line's colour at a quarter of its opacity).
-fn fill_color(mut series: SeriesConfig, color: Color) -> SeriesConfig {
-    if let DataRenderType::Xy(XySeries {
-        line: Some(line), ..
-    }) = &mut series.render_type
-    {
-        line.fill_color = Some(color);
-    }
-    series
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = gallery::output_directory("target/polar-plot")?;
@@ -72,13 +59,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut chart = gallery::chart("Antenna pattern", "Azimuth", "Gain", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, 1.0);
-        let series = [fill_color(
-            SeriesConfig::line("gain", "deg", "pattern")
-                .color(Color::from_rgb8(30, 110, 210))
-                .width(2.5)
-                .fill_to(0.0),
-            Color::new(0.12, 0.43, 0.82, 0.25),
-        )];
+        let series = [SeriesConfig::line("gain", "deg", "pattern")
+            .color(Color::from_rgb8(30, 110, 210))
+            .width(2.5)
+            .fill_to(0.0)
+            .fill_color(Color::new(0.12, 0.43, 0.82, 0.25))];
         {
             let config = chart.config_mut();
             config.set_polar(Some(PolarOptions::default()));
@@ -160,13 +145,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut chart = gallery::chart("Sector in radians", "Phase", "Response", size);
         chart.set_x_range(-PI / 2.0, PI / 2.0);
         chart.set_y_range(0.0, 2.0);
-        let series = [fill_color(
-            SeriesConfig::line("response", "phase", "response")
-                .color(Color::from_rgb8(150, 60, 170))
-                .width(3.0)
-                .fill_to(0.0),
-            Color::new(0.59, 0.24, 0.67, 0.2),
-        )];
+        let series = [SeriesConfig::line("response", "phase", "response")
+            .color(Color::from_rgb8(150, 60, 170))
+            .width(3.0)
+            .fill_to(0.0)
+            .fill_color(Color::new(0.59, 0.24, 0.67, 0.2))];
         {
             let config = chart.config_mut();
             config.set_polar(Some(PolarOptions {
@@ -215,37 +198,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut chart = gallery::chart("Gain over azimuth and frequency", "Azimuth", "GHz", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(1.0, 6.0);
-        // A heatmap with labelled contours: no constructor makes both.
+        // Labelled contours over an interpolated fill.
         let dark = Color::from_rgb8(25, 25, 25);
-        let series = [SeriesConfig::of_kind(
+        let series = [SeriesConfig::contours(
             "gain",
             "gain_az",
             "gain_ghz",
-            DataRenderType::Field(FieldSeries {
-                matrix: MatrixRef::columns_are_x(ids),
-                fill: Some(FieldFillConfig {
-                    shading: Shading::Interpolated,
-                    ..Default::default()
-                }),
-                contour: Some(ContourConfig {
-                    levels: vec![-4.0, 3.0],
-                    line: DataLineStyleConfig {
-                        line_color: dark,
-                        line_width: 1.2,
-                        ..Default::default()
-                    },
-                    per_level_color: None,
-                    labels: Some(ContourLabelConfig {
-                        font_size: 12.0,
-                        color: dark,
-                        significant_digits: 1,
-                        spacing_px: 180.0,
-                        ..Default::default()
-                    }),
-                }),
-                surface: None,
-            }),
-        )];
+            MatrixRef::columns_are_x(ids),
+            vec![-4.0, 3.0],
+        )
+        .filled()
+        .shading(Shading::Interpolated)
+        .color(dark)
+        .width(1.2)
+        .contour_labels(ContourLabelConfig {
+            font_size: 12.0,
+            color: dark,
+            significant_digits: 1,
+            spacing_px: 180.0,
+            ..Default::default()
+        })];
         {
             let config = chart.config_mut();
             config.set_polar(Some(PolarOptions {
@@ -357,33 +329,24 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
         r.add_column(id, &db)?;
     }
     ids.push(ids[0].clone());
-    let series = [SeriesConfig::of_kind(
+    let series = [SeriesConfig::contours(
         "spectrum",
         "wave_dir",
         "wave_freq",
-        DataRenderType::Field(FieldSeries {
-            matrix: MatrixRef::columns_are_x(ids).with_layout(GridLayout::Edges),
-            fill: Some(FieldFillConfig::default()),
-            contour: Some(ContourConfig {
-                levels: vec![-20.0, -10.0, -3.0],
-                line: DataLineStyleConfig {
-                    line_color: rgba(20, 28, 48, 0.85),
-                    line_width: 1.4,
-                    ..Default::default()
-                },
-                per_level_color: None,
-                labels: Some(ContourLabelConfig {
-                    font_size: 15.0,
-                    color: rgb(20, 28, 48),
-                    significant_digits: 2,
-                    spacing_px: 260.0,
-                    bg_padding_px: 3.0,
-                    ..Default::default()
-                }),
-            }),
-            surface: None,
-        }),
-    )];
+        MatrixRef::columns_are_x(ids).with_layout(GridLayout::Edges),
+        vec![-20.0, -10.0, -3.0],
+    )
+    .filled()
+    .color(rgba(20, 28, 48, 0.85))
+    .width(1.4)
+    .contour_labels(ContourLabelConfig {
+        font_size: 15.0,
+        color: rgb(20, 28, 48),
+        significant_digits: 2,
+        spacing_px: 260.0,
+        bg_padding_px: 3.0,
+        ..Default::default()
+    })];
     chart.set_x_range(0.0, 8.0);
     chart.set_y_range(0.04, 0.25);
     {
@@ -491,16 +454,18 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
     for (band, (id, label, color)) in bands.into_iter().enumerate() {
         let shares: Vec<f64> = (0..16).map(|k| share(k, band)).collect();
         r.add_column(id, &shares)?;
-        let mut s = SeriesConfig::category_bars(id, "rose_dir", id, color).label(label);
-        if let DataRenderType::CategoryBars { style, .. } = &mut s.render_type {
-            *style = CategoryBarStyle {
-                corner_radius: 3.0,
-                gloss: 0.0,
-                texture_strength: 0.0,
-                ..CategoryBarStyle::default()
-            };
-        }
-        series.push(s);
+        series.push(
+            SeriesConfig::category_bars(id, "rose_dir", id, color)
+                .label(label)
+                .style_bars(|style| {
+                    *style = CategoryBarStyle {
+                        corner_radius: 3.0,
+                        gloss: 0.0,
+                        texture_strength: 0.0,
+                        ..CategoryBarStyle::default()
+                    }
+                }),
+        );
     }
     chart = chart.with_legend_from(&series);
     chart.set_x_range(0.0, 16.0);

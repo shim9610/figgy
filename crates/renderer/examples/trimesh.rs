@@ -20,7 +20,7 @@ mod styled;
 use gallery::Result;
 use renderer::{
     Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig, TriangleSource,
-    data_config::{ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, Shading},
+    data_config::{ContourConfig, DataLineStyleConfig, DataRenderType, Shading},
     text::RichText,
     tri_mesh::{MeshValueLocation, MeshValues},
     view3d::{SurfaceStyle, SurfaceWireframe, View3d},
@@ -37,12 +37,8 @@ fn mesh_series(id: &str, contour: ContourConfig, surface: Option<SurfaceStyle>) 
         at: MeshValueLocation::Vertices,
     };
     let (x, y, triangles) = (format!("{id}-x"), format!("{id}-y"), format!("{id}-tri"));
-    let mut mesh = SeriesConfig::mesh(id, x, y, triangles, values);
+    let mut mesh = SeriesConfig::mesh(id, x, y, triangles, values).shading(Shading::Interpolated);
     if let DataRenderType::TriMesh(series) = &mut mesh.render_type {
-        series.fill = Some(FieldFillConfig {
-            shading: Shading::Interpolated,
-            ..Default::default()
-        });
         series.contour = Some(contour);
         series.surface = surface;
     }

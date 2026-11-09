@@ -3,7 +3,7 @@
 //! Do not replace Line with ScatterLine/LineScatterErrorbar: those add planets/jets.
 use renderer::config::{DrawStyle, LegendCorner, MilkywayOptions};
 use renderer::theme::{SubplotScope, Theme};
-use renderer::{Chart, Color, Renderer, SeriesConfig, encode_png};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -100,12 +100,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     chart.set_x_range(-6.0, 126.0);
     chart.set_y_range(-0.05, 1.08);
     let img = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &series),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let empty = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &[]),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &[]),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let changed = img
         .rgba
@@ -127,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "missing line-generated star field: {changed}"
     );
     assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255));
-    std::fs::write(&output, encode_png(&img)?)?;
+    img.save_png(&output)?;
     println!(
         "{}: 1280x1024, {changed} data-dependent pixels; two Line series",
         output.display()

@@ -279,9 +279,12 @@ fn chart_placement_overlay_swatch_and_png_save() {
         (area.x, area.y, area.width, area.height),
         (40, 30, 320, 200)
     );
-    let resized = Chart::sized(10, 10).with_area(5, 6, 300, 180);
+    let mut resized = Chart::sized(10, 10).with_area(5, 6, 300, 180);
     let area = resized.config().chart_area.0;
     assert_eq!((area.x, area.y, area.width, area.height), (5, 6, 300, 180));
+    resized.set_area(0, 0, 640, 480);
+    let area = resized.config().chart_area.0;
+    assert_eq!((area.x, area.y, area.width, area.height), (0, 0, 640, 480));
 
     let axis = renderer::config::Config::default().left_y;
     let red = Color::new(0.9, 0.1, 0.1, 1.0);

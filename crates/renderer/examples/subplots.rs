@@ -18,34 +18,11 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, OverlayLayer,
-    Renderer, SeriesConfig, Subplot,
-    data_config::{DataRenderType, XySeries},
-    text::RichText,
+    CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, Renderer,
+    SeriesConfig, Subplot, text::RichText,
 };
 use std::path::Path;
 use styled::{chrome, rgb, save};
-
-/// A line series' fill in a colour of its own (`fill_to` fills in the
-/// line's colour at a quarter of its opacity).
-fn fill_color(mut series: SeriesConfig, color: Color) -> SeriesConfig {
-    if let DataRenderType::Xy(XySeries {
-        line: Some(line), ..
-    }) = &mut series.render_type
-    {
-        line.fill_color = Some(color);
-    }
-    series
-}
-
-/// A chart of `width` x `height` with its top-left corner at `(x, y)` in
-/// the document.
-fn placed(x: u32, y: u32, width: u32, height: u32) -> Chart {
-    let mut chart = Chart::sized(width, height);
-    let area = &mut chart.config_mut().chart_area.0;
-    (area.x, area.y) = (x, y);
-    chart
-}
 
 // Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
 // axis, each with its own range and colour.
@@ -56,7 +33,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
     let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
     r.add_column("h", &hour)?;
     let cell = |x: u32, y: u32, title: &str, y_title: &str| -> Config {
-        let mut chart = placed(x, y, 600, 400);
+        let mut chart = Chart::placed(x, y, 600, 400);
         let config = chart.config_mut();
         chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 26.;
@@ -139,13 +116,13 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             })
             .collect();
         r.add_column(id, &data)?;
-        specs.push(fill_color(
+        specs.push(
             SeriesConfig::line(id, "h", id)
                 .color(color)
                 .width(3.)
-                .fill_to(floor),
-            Color::from_rgba(color.r, color.g, color.b, 0.1),
-        ));
+                .fill_to(floor)
+                .fill_color(Color::from_rgba(color.r, color.g, color.b, 0.1)),
+        );
     }
     let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
     config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
@@ -212,8 +189,8 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     }
 
     // One 480x420 cell: a chart with its own axes, titled.
-    let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut chart = placed(x, y, 480, 420);
+    let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| -> Chart {
+        let mut chart = Chart::placed(x, y, 480, 420);
         let config = chart.config_mut();
         config.left_y.out_margin = 100.0;
         config.right_y.out_margin = 40.0;
@@ -223,18 +200,16 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             .with_title(title)
             .with_x_title(x_title)
             .with_y_title(y_title)
-            .config()
-            .clone()
     };
-    let subplot = |config: Config, series: &[&str]| Subplot {
-        config,
+    let subplot = |chart: Chart, series: &[&str]| Subplot {
+        config: chart.config().clone(),
         series: series.iter().map(|id| id.to_string()).collect(),
         ..Default::default()
     };
 
     // The document's own chart is the upper-left cell; three subplots fill
     // the grid. Only the upper-right one links an axis (X, to the parent).
-    let mut config = cell(0, 0, "Temperature", "Hour", "°C");
+    let mut config = cell(0, 0, "Temperature", "Hour", "°C").config().clone();
     let mut pressure_by_hour = subplot(cell(480, 0, "Pressure", "Hour", "hPa"), &["pressure"]);
     pressure_by_hour.link_x = Some(CellRef::Parent);
     let humidity_by_temperature = subplot(
@@ -243,15 +218,16 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     );
     let pressure_color = Color::from_rgb8(176, 64, 32);
     let humidity_color = Color::from_rgb8(40, 140, 90);
-    let mut daytime = subplot(cell(480, 420, "Daytime", "Hour", "hPa"), &["daytime"]);
+    let mut twin = renderer::default::default_axis_options_y();
+    twin.out_margin = 100.0;
+    twin.title_option.visible = true;
+    twin.title_option.text = RichText::plain("%", humidity_color, 22.0, "");
+    twin.label_style.color = humidity_color;
+    let mut daytime = subplot(
+        cell(480, 420, "Daytime", "Hour", "hPa").with_overlay(twin, &["daytime_humidity"]),
+        &["daytime"],
+    );
     daytime.config.right_y.out_margin = 100.0;
-    let mut twin = OverlayLayer::default();
-    twin.series = vec!["daytime_humidity".into()];
-    twin.y_axis.out_margin = 100.0;
-    twin.y_axis.title_option.visible = true;
-    twin.y_axis.title_option.text = RichText::plain("%", humidity_color, 22.0, "");
-    twin.y_axis.label_style.color = humidity_color;
-    daytime.config.overlays.push(twin);
     config.subplots = vec![pressure_by_hour, humidity_by_temperature, daytime];
 
     let mut chart = Chart::new(config);

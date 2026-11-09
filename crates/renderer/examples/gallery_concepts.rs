@@ -19,11 +19,10 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Color, ColorMap, Material, Renderer, RendererDevice, SeriesConfig,
+    Color, ColorMap, Material, Renderer, SeriesConfig,
     categorical::*,
     config::{DrawStyle, SketchOptions},
-    data_config::{DataRenderType, FieldFillConfig, MatrixRef, ScatterShape, Shading},
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
+    data_config::{MatrixRef, ScatterShape, Shading},
     radial::*,
 };
 use std::path::Path;
@@ -166,13 +165,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         },
         ..Default::default()
     };
-    let (mut config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: SIZE.0,
-        height: SIZE.1,
-    });
+    let (config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
     // The positions, then the value columns as one batch.
     let (positions, values) = uploads.split_first().expect("the positions column");
     r.add_column(positions.column.clone(), &positions.values)?;
@@ -181,7 +174,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         .map(|u| (u.column.as_str(), &u.values as &dyn renderer::ColumnSource))
         .collect();
     r.add_columns(&columns)?;
-    let mut cartesian = renderer::Chart::new(config);
+    let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
     cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
     let image = export(r, &cartesian, &specs, bg)?;
     save(&image, bg, &out.join("concept-revenue.png"))
@@ -190,10 +183,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
 // 4–5. The same named-value contract, with two very different material choices.
 fn radial_concepts(out: &Path) -> Result {
     // The radial renderer takes a device of its own making.
-    let adapter = request_adapter_blocking(&create_instance())?;
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(device, queue)?;
-    let mut r = RadialRenderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut r = RadialRenderer::headless_blocking()?;
     let mut chart = RadialChart {
         slices: vec![
             RadialSlice::new("Design", 38., rgb(245, 103, 87)),
@@ -225,8 +215,8 @@ fn radial_concepts(out: &Path) -> Result {
             ..Default::default()
         },
         ..Default::default()
-    };
-    chart.set_title_text("Studio time / a creative week");
+    }
+    .with_title("Studio time / a creative week");
     chart.format_labels();
     let image = r.export_rgba_blocking(&chart, SIZE, renderer::ExportOptions::document(1.))?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
@@ -298,7 +288,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         columns.push(id);
     }
     let levels = (1..=17).map(|i| i as f64 * 0.1).collect();
-    let mut terrain = SeriesConfig::contours(
+    let terrain = SeriesConfig::contours(
         "terrain",
         "east",
         "north",
@@ -306,14 +296,10 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
         levels,
     )
     .color(Color::from_rgba(0.92, 0.98, 0.8, 0.65))
-    .width(1.1);
+    .width(1.1)
     // The custom ramp under the isolines, interpolated between the cells.
-    if let DataRenderType::Field(field) = &mut terrain.render_type {
-        field.fill = Some(FieldFillConfig {
-            shading: Shading::Interpolated,
-            ..Default::default()
-        });
-    }
+    .filled()
+    .shading(Shading::Interpolated);
     let specs = [terrain];
     let mut bar = renderer::default::default_colorbar_options();
     // The gallery image was rendered with this gap.

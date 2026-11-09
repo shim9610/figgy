@@ -5,7 +5,7 @@
 
 use renderer::color::Color;
 use renderer::config::{DrawStyle, LegendEntryKind, SketchOptions};
-use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig, XySeries};
+use renderer::data_config::{ScatterShape, SeriesConfig};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
@@ -96,18 +96,6 @@ fn main() {
 
     let blue = Color::from_rgb8(38, 104, 214);
     let green = Color::from_rgb8(44, 140, 80);
-    let mut meas = SeriesConfig::scatter("meas", "t", "yc")
-        .color(green)
-        .marker(ScatterShape::Diamond, 5.0)
-        .y_errors("err");
-    if let DataRenderType::Xy(XySeries {
-        errors: Some(errors),
-        ..
-    }) = &mut meas.render_type
-    {
-        errors.style.error_bar_width = 1.6;
-        errors.style.cap_width = 1.6;
-    }
     let tour_series = [
         SeriesConfig::scatter_line("wave", "t", "ya")
             .color(accent)
@@ -117,7 +105,12 @@ fn main() {
             .color(blue)
             .width(2.5)
             .dash(LineStylePreset::Dash),
-        meas,
+        SeriesConfig::scatter("meas", "t", "yc")
+            .color(green)
+            .marker(ScatterShape::Diamond, 5.0)
+            .y_errors("err")
+            // The default 6 px caps.
+            .error_bars(1.6, 6.0),
     ];
 
     let mut chart = Chart::sized(920, 600);

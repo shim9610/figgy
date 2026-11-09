@@ -102,9 +102,12 @@ impl SeriesConfig {
             _ => return self,
         };
         let color = scatter.map(|scatter| scatter.point_color);
-        let line = line.get_or_insert_with(|| DataLineStyleConfig {
-            line_color: color.unwrap_or(DataLineStyleConfig::default().line_color),
-            ..DataLineStyleConfig::default()
+        let line = line.get_or_insert_with(|| {
+            let mut style = DataLineStyleConfig::default();
+            if let Some(color) = color {
+                style.line_color = color;
+            }
+            style
         });
         line.line_width = width;
         self
@@ -117,9 +120,12 @@ impl SeriesConfig {
     pub fn with_stem(mut self, baseline: f64) -> Self {
         if let DataRenderType::Xy(xy) = &mut self.render_type {
             let color = xy_color(xy);
-            let stem = xy.stem.get_or_insert_with(|| Stem {
-                color: color.unwrap_or(Stem::default().color),
-                ..Stem::default()
+            let stem = xy.stem.get_or_insert_with(|| {
+                let mut stem = Stem::default();
+                if let Some(color) = color {
+                    stem.color = color;
+                }
+                stem
             });
             stem.baseline = baseline;
         }

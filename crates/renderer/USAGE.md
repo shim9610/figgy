@@ -622,6 +622,22 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   that chart area; `with_legend_from(&series)` adds one legend entry per
   labelled series with the series' own symbol; `fit_layout()` fits the axis
   bands and margins to their labels (`layout::auto_layout`).
+- `Chart::placed(x, y, width, height)` puts the chart area at an offset and
+  `with_area(..)` resizes a chart built from a document; `set_area(..)` moves
+  an existing chart's area in place, as a window resize does;
+  `with_overlay(y_axis, &series_ids)` adds an overlay layer;
+  `with_legend_swatch(label, color)` adds a filled-square entry for a meaning
+  that is not a series.
+- `RadialRenderer::headless_blocking()` makes a radial renderer the same way,
+  `RadialChart::with_title(text)` gives it a title it accepts, and
+  `RasterImage::save_png(path)` writes an image the host checked first.
+- Series modifiers beyond the common ones: `fill_color`, `fill_between`,
+  `interpolation`, `with_line`, `with_stem`, `stem_color`, `error_bars`,
+  `error_color`, `bar_border`, `bar_gap`, `color_by`, `size_by`, `shading`,
+  `opacity`, `filled`, `contour_labels`, `arrow_head` and `pivot`, plus
+  `style_line`, `style_markers`, `style_bars`, `style_boxes` and
+  `style_vectors` for any other field of those sub-styles. A modifier that
+  does not apply to a series' family leaves it unchanged.
 
 ### Themes
 
@@ -1250,6 +1266,18 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 - `Chart::sized(width, height)`는 기본 모양에 그 크기의 차트 영역을 준 차트다.
   `with_legend_from(&series)`는 라벨이 있는 시리즈마다 그 시리즈의 기호로 범례 항목을 하나씩 더하고,
   `fit_layout()`은 축 띠와 여백을 라벨과 제목에 맞춘다(`layout::auto_layout`).
+- `Chart::placed(x, y, width, height)`는 차트 영역을 원하는 위치에 두고, `with_area(..)`는 문서로
+  만든 차트의 크기를 바꾸며, `set_area(..)`는 창 크기가 바뀔 때처럼 이미 있는 차트의 영역을 그 자리에서
+  옮긴다. `with_overlay(y_axis, &series_ids)`는 오버레이 레이어를 더하고,
+  `with_legend_swatch(label, color)`는 시리즈가 아닌 의미를 나타내는 색 사각형 범례 항목을 더한다.
+- `RadialRenderer::headless_blocking()`은 원형 차트 렌더러를 같은 방식으로 만든다.
+  `RadialChart::with_title(text)`는 원형 차트가 받아들이는 제목을 주고,
+  `RasterImage::save_png(path)`는 호스트가 먼저 검사한 이미지를 파일로 쓴다.
+- 공통 modifier 말고도 `fill_color`, `fill_between`, `interpolation`, `with_line`, `with_stem`,
+  `stem_color`, `error_bars`, `error_color`, `bar_border`, `bar_gap`, `color_by`, `size_by`,
+  `shading`, `opacity`, `filled`, `contour_labels`, `arrow_head`, `pivot`이 있다. 이 하위 스타일의
+  나머지 필드는 `style_line`, `style_markers`, `style_bars`, `style_boxes`, `style_vectors`로
+  바꾼다. 시리즈 계열에 맞지 않는 modifier는 시리즈를 바꾸지 않는다.
 
 ### 테마
 

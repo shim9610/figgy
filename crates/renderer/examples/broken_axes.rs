@@ -18,7 +18,6 @@ use gallery::Result;
 use renderer::{
     Anchor, Annotation, AnnotationKind, Color, Renderer, SeriesConfig,
     config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark},
-    data_config::{DataRenderType, XySeries},
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
 };
@@ -72,17 +71,13 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("gamma-energy", &energy)?;
     r.add_column("gamma-counts", &counts)?;
-    let mut trace = SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
-        .color(cyan)
-        .width(2.5)
-        .fill_to(0.);
-    if let DataRenderType::Xy(XySeries {
-        line: Some(line), ..
-    }) = &mut trace.render_type
-    {
-        line.fill_color = Some(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14));
-    }
-    let specs = [trace];
+    let specs = [
+        SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
+            .color(cyan)
+            .width(2.5)
+            .fill_to(0.)
+            .fill_color(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14)),
+    ];
     chart.config_mut().legend.visible = false;
     chart.set_x_range(500., 1450.);
     chart.set_y_range(0., 6000.);

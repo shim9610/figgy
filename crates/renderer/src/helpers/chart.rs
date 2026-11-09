@@ -29,13 +29,20 @@ impl Chart {
     /// `width` × `height` logical pixels, for a chart built from a
     /// document (`Config::from_categorical` and its siblings).
     pub fn with_area(mut self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        self.set_area(x, y, width, height);
+        self
+    }
+
+    /// Move the chart area of a chart that already exists to `(x, y)` and
+    /// resize it to `width` × `height` logical pixels, as a window resize
+    /// does.
+    pub fn set_area(&mut self, x: u32, y: u32, width: u32, height: u32) {
         self.config_mut().chart_area = crate::layout::ChartArea(crate::layout::Rect {
             x,
             y,
             width,
             height,
         });
-        self
     }
 
     /// The chart with an overlay layer: a secondary y axis on the right

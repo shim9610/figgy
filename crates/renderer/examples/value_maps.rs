@@ -1,10 +1,11 @@
 //! Point value maps: a value column colours the points through the chart's
 //! colourbar or sizes their markers.
 //! - `colormap_scatter` writes `gallery-colormap.png`: 1400 particles along two
-//!   spiral arms coloured by an age column (`point_color_map`).
+//!   spiral arms coloured by an age column (`point_color_map` through
+//!   `color_by`).
 //! - `bubbles` writes `gallery-bubbles.png`: three regions of cities whose
 //!   marker area follows a population column over one explicit domain
-//!   (`point_size_map` with `fit_domain`).
+//!   (`point_size_map` through `size_by`).
 //!
 //! cargo run --locked -p figgy-renderer --example value_maps -- target/value-maps
 #[allow(dead_code)]
@@ -17,7 +18,7 @@ use gallery::Result;
 use renderer::{
     Color, ColorMap, Renderer, SeriesConfig,
     config::{LegendCorner, LegendEntryKind},
-    data_config::{DataRenderType, PointColorMap, PointSizeMap, ScatterShape, SizeScale, XySeries},
+    data_config::ScatterShape,
     text::RichText,
 };
 use std::path::Path;
@@ -58,19 +59,10 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
     for (id, data) in [("sx", x), ("sy", y), ("sage", age)] {
         r.add_column(id, &data)?;
     }
-    let mut stars = SeriesConfig::scatter("stars", "sx", "sy")
+    let specs = [SeriesConfig::scatter("stars", "sx", "sy")
         .color(ink)
-        .marker(ScatterShape::CircleFilled, 5.5);
-    if let DataRenderType::Xy(XySeries {
-        scatter: Some(points),
-        ..
-    }) = &mut stars.render_type
-    {
-        points.point_color_map = Some(PointColorMap {
-            column: "sage".into(),
-        });
-    }
-    let specs = [stars];
+        .marker(ScatterShape::CircleFilled, 5.5)
+        .color_by("sage")];
     colorbar(
         chart.config_mut(),
         ColorMap::Custom {
@@ -143,26 +135,12 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
         for (suffix, data) in [("x", x), ("y", y), ("pop", p)] {
             r.add_column(format!("{id}-{suffix}"), &data)?;
         }
-        let mut size = PointSizeMap {
-            column: format!("{id}-pop"),
-            domain_min: 0.,
-            domain_max: 1.,
-            min_px: 5.,
-            max_px: 34.,
-            scale: SizeScale::Area,
-        };
-        size.fit_domain(0.4, 10.);
-        let mut region = SeriesConfig::scatter(id, format!("{id}-x"), format!("{id}-y"))
-            .color(Color::from_rgba(color.r, color.g, color.b, 0.62))
-            .marker(ScatterShape::CircleFilled, 8.);
-        if let DataRenderType::Xy(XySeries {
-            scatter: Some(marker),
-            ..
-        }) = &mut region.render_type
-        {
-            marker.point_size_map = Some(size);
-        }
-        specs.push(region);
+        specs.push(
+            SeriesConfig::scatter(id, format!("{id}-x"), format!("{id}-y"))
+                .color(Color::from_rgba(color.r, color.g, color.b, 0.62))
+                .marker(ScatterShape::CircleFilled, 8.)
+                .size_by(format!("{id}-pop"), [0.4, 10.], [5., 34.]),
+        );
         // The legend shows each region's colour opaque, not the translucent
         // marker fill.
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);

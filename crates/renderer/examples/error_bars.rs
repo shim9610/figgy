@@ -7,11 +7,7 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::{Result, chart, output_directory, save, with_renderer};
-use renderer::{
-    Color, Renderer, SeriesConfig,
-    config::LegendCorner,
-    data_config::{DataErrorBarStyleConfig, DataRenderType, XySeries},
-};
+use renderer::{Color, Renderer, SeriesConfig, config::LegendCorner};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
@@ -32,25 +28,14 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         let error: Vec<f64> = x.iter().map(|t| 3.0 + 0.4 * t).collect();
         r.add_column(format!("response-{name}"), &y)?;
         r.add_column(format!("error-{name}"), &error)?;
-        let mut curve = SeriesConfig::scatter_line(name, "response-x", format!("response-{name}"))
-            .label(label)
-            .color(color)
-            .width(2.5)
-            .y_errors(format!("error-{name}"));
-        if let DataRenderType::Xy(XySeries {
-            errors: Some(errors),
-            ..
-        }) = &mut curve.render_type
-        {
-            errors.style = DataErrorBarStyleConfig {
-                error_bar_color: color,
-                error_bar_width: 1.5,
-                error_bar_cap_size: 7.0,
-                cap_width: 1.5,
-                ..Default::default()
-            };
-        }
-        specs.push(curve);
+        specs.push(
+            SeriesConfig::scatter_line(name, "response-x", format!("response-{name}"))
+                .label(label)
+                .color(color)
+                .width(2.5)
+                .y_errors(format!("error-{name}"))
+                .error_bars(1.5, 7.0),
+        );
     }
     let mut c = chart(
         "Response curves with uncertainty",

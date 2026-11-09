@@ -18,9 +18,7 @@ use renderer::{
     Anchor, Annotation, AnnotationKind, Color, CpuTextMeasure, MeasureText, Renderer, SeriesConfig,
     TextAlign,
     config::{LegendCorner, TickVisibility},
-    data_config::{
-        DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, PointSizeMap, SizeScale,
-    },
+    data_config::{DataLineStyleConfig, DataRenderType, SizeScale},
     ternary::{TernaryOptions, TernaryRegionStyle},
     text::RichText,
 };
@@ -275,35 +273,21 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         ] {
             r.add_column(format!("core-{k}-{suffix}"), data)?;
         }
-        let mut size = PointSizeMap {
-            column: format!("core-{k}-depth"),
-            domain_min: 0.,
-            domain_max: 1.,
-            min_px: 3.5,
-            max_px: 9.,
-            scale: SizeScale::Radius,
-        };
-        size.fit_domain(0., 140.);
-        // A line through markers sized by depth: no constructor draws that.
-        let core = SeriesConfig::of_kind(
+        // A line through markers whose radius (not area) follows the depth.
+        let core = SeriesConfig::ternary(
             format!("core-{k}"),
             format!("core-{k}-sand"),
             format!("core-{k}-clay"),
-            DataRenderType::Ternary {
-                c_column: format!("core-{k}-silt").into(),
-                scatter: Some(DataScatterStyleConfig {
-                    point_color: *color,
-                    point_size_map: Some(size),
-                    ..Default::default()
-                }),
-                line: Some(DataLineStyleConfig {
-                    line_color: *color,
-                    line_width: 2.2,
-                    ..Default::default()
-                }),
-                region: None,
-            },
-        );
+            format!("core-{k}-silt"),
+        )
+        .color(*color)
+        .with_line(2.2)
+        .size_by(format!("core-{k}-depth"), [0., 140.], [3.5, 9.])
+        .style_markers(|markers| {
+            if let Some(size) = &mut markers.point_size_map {
+                size.scale = SizeScale::Radius;
+            }
+        });
         specs.push(core.label(name));
     }
     chart = chart.with_legend_from(&specs);

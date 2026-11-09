@@ -589,9 +589,12 @@ impl SeriesConfig {
             _ => None,
         };
         if let Some(slot) = slot {
-            let scatter = slot.get_or_insert_with(|| DataScatterStyleConfig {
-                point_color: color.unwrap_or(DataScatterStyleConfig::default().point_color),
-                ..DataScatterStyleConfig::default()
+            let scatter = slot.get_or_insert_with(|| {
+                let mut style = DataScatterStyleConfig::default();
+                if let Some(color) = color {
+                    style.point_color = color;
+                }
+                style
             });
             scatter.point_shape = shape;
             scatter.point_size = size;
@@ -628,10 +631,12 @@ impl SeriesConfig {
             let errors = xy.errors.get_or_insert_with(|| ErrorBars {
                 x: None,
                 y: None,
-                style: DataErrorBarStyleConfig {
-                    error_bar_color: color
-                        .unwrap_or(DataErrorBarStyleConfig::default().error_bar_color),
-                    ..DataErrorBarStyleConfig::default()
+                style: {
+                    let mut style = DataErrorBarStyleConfig::default();
+                    if let Some(color) = color {
+                        style.error_bar_color = color;
+                    }
+                    style
                 },
             });
             if let Some(column) = x {

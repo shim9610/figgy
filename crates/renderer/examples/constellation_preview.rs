@@ -3,7 +3,7 @@
 //! Constellation uses ScatterLine; Milkyway uses Line in its separate preview.
 use renderer::config::{ConstellationOptions, DrawStyle, LegendCorner, LegendEntryKind};
 use renderer::theme::{SubplotScope, Theme};
-use renderer::{Chart, Color, Renderer, SeriesConfig, encode_png};
+use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig};
 use std::{error::Error, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -87,12 +87,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         chart = chart.with_legend_entry(label, color, 2.0, LegendEntryKind::Line);
     }
     let img = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &series),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &series),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let empty = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &[]),
-        renderer::ExportOptions::panel(1.0).with_clear(bg),
+        ExportSource::chart(&chart, &[]),
+        ExportOptions::panel(1.0).with_clear(bg),
     )?;
     let changed = img
         .rgba
@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .count();
     assert!(changed > 1000, "missing constellation data: {changed}");
     assert!(img.rgba.chunks_exact(4).all(|p| p[3] == 255));
-    std::fs::write(&output, encode_png(&img)?)?;
+    img.save_png(&output)?;
     println!(
         "{}: 1280x1024, {changed} data-dependent pixels; two ScatterLine series",
         output.display()

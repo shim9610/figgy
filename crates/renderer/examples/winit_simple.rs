@@ -48,18 +48,15 @@ use winit::window::{Window, WindowId};
 
 use renderer::color::Color;
 use renderer::config::AxisScale;
-use renderer::data_config::{
-    ContourConfig, ContourLabelConfig, FieldFillConfig, FieldSeries, MatrixRef, Shading,
-};
+use renderer::data_config::{ContourLabelConfig, MatrixRef, Shading};
 use renderer::default;
 use renderer::demo;
 use renderer::layout::NudgeResult;
-use renderer::layout::{ChartArea, Rect};
+use renderer::layout::Rect;
 use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
-    CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    Series, SeriesConfig, WindowedRenderer,
+    CpuTextMeasure, HitId, HitMap, Renderer, ResizeHandle, Series, SeriesConfig, WindowedRenderer,
 };
 
 const AXIS_PRESETS: [AxisPreset; 7] = [
@@ -175,7 +172,6 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
     renderer.add_column("sine_y", &ys).expect("add y");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     // Chart 1: grid off.
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
@@ -189,6 +185,7 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
             .width(1.0),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Sine (1 px line, no grid)")
         .with_x_title("x [rad]")
         .with_y_title("y")
@@ -217,7 +214,6 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         .expect("add discharge");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.grid.show_major_x = true;
     config.grid.show_major_y = true;
     config.grid.show_minor_x = false;
@@ -235,6 +231,7 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
             .width(2.0),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("RC charge / discharge (2 px, major grid)")
         .with_x_title("t [s]")
         .with_y_title("V [V]")
@@ -259,7 +256,6 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
     // Log scale is one line in Config. set_y_range / auto_fit_y automatically picks
     // (a) decade major spacing (b) Power label format (c) multiplicative padding.
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.left_y.scale = AxisScale::Logarithmic;
     config.right_y.scale = AxisScale::Logarithmic;
     // Chart 3: major + minor grid, minor is dotted.
@@ -277,6 +273,7 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
             .width(3.5),
     ];
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Cross-section σ(E) — 3.5 px, log + minor grid")
         .with_x_title("E [keV]")
         .with_y_title("σ [barn]")
@@ -320,7 +317,6 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     renderer.add_columns(&batch).expect("grid batch upload");
 
     let mut config = default::default_config();
-    config.chart_area = ChartArea(rect);
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     config.grid.show_minor_x = false;
@@ -334,6 +330,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     config.colorbar = Some(bar);
 
     let mut chart = Chart::new(config)
+        .with_area(rect.x, rect.y, rect.width, rect.height)
         .with_title("Gaussian field — heatmap + labelled contours")
         .with_x_title("x")
         .with_y_title("y");
@@ -347,35 +344,26 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
     let levels = vec![0.2f64, 0.4, 0.6, 0.8];
 
     let ink = Color::from_rgb8(20, 20, 20);
-    let series = vec![SeriesConfig::of_kind(
-        "bump",
-        "bump_x",
-        "bump_y",
-        DataRenderType::Field(FieldSeries {
-            matrix: MatrixRef::columns_are_x(ids),
-            fill: Some(FieldFillConfig {
-                shading: Shading::Interpolated,
-                ..Default::default()
-            }),
-            contour: Some(ContourConfig {
-                levels,
-                line: DataLineStyleConfig {
-                    line_color: ink,
-                    line_width: 1.5,
-                    ..Default::default()
-                },
-                per_level_color: None,
-                labels: Some(ContourLabelConfig {
-                    font_size: 11.0,
-                    color: ink,
-                    significant_digits: 1,
-                    bg_color: Some(Color::from_rgb8(250, 250, 250)),
-                    ..Default::default()
-                }),
-            }),
-            surface: None,
+    let series = vec![
+        SeriesConfig::contours(
+            "bump",
+            "bump_x",
+            "bump_y",
+            MatrixRef::columns_are_x(ids),
+            levels,
+        )
+        .filled()
+        .shading(Shading::Interpolated)
+        .color(ink)
+        .width(1.5)
+        .contour_labels(ContourLabelConfig {
+            font_size: 11.0,
+            color: ink,
+            significant_digits: 1,
+            bg_color: Some(Color::from_rgb8(250, 250, 250)),
+            ..Default::default()
         }),
-    )];
+    ];
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     panel_entry(renderer, chart, view, series)
 }
@@ -707,7 +695,9 @@ impl App {
         // The next prepare redraws each panel's raster at its new area.
         let rects = compute_panel_rects(w, h);
         for (panel, rect) in self.panels.iter_mut().zip(rects.iter()) {
-            panel.chart.config_mut().chart_area = ChartArea(*rect);
+            panel
+                .chart
+                .set_area(rect.x, rect.y, rect.width, rect.height);
         }
     }
 

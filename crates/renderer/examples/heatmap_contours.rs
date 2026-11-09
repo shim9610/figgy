@@ -22,7 +22,7 @@ use gallery::{Result, chart, output_directory, save, with_renderer};
 use renderer::{
     Color, ColorMap, Renderer, SeriesConfig,
     config::AxisScale,
-    data_config::{ContourLabelConfig, DataRenderType, FieldFillConfig, MatrixRef, Shading},
+    data_config::{ContourLabelConfig, MatrixRef, Shading},
     default,
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
@@ -58,26 +58,21 @@ fn contours(r: &mut Renderer, out: &Path) -> Result {
     }
     let levels = (1..=10).map(|i| i as f64 * 0.1).collect();
     let matrix = MatrixRef::columns_are_x(columns);
-    let mut potential = SeriesConfig::contours("potential", "field-x", "field-y", matrix, levels)
-        .color(Color::from_rgba(1.0, 1.0, 1.0, 0.9))
-        .width(1.3);
     // Under the isolines an interpolated fill; on them white labels.
-    if let DataRenderType::Field(field) = &mut potential.render_type {
-        field.fill = Some(FieldFillConfig {
-            shading: Shading::Interpolated,
-            ..Default::default()
-        });
-        if let Some(contour) = &mut field.contour {
-            contour.labels = Some(ContourLabelConfig {
+    let specs = [
+        SeriesConfig::contours("potential", "field-x", "field-y", matrix, levels)
+            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.9))
+            .width(1.3)
+            .filled()
+            .shading(Shading::Interpolated)
+            .contour_labels(ContourLabelConfig {
                 font_size: 13.0,
                 color: Color::WHITE,
                 spacing_px: 140.0,
                 bg_padding_px: 3.0,
                 ..Default::default()
-            });
-        }
-    }
-    let specs = [potential];
+            }),
+    ];
     let mut c = chart("A smooth field, exact contour levels", "x", "y", (960, 640));
     c.set_x_range(-3.0, 3.0);
     c.set_y_range(-3.0, 3.0);
@@ -359,11 +354,10 @@ fn imshow(r: &mut Renderer, out: &Path) -> Result {
         }
     }
     let [red, green, blue] = channels.map(MatrixRef::columns_are_x);
-    let mut nebula = SeriesConfig::rgb_image("nebula", "nebula-x", "nebula-y", red, green, blue);
-    if let DataRenderType::RgbImage { shading, .. } = &mut nebula.render_type {
-        *shading = Shading::Interpolated;
-    }
-    let specs = [nebula];
+    let specs = [
+        SeriesConfig::rgb_image("nebula", "nebula-x", "nebula-y", red, green, blue)
+            .shading(Shading::Interpolated),
+    ];
     chart.set_x_range(-half_w, half_w);
     chart.set_y_range(-half_h, half_h);
     chart.config_mut().bottom_x.major_spacing = 40.0;
