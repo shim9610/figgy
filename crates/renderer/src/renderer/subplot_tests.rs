@@ -407,6 +407,7 @@ fn annotations_stay_in_the_parent_of_a_subplot_document() {
         anchor: Anchor::Ratio { x: 0.4, y: 0.3 },
         text: RichText::plain("note", Color::BLACK, 10.0, ""),
         box_style: Some(Default::default()),
+        align: Default::default(),
     })];
     let annotated = fresh_frame(&config);
     let pixels = differing(&plain, &annotated);

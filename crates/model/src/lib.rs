@@ -31,7 +31,7 @@ pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
-    MeasuredText, PixelSpace, ShapeStyle,
+    MeasuredText, NoteAlign, PixelSpace, ShapeStyle,
 };
 pub use layer::{AnnotationLayer, CellRef, InsetMarker, LayerRef, OverlayLayer, Subplot};
 pub mod format;
@@ -110,6 +110,7 @@ pub mod view3d;
 pub use energy_levels::{
     EnergyLevel, EnergyLevelSeries, EnergyLevelStyle, IonizationLimit, LabelPart, LevelLabelSide,
     LevelRole, LevelStrokeStyle, LevelView, Transition, TransitionArrowStyle, TransitionDirection,
+    WavelengthLabels,
 };
 pub use feynman::{
     FeynmanHit, FeynmanLabelPart, FeynmanLayout, FeynmanPicked, FeynmanSeries, FeynmanStyle,

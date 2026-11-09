@@ -1004,6 +1004,7 @@ fn radial_cases() -> Vec<(&'static str, RadialChart)> {
             anchor: Anchor::Ratio { x: 0.1, y: 0.9 },
             text: renderer::text::RichText::plain("note", Color::BLACK, 14.0, ""),
             box_style: None,
+            align: Default::default(),
         }));
     annotated.decorations.selected = Some(DecorationId::ChartTitle);
     vec![

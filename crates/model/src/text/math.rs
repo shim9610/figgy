@@ -1467,6 +1467,7 @@ mod tests {
                     anchor: crate::annotation::Anchor::Ratio { x: 0.5, y: 0.5 },
                     text: broken.clone(),
                     box_style: None,
+                    align: Default::default(),
                 },
             )],
             ..Default::default()

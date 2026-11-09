@@ -555,6 +555,24 @@ impl FiggyChart {
         Ok(index as u32)
     }
 
+    /// Append a text note at the plot's `corner` (a `NoteAlign` name:
+    /// `"TopLeft"`, `"Top"`, ..., `"BottomRight"`), its block inside the
+    /// plot, and return its index (#258). `text` is a `RichText` JSON value,
+    /// the same shape as in `get_config`; the note owns it, such as the
+    /// unit of the chart's values. It is an ordinary text annotation: move,
+    /// hide or edit it as one.
+    /// JS: `const i = chart.add_corner_note(textJson, "BottomRight");`
+    pub fn add_corner_note(&mut self, text: &str, corner: &str) -> Result<u32, JsValue> {
+        let text: renderer::text::RichText = serde_json::from_str(text).map_err(js_err)?;
+        let corner: renderer::NoteAlign =
+            serde_json::from_value(serde_json::Value::String(corner.into()))
+                .map_err(|_| js_err("unknown note corner"))?;
+        let mut config = self.chart_config()?.clone();
+        let index = config.annotations.add_corner_note(text, corner);
+        self.replace_chart_config(config)?;
+        Ok(index as u32)
+    }
+
     /// Replace the annotation at `index` with an `Annotation` JSON value.
     pub fn set_annotation(&mut self, index: u32, json: &str) -> Result<(), JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;

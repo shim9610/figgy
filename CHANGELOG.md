@@ -32,12 +32,42 @@ axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 `part`, a category's `rich_label`, the axes' `category_groups`, the
 chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
-breaks' `sizing`, the energy-level `bands` and `band` style and a
-subplot's `marker`) are additive.
+breaks' `sizing`, the energy-level `bands` and `band` style, a
+subplot's `marker`, the energy-level `wavelength_labels` and a text
+annotation's `align`) are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
+
+- **Wavelength labels written by the renderer, and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  A `Transition` holds one wavelength, `wavelength: Option<f64>` and
+  `wavelength_uncertainty: Option<f64>`, in place of `observed_wavelength`,
+  `observed_uncertainty`, `ritz_wavelength` and `ritz_uncertainty`: the
+  host writes the NIST column it chose. `EnergyLevelStyle.wavelength_labels:
+  Option<WavelengthLabels>` gives every transition with a wavelength and
+  no host `label` a drawn label: the value in a `PlainNumberFormat` (at
+  most `MAX_WAVELENGTH_DECIMALS` = 17 fixed decimals), then ` {unit}` when
+  the labels' own `unit: Option<String>` is set (the host's text: `nm`,
+  `Å`, `nm (air)`; `None` writes the number alone), in the font, size and
+  colour of its `text`. The labels own their unit. A host `label` wins.
+  `Transition::drawn_label` is the one owner of the choice, and the
+  placement, the emit, the pick, the drag and the vector export read the
+  label through it, so a formatted label is placed, drawn, picked and
+  dragged as a host label is. The renderer formats the host's value and
+  nothing else: it converts no unit and chooses between no values.
+  `AnnotationKind::Text` gains `align: NoteAlign` (nine points: corners,
+  edge middles, centre; `TopLeft`, the old placement, by default and
+  omitted), the point of the block that sits on the anchor.
+  `AnnotationLayer::add_corner_note(text, corner)` adds a text item at a
+  corner or edge of the plot, its block inside it, and returns its index:
+  a note that owns its text, such as the unit of the chart's values, and
+  is hit, selected, dragged, hidden, serialized and exported as any text
+  item. New rules: `WavelengthLabels`, `WavelengthUnit`. Energy levels are
+  new in this cycle, so no released document carries the replaced fields.
+  **Migration:** write `wavelength` (and `wavelength_uncertainty`) in place
+  of the four line fields; an `AnnotationKind::Text { .. }` literal names
+  `align` (`NoteAlign::TopLeft` keeps the old placement).
 
 - **Energy-level labels keep off other columns** ([#248](https://github.com/shim9610/figgy/issues/248)).
   After stacking, a level or band label that lies on another column's level
@@ -1405,6 +1435,14 @@ subplot's `marker`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  The energy-level raster and the SVG and PDF export draw the labels
+  `wavelength_labels` writes, through the same placement as host labels.
+  The annotation layer places a text block by its `align`. `NoteAlign` and
+  `WavelengthLabels` are re-exported. The NIST examples and the
+  energy-level scenes label their lines from `wavelength` to one decimal
+  and show the unit once, in a corner note.
 
 - **Gallery findings** ([#259](https://github.com/shim9610/figgy/issues/259)).
   - A 3D floor contour (a heatmap's or a mesh's) is `line_width` wide on
@@ -3236,6 +3274,15 @@ subplot's `marker`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
+  The series JSON carries `wavelength`, `wavelength_uncertainty` and
+  `wavelength_labels` (with its `unit`), and a `Text` annotation an
+  optional `align`. `FiggyChart.add_corner_note(text_json, corner)` and
+  `FiggyBoundedChart.add_corner_note(text_json, corner)` add a text item
+  owning the `RichText` JSON at a `NoteAlign` corner (`"BottomRight"`, …)
+  and return its index. It is hit, selected, dragged and hidden like any
+  text box.
 
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   A refused rule throws a JS `Error` whose `message` is the rule's sentence

@@ -160,6 +160,9 @@ pub struct LineRow {
 }
 
 impl LineRow {
+    /// The wavelength the host writes into `Transition::wavelength`: the
+    /// observed one, else the Ritz one. The renderer chooses between no
+    /// values (#258).
     pub fn wavelength(&self) -> Option<f64> {
         self.observed.or(self.ritz)
     }

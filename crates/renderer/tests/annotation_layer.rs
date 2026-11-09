@@ -44,6 +44,7 @@ fn boxed_text(anchor: Anchor) -> Annotation {
             border_width: 1.,
             padding: 10.,
         }),
+        align: Default::default(),
     })
 }
 fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {

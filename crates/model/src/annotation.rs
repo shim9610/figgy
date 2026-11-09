@@ -201,13 +201,22 @@ pub enum AnnotationKind {
         to: f64,
         fill: Color,
     },
-    /// A text block whose top-left corner sits at `anchor`. With a box
-    /// style the block is padded and framed; the anchor is the frame's
-    /// top-left corner. Drawn on the overlay, anywhere in the panel.
+    /// A text block whose point `align` (by default its top-left corner)
+    /// sits at `anchor`. With a box style the block is padded and framed;
+    /// the anchor is then that point of the frame. Drawn on the overlay,
+    /// anywhere in the panel. [`AnnotationLayer::add_corner_note`] puts one
+    /// in a corner of the plot, such as the unit of a chart's values (#258).
     Text {
         anchor: Anchor,
         text: RichText,
         box_style: Option<BoxStyle>,
+        /// Which point of the block sits on the anchor (#258). The default,
+        /// `TopLeft`, is omitted.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "NoteAlign::is_top_left")
+        )]
+        align: NoteAlign,
     },
     /// A shaft from `from` to `to` with a head at `to`, and an optional
     /// label centred beside the shaft's midpoint. Drawn on the overlay.
@@ -240,6 +249,69 @@ pub enum AnnotationKind {
         #[cfg_attr(feature = "serde", serde(default))]
         style: ShapeStyle,
     },
+}
+
+/// Which point of a text block sits on its anchor (#258): a corner, the
+/// middle of an edge or the centre. A ratio anchor of `(1, 1)` with
+/// `BottomRight` puts the block in the plot's lower-right corner, `(0.5, 0)`
+/// with `Top` at the middle of its top edge, and so on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NoteAlign {
+    #[default]
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl NoteAlign {
+    /// The point of the block on the anchor, as fractions of its width and
+    /// height from its top-left corner: `[0, 0]` for `TopLeft`, `[1, 1]`
+    /// for `BottomRight`. The same fractions of the plot are the ratio
+    /// anchor of the matching corner or edge.
+    pub fn fractions(self) -> [f32; 2] {
+        let x = match self {
+            Self::TopLeft | Self::Left | Self::BottomLeft => 0.0,
+            Self::Top | Self::Center | Self::Bottom => 0.5,
+            Self::TopRight | Self::Right | Self::BottomRight => 1.0,
+        };
+        let y = match self {
+            Self::TopLeft | Self::Top | Self::TopRight => 0.0,
+            Self::Left | Self::Center | Self::Right => 0.5,
+            Self::BottomLeft | Self::Bottom | Self::BottomRight => 1.0,
+        };
+        [x, y]
+    }
+
+    #[cfg(feature = "serde")]
+    fn is_top_left(&self) -> bool {
+        *self == Self::TopLeft
+    }
+}
+
+impl AnnotationLayer {
+    /// Add a text note at the plot's `corner` (#258), such as the unit of
+    /// the chart's values: a [`AnnotationKind::Text`] whose ratio anchor is
+    /// that corner or edge of the plot ([`NoteAlign::fractions`]) and whose
+    /// block sits inside it, with no box and the item visible. The note
+    /// owns its text; it is an ordinary text item and is moved, selected,
+    /// hidden and edited as one. Returns its index in `items`.
+    pub fn add_corner_note(&mut self, text: RichText, corner: NoteAlign) -> usize {
+        let [x, y] = corner.fractions();
+        self.items.push(Annotation::new(AnnotationKind::Text {
+            anchor: Anchor::Ratio { x, y },
+            text,
+            box_style: None,
+            align: corner,
+        }));
+        self.items.len() - 1
+    }
 }
 
 impl AnnotationKind {
@@ -1225,12 +1297,13 @@ pub fn geometry(
                 },
             }))
         }
-        AnnotationKind::Text { anchor, .. } => {
+        AnnotationKind::Text { anchor, align, .. } => {
             let p = space.anchor_to_px(anchor)?;
             let size = text_size?;
+            let [fx, fy] = align.fractions();
             let rect = RectF {
-                x: p[0],
-                y: p[1],
+                x: p[0] - fx * size[0],
+                y: p[1] - fy * size[1],
                 width: size[0],
                 height: size[1],
             };
@@ -1817,6 +1890,7 @@ impl DragConfig for AnnotationLayer {
                     anchor,
                     text,
                     box_style,
+                    align,
                 },
                 None,
             ) => {
@@ -1830,6 +1904,7 @@ impl DragConfig for AnnotationLayer {
                     anchor: next,
                     text: text.clone(),
                     box_style: box_style.clone(),
+                    align: *align,
                 }
             }
             (
@@ -2205,6 +2280,7 @@ mod tests {
             anchor: Anchor::Ratio { x: 1.1, y: 0. },
             text: text("a"),
             box_style: None,
+            align: Default::default(),
         };
         assert!(geometry(&text, &s, Some([20., 10.])).is_some());
         assert_eq!(geometry(&text, &s, Some([200., 10.])), None);
@@ -2245,6 +2321,7 @@ mod tests {
                     anchor: Anchor::Data { x: 5., y: 10. },
                     text: text("note"),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.1, y: 0.1 },
@@ -2377,6 +2454,7 @@ mod tests {
                     anchor: Anchor::Ratio { x: 0.5, y: 0.5 },
                     text: text("t"),
                     box_style: None,
+                    align: Default::default(),
                 }),
                 Annotation::new(AnnotationKind::Arrow {
                     from: Anchor::Ratio { x: 0.5, y: 0.5 },
@@ -2438,6 +2516,7 @@ mod tests {
             },
             text: text("inf"),
             box_style: Some(BoxStyle::default()),
+            align: Default::default(),
         }));
         layer.validate().unwrap();
         assert!(!layer.is_default());
@@ -2461,11 +2540,13 @@ mod tests {
                     text: a,
                     box_style: Some(ba),
                     anchor: aa,
+                    ..
                 },
                 AnnotationKind::Text {
                     text: b,
                     box_style: Some(bb),
                     anchor: ab,
+                    ..
                 },
             ) => {
                 assert_eq!(a.font_size, b.font_size * 2.);
@@ -2763,5 +2844,151 @@ mod tests {
             style: ShapeStyle::default(),
         });
         assert_eq!(two.validate(), Err(crate::RuleKind::AnnotationPolygon));
+    }
+
+    fn aligned(align: NoteAlign) -> AnnotationKind {
+        AnnotationKind::Text {
+            anchor: Anchor::Ratio { x: 1., y: 1. },
+            text: text("λ / nm"),
+            box_style: None,
+            align,
+        }
+    }
+
+    /// A text block's alignment (#258): its box placed by the alignment on
+    /// its anchor, hit and outlined as one box with no handles, dragged by
+    /// its anchor with the alignment kept, and drawing nothing hidden.
+    #[test]
+    fn an_aligned_text_places_hits_drags_and_hides() {
+        let s = space();
+        let size = [40., 14.];
+        // The plot is x 50..350, y 20..220; the anchor its lower-right
+        // corner.
+        for (align, x, y) in [
+            (NoteAlign::BottomRight, 310., 206.),
+            (NoteAlign::TopLeft, 350., 220.),
+            (NoteAlign::Center, 330., 213.),
+            (NoteAlign::Right, 310., 213.),
+            (NoteAlign::Bottom, 330., 206.),
+        ] {
+            assert_eq!(
+                geometry(&aligned(align), &s, Some(size)),
+                Some(AnnotationGeometry::Text(RectF {
+                    x,
+                    y,
+                    width: 40.,
+                    height: 14.,
+                })),
+                "{align:?}"
+            );
+        }
+        let mut layer = shape(aligned(NoteAlign::BottomRight));
+        let e = element(0, Some(size));
+        let drawn = RectF {
+            x: 310.,
+            y: 206.,
+            width: 40.,
+            height: 14.,
+        };
+        assert_eq!(e.bounds(&layer, &NoMeasure), Some(drawn));
+        assert!(e.contains(&layer, &NoMeasure, 330., 213.));
+        assert!(!e.contains(&layer, &NoMeasure, 100., 100.));
+        assert!(!e.outlines_parts(&layer));
+        let selection = e.selection_box(&layer, &NoMeasure).unwrap();
+        assert!(selection.handles().is_empty(), "a text box has no handles");
+        // A drag moves the anchor and keeps the alignment; one off the
+        // panel is refused.
+        assert_eq!(
+            e.drag_by(&mut layer, &NoMeasure, -100., -50.),
+            NudgeResult::Moved
+        );
+        let AnnotationKind::Text { anchor, align, .. } = &layer.items[0].kind else {
+            unreachable!()
+        };
+        assert!(ratio_near(anchor, 2. / 3., 0.75), "{anchor:?}");
+        assert_eq!(*align, NoteAlign::BottomRight);
+        let before = layer.clone();
+        assert!(matches!(
+            e.drag_by(&mut layer, &NoMeasure, 1000., 0.),
+            NudgeResult::Rejected(_)
+        ));
+        assert_eq!(layer, before);
+        // Hidden: no geometry, no bounds.
+        layer.items[0].visible = false;
+        assert_eq!(e.geometry(&layer), None);
+        assert_eq!(e.bounds(&layer, &NoMeasure), None);
+    }
+
+    /// The corner-note helper (#258) places an ordinary text item at a
+    /// corner or an edge of the plot, its block inside it.
+    #[test]
+    fn a_corner_note_is_an_aligned_text_item() {
+        let mut config = crate::default::default_config();
+        assert_eq!(
+            config
+                .annotations
+                .add_corner_note(text("λ / nm"), NoteAlign::BottomRight),
+            0
+        );
+        assert_eq!(
+            config
+                .annotations
+                .add_corner_note(text("λ / Å"), NoteAlign::Top),
+            1
+        );
+        let placed: Vec<(Anchor, NoteAlign, String)> = config
+            .annotations
+            .items
+            .iter()
+            .map(|item| match &item.kind {
+                AnnotationKind::Text {
+                    anchor,
+                    align,
+                    text,
+                    box_style: None,
+                } => (
+                    *anchor,
+                    *align,
+                    text.segments.iter().map(|s| s.text).collect(),
+                ),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                (
+                    Anchor::Ratio { x: 1., y: 1. },
+                    NoteAlign::BottomRight,
+                    "λ / nm".to_string()
+                ),
+                (
+                    Anchor::Ratio { x: 0.5, y: 0. },
+                    NoteAlign::Top,
+                    "λ / Å".to_string()
+                ),
+            ]
+        );
+        assert!(config.annotations.items.iter().all(|item| item.visible));
+        assert_eq!(config.annotations.validate(), Ok(()));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_text_alignment_round_trips_and_the_default_is_omitted() {
+        let item = Annotation::new(aligned(NoteAlign::BottomRight));
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(json["kind"]["Text"]["align"], "BottomRight");
+        let back: Annotation = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, item);
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+        // A top-left block writes no alignment, so a document written
+        // before #258 reads and writes back unchanged.
+        let plain = Annotation::new(aligned(NoteAlign::TopLeft));
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json["kind"]["Text"].get("align").is_none());
+        let back: Annotation = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(back, plain);
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
     }
 }
