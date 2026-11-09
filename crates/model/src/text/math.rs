@@ -1283,6 +1283,7 @@ mod tests {
         assert_eq!(math_class('\u{10FFFF}'), MathClass::Special);
     }
 
+    #[cfg(feature = "serde")]
     fn every_kind() -> [MathKind; 14] {
         [
             MathKind::Math(MathStyle::Display),

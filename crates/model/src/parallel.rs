@@ -527,6 +527,7 @@ mod tests {
         assert_eq!(axes[1].label_offset, [6.0 - LABEL_GAP, 10.0]);
     }
 
+    #[cfg(feature = "serde")]
     #[test]
     fn parallel_options_round_trip_with_defaults_omitted() {
         let config = chart();

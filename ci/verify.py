@@ -165,6 +165,9 @@ def static():
     run(["cargo", "check", "--locked", "-p", PACKAGES[0], "-p", PACKAGES[1], "--lib",
          "--profile", "test", "--no-default-features", "--features",
          f"{PACKAGES[0]}/serde,{PACKAGES[1]}/serde,{PACKAGES[1]}/cpu-twin"])
+    # The model's tests also build without serde: a wire test is gated on it.
+    run(["cargo", "check", "--locked", "-p", PACKAGES[0], "--lib", "--profile", "test",
+         "--no-default-features"])
     # Compile the browser tests too; running them needs a WebGPU browser.
     # Every WASM test target is named `*_browser`; the other tests are native.
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",
