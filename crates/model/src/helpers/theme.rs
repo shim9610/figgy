@@ -54,8 +54,10 @@ pub struct ChromeTheme {
     /// family with a frame of its own replaces it
     /// ([`EnergyLevelTheme::axis_preset`], [`FeynmanTheme::axis_preset`]).
     pub axis_preset: AxisPreset,
-    /// Axis lines and ticks, the chart title and the axis titles.
+    /// The chart title and the axis titles.
     pub ink: Color,
+    /// Axis lines and ticks.
+    pub frame_ink: Color,
     /// Tick labels and the legend text.
     pub label_ink: Color,
     pub axis_width: f32,
@@ -301,7 +303,8 @@ impl Theme {
                 plot_background: None,
                 draw_style: DrawStyle::Precise,
                 axis_preset: AxisPreset::BoxedInward,
-                ink: config.bottom_x.line_color,
+                ink: config.chart_title.text.color,
+                frame_ink: config.bottom_x.line_color,
                 label_ink: config.bottom_x.label_style.color,
                 axis_width: config.bottom_x.line_width,
                 major_tick_length: config.bottom_x.major_tick_length,
@@ -439,6 +442,7 @@ impl Theme {
         let chrome = &mut theme.chrome;
         chrome.background = Some(bg);
         chrome.ink = ink;
+        chrome.frame_ink = soft;
         chrome.label_ink = soft;
         chrome.grid.major_x.color = rgb(66, 70, 80);
         chrome.grid.major_y.color = rgb(66, 70, 80);
@@ -516,6 +520,7 @@ impl Theme {
         chrome.background = Some(bg);
         chrome.axis_preset = AxisPreset::Minimal;
         chrome.ink = ink;
+        chrome.frame_ink = soft;
         chrome.label_ink = soft;
         chrome.title_size = 34.0;
         chrome.axis_title_size = 23.0;
@@ -558,6 +563,7 @@ impl Theme {
         chrome.draw_style = DrawStyle::Sketch(crate::defaults::sketch_options());
         chrome.axis_preset = AxisPreset::OpenOutward;
         chrome.ink = ink;
+        chrome.frame_ink = ink;
         chrome.label_ink = ink;
         chrome.axis_width = 1.5;
         chrome.grid.major_x.show = false;
@@ -849,7 +855,7 @@ impl Theme {
     /// Colours, widths and text of an axis; which parts are drawn stays.
     fn style_axis_look(&self, axis: &mut AxisOptions) {
         let chrome = &self.chrome;
-        axis.line_color = chrome.ink;
+        axis.line_color = chrome.frame_ink;
         axis.line_width = chrome.axis_width;
         axis.label_style.color = chrome.label_ink;
         axis.label_style.font_size = chrome.tick_label_size;

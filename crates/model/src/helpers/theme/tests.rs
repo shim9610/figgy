@@ -217,7 +217,7 @@ fn a_theme_writes_the_look_where_it_applies() {
     let chrome = &theme.chrome;
     assert_eq!(config.background, chrome.background);
     assert_eq!(config.draw_style, chrome.draw_style);
-    assert_eq!(config.bottom_x.line_color, chrome.ink);
+    assert_eq!(config.bottom_x.line_color, chrome.frame_ink);
     assert_eq!(config.bottom_x.label_style.color, chrome.label_ink);
     assert_eq!(config.bottom_x.title_option.text.color, chrome.ink);
     assert_eq!(config.chart_title.text.font_size, chrome.title_size);
@@ -225,10 +225,13 @@ fn a_theme_writes_the_look_where_it_applies() {
     assert_eq!(config.legend.bg_color, chrome.legend_fill);
     assert_eq!(config.legend.content.color, chrome.label_ink);
     // Overlays take the theme with their chart.
-    assert_eq!(config.overlays[0].y_axis.line_color, chrome.ink);
+    assert_eq!(config.overlays[0].y_axis.line_color, chrome.frame_ink);
     // Subplot 1 is chosen, subplot 0 is not.
     assert_eq!(config.subplots[1].config.background, chrome.background);
-    assert_eq!(config.subplots[1].config.bottom_x.line_color, chrome.ink);
+    assert_eq!(
+        config.subplots[1].config.bottom_x.line_color,
+        chrome.frame_ink
+    );
     assert_eq!(config.subplots[0].config.background, None);
     assert_eq!(config.subplots[0].config.bottom_x.line_color, Color::BLACK);
     assert_eq!(series[2], untouched, "a series of an unchosen subplot");

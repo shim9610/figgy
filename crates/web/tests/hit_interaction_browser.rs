@@ -582,7 +582,7 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
     let themed = chart_config(&chart);
     let dark = renderer::theme::Theme::dark();
     assert_eq!(themed.background, dark.chrome.background);
-    assert_eq!(themed.bottom_x.line_color, dark.chrome.ink);
+    assert_eq!(themed.bottom_x.line_color, dark.chrome.frame_ink);
     assert_eq!(themed.subplots[0].config.background, None);
     assert_eq!(
         (themed.bottom_x.min, themed.bottom_x.max),
