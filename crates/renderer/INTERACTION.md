@@ -949,6 +949,7 @@ chart.annotations.items.push(Annotation::new(AnnotationKind::Text {
     anchor: Anchor::Ratio { x: 0.6, y: 0.1 },
     text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 12., ""),
     box_style: Some(Default::default()),
+    align: Default::default(),
 }));
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
