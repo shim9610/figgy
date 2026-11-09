@@ -173,14 +173,6 @@ pub enum ExportScope {
     Document,
 }
 
-/// The whole document, the scope a host gets by default (#266).
-#[cfg(feature = "helpers")]
-impl Default for ExportScope {
-    fn default() -> Self {
-        Self::Document
-    }
-}
-
 /// How an export renders: its [`ExportScope`], its `scale` and its
 /// background.
 ///
@@ -195,15 +187,6 @@ pub struct ExportOptions {
     pub scope: ExportScope,
     pub scale: f32,
     pub clear: crate::color::Color,
-}
-
-/// The whole document at scale 1 on a transparent background
-/// ([`ExportOptions::document`]`(1.0)`), for hosts (#266).
-#[cfg(feature = "helpers")]
-impl Default for ExportOptions {
-    fn default() -> Self {
-        Self::document(1.0)
-    }
 }
 
 impl ExportOptions {

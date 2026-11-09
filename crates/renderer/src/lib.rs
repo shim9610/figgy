@@ -90,15 +90,18 @@ pub use ::model::bounded_sources::{BoxColumn, BoxField};
 /// for its own tests.
 #[doc(hidden)]
 pub use ::model::chrome;
+/// The model's default builders, behind the `helpers` feature (#266).
+#[cfg(feature = "helpers")]
+pub use ::model::default;
 pub use ::model::{ConfigError, Coordinates, RuleKind, SeriesUpload, UploadValues};
 pub use ::model::{
     bounded_sources, boxplot, categorical, color, colormap, config, coordinates, data_config, drag,
     format, layout, legend, line, preset, resize, select, sink, text, tick, validate,
 };
-/// Host conveniences from the model, behind the `helpers` feature (#266):
-/// `Default` on the document types and the [`default`] builders.
 #[cfg(feature = "helpers")]
-pub use ::model::{default, helpers};
+pub mod helpers;
+#[cfg(feature = "helpers")]
+pub use helpers::{ExportFormat, HeadlessOptions, SaveError};
 
 // Public API re-exports.
 pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};

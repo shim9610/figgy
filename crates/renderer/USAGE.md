@@ -584,6 +584,38 @@ The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 [per-slice editing](RADIAL.md#ssot-편집과-선택), and
 [host update order](RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
 
+### Headless renderer and saving by format
+
+With the `helpers` feature, a renderer without a window takes one call, and
+one call exports and writes a file in the format its name gives. The steps
+stay explicit: create, upload, set the document, save.
+
+```rust
+use renderer::{Chart, ExportOptions, ExportSource, Renderer, SeriesConfig};
+
+let mut renderer = Renderer::headless_blocking()?;        // instance, adapter, device, pipelines
+renderer.add_column("x", &xs)?;                          // a Vec<f64> or a slice, no wrapper
+renderer.add_column("y", &ys)?;
+let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let chart = Chart::new(renderer::config::Config::default()).with_title("A sine wave");
+let source = ExportSource::Chart { chart: &chart, series: &series };
+renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // or .svg / .pdf
+```
+
+- `Renderer::headless_blocking()` (native) and `Renderer::headless(options).await`
+  (also in the browser) honour `WGPU_BACKEND`; `HeadlessOptions` sets the
+  initial column pool (16 MiB by default) and the power preference
+  (`headless_blocking_with`).
+- `ExportFormat` is `Png`, `Svg` or `Pdf`; `ExportFormat::from_path` reads it
+  from the extension in any letter case. `export_bytes` (async) and
+  `export_bytes_blocking` return the bytes; `save_blocking` picks the format
+  from the extension and `save_as_blocking` takes it explicitly. Each routes
+  to the export below, so the file is exactly what that export returns.
+- A save fails with `SaveError`: the export's own error, an extension that
+  names no format, or the file write.
+- `RadialRenderer` has the same `export_bytes`, `export_bytes_blocking` and
+  `save_blocking`, with the chart and its size.
+
 ### PNG export (memory only — saving is the caller's job)
 
 ```rust
@@ -1136,6 +1168,36 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
+
+### 창 없는 렌더러와 형식별 저장
+
+`helpers` 기능을 쓰면 창 없는 렌더러를 한 번의 호출로 만들고, 파일 이름이 가리키는 형식으로
+내보내 저장하는 것도 한 번의 호출로 끝난다. 단계는 그대로 드러난다. 만들기, 올리기, 문서 정하기,
+저장하기 순서다.
+
+```rust
+use renderer::{Chart, ExportOptions, ExportSource, Renderer, SeriesConfig};
+
+let mut renderer = Renderer::headless_blocking()?;        // 인스턴스, 어댑터, 장치, 파이프라인
+renderer.add_column("x", &xs)?;                          // Vec<f64>나 슬라이스를 감싸지 않고 넘긴다
+renderer.add_column("y", &ys)?;
+let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let chart = Chart::new(renderer::config::Config::default()).with_title("A sine wave");
+let source = ExportSource::Chart { chart: &chart, series: &series };
+renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .svg, .pdf도 된다
+```
+
+- `Renderer::headless_blocking()`(네이티브)과 `Renderer::headless(options).await`(브라우저 포함)은
+  `WGPU_BACKEND`를 따른다. `HeadlessOptions`로 처음 컬럼 풀 크기(기본 16 MiB)와 전력 선호를
+  정한다(`headless_blocking_with`).
+- `ExportFormat`은 `Png`, `Svg`, `Pdf`다. `ExportFormat::from_path`는 확장자를 대소문자 구분 없이
+  읽는다. `export_bytes`(비동기)와 `export_bytes_blocking`은 바이트를 돌려준다. `save_blocking`은
+  확장자로 형식을 고르고 `save_as_blocking`은 형식을 직접 받는다. 모두 아래의 내보내기 함수를 그대로
+  부르므로 파일 내용은 그 내보내기 결과와 같다.
+- 저장이 실패하면 `SaveError`를 돌려준다. 내보내기 자체의 오류, 형식을 알 수 없는 확장자, 파일 쓰기
+  오류 중 하나다.
+- `RadialRenderer`에도 같은 `export_bytes`, `export_bytes_blocking`, `save_blocking`이 있고, 차트와
+  크기를 받는다.
 
 ### PNG 내보내기
 

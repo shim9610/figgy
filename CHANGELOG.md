@@ -1450,6 +1450,8 @@ annotation's `align`) are additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **A headless renderer in one call and one save call by format** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Renderer::headless(HeadlessOptions)` (async, browser too), `Renderer::headless_blocking()` and `headless_blocking_with(options)` (native) make the instance, adapter and device (honouring `WGPU_BACKEND`) and an `Rgba8Unorm` renderer. `ExportFormat { Png, Svg, Pdf }` with `from_path` and `extension`; `Renderer::export_bytes` / `export_bytes_blocking`, `save_blocking` (format from the extension) and `save_as_blocking`, and the same on `RadialRenderer`. They route to the existing exports. A save fails with `SaveError` (`Export`, `Radial`, `UnknownFormat`, `Write`). `renderer::helpers` is now the renderer's own module: it re-exports the model's helpers and holds these, and the host `Default` for `ExportOptions` and `ExportScope` moved there.
+
 - **`Vec`s and slices upload as they are** ([#265](https://github.com/shim9610/figgy/issues/265)). `ColumnSource` is implemented for `[T]`, `&[T]` and `Vec<T>` with `T` = `f64`, `f32`, `u32` and `Option<f64>`, and `HiLoColumnSource` for the `f64`, `f32` and `Option<f64>` ones, so `add_column("x", &xs)` takes the host's vector without a `Column` wrapper. Values go straight from host memory into mapped staging. `Column<T>` now uploads through the same slice implementations. Arrays are not implementors: a trait `len` on `[T; N]` would shadow the slice's.
 
 - **No default fallbacks in the renderer; `helpers` feature** ([#266](https://github.com/shim9610/figgy/issues/266)).
