@@ -2042,7 +2042,7 @@ pub(crate) mod tests {
     }
 
     fn cfg_800x600() -> Config {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2452,7 +2452,7 @@ pub(crate) mod tests {
     fn overlay_legend_is_selectable_only_when_present() {
         let mut cfg = cfg_with_overlay();
         cfg.set_active_layer(LayerRef::Overlay(0));
-        let mut legend = crate::config::Legend::omitted();
+        let mut legend = crate::defaults::legend();
         legend.visible = true;
         legend.content = RichText {
             segments: rich_segments_from_text("P"),
@@ -2709,7 +2709,7 @@ pub(crate) mod tests {
 
     fn cfg_with_colorbar(side: Side) -> Config {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg

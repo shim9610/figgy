@@ -134,22 +134,6 @@ pub enum LogTickPolicy {
 }
 
 impl LogTickPolicy {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Decades
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for LogTickPolicy {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl LogTickPolicy {
     /// `true` for the default, `Decades`. Used to keep it out of serialized
     /// JSON.
     #[cfg(feature = "serde")]
@@ -182,7 +166,7 @@ pub const MAX_AXIS_BREAK_GAP_PX: f32 = 200.0;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "AxisBreaks::omitted")
+    serde(default = "crate::defaults::axis_breaks")
 )]
 pub struct AxisBreaks {
     /// The cut ranges, in data units, sorted and not overlapping; at most
@@ -205,34 +189,11 @@ pub struct AxisBreaks {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "PieceSizing::omitted",
+            default = "crate::defaults::piece_sizing",
             skip_serializing_if = "PieceSizing::is_by_value"
         )
     )]
     pub sizing: PieceSizing,
-}
-
-impl AxisBreaks {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            ranges: Vec::new(),
-            style: AxisBreakStyle::omitted(),
-            gap_px: 8.0,
-            mark: BreakMark::omitted(),
-            frame_each_panel: true,
-            sizing: PieceSizing::ByValue,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for AxisBreaks {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// How the pieces of a broken axis share its length (#205), the gaps
@@ -251,22 +212,6 @@ pub enum PieceSizing {
     /// In proportion to one positive weight per piece, in axis order: one
     /// more weight than cut ranges.
     Weights(Vec<f32>),
-}
-
-impl PieceSizing {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::ByValue
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for PieceSizing {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl PieceSizing {
@@ -306,22 +251,6 @@ pub enum AxisBreakStyle {
     Panels,
 }
 
-impl AxisBreakStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Continuous
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for AxisBreakStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// What marks a gap of a broken axis on the axis line.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -340,26 +269,6 @@ pub enum BreakMark {
         color: Option<Color>,
         width: f32,
     },
-}
-
-impl BreakMark {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self::Slash {
-            size: 6.0,
-            color: None,
-            width: 1.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for BreakMark {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,7 +411,7 @@ pub struct AxisOptions {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "LogTickPolicy::omitted",
+            default = "crate::defaults::log_tick_policy",
             skip_serializing_if = "LogTickPolicy::is_decades"
         )
     )]
@@ -769,10 +678,10 @@ impl AxisOptions {
 
 /// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
 /// JSON `{"mode":"sketch"}` alone enables the mode with stock values
-/// (`serde(default = "SketchOptions::omitted")`).
+/// (`serde(default = "crate::defaults::sketch_options")`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "SketchOptions::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::sketch_options"))]
 pub struct SketchOptions {
     /// Perpendicular path-displacement amplitude, in px. Default 1.5.
     pub amplitude_px: f32,
@@ -783,26 +692,6 @@ pub struct SketchOptions {
     pub seed: u32,
 }
 
-impl SketchOptions {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            amplitude_px: 1.5,
-            wavelength_px: 60.0,
-            seed: 0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for SketchOptions {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// Milkyway draw-style parameters. All fields have defaults — JSON
 /// `{"mode":"milkyway"}` alone works. Lines render as star chains over
 /// a soft nebula ribbon tinted with the series `line_color` (that ribbon is
@@ -811,7 +700,10 @@ impl Default for SketchOptions {
 /// mix follows the clump field).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "MilkywayOptions::omitted"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::milkyway_options")
+)]
 pub struct MilkywayOptions {
     /// Stars per 100 px of arc length. Default 14.0.
     pub star_density: f32,
@@ -855,66 +747,20 @@ pub struct MilkywayOptions {
     pub seed: u32,
 }
 
-impl MilkywayOptions {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            star_density: 14.0,
-            ribbon_width_px: 14.0,
-            ribbon_intensity: 0.30,
-            star_scale: 1.0,
-            star_brightness: 1.0,
-            spread_px: 2.5,
-            structure_scale: 1.0,
-            faint_bias: 3.0,
-            glow: 0.55,
-            nebula: 1.0,
-            dust: 1.0,
-            planet_rim: 0.34,
-            seed: 0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for MilkywayOptions {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// Constellation draw-style parameters. All fields have defaults. Only
 /// `ScatterLine` series are drawn: PSF-rendered stars sit at the scatter data
 /// points, connected by a translucent line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "ConstellationOptions::omitted"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::constellation_options")
+)]
 pub struct ConstellationOptions {
     /// Opacity applied to the point stars. Default 1.0.
     pub star_opacity: f32,
     /// Opacity applied to the connecting line. Default 0.45.
     pub line_opacity: f32,
-}
-
-impl ConstellationOptions {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            star_opacity: 1.0,
-            line_opacity: 0.45,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ConstellationOptions {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// UI-facing metadata for one stylized-mode parameter.
@@ -1000,22 +846,6 @@ pub enum DrawStyle {
     Sketch(SketchOptions),
     Milkyway(MilkywayOptions),
     Constellation(ConstellationOptions),
-}
-
-impl DrawStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Precise
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for DrawStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// A renderer-independent reference to one selected data primitive.
@@ -1194,7 +1024,10 @@ impl PickedDataRef {
 /// contour segment behind.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "DataSelectionsConfig::omitted"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::data_selections_config")
+)]
 pub struct DataSelectionsConfig {
     pub visible: bool,
     pub refs: Vec<PickedDataRef>,
@@ -1207,30 +1040,7 @@ pub struct DataSelectionsConfig {
 impl DataSelectionsConfig {
     /// No selection, with the default highlight look (#266).
     pub fn empty() -> Self {
-        Self::omitted()
-    }
-}
-
-impl DataSelectionsConfig {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            visible: true,
-            refs: Vec::new(),
-            highlight_color: Color::from_rgb8(255, 215, 0),
-            outline_width_px: 2.0,
-            point_radius_extra_px: 3.0,
-            contour_width_extra_px: 2.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for DataSelectionsConfig {
-    fn default() -> Self {
-        Self::omitted()
+        crate::defaults::data_selections_config()
     }
 }
 
@@ -1458,7 +1268,7 @@ pub struct Config {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "DrawStyle::omitted",
+            default = "crate::defaults::draw_style",
             skip_serializing_if = "DrawStyle::is_precise"
         )
     )]
@@ -1499,7 +1309,7 @@ pub struct Config {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "LayerRef::omitted",
+            default = "crate::defaults::layer_ref",
             skip_serializing_if = "LayerRef::is_base"
         )
     )]
@@ -1509,7 +1319,7 @@ pub struct Config {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "AnnotationLayer::omitted",
+            default = "crate::defaults::annotation_layer",
             skip_serializing_if = "AnnotationLayer::is_default"
         )
     )]
@@ -2007,7 +1817,7 @@ mod colorbar_normalization_tests {
 
     #[test]
     fn a_linear_bar_normalizes_and_clamps() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.min = -50.0;
         bar.axis.max = 150.0;
 
@@ -2021,7 +1831,7 @@ mod colorbar_normalization_tests {
 
     #[test]
     fn a_logarithmic_bar_normalizes_in_decades_and_rejects_non_positive() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.scale = AxisScale::Logarithmic;
         bar.axis.min = 1.0e-2;
         bar.axis.max = 1.0e2;
@@ -2038,7 +1848,7 @@ mod colorbar_normalization_tests {
 
     #[test]
     fn unplaceable_values_and_ranges_yield_none() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.min = 0.0;
         bar.axis.max = 1.0;
         assert_eq!(bar.normalized_z(f64::NAN), None);
@@ -2054,7 +1864,7 @@ mod colorbar_normalization_tests {
 
     #[test]
     fn color_for_z_falls_back_to_nan_color() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.scale = AxisScale::Logarithmic;
         bar.axis.min = 1.0;
         bar.axis.max = 100.0;
@@ -2070,7 +1880,7 @@ mod colorbar_normalization_tests {
     // `inverted` is screen layout, not colour assignment.
     #[test]
     fn inverting_the_axis_does_not_reverse_the_ramp() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.min = 0.0;
         bar.axis.max = 10.0;
         let upright = bar.normalized_z(2.5);
@@ -2087,8 +1897,8 @@ mod colorbar_scale_tests {
 
     #[test]
     fn scaling_a_config_scales_the_colorbar_pixels_but_not_its_fractions() {
-        let mut cfg = crate::config::Config::omitted();
-        cfg.colorbar = Some(crate::config::ColorBarOptions::omitted());
+        let mut cfg = crate::defaults::config();
+        cfg.colorbar = Some(crate::defaults::color_bar_options());
         let before = cfg.colorbar.clone().expect("colourbar");
 
         let scaled = cfg.scaled(2.0);
@@ -2125,8 +1935,8 @@ mod colorbar_scale_tests {
     // bar's labels at a different size or gap than the axis labels beside them.
     #[test]
     fn the_colorbar_axis_scales_like_a_chart_axis() {
-        let mut cfg = crate::config::Config::omitted();
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
         assert_eq!(bar.side, crate::layout::Side::Right);
         bar.axis = cfg.right_y.clone();
         cfg.colorbar = Some(bar);
@@ -2141,7 +1951,7 @@ mod colorbar_scale_tests {
     #[test]
     fn scaling_keeps_the_fixed_label_gap_and_legend_inset_proportional() {
         use crate::layout::{LABEL_GAP, LEGEND_INSET};
-        let cfg = crate::config::Config::omitted();
+        let cfg = crate::defaults::config();
         let scaled = cfg.scaled(2.0);
         for (before, after, outward) in [
             (&cfg.top_x, &scaled.top_x, (0.0, -1.0)),
@@ -2205,7 +2015,7 @@ mod serde_tests {
     /// Serialized default config — `draw_style` is `Precise`, so the JSON has
     /// no `"draw_style"` key: exactly the shape of pre-sketch documents.
     fn default_config_json() -> serde_json::Value {
-        serde_json::to_value(crate::config::Config::omitted()).expect("serialize Config")
+        serde_json::to_value(crate::defaults::config()).expect("serialize Config")
     }
 
     // `line_offsets` is additive: absent at its default, so an older document
@@ -2215,12 +2025,12 @@ mod serde_tests {
         use crate::data_config::LineOffsets;
         let json = default_config_json();
         assert!(json.get("line_offsets").is_none(), "{json}");
-        let text = serde_json::to_string(&crate::config::Config::omitted()).unwrap();
+        let text = serde_json::to_string(&crate::defaults::config()).unwrap();
         let old: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(old.line_offsets, None);
         assert_eq!(serde_json::to_string(&old).unwrap(), text);
 
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.line_offsets = Some(LineOffsets {
             series: vec!["a".into(), "b".into()],
             step_y: 0.5,
@@ -2266,7 +2076,7 @@ mod serde_tests {
         assert_eq!(cfg.active_layer, LayerRef::Base);
         assert_eq!(cfg.annotations, AnnotationLayer::default());
 
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.active_layer = LayerRef::Overlay(1);
         cfg.annotations.visible = false;
         cfg.overlays.push(crate::layer::OverlayLayer {
@@ -2357,7 +2167,7 @@ mod serde_tests {
     }
 
     fn sketch_round_trips_with_inline_fields() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.draw_style = DrawStyle::Sketch(SketchOptions {
             amplitude_px: 2.5,
             wavelength_px: 42.0,
@@ -2486,7 +2296,7 @@ mod serde_tests {
 
     #[test]
     fn scale_scales_picked_data_pixel_dimensions() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.picked_data = Some(DataSelectionsConfig::default());
         cfg.scale_in_place(2.0);
         let picked = cfg.picked_data.expect("picked data");
@@ -2505,7 +2315,7 @@ mod serde_tests {
     }
 
     fn typed_picked_data_round_trips_with_minimal_provenance() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.picked_data = Some(DataSelectionsConfig {
             refs: vec![
                 PickedDataRef::Point {
@@ -2548,7 +2358,7 @@ mod serde_tests {
 
     #[test]
     fn scale_scales_typed_selection_pixel_dimensions() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.picked_data = Some(DataSelectionsConfig::default());
         cfg.scale_in_place(2.0);
         let picked = cfg.picked_data.expect("picked data");
@@ -2652,7 +2462,7 @@ mod serde_tests {
     }
 
     fn constellation_round_trips_with_inline_fields() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.draw_style = super::DrawStyle::Constellation(super::ConstellationOptions {
             star_opacity: 0.75,
             line_opacity: 0.25,
@@ -2666,7 +2476,7 @@ mod serde_tests {
     }
 
     fn milkyway_round_trips_with_inline_fields() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.draw_style = super::DrawStyle::Milkyway(super::MilkywayOptions {
             star_density: 22.0,
             ribbon_width_px: 20.0,
@@ -2723,7 +2533,7 @@ mod category_axis_tests {
     use crate::tick::{major_ticks, minor_ticks};
 
     fn categorical(n: usize) -> AxisOptions {
-        let mut axis = crate::config::AxisOptions::omitted_x();
+        let mut axis = crate::defaults::axis_options_x();
         axis.categories = Some(
             (0..n)
                 .map(|i| Category::new(format!("c{i}"), format!("Category {i}")))
@@ -2741,7 +2551,7 @@ mod category_axis_tests {
 
     #[test]
     fn a_numeric_axis_always_passes_and_maps_its_own_range() {
-        let mut axis = crate::config::AxisOptions::omitted_x();
+        let mut axis = crate::defaults::axis_options_x();
         axis.min = 3.0;
         axis.max = 7.0;
         axis.scale = AxisScale::Logarithmic;
@@ -2861,7 +2671,7 @@ mod category_axis_tests {
 
     #[test]
     fn scaling_keeps_the_categories() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.bottom_x = categorical(5);
         let scaled = cfg.scaled(2.0);
         assert_eq!(scaled.bottom_x.categories, cfg.bottom_x.categories);
@@ -2870,7 +2680,7 @@ mod category_axis_tests {
     /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
     pub(super) fn categories_are_additive_on_the_wire() {
-        let axis = crate::config::AxisOptions::omitted_x();
+        let axis = crate::defaults::axis_options_x();
         let json = serde_json::to_value(&axis).expect("serialize");
         assert!(json.get("categories").is_none(), "{json}");
         let back: AxisOptions = serde_json::from_value(json).expect("parse");
@@ -2889,7 +2699,7 @@ mod category_axis_tests {
         let back: AxisOptions = serde_json::from_value(json).expect("parse");
         assert_eq!(back, axis);
 
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.left_y = categorical(2);
         let text = serde_json::to_string(&cfg).expect("serialize");
         let back: super::Config = serde_json::from_str(&text).expect("parse");
@@ -3014,7 +2824,7 @@ mod axis_break_config_tests {
 
     #[test]
     fn breaks_are_validated_on_the_axis() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         config.left_y.breaks = Some(broken());
@@ -3063,14 +2873,14 @@ mod axis_break_config_tests {
     #[test]
     fn breaks_go_only_on_the_data_axes_of_a_rectangular_chart() {
         for field in ["top_x", "right_y"] {
-            let mut config = crate::config::Config::omitted();
+            let mut config = crate::defaults::config();
             match field {
                 "top_x" => config.top_x.breaks = Some(broken()),
                 _ => config.right_y.breaks = Some(broken()),
             }
             assert_eq!(config.validate_chart().unwrap_err().field, field);
         }
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(vec![super::Category::new("a", "A")]);
         config.bottom_x.breaks = Some(broken());
         assert!(
@@ -3081,13 +2891,13 @@ mod axis_break_config_tests {
                 .to_string()
                 .contains("categorical")
         );
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         config.left_y.breaks = Some(broken());
         config.coordinates = crate::coordinates::Coordinates::Polar(Default::default());
         assert_eq!(config.validate_chart().unwrap_err().field, "coordinates");
-        let mut log = crate::config::Config::omitted();
+        let mut log = crate::defaults::config();
         log.left_y.scale = super::AxisScale::Logarithmic;
         log.left_y.min = 1.0;
         log.left_y.max = 1e6;
@@ -3107,7 +2917,7 @@ mod axis_break_config_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn breaks_round_trip_and_are_omitted_when_absent() {
-        let config: Config = crate::config::Config::omitted();
+        let config: Config = crate::defaults::config();
         let json = serde_json::to_value(&config).unwrap();
         assert!(json["left_y"].get("breaks").is_none());
         let mut config = config;
@@ -3121,7 +2931,7 @@ mod axis_break_config_tests {
         assert_eq!(back, config);
         assert_eq!(serde_json::to_string(&back).unwrap(), text);
         // A document naming only the ranges takes the defaults.
-        let mut json = serde_json::to_value(crate::config::Config::omitted()).unwrap();
+        let mut json = serde_json::to_value(crate::defaults::config()).unwrap();
         json["left_y"]["breaks"] = serde_json::json!({"ranges": [{"from": 1.0, "to": 2.0}]});
         let parsed: Config = serde_json::from_value(json).unwrap();
         let breaks = parsed.left_y.breaks.unwrap();
@@ -3131,7 +2941,7 @@ mod axis_break_config_tests {
 
     #[test]
     fn the_export_scale_scales_the_mark_and_the_gap() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.left_y.breaks = Some(broken());
         let mut scaled = config.clone();
         scaled.scale_in_place(2.0);

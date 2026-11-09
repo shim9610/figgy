@@ -55,27 +55,11 @@ pub enum Projection3d {
     Perspective,
 }
 
-impl Projection3d {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Orthographic
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for Projection3d {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// The camera of a 3D chart (`Config.view_3d`). The box's axes are x
 /// (`bottom_x`), y (`left_y`) and z (`right_y`, up).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "View3d::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::view3d"))]
 pub struct View3d {
     /// The camera's turn around the z axis, in degrees from the +x axis
     /// towards +y. Any finite value; it is read modulo 360.
@@ -96,28 +80,6 @@ pub struct View3d {
     pub box_aspect: Option<[f64; 3]>,
 }
 
-impl View3d {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            azimuth_degrees: -60.0,
-            elevation_degrees: 30.0,
-            distance: REFERENCE_DISTANCE,
-            projection: Projection3d::Orthographic,
-            box_aspect: None,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for View3d {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// The grid lines a surface draws over its fill, along the grid's rows and
 /// columns only.
 #[derive(Clone, Debug, PartialEq)]
@@ -134,7 +96,7 @@ pub struct SurfaceWireframe {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "SurfaceStyle::omitted")
+    serde(default = "crate::defaults::surface_style")
 )]
 pub struct SurfaceStyle {
     /// A second grid of the same shape to colour the surface by; `None`
@@ -159,32 +121,8 @@ impl SurfaceStyle {
     pub fn resolved(style: Option<&Self>) -> std::borrow::Cow<'_, Self> {
         match style {
             Some(style) => std::borrow::Cow::Borrowed(style),
-            None => std::borrow::Cow::Owned(Self::omitted()),
+            None => std::borrow::Cow::Owned(crate::defaults::surface_style()),
         }
-    }
-}
-
-impl SurfaceStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            color_matrix: None,
-            wireframe: None,
-            material: Material::Flat,
-            gloss: 0.45,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            emphasis_brightness: 0.12,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for SurfaceStyle {
-    fn default() -> Self {
-        Self::omitted()
     }
 }
 
@@ -817,7 +755,7 @@ mod tests {
     use crate::{ScatterShape, layout::Element, layout::NudgeResult};
 
     fn chart() -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.set_view_3d(Some(View3d::default()));
         config
     }
@@ -934,7 +872,7 @@ mod tests {
         // The view stays well defined at the pole.
         assert!(orbit.project_3d([1.0, 0.0, 0.0]).is_some());
         // A flat chart's data area still moves.
-        let mut flat = crate::config::Config::omitted();
+        let mut flat = crate::defaults::config();
         assert!(!flat.orbit_view(1.0, 1.0));
         assert!(!flat.zoom_view(2.0));
     }
@@ -1102,7 +1040,7 @@ mod tests {
             config.validate_view3d_series(&[grid]),
             Err(crate::RuleKind::View3dGridVector)
         );
-        let flat = crate::config::Config::omitted();
+        let flat = crate::defaults::config();
         assert_eq!(
             flat.validate_view3d_series(&[vector_3d(None, None)]),
             Ok(())
@@ -1129,7 +1067,7 @@ mod tests {
                 _ => 10,
             })
         };
-        for (config, last) in [(chart(), 3usize), (crate::config::Config::omitted(), 9)] {
+        for (config, last) in [(chart(), 3usize), (crate::defaults::config(), 9)] {
             let mut config = config;
             config.picked_data = Some(crate::config::DataSelectionsConfig {
                 refs: vec![crate::config::PickedDataRef::Point {
@@ -1235,7 +1173,7 @@ mod tests {
         assert!(matches!(err(bars), crate::RuleKind::View3dSeriesKind));
         // A flat chart draws the scatter and keeps a heatmap's surface style
         // and a series' z column.
-        let flat = crate::config::Config::omitted();
+        let flat = crate::defaults::config();
         assert_eq!(
             flat.validate_view3d_series(&[
                 scatter,
@@ -1316,7 +1254,7 @@ mod tests {
         assert!(!json.contains("box_aspect"), "{json}");
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.view_3d(), config.view_3d());
-        let flat = crate::config::Config::omitted();
+        let flat = crate::defaults::config();
         assert!(!serde_json::to_string(&flat).unwrap().contains("view_3d"));
         let plain = heatmap(None);
         let json = serde_json::to_string(&plain).unwrap();

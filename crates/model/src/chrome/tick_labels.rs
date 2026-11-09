@@ -737,7 +737,7 @@ mod category_stagger_tests {
     // places them by the window, and clips a group header to it.
     #[test]
     fn a_category_window_names_only_its_slots() {
-        let mut axis = crate::config::Config::omitted().bottom_x;
+        let mut axis = crate::defaults::config().bottom_x;
         axis.categories = Some(
             (0..8)
                 .map(|i| crate::config::Category::new(format!("c{i}"), format!("{i}")))
@@ -775,7 +775,7 @@ mod category_stagger_tests {
         );
         assert_eq!(n, 0);
         // Validation: finite bounds, from < to.
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x = axis.clone();
         config.bottom_x.category_window = Some([2.0, 2.0]);
         assert!(config.validate_chart().is_err());
@@ -788,7 +788,7 @@ mod category_stagger_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn a_category_window_serializes_only_when_set() {
-        let mut axis = crate::config::Config::omitted().bottom_x;
+        let mut axis = crate::defaults::config().bottom_x;
         let json = serde_json::to_string(&axis).unwrap();
         assert!(!json.contains("category_window"));
         axis.category_window = Some([0.5, 2.5]);
@@ -802,7 +802,7 @@ mod category_stagger_tests {
     // over rows, and no two of one row overlap.
     #[test]
     fn crowded_categories_stagger_and_keep_every_name() {
-        let mut axis = crate::config::Config::omitted().bottom_x;
+        let mut axis = crate::defaults::config().bottom_x;
         axis.categories = Some(
             (0..40)
                 .map(|i| crate::config::Category::new(format!("c{i}"), format!("name {i:02}")))

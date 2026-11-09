@@ -26,22 +26,6 @@ pub enum LineStylePreset {
 }
 
 impl LineStylePreset {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Solid
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for LineStylePreset {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl LineStylePreset {
     /// Dash pattern as sequential `[on, off, ...]` pixel lengths at 1× scale.
     /// Empty slice = solid. Consumers (CPU raster dash, GPU `Style.dash`)
     /// apply their own scale factor to each entry.

@@ -202,22 +202,6 @@ pub enum RadialLabelFormat {
     NameValuePercent,
 }
 
-impl RadialLabelFormat {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::NamePercent
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadialLabelFormat {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadialOutline {
@@ -227,27 +211,6 @@ pub struct RadialOutline {
     /// Logical pixels, independent of DPR/export scale.
     pub width: f32,
     pub color: Color,
-}
-impl RadialOutline {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            rim: false,
-            separators: false,
-            emphasis: false,
-            width: 1.0,
-            color: Color::new(0.08, 0.12, 0.2, 1.0),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadialOutline {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// Index in the original array (including zero-valued slices). group 1 is
@@ -279,25 +242,7 @@ pub struct RadialInteraction {
     /// Linear progress in 0..1. Rendering applies smoothstep via [`Self::amount`].
     pub hover_progress: f32,
 }
-impl RadialInteraction {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            hovered: None,
-            selected: None,
-            hover_progress: 0.0,
-        }
-    }
-}
 
-#[cfg(feature = "helpers")]
-impl Default for RadialInteraction {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
 impl RadialInteraction {
     /// Host supplies elapsed seconds; no wall clock, browser, or permanent animation loop.
     /// Exit completes before a different slice enters. Returns whether state changed.
@@ -343,7 +288,7 @@ impl RadialInteraction {
 /// Defaults are flat/top-down; setting a material does not enable extrusion.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "RadialStyle::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::radial_style"))]
 pub struct RadialStyle {
     pub material: Material,
     /// Orthographic camera tilt, 0..65 degrees. Zero is an undistorted top view.
@@ -400,7 +345,7 @@ impl RadialStyle {
             hover_brightness,
             gloss,
             texture_angle_degrees,
-        } = Self::omitted();
+        } = crate::defaults::radial_style();
         Self {
             material: Material::Ceramic,
             tilt_degrees: 55.0,
@@ -419,33 +364,6 @@ impl RadialStyle {
             hover_brightness,
             gloss,
             texture_angle_degrees,
-        }
-    }
-}
-
-impl RadialStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            material: Material::Flat,
-            tilt_degrees: 0.0,
-            depth: 0.0,
-            bevel: 0.015,
-            gap_degrees: 0.0,
-            roughness: 0.35,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            light: [-0.5, -0.6, 1.0],
-            shadow: false,
-            inner_corner: 0.0,
-            outer_corner: 0.0,
-            outline: RadialOutline::omitted(),
-            hover_lift: 0.08,
-            hover_brightness: 0.04,
-            gloss: 0.55,
-            texture_angle_degrees: 0.0,
         }
     }
 }
@@ -494,7 +412,7 @@ impl RadialStyle {
             hover_brightness,
             gloss,
             texture_angle_degrees,
-        } = Self::omitted();
+        } = crate::defaults::radial_style();
         Self {
             material,
             tilt_degrees: *tilt_degrees,
@@ -526,15 +444,8 @@ impl RadialInteraction {
         if labels_move {
             self.clone()
         } else {
-            Self::omitted()
+            crate::defaults::radial_interaction()
         }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadialStyle {
-    fn default() -> Self {
-        Self::omitted()
     }
 }
 
@@ -553,7 +464,10 @@ pub struct RadialSplit {
 #[cfg_attr(feature = "serde", serde(from = "radial_wire::RadialChartWire"))]
 pub struct RadialChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default = "crate::DecorationLayout::omitted"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// The chart's title, the shared rich chart title; `None` draws none.
     /// Its position remains in `decorations`: the offsets and `top_margin`
@@ -579,7 +493,7 @@ pub struct RadialChart {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "crate::LayerRef::omitted",
+            default = "crate::defaults::layer_ref",
             skip_serializing_if = "crate::LayerRef::is_base"
         )
     )]
@@ -588,7 +502,7 @@ pub struct RadialChart {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "crate::AnnotationLayer::omitted",
+            default = "crate::defaults::annotation_layer",
             skip_serializing_if = "crate::AnnotationLayer::is_default"
         )
     )]
@@ -600,57 +514,27 @@ pub struct RadialChart {
     pub split: Option<RadialSplit>,
     pub style: RadialStyle,
     pub labels: RadialLabels,
-    #[cfg_attr(feature = "serde", serde(default = "RadialLabelFormat::omitted"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_label_format")
+    )]
     pub label_format: RadialLabelFormat,
-    #[cfg_attr(feature = "serde", serde(default = "default_decimals"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_label_decimals")
+    )]
     pub label_decimals: usize,
     #[cfg_attr(feature = "serde", serde(default))]
     pub value_suffix: String,
-    #[cfg_attr(feature = "serde", serde(default = "RadialInteraction::omitted"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::radial_interaction")
+    )]
     pub interaction: RadialInteraction,
     pub font_family: String,
     pub font_size: f32,
     pub label_color: Color,
     pub background: Color,
-}
-impl RadialChart {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            decorations: crate::DecorationLayout::omitted(),
-            chart_title: None,
-            active_layer: crate::LayerRef::omitted(),
-            annotations: crate::AnnotationLayer::omitted(),
-            slices: Vec::new(),
-            kind: RadialKind::Pie,
-            start_angle_degrees: -90.0,
-            split: None,
-            style: RadialStyle::omitted(),
-            labels: RadialLabels::Outside,
-            label_format: RadialLabelFormat::NamePercent,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            interaction: RadialInteraction::omitted(),
-            font_family: "sans-serif".into(),
-            font_size: 16.0,
-            label_color: Color::new(0.12, 0.16, 0.22, 1.0),
-            background: Color::WHITE,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadialChart {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-#[cfg(feature = "serde")]
-fn default_decimals() -> usize {
-    1
 }
 
 /// The document form a [`RadialChart`] is read from: its own fields, and
@@ -663,16 +547,16 @@ mod radial_wire {
     /// the legacy `title`.
     #[derive(serde::Deserialize)]
     pub(super) struct RadialChartWire {
-        #[serde(default = "crate::DecorationLayout::omitted")]
+        #[serde(default = "crate::defaults::decoration_layout")]
         decorations: crate::DecorationLayout,
         /// The plain title of a document written before 0.19.
         #[serde(default)]
         title: String,
         #[serde(default, with = "crate::bounded_title::bounded_title_wire")]
         chart_title: Option<crate::config::ChartTitleOptions>,
-        #[serde(default = "crate::LayerRef::omitted")]
+        #[serde(default = "crate::defaults::layer_ref")]
         active_layer: crate::LayerRef,
-        #[serde(default = "crate::AnnotationLayer::omitted")]
+        #[serde(default = "crate::defaults::annotation_layer")]
         annotations: crate::AnnotationLayer,
         slices: Vec<RadialSlice>,
         kind: RadialKind,
@@ -680,13 +564,13 @@ mod radial_wire {
         split: Option<RadialSplit>,
         style: RadialStyle,
         labels: RadialLabels,
-        #[serde(default = "RadialLabelFormat::omitted")]
+        #[serde(default = "crate::defaults::radial_label_format")]
         label_format: RadialLabelFormat,
-        #[serde(default = "default_decimals")]
+        #[serde(default = "crate::defaults::radial_label_decimals")]
         label_decimals: usize,
         #[serde(default)]
         value_suffix: String,
-        #[serde(default = "RadialInteraction::omitted")]
+        #[serde(default = "crate::defaults::radial_interaction")]
         interaction: RadialInteraction,
         font_family: String,
         font_size: f32,

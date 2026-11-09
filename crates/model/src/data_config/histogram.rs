@@ -20,7 +20,10 @@ pub struct DataBarStyleConfig {
     /// Fraction of each bin occupied by its bar, centred on the bin. Values are
     /// clamped to `0..=1` by the renderer. `1` uses the whole bin before
     /// applying [`Self::gap_px`], while `0.8` leaves 10% empty on each side.
-    #[cfg_attr(feature = "serde", serde(default = "default_bar_width_ratio"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::histogram_bar_width_ratio")
+    )]
     pub width_ratio: f32,
     /// Which column is edges and which is counts. This alone decides; the
     /// `edges = counts + 1` length relation is not used to guess.
@@ -32,11 +35,6 @@ pub struct DataBarStyleConfig {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub bar_style_overrides: Option<Vec<DataBarStyleOverride>>,
-}
-
-#[cfg(feature = "serde")]
-pub(super) fn default_bar_width_ratio() -> f32 {
-    1.0
 }
 
 /// Partial appearance override for one histogram bin.
@@ -71,28 +69,6 @@ pub struct DataBarBinStyleConfig {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub width_ratio: Option<f32>,
-}
-
-impl DataBarBinStyleConfig {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            fill_color: Default::default(),
-            border_color: Default::default(),
-            border_width: Default::default(),
-            gap_px: Default::default(),
-            width_ratio: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for DataBarBinStyleConfig {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// One sparse histogram-bin style override.

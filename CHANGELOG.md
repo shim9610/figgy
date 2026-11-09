@@ -41,8 +41,8 @@ annotation's `align`) are additive.
 ### Model (`figgy-model` 0.13.0)
 
 - **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
-  - **One source.** Every serialized type with a default now spells it once, in a crate-private `omitted()` function: the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]` and the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`). `#[serde(default)]` on those types reads it through `default = "Type::omitted"`. Documents parse and serialize exactly as before.
-  - **New `helpers` feature (on by default).** It gates `impl Default` on those types and the public `default` module, so the model's and the renderer's own code cannot fall back on a default. `ci/verify.py static` builds both libraries without it.
+  - **One source, one folder.** Every serialized type with a default now spells it once, in the crate-private `defaults/` folder (one file per area: frame, series, annotations, chart families, science, text): the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]`, the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`) and the ten field defaults that serde read from functions scattered over the model. `#[serde(default)]` reads them through `default = "crate::defaults::name"`. `Violin::DEFAULT_BOX_WIDTH` keeps its value, now read from there. Documents parse and serialize exactly as before.
+  - **New `helpers` feature (on by default).** Host conveniences live in the `helpers/` folder behind it: `impl Default` on those types and the `default` module (now `figgy_model::helpers::default`, still reachable as `figgy_model::default`). The model's and the renderer's own code cannot fall back on a default: `ci/verify.py static` builds both libraries without it.
   - **Named functions in place of defaults.**
     - `AnnotationLayer::empty()` and `DataSelectionsConfig::empty()` mean "nothing".
     - `Config::effective_bar_groups()` resolves an omitted `bar_groups` once. `BarGroups` is now `Copy`.
@@ -1453,6 +1453,7 @@ annotation's `align`) are additive.
   - The radial label raster key comes from the model's `label_raster_key` functions.
   - "No annotations" is `AnnotationLayer::empty()`.
   - `ExportOptions::panel` and `document` no longer go through `Default`. `impl Default` for `ExportOptions` (`document(1.0)`) and `ExportScope` (`Document`) now sit behind `helpers`.
+  - `renderer::default` and the new `renderer::helpers` re-export the model's `helpers` folder and exist only with the feature.
   - **Migration:** a build with `default-features = false` adds `features = ["helpers"]` to keep `Default` on the model types, `renderer::default` and `ExportOptions::default()`.
 
 - **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).

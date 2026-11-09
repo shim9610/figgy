@@ -266,7 +266,7 @@ mod tests {
     use crate::text::rich_segments_from_text;
 
     fn cfg_800x600() -> Config {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -426,7 +426,7 @@ mod tests {
         use crate::select::ColorBarElement;
 
         let mut cfg = cfg_800x600();
-        cfg.colorbar = Some(crate::config::ColorBarOptions::omitted());
+        cfg.colorbar = Some(crate::defaults::color_bar_options());
         let margins_before = cfg.margins();
         let area_before = cfg.data_area().expect("data area");
 
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn colorbar_detail_drags_update_only_the_z_axis_fields() {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = Side::Right;
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text =

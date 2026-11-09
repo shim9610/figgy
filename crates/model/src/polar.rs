@@ -34,22 +34,6 @@ pub enum AngleUnit {
 }
 
 impl AngleUnit {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Degrees
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for AngleUnit {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl AngleUnit {
     /// The factor from a value in this unit to radians.
     pub fn radians_per_unit(self) -> f64 {
         match self {
@@ -76,22 +60,6 @@ pub enum PolarInterpolation {
 }
 
 impl PolarInterpolation {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Chord
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for PolarInterpolation {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl PolarInterpolation {
     /// Whether segments are straight chords (the default).
     pub fn is_chord(&self) -> bool {
         matches!(self, Self::Chord)
@@ -108,22 +76,6 @@ pub enum GridShape {
     /// ring joins its points at the category angles with straight chords
     /// (the radar look). Needs a categorical angle axis.
     Polygon,
-}
-
-impl GridShape {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Circle
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for GridShape {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// How an angle-axis value maps to a screen angle
@@ -175,7 +127,7 @@ impl AngleMap {
 /// counter-clockwise from the right, in degrees.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "PolarOptions::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::polar_options"))]
 pub struct PolarOptions {
     /// Where the angle value 0 points, in screen degrees: 0 right, 90 up.
     pub zero_angle_degrees: f64,
@@ -214,32 +166,6 @@ pub struct PolarOptions {
         serde(default, skip_serializing_if = "std::ops::Not::not")
     )]
     pub hide_first_radius_label: bool,
-}
-
-impl PolarOptions {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            zero_angle_degrees: 0.0,
-            clockwise: false,
-            angle_unit: AngleUnit::Degrees,
-            sector: None,
-            inner_radius_fraction: 0.0,
-            interpolation: PolarInterpolation::Chord,
-            radial_label_angle_degrees: 90.0,
-            grid_shape: None,
-            hide_first_radius_label: false,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for PolarOptions {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The circle a polar chart draws into, in the chart's pixel space.
@@ -345,7 +271,7 @@ impl PolarOptions {
 
     /// The ring shape: `grid_shape`, or circles.
     pub fn grid_shape(&self) -> GridShape {
-        self.grid_shape.unwrap_or_else(crate::GridShape::omitted)
+        self.grid_shape.unwrap_or_else(crate::defaults::grid_shape)
     }
 
     /// How the values of `angle_axis` (the chart's `bottom_x`) map to screen
@@ -496,7 +422,7 @@ mod tests {
     use super::*;
 
     fn polar_config() -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
         config.left_y.min = 0.0;
@@ -584,7 +510,7 @@ mod tests {
         let mut c = config.clone();
         c.polar_mut().unwrap().zero_angle_degrees = f64::NAN;
         assert!(c.validate_polar().is_err());
-        let mut plain = crate::config::Config::omitted();
+        let mut plain = crate::defaults::config();
         plain.set_polar(None);
         plain.bottom_x.inverted = true;
         assert_eq!(plain.validate_polar(), Ok(()));
@@ -742,7 +668,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn polar_is_additive_in_json() {
-        let plain = crate::config::Config::omitted();
+        let plain = crate::defaults::config();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json.get("polar").is_none());
         let back: Config = serde_json::from_value(json).unwrap();

@@ -43,7 +43,10 @@ pub struct ParallelAxis {
     /// Linear or logarithmic placement along the axis.
     #[cfg_attr(
         feature = "serde",
-        serde(default = "linear_scale", skip_serializing_if = "is_linear")
+        serde(
+            default = "crate::defaults::parallel_axis_scale",
+            skip_serializing_if = "is_linear"
+        )
     )]
     pub scale: AxisScale,
     /// The tick labels' offset from their drawn place, logical pixels, as
@@ -59,11 +62,6 @@ pub struct ParallelAxis {
 #[cfg(feature = "serde")]
 fn is_false(v: &bool) -> bool {
     !*v
-}
-
-#[cfg(feature = "serde")]
-fn linear_scale() -> AxisScale {
-    AxisScale::Linear
 }
 
 #[cfg(feature = "serde")]
@@ -150,27 +148,12 @@ impl ParallelAxis {
 /// in order. Later options join it additively.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "ParallelOptions::omitted"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(default = "crate::defaults::parallel_options")
+)]
 pub struct ParallelOptions {
     pub axes: Vec<ParallelAxis>,
-}
-
-impl ParallelOptions {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            axes: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ParallelOptions {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl ParallelOptions {
@@ -334,7 +317,7 @@ mod tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(
             ["a", "b", "c"]
                 .map(|id| Category::new(id, id.to_uppercase()))
@@ -468,7 +451,7 @@ mod tests {
             crate::RuleKind::ParallelSeriesColorbar
         );
         let mut coloured = chart();
-        coloured.colorbar = Some(crate::config::ColorBarOptions::omitted());
+        coloured.colorbar = Some(crate::defaults::color_bar_options());
         let mut s = series(&["a", "b", "c"]);
         if let DataRenderType::Parallel { color_column, .. } = &mut s.render_type {
             *color_column = Some("class".into());
@@ -476,7 +459,7 @@ mod tests {
         assert_eq!(coloured.validate_parallel_series(&[s]), Ok(()));
         // The other way round: a plain chart refuses a parallel series, a
         // parallel chart refuses a plain one.
-        let plain = crate::config::Config::omitted();
+        let plain = crate::defaults::config();
         assert_eq!(
             plain.validate_parallel_series(&[series(&["a", "b", "c"])]),
             Err(crate::RuleKind::ParallelSeriesNotParallel)
@@ -556,7 +539,7 @@ mod tests {
         assert_eq!(axes[2]["scale"], "Logarithmic");
         let back: Config = serde_json::from_value(json).unwrap();
         assert_eq!(back, config);
-        let plain = serde_json::to_value(crate::config::Config::omitted()).unwrap();
+        let plain = serde_json::to_value(crate::defaults::config()).unwrap();
         assert!(plain.get("parallel").is_none());
         let series_json = serde_json::to_value(series(&["a", "b", "c"])).unwrap();
         assert!(

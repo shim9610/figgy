@@ -101,22 +101,6 @@ pub enum MathStyle {
     Display,
 }
 
-impl MathStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Text
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for MathStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// The style of a fraction: chosen from the surrounding style, or forced
 /// to the display (`\dfrac`) or text (`\tfrac`) form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1455,7 +1439,7 @@ mod tests {
         assert!(err.contains("segment 6"), "{err}");
         assert!(err.contains(MathErrorKind::UnknownParent.as_str()), "{err}");
 
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.chart_title.text = text;
         let json = serde_json::to_string(&config).unwrap();
         assert!(serde_json::from_str::<crate::config::Config>(&json).is_err());

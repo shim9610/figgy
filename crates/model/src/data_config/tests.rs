@@ -960,7 +960,7 @@ mod contour_level_tests {
     use crate::config::AxisScale;
 
     fn axis(min: f64, max: f64, scale: AxisScale) -> AxisOptions {
-        let mut axis = crate::config::AxisOptions::omitted_colorbar();
+        let mut axis = crate::defaults::axis_options_colorbar();
         axis.min = min;
         axis.max = max;
         axis.scale = scale;
@@ -1187,7 +1187,7 @@ mod contour_level_tests {
     /// field's cells do, so a line and the fill it bounds agree about the value.
     #[test]
     fn colormap_colours_come_from_color_for_z() {
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut bar = crate::defaults::color_bar_options();
         bar.axis.min = 0.0;
         bar.axis.max = 100.0;
         let mut cfg = contour();
@@ -1252,7 +1252,7 @@ mod category_bar_tests {
     }
 
     pub(crate) fn chart(n: usize) -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(categories(n));
         config
     }
@@ -1286,14 +1286,14 @@ mod category_bar_tests {
             Ok(())
         );
         assert_eq!(
-            crate::config::Config::omitted().validate_category_bars(&[]),
+            crate::defaults::config().validate_category_bars(&[]),
             Ok(())
         );
     }
 
     #[test]
     fn bars_need_a_categorical_axis_in_their_direction() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         assert!(config.validate_category_bars(&[bars("a")]).is_err());
         let mut config = chart(3);
         config.bar_groups = Some(BarGroups {
@@ -1404,7 +1404,7 @@ mod category_bar_tests {
                 .contains("overlay")
         );
 
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.subplots.push(Subplot {
             config: chart(2),
             series: vec!["a".into()],
@@ -1700,7 +1700,7 @@ mod category_bar_tests {
     /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
     pub(super) fn bar_groups_and_cross_at_are_additive_on_the_wire() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("bar_groups").is_none());
         assert!(json["bottom_x"].get("cross_at").is_none());
@@ -1725,8 +1725,8 @@ mod category_bar_tests {
     #[cfg(feature = "serde")]
     pub(super) fn log_ticks_are_additive_on_the_wire() {
         use crate::config::LogTickPolicy;
-        let mut config = crate::config::Config::omitted();
-        config.colorbar = Some(crate::config::ColorBarOptions::omitted());
+        let mut config = crate::defaults::config();
+        config.colorbar = Some(crate::defaults::color_bar_options());
         let json = serde_json::to_value(&config).unwrap();
         for axis in ["top_x", "bottom_x", "left_y", "right_y"] {
             assert!(json[axis].get("log_ticks").is_none(), "{axis}");
@@ -1818,7 +1818,7 @@ mod box_plot_tests {
     }
 
     fn chart(n: usize) -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(categories(n));
         config
     }
@@ -1861,7 +1861,7 @@ mod box_plot_tests {
         });
         // No box plot series: nothing to hold, not even a categorical axis.
         assert_eq!(
-            crate::config::Config::omitted().validate_box_plots(&[plain]),
+            crate::defaults::config().validate_box_plots(&[plain]),
             Ok(())
         );
         assert_eq!(boxes("a").box_plot_columns(), ("positions", "a.record"));
@@ -2427,7 +2427,7 @@ mod radar_tests {
     }
 
     fn polar_config(n: usize) -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.set_polar(Some(PolarOptions::default()));
         config.bottom_x.categories = Some(categories(n));
         config
@@ -2452,7 +2452,7 @@ mod radar_tests {
         let config = polar_config(5);
         assert_eq!(config.validate_radar(&[radar("a"), radar("b")]), Ok(()));
         assert_eq!(
-            crate::config::Config::omitted().validate_radar(&[]),
+            crate::defaults::config().validate_radar(&[]),
             Ok(()),
             "a chart without radar series passes"
         );
@@ -2496,7 +2496,7 @@ mod radar_tests {
 
     #[test]
     fn a_subplot_draws_radar_series_against_its_own_polar_axes() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         let mut cell = polar_config(3);
         cell.chart_area = config.chart_area.clone();
         config.subplots.push(Subplot {
@@ -2815,7 +2815,7 @@ mod step_selection_tests {
     }
 
     fn selected(reference: PickedDataRef) -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![reference],
             ..Default::default()
@@ -2964,7 +2964,7 @@ mod step_selection_tests {
         let mut config = selected(bin("a", 0));
         // Series `c` sits on an overlay, another bar group.
         config.overlays.push(crate::layer::OverlayLayer {
-            y_axis: crate::config::AxisOptions::omitted_y(),
+            y_axis: crate::defaults::axis_options_y(),
             series: vec!["c".into()],
             legend: None,
         });
@@ -3074,7 +3074,7 @@ mod step_selection_tests {
     fn no_selection_an_unknown_series_and_labels_do_not_step() {
         let series = [entry("a", "x", "y", line())];
         let columns = HashMap::from([("x", 3), ("y", 3)]);
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
         let mut config = selected(point("gone", 0));
         assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
@@ -3180,14 +3180,14 @@ mod step_selection_tests {
             step_y: 1.0,
             step_x: 0.0,
         };
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.line_offsets = Some(group(&["a", "b"]));
         assert_eq!(config.validate_line_offsets(&series), Ok(()));
         assert_eq!(config.line_offset_of("a"), Some([0.0, 0.0]));
         assert_eq!(config.line_offset_of("b"), Some([0.0, 1.0]));
         assert_eq!(config.line_offset_of("h"), None);
         let rejected = |offsets: LineOffsets, edit: fn(&mut Config)| {
-            let mut config = crate::config::Config::omitted();
+            let mut config = crate::defaults::config();
             config.line_offsets = Some(offsets);
             edit(&mut config);
             config.validate_line_offsets(&series).is_err()
@@ -3233,7 +3233,7 @@ mod step_selection_tests {
         {
             line.fill = Some(LineFill::ToSeries("a".into()));
         }
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.line_offsets = Some(group(&["a"]));
         assert!(config.validate_line_offsets(&filled).is_err());
         config.line_offsets = Some(group(&["a", "b"]));
@@ -3413,7 +3413,7 @@ mod range_bar_tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.categories = Some(vec![
             Category::new("a", "A"),
             Category::new("b", "B"),
@@ -3476,7 +3476,7 @@ mod range_bar_tests {
         assert_eq!(config.validate_range_bars(&many), Ok(()));
         // A numeric position axis needs a slot width; a categorical one
         // has none.
-        let mut numeric = crate::config::Config::omitted();
+        let mut numeric = crate::defaults::config();
         assert!(numeric.validate_range_bars(&[ranges("t")]).is_err());
         let mut timed = ranges("t");
         let DataRenderType::RangeBars { slot_width, .. } = edit(&mut timed) else {
@@ -3560,7 +3560,7 @@ mod range_bar_tests {
         });
         assert!(overlay.validate_range_bars(&[ranges("one")]).is_err());
         // A subplot's own axes decide for its range bars.
-        let mut parent = crate::config::Config::omitted();
+        let mut parent = crate::defaults::config();
         parent.subplots.push(Subplot {
             config: chart(),
             series: vec!["one".into()],
@@ -3841,7 +3841,7 @@ mod hexagonal_tests {
     /// every other reading of it is named.
     #[test]
     fn the_rules_name_each_rejection() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         let ok = |series: &[SeriesConfig]| config.validate_hexagonal_series(series);
         assert_eq!(ok(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]), Ok(()));
         assert_eq!(
@@ -3974,7 +3974,7 @@ mod image_tests {
     /// named.
     #[test]
     fn the_rules_name_each_rejection() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         let ok = |series: &[SeriesConfig]| config.validate_rgb_image_series(series);
         assert_eq!(ok(&[image([0.0, 1.0], 1.0)]), Ok(()));
         assert_eq!(

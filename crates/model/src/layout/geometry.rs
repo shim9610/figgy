@@ -681,7 +681,7 @@ pub fn chart_title_placement_in(
 /// em box the renderer also gives a line without ink). Derived rather than
 /// restated, so fitted bands follow the defaults if they change.
 fn chart_title_band_padding() -> f32 {
-    let defaults = crate::config::ChartTitleOptions::omitted();
+    let defaults = crate::defaults::chart_title_options();
     (defaults.top_margin - defaults.text.font_size).max(0.0)
 }
 
@@ -1619,7 +1619,7 @@ mod tests {
     /// centre under it and never past the plot's edge lines.
     #[test]
     fn axis_lines_cross_the_perpendicular_axis_at_cross_at() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.left_y.min = -10.0;
         config.left_y.max = 10.0;
         config.bottom_x.min = 0.0;
@@ -1854,14 +1854,14 @@ mod tests {
     }
 
     fn titled(text: &str) -> Config {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.chart_title.text.segments = crate::text::rich_segments_from_text(text);
         cfg
     }
 
     #[test]
     fn the_title_band_padding_comes_from_the_defaults() {
-        let defaults = crate::config::ChartTitleOptions::omitted();
+        let defaults = crate::defaults::chart_title_options();
         assert_eq!(
             chart_title_band_padding(),
             defaults.top_margin - defaults.text.font_size
@@ -1922,9 +1922,9 @@ mod tests {
 
     #[test]
     fn fitting_skips_hidden_empty_and_unusable_titles() {
-        let mut empty = crate::config::Config::omitted();
+        let mut empty = crate::defaults::config();
         assert!(!fit_chart_title_margin(&mut empty, &LineMeasure));
-        assert_eq!(empty, crate::config::Config::omitted());
+        assert_eq!(empty, crate::defaults::config());
 
         let mut hidden = titled("one\ntwo\nthree");
         hidden.chart_title.visible = false;
@@ -1956,7 +1956,7 @@ mod tests {
             height: 100.0,
         };
         let moved = strip.translated(13.0, -9.0);
-        let axis = crate::config::AxisOptions::omitted_colorbar();
+        let axis = crate::defaults::axis_options_colorbar();
         let m = extents();
 
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
@@ -1982,7 +1982,7 @@ mod tests {
             width: 40.0,
             height: 100.0,
         };
-        let mut axis = crate::config::AxisOptions::omitted_colorbar();
+        let mut axis = crate::defaults::axis_options_colorbar();
         // A band wide enough for the labels and the title, whose centre
         // would sit on the labels (#259).
         axis.out_margin = 60.0;
@@ -2054,8 +2054,8 @@ mod tests {
     /// synthetic `areas()` fixture above cannot: its data area is not derived
     /// from any margin.
     fn colorbar_config(side: Side) -> (crate::config::Config, DataArea) {
-        let mut cfg = crate::config::Config::omitted();
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
         bar.side = side;
         bar.thickness_px = 20.0;
         bar.gap_px = 10.0;
@@ -2304,7 +2304,7 @@ mod tests {
     // and the widest label: the three `0.00300` labels of the left axis.
     #[test]
     fn a_probe_reads_the_drawn_labels_without_storing_them() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         long_labels(&mut cfg.left_y);
         let measure = Labels;
         let probe = Probe::of(&cfg, &Element::AxisLabel(Side::Left), &measure);
@@ -2370,7 +2370,7 @@ mod tests {
     // auto_layout (#44).
 
     fn with_titles(left: &str) -> Config {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.left_y.title_option.text.segments = crate::text::rich_segments_from_text(left);
         cfg.bottom_x.title_option.text.segments = crate::text::rich_segments_from_text("x");
         cfg
@@ -2413,8 +2413,8 @@ mod tests {
         assert!(title_clearance(&cfg, Side::Left, &measure) >= LABEL_GAP);
         assert_eq!(auto_layout(&cfg, &measure), cfg);
         assert_eq!(
-            auto_layout(&crate::config::Config::omitted(), &measure),
-            crate::config::Config::omitted()
+            auto_layout(&crate::defaults::config(), &measure),
+            crate::defaults::config()
         );
     }
 
@@ -2481,7 +2481,7 @@ mod tests {
     #[test]
     fn auto_layout_sizes_a_band_without_a_title_for_its_labels_alone() {
         let measure = Labels;
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         five_digit_labels(&mut cfg.left_y);
         cfg.left_y.out_margin = 20.0;
         cfg.right_y.out_margin = 1.0;
@@ -2524,7 +2524,7 @@ mod tests {
     #[test]
     fn auto_layout_switches_long_decimal_labels_to_power() {
         let long = Labels;
-        let mut long_cfg = crate::config::Config::omitted();
+        let mut long_cfg = crate::defaults::config();
         long_labels(&mut long_cfg.left_y);
         long_labels(&mut long_cfg.bottom_x);
         let out = auto_layout(&long_cfg, &long);
@@ -2536,8 +2536,8 @@ mod tests {
 
         let short = Labels;
         assert_eq!(
-            auto_layout(&crate::config::Config::omitted(), &short),
-            crate::config::Config::omitted()
+            auto_layout(&crate::defaults::config(), &short),
+            crate::defaults::config()
         );
 
         let mut kept = long_cfg.clone();
@@ -2581,8 +2581,8 @@ mod tests {
     #[test]
     fn auto_layout_fits_the_colorbar_band_and_clears_the_legend_off_it() {
         let measure = Labels;
-        let mut cfg = crate::config::Config::omitted();
-        let mut bar = crate::config::ColorBarOptions::omitted();
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
         five_digit_labels(&mut bar.axis);
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text.segments = crate::text::rich_segments_from_text("z");
@@ -2622,7 +2622,7 @@ mod tests {
     #[test]
     fn auto_layout_fits_overlay_and_subplot_bands() {
         let measure = Labels;
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let mut overlay = crate::layer::OverlayLayer::default();
         overlay.y_axis.title_option.visible = true;
         overlay.y_axis.title_option.text.segments = crate::text::rich_segments_from_text("p");
@@ -2664,7 +2664,7 @@ mod break_map_tests {
     const LEN: f32 = 1000.0;
 
     fn axis(min: f64, max: f64, cuts: &[(f64, f64)], gap: f32) -> AxisOptions {
-        let mut axis = crate::config::AxisOptions::omitted_y();
+        let mut axis = crate::defaults::axis_options_y();
         axis.min = min;
         axis.max = max;
         axis.breaks = Some(AxisBreaks {
@@ -2878,7 +2878,7 @@ mod break_map_tests {
 
     #[test]
     fn an_axis_without_breaks_maps_exactly_as_before() {
-        let mut a = crate::config::AxisOptions::omitted_y();
+        let mut a = crate::defaults::axis_options_y();
         a.min = -3.0;
         a.max = 7.0;
         let before = axis_fraction(1.5, &a, LEN);

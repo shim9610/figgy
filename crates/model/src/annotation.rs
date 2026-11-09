@@ -89,32 +89,12 @@ impl Anchor {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "AnnotationLineStyle::omitted")
+    serde(default = "crate::defaults::annotation_line_style")
 )]
 pub struct AnnotationLineStyle {
     pub color: Color,
     pub width: f32,
     pub style: LineStylePreset,
-}
-
-impl AnnotationLineStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            color: Color::from_rgb8(60, 60, 60),
-            width: 1.5,
-            style: LineStylePreset::Solid,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for AnnotationLineStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The frame drawn behind a text box: fill, border and the padding between
@@ -123,7 +103,7 @@ impl Default for AnnotationLineStyle {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "BoxStyle::omitted")
+    serde(default = "crate::defaults::box_style")
 )]
 pub struct BoxStyle {
     pub fill: Color,
@@ -132,59 +112,18 @@ pub struct BoxStyle {
     pub padding: f32,
 }
 
-impl BoxStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            fill: Color::from_rgba8(255, 255, 255, 230),
-            border_color: Color::from_rgb8(60, 60, 60),
-            border_width: 1.0,
-            padding: 4.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for BoxStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// Shaft stroke plus the filled triangular head at the arrow's `to` end, in
 /// logical pixels.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "ArrowStyle::omitted")
+    serde(default = "crate::defaults::arrow_style")
 )]
 pub struct ArrowStyle {
     pub line: AnnotationLineStyle,
     pub head_length: f32,
     pub head_width: f32,
-}
-
-impl ArrowStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            line: AnnotationLineStyle::omitted(),
-            head_length: 10.0,
-            head_width: 8.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ArrowStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The chords an ellipse annotation is drawn with, in the raster and the
@@ -197,7 +136,7 @@ pub const ELLIPSE_SEGMENTS: usize = 64;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "ShapeStyle::omitted")
+    serde(default = "crate::defaults::shape_style")
 )]
 pub struct ShapeStyle {
     /// The fill; `None` draws the outline only.
@@ -207,26 +146,6 @@ pub struct ShapeStyle {
     /// Draw the shape below the data (the underlay, as a span is) instead
     /// of above every decoration.
     pub below: bool,
-}
-
-impl ShapeStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            fill: Default::default(),
-            border: crate::AnnotationLineStyle::omitted(),
-            below: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ShapeStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The geometry and content of one annotation.
@@ -265,7 +184,7 @@ pub enum AnnotationKind {
         #[cfg_attr(
             feature = "serde",
             serde(
-                default = "NoteAlign::omitted",
+                default = "crate::defaults::note_align",
                 skip_serializing_if = "NoteAlign::is_top_left"
             )
         )]
@@ -284,7 +203,7 @@ pub enum AnnotationKind {
     Rect {
         from: Anchor,
         to: Anchor,
-        #[cfg_attr(feature = "serde", serde(default = "ShapeStyle::omitted"))]
+        #[cfg_attr(feature = "serde", serde(default = "crate::defaults::shape_style"))]
         style: ShapeStyle,
     },
     /// The ellipse inscribed in the rectangle between two anchors, drawn
@@ -292,14 +211,14 @@ pub enum AnnotationKind {
     Ellipse {
         from: Anchor,
         to: Anchor,
-        #[cfg_attr(feature = "serde", serde(default = "ShapeStyle::omitted"))]
+        #[cfg_attr(feature = "serde", serde(default = "crate::defaults::shape_style"))]
         style: ShapeStyle,
     },
     /// A closed polygon through at least three anchors, clipped to the
     /// plot area.
     Polygon {
         vertices: Vec<Anchor>,
-        #[cfg_attr(feature = "serde", serde(default = "ShapeStyle::omitted"))]
+        #[cfg_attr(feature = "serde", serde(default = "crate::defaults::shape_style"))]
         style: ShapeStyle,
     },
 }
@@ -320,22 +239,6 @@ pub enum NoteAlign {
     BottomLeft,
     Bottom,
     BottomRight,
-}
-
-impl NoteAlign {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::TopLeft
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for NoteAlign {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl NoteAlign {
@@ -410,15 +313,13 @@ pub struct Annotation {
     /// geometry is kept.
     #[cfg_attr(
         feature = "serde",
-        serde(default = "default_visible", skip_serializing_if = "is_visible")
+        serde(
+            default = "crate::defaults::annotation_visible",
+            skip_serializing_if = "is_visible"
+        )
     )]
     pub visible: bool,
     pub kind: AnnotationKind,
-}
-
-#[cfg(feature = "serde")]
-fn default_visible() -> bool {
-    true
 }
 
 #[cfg(feature = "serde")]
@@ -2161,7 +2062,7 @@ mod tests {
 
     /// `space()` with x cut at 4..6 (a 10 % gap) (#200).
     fn broken_space(inverted: bool) -> PixelSpace {
-        let mut axis = crate::config::AxisOptions::omitted_x();
+        let mut axis = crate::defaults::axis_options_x();
         axis.min = 0.0;
         axis.max = 10.0;
         axis.inverted = inverted;
@@ -2991,7 +2892,7 @@ mod tests {
     /// corner or an edge of the plot, its block inside it.
     #[test]
     fn a_corner_note_is_an_aligned_text_item() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         assert_eq!(
             config
                 .annotations

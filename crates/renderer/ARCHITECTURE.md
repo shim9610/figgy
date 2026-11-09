@@ -474,12 +474,16 @@ Rules for new code:
 
 ### Document defaults
 
-Each serialized model type with a default spells it once, in a crate-private
-`omitted()` function: the value a field takes when a document omits it.
-Serde reads it through `#[serde(default = "Type::omitted")]`. `Default` on
-those types and the public `default` module exist only with the `helpers`
-feature, which hosts get by default. The model and the renderer build
-without it (`ci/verify.py static`), so product code cannot fall back on a
+Each serialized model type with a default spells it once, in the model's
+crate-private `defaults/` folder, one file per area (frame, series,
+annotations, chart families, science, text): the value a field takes when a
+document omits it. Serde reads it through
+`#[serde(default = "crate::defaults::name")]`, and the model calls the same
+function where it builds a document. Host conveniences live apart, in the
+`helpers/` folder behind the `helpers` feature, which hosts get by default:
+`Default` on those types, each returning its `defaults/` source, and the
+public `default` module. The model and the renderer build without the
+feature (`ci/verify.py static`), so product code cannot fall back on a
 default. Where it needs a value, the model names it: `AnnotationLayer::empty()`,
 `DataSelectionsConfig::empty()`, `Config::effective_bar_groups()`,
 `SurfaceStyle::resolved()` and the radial `label_raster_key` functions (#266).
@@ -856,12 +860,15 @@ redraw_pending = false;
 
 ### 문서 기본값
 
-기본값이 있는 직렬화 모델 타입은 그 값을 크레이트 내부 함수 `omitted()`
-하나에만 적는다. 문서에서 필드가 빠졌을 때 쓰는 값이다. serde는
-`#[serde(default = "Type::omitted")]`로 이 함수를 읽는다. 이 타입들의
-`Default`와 공개 `default` 모듈은 `helpers` 기능이 켜졌을 때만 있다.
-호스트에서는 기본으로 켜진다. 모델과 렌더러는 이 기능 없이 빌드되므로
-(`ci/verify.py static`) 제품 코드는 기본값에 기댈 수 없다. 값이 필요한
+기본값이 있는 직렬화 모델 타입은 그 값을 모델의 크레이트 내부 폴더
+`defaults/`에 한 번만 적는다. 파일은 영역별로 나뉜다(프레임, 계열, 주석,
+차트 종류, 과학 도표, 글자). 문서에서 필드가 빠졌을 때 쓰는 값이다. serde는
+`#[serde(default = "crate::defaults::name")]`로 이 함수를 읽고, 모델이
+문서를 만들 때도 같은 함수를 부른다. 호스트용 편의 기능은 따로
+`helpers/` 폴더에 있고 `helpers` 기능이 켜졌을 때만 있다. 호스트에서는
+기본으로 켜진다. 이 타입들의 `Default`(각각 `defaults/`의 값을 돌려준다)와
+공개 `default` 모듈이 여기에 있다. 모델과 렌더러는 이 기능 없이
+빌드되므로(`ci/verify.py static`) 제품 코드는 기본값에 기댈 수 없다. 값이 필요한
 곳은 모델이 이름을 붙여 준다. `AnnotationLayer::empty()`,
 `DataSelectionsConfig::empty()`, `Config::effective_bar_groups()`,
 `SurfaceStyle::resolved()`, 원형 차트의 `label_raster_key` 함수다(#266).

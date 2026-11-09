@@ -73,11 +73,14 @@ pub type CategoryBarMaterial = crate::Material;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "CategoricalChart::omitted")
+    serde(default = "crate::defaults::categorical_chart")
 )]
 pub struct CategoricalChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default = "crate::DecorationLayout::omitted"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::defaults::decoration_layout")
+    )]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -92,7 +95,7 @@ pub struct CategoricalChart {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "crate::LayerRef::omitted",
+            default = "crate::defaults::layer_ref",
             skip_serializing_if = "crate::LayerRef::is_base"
         )
     )]
@@ -101,7 +104,7 @@ pub struct CategoricalChart {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "crate::AnnotationLayer::omitted",
+            default = "crate::defaults::annotation_layer",
             skip_serializing_if = "crate::AnnotationLayer::is_default"
         )
     )]
@@ -131,49 +134,7 @@ pub struct CategoricalChart {
     pub text_color: Color,
     pub background: Color,
 }
-impl CategoricalChart {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            decorations: crate::DecorationLayout::omitted(),
-            title: String::new(),
-            chart_title: None,
-            active_layer: crate::LayerRef::omitted(),
-            annotations: crate::AnnotationLayer::omitted(),
-            categories: vec![],
-            series: vec![],
-            mode: CategoryBarMode::Grouped,
-            direction: CategoryBarDirection::Vertical,
-            style: CategoryBarStyle::omitted(),
-            overrides: vec![],
-            hovered: None,
-            selected: None,
-            labels: CategoryBarLabels::Auto,
-            label_format: CategoryBarLabelFormat::Value,
-            label_decimals: 1,
-            value_suffix: String::new(),
-            value_title: String::new(),
-            category_title: String::new(),
-            grid: true,
-            legend: true,
-            group_width: 0.7,
-            bar_gap: 3.0,
-            font_family: "sans-serif".into(),
-            font_size: 14.0,
-            text_color: Color::from_rgb8(35, 45, 65),
-            background: Color::WHITE,
-        }
-    }
-}
 
-#[cfg(feature = "helpers")]
-impl Default for CategoricalChart {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
 fn text(s: &str, max: usize) -> bool {
     s.chars().count() <= max && !s.chars().any(char::is_control)
 }

@@ -52,22 +52,6 @@ pub enum RangeColor {
 }
 
 impl RangeColor {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Single
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RangeColor {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl RangeColor {
     /// Whether this is [`RangeColor::Single`], which a document omits.
     pub fn is_single(&self) -> bool {
         matches!(self, RangeColor::Single)

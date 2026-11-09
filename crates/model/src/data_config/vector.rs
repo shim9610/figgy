@@ -18,26 +18,6 @@ pub struct StreamlineArrows {
 }
 
 impl StreamlineArrows {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            spacing_px: 80.0,
-            head_length_px: 8.0,
-            head_width_px: 7.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for StreamlineArrows {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl StreamlineArrows {
     /// The validation reason for a bad arrow size or spacing.
     pub const INVALID_REASON: crate::RuleKind = crate::RuleKind::StreamlineArrows;
 
@@ -179,22 +159,6 @@ pub enum VectorScale {
     },
 }
 
-impl VectorScale {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self::Pixels { px_per_unit: 1.0 }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for VectorScale {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// Which point of the arrow sits on the anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -205,22 +169,6 @@ pub enum VectorPivot {
     Middle,
     /// The tip sits on the anchor.
     Tip,
-}
-
-impl VectorPivot {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Tail
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for VectorPivot {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// A value mapped to arrow colour through `Config.colorbar`, in the same form
@@ -247,7 +195,7 @@ pub struct VectorStyle {
     /// How the vector's magnitude becomes a length on screen.
     pub scale: VectorScale,
     /// Which point of the arrow sits on the anchor.
-    #[cfg_attr(feature = "serde", serde(default = "VectorPivot::omitted"))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::vector_pivot"))]
     pub pivot: VectorPivot,
     /// Head length along the shaft. An arrow shorter than its head scales the
     /// head down with it.

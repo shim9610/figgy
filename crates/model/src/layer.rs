@@ -39,22 +39,6 @@ pub enum LayerRef {
 }
 
 impl LayerRef {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Base
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for LayerRef {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl LayerRef {
     /// `true` for the default layer; used to omit the field from JSON.
     pub fn is_base(&self) -> bool {
         matches!(self, Self::Base)
@@ -100,7 +84,7 @@ pub(crate) fn set_bounded_active_layer(
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "AnnotationLayer::omitted")
+    serde(default = "crate::defaults::annotation_layer")
 )]
 pub struct AnnotationLayer {
     /// Skips the layer's composite draws without re-rasterizing anything.
@@ -111,35 +95,16 @@ pub struct AnnotationLayer {
 }
 
 impl AnnotationLayer {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            visible: true,
-            items: Vec::new(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for AnnotationLayer {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl AnnotationLayer {
     /// `true` when nothing differs from the default; used to omit the field
     /// from JSON so existing documents serialize byte-identically.
     pub fn is_default(&self) -> bool {
-        *self == Self::omitted()
+        *self == crate::defaults::annotation_layer()
     }
 
     /// A layer with no items, visible: a document without annotations
     /// (#266).
     pub fn empty() -> Self {
-        Self::omitted()
+        crate::defaults::annotation_layer()
     }
 }
 
@@ -162,7 +127,7 @@ impl AnnotationLayer {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "OverlayLayer::omitted")
+    serde(default = "crate::defaults::overlay_layer")
 )]
 pub struct OverlayLayer {
     /// The overlay's own Y axis, drawn on the right side of the data area.
@@ -179,26 +144,6 @@ pub struct OverlayLayer {
     /// means the parent's single merged legend lists every layer's series.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub legend: Option<crate::legend::Legend>,
-}
-
-impl OverlayLayer {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            y_axis: crate::config::AxisOptions::omitted_y(),
-            series: Vec::new(),
-            legend: None,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for OverlayLayer {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl OverlayLayer {
@@ -238,7 +183,7 @@ pub enum CellRef {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "Subplot::omitted")
+    serde(default = "crate::defaults::subplot")
 )]
 pub struct Subplot {
     /// The subplot's chart. Its own `subplots` must be empty (one level of
@@ -278,7 +223,7 @@ pub struct Subplot {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "InsetMarker::omitted")
+    serde(default = "crate::defaults::inset_marker")
 )]
 pub struct InsetMarker {
     /// The window in the parent's data coordinates, `[[x0, x1], [y0, y1]]`.
@@ -290,52 +235,6 @@ pub struct InsetMarker {
     pub line: crate::annotation::AnnotationLineStyle,
     /// Whether the connectors are drawn. Default `true`.
     pub connectors: bool,
-}
-
-impl InsetMarker {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            window: None,
-            line: crate::annotation::AnnotationLineStyle {
-                color: crate::color::Color::from_rgb8(120, 128, 140),
-                width: 1.0,
-                style: crate::line::LineStylePreset::Solid,
-            },
-            connectors: true,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for InsetMarker {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl Subplot {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            config: crate::config::Config::omitted(),
-            series: Vec::new(),
-            link_x: None,
-            link_y: None,
-            marker: None,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for Subplot {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl Subplot {
@@ -523,7 +422,7 @@ mod tests {
     #[test]
     fn overlay_layer_defaults_to_an_unassigned_right_axis() {
         let layer = OverlayLayer::default();
-        assert_eq!(layer.y_axis, crate::config::AxisOptions::omitted_y());
+        assert_eq!(layer.y_axis, crate::defaults::axis_options_y());
         assert!(layer.series.is_empty());
         assert!(layer.legend.is_none());
         assert!(!layer.owns_series("a"));
@@ -547,7 +446,7 @@ mod tests {
 
         let layer = OverlayLayer {
             series: vec!["pressure".into()],
-            legend: Some(crate::config::Legend::omitted()),
+            legend: Some(crate::defaults::legend()),
             ..Default::default()
         };
         let json = serde_json::to_value(&layer).unwrap();

@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn series_ids_are_named_by_the_series_that_breaks_them() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         assert_eq!(
             config.validate_series(&[scatter("a"), scatter("b")]),
             Ok(())
@@ -473,7 +473,7 @@ mod tests {
             }
             series
         };
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         assert_eq!(config.validate_series(&[with(stem.clone())]), Ok(()));
         let reason = |series: SeriesConfig| config.validate_series(&[series]).unwrap_err().kind;
         assert_eq!(
@@ -499,7 +499,7 @@ mod tests {
         }
         assert_eq!(reason(bare), crate::RuleKind::StemsWithoutMarkers);
 
-        let mut polar = crate::config::Config::omitted();
+        let mut polar = crate::defaults::config();
         polar.bottom_x.min = 0.0;
         polar.bottom_x.max = 360.0;
         polar.set_polar(Some(PolarOptions::default()));
@@ -507,7 +507,7 @@ mod tests {
             polar.validate_series_on_polar(&with(stem.clone())),
             Err(crate::RuleKind::PolarStems)
         );
-        let mut three_d = crate::config::Config::omitted();
+        let mut three_d = crate::defaults::config();
         three_d.set_view_3d(Some(crate::view3d::View3d::default()));
         let mut tall = with(stem.clone());
         tall.z_column = Some("z".into());
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_polar_chart_names_the_series_it_does_not_draw() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 360.0;
         config.set_polar(Some(PolarOptions::default()));
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(error.series_id.as_deref(), Some("v"));
         assert_eq!(error.field, "polar");
         assert_eq!(
-            crate::config::Config::omitted().validate_series_on_polar(&scatter("a")),
+            crate::defaults::config().validate_series_on_polar(&scatter("a")),
             Ok(())
         );
     }
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn a_polar_heatmap_is_held_to_its_rules() {
         use crate::data_config::GridLayout;
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.set_polar(Some(PolarOptions::default()));
         for layout in [GridLayout::Edges, GridLayout::Centers] {
             for contour in [false, true] {
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn a_polar_heatmap_document_round_trips() {
         use crate::data_config::GridLayout;
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.set_polar(Some(PolarOptions {
             inner_radius_fraction: 0.1,
             clockwise: true,
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn the_chart_rules_name_the_field() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         assert_eq!(config.validate_chart(), Ok(()));
         config.bottom_x.max = config.bottom_x.min;
         let error = config.validate_chart().unwrap_err();

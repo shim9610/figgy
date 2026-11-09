@@ -56,22 +56,6 @@ pub enum ColorMap {
     Custom { stops: Vec<Color> },
 }
 
-impl ColorMap {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Viridis
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ColorMap {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 // Ramp control points, sampled from the reference implementations at even
 // spacing. Eight stops per named ramp: enough that linear interpolation between
 // them stays visually smooth at 256 LUT entries, few enough to read here.

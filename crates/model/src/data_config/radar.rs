@@ -14,22 +14,6 @@ pub enum RadarMarker {
     Square,
 }
 
-impl RadarMarker {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Circle
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadarMarker {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// Which vertices of a radar series carry value labels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -42,22 +26,6 @@ pub enum RadarLabels {
     Emphasized,
 }
 
-impl RadarLabels {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::None
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadarLabels {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// The look of a radar series. Every field is optional: an unset field
 /// takes its default ([`Self::DEFAULT_LINE_WIDTH_PX`] and the other
 /// `DEFAULT_*` constants), and a legacy [`RadarChart`](crate::radar::RadarChart)
@@ -67,7 +35,7 @@ impl Default for RadarLabels {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "RadarSeriesStyle::omitted")
+    serde(default = "crate::defaults::radar_series_style")
 )]
 pub struct RadarSeriesStyle {
     /// Outline width in logical pixels, `0..=12`; zero draws no outline.
@@ -84,28 +52,6 @@ pub struct RadarSeriesStyle {
     /// unset, `0..=1`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fill_opacity: Option<f32>,
-}
-
-impl RadarSeriesStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            line_width_px: Default::default(),
-            fill: Default::default(),
-            marker: Default::default(),
-            marker_size_px: Default::default(),
-            fill_opacity: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadarSeriesStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl RadarSeriesStyle {
@@ -185,7 +131,7 @@ impl RadarSeriesStyle {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "RadarSeriesLabels::omitted")
+    serde(default = "crate::defaults::radar_series_labels")
 )]
 pub struct RadarSeriesLabels {
     pub placement: RadarLabels,
@@ -202,28 +148,6 @@ pub struct RadarSeriesLabels {
     /// ([`SeriesConfig::drag_value_label`]).
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub offsets: Vec<[f32; 2]>,
-}
-
-impl RadarSeriesLabels {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            placement: RadarLabels::None,
-            decimals: 1,
-            value_suffix: String::new(),
-            text: Vec::new(),
-            offsets: Vec::new(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for RadarSeriesLabels {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The most characters of one radar value label.

@@ -588,7 +588,7 @@ mod break_tests {
     }
 
     fn broken(mark: BreakMark) -> AxisOptions {
-        let mut axis = crate::config::AxisOptions::omitted_y();
+        let mut axis = crate::defaults::axis_options_y();
         axis.min = 0.0;
         axis.max = 100.0;
         axis.major_spacing = 10.0;
@@ -712,7 +712,7 @@ mod break_tests {
     /// gap, and every line reaches both outer edges.
     #[test]
     fn grid_lines_leave_the_gaps_empty() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 10.0;
         config.bottom_x.major_spacing = 1.0;
@@ -763,7 +763,7 @@ mod break_tests {
     /// no tick in a gap.
     #[test]
     fn a_top_or_right_axis_takes_its_partners_cuts() {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         config.bottom_x.min = 0.0;
         config.bottom_x.max = 100.0;
         config.bottom_x.breaks = Some(AxisBreaks {
@@ -968,7 +968,7 @@ mod break_tests {
             );
         }
         // An unbroken axis across leaves each frame whole.
-        let mut plain = crate::config::AxisOptions::omitted_x();
+        let mut plain = crate::defaults::axis_options_x();
         plain.min = 0.0;
         plain.max = 100.0;
         assert_eq!(collect(&y, Side::Left, &plain).len(), 2);

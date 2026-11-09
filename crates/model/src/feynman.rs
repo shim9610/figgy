@@ -54,7 +54,7 @@ pub struct FeynmanSeries {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "FeynmanStyle::omitted",
+            default = "crate::defaults::feynman_style",
             skip_serializing_if = "FeynmanStyle::is_default"
         )
     )]
@@ -63,32 +63,11 @@ pub struct FeynmanSeries {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "FeynmanLayout::omitted",
+            default = "crate::defaults::feynman_layout",
             skip_serializing_if = "FeynmanLayout::is_default"
         )
     )]
     pub layout: FeynmanLayout,
-}
-
-impl FeynmanSeries {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            vertices: Default::default(),
-            propagators: Default::default(),
-            style: crate::FeynmanStyle::omitted(),
-            layout: crate::FeynmanLayout::omitted(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for FeynmanSeries {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// One vertex: an interaction point, or the free end of an external leg.
@@ -102,7 +81,7 @@ pub struct FeynmanVertex {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "VertexRole::omitted",
+            default = "crate::defaults::vertex_role",
             skip_serializing_if = "VertexRole::is_internal"
         )
     )]
@@ -167,22 +146,6 @@ pub enum VertexRole {
     Incoming,
     /// The end of an outgoing external leg: on the late side.
     Outgoing,
-}
-
-impl VertexRole {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Internal
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for VertexRole {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl VertexRole {
@@ -317,22 +280,6 @@ pub enum ParticleLine {
 }
 
 impl ParticleLine {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Plain
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for ParticleLine {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl ParticleLine {
     /// Whether the line carries a single arrow, and whether it runs
     /// against the propagator's direction.
     fn arrow(self) -> Option<bool> {
@@ -360,7 +307,10 @@ pub struct MomentumArrow {
     /// Which side of the line, facing along it from `from` to `to`.
     #[cfg_attr(
         feature = "serde",
-        serde(default = "MomentumSide::omitted", skip_serializing_if = "is_left")
+        serde(
+            default = "crate::defaults::momentum_side",
+            skip_serializing_if = "is_left"
+        )
     )]
     pub side: MomentumSide,
     /// Point the arrow from `to` to `from`.
@@ -382,26 +332,10 @@ pub enum MomentumSide {
     Right,
 }
 
-impl MomentumSide {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Left
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for MomentumSide {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// The look of a Feynman series, in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "FeynmanStyle::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::feynman_style"))]
 pub struct FeynmanStyle {
     /// The line colour, opaque: the series colour and its legend swatch.
     pub color: Color,
@@ -431,31 +365,12 @@ pub struct FeynmanStyle {
 /// `color` at that width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default = "FeynmanPicked::omitted"))]
+#[cfg_attr(feature = "serde", serde(default = "crate::defaults::feynman_picked"))]
 pub struct FeynmanPicked {
     /// The colour, channels in `0..=1`.
     pub color: Color,
     /// The extra width, logical pixels, `0..=16`.
     pub width_extra_px: f32,
-}
-
-impl FeynmanPicked {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            color: Color::from_rgb8(255, 215, 0),
-            width_extra_px: 2.0,
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for FeynmanPicked {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 /// The amplitude and wavelength of a wave or a coil, logical pixels.
@@ -467,42 +382,9 @@ pub struct Wiggle {
 }
 
 impl FeynmanStyle {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            color: Color::from_rgb8(30, 30, 30),
-            width: 1.5,
-            wave: Wiggle {
-                amplitude: 4.0,
-                wavelength: 12.0,
-            },
-            coil: Wiggle {
-                amplitude: 5.0,
-                wavelength: 9.0,
-            },
-            head_length: 9.0,
-            head_width: 7.0,
-            dot_radius: 3.0,
-            loop_radius: 18.0,
-            fan_step: 90.0,
-            picked: FeynmanPicked::omitted(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for FeynmanStyle {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl FeynmanStyle {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::omitted()
+        *self == crate::defaults::feynman_style()
     }
 
     fn validate(&self) -> Result<(), crate::RuleKind> {
@@ -540,52 +422,18 @@ pub enum TimeDirection {
     BottomToTop,
 }
 
-impl TimeDirection {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::LeftToRight
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for TimeDirection {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
 /// How the automatic layout places the unplaced vertices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanLayout {
-    #[cfg_attr(feature = "serde", serde(default = "TimeDirection::omitted"))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::defaults::time_direction"))]
     pub direction: TimeDirection,
-}
-
-impl FeynmanLayout {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            direction: crate::TimeDirection::omitted(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for FeynmanLayout {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl FeynmanLayout {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::omitted()
+        *self == crate::defaults::feynman_layout()
     }
 }
 

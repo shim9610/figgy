@@ -969,7 +969,7 @@ mod tests {
     /// The default config with a visible chart title: a title that draws
     /// nothing cannot be grabbed, so it has no move.
     fn titled_config() -> Config {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         cfg.chart_title.text.segments = rich_segments_from_text("T");
         cfg
     }
@@ -1001,7 +1001,7 @@ mod tests {
     // measure does.
     #[test]
     fn nudge_moved_changes_only_target_offset() {
-        let before = crate::config::Config::omitted();
+        let before = crate::defaults::config();
         let mut expected = before.clone();
         expected.left_y.label_style.label_offset_x += 1.0;
         for measure in [
@@ -1027,7 +1027,7 @@ mod tests {
         use crate::drag::Draggable;
         use crate::select::AxisElement;
 
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(cfg.left_y.out_margin, margin_before);
         assert_eq!(cfg.data_area().unwrap(), da_before);
 
-        let mut dragged = crate::config::Config::omitted();
+        let mut dragged = crate::defaults::config();
         let el = AxisElement { side: Side::Left };
         assert_eq!(
             el.drag_by(&mut dragged, &LaysOut, 12.0, -40.0),
@@ -1056,7 +1056,7 @@ mod tests {
         use crate::drag::Draggable;
         use crate::select::AxisElement;
 
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.bottom_x.out_margin;
 
@@ -1066,7 +1066,7 @@ mod tests {
         assert_eq!(cfg.bottom_x.out_margin, margin_before);
         assert_eq!(cfg.data_area().unwrap(), da_before);
 
-        let mut dragged = crate::config::Config::omitted();
+        let mut dragged = crate::defaults::config();
         let el = AxisElement { side: Side::Bottom };
         assert_eq!(
             el.drag_by(&mut dragged, &LaysOut, -40.0, -6.0),
@@ -1081,7 +1081,7 @@ mod tests {
     // but never leave the chart area.
     #[test]
     fn axis_nudge_allows_crossing_into_data_area() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, 50.0, 0.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.line_offset, 50.0);
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn axis_nudge_rejects_leaving_chart_area() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
@@ -1099,7 +1099,7 @@ mod tests {
     // Data-area edges (resize path) still move via margins.
     #[test]
     fn data_area_edge_nudge_moves_margin_and_data_area() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn data_area_edge_rejects_negative_margin() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
@@ -1122,7 +1122,7 @@ mod tests {
 
     #[test]
     fn data_area_edge_rejects_margin_overflow() {
-        let mut cfg = crate::config::Config::omitted();
+        let mut cfg = crate::defaults::config();
         let before = cfg.clone();
         let w = cfg.chart_area.width as f32;
         let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, w * 2.0, 0.0);

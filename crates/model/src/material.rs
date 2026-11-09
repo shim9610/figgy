@@ -30,22 +30,6 @@ pub enum Material {
 }
 
 impl Material {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Flat
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for Material {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
-
-impl Material {
     /// Whether the material has a visible look on a flat body (a bar or a
     /// box). `Toon` quantizes and `Pearl` tints by how the normal turns away
     /// from the light and the viewer; on a flat body the normal is constant,

@@ -92,7 +92,7 @@ pub struct DecorationOffset {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default = "DecorationLayout::omitted")
+    serde(default = "crate::defaults::decoration_layout")
 )]
 pub struct DecorationLayout {
     /// Explicit plot region in logical pixels. None uses the measured automatic
@@ -103,25 +103,6 @@ pub struct DecorationLayout {
     pub selected: Option<DecorationId>,
 }
 
-impl DecorationLayout {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) fn omitted() -> Self {
-        Self {
-            data_area: Default::default(),
-            offsets: Default::default(),
-            selected: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for DecorationLayout {
-    fn default() -> Self {
-        Self::omitted()
-    }
-}
 impl DecorationLayout {
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.offsets

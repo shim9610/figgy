@@ -35,7 +35,7 @@ pub struct RichText {
     #[cfg_attr(
         feature = "serde",
         serde(
-            default = "TextAlign::omitted",
+            default = "crate::defaults::text_align",
             skip_serializing_if = "TextAlign::is_left"
         )
     )]
@@ -60,22 +60,6 @@ pub enum TextAlign {
     Center,
     /// Every line ends at the block's right edge.
     Right,
-}
-
-impl TextAlign {
-    /// The value this type takes where a document omits it: the one source
-    /// of its default (#266). `Default`, for hosts, returns it.
-    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
-    pub(crate) const fn omitted() -> Self {
-        Self::Left
-    }
-}
-
-#[cfg(feature = "helpers")]
-impl Default for TextAlign {
-    fn default() -> Self {
-        Self::omitted()
-    }
 }
 
 impl TextAlign {
@@ -346,7 +330,7 @@ mod rich_text_serde {
         color: Color,
         font_size: f32,
         font: String,
-        #[serde(default = "TextAlign::omitted")]
+        #[serde(default = "crate::defaults::text_align")]
         align: TextAlign,
     }
 

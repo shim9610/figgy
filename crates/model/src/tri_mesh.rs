@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn the_chart_rules_place_a_mesh_on_rectangular_and_3d_charts() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         let item = series(mesh(MeshValueLocation::Vertices));
         assert_eq!(
             config.validate_tri_mesh_series(std::slice::from_ref(&item)),
@@ -446,7 +446,7 @@ mod tests {
             stem: None,
         });
         let list = [named("a", "a.tris"), other, named("b", "b.tris")];
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         let select = |config: &mut Config, series_id: &str, triangle_index| {
             config.picked_data = Some(DataSelectionsConfig {
                 refs: vec![PickedDataRef::MeshTriangle {
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn validate_series_names_the_mesh_rule_and_the_series() {
-        let config = crate::config::Config::omitted();
+        let config = crate::defaults::config();
         let mut item = series(mesh(MeshValueLocation::Faces));
         assert_eq!(config.validate_series(std::slice::from_ref(&item)), Ok(()));
         if let DataRenderType::TriMesh(mesh) = &mut item.render_type {

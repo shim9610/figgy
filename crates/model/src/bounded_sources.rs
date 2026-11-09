@@ -509,7 +509,7 @@ fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
         axis.line_width = 1.0;
     };
 
-    let mut config = crate::config::Config::omitted();
+    let mut config = crate::defaults::config();
     let mut category_axis = config.bottom_x.clone();
     style_axis(&mut category_axis, chrome.category_title);
     category_axis.categories = Some(chrome.categories.to_vec());
@@ -901,7 +901,7 @@ impl Config {
     /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        let mut config = crate::config::Config::omitted();
+        let mut config = crate::defaults::config();
         let text = |s: &str| {
             RichText::plain(
                 s,
@@ -1024,7 +1024,7 @@ impl Config {
                     style: s
                         .style
                         .clone()
-                        .unwrap_or_else(crate::data_config::RadarSeriesStyle::omitted)
+                        .unwrap_or_else(crate::defaults::radar_series_style)
                         .resolved_from(style),
                     labels: RadarSeriesLabels {
                         placement: chart.labels,
