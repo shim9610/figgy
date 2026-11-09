@@ -76,7 +76,6 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("voltage", &voltage)?;
     r.add_column("current", &current)?;
     let mut current_axis = renderer::default::default_axis_options_y();
-    current_axis.out_margin = 110.;
     current_axis.line_visible = false;
     current_axis.tick = TickVisibility::None;
     current_axis.min = 0.;
@@ -133,6 +132,7 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     // Overlay layers are part of the document, not the base panel.
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),
@@ -326,7 +326,7 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
     chart.set_y_range(0., 250.);
     chart.config_mut().bottom_x.major_spacing = 50.;
     chart.config_mut().left_y.major_spacing = 50.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-shapes.png"))
 }
 

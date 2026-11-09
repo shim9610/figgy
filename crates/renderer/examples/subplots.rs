@@ -37,11 +37,6 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
         let config = chart.config_mut();
         chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 26.;
-        config.chart_title.top_margin = 60.;
-        config.left_y.out_margin = 95.;
-        config.right_y.out_margin = 40.;
-        config.bottom_x.out_margin = 70.;
-        config.top_x.out_margin = 20.;
         config.legend.visible = false;
         config.bottom_x.major_spacing = 6.;
         for a in [&mut config.left_y, &mut config.bottom_x] {
@@ -159,6 +154,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:data_area")
             .is_some()
     );
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         ExportSource::chart(&chart, &specs),
         ExportOptions::document(1.).with_clear(bg),
@@ -190,13 +186,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
 
     // One 480x420 cell: a chart with its own axes, titled.
     let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| -> Chart {
-        let mut chart = Chart::placed(x, y, 480, 420);
-        let config = chart.config_mut();
-        config.left_y.out_margin = 100.0;
-        config.right_y.out_margin = 40.0;
-        config.bottom_x.out_margin = 70.0;
-        config.top_x.out_margin = 16.0;
-        chart
+        Chart::placed(x, y, 480, 420)
             .with_title(title)
             .with_x_title(x_title)
             .with_y_title(y_title)
@@ -219,15 +209,13 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     let pressure_color = Color::from_rgb8(176, 64, 32);
     let humidity_color = Color::from_rgb8(40, 140, 90);
     let mut twin = renderer::default::default_axis_options_y();
-    twin.out_margin = 100.0;
     twin.title_option.visible = true;
     twin.title_option.text = RichText::plain("%", humidity_color, 22.0, "");
     twin.label_style.color = humidity_color;
-    let mut daytime = subplot(
+    let daytime = subplot(
         cell(480, 420, "Daytime", "Hour", "hPa").with_overlay(twin, &["daytime_humidity"]),
         &["daytime"],
     );
-    daytime.config.right_y.out_margin = 100.0;
     config.subplots = vec![pressure_by_hour, humidity_by_temperature, daytime];
 
     let mut chart = Chart::new(config);
@@ -282,6 +270,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:overlay_0:axis_right")
             .is_some()
     );
+    chart.fit_layout();
     let path = out.join("mixed-axes.png");
     r.save_blocking(
         ExportSource::chart(&chart, &specs),

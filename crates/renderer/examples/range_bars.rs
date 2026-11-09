@@ -145,7 +145,7 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
     chart.set_y_range(0., 80.);
     chart.config_mut().left_y.major_spacing = 20.;
     chart.config_mut().left_y.auto_significant_digits();
-    let image = export(r, &chart, &[bars], bg)?;
+    let image = export(r, &mut chart, &[bars], bg)?;
     save(&image, bg, &out.join("gallery-waterfall.png"))
 }
 
@@ -251,7 +251,7 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
     chart.set_y_range(95., 125.);
     chart.config_mut().left_y.major_spacing = 5.;
     chart.config_mut().left_y.auto_significant_digits();
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-candlestick.png"))
 }
 
@@ -354,7 +354,7 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         chart = chart.with_legend_swatch(label, color);
     }
     chart.set_x_range(T0 - 2.0 * DAY, T0 + 66.0 * DAY);
-    let image = export(r, &chart, &[bars], bg)?;
+    let image = export(r, &mut chart, &[bars], bg)?;
     save(&image, bg, &out.join("gallery-gantt.png"))
 }
 

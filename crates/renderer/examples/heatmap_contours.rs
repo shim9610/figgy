@@ -86,7 +86,7 @@ fn contours(r: &mut Renderer, out: &Path) -> Result {
     c.config_mut().colorbar = Some(bar);
     c.config_mut().grid.show_major_x = false;
     c.config_mut().grid.show_major_y = false;
-    save(r, &c, &specs, &out.join("gallery-contours.png"))
+    save(r, &mut c, &specs, &out.join("gallery-contours.png"))
 }
 
 /// The data areas of the two gallery-chrome scenes in pixels, measured on
@@ -245,7 +245,7 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
     bar.offset_x = -26.0;
     bar.axis.title_option.visible = true;
     bar.axis.title_option.text = RichText::plain("Pickups per cell", ink, 19.0, "");
-    let image = styled::export(r, &chart, &specs, bg)?;
+    let image = styled::export(r, &mut chart, &specs, bg)?;
     styled::save(&image, bg, &out.join("gallery-hexbin.png"))
 }
 
@@ -364,7 +364,7 @@ fn imshow(r: &mut Renderer, out: &Path) -> Result {
     chart.config_mut().left_y.major_spacing = 40.0;
     chart.config_mut().bottom_x.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
     chart.config_mut().left_y.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
-    let image = styled::export(r, &chart, &specs, bg)?;
+    let image = styled::export(r, &mut chart, &specs, bg)?;
     styled::save(&image, bg, &out.join("gallery-imshow.png"))
 }
 

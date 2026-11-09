@@ -197,6 +197,8 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         .auto_fit_y(renderer.pool(), "sine_y", 0.10)
         .expect("fit y");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     panel_entry(renderer, chart, view, series)
 }
@@ -244,6 +246,8 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .expect("fit v");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     panel_entry(renderer, chart, view, series)
 }
@@ -285,6 +289,8 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         .auto_fit_y(renderer.pool(), "xs_sigma", 0.10)
         .expect("fit sigma");
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     panel_entry(renderer, chart, view, series)
 }
@@ -364,6 +370,8 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
             ..Default::default()
         }),
     ];
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).expect("view");
     panel_entry(renderer, chart, view, series)
 }
@@ -698,6 +706,8 @@ impl App {
             panel
                 .chart
                 .set_area(rect.x, rect.y, rect.width, rect.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
     }
 

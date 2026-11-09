@@ -121,7 +121,7 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
             .dash(LineStylePreset::Dash),
     ];
     chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-forecast.png"))
 }
 
@@ -193,7 +193,7 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
         .width(3.5);
     let specs = [schedule, measured];
     chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-thermostat.png"))
 }
 
@@ -236,7 +236,7 @@ fn step_modes(r: &mut Renderer, out: &Path) -> Result {
     let mut chart = gallery::chart("Step interpolation", "Sample", "Value", (960, 600));
     chart.set_x_range(-0.5, 7.5);
     chart.set_y_range(0.0, 4.0);
-    gallery::save(r, &chart, &steps, &out.join("steps.png"))
+    gallery::save(r, &mut chart, &steps, &out.join("steps.png"))
 }
 
 fn main() -> Result {

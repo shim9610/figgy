@@ -32,7 +32,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     c.set_x_range(-4.2, 4.2);
     c.set_y_range(0.0, 120.0);
     let specs = std::slice::from_ref(&vertical);
-    save(r, &c, specs, &out.join("gallery-histogram.png"))?;
+    save(r, &mut c, specs, &out.join("gallery-histogram.png"))?;
 
     // Orientation defines the column roles; reuse the uploaded columns and
     // exchange their bindings together with the axis ranges and titles.
@@ -42,7 +42,12 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     c.set_x_range(0.0, 120.0);
     c.set_y_range(-4.2, 4.2);
     let specs = [horizontal];
-    save(r, &c, &specs, &out.join("gallery-histogram-horizontal.png"))
+    save(
+        r,
+        &mut c,
+        &specs,
+        &out.join("gallery-histogram-horizontal.png"),
+    )
 }
 
 fn main() -> Result {

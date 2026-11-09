@@ -241,7 +241,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     // The floor sits at sea level, well below the massif's base.
     chart.config_mut().right_y.min = 0.;
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-surface.png"))
 }
 
@@ -352,7 +352,7 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     nice_z(&mut chart, 1.);
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-quiver3d.png"))
 }
 

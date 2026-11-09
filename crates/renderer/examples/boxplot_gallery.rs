@@ -94,6 +94,7 @@ fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str)
     if document.value_range.is_none() {
         chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
     }
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0),
@@ -213,7 +214,8 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
 }
 
 /// The shared gallery chrome (`support/styled.rs`) scaled to 960 x 640:
-/// the scene's theme with smaller text, and narrower margins.
+/// the scene's theme with smaller text. The margins are fitted to the
+/// labels when the scene is exported.
 fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
     let mut chart = gallery::chart(title, x, y, SCENE);
     let config = chart.config_mut();
@@ -224,11 +226,6 @@ fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -
     theme.chrome.tick_label_size = 18.;
     theme.chrome.legend_size = 18.;
     theme.apply_chrome(config, SubplotScope::All);
-    config.chart_title.top_margin = 68.;
-    config.left_y.out_margin = 96.;
-    config.right_y.out_margin = 44.;
-    config.bottom_x.out_margin = 82.;
-    config.top_x.out_margin = 30.;
     config.legend.padding = 12.;
     chart
 }
@@ -264,7 +261,7 @@ fn half(id: &str, peak: f64, fill: Option<Color>, outline: Option<Color>) -> Vio
 
 fn save_scene(
     r: &mut Renderer,
-    chart: &Chart,
+    chart: &mut Chart,
     specs: &[SeriesConfig],
     bg: Color,
     path: &Path,
@@ -371,7 +368,7 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
     chart.set_y_range(200., 1000.);
     chart.config_mut().left_y.major_spacing = 200.;
     chart.config_mut().left_y.auto_significant_digits();
-    save_scene(r, &chart, &[split], bg, &out.join("gallery-violin.png"))
+    save_scene(r, &mut chart, &[split], bg, &out.join("gallery-violin.png"))
 }
 
 // Rainclouds: door-to-door commute times by mode, each a half violin of the
@@ -491,7 +488,13 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     chart.set_x_range(0., 80.);
     chart.config_mut().bottom_x.major_spacing = 10.;
     chart.config_mut().bottom_x.auto_significant_digits();
-    save_scene(r, &chart, &[cloud], bg, &out.join("gallery-raincloud.png"))
+    save_scene(
+        r,
+        &mut chart,
+        &[cloud],
+        bg,
+        &out.join("gallery-raincloud.png"),
+    )
 }
 
 fn main() -> Result {

@@ -9,7 +9,8 @@ use renderer::data_config::{ScatterShape, SeriesConfig};
 use renderer::line::LineStylePreset;
 use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
+fn export(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &str) {
+    chart.fit_layout();
     // Exported over white for viewing.
     let options = ExportOptions::panel(1.0).with_clear(Color::WHITE);
     r.save_blocking(ExportSource::chart(chart, series), options, path)
@@ -57,13 +58,13 @@ fn main() {
 
     export(
         &mut r,
-        &star_chart(DrawStyle::Precise),
+        &mut star_chart(DrawStyle::Precise),
         &star_series,
         "target/sketch_demo/precise.png",
     );
     export(
         &mut r,
-        &star_chart(DrawStyle::Sketch(SketchOptions {
+        &mut star_chart(DrawStyle::Sketch(SketchOptions {
             amplitude_px: 2.2,
             wavelength_px: 55.0,
             seed: 1,
@@ -140,7 +141,7 @@ fn main() {
 
     export(
         &mut r,
-        &chart,
+        &mut chart,
         &tour_series,
         "target/sketch_demo/sketch_tour.png",
     );

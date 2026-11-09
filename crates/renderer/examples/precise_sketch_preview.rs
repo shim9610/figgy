@@ -52,13 +52,6 @@ fn main() -> Result {
             let mut chart = Chart::sized(1280, 1024);
             theme.apply_chrome(chart.config_mut(), SubplotScope::All);
             let cfg = chart.config_mut();
-            // The four style previews share these margins, so their plot
-            // areas line up in the row whatever face a draw style uses.
-            cfg.chart_title.top_margin = 60.;
-            cfg.left_y.out_margin = 200.;
-            cfg.bottom_x.out_margin = 145.;
-            cfg.top_x.out_margin = 32.;
-            cfg.right_y.out_margin = 64.;
             // After the theme, which writes the draw style too.
             cfg.draw_style = style;
             cfg.legend.corner = LegendCorner::TopLeft;
@@ -83,7 +76,7 @@ fn main() -> Result {
             chart.set_y_range(-0.05, 1.08);
             save(
                 r,
-                &chart,
+                &mut chart,
                 &specs,
                 &out.join(format!("style-growth-response-{name}.png")),
             )?;

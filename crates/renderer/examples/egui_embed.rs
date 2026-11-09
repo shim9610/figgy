@@ -246,6 +246,8 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "sine_x", 0.02).unwrap();
     chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).unwrap();
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -284,6 +286,8 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .unwrap();
 
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -317,6 +321,8 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
         .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "xs_e", 0.0).unwrap();
     chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).unwrap();
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
     panel_entry(renderer, chart, view, series)
 }
@@ -392,6 +398,8 @@ impl CallbackTrait for FiggyCallback {
         if panel.chart.config().chart_area.0 != self.panel_rect_px {
             let r = self.panel_rect_px;
             panel.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
         panel.chart.select(selected_id.as_deref());
 

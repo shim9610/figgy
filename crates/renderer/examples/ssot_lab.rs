@@ -239,6 +239,8 @@ impl CallbackTrait for LabCallback {
         if panel.chart.config().chart_area.0 != self.panel_rect_px {
             let r = self.panel_rect_px;
             panel.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            panel.chart.fit_layout();
         }
 
         let prepared = {
@@ -401,6 +403,8 @@ impl LabApp {
                 .with_y_title("y");
             chart.set_x_range(0.0, X_SPAN);
             let _ = chart.auto_fit_y(renderer.pool(), Y_IDS[i], 0.10);
+            // Fit the margins to the labels and titles.
+            chart.fit_layout();
             let view = renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .map_err(|e| format!("create_chart_view failed: {e}"))?;

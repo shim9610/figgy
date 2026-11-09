@@ -481,6 +481,8 @@ impl DemoState {
         self.cancel(Phase::Cancelled);
         let r = panel_rect;
         self.chart.set_area(r.x, r.y, r.width, r.height);
+        // Refit the margins to the labels at the new size.
+        self.chart.fit_layout();
         self.renderer
             .set_chart_config(self.chart_id, self.chart.config().clone())?;
         self.renderer
@@ -650,6 +652,8 @@ impl DemoApp {
             .with_y_title("Virtual signal");
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(0.0, 1.0);
+        // Fit the margins to the labels and titles.
+        chart.fit_layout();
         let series = SeriesConfig::scatter("stream-points", "stream-x", "stream-y")
             .marker(ScatterShape::SquareFilled, 1.0)
             .color(renderer::Color::new(0.15, 0.65, 1.0, 0.35));

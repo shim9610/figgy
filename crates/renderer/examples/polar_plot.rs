@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 0.25;
         }
-        gallery::save(r, &chart, &series, &out.join("01-antenna-pattern.png"))?;
+        gallery::save(r, &mut chart, &series, &out.join("01-antenna-pattern.png"))?;
 
         // 2) A compass rose: clockwise from the top, markers on a three-leaf
         //    rose with arc segments between the samples.
@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
         }
-        gallery::save(r, &chart, &series, &out.join("02-compass-rose.png"))?;
+        gallery::save(r, &mut chart, &series, &out.join("02-compass-rose.png"))?;
 
         // 3) A dashed spiral from 24 sparse samples over two turns: the arc
         //    interpolation bends every segment along the data, and the dash
@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.bottom_x.label_style.format = LabelFormat::Degrees;
             config.left_y.major_spacing = 1.0;
         }
-        gallery::save(r, &chart, &series, &out.join("03-spiral-arcs.png"))?;
+        gallery::save(r, &mut chart, &series, &out.join("03-spiral-arcs.png"))?;
 
         // 4) A half-circle sector in radians with a hole in the middle: a
         //    phase response over -π/2..π/2, labelled in multiples of π.
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.bottom_x.label_style.format = LabelFormat::Radians;
             config.left_y.major_spacing = 0.5;
         }
-        gallery::save(r, &chart, &series, &out.join("04-sector-radians.png"))?;
+        gallery::save(r, &mut chart, &series, &out.join("04-sector-radians.png"))?;
 
         // 5) A heatmap on the polar chart (#208): an antenna's gain in dBi
         //    over azimuth (5° cells) and frequency (rings from 1 to 6 GHz),
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bar.axis.major_spacing = 6.0;
             config.colorbar = Some(bar);
         }
-        gallery::save(r, &chart, &series, &out.join("05-gain-heatmap.png"))?;
+        gallery::save(r, &mut chart, &series, &out.join("05-gain-heatmap.png"))?;
         wave_spectrum(r, &out)?;
         wind_rose(r, &out)
     })
@@ -396,7 +396,7 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
         bar.axis.title_option.visible = true;
         bar.axis.title_option.text = RichText::plain("Energy (dB)", ink, 19.0, "");
     }
-    let image = export(r, &chart, &series, bg)?;
+    let image = export(r, &mut chart, &series, bg)?;
     save(&image, bg, &out.join("gallery-polar-heatmap.png"))
 }
 
@@ -501,6 +501,6 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
         config.grid.show_major_x = true;
         config.grid.show_major_y = true;
     }
-    let image = export(r, &chart, &series, bg)?;
+    let image = export(r, &mut chart, &series, bg)?;
     save(&image, bg, &out.join("gallery-rose.png"))
 }

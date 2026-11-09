@@ -221,9 +221,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         axis.label_style.color = rgb(120, 110, 100);
     }
     config.legend.corner = LegendCorner::TopLeft;
-    // The triangle is as tall as the plot: no chrome below it.
-    config.bottom_x.out_margin = 30.;
-    config.top_x.out_margin = 10.;
 
     let mut specs = Vec::new();
     // The class polygons, one series each so that neighbours never form an
@@ -291,6 +288,8 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         specs.push(core.label(name));
     }
     chart = chart.with_legend_from(&specs);
+    // The class names below are placed from the fitted data area.
+    chart.fit_layout();
 
     // Each class name centred on its place: the triangle's geometry turns
     // the composition into pixels, the measured text centres the block.
@@ -331,7 +330,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             align: Default::default(),
         }));
 
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-ternary.png"))
 }
 

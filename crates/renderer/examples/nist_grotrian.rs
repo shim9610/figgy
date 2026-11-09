@@ -375,7 +375,6 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         ],
         offset: [0.0; 2],
     });
-    c.config_mut().bottom_x.out_margin = 84.0;
     c.config_mut().bottom_x.categories = Some(categories);
     // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
     let config = c.config_mut();
@@ -417,7 +416,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         }
     }
     let spec = SeriesConfig::energy_diagram("he", series);
-    save(r, &c, &[spec], &out.join("nist-grotrian-he-i.png"))
+    save(r, &mut c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 
 fn main() -> Result {

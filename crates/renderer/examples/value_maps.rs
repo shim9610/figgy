@@ -90,7 +90,7 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
     title.text = RichText::plain("Age (Myr)", ink, 19., "");
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 3.5;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-colormap.png"))
 }
 
@@ -145,7 +145,7 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
         // marker fill.
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);
     }
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-bubbles.png"))
 }
 

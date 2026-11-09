@@ -206,7 +206,7 @@ fn plate(r: &mut Renderer, out: &Path) -> Result {
         .color(rgba(255, 255, 255, 0.16))
         .width(0.7);
     let specs = [mesh_series("plate", contour, None), edges];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trimesh.png"))
 }
 
@@ -360,7 +360,7 @@ fn drum(r: &mut Renderer, out: &Path) -> Result {
     if let Some(bar) = config.colorbar.as_mut() {
         bar.axis.label_style.significant_digits = 1;
     }
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-trisurf.png"))
 }
 

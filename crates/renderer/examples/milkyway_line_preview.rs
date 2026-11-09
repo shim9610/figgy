@@ -37,13 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut chart = Chart::sized(1280, 1024);
     theme.apply_chrome(chart.config_mut(), SubplotScope::All);
     let cfg = chart.config_mut();
-    // The four style previews share these margins, so their plot areas
-    // line up in the row whatever face a draw style uses.
-    cfg.chart_title.top_margin = 60.0;
-    cfg.left_y.out_margin = 200.0;
-    cfg.bottom_x.out_margin = 145.0;
-    cfg.top_x.out_margin = 32.0;
-    cfg.right_y.out_margin = 64.0;
     // After the theme, which writes the draw style too.
     cfg.draw_style = DrawStyle::Milkyway(MilkywayOptions {
         star_density: 70.0,
@@ -99,6 +92,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_legend_from(&series);
     chart.set_x_range(-6.0, 126.0);
     chart.set_y_range(-0.05, 1.08);
+    // Fit the margins to the labels, titles and legend before export.
+    chart.fit_layout();
     let img = r.export_rgba_blocking(
         ExportSource::chart(&chart, &series),
         ExportOptions::panel(1.0).with_clear(bg),

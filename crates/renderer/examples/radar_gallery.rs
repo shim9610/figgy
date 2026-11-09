@@ -52,6 +52,7 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
             radius.major_spacing = spacing;
         }
     }
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &series),
         renderer::ExportOptions::panel(1.0),

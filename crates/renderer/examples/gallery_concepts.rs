@@ -66,8 +66,8 @@ fn observability(r: &mut Renderer, out: &Path) -> Result {
                 .width(3.5),
         );
     }
-    let chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-observability.png"))
 }
 
@@ -111,8 +111,8 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
                 .marker(ScatterShape::CircleFilled, 7.),
         );
     }
-    let chart = chart.with_legend_from(&specs);
-    let image = export(r, &chart, &specs, bg)?;
+    let mut chart = chart.with_legend_from(&specs);
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
@@ -176,7 +176,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
     r.add_columns(&columns)?;
     let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
     cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
-    let image = export(r, &cartesian, &specs, bg)?;
+    let image = export(r, &mut cartesian, &specs, bg)?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }
 
@@ -320,7 +320,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.label_style.font_size = 18.;
     bar.axis.line_color = rgb(164, 185, 120);
     chart.config_mut().colorbar = Some(bar);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("concept-terrain.png"))
 }
 

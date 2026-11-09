@@ -67,15 +67,10 @@ pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
     theme
 }
 
-/// The shared chrome: the scene's theme, then the layout every designed
-/// scene shares (the title band, the margins and a top-left legend).
+/// The shared chrome: the scene's theme and a top-left legend. The margins
+/// are fitted to the labels when the chart is exported.
 pub fn chrome(config: &mut Config, bg: Color, ink: Color, grid: Color) {
     theme(bg, ink, grid).apply_chrome(config, SubplotScope::All);
-    config.chart_title.top_margin = 85.;
-    config.left_y.out_margin = 110.;
-    config.right_y.out_margin = 65.;
-    config.bottom_x.out_margin = 95.;
-    config.top_x.out_margin = 45.;
     config.legend.visible = true;
     config.legend.corner = LegendCorner::TopLeft;
     config.legend.padding = 15.;
@@ -107,12 +102,14 @@ pub fn colorbar(config: &mut Config, ramp: ColorMap, min: f64, max: f64, spacing
     config.colorbar = Some(bar);
 }
 
+/// Fit the chart's margins to its labels and render it on `bg`.
 pub fn export(
     r: &mut Renderer,
-    chart: &Chart,
+    chart: &mut Chart,
     specs: &[renderer::SeriesConfig],
     bg: Color,
 ) -> Result<RasterImage> {
+    chart.fit_layout();
     Ok(r.export_rgba_blocking(
         renderer::ExportSource::chart(chart, specs),
         renderer::ExportOptions::panel(1.).with_clear(bg),

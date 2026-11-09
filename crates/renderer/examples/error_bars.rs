@@ -47,7 +47,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     c.set_x_range(-0.3, 8.8);
     c.config_mut().legend.corner = LegendCorner::TopLeft;
     c.set_y_range(-5.0, 115.0);
-    save(r, &c, &specs, &out.join("gallery-errorbars.png"))
+    save(r, &mut c, &specs, &out.join("gallery-errorbars.png"))
 }
 
 fn main() -> Result {

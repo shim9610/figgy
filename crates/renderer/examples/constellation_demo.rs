@@ -13,7 +13,10 @@ use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 /// The deep-space backdrop the exports clear to.
 const SPACE: Color = Color::from_rgb8(11, 15, 23);
 
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
+/// Fit the chart's margins to its labels, render it on the backdrop and
+/// write it as a PNG.
+fn export(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &str) {
+    chart.fit_layout();
     let img = r
         .export_rgba_blocking(
             ExportSource::chart(chart, series),
@@ -114,7 +117,7 @@ fn main() {
     for (name, style) in cases {
         export(
             &mut r,
-            &build_chart(style),
+            &mut build_chart(style),
             &series,
             &format!("target/constellation_demo/{name}.png"),
         );
@@ -127,7 +130,7 @@ fn main() {
         });
         export(
             &mut r,
-            &build_chart(style),
+            &mut build_chart(style),
             &series,
             &format!("target/constellation_demo/{name}.png"),
         );
@@ -181,13 +184,13 @@ fn main() {
     };
     export(
         &mut r,
-        &spec_chart(),
+        &mut spec_chart(),
         &spec_correlated,
         "target/constellation_demo/spectrum_correlated.png",
     );
     export(
         &mut r,
-        &spec_chart(),
+        &mut spec_chart(),
         &spec_distinct,
         "target/constellation_demo/spectrum.png",
     );
@@ -196,8 +199,10 @@ fn main() {
     // as the 1× render upscaled — same star count per data span, same clump
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
+    let mut x2 = spec_chart();
+    x2.fit_layout();
     r.save_blocking(
-        ExportSource::chart(&spec_chart(), &spec_distinct),
+        ExportSource::chart(&x2, &spec_distinct),
         ExportOptions::panel(2.0).with_clear(SPACE),
         "target/constellation_demo/spectrum_x2.png",
     )
@@ -239,7 +244,7 @@ fn main() {
     });
     export(
         &mut r,
-        &build_chart(style),
+        &mut build_chart(style),
         &sampling,
         "target/constellation_demo/sampling_match.png",
     );
@@ -283,7 +288,7 @@ fn main() {
     ];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &chart_planets,
         "target/constellation_demo/planets_chart.png",
     );
@@ -298,7 +303,7 @@ fn main() {
         .marker(ScatterShape::Square, 44.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &big,
         "target/constellation_demo/planets_big.png",
     );
@@ -310,7 +315,7 @@ fn main() {
         .marker(ScatterShape::Circle, 15.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &combo,
         "target/constellation_demo/planets_combo.png",
     );
@@ -330,7 +335,7 @@ fn main() {
         .error_bars(2.0, 7.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &jets,
         "target/constellation_demo/jets.png",
     );

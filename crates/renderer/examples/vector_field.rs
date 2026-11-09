@@ -132,7 +132,7 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
     );
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 2.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-wind.png"))
 }
 
@@ -212,7 +212,7 @@ fn currents(r: &mut Renderer, out: &Path) -> Result {
     );
     chart.config_mut().bottom_x.major_spacing = 2.;
     chart.config_mut().left_y.major_spacing = 1.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-currents.png"))
 }
 
@@ -304,7 +304,7 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.max = speed_max;
     bar.axis.major_spacing = (speed_max - speed_min) / 5.0;
     chart.config_mut().colorbar = Some(bar);
-    gallery::save(r, &chart, &[field, arrows], &out.join("gradient.png"))
+    gallery::save(r, &mut chart, &[field, arrows], &out.join("gradient.png"))
 }
 
 fn main() -> Result {

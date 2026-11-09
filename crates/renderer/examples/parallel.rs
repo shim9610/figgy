@@ -101,10 +101,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .collect(),
     );
     config.bottom_x.label_style.font_size = 20.;
-    config.bottom_x.out_margin = 70.;
-    config.top_x.out_margin = 30.;
-    config.left_y.out_margin = 70.;
-    config.right_y.out_margin = 40.;
     config.grid.show_major_x = false;
     config.grid.show_major_y = false;
     // The parallel axes draw in the left axis' style.
@@ -162,7 +158,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     bar.axis.title_option.visible = true;
     bar.axis.title_option.text = RichText::plain("Validation accuracy (%)", ink, 19., "");
 
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-parallel.png"))
 }
 

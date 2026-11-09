@@ -136,6 +136,8 @@ fn build_state(
         .with_y_title("value");
     chart.set_x_range(-0.03, 1.03);
     chart.set_y_range(0.0, 100.0);
+    // Fit the margins to the labels and titles.
+    chart.fit_layout();
 
     let view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
@@ -208,6 +210,8 @@ impl CallbackTrait for LabCallback {
         if state.view.panel_rect() != self.panel_rect_px {
             let r = self.panel_rect_px;
             state.chart.set_area(r.x, r.y, r.width, r.height);
+            // Refit the margins to the labels at the new size.
+            state.chart.fit_layout();
         }
         let _ = state.chart.consume_data_dirty();
         let _ = state.chart.consume_raster_dirty();

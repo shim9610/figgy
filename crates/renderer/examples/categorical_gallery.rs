@@ -68,6 +68,7 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
     value
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;
+    chart.fit_layout();
     let path = directory.join(format!("{name}.png"));
     r.save_blocking(
         ExportSource::chart(&chart, &series),

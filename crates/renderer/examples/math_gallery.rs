@@ -62,7 +62,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(&output)?;
     let mut renderer = Renderer::headless_blocking()?;
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
-        let chart = gallery(sketch)?;
+        let mut chart = gallery(sketch)?;
+        chart.fit_layout();
         for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
             let path = output.join(format!("{name}{suffix}.png"));
             let options = ExportOptions::document(scale).with_clear(Color::WHITE);
@@ -90,7 +91,6 @@ fn gallery(sketch: bool) -> Result<Chart, Box<dyn Error>> {
         &mut cfg.right_y,
     ] {
         axis.title_option.visible = false;
-        axis.out_margin = 24.0;
     }
     cfg.chart_title.text = RichText::from_tex(
         r"Math in figgy: $\sum_{k} \frac{x^k}{k!}$, from TeX",
@@ -98,7 +98,6 @@ fn gallery(sketch: bool) -> Result<Chart, Box<dyn Error>> {
         26.0,
         "",
     )?;
-    cfg.chart_title.top_margin = 64.0;
     if sketch {
         cfg.draw_style = DrawStyle::Sketch(Default::default());
     }

@@ -84,7 +84,6 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
     let config = chart.config_mut();
     config.bottom_x.major_spacing = 50.;
     config.left_y.major_spacing = 1000.;
-    config.left_y.out_margin = 140.;
     for axis in [&mut config.bottom_x, &mut config.left_y] {
         axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
     }
@@ -117,7 +116,7 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
         label(1140., 2120., "1173.2 keV", 18., ink),
         label(1300., 1880., "1332.5 keV", 18., ink),
     ];
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-broken-axes.png"))
 }
 
