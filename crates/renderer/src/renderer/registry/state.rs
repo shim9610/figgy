@@ -46,6 +46,7 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         bar_groups: _,
         line_offsets,
         plot_background,
+        background,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -73,6 +74,8 @@ pub(in crate::renderer) fn raster_config_equal(left: &Config, right: &Config) ->
         && line_offsets == &right.line_offsets
         // The plot fill is the grid raster's first part (#203).
         && plot_background == &right.plot_background
+        // The chart fill is the grid raster's first part (#265).
+        && background == &right.background
 }
 
 /// Whether two configs map data to the same pixels on every layer: the

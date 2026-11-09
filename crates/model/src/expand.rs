@@ -640,6 +640,7 @@ impl Config {
             // their own; the overlay panel draws none of them.
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -722,6 +723,7 @@ impl Config {
             bar_groups: bar_groups.clone(),
             line_offsets: None,
             plot_background: None,
+            background: None,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -764,6 +766,7 @@ impl Config {
             bar_groups,
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = owner;
         let [dx, dy] = self
             .line_offsets
@@ -798,6 +801,7 @@ impl Config {
             bar_groups: bar_groups.clone(),
             line_offsets: None,
             plot_background: None,
+            background: None,
         };
         retain_picks(&mut panel, |id| id == series_id);
         align_margins(&mut panel, group, data_area)?;
@@ -1182,6 +1186,7 @@ impl Config {
             bar_groups: _,
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -1236,6 +1241,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         bar_groups: _,
         line_offsets: _,
         plot_background: _,
+        background: _,
     } = panel;
     if let Some(picked) = picked_data.as_mut() {
         picked.refs.retain(|reference| keep(reference.series_id()));

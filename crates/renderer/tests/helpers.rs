@@ -139,3 +139,70 @@ fn chart_conveniences_build_the_document() {
     chart.fit_layout();
     assert_eq!(chart.config(), &expected);
 }
+
+// `Config::background` fills the whole chart area under everything, at 1x
+// and 2x, in the PNG and in the SVG; without it the corner stays the clear
+// colour. A document without the key reads it as `None` and writes no key.
+#[test]
+fn the_chart_background_fills_the_chart_area() {
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let (x, y) = sine();
+    renderer.add_column("x", &x).unwrap();
+    renderer.add_column("y", &y).unwrap();
+    let series = [SeriesConfig::line("sine", "x", "y")];
+    let paper = Color::from_rgb8(250, 246, 236);
+    let mut chart = Chart::sized(320, 240);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(-1.2, 1.2);
+    let plain = chart.config().clone();
+    chart.config_mut().background = Some(paper);
+    for scale in [1.0f32, 2.0] {
+        for (config, expected) in [(chart.config(), [250, 246, 236, 255]), (&plain, [0; 4])] {
+            let held = Chart::new(config.clone());
+            let png = renderer
+                .export_png_blocking(
+                    ExportSource::Chart {
+                        chart: &held,
+                        series: &series,
+                    },
+                    ExportOptions::document(scale),
+                )
+                .unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+                .read_info()
+                .unwrap();
+            let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut rgba).unwrap();
+            assert_eq!(info.color_type, png::ColorType::Rgba);
+            // The top-left corner sits in the margin, outside the data area.
+            let corner = (2 * info.width as usize + 2) * 4;
+            assert_eq!(rgba[corner..corner + 4], expected, "{scale}x");
+        }
+    }
+    let svg = renderer
+        .export_svg_blocking(
+            ExportSource::Chart {
+                chart: &chart,
+                series: &series,
+            },
+            ExportOptions::document(1.0),
+        )
+        .unwrap();
+    assert!(svg.contains("#faf6ec"), "the SVG carries the fill");
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn the_chart_background_is_an_additive_key() {
+    let plain = renderer::config::Config::default();
+    let mut filled_config = plain.clone();
+    filled_config.background = Some(Color::from_rgb8(250, 246, 236));
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("\"background\""));
+    let back: renderer::config::Config = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.background, None);
+    let filled = serde_json::to_string(&filled_config).unwrap();
+    let back: renderer::config::Config = serde_json::from_str(&filled).unwrap();
+    assert_eq!(back, filled_config);
+    assert_eq!(serde_json::to_string(&back).unwrap(), filled);
+}

@@ -1361,6 +1361,17 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub plot_background: Option<crate::color::Color>,
+    /// A fill over the whole chart area, under everything else the chart
+    /// draws (#265). `None` (key absent in JSON) leaves the chart area
+    /// transparent, as every chart before the field: the host's clear colour
+    /// or an export's clear colour shows through. A subplot fills its own chart area from its own config;
+    /// overlay layers draw none. The Milkyway style's deep-space backdrop
+    /// takes this slot, as it takes the plot fill's.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub background: Option<crate::color::Color>,
 }
 
 impl Config {
@@ -1403,6 +1414,7 @@ impl Config {
             // dimension.
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = self;
         // A parallel axis's labels sit to its left with the fixed label gap,
         // as `left_y`'s: its scaled offset makes up the gap as

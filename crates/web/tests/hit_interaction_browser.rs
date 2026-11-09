@@ -560,4 +560,14 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
             .plot_background
             .is_none()
     );
+    // The chart's own fill (#265) is set and cleared the same way.
+    chart
+        .set_background(r#"{"r":1.0,"g":0.98,"b":0.94,"a":1.0}"#)
+        .expect("fill the chart area");
+    assert_eq!(
+        chart_config(&chart).background,
+        Some(renderer::Color::new(1.0, 0.98, 0.94, 1.0))
+    );
+    chart.set_background("null").expect("clear the chart fill");
+    assert!(chart_config(&chart).background.is_none());
 }

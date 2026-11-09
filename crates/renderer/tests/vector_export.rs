@@ -384,6 +384,7 @@ fn hide_decorations(config: &mut Config) {
     config.annotations.visible = false;
     // The plot fill is chrome (the slot below the grid).
     config.plot_background = None;
+    config.background = None;
     for overlay in &mut config.overlays {
         hide_axis(&mut overlay.y_axis);
     }

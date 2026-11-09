@@ -728,6 +728,16 @@ impl FiggyChart {
         serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
     }
 
+    /// Fill the chart area with a colour under everything the chart draws
+    /// (JSON `{"r":1,"g":1,"b":1,"a":1}`), or leave it transparent (`null`)
+    /// so the page or the export's clear colour shows through (#265).
+    pub fn set_background(&mut self, json: &str) -> Result<(), JsValue> {
+        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        let mut config = self.chart_config()?.clone();
+        config.background = color;
+        self.replace_chart_config(config)
+    }
+
     /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,
     /// "a":1}`) or leave it transparent (`null`): an inset usually covers
     /// the parent's data under it.

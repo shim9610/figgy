@@ -248,6 +248,7 @@ pub(crate) fn config() -> Config {
         // Every series drawn where its values are.
         line_offsets: None,
         plot_background: None,
+        background: None,
     }
 }
 

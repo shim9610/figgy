@@ -808,6 +808,7 @@ impl SubplotElement {
                 bar_groups,
                 line_offsets,
                 plot_background,
+                background,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -832,6 +833,7 @@ impl SubplotElement {
                 bar_groups,
                 line_offsets,
                 plot_background,
+                background,
             };
         }
         result

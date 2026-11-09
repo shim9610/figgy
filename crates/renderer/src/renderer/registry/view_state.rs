@@ -122,6 +122,7 @@ impl ChartViewState {
             // as they are when a view state moves the ranges.
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -180,6 +181,7 @@ impl ChartViewState {
             bar_groups: _,
             line_offsets: _,
             plot_background: _,
+            background: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);

@@ -42,6 +42,8 @@ annotation's `align`) are additive.
 
 - **Series constructors and modifiers** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` gains one constructor per chart family (`line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`, and `of_kind`), each naming its columns and drawing with the host style defaults. Chainable modifiers set the common fields: `label`, `color`, `width`, `dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal` and `z`. `MatrixRef::columns_are_x`, `columns_are_y` and `with_layout` name a matrix. These are methods on the document types: the series stays the single source of truth.
 
+- **A fill for the whole chart area** ([#265](https://github.com/shim9610/figgy/issues/265)). `Config::background: Option<Color>` paints the chart area under everything the chart draws: the plot fill, the grid, the data and the decorations. `None` (key absent in JSON) is the transparent chart area every document had, so older documents read and write as before. A subplot fills its own chart area from its own `background`; overlay layers and line-offset members draw none. In the Milkyway style the deep-space backdrop takes its place, as it takes the plot fill's. An exhaustive `Config { .. }` literal or pattern adds `background`.
+
 - **Host defaults for the series styles and the chart frame** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `Default` now covers `Config`, `ChartTitleOptions`, `AxisTitleOptions`, `GridOptions`, `ColorBarOptions`, `Legend` and `ChartArea` (each the value `default` builds), and the series styles a document always spells out: `Stem`, `DataScatterStyleConfig`, `DataErrorBarStyleConfig`, `DataBarStyleConfig`, `VectorStyle`, `FieldFillConfig`, `ContourLabelConfig`, `RangeConnector` and `SurfaceWireframe`. Strokes take the black, 1 px ink of the line default; bars fill with the first colour of the balanced palette. `AxisOptions` and `LabelStyle` have none, since their default differs by axis. Product code cannot read them (#266).
 
 - **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
@@ -3313,6 +3315,11 @@ annotation's `align`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **A chart background** ([#265](https://github.com/shim9610/figgy/issues/265)).
+  The config JSON takes an optional `background` colour that fills the whole
+  chart area under everything else. `FiggyChart.set_background(color_json)`
+  and `<figgy-chart>`'s `set_background(color)` set it, `null` clears it.
 
 - **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
   The series JSON carries `wavelength`, `wavelength_uncertainty` and
