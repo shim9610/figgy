@@ -25,12 +25,12 @@ mod gallery;
 mod styled;
 
 use renderer::{
-    Color, ColorMap, DataRenderType, Renderer,
-    config::{Category, append_legend_entry, series_symbol_segments},
+    Color, ColorMap, DataRenderType, Renderer, SeriesConfig,
+    config::Category,
     data_config::{
         BarGroups, CategoryBarMode, CategoryBarStyle, ContourConfig, ContourLabelConfig,
-        FieldFillConfig, FieldSeries, FillMode, GridLayout, LineFill, MatrixOrientation, MatrixRef,
-        Shading,
+        DataLineStyleConfig, FieldFillConfig, FieldSeries, GridLayout, MatrixRef, ScatterShape,
+        Shading, XySeries,
     },
     format::{LabelFormat, PlainNumberFormat},
     line::LineStylePreset,
@@ -38,14 +38,26 @@ use renderer::{
     text::RichText,
 };
 use std::{f64::consts::PI, path::Path};
-use styled::{colorbar, export, rgb, rgba, save};
+use styled::{cartesian, colorbar, export, rgb, rgba, save};
+
+/// A line series' fill in a colour of its own (`fill_to` fills in the
+/// line's colour at a quarter of its opacity).
+fn fill_color(mut series: SeriesConfig, color: Color) -> SeriesConfig {
+    if let DataRenderType::Xy(XySeries {
+        line: Some(line), ..
+    }) = &mut series.render_type
+    {
+        line.fill_color = Some(color);
+    }
+    series
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = gallery::output_directory("target/polar-plot")?;
     gallery::with_renderer(|r| {
         let size = (960, 640);
         let degrees: Vec<f64> = (0..=360).map(f64::from).collect();
-        r.add_column("deg", &gallery::column(degrees.clone()))?;
+        r.add_column("deg", &degrees)?;
 
         // 1) An antenna pattern: a line filled to the centre, degrees around
         //    the ring with a degree sign, rings every 0.25.
@@ -56,23 +68,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (0.15 + 0.85 * (2.0 * t).cos().abs()) * (0.6 + 0.4 * t.cos().max(0.0))
             })
             .collect();
-        r.add_column("pattern", &gallery::column(pattern))?;
+        r.add_column("pattern", &pattern)?;
         let mut chart = gallery::chart("Antenna pattern", "Azimuth", "Gain", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, 1.0);
-        let mut line = gallery::line(Color::from_rgb8(30, 110, 210), 2.5);
-        line.fill = Some(LineFill::ToBaseline(0.0));
-        line.fill_color = Some(Color::new(0.12, 0.43, 0.82, 0.25));
-        let series = vec![gallery::series(
-            "gain",
-            "deg",
-            "pattern",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line),
-                errors: None,
-                stem: None,
-            }),
+        let series = [fill_color(
+            SeriesConfig::line("gain", "deg", "pattern")
+                .color(Color::from_rgb8(30, 110, 210))
+                .width(2.5)
+                .fill_to(0.0),
+            Color::new(0.12, 0.43, 0.82, 0.25),
         )];
         {
             let config = chart.config_mut();
@@ -90,22 +95,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|d| 2.0 + (3.0 * d.to_radians()).cos())
             .collect();
-        r.add_column("rose_deg", &gallery::column(samples))?;
-        r.add_column("rose", &gallery::column(rose))?;
+        r.add_column("rose_deg", &samples)?;
+        r.add_column("rose", &rose)?;
         let mut chart = gallery::chart("Compass rose", "Bearing", "Strength", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, 3.0);
-        let series = vec![gallery::series(
-            "rose",
-            "rose_deg",
-            "rose",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(gallery::scatter(Color::from_rgb8(200, 60, 40), 7.0)),
-                line: Some(gallery::line(Color::from_rgb8(200, 60, 40), 1.5)),
-                errors: None,
-                stem: None,
-            }),
-        )];
+        let series = [SeriesConfig::scatter_line("rose", "rose_deg", "rose")
+            .color(Color::from_rgb8(200, 60, 40))
+            .width(1.5)
+            .marker(ScatterShape::CircleFilled, 7.0)];
         {
             let config = chart.config_mut();
             config.set_polar(Some(PolarOptions {
@@ -126,24 +124,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         //    pattern walks the bent path.
         let turns: Vec<f64> = (0..24).map(|i| f64::from(i) * 30.0).collect();
         let spiral: Vec<f64> = turns.iter().map(|d| d / 720.0 * 5.0).collect();
-        r.add_column("spiral_deg", &gallery::column(turns))?;
-        r.add_column("spiral", &gallery::column(spiral))?;
+        r.add_column("spiral_deg", &turns)?;
+        r.add_column("spiral", &spiral)?;
         let mut chart = gallery::chart("Spiral, arc interpolation", "Angle", "Radius", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, 5.0);
-        let mut dashed = gallery::line(Color::from_rgb8(40, 150, 90), 3.0);
-        dashed.line_style = LineStylePreset::Dash;
-        let series = vec![gallery::series(
-            "spiral",
-            "spiral_deg",
-            "spiral",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(gallery::scatter(Color::from_rgb8(40, 150, 90), 6.0)),
-                line: Some(dashed),
-                errors: None,
-                stem: None,
-            }),
-        )];
+        let series = [SeriesConfig::scatter_line("spiral", "spiral_deg", "spiral")
+            .color(Color::from_rgb8(40, 150, 90))
+            .width(3.0)
+            .dash(LineStylePreset::Dash)
+            .marker(ScatterShape::CircleFilled, 6.0)];
         {
             let config = chart.config_mut();
             config.set_polar(Some(PolarOptions {
@@ -165,24 +155,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|p| 1.0 + 0.8 * (2.0 * p).cos().powi(2) + 0.2 * (6.0 * p).sin())
             .collect();
-        r.add_column("phase", &gallery::column(phase))?;
-        r.add_column("response", &gallery::column(response))?;
+        r.add_column("phase", &phase)?;
+        r.add_column("response", &response)?;
         let mut chart = gallery::chart("Sector in radians", "Phase", "Response", size);
         chart.set_x_range(-PI / 2.0, PI / 2.0);
         chart.set_y_range(0.0, 2.0);
-        let mut line = gallery::line(Color::from_rgb8(150, 60, 170), 3.0);
-        line.fill = Some(LineFill::ToBaseline(0.0));
-        line.fill_color = Some(Color::new(0.59, 0.24, 0.67, 0.2));
-        let series = vec![gallery::series(
-            "response",
-            "phase",
-            "response",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line),
-                errors: None,
-                stem: None,
-            }),
+        let series = [fill_color(
+            SeriesConfig::line("response", "phase", "response")
+                .color(Color::from_rgb8(150, 60, 170))
+                .width(3.0)
+                .fill_to(0.0),
+            Color::new(0.59, 0.24, 0.67, 0.2),
         )];
         {
             let config = chart.config_mut();
@@ -211,8 +194,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let frequencies: Vec<f64> = (0..bands)
             .map(|j| 1.0 + j as f64 * 5.0 / (bands - 1) as f64)
             .collect();
-        r.add_column("gain_az", &gallery::column(centres))?;
-        r.add_column("gain_ghz", &gallery::column(frequencies.clone()))?;
+        r.add_column("gain_az", &centres)?;
+        r.add_column("gain_ghz", &frequencies)?;
         let mut ids: Vec<String> = (0..azimuths).map(|i| format!("gain_z{i}")).collect();
         for (i, id) in ids.iter().enumerate() {
             let az = (i as f64 * 5.0 + 2.5).to_radians();
@@ -226,41 +209,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     10.0 * (lobe + back + 1e-3).log10() + 6.0
                 })
                 .collect();
-            r.add_column(id, &gallery::column(gain))?;
+            r.add_column(id, &gain)?;
         }
         ids.push(ids[0].clone());
         let mut chart = gallery::chart("Gain over azimuth and frequency", "Azimuth", "GHz", size);
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(1.0, 6.0);
-        let series = vec![gallery::series(
+        // A heatmap with labelled contours: no constructor makes both.
+        let dark = Color::from_rgb8(25, 25, 25);
+        let series = [SeriesConfig::of_kind(
             "gain",
             "gain_az",
             "gain_ghz",
-            DataRenderType::Field(renderer::data_config::FieldSeries {
-                matrix: renderer::data_config::MatrixRef {
-                    columns: ids,
-                    orientation: renderer::data_config::MatrixOrientation::ColumnsAreX,
-                    grid_layout: renderer::data_config::GridLayout::Centers,
-                },
-                fill: Some(renderer::data_config::FieldFillConfig {
-                    mode: renderer::data_config::FillMode::Continuous,
-                    shading: renderer::data_config::Shading::Interpolated,
-                    opacity: 1.0,
+            DataRenderType::Field(FieldSeries {
+                matrix: MatrixRef::columns_are_x(ids),
+                fill: Some(FieldFillConfig {
+                    shading: Shading::Interpolated,
+                    ..Default::default()
                 }),
-                contour: Some(renderer::data_config::ContourConfig {
+                contour: Some(ContourConfig {
                     levels: vec![-4.0, 3.0],
-                    line: gallery::line(Color::from_rgb8(25, 25, 25), 1.2),
+                    line: DataLineStyleConfig {
+                        line_color: dark,
+                        line_width: 1.2,
+                        ..Default::default()
+                    },
                     per_level_color: None,
-                    labels: Some(renderer::data_config::ContourLabelConfig {
-                        visible: true,
+                    labels: Some(ContourLabelConfig {
                         font_size: 12.0,
-                        color: Color::from_rgb8(25, 25, 25),
-                        format: LabelFormat::Decimal,
+                        color: dark,
                         significant_digits: 1,
                         spacing_px: 180.0,
-                        anchors: Vec::new(),
-                        bg_color: None,
-                        bg_padding_px: 2.0,
+                        ..Default::default()
                     }),
                 }),
                 surface: None,
@@ -317,13 +297,14 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
     let bg = rgb(249, 250, 252);
     let ink = rgb(44, 56, 78);
     let grid = rgb(214, 222, 232);
-    let mut chart = gallery::chart(
+    let mut chart = cartesian(
         "Directional wave spectrum / rings in Hz",
         "Direction",
         "Frequency (Hz)",
-        styled::SIZE,
+        bg,
+        ink,
+        grid,
     );
-    styled::chrome(chart.config_mut(), bg, ink, grid);
     chart.config_mut().legend.visible = false;
     // The compass labels and the ring labels name the two coordinates.
     chart.config_mut().bottom_x.title_option.visible = false;
@@ -361,8 +342,8 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
         }
     }
     let peak = energy.iter().copied().fold(0.0f64, f64::max);
-    r.add_column("wave_dir", &gallery::column(angle_edges))?;
-    r.add_column("wave_freq", &gallery::column(frequency_edges))?;
+    r.add_column("wave_dir", &angle_edges)?;
+    r.add_column("wave_freq", &frequency_edges)?;
     let mut ids: Vec<String> = (0..directions).map(|i| format!("wave_e{i}")).collect();
     for (i, id) in ids.iter().enumerate() {
         let db: Vec<f64> = energy[i * rings..(i + 1) * rings]
@@ -373,38 +354,31 @@ fn wave_spectrum(r: &mut Renderer, out: &Path) -> gallery::Result {
                 if db < -30.0 { f64::NAN } else { db }
             })
             .collect();
-        r.add_column(id, &gallery::column(db))?;
+        r.add_column(id, &db)?;
     }
     ids.push(ids[0].clone());
-    let series = vec![gallery::series(
+    let series = [SeriesConfig::of_kind(
         "spectrum",
         "wave_dir",
         "wave_freq",
         DataRenderType::Field(FieldSeries {
-            matrix: MatrixRef {
-                columns: ids,
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Edges,
-            },
-            fill: Some(FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Flat,
-                opacity: 1.0,
-            }),
+            matrix: MatrixRef::columns_are_x(ids).with_layout(GridLayout::Edges),
+            fill: Some(FieldFillConfig::default()),
             contour: Some(ContourConfig {
                 levels: vec![-20.0, -10.0, -3.0],
-                line: gallery::line(rgba(20, 28, 48, 0.85), 1.4),
+                line: DataLineStyleConfig {
+                    line_color: rgba(20, 28, 48, 0.85),
+                    line_width: 1.4,
+                    ..Default::default()
+                },
                 per_level_color: None,
                 labels: Some(ContourLabelConfig {
-                    visible: true,
                     font_size: 15.0,
                     color: rgb(20, 28, 48),
-                    format: LabelFormat::Decimal,
                     significant_digits: 2,
                     spacing_px: 260.0,
-                    anchors: Vec::new(),
-                    bg_color: None,
                     bg_padding_px: 3.0,
+                    ..Default::default()
                 }),
             }),
             surface: None,
@@ -470,13 +444,14 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
     let bg = rgb(252, 249, 244);
     let ink = rgb(70, 60, 56);
     let grid = rgb(229, 221, 209);
-    let mut chart = gallery::chart(
+    let mut chart = cartesian(
         "Wind rose / share of a year's hours",
         "Direction",
         "Share of hours",
-        styled::SIZE,
+        bg,
+        ink,
+        grid,
     );
-    styled::chrome(chart.config_mut(), bg, ink, grid);
     chart.config_mut().bottom_x.title_option.visible = false;
     chart.config_mut().left_y.title_option.visible = false;
 
@@ -510,41 +485,24 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
         // A fraction of the year's hours, to 0.1 %.
         (1000.0 * shape(k) / total * weights[band] / sum * jitter).round() / 1000.0
     };
-    r.add_column(
-        "rose_dir",
-        &gallery::column((0..16).map(|k| k as f64).collect()),
-    )?;
+    let directions: Vec<f64> = (0..16).map(|k| k as f64).collect();
+    r.add_column("rose_dir", &directions)?;
     let mut series = Vec::with_capacity(bands.len());
     for (band, (id, label, color)) in bands.into_iter().enumerate() {
-        r.add_column(
-            id,
-            &gallery::column((0..16).map(|k| share(k, band)).collect()),
-        )?;
-        let mut s = gallery::series(
-            id,
-            "rose_dir",
-            id,
-            DataRenderType::CategoryBars {
-                color,
-                style: CategoryBarStyle {
-                    corner_radius: 3.0,
-                    gloss: 0.0,
-                    texture_strength: 0.0,
-                    ..CategoryBarStyle::default()
-                },
-                labels: Default::default(),
-                label_format: Default::default(),
-                overrides: None,
-            },
-        );
-        s.label = Some(RichText::plain(label, ink, 22.0, ""));
-        append_legend_entry(
-            &mut chart.config_mut().legend.content,
-            series_symbol_segments(&s, None),
-            label,
-        );
+        let shares: Vec<f64> = (0..16).map(|k| share(k, band)).collect();
+        r.add_column(id, &shares)?;
+        let mut s = SeriesConfig::category_bars(id, "rose_dir", id, color).label(label);
+        if let DataRenderType::CategoryBars { style, .. } = &mut s.render_type {
+            *style = CategoryBarStyle {
+                corner_radius: 3.0,
+                gloss: 0.0,
+                texture_strength: 0.0,
+                ..CategoryBarStyle::default()
+            };
+        }
         series.push(s);
     }
+    chart = chart.with_legend_from(&series);
     chart.set_x_range(0.0, 16.0);
     chart.set_y_range(0.0, 0.12);
     {
@@ -577,7 +535,6 @@ fn wind_rose(r: &mut Renderer, out: &Path) -> gallery::Result {
         config.left_y.label_style.significant_digits = 2;
         config.grid.show_major_x = true;
         config.grid.show_major_y = true;
-        config.legend.visible = true;
     }
     let image = export(r, &chart, &series, bg)?;
     save(&image, bg, &out.join("gallery-rose.png"))

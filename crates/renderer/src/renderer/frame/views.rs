@@ -56,8 +56,24 @@ impl Renderer {
             .map(|rgba| self.create_layer_texture(rgba, w, h))
             .transpose()?;
         view.annotation_map = annotations.map;
+        view.annotation_key = Some(AnnotationRasterKey {
+            config: chart.config().clone(),
+            selected: None,
+            font_generation,
+            panel_rect,
+        });
         view.tick_warnings = merged_render_warnings(chart.config(), &panels);
         view.rebuild_render_warnings();
+        // Drawn from the chart as it stands, without a selection: what
+        // `prepare` would draw for it, so the first prepare keeps it.
+        if chart.selected().is_none() && panel_rect == chart.config().chart_area.0 {
+            view.raster_source = chart.raster_stamp().map(|stamp| RasterSource {
+                chart: RasterChart::Held { stamp },
+                font_generation,
+                panel_rect,
+                scale,
+            });
+        }
         Ok(view)
     }
 
@@ -129,6 +145,8 @@ impl Renderer {
                 scale,
             )),
             raster_generation: 1,
+            raster_source: None,
+            annotation_key: None,
         })
     }
 
@@ -209,6 +227,17 @@ impl Renderer {
         panel_rect: Rect,
     ) -> Result<()> {
         let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
+        let key = AnnotationRasterKey {
+            config: chart.config().clone(),
+            selected: view.annotation_selected,
+            font_generation: crate::text_render::font_generation(),
+            panel_rect,
+        };
+        if view.annotation_key.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        // Unknown until the raster is uploaded: a failure leaves it stale.
+        view.annotation_key = None;
         let raster = annotation_raster_for_chart(chart, view.annotation_selected)?;
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
@@ -224,6 +253,7 @@ impl Renderer {
         )?;
         view.annotation_map = raster.map;
         view.layer_stamps.annotations += 1;
+        view.annotation_key = Some(key);
         view.rebuild_render_warnings();
         Ok(())
     }
@@ -355,6 +385,8 @@ impl Renderer {
         scale: f32,
     ) -> Result<()> {
         self.health.check()?;
+        // Unknown until the raster is drawn: a failure leaves the view stale.
+        view.raster_source = None;
         view.display_scale = scale;
         let selection: Vec<crate::select::SelectionBox> = selected
             .and_then(|id| self.selection_box(chart, id))
@@ -403,8 +435,19 @@ impl Renderer {
         view.tick_warnings = merged_render_warnings(chart.config(), &panels);
         // The anchor space follows the axes and the data area, which this
         // refresh may have moved, so the annotation layer is redone here as
-        // well; its own revision covers item edits between axis refreshes.
+        // well (its key skips an unchanged one); its own revision covers item
+        // edits between axis refreshes.
         self.refresh_annotation_layers(view, chart, panel_rect)?;
+        // Drawn from the chart as `prepare` would draw it (its own selection
+        // and area): the next prepare keeps it.
+        if selected == chart.selected() && panel_rect == chart.config().chart_area.0 {
+            view.raster_source = chart.raster_stamp().map(|stamp| RasterSource {
+                chart: RasterChart::Held { stamp },
+                font_generation,
+                panel_rect,
+                scale,
+            });
+        }
         Ok(())
     }
 

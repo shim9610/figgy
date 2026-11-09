@@ -228,7 +228,7 @@ impl Renderer {
         })
     }
 
-    pub(in crate::renderer) async fn try_new_with_sample_count_observed_async(
+    pub(crate) async fn try_new_with_sample_count_observed_async(
         gpu: RendererDevice,
         surface_format: wgpu::TextureFormat,
         pool_capacity_bytes: u64,

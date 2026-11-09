@@ -390,6 +390,16 @@ impl FiggyRadialChart {
         self.annotations = annotations;
         Ok(true)
     }
+    /// Apply the built-in theme `name` (`light`, `dark`, `paper`,
+    /// `dashboard` or `sketch`, #265): the background, label look, material
+    /// and the cycle colours on the top-level slices. Values, labels and the
+    /// slice structure stay. An unknown name changes nothing.
+    pub fn apply_theme(&mut self, name: &str) -> Result<(), JsValue> {
+        let theme = crate::web::theme_named(name)?;
+        let mut next = self.chart.clone();
+        theme.apply_radial(&mut next);
+        self.adopt(next)
+    }
     /// Validate and prepare an edited document, then adopt it; the previous
     /// chart and frames stay on failure.
     fn adopt(&mut self, next: RadialChart) -> Result<(), JsValue> {

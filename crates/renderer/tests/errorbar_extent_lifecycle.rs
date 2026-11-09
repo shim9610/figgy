@@ -60,7 +60,7 @@ fn explicit_preparation_publishes_engine_for_shared_submission() {
         .unwrap();
 
     assert!(!renderer.errorbar_extent_engine_ready());
-    renderer.prepare(&[]).unwrap();
+    renderer.prepare(&mut []).unwrap();
     assert!(!renderer.errorbar_extent_engine_ready());
     assert!(matches!(
         renderer.begin_errorbar_extent("x", "x", "x"),

@@ -41,7 +41,7 @@ impl PrepareContext<'_> {
     /// receipts for the token the way `ensure_field_scratches` does.
     pub(in crate::renderer) fn ensure_vector_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.frame_batch(|ctx| ctx.ensure_vector_scratches_in_frame(items, scale))
@@ -49,7 +49,7 @@ impl PrepareContext<'_> {
 
     fn ensure_vector_scratches_in_frame(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.vector_cache, items, VECTOR_SCRATCH_CACHE_LIMIT);
@@ -514,7 +514,7 @@ impl PrepareContext<'_> {
 impl Renderer {
     pub(in crate::renderer) fn ensure_vector_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts()

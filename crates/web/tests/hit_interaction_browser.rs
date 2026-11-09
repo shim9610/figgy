@@ -560,4 +560,39 @@ async fn a_subplot_frame_hits_drags_resizes_and_moves_out_of_its_parent() {
             .plot_background
             .is_none()
     );
+    // The chart's own fill (#265) is set and cleared the same way.
+    chart
+        .set_background(r#"{"r":1.0,"g":0.98,"b":0.94,"a":1.0}"#)
+        .expect("fill the chart area");
+    assert_eq!(
+        chart_config(&chart).background,
+        Some(renderer::Color::new(1.0, 0.98, 0.94, 1.0))
+    );
+    chart.set_background("null").expect("clear the chart fill");
+    assert!(chart_config(&chart).background.is_none());
+    // A theme (#265) writes the look into the chart and leaves the subplot
+    // it is not given alone; a bad name or list changes nothing.
+    let before = chart_config(&chart);
+    assert!(chart.apply_theme("neon", "all").is_err());
+    assert!(chart.apply_theme("dark", "[nope").is_err());
+    assert_eq!(chart_config(&chart), before);
+    chart
+        .apply_theme("dark", "none")
+        .expect("apply the dark theme");
+    let themed = chart_config(&chart);
+    let dark = renderer::theme::Theme::dark();
+    assert_eq!(themed.background, dark.chrome.background);
+    assert_eq!(themed.bottom_x.line_color, dark.chrome.frame_ink);
+    assert_eq!(themed.subplots[0].config.background, None);
+    assert_eq!(
+        (themed.bottom_x.min, themed.bottom_x.max),
+        (before.bottom_x.min, before.bottom_x.max)
+    );
+    chart
+        .apply_theme("dark", "[0]")
+        .expect("theme the subplot too");
+    assert_eq!(
+        chart_config(&chart).subplots[0].config.background,
+        dark.chrome.background
+    );
 }

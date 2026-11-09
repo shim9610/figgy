@@ -213,7 +213,7 @@ impl PrepareContext<'_> {
     /// stroke width.
     pub(in crate::renderer) fn ensure_contour_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
         contour_spacings: &[Vec<Option<f32>>],
     ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
@@ -224,7 +224,7 @@ impl PrepareContext<'_> {
 
     fn ensure_contour_scratches_in_frame(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
         contour_spacings: &[Vec<Option<f32>>],
     ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
@@ -733,10 +733,7 @@ impl PrepareContext<'_> {
     /// may only *use* them: it is the single site allowed to compile a target
     /// pipeline (design B.6), and it has no `&mut self` to create the module
     /// with.
-    pub(in crate::renderer) fn ensure_contour_label_pipelines(
-        &mut self,
-        items: &[ChartDrawItem<'_>],
-    ) {
+    pub(in crate::renderer) fn ensure_contour_label_pipelines(&mut self, items: &[PanelDraw<'_>]) {
         if self.contour_label_pipelines.is_some() {
             return;
         }
@@ -772,7 +769,7 @@ impl Renderer {
     /// stroke width.
     pub(in crate::renderer) fn ensure_contour_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
         contour_spacings: &[Vec<Option<f32>>],
     ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
@@ -809,10 +806,7 @@ impl Renderer {
     /// may only *use* them: it is the single site allowed to compile a target
     /// pipeline (design B.6), and it has no `&mut self` to create the module
     /// with.
-    pub(in crate::renderer) fn ensure_contour_label_pipelines(
-        &mut self,
-        items: &[ChartDrawItem<'_>],
-    ) {
+    pub(in crate::renderer) fn ensure_contour_label_pipelines(&mut self, items: &[PanelDraw<'_>]) {
         self.preparation_parts()
             .1
             .ensure_contour_label_pipelines(items)

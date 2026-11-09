@@ -16,15 +16,36 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
-    CellRef, Chart, Color, Config, HitMap, LayerRef, OverlayLayer, Renderer, Subplot,
-    data_config::{DataRenderType, LineFill},
-    layout::{ChartArea, Rect},
+    CellRef, Chart, Color, Config, ExportOptions, ExportSource, HitMap, LayerRef, OverlayLayer,
+    Renderer, SeriesConfig, Subplot,
+    data_config::{DataRenderType, XySeries},
     text::RichText,
 };
 use std::path::Path;
 use styled::{chrome, rgb, save};
+
+/// A line series' fill in a colour of its own (`fill_to` fills in the
+/// line's colour at a quarter of its opacity).
+fn fill_color(mut series: SeriesConfig, color: Color) -> SeriesConfig {
+    if let DataRenderType::Xy(XySeries {
+        line: Some(line), ..
+    }) = &mut series.render_type
+    {
+        line.fill_color = Some(color);
+    }
+    series
+}
+
+/// A chart of `width` x `height` with its top-left corner at `(x, y)` in
+/// the document.
+fn placed(x: u32, y: u32, width: u32, height: u32) -> Chart {
+    let mut chart = Chart::sized(width, height);
+    let area = &mut chart.config_mut().chart_area.0;
+    (area.x, area.y) = (x, y);
+    chart
+}
 
 // Small multiples: four sensors in a 2 x 2 grid of subplots sharing the hour
 // axis, each with its own range and colour.
@@ -33,16 +54,11 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
     let ink = rgb(52, 57, 85);
     let grid = rgb(228, 231, 240);
     let hour: Vec<f64> = (0..=240).map(|i| f64::from(i) / 10.).collect();
-    r.add_column("h", &column(hour.clone()))?;
+    r.add_column("h", &hour)?;
     let cell = |x: u32, y: u32, title: &str, y_title: &str| -> Config {
-        let mut config = renderer::default::default_config();
-        config.chart_area = ChartArea(Rect {
-            x,
-            y,
-            width: 600,
-            height: 400,
-        });
-        chrome(&mut config, bg, ink, grid);
+        let mut chart = placed(x, y, 600, 400);
+        let config = chart.config_mut();
+        chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 26.;
         config.chart_title.top_margin = 60.;
         config.left_y.out_margin = 95.;
@@ -55,7 +71,7 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             a.label_style.font_size = 18.;
             a.title_option.text.font_size = 19.;
         }
-        Chart::new(config)
+        chart
             .with_title(title)
             .with_x_title("Hour")
             .with_y_title(y_title)
@@ -122,35 +138,23 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
                 .max(0.)
             })
             .collect();
-        r.add_column(id, &column(data))?;
-        let mut style = line(color, 3.);
-        style.fill = Some(LineFill::ToBaseline(floor));
-        style.fill_color = Some(Color::from_rgba(color.r, color.g, color.b, 0.1));
-        specs.push(series(
-            id,
-            "h",
-            id,
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(style),
-                errors: None,
-                stem: None,
-            }),
+        r.add_column(id, &data)?;
+        specs.push(fill_color(
+            SeriesConfig::line(id, "h", id)
+                .color(color)
+                .width(3.)
+                .fill_to(floor),
+            Color::from_rgba(color.r, color.g, color.b, 0.1),
         ));
     }
     let mut config = cell(0, 0, sensors[0].1, sensors[0].2);
     config.subplots = [(1usize, 600u32, 0u32), (2, 0, 400), (3, 600, 400)]
         .into_iter()
-        .map(|(k, x, y)| {
-            let mut subplot = Subplot {
-                config: cell(x, y, sensors[k].1, sensors[k].2),
-                series: vec![sensors[k].0.to_string()],
-                link_x: Some(CellRef::Parent),
-                link_y: None,
-                marker: None,
-            };
-            subplot.config.legend.visible = false;
-            subplot
+        .map(|(k, x, y)| Subplot {
+            config: cell(x, y, sensors[k].1, sensors[k].2),
+            series: vec![sensors[k].0.to_string()],
+            link_x: Some(CellRef::Parent),
+            ..Default::default()
         })
         .collect();
     let mut chart = Chart::new(config);
@@ -179,8 +183,8 @@ fn small_multiples(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &specs),
-        renderer::ExportOptions::document(1.).with_clear(bg),
+        ExportSource::chart(&chart, &specs),
+        ExportOptions::document(1.).with_clear(bg),
     )?;
     save(&image, bg, &out.join("gallery-subplots.png"))
 }
@@ -204,23 +208,18 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
         ("pressure", pressure),
         ("air_humidity", humidity),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
 
     // One 480x420 cell: a chart with its own axes, titled.
     let cell = |x: u32, y: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut config = renderer::default::default_config();
-        config.chart_area = ChartArea(Rect {
-            x,
-            y,
-            width: 480,
-            height: 420,
-        });
+        let mut chart = placed(x, y, 480, 420);
+        let config = chart.config_mut();
         config.left_y.out_margin = 100.0;
         config.right_y.out_margin = 40.0;
         config.bottom_x.out_margin = 70.0;
         config.top_x.out_margin = 16.0;
-        Chart::new(config)
+        chart
             .with_title(title)
             .with_x_title(x_title)
             .with_y_title(y_title)
@@ -230,9 +229,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     let subplot = |config: Config, series: &[&str]| Subplot {
         config,
         series: series.iter().map(|id| id.to_string()).collect(),
-        link_x: None,
-        link_y: None,
-        marker: None,
+        ..Default::default()
     };
 
     // The document's own chart is the upper-left cell; three subplots fill
@@ -274,17 +271,7 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
     });
 
     let plain = |id: &str, x: &str, y: &str, color: Color| {
-        series(
-            id,
-            x,
-            y,
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(color, 2.5)),
-                errors: None,
-                stem: None,
-            }),
-        )
+        SeriesConfig::line(id, x, y).color(color).width(2.5)
     };
     let specs = [
         plain(
@@ -319,13 +306,13 @@ fn mixed_axes(r: &mut Renderer, out: &Path) -> Result {
             .find("subplot_2:overlay_0:axis_right")
             .is_some()
     );
-    let image = r.export_rgba_blocking(
-        renderer::ExportSource::chart(&chart, &specs),
-        renderer::ExportOptions::document(1.0).with_clear(Color::WHITE),
-    )?;
     let path = out.join("mixed-axes.png");
-    std::fs::write(&path, renderer::encode_png(&image)?)?;
-    println!("{}: {}x{}", path.display(), image.width, image.height);
+    r.save_blocking(
+        ExportSource::chart(&chart, &specs),
+        ExportOptions::document(1.0).with_clear(Color::WHITE),
+        &path,
+    )?;
+    println!("{}", path.display());
     Ok(())
 }
 

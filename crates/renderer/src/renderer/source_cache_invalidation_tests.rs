@@ -388,7 +388,7 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
     };
     let render = |r: &mut Renderer, id, document: &Config, size| {
         let (config, panel, scale) = display_config_for_surface(document, size);
-        let view = r
+        let mut view = r
             .create_chart_view(&Chart::new(config.clone()), panel)
             .unwrap();
         r.request_auto_streaming_chart_with_display_scale(
@@ -421,9 +421,9 @@ fn bounded_source_cache_resizes_physical_target_and_dpr_preserving_arc_boundarie
         }
         assert!(done, "cached replay failed to finish");
         wait_stream_slots(r, 0);
-        r.prepare_registered(&[RegisteredChartDrawItem {
+        r.prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
         assert!(matches!(

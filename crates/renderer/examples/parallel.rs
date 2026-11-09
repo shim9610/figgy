@@ -12,9 +12,9 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
-    BarAlign, ColorMap, Renderer,
+    BarAlign, ColorMap, Renderer, SeriesConfig,
     config::{AxisScale, Category, TickVisibility},
     data_config::DataRenderType,
     layout::Side,
@@ -76,22 +76,16 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
 
     let ids = ["lr", "batch", "dropout", "layers", "epochs", "accuracy"];
     for (k, id) in ids.iter().enumerate() {
-        r.add_column(
-            format!("sweep-{id}"),
-            &column(runs.iter().map(|run| run[k]).collect()),
-        )?;
+        let values: Vec<f64> = runs.iter().map(|run| run[k]).collect();
+        r.add_column(format!("sweep-{id}"), &values)?;
     }
-    let columns: Vec<String> = ids.iter().map(|id| format!("sweep-{id}")).collect();
-    let specs = [series(
-        "runs",
-        &columns[0],
-        &columns[1],
-        DataRenderType::Parallel {
-            columns: columns.clone(),
-            line: line(ink, 1.2),
-            color_column: Some("sweep-accuracy".into()),
-        },
-    )];
+    let mut lines = SeriesConfig::parallel("runs", ids.map(|id| format!("sweep-{id}")))
+        .color(ink)
+        .width(1.2);
+    if let DataRenderType::Parallel { color_column, .. } = &mut lines.render_type {
+        *color_column = Some("sweep-accuracy".into());
+    }
+    let specs = [lines];
 
     let config = chart.config_mut();
     config.bottom_x.categories = Some(

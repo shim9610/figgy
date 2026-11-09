@@ -17,13 +17,12 @@
 //! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
 // Legacy documents are read through their deprecated reader types.
 #![allow(deprecated)]
-use renderer::{
-    Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, encode_png, gpu,
-    radar::*,
-};
-use std::{path::Path, path::PathBuf};
-
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[allow(dead_code)]
+#[path = "support/gallery.rs"]
+mod gallery;
+use gallery::Result;
+use renderer::{Category, Chart, Color, LayerRef, Renderer, config::Config, encode_png, radar::*};
+use std::path::Path;
 
 /// `document` as a polar chart of radar series, exported to `name.png`.
 fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -> Result {
@@ -82,18 +81,11 @@ fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -
 }
 
 fn main() -> Result {
-    let dir = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "target/radar-gallery".into()),
-    );
-    std::fs::create_dir_all(&dir)?;
-    let instance = gpu::create_instance();
-    let adapter = gpu::request_adapter_blocking(&instance)?;
-    eprintln!("Radar adapter: {:?}", adapter.get_info());
-    let (d, q) = gpu::request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
-    let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
+    let dir = gallery::output_directory("target/radar-gallery")?;
+    gallery::with_renderer(|r| render(r, &dir))
+}
+
+fn render(r: &mut Renderer, dir: &Path) -> Result {
     let mut c = RadarChart {
         title: "Build quality".into(),
         categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
@@ -117,13 +109,13 @@ fn main() -> Result {
         font_size: 18.,
         ..Default::default()
     };
-    save(&mut r, &c, &dir, "01-spider-web")?;
+    save(r, &c, dir, "01-spider-web")?;
     c.title = "Circular grid, value labels".into();
     c.style.grid_shape = RadarGridShape::Circle;
     c.labels = RadarLabels::Values;
     c.value_suffix = " pt".into();
     c.label_decimals = 0;
-    save(&mut r, &c, &dir, "02-circle-values")?;
+    save(r, &c, dir, "02-circle-values")?;
     c.title = "Fixed 0 to 10 axis, square markers".into();
     c.style.grid_shape = RadarGridShape::Polygon;
     c.labels = RadarLabels::None;
@@ -131,7 +123,7 @@ fn main() -> Result {
     c.ring_spacing = Some(2.5);
     c.style.marker = RadarMarker::Square;
     c.style.fill_opacity = 0.15;
-    save(&mut r, &c, &dir, "03-fixed-axis")?;
+    save(r, &c, dir, "03-fixed-axis")?;
     c.title = "Four teams, counter-clockwise from the right".into();
     c.style.start_angle_degrees = 0.;
     c.style.clockwise = false;
@@ -158,7 +150,7 @@ fn main() -> Result {
         ..Default::default()
     });
     c.series.push(muted);
-    save(&mut r, &c, &dir, "04-four-series")?;
+    save(r, &c, dir, "04-four-series")?;
     c.title = "Selected vertex".into();
     c.style.start_angle_degrees = -90.;
     c.style.clockwise = true;
@@ -167,6 +159,6 @@ fn main() -> Result {
     c.labels = RadarLabels::Emphasized;
     c.selected = Some(RadarTarget::vertex("v2", "docs"));
     c.hovered = Some(RadarTarget::series("v1"));
-    save(&mut r, &c, &dir, "05-selection")?;
+    save(r, &c, dir, "05-selection")?;
     Ok(())
 }

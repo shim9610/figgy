@@ -86,23 +86,25 @@ the distinction between logical and physical pointer coordinates, see
 [the native API workflow](API.md#native-edit-pick-and-export-workflow).
 
 Cartesian hosts own the derived `ChartView` and, with `prepare`, the series'
-`ChartStyle` values. After changing axes, grid, labels, legend or panel size, call
-`refresh_axis` (or `refresh_axis_with_selection`) before preparing. After changing
-a series' appearance, mapped styles or identity, recreate its `ChartStyle` with
-`create_style_for_series` (or `create_style_for_series_scaled` at the display
-scale the style was built for). `prepare` updates transforms and GPU data but
-does not perform those two steps. Charts registered with `Renderer::register_chart`
-keep their own style cache, updated by `set_chart_config` / `set_chart_series`
-and drawn with `prepare_registered`; the caller-owned `ChartView` still needs
-`refresh_axis`.
+`ChartStyle` values. After changing axes, grid, labels, legend or panel size
+through the `Chart`, just prepare: `prepare` redraws the view's text and axis
+raster when the chart changed since the view was drawn, with the element
+`chart.select(..)` names drawn selected. `refresh_axis` (or
+`refresh_axis_with_selection`) stays for a host that draws the raster itself.
+After changing a series' appearance, mapped styles or identity, recreate its
+`ChartStyle` with `create_style_for_series` (or `create_style_for_series_scaled`
+at the display scale the style was built for); `prepare` does not rebuild it.
+Charts registered with `Renderer::register_chart` keep their own style cache,
+updated by `set_chart_config` / `set_chart_series`, and `prepare_registered`
+redraws the caller-owned `ChartView` from the stored chart and its selection.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
 
 The refresh also reports tick settings the axis raster could not draw as written.
-Read `view.render_warnings()` in the same branch that calls `refresh_axis`: each
+Read `view.render_warnings()` after a prepare that redrew the view: each
 `RenderWarning` names the axis, the value as written and the value drawn, such
 as a `major_spacing` that would need more than 1000 intervals and was drawn at
-automatic spacing. The list is re-derived only when the view is rasterized, so a
-host that refreshes on its dirty flag never pays for it per frame. Compare it
+automatic spacing. The list is re-derived only when the view is rasterized,
+never per frame. Compare it
 with the previous list to show only changes. The same list ends with the
 annotation layer's `AnnotationSkipped` warnings for items the annotation raster
 could not place. After an edit of `config.annotations.items`, `refresh_axis`
@@ -142,16 +144,13 @@ let mut renderer = Renderer::for_window_blocking(
     16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
 ).unwrap();
 
-// renderer.add_column takes `&dyn ColumnSource`.
-// Implement the trait on your own type (see `ColumnSource` section below) — Vec, ndarray,
-// polars Series, mmap, anything. Built-in `Column<f64>` works too.
+// renderer.add_column takes `&dyn ColumnSource`. A `Vec` or slice of f64,
+// f32, u32 or Option<f64> uploads as it is; implement the trait on your own
+// type (see `ColumnSource` section below) for ndarray, polars Series, mmap, anything.
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    renderer::Column { data }
-}
-renderer.add_column("x", &column(xs)).unwrap();
-renderer.add_column("y", &column(ys)).unwrap();
+renderer.add_column("x", &xs).unwrap();
+renderer.add_column("y", &ys).unwrap();
 
 // Chart — builder pattern.
 let mut config = default::default_config();
@@ -178,16 +177,16 @@ let cfg = SeriesConfig {
         }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
-let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
+let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
 let series = [Series { config: &cfg, style: &style }];
-let items  = [ChartDrawItem {
-    view: &view,
-    chart_config: chart.config(),
+let mut items = [ChartDrawItem {
+    view: &mut view,
+    chart: &chart,
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → prepare → encoder → pass → paint_prepared → submit → present
+renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame → prepare (redraws a stale raster) → encoder → pass → paint_prepared → submit → present
 ```
 
 ### `ColumnSource` — the data adapter trait
@@ -223,7 +222,7 @@ pub trait ColumnSource {
 }
 ```
 
-**Built-in implementors**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+**Built-in implementors**: `Column<T>`, `Vec<T>`, `[T]` and `&[T]` for `T` = `f64`, `f32`, `u32` and `Option<f64>` (`None` → NaN). They write straight from the host's memory into mapped staging, with no copy. Arrays are not implementors: pass `&arr.as_slice()`.
 
 ```rust
 pub trait HiLoColumnSource {
@@ -242,7 +241,7 @@ pub trait HiLoColumnSource {
 }
 ```
 
-`Column<f64>`, `Column<f32>` and `Column<Option<f64>>` also implement
+The `f64`, `f32` and `Option<f64>` implementors also implement
 `HiLoColumnSource`; browser hosts should pass a
 `Float64Array` through `register_column_f64` for the first upload and
 `update_register_column_f64` for an explicit replacement when using timestamp
@@ -344,11 +343,11 @@ struct FiggyCallback { panel_idx: usize /* one callback per panel */ }
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
         let state = resources.get_mut::<FiggyState>().unwrap();
-        // dirty handling: refresh_axis (raster). No per-frame update_transform —
-        // prepare writes the transform uniform itself.
-        // items = panel_draw_items(panel, &series): a free function over the panel
-        // fields, so `state.renderer` stays free for this `&mut` call.
-        let prepared = state.renderer.prepare(&items).unwrap();
+        // No raster or transform handling: prepare redraws a stale raster and
+        // writes the transform uniform itself. The panel lends its view
+        // mutably and its chart and series immutably (disjoint fields), so
+        // `state.renderer` stays free for this `&mut` call.
+        let prepared = state.renderer.prepare(&mut items).unwrap();
         // store the token per panel — egui runs every callback's prepare before
         // any paint, so one shared token would be overwritten by later panels
         state.panels[self.panel_idx].prepared = Some(prepared);
@@ -443,6 +442,38 @@ The retained [iced integration source](https://github.com/shim9610/figgy/blob/ma
 documents the intended `prepare` / `paint_prepared` ownership pattern, but its
 build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
 queue, and render-pass types cannot be shared across major versions.
+
+### Series constructors
+
+With the `helpers` feature (on by default), each chart family has a
+constructor on `SeriesConfig` that names its columns and draws with the
+host style defaults. Chainable modifiers set the common fields; any other
+field is set on the returned series directly. Both are plain values in the
+document: nothing is stored besides the series.
+
+```rust
+use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
+
+let series = [
+    SeriesConfig::line("sine", "x", "y").label("sin x").width(2.0),
+    SeriesConfig::scatter("samples", "x", "noisy")
+        .label("samples")
+        .color(Color::from_rgb8(214, 39, 40))
+        .marker(ScatterShape::Diamond, 7.0)
+        .y_errors("sigma"),
+    SeriesConfig::line("trend", "x", "fit").dash(LineStylePreset::Dash).fill_to(0.0),
+];
+```
+
+The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
+`heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`,
+`category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`,
+`mesh`, `energy_diagram` and `feynman_diagram` (and `of_kind` for any
+`DataRenderType`). Matrices are named with `MatrixRef::columns_are_x` or
+`columns_are_y`. The modifiers: `label`, `color`, `width`, `dash`, `marker`,
+`fill_to`, `x_errors`, `y_errors`, `horizontal` (histograms) and `z` (3D).
+A family that needs its chart set up (a category axis, polar, ternary or
+parallel axes) still validates against that chart.
 
 ### Cartesian series, maps and layers
 
@@ -554,6 +585,84 @@ The [radial chart guide](RADIAL.md) (in Korean) covers the API with an example,
 [option defaults and ranges](RADIAL.md#스타일-옵션-기본값과-범위),
 [per-slice editing](RADIAL.md#ssot-편집과-선택), and
 [host update order](RADIAL.md#호스트의-갱신-순서), including frame ownership and export.
+
+### Headless renderer and saving by format
+
+With the `helpers` feature, a renderer without a window takes one call, and
+one call exports and writes a file in the format its name gives. The steps
+stay explicit: create, upload, set the document, save.
+
+```rust
+use renderer::{Chart, ExportOptions, ExportSource, Renderer, SeriesConfig};
+
+let mut renderer = Renderer::headless_blocking()?;        // instance, adapter, device, pipelines
+renderer.add_column("x", &xs)?;                          // a Vec<f64> or a slice, no wrapper
+renderer.add_column("y", &ys)?;
+let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.fit_layout();                                       // margins fitted to the labels
+let source = ExportSource::Chart { chart: &chart, series: &series };
+renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // or .svg / .pdf
+```
+
+- `Renderer::headless_blocking()` (native) and `Renderer::headless(options).await`
+  (also in the browser) honour `WGPU_BACKEND`; `HeadlessOptions` sets the
+  initial column pool (16 MiB by default) and the power preference
+  (`headless_blocking_with`).
+- `ExportFormat` is `Png`, `Svg` or `Pdf`; `ExportFormat::from_path` reads it
+  from the extension in any letter case. `export_bytes` (async) and
+  `export_bytes_blocking` return the bytes; `save_blocking` picks the format
+  from the extension and `save_as_blocking` takes it explicitly. Each routes
+  to the export below, so the file is exactly what that export returns.
+- A save fails with `SaveError`: the export's own error, an extension that
+  names no format, or the file write.
+- `RadialRenderer` has the same `export_bytes`, `export_bytes_blocking` and
+  `save_blocking`, with the chart and its size.
+- `Chart::sized(width, height)` starts from the documented default look with
+  that chart area; `with_legend_from(&series)` adds one legend entry per
+  labelled series with the series' own symbol; `fit_layout()` fits the axis
+  bands and margins to their labels (`layout::auto_layout`).
+
+### Themes
+
+A theme (`renderer::theme::Theme`, `helpers` feature) writes a whole look into
+the document once. It is a value, not a name the document stores: after it is
+applied, the document holds plain values and stays the single source of truth.
+
+```rust
+use renderer::theme::{SubplotScope, Theme};
+
+let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // refits the layout too
+```
+
+- Built in: `Theme::light()` (the documented default look), `dark()`,
+  `paper()` (open frame, no grid, grayscale-safe), `dashboard()` (no axis
+  lines or ticks, horizontal grid, large text) and `sketch()` (hand-drawn
+  strokes). `Theme::named("dark")` looks one up by name. Every field is public,
+  so a host edits a copy before applying it.
+- A theme writes the chrome (`ChromeTheme`): the chart and plot fills, the
+  draw style, the axis frame (`AxisPreset`), axis, tick-label, title and legend
+  colours, fonts and sizes, the grid, the legend box, the colourbar outline and
+  the selection highlight. It writes each series' family part (`SeriesTheme`):
+  colours through its `ColorCycle`, stroke widths, marker sizes and the
+  family's materials. Energy-level and Feynman charts keep a frame of their
+  own (`Grotrian`, `Hidden`).
+- It keeps axis ranges, scales, tick spacing, label formats, categories,
+  axis breaks, the chart area, every offset, all text content, the annotation
+  layer, the overlay and subplot structure, series ids, columns and labels,
+  and the selection itself.
+- Overlays take the theme with their chart. `SubplotScope` chooses the
+  subplots: `None`, `All` or `Only(&[indices])`; a series drawn in a subplot
+  outside the scope keeps its look.
+- `Chart::apply_theme` refits the layout to the new text sizes
+  (`fit_layout`). `Chart::with_theme(&theme)` applies the chrome alone and
+  fits; style the series with `theme.style_series(&mut series, index)`.
+  `theme.apply(&mut config, &mut series, scope)` works on a bare `Config` and
+  leaves the layout to the host. `theme.apply_radial(&mut radial_chart)`
+  themes a radial chart.
+- Applying the same theme twice changes nothing more.
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -711,21 +820,22 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 차이는 [네이티브 API 작업 흐름](API.md#native-edit-pick-and-export-workflow)에 있다.
 
 직교 차트 호스트는 파생 상태인 `ChartView`를 보관하고, `prepare`를 쓸 때는 시리즈별
-`ChartStyle`도 보관한다. 축·격자·라벨·범례·패널 크기를 바꾼 뒤에는 prepare 전에
-`refresh_axis`(또는 `refresh_axis_with_selection`)를 호출한다. 시리즈의 모양·매핑 스타일·
-식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다. 특정 표시 배율로
-만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다. `prepare`는 변환과
-GPU 데이터만 갱신하며 이 두 단계를 대신하지 않는다. `Renderer::register_chart`로 등록한
-차트는 자체 스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며
-`prepare_registered`로 그린다. 이때도 호출자가 가진 `ChartView`에는 `refresh_axis`가 필요하다.
+`ChartStyle`도 보관한다. 축·격자·라벨·범례·패널 크기를 `Chart`로 바꿨다면 그대로 prepare하면
+된다. `prepare`는 뷰를 그린 뒤로 차트가 바뀌었으면 글자·축 래스터를 다시 그리고,
+`chart.select(..)`로 지정한 요소를 선택 상태로 그린다. `refresh_axis`(또는
+`refresh_axis_with_selection`)는 래스터를 직접 그리려는 호스트를 위해 남아 있다. 시리즈의
+모양·매핑 스타일·식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다.
+특정 표시 배율로 만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다.
+`prepare`는 스타일을 다시 만들지 않는다. `Renderer::register_chart`로 등록한 차트는 자체
+스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며, `prepare_registered`가
+저장된 차트와 그 선택 상태로 호출자의 `ChartView`를 다시 그린다.
 [편집 표와 컴파일되는 예제](API.md#cartesian-edits-update-the-derived-inputs-before-preparing)를
 참고한다.
 
-`refresh_axis`는 축 래스터가 설정대로 그리지 못한 눈금 설정도 알려 준다. `refresh_axis`를
-호출한 분기에서 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
+래스터를 다시 그리면 축 래스터가 설정대로 그리지 못한 눈금 설정도 알려 준다. 뷰를 다시
+그린 prepare 뒤에 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
 실제로 그린 값이 들어 있다. 예를 들어 간격이 1000개를 넘어야 하는 `major_spacing`은 자동
-간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 변경 플래그에 따라 갱신하는
-호스트는 프레임마다 비용을 내지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
+간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 프레임마다 비용이 들지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
 목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙는다.
 `config.annotations.items`를 고친 뒤 `refresh_axis`를 호출하면 축과 함께 주석 래스터도 다시
 그리고, `refresh_annotations`는 주석 층(아래층·위층 텍스처)만 다시 그린다. 등록 차트에서는
@@ -761,16 +871,13 @@ let mut renderer = Renderer::for_window_blocking(
     16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
 ).unwrap();
 
-// renderer.add_column은 `&dyn ColumnSource`를 받는다.
-// 사용하는 데이터 타입에 트레이트를 구현하면(아래 `ColumnSource` 절 참고) Vec, ndarray,
-// polars Series, mmap 등 어떤 데이터든 넘길 수 있다. 기본 제공 `Column<f64>`를 써도 된다.
+// renderer.add_column은 `&dyn ColumnSource`를 받는다. f64, f32, u32, Option<f64>의
+// `Vec`이나 슬라이스는 그대로 넘긴다. ndarray, polars Series, mmap 같은 다른 데이터는
+// 그 타입에 트레이트를 구현해 넘긴다(아래 `ColumnSource` 절 참고).
 let xs: Vec<f64> = (0..1024).map(|i| i as f64 * 0.01).collect();
 let ys: Vec<f64> = xs.iter().map(|x| x.sin()).collect();
-fn column(data: Vec<f64>) -> renderer::Column<f64> {
-    renderer::Column { data }
-}
-renderer.add_column("x", &column(xs)).unwrap();
-renderer.add_column("y", &column(ys)).unwrap();
+renderer.add_column("x", &xs).unwrap();
+renderer.add_column("y", &ys).unwrap();
 
 // Chart — 빌더 패턴.
 let mut config = default::default_config();
@@ -797,16 +904,16 @@ let cfg = SeriesConfig {
         }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
-let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
+let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
 let series = [Series { config: &cfg, style: &style }];
-let items  = [ChartDrawItem {
-    view: &view,
-    chart_config: chart.config(),
+let mut items = [ChartDrawItem {
+    view: &mut view,
+    chart: &chart,
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prepare → encoder → pass → paint_prepared → submit → present
+renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → prepare(오래된 래스터를 다시 그림) → encoder → pass → paint_prepared → submit → present
 ```
 
 <a id="columnsource--데이터-어댑터-trait"></a>
@@ -817,7 +924,7 @@ renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prep
 
 데이터 소스는 값만 GPU용 쌍으로 기록한다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 렌더러의 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 렌더러는 wgpu 30의 쓰기 전용 매핑 영역을 다시 읽지 않는다. `writer.write_value(index, v)`로 f64를 기록하면 `(hi, lo)`로 나눠 쓰고 통계에는 `v` 자체를 반영한다. `writer.write_pair(index, hi, lo)`는 `hi as f64 + lo as f64`를 반영한다. 유한한 값만 포함한다. 스트리밍 소스는 청크마다 같은 방식으로 계산한다.
 
-큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 `Column` 타입 세 가지는 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
+큰 Unix 시각이나 절대 좌표처럼 f32로는 작은 차이가 사라지는 값은 `Renderer::add_hilo_column`에 `&dyn HiLoColumnSource`를 넘겨 등록한다. 기본 제공 구현체 중 `f64`, `f32`, `Option<f64>`를 담는 것은 이 트레이트도 구현한다. 브라우저에서 큰 Unix 시각을 시간축에 쓸 때는 처음 등록할 때 `register_column_f64`, 교체할 때 `update_register_column_f64`에 `Float64Array`를 넘긴다.
 
 `add_column` / `add_hilo_column`은 새 ID를 등록할 때 사용한다. 기존 ID의 데이터를 교체하려면 `upsert_column` / `upsert_hilo_column`을 사용한다. `Renderer`는 새 풀 상태, 영향을 받는 차트의 리비전, 피킹 캐시와 정리 작업을 모두 준비한 뒤 한꺼번에 반영한다. 준비 중 오류가 나면 기존 상태를 유지한다.
 
@@ -842,7 +949,7 @@ pub trait ColumnSource {
 }
 ```
 
-**기본 제공 구현체**: `Column<f64>`, `Column<f32>`, `Column<Option<f64>>` (null → NaN).
+**기본 제공 구현체**: `T`가 `f64`, `f32`, `u32`, `Option<f64>`일 때의 `Column<T>`, `Vec<T>`, `[T]`, `&[T]` (`None` → NaN). 호스트 메모리에서 매핑된 스테이징 버퍼로 복사 없이 바로 쓴다. 배열은 구현체가 아니므로 `&arr.as_slice()`로 넘긴다.
 
 사용자 정의 `ColumnSource`는 값을 기록하는 `write_pairs`를 반드시 구현해야 한다. 빠뜨리면 컴파일 단계에서 오류가 난다. 소스는 값만 기록하고 통계는 넘기지 않는다. 최솟값, 최댓값, 0보다 큰 가장 작은 값은 `ColumnPairWriter`가 기록되는 값에서 같은 순회로 계산한다. 그래서 통계가 데이터와 어긋날 수 없다. `HiLoColumnSource`도 같은 이름의 메서드로 `(hi, lo)` 쌍을 기록한다.
 
@@ -927,11 +1034,10 @@ struct FiggyCallback { panel_idx: usize /* 패널마다 콜백 하나 */ }
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
         let state = resources.get_mut::<FiggyState>().unwrap();
-        // 패널 영역이 바뀌었거나 래스터를 다시 그려야 하면 refresh_axis를 호출한다.
-        // prepare가 transform uniform을 직접 쓰므로 프레임마다 update_transform을 호출할 필요는 없다.
-        // items = panel_draw_items(panel, &series): 패널 필드만 받는 자유 함수라서
-        // 이 `&mut` 호출에 `state.renderer`를 그대로 쓸 수 있다.
-        let prepared = state.renderer.prepare(&items).unwrap();
+        // 래스터와 transform은 따로 처리하지 않는다. prepare가 오래된 래스터를 다시 그리고
+        // transform uniform도 직접 쓴다. 패널은 뷰를 쓰기 가능하게, 차트와 시리즈는 읽기 전용으로
+        // 빌려준다(서로 다른 필드). 그래서 이 `&mut` 호출에 `state.renderer`를 그대로 쓸 수 있다.
+        let prepared = state.renderer.prepare(&mut items).unwrap();
         // 토큰은 패널마다 따로 저장한다. egui는 모든 콜백의 prepare를 실행한 뒤 paint를
         // 실행하므로, 토큰 하나를 공유하면 뒤 패널의 prepare가 앞 패널의 토큰을 덮어쓴다
         state.panels[self.panel_idx].prepared = Some(prepared);
@@ -994,6 +1100,34 @@ if let Some(ticket) = pending.take() {
 ### iced 통합 상태
 
 [보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
+
+### 시리즈 생성 함수
+
+`helpers` 기능(기본으로 켜져 있다)을 쓰면 차트 종류마다 `SeriesConfig`에 생성 함수가 있다. 생성
+함수는 컬럼을 지정하고 호스트용 기본 스타일로 그린다. 이어 붙이는 수정 메서드로 공통 필드를 바꾸고,
+그 밖의 필드는 돌려받은 시리즈에서 직접 고친다. 둘 다 문서 안의 값일 뿐이며 시리즈 말고는 따로
+저장하는 것이 없다.
+
+```rust
+use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
+
+let series = [
+    SeriesConfig::line("sine", "x", "y").label("sin x").width(2.0),
+    SeriesConfig::scatter("samples", "x", "noisy")
+        .label("samples")
+        .color(Color::from_rgb8(214, 39, 40))
+        .marker(ScatterShape::Diamond, 7.0)
+        .y_errors("sigma"),
+    SeriesConfig::line("trend", "x", "fit").dash(LineStylePreset::Dash).fill_to(0.0),
+];
+```
+
+생성 함수: `line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`,
+`rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`,
+`parallel`, `mesh`, `energy_diagram`, `feynman_diagram`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다.
+행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로 지정한다. 수정 메서드: `label`, `color`, `width`,
+`dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal`(히스토그램), `z`(3D). 차트 설정이
+필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그 차트 설정에 맞춰 검증된다.
 
 ### 직교 시리즈·매핑·레이어
 
@@ -1082,6 +1216,74 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 [호스트 갱신 순서](RADIAL.md#호스트의-갱신-순서)를 확인할 수 있다.
 
 <a id="png-export-메모리-only--저장은-caller"></a>
+
+### 창 없는 렌더러와 형식별 저장
+
+`helpers` 기능을 쓰면 창 없는 렌더러를 한 번의 호출로 만들고, 파일 이름이 가리키는 형식으로
+내보내 저장하는 것도 한 번의 호출로 끝난다. 단계는 그대로 드러난다. 만들기, 올리기, 문서 정하기,
+저장하기 순서다.
+
+```rust
+use renderer::{Chart, ExportOptions, ExportSource, Renderer, SeriesConfig};
+
+let mut renderer = Renderer::headless_blocking()?;        // 인스턴스, 어댑터, 장치, 파이프라인
+renderer.add_column("x", &xs)?;                          // Vec<f64>나 슬라이스를 감싸지 않고 넘긴다
+renderer.add_column("y", &ys)?;
+let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.fit_layout();                                       // 여백을 라벨에 맞춘다
+let source = ExportSource::Chart { chart: &chart, series: &series };
+renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .svg, .pdf도 된다
+```
+
+- `Renderer::headless_blocking()`(네이티브)과 `Renderer::headless(options).await`(브라우저 포함)은
+  `WGPU_BACKEND`를 따른다. `HeadlessOptions`로 처음 컬럼 풀 크기(기본 16 MiB)와 전력 선호를
+  정한다(`headless_blocking_with`).
+- `ExportFormat`은 `Png`, `Svg`, `Pdf`다. `ExportFormat::from_path`는 확장자를 대소문자 구분 없이
+  읽는다. `export_bytes`(비동기)와 `export_bytes_blocking`은 바이트를 돌려준다. `save_blocking`은
+  확장자로 형식을 고르고 `save_as_blocking`은 형식을 직접 받는다. 모두 아래의 내보내기 함수를 그대로
+  부르므로 파일 내용은 그 내보내기 결과와 같다.
+- 저장이 실패하면 `SaveError`를 돌려준다. 내보내기 자체의 오류, 형식을 알 수 없는 확장자, 파일 쓰기
+  오류 중 하나다.
+- `RadialRenderer`에도 같은 `export_bytes`, `export_bytes_blocking`, `save_blocking`이 있고, 차트와
+  크기를 받는다.
+- `Chart::sized(width, height)`는 기본 모양에 그 크기의 차트 영역을 준 차트다.
+  `with_legend_from(&series)`는 라벨이 있는 시리즈마다 그 시리즈의 기호로 범례 항목을 하나씩 더하고,
+  `fit_layout()`은 축 띠와 여백을 라벨과 제목에 맞춘다(`layout::auto_layout`).
+
+### 테마
+
+테마(`renderer::theme::Theme`, `helpers` 기능)는 차트 전체의 모양을 문서에 한 번 써 넣는다.
+문서에 이름으로 저장되는 것이 아니라 값이다. 적용하고 나면 문서에는 평범한 값만 남고, 문서가 계속
+하나뿐인 원본(SSOT)으로 남는다.
+
+```rust
+use renderer::theme::{SubplotScope, Theme};
+
+let mut series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.apply_theme(&Theme::dark(), &mut series, SubplotScope::All);  // 레이아웃도 다시 맞춘다
+```
+
+- 내장 테마는 `Theme::light()`(문서에 적힌 기본 모양), `dark()`, `paper()`(열린 축 틀, 격자 없음,
+  흑백 인쇄에 안전), `dashboard()`(축선·눈금 없음, 가로 격자, 큰 글자), `sketch()`(손으로 그린 선)다.
+  `Theme::named("dark")`로 이름으로 찾을 수 있다. 모든 필드가 공개되어 있어서 복사본을 고친 뒤
+  적용해도 된다.
+- 테마가 쓰는 것은 크롬(`ChromeTheme`)이다. 차트와 플롯 배경, 그리기 스타일, 축 틀(`AxisPreset`),
+  축·눈금 라벨·제목·범례의 색과 글꼴과 크기, 격자, 범례 상자, 색상 막대 테두리, 선택 강조가
+  여기에 든다. 시리즈마다 계열별 부분(`SeriesTheme`)도 쓴다. `ColorCycle`에 따른 색, 선 굵기,
+  마커 크기, 계열별 재질이다. 에너지 준위 차트와 파인만 도형은 자기 축 틀(`Grotrian`, `Hidden`)을
+  유지한다.
+- 축 범위, 스케일, 눈금 간격, 라벨 형식, 범주, 축 끊김, 차트 영역, 모든 오프셋, 모든 텍스트
+  내용, 주석 레이어, 오버레이와 서브플롯 구조, 시리즈 id·컬럼·라벨, 선택 자체는 그대로 둔다.
+- 오버레이는 차트와 함께 테마를 받는다. 서브플롯은 `SubplotScope`로 고른다. `None`, `All`,
+  `Only(&[인덱스])` 중 하나이고, 범위 밖 서브플롯에 그려지는 시리즈는 모양을 유지한다.
+- `Chart::apply_theme`은 바뀐 글자 크기에 맞춰 레이아웃을 다시 맞춘다(`fit_layout`).
+  `Chart::with_theme(&theme)`는 크롬만 적용하고 맞추며, 시리즈는
+  `theme.style_series(&mut series, index)`로 꾸민다. `theme.apply(&mut config, &mut series, scope)`는
+  `Config`에 바로 적용하고 레이아웃은 호스트에게 맡긴다. `theme.apply_radial(&mut radial_chart)`은
+  원형 차트에 적용한다.
+- 같은 테마를 두 번 적용해도 더 바뀌는 것은 없다.
 
 ### PNG 내보내기
 

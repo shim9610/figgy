@@ -55,6 +55,15 @@ pub fn emit_chart_chrome(
     sink: &mut dyn Sink,
     scale: f32,
 ) {
+    // The chart's own fill, under everything it draws (#265).
+    if let Some(fill) = config.background {
+        sink.rect(
+            Slot::Below,
+            RectF::from_rect(&config.chart_area.0),
+            Some(fill),
+            None,
+        );
+    }
     let Ok(da) = config.data_area() else { return };
     // The Cartesian walks take the plot rectangle.
     let plot = data_area_rect(&da);

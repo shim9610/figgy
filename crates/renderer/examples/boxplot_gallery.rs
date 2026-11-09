@@ -26,26 +26,23 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
+use gallery::Result;
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
-    RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, encode_png,
-    gpu,
+    RecordSource, Renderer, UploadValues, boxplot::*, config::Config, encode_png,
 };
 use renderer::{
     SeriesConfig,
     config::{LegendCorner, append_legend_entry, scatter_shape_char},
-    data::Column,
     data_config::{
-        BarGroups, BoxPlotSeriesLabels, BoxPlotStyle, BoxPoints, BoxPointsStyle,
-        CategoryBarDirection, DataRenderType, ScatterShape, Violin, ViolinBody, ViolinHalf,
-        ViolinStyle,
+        BarGroups, BoxPlotStyle, BoxPoints, BoxPointsStyle, CategoryBarDirection, DataRenderType,
+        ScatterShape, Violin, ViolinBody, ViolinHalf, ViolinStyle,
     },
     text::RichSegment,
+    theme::SubplotScope,
 };
-use std::{path::Path, path::PathBuf};
+use std::path::Path;
 use styled::{rgb, rgba};
-
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Option<BoxSummary> {
     let mut v = BoxSummary::new(low, q1, med, q3, high);
@@ -203,9 +200,8 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
         cat.extend(std::iter::repeat_n(k as f64, group.len()));
         value.extend_from_slice(group);
     }
-    let columns = stats.map(|data| Column { data });
     let fields: [(&str, &dyn ColumnSource); 5] =
-        std::array::from_fn(|k| (BOX_PLOT_RECORD[k].0, &columns[k] as &dyn ColumnSource));
+        std::array::from_fn(|k| (BOX_PLOT_RECORD[k].0, &stats[k] as &dyn ColumnSource));
     r.upsert_record(
         format!("{id}.record"),
         &RecordSource {
@@ -216,37 +212,33 @@ fn upload_groups(r: &mut Renderer, id: &str, groups: &[Vec<f64>], grid: usize) -
     r.upsert_ragged(
         format!("{id}.curve"),
         &RaggedSource {
-            values: &Column { data: curve },
-            offsets: &Column { data: offsets },
+            values: &curve,
+            offsets: &offsets,
         },
     )?;
-    r.add_column(format!("{id}.density"), &Column { data: density })?;
-    r.add_column(format!("{id}.cat"), &Column { data: cat })?;
-    r.add_column(format!("{id}.value"), &Column { data: value })?;
+    r.add_column(format!("{id}.density"), &density)?;
+    r.add_column(format!("{id}.cat"), &cat)?;
+    r.add_column(format!("{id}.value"), &value)?;
     Ok(peak)
 }
 
-/// The shared gallery chrome (`support/styled.rs`) scaled to 960 x 640.
+/// The shared gallery chrome (`support/styled.rs`) scaled to 960 x 640:
+/// the scene's theme with smaller text, and narrower margins.
 fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -> Chart {
     let mut chart = gallery::chart(title, x, y, SCENE);
     let config = chart.config_mut();
     styled::chrome(config, bg, ink, grid);
-    config.chart_title.text.font_size = 28.;
+    let mut theme = styled::theme(bg, ink, grid);
+    theme.chrome.title_size = 28.;
+    theme.chrome.axis_title_size = 19.;
+    theme.chrome.tick_label_size = 18.;
+    theme.chrome.legend_size = 18.;
+    theme.apply_chrome(config, SubplotScope::All);
     config.chart_title.top_margin = 68.;
     config.left_y.out_margin = 96.;
     config.right_y.out_margin = 44.;
     config.bottom_x.out_margin = 82.;
     config.top_x.out_margin = 30.;
-    for axis in [
-        &mut config.left_y,
-        &mut config.right_y,
-        &mut config.bottom_x,
-        &mut config.top_x,
-    ] {
-        axis.label_style.font_size = 18.;
-        axis.title_option.text.font_size = 19.;
-    }
-    config.legend.content.font_size = 18.;
     config.legend.padding = 12.;
     chart
 }
@@ -266,20 +258,17 @@ fn swatch(chart: &mut Chart, label: &str, color: Color) {
 /// A box plot series at the positions `{id}.pos` over the host's record
 /// `{id}.record` with `violin` behind its boxes.
 fn violin_series(id: &str, color: Color, style: BoxPlotStyle, violin: Violin) -> SeriesConfig {
-    gallery::series(
-        id,
-        &format!("{id}.pos"),
-        &format!("{id}.record"),
-        DataRenderType::BoxPlot {
-            color,
-            style,
-            labels: BoxPlotSeriesLabels::default(),
-            outliers: None,
-            overrides: None,
-            violin: Some(violin),
-            points: None,
-        },
-    )
+    let mut series = SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color);
+    if let DataRenderType::BoxPlot {
+        style: box_style,
+        violin: body,
+        ..
+    } = &mut series.render_type
+    {
+        *box_style = style;
+        *body = Some(violin);
+    }
+    series
 }
 
 /// A density half over `{id}.curve` and `{id}.density`, its widest point
@@ -362,7 +351,7 @@ fn violins(r: &mut Renderer, out: &Path) -> Result {
         })
         .collect();
     let positions: Vec<f64> = (0..loads.len()).map(|k| k as f64).collect();
-    r.add_column("rt.pos", &Column { data: positions })?;
+    r.add_column("rt.pos", &positions)?;
     let peak = upload_groups(r, "rt-rested", &rested_samples, 160)?.max(upload_groups(
         r,
         "rt-tired",
@@ -453,7 +442,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
         .map(|m| (0..n).map(m.3).collect())
         .collect();
     let positions: Vec<f64> = (0..modes.len()).map(|k| k as f64).collect();
-    r.add_column("commute.pos", &Column { data: positions })?;
+    r.add_column("commute.pos", &positions)?;
     let peak = upload_groups(r, "commute", &samples, 160)?;
     let mut chart = designed(
         "Commute time by mode",
@@ -536,18 +525,11 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
 }
 
 fn main() -> Result {
-    let dir = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "target/boxplot-gallery".into()),
-    );
-    std::fs::create_dir_all(&dir)?;
-    let instance = gpu::create_instance();
-    let adapter = gpu::request_adapter_blocking(&instance)?;
-    eprintln!("Boxplot adapter: {:?}", adapter.get_info());
-    let (d, q) = gpu::request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(d, q).expect("figgy poll thread");
-    let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
+    let dir = gallery::output_directory("target/boxplot-gallery")?;
+    gallery::with_renderer(|r| render(r, &dir))
+}
+
+fn render(r: &mut Renderer, dir: &Path) -> Result {
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),
         categories: ["Control", "Low", "High"]
@@ -580,15 +562,15 @@ fn main() -> Result {
         o.color = Some(color);
         c.overrides.push(o);
     }
-    save(&mut r, &c, &dir, "01-classic-matte")?;
+    save(r, &c, dir, "01-classic-matte")?;
     c.title = "Satin finish".into();
     c.style.material = Material::SatinMetal;
     c.style.gloss = 0.6;
-    save(&mut r, &c, &dir, "02-satin")?;
+    save(r, &c, dir, "02-satin")?;
     c.title = "Horizontal comparison".into();
     c.direction = BoxPlotDirection::Horizontal;
     c.style.material = Material::Matte;
-    save(&mut r, &c, &dir, "03-horizontal")?;
+    save(r, &c, dir, "03-horizontal")?;
     c.title = "Grouped + notch".into();
     c.direction = BoxPlotDirection::Vertical;
     c.style.notched = true;
@@ -610,13 +592,13 @@ fn main() -> Result {
         ],
         Color::from_rgb8(42, 168, 162),
     ));
-    save(&mut r, &c, &dir, "04-grouped-notch")?;
+    save(r, &c, dir, "04-grouped-notch")?;
     c.title = "Mean and individual styling".into();
     c.style.show_mean = true;
     c.style.outline = false;
     c.selected = Some(BoxPlotTarget::new("B", "after"));
-    save(&mut r, &c, &dir, "05-mean-selection")?;
-    violins(&mut r, &dir)?;
-    raincloud(&mut r, &dir)?;
+    save(r, &c, dir, "05-mean-selection")?;
+    violins(r, dir)?;
+    raincloud(r, dir)?;
     Ok(())
 }

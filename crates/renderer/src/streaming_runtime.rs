@@ -4477,7 +4477,7 @@ impl Renderer {
                 &self.style_bgl,
                 &self.star_data_bgl,
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: config,
                     series: &series,
@@ -4498,7 +4498,7 @@ impl Renderer {
                 &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: config,
                     series: &series,

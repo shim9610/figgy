@@ -153,7 +153,11 @@ impl<'w> WindowedRenderer<'w> {
     /// current swap-chain texture, builds an encoder + render pass, records
     /// via `paint_prepared`, and submits and presents. The caller is only responsible for processing per-panel
     /// dirty flags (`chart.consume_*_dirty()` → `refresh_axis`).
-    pub fn draw(&mut self, clear: crate::color::Color, items: &[ChartDrawItem<'_>]) -> Result<()> {
+    pub fn draw(
+        &mut self,
+        clear: crate::color::Color,
+        items: &mut [ChartDrawItem<'_>],
+    ) -> Result<()> {
         let prepared = self.inner.prepare(items)?;
         self.draw_prepared(clear, &prepared)
     }
@@ -163,7 +167,7 @@ impl<'w> WindowedRenderer<'w> {
     pub fn draw_registered(
         &mut self,
         clear: crate::color::Color,
-        items: &[RegisteredChartDrawItem<'_>],
+        items: &mut [RegisteredChartDrawItem<'_>],
     ) -> Result<()> {
         let prepared = self.inner.prepare_registered(items)?;
         self.draw_prepared(clear, &prepared)
@@ -260,7 +264,7 @@ impl<'w> WindowedRenderer<'w> {
     pub async fn first_frame_ready(
         &mut self,
         clear: crate::color::Color,
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<()> {
         self.draw(clear, items)?;
         #[cfg(target_arch = "wasm32")]
@@ -281,7 +285,7 @@ impl<'w> WindowedRenderer<'w> {
     pub fn first_frame_ready_blocking(
         &mut self,
         clear: crate::color::Color,
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<()> {
         self.draw(clear, items)?;
         self.inner.wait_submitted_work_blocking()?;
@@ -293,7 +297,7 @@ impl<'w> WindowedRenderer<'w> {
     pub fn warm_up_blocking(
         &mut self,
         clear: crate::color::Color,
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<()> {
         self.first_frame_ready_blocking(clear, items)
     }
@@ -302,7 +306,7 @@ impl<'w> WindowedRenderer<'w> {
     pub async fn warm_up(
         &mut self,
         clear: crate::color::Color,
-        items: &[ChartDrawItem<'_>],
+        items: &mut [ChartDrawItem<'_>],
     ) -> Result<()> {
         self.first_frame_ready(clear, items).await
     }

@@ -574,11 +574,40 @@ pub fn box_plot_value_extent(
     Ok((extent, groups.direction))
 }
 
-/// A single figgy chart panel: a `Config` plus dirty-flag tracking.
+/// A single figgy chart panel: a `Config`, the decoration selection its
+/// raster highlights, and dirty-flag tracking.
 pub struct Chart {
     config: Config,
     data_dirty: bool,
     raster_dirty: bool,
+    /// The element the raster draws selected, by its element id
+    /// (`Selectable::element_id`).
+    selected: Option<String>,
+    /// Moves on every raster-affecting change: [`Renderer::prepare`] redraws
+    /// a view drawn at another stamp (#265). Each value is an issued number
+    /// from one process-wide counter ([`issue_raster_stamp`]), so two charts
+    /// never share one and a view cannot mistake another chart for its own.
+    /// `None` once the counter is exhausted: an edit cannot fail, so
+    /// `prepare` reports `FiggyError::CounterExhausted` instead.
+    ///
+    /// [`Renderer::prepare`]: crate::Renderer::prepare
+    raster_stamp: Option<u64>,
+}
+
+/// The next chart raster stamp: an issued number from one process-wide
+/// counter, incremented with a check and never wrapped, so no stamp is
+/// reused. `None` once exhausted. See "Identity and staleness checks" in
+/// `ARCHITECTURE.md`.
+fn issue_raster_stamp() -> Option<u64> {
+    static NEXT_RASTER_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT_RASTER_STAMP
+        .try_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
+        .ok()
+        .map(|previous| previous + 1)
 }
 
 impl Chart {
@@ -588,6 +617,38 @@ impl Chart {
             config,
             data_dirty: true,
             raster_dirty: true,
+            selected: None,
+            raster_stamp: issue_raster_stamp(),
+        }
+    }
+
+    /// The raster changed: the dirty flag a host reads, and a new stamp for
+    /// [`Renderer::prepare`](crate::Renderer::prepare).
+    fn mark_raster(&mut self) {
+        self.raster_dirty = true;
+        self.raster_stamp = issue_raster_stamp();
+    }
+
+    /// The stamp of the chart's current raster content; `None` when the
+    /// stamp counter is exhausted.
+    pub(crate) fn raster_stamp(&self) -> Option<u64> {
+        self.raster_stamp
+    }
+
+    /// The element the raster draws selected, by its element id.
+    pub fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Select the element `element_id` names (`Selectable::element_id`:
+    /// `"axis_bottom"`, `"legend"`, `"overlay_0:legend"`, ...), or none.
+    /// The next [`Renderer::prepare`](crate::Renderer::prepare) draws its
+    /// selection box, as [`Renderer::refresh_axis_with_selection`](crate::Renderer::refresh_axis_with_selection)
+    /// does. An id no element of the active layer has draws nothing.
+    pub fn select(&mut self, element_id: Option<&str>) {
+        if self.selected.as_deref() != element_id {
+            self.selected = element_id.map(str::to_owned);
+            self.mark_raster();
         }
     }
 
@@ -608,7 +669,7 @@ impl Chart {
     /// not fit ranges, choose ticks or fit the title band.
     pub fn config_mut(&mut self) -> &mut Config {
         self.data_dirty = true;
-        self.raster_dirty = true;
+        self.mark_raster();
         &mut self.config
     }
 
@@ -621,7 +682,7 @@ impl Chart {
     pub fn with_axis_range_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
         self.data_dirty = true;
-        self.raster_dirty = true;
+        self.mark_raster();
     }
 
     /// Decoration-only change (titles, colors, margins, …): raster only.
@@ -630,7 +691,7 @@ impl Chart {
     /// that band. The caller still refreshes the view before preparing.
     pub fn with_decoration_change<F: FnOnce(&mut Config)>(&mut self, f: F) {
         f(&mut self.config);
-        self.raster_dirty = true;
+        self.mark_raster();
     }
 
     // Dirty-flag interface.
@@ -675,7 +736,7 @@ impl Chart {
     pub fn with_title(mut self, text: &str) -> Self {
         fill_plain_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 
@@ -686,21 +747,23 @@ impl Chart {
     fn fit_chart_title_margin(&mut self) -> bool {
         let measure = CpuTextMeasure::for_style(&self.config.draw_style);
         let changed = crate::layout::fit_chart_title_margin(&mut self.config, &measure);
-        self.raster_dirty |= changed;
+        if changed {
+            self.mark_raster();
+        }
         changed
     }
 
     /// Set the bottom X axis title text.
     pub fn with_x_title(mut self, text: &str) -> Self {
         fill_plain_segments(&mut self.config.bottom_x.title_option.text, text);
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 
     /// Set the left Y axis title text.
     pub fn with_y_title(mut self, text: &str) -> Self {
         fill_plain_segments(&mut self.config.left_y.title_option.text, text);
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 
@@ -722,7 +785,7 @@ impl Chart {
         let symbol = crate::config::symbol_segments(&kind, color);
         crate::config::append_legend_entry(&mut self.config.legend.content, symbol, label);
         self.config.legend.visible = true;
-        self.raster_dirty = true;
+        self.mark_raster();
         self
     }
 

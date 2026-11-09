@@ -59,6 +59,7 @@ pub(in crate::renderer) fn annotation_raster_for_chart(
         line_offsets: _,
         // The plot fill is under the grid, not the annotations (#203).
         plot_background: _,
+        background: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {

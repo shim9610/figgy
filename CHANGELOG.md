@@ -40,6 +40,14 @@ annotation's `align`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Series constructors and modifiers** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` gains one constructor per chart family (`line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`, and `of_kind`), each naming its columns and drawing with the host style defaults. Chainable modifiers set the common fields: `label`, `color`, `width`, `dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal` and `z`. `MatrixRef::columns_are_x`, `columns_are_y` and `with_layout` name a matrix. These are methods on the document types: the series stays the single source of truth.
+
+- **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `model::theme` holds `Theme`: a look written into the document once, never stored as a name. `ChromeTheme` covers the chart and plot fills, the draw style, the axis frame (`AxisPreset`), axis, label, title and legend colours, fonts and sizes, the grid, the legend box, the colourbar outline and the selection highlight. `SeriesTheme` has one part per family: a `ColorCycle`, line widths and marker sizes, bars, boxes and violins, field colour maps and contour labels, vectors, radar, range bars, ternary regions, 3D surfaces, energy levels, Feynman diagrams and the radial chart. Built in: `light` (the documented default), `dark`, `paper`, `dashboard` and `sketch`, also through `Theme::named`. `Theme::apply(&mut config, &mut series, SubplotScope)` writes the chrome of the chart, its overlays and the chosen subplots, and styles the series drawn there; the legend symbols follow the new series look. `apply_chrome`, `style_series` and `apply_radial` apply one part. A theme keeps ranges, scales, label formats, categories, axis breaks, the chart area, offsets, all text, the annotation layer, the layer structure, series ids, columns and labels, and the selection's refs. Energy-level and Feynman charts keep their own frame.
+
+- **A fill for the whole chart area** ([#265](https://github.com/shim9610/figgy/issues/265)). `Config::background: Option<Color>` paints the chart area under everything the chart draws: the plot fill, the grid, the data and the decorations. `None` (key absent in JSON) is the transparent chart area every document had, so older documents read and write as before. A subplot fills its own chart area from its own `background`; overlay layers and line-offset members draw none. In the Milkyway style the deep-space backdrop takes its place, as it takes the plot fill's. An exhaustive `Config { .. }` literal or pattern adds `background`.
+
+- **Host defaults for the series styles and the chart frame** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `Default` now covers `Config`, `ChartTitleOptions`, `AxisTitleOptions`, `GridOptions`, `ColorBarOptions`, `Legend` and `ChartArea` (each the value `default` builds), and the series styles a document always spells out: `Stem`, `DataScatterStyleConfig`, `DataErrorBarStyleConfig`, `DataBarStyleConfig`, `VectorStyle`, `FieldFillConfig`, `ContourLabelConfig`, `RangeConnector` and `SurfaceWireframe`. Strokes take the black, 1 px ink of the line default; bars fill with the first colour of the balanced palette. `AxisOptions` and `LabelStyle` have none, since their default differs by axis. Product code cannot read them (#266).
+
 - **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
   - **One source, one folder.** Every serialized type with a default now spells it once, in the crate-private `defaults/` folder (one file per area: frame, series, annotations, chart families, science, text): the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]`, the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`) and the ten field defaults that serde read from functions scattered over the model. `#[serde(default)]` reads them through `default = "crate::defaults::name"`. `Violin::DEFAULT_BOX_WIDTH` keeps its value, now read from there. Documents parse and serialize exactly as before.
   - **New `helpers` feature (on by default).** Host conveniences live in the `helpers/` folder behind it: `impl Default` on those types and the `default` module (now `figgy_model::helpers::default`, still reachable as `figgy_model::default`). The model's and the renderer's own code, their unit tests included, cannot fall back on a default: `ci/verify.py static` builds both libraries and their unit tests without it.
@@ -1445,6 +1453,25 @@ annotation's `align`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **`prepare` redraws a stale raster itself; the chart holds its selection** ([#265](https://github.com/shim9610/figgy/issues/265)). Breaking.
+  - `ChartDrawItem` is now `{ view: &mut ChartView, chart: &Chart, series }` (was `view: &ChartView, chart_config: &Config`), and `RegisteredChartDrawItem.view` is `&mut ChartView`. `Renderer::prepare`, `prepare_registered`, `paint`, and `WindowedRenderer::draw`, `draw_registered`, `first_frame_ready(_blocking)` and `warm_up(_blocking)` take `&mut [..]`.
+  - `prepare` redraws a view's text and axis raster first when it is stale: its chart's raster stamp, panel rect, scale or the font generation differ from the ones it was drawn with. An unchanged view is left alone. The stamp is an issued number every raster-affecting `Chart` edit moves, so two charts never share one.
+  - `Chart::select(Option<&str>)` / `Chart::selected()` hold the element the raster draws selected, by element id. `prepare_registered` draws a registered chart's stored selection (`set_chart_selection`) at its display placement.
+  - `refresh_axis*` stay for a host that draws the raster itself; a refresh of the chart as `prepare` would draw it is not repeated.
+  - A failed `prepare_registered` (an unknown chart) redraws no view.
+  - A view made with `create_chart_view` and drawn by `prepare_registered` is not redrawn on its first frame when the stored chart matches: a redraw whose panel and annotation raster keys all match uploads nothing, and a registered chart's annotation edit redraws the annotation layer alone. A view with fewer overlay layers than the stored chart grows on the next prepare instead of failing with `StaleStateToken`.
+  - **Migration:** build the item with `view: &mut view, chart: &chart` (wrap a bare `Config` in `Chart::new`), pass `&mut [..]`, set the selection with `chart.select(..)` instead of `refresh_axis_with_selection`, and drop the host's dirty-flag `refresh_axis` branch.
+
+- **The examples use the helpers** ([#265](https://github.com/shim9610/figgy/issues/265)). The headless examples make their renderer with `Renderer::headless_blocking`, pass plain `Vec`s to `add_column`, build series with the `SeriesConfig` constructors and modifiers, take legends from their series (`with_legend_from`) and save with `save_blocking` where they need no image check. The gallery look and the designed scenes' chrome are themes (`examples/support/gallery.rs`, `support/styled.rs`). The examples shrink from 15,116 to 13,683 lines; the quick start (`examples/line.rs` and the README) from 85 to 30. Gallery images change only where a legend symbol now shows its series' own mark, where an axis title takes the gallery theme's ink, and where the dark style previews take the dark theme's chrome. `winit_simple` and `constellation_lab` leave the raster redraw to `prepare` and set the selection on the chart.
+
+- **Chart themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `renderer::theme` re-exports the model's themes, `Chart::apply_theme(&theme, &mut series, SubplotScope)` applies one to the chart and its series and refits the layout to the new text sizes, and `Chart::with_theme(&theme)` applies the chrome alone and fits.
+
+- **Chart conveniences** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::sized(width, height)` (the documented default look with that chart area), `with_legend_from(&series)` (one entry per labelled series, its symbol from the series through `legend::series_symbol_segments`, so a colour is written once) and `fit_layout()` (`layout::auto_layout` with the chart's own font measure).
+
+- **A headless renderer in one call and one save call by format** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Renderer::headless(HeadlessOptions)` (async, browser too), `Renderer::headless_blocking()` and `headless_blocking_with(options)` (native) make the instance, adapter and device (honouring `WGPU_BACKEND`) and an `Rgba8Unorm` renderer. `ExportFormat { Png, Svg, Pdf }` with `from_path` and `extension`; `Renderer::export_bytes` / `export_bytes_blocking`, `save_blocking` (format from the extension) and `save_as_blocking`, and the same on `RadialRenderer`. They route to the existing exports. A save fails with `SaveError` (`Export`, `Radial`, `UnknownFormat`, `Write`). `renderer::helpers` is now the renderer's own module: it re-exports the model's helpers and holds these, and the host `Default` for `ExportOptions` and `ExportScope` moved there.
+
+- **`Vec`s and slices upload as they are** ([#265](https://github.com/shim9610/figgy/issues/265)). `ColumnSource` is implemented for `[T]`, `&[T]` and `Vec<T>` with `T` = `f64`, `f32`, `u32` and `Option<f64>`, and `HiLoColumnSource` for the `f64`, `f32` and `Option<f64>` ones, so `add_column("x", &xs)` takes the host's vector without a `Column` wrapper. Values go straight from host memory into mapped staging. `Column<T>` now uploads through the same slice implementations. Arrays are not implementors: a trait `len` on `[T; N]` would shadow the slice's.
 
 - **No default fallbacks in the renderer; `helpers` feature** ([#266](https://github.com/shim9610/figgy/issues/266)).
   - The renderer depends on the model without `helpers` and forwards its own `helpers` feature, which is on by default.
@@ -3294,6 +3321,19 @@ annotation's `align`) are additive.
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
+
+- **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)).
+  `FiggyChart.apply_theme(name, subplots)` and `<figgy-chart>`'s
+  `apply_theme(name, subplots = "all")` apply a built-in theme (`light`,
+  `dark`, `paper`, `dashboard` or `sketch`) to the chart, its overlays and
+  the series drawn there, then refit the layout; `subplots` is `"all"`,
+  `"none"` or a JSON array of indices. `FiggyBoundedChart.apply_theme(name)`
+  themes a radial chart. An unknown name or a bad list changes nothing.
+
+- **A chart background** ([#265](https://github.com/shim9610/figgy/issues/265)).
+  The config JSON takes an optional `background` colour that fills the whole
+  chart area under everything else. `FiggyChart.set_background(color_json)`
+  and `<figgy-chart>`'s `set_background(color)` set it, `null` clears it.
 
 - **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
   The series JSON carries `wavelength`, `wavelength_uncertainty` and

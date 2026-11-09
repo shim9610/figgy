@@ -55,7 +55,7 @@ struct PreciseNeeds {
 }
 
 impl PreciseNeeds {
-    fn scan(items: &[ChartDrawItem<'_>]) -> Self {
+    fn scan(items: &[PanelDraw<'_>]) -> Self {
         let mut need_parallel = false;
         let mut need_parallel_selection = false;
         let mut need_vector_points = false;
@@ -340,7 +340,7 @@ impl TargetPipelines {
         parallel_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) {
         let needs = PreciseNeeds::scan(items);
         self.create_line_pipelines(

@@ -52,7 +52,7 @@ impl PrepareContext<'_> {
     /// the per-field source receipts in `items` order for the token to hold.
     pub(in crate::renderer) fn ensure_value_map_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<()> {
         self.frame_batch(|ctx| ctx.ensure_value_map_scratches_in_frame(items, scale))
@@ -60,7 +60,7 @@ impl PrepareContext<'_> {
 
     fn ensure_value_map_scratches_in_frame(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<()> {
         retain_frame_series(
@@ -213,7 +213,7 @@ impl PrepareContext<'_> {
 impl Renderer {
     pub(in crate::renderer) fn ensure_value_map_scratches(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         scale: f32,
     ) -> Result<()> {
         self.preparation_parts()

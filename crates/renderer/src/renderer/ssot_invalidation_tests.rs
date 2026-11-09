@@ -60,6 +60,12 @@ fn edits() -> Vec<Edit> {
         Some(crate::Color::from_rgb8(240, 244, 250)),
         Prefix
     );
+    // The chart fill (#265) is the grid raster's first part too.
+    edit!(
+        background,
+        Some(crate::Color::from_rgb8(250, 246, 236)),
+        Prefix
+    );
     cases.push(Edit {
         name: "identical config",
         apply: |_| {},
@@ -1555,14 +1561,14 @@ fn frame_values(
     revision: u64,
 ) -> (Vec<u8>, usize) {
     let c = r.chart_config(id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(c.clone()), c.chart_area.0)
         .unwrap();
     if resident {
         let prepared = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         return (paint_frame_pixels(r, &prepared, 1), 0);
@@ -1612,9 +1618,9 @@ fn frame_values(
         crate::StreamingSelectionRequest::Complete { .. }
     ));
     wait_stream_slots(r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id: id,
-        view: &view,
+        view: &mut view,
     }])
     .unwrap();
     assert!(matches!(
@@ -1825,6 +1831,7 @@ fn config_fields_are_classified() {
         bar_groups: _,      // "bar_groups (None -> Some)" + resident display mutations
         line_offsets: _,    // "line_offsets (None -> Some)" + resident display mutations
         plot_background: _, // edit!(plot_background): Prefix, raster
+        background: _,      // edit!(background): Prefix, raster
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,

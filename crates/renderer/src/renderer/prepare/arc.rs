@@ -84,7 +84,7 @@ pub(in crate::renderer) struct ArcResultEntry {
 impl PrepareContext<'_> {
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) -> Result<Vec<PreparedArcItem>> {
         let mut prepared = Vec::with_capacity(items.len());
         for item in items {

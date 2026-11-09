@@ -20,12 +20,10 @@ use gallery::Result;
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationLineStyle, AxisPreset, Color, Renderer,
     SeriesConfig, ShapeStyle,
-    data_config::DataRenderType,
     feynman::{
         FeynmanSeries, FeynmanStyle, FeynmanVertex, MomentumArrow, MomentumSide, ParticleLine,
         Propagator, VertexRole, Wiggle,
     },
-    line::LineStylePreset,
     text::RichText,
 };
 use std::path::Path;
@@ -287,7 +285,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                     border: AnnotationLineStyle {
                         color: rgb(222, 216, 204),
                         width: 1.,
-                        style: LineStylePreset::Solid,
+                        ..Default::default()
                     },
                     below: true,
                 },
@@ -304,15 +302,10 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 box_style: None,
                 align: Default::default(),
             }));
-        specs.push(SeriesConfig {
-            series_id: format!("diagram-{k}"),
-            source_id: None,
-            label: None,
-            x_column: String::new(),
-            y_column: String::new(),
-            z_column: None,
-            render_type: DataRenderType::Feynman(diagram),
-        });
+        specs.push(SeriesConfig::feynman_diagram(
+            format!("diagram-{k}"),
+            diagram,
+        ));
     }
     let image = export(r, &chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-feynman.png"))

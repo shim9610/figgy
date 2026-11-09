@@ -781,14 +781,14 @@ impl Panel {
     }
 
     fn prepare(&mut self) -> PreparedFrame {
-        prepare(&mut self.r, self.id, &self.view)
+        prepare(&mut self.r, self.id, &mut self.view)
     }
 
     fn try_prepare(&mut self) -> Option<PreparedFrame> {
         self.r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: self.id,
-                view: &self.view,
+                view: &mut self.view,
             }])
             .ok()
     }

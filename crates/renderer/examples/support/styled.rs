@@ -7,6 +7,7 @@ use renderer::{
     config::{AxisScale, LegendCorner, TickVisibility},
     encode_png,
     layout::Side,
+    theme::{SubplotScope, Theme},
 };
 use std::path::Path;
 
@@ -50,40 +51,33 @@ pub fn save(image: &RasterImage, background: Color, path: &Path) -> Result {
     Ok(())
 }
 
-/// The shared chrome: no axis lines or ticks, horizontal grid only, a quiet
-/// legend in the background colour.
+/// The designed scenes' look: the dashboard theme in the scene's background,
+/// ink and grid colours.
+pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
+    let mut theme = Theme::dashboard();
+    let chrome = &mut theme.chrome;
+    chrome.background = Some(bg);
+    chrome.ink = ink;
+    chrome.frame_ink = ink;
+    chrome.label_ink = ink;
+    chrome.grid.major_x.color = grid;
+    chrome.grid.major_y.color = grid;
+    chrome.legend_fill = bg;
+    chrome.legend_border = bg;
+    theme
+}
+
+/// The shared chrome: the scene's theme, then the layout every designed
+/// scene shares (the title band, the margins and a top-left legend).
 pub fn chrome(config: &mut Config, bg: Color, ink: Color, grid: Color) {
-    config.chart_title.text.font_size = 34.;
-    config.chart_title.text.color = ink;
+    theme(bg, ink, grid).apply_chrome(config, SubplotScope::All);
     config.chart_title.top_margin = 85.;
     config.left_y.out_margin = 110.;
     config.right_y.out_margin = 65.;
     config.bottom_x.out_margin = 95.;
     config.top_x.out_margin = 45.;
-    config.grid.major_y_color = grid;
-    config.grid.major_x_color = grid;
-    config.grid.show_major_x = false;
-    config.grid.show_minor_x = false;
-    config.grid.show_minor_y = false;
-    for a in [
-        &mut config.left_y,
-        &mut config.right_y,
-        &mut config.bottom_x,
-        &mut config.top_x,
-    ] {
-        a.line_visible = false;
-        a.tick = TickVisibility::None;
-        a.label_style.color = ink;
-        a.label_style.font_size = 21.;
-        a.title_option.text.color = ink;
-        a.title_option.text.font_size = 23.;
-    }
     config.legend.visible = true;
     config.legend.corner = LegendCorner::TopLeft;
-    config.legend.bg_color = bg;
-    config.legend.border_color = bg;
-    config.legend.content.color = ink;
-    config.legend.content.font_size = 22.;
     config.legend.padding = 15.;
 }
 

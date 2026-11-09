@@ -2,6 +2,7 @@
 //! auto-fit.
 
 use super::*;
+use renderer::theme::SubplotScope;
 
 // ------------------------------------------------------------------
 // Preset mirrors — fieldless enums cross the boundary as integers.
@@ -726,6 +727,45 @@ impl FiggyChart {
             .get(index)
             .ok_or_else(|| js_err(format!("no subplot {index}")))?;
         serde_json::to_string(&subplot.config.chart_area.0).map_err(js_err)
+    }
+
+    /// Fill the chart area with a colour under everything the chart draws
+    /// (JSON `{"r":1,"g":1,"b":1,"a":1}`), or leave it transparent (`null`)
+    /// so the page or the export's clear colour shows through (#265).
+    pub fn set_background(&mut self, json: &str) -> Result<(), JsValue> {
+        let color: Option<Color> = serde_json::from_str(json).map_err(js_err)?;
+        let mut config = self.chart_config()?.clone();
+        config.background = color;
+        self.replace_chart_config(config)
+    }
+
+    /// Apply the built-in theme `name` (`light`, `dark`, `paper`,
+    /// `dashboard` or `sketch`, #265) to the chart, its overlays and the
+    /// series drawn there, then fit the layout to the theme's text sizes.
+    /// `subplots` names the subplots that take it too: `"all"`, `"none"`
+    /// or a JSON array of indices. Ranges, text, annotations, the layer
+    /// structure and the selection stay; an unknown name or a bad list
+    /// changes nothing.
+    pub fn apply_theme(&mut self, name: &str, subplots: &str) -> Result<(), JsValue> {
+        let theme = theme_named(name)?;
+        let indices: Vec<usize> = match subplots.trim() {
+            "all" | "none" => Vec::new(),
+            list => serde_json::from_str(list).map_err(js_err)?,
+        };
+        let scope = match subplots.trim() {
+            "all" => SubplotScope::All,
+            "none" => SubplotScope::None,
+            _ => SubplotScope::Only(&indices),
+        };
+        let mut config = self.chart_config()?.clone();
+        let mut series = self.chart_series()?.to_vec();
+        theme.apply(&mut config, &mut series, scope);
+        let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+        let config = renderer::layout::auto_layout(&config, &measure);
+        self.renderer
+            .preflight_chart_styles(&series)
+            .map_err(js_err)?;
+        self.replace_chart_state(config, series)
     }
 
     /// Fill subplot `index`'s plot with a colour (JSON `{"r":1,"g":1,"b":1,

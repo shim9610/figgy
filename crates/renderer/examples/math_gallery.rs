@@ -9,12 +9,9 @@
 //! Writes `math-gallery.png` (1200 × 1600), `math-gallery@2x.png`, and the
 //! sketch pair `math-gallery-sketch.png` and `math-gallery-sketch@2x.png`.
 use renderer::{
-    Chart, Color, Config, Renderer, RendererDevice,
+    AxisPreset, Chart, Color, ExportOptions, ExportSource, Renderer,
     annotation::{Anchor, Annotation, AnnotationKind},
-    config::{DrawStyle, TickVisibility},
-    default, encode_png,
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
-    layout::{ChartArea, Rect},
+    config::DrawStyle,
     text::RichText,
 };
 use std::{error::Error, path::PathBuf};
@@ -63,27 +60,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/math-gallery"));
     std::fs::create_dir_all(&output)?;
-    let instance = create_instance();
-    let adapter = request_adapter_blocking(&instance)?;
-    eprintln!("Adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let gpu = RendererDevice::new(device, queue).expect("figgy poll thread");
-    let mut renderer = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 16 << 20)?;
+    let mut renderer = Renderer::headless_blocking()?;
     for (name, sketch) in [("math-gallery", false), ("math-gallery-sketch", true)] {
-        let chart = Chart::new(gallery(sketch)?);
+        let chart = gallery(sketch)?;
         for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
-            let image = renderer.export_rgba_blocking(
-                renderer::ExportSource::chart(&chart, &[]),
-                renderer::ExportOptions::document(scale).with_clear(Color::WHITE),
-            )?;
             let path = output.join(format!("{name}{suffix}.png"));
-            std::fs::write(&path, encode_png(&image)?)?;
-            eprintln!(
-                "wrote {} ({}x{})",
-                path.display(),
-                image.width,
-                image.height
-            );
+            let options = ExportOptions::document(scale).with_clear(Color::WHITE);
+            renderer.save_blocking(ExportSource::chart(&chart, &[]), options, &path)?;
+            eprintln!("wrote {}", path.display());
         }
     }
     Ok(())
@@ -91,34 +75,23 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// The page: no axes, no grid, a math title and one annotation pair (the
 /// formula, its source) per formula.
-fn gallery(sketch: bool) -> Result<Config, Box<dyn Error>> {
+fn gallery(sketch: bool) -> Result<Chart, Box<dyn Error>> {
     let ink = Color::from_rgb8(24, 39, 63);
     let source = Color::from_rgb8(110, 118, 130);
-    let mut cfg = default::default_config();
-    cfg.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: SIZE.0,
-        height: SIZE.1,
-    });
+    let mut chart = Chart::sized(SIZE.0, SIZE.1);
+    let cfg = chart.config_mut();
     cfg.legend.visible = false;
+    // No axis lines, ticks, tick labels or grid.
+    cfg.apply_axis_preset(AxisPreset::Hidden);
     for axis in [
         &mut cfg.bottom_x,
         &mut cfg.top_x,
         &mut cfg.left_y,
         &mut cfg.right_y,
     ] {
-        axis.line_visible = false;
-        axis.label_style.label_visible = false;
-        axis.label_style.visible = false;
-        axis.tick = TickVisibility::None;
         axis.title_option.visible = false;
         axis.out_margin = 24.0;
     }
-    cfg.grid.show_major_x = false;
-    cfg.grid.show_major_y = false;
-    cfg.grid.show_minor_x = false;
-    cfg.grid.show_minor_y = false;
     cfg.chart_title.text = RichText::from_tex(
         r"Math in figgy: $\sum_{k} \frac{x^k}{k!}$, from TeX",
         ink,
@@ -141,7 +114,7 @@ fn gallery(sketch: bool) -> Result<Config, Box<dyn Error>> {
             .items
             .push(text(plain, x, y + 0.68 / rows as f32));
     }
-    Ok(cfg)
+    Ok(chart)
 }
 
 fn text(text: RichText, x: f32, y: f32) -> Annotation {

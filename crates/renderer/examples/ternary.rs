@@ -13,11 +13,14 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, Color, CpuTextMeasure, MeasureText, Renderer, TextAlign,
-    config::{LegendCorner, LegendEntryKind, TickVisibility},
-    data_config::{DataRenderType, PointSizeMap, SizeScale},
+    Anchor, Annotation, AnnotationKind, Color, CpuTextMeasure, MeasureText, Renderer, SeriesConfig,
+    TextAlign,
+    config::{LegendCorner, TickVisibility},
+    data_config::{
+        DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, PointSizeMap, SizeScale,
+    },
     ternary::{TernaryOptions, TernaryRegionStyle},
     text::RichText,
 };
@@ -230,19 +233,22 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     for (k, (name, color, polygon, _)) in classes().iter().enumerate() {
         let ring = polygon.iter().chain(polygon.first());
         for (i, suffix) in ["sand", "silt", "clay"].iter().enumerate() {
-            r.add_column(
-                format!("class-{k}-{suffix}"),
-                &column(ring.clone().map(|v| v[i]).collect()),
-            )?;
+            let values: Vec<f64> = ring.clone().map(|v| v[i]).collect();
+            r.add_column(format!("class-{k}-{suffix}"), &values)?;
         }
-        specs.push(series(
-            name,
-            &format!("class-{k}-sand"),
-            &format!("class-{k}-clay"),
+        // An outlined region without markers: no constructor draws that.
+        specs.push(SeriesConfig::of_kind(
+            *name,
+            format!("class-{k}-sand"),
+            format!("class-{k}-clay"),
             DataRenderType::Ternary {
-                c_column: format!("class-{k}-silt"),
+                c_column: format!("class-{k}-silt").into(),
                 scatter: None,
-                line: Some(line(bg, 2.)),
+                line: Some(DataLineStyleConfig {
+                    line_color: bg,
+                    line_width: 2.,
+                    ..Default::default()
+                }),
                 region: Some(TernaryRegionStyle {
                     color: *color,
                     opacity: 0.75,
@@ -262,14 +268,13 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             silt.push(100. - s - c);
         }
         for (suffix, data) in [
-            ("sand", sand),
-            ("silt", silt),
-            ("clay", clay),
-            ("depth", depths.clone()),
+            ("sand", &sand),
+            ("silt", &silt),
+            ("clay", &clay),
+            ("depth", &depths),
         ] {
-            r.add_column(format!("core-{k}-{suffix}"), &column(data))?;
+            r.add_column(format!("core-{k}-{suffix}"), data)?;
         }
-        let mut markers = scatter(*color, 6.);
         let mut size = PointSizeMap {
             column: format!("core-{k}-depth"),
             domain_min: 0.,
@@ -279,20 +284,29 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             scale: SizeScale::Radius,
         };
         size.fit_domain(0., 140.);
-        markers.point_size_map = Some(size);
-        specs.push(series(
-            &format!("core-{k}"),
-            &format!("core-{k}-sand"),
-            &format!("core-{k}-clay"),
+        // A line through markers sized by depth: no constructor draws that.
+        let core = SeriesConfig::of_kind(
+            format!("core-{k}"),
+            format!("core-{k}-sand"),
+            format!("core-{k}-clay"),
             DataRenderType::Ternary {
-                c_column: format!("core-{k}-silt"),
-                scatter: Some(markers),
-                line: Some(line(*color, 2.2)),
+                c_column: format!("core-{k}-silt").into(),
+                scatter: Some(DataScatterStyleConfig {
+                    point_color: *color,
+                    point_size_map: Some(size),
+                    ..Default::default()
+                }),
+                line: Some(DataLineStyleConfig {
+                    line_color: *color,
+                    line_width: 2.2,
+                    ..Default::default()
+                }),
                 region: None,
             },
-        ));
-        chart = chart.with_legend_entry(name, *color, 2.2, LegendEntryKind::LineScatter);
+        );
+        specs.push(core.label(name));
     }
+    chart = chart.with_legend_from(&specs);
 
     // Each class name centred on its place: the triangle's geometry turns
     // the composition into pixels, the measured text centres the block.

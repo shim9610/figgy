@@ -121,7 +121,7 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
     let chart_id = renderer
         .register_chart(config.clone(), vec![series])
         .expect("mapped chart registration failed");
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .expect("chart view creation failed");
     let raw = device.as_webgpu().expect("browser WebGPU backend required");
@@ -129,9 +129,9 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         .call1(raw.as_ref(), &JsValue::from_str("validation"))
         .expect("pushErrorScope failed");
     renderer
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .expect("mapped chart preparation failed");
     let error = validation_error(&device).await;

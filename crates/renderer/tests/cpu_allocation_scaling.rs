@@ -276,7 +276,7 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
         return;
     };
     let chart = Chart::new(panel_config(320, 240));
-    let views: Vec<_> = (0..4)
+    let mut views: Vec<_> = (0..4)
         .map(|_| {
             renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
@@ -292,31 +292,31 @@ fn a_warm_prepare_costs_a_constant_per_panel_and_nothing_for_no_panels() {
     );
     let mut measured = Vec::new();
     for panels in [0usize, 1, 2, 4] {
-        let items: Vec<ChartDrawItem<'_>> = views
-            .iter()
+        let mut items: Vec<ChartDrawItem<'_>> = views
+            .iter_mut()
             .take(panels)
             .map(|view| ChartDrawItem {
                 view,
-                chart_config: chart.config(),
+                chart: &chart,
                 series: &[],
             })
             .collect();
         // Warm this exact shape: a shape's first prepare compiles pipeline
         // variants and fills caches, which is not per-frame cost.
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
 
         let calls_before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - calls_before;
         drop(prepared);
 
         // Retained is measured as a **steady-state** diagnostic, not a one-shot
         // ownership bound. A one-shot delta cannot distinguish a leak from a
         // driver cache filling for the first time.
-        let cycle = |renderer: &mut Renderer, rounds: usize| -> i64 {
+        let mut cycle = |renderer: &mut Renderer, rounds: usize| -> i64 {
             let before = live_bytes();
             for _ in 0..rounds {
-                let prepared = renderer.prepare(&items).unwrap();
+                let prepared = renderer.prepare(&mut items).unwrap();
                 drop(prepared);
             }
             live_bytes() - before
@@ -367,7 +367,7 @@ fn prepare_cost_is_independent_of_series_length() {
     renderer.end_gpu_frame();
 
     let chart = Chart::new(panel_config(320, 240));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
 
@@ -399,18 +399,18 @@ fn prepare_cost_is_independent_of_series_length() {
             config: &series_config,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
         // Two warm-ups: the first prepare of a series compiles what it needs
         // and builds its arc scratch; the second settles the cache.
-        renderer.prepare(&items).unwrap();
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
+        renderer.prepare(&mut items).unwrap();
 
         let before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - before;
         drop(prepared);
         println!("prepare with {len} points: {allocations} allocations");
@@ -485,7 +485,7 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
         let mut chart = Chart::new(config.clone());
         chart.set_x_range(0.0, 360.0);
         chart.set_y_range(0.0, rows as f64);
-        let view = renderer
+        let mut view = renderer
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let series_config = renderer::SeriesConfig {
@@ -515,15 +515,15 @@ fn polar_field_prepare_cost_is_independent_of_its_rows() {
             config: &series_config,
             style: &style,
         }];
-        let items = [ChartDrawItem {
-            view: &view,
-            chart_config: chart.config(),
+        let mut items = [ChartDrawItem {
+            view: &mut view,
+            chart: &chart,
             series: &series,
         }];
-        renderer.prepare(&items).unwrap();
-        renderer.prepare(&items).unwrap();
+        renderer.prepare(&mut items).unwrap();
+        renderer.prepare(&mut items).unwrap();
         let before = calls();
-        let prepared = renderer.prepare(&items).unwrap();
+        let prepared = renderer.prepare(&mut items).unwrap();
         let allocations = calls() - before;
         drop(prepared);
         println!("polar field prepare with {rows} rows: {allocations} allocations");

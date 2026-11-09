@@ -1,89 +1,40 @@
 //! Shared native device setup, presentation defaults and PNG checks for gallery examples.
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
-    Chart, Color, Renderer, RendererDevice, SeriesConfig,
-    data::Column,
-    data_config::{DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape},
-    default, encode_png,
-    gpu::{create_instance, request_adapter_blocking, request_device_blocking},
-    layout::{ChartArea, Rect},
-    line::LineStylePreset,
+    Chart, Color, Renderer, SeriesConfig, encode_png,
+    theme::{SubplotScope, Theme},
 };
 use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-pub fn column(data: Vec<f64>) -> Column<f64> {
-    Column { data }
+/// The gallery look: the light theme with a navy title, a slate frame, a
+/// pale major grid and smaller text.
+pub fn theme() -> Theme {
+    let mut theme = Theme::light();
+    let chrome = &mut theme.chrome;
+    chrome.ink = Color::from_rgb8(24, 39, 63);
+    chrome.frame_ink = Color::from_rgb8(88, 102, 123);
+    chrome.title_size = 26.0;
+    chrome.axis_title_size = 18.0;
+    chrome.tick_label_size = 16.0;
+    chrome.grid.major_x.color = Color::from_rgb8(230, 235, 242);
+    chrome.grid.major_y.color = chrome.grid.major_x.color;
+    theme
 }
 
-pub fn line(color: Color, width: f32) -> DataLineStyleConfig {
-    DataLineStyleConfig {
-        line_style: LineStylePreset::Solid,
-        line_color: color,
-        line_width: width,
-        fill: None,
-        fill_color: None,
-        interpolation: renderer::data_config::LineInterpolation::Linear,
-    }
-}
-
-pub fn scatter(color: Color, size: f32) -> DataScatterStyleConfig {
-    DataScatterStyleConfig {
-        point_color: color,
-        point_shape: ScatterShape::CircleFilled,
-        point_size: size,
-        point_style_table: None,
-        point_style_index_column: None,
-        point_style_overrides: None,
-        point_color_map: None,
-        point_size_map: None,
-    }
-}
-
-pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type,
-    }
-}
-
+/// A gallery chart of `size` in the gallery look, with its titles and the
+/// gallery's margins.
 pub fn chart(title: &str, x_title: &str, y_title: &str, size: (u32, u32)) -> Chart {
-    let mut cfg = default::default_config();
-    cfg.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: size.0,
-        height: size.1,
-    });
-    cfg.legend.visible = false;
-    cfg.chart_title.text.font_size = 26.0;
-    cfg.chart_title.text.color = Color::from_rgb8(24, 39, 63);
+    let mut chart = Chart::sized(size.0, size.1);
+    theme().apply_chrome(chart.config_mut(), SubplotScope::All);
+    let cfg = chart.config_mut();
     cfg.chart_title.top_margin = 48.0;
-    cfg.grid.major_x_color = Color::from_rgb8(230, 235, 242);
-    cfg.grid.major_y_color = cfg.grid.major_x_color;
-    cfg.grid.show_minor_x = false;
-    cfg.grid.show_minor_y = false;
-    for axis in [
-        &mut cfg.bottom_x,
-        &mut cfg.top_x,
-        &mut cfg.left_y,
-        &mut cfg.right_y,
-    ] {
-        axis.label_style.font_size = 16.0;
-        axis.title_option.text.font_size = 18.0;
-        axis.line_color = Color::from_rgb8(88, 102, 123);
-    }
     cfg.left_y.out_margin = 90.0;
     cfg.bottom_x.out_margin = 70.0;
     cfg.top_x.out_margin = 16.0;
     cfg.right_y.out_margin = 24.0;
-    Chart::new(cfg)
+    chart
         .with_title(title)
         .with_x_title(x_title)
         .with_y_title(y_title)
@@ -124,19 +75,10 @@ pub fn save(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &Pat
 }
 
 pub fn with_renderer(render: impl FnOnce(&mut Renderer) -> Result) -> Result {
-    // Instance and adapter stay alive until rendering and readback finish.
     // Software GPU selection belongs to the environment, not the example.
-    let instance = create_instance();
-    let adapter = request_adapter_blocking(&instance)?;
-    eprintln!("Gallery adapter: {:?}", adapter.get_info());
-    let (device, queue) = request_device_blocking(&adapter)?;
-    let mut renderer = Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Rgba8Unorm,
-        16 * 1024 * 1024,
-    )?;
+    let mut renderer = Renderer::headless_blocking()?;
     let result = render(&mut renderer);
-    renderer.wait_idle().unwrap();
+    renderer.wait_idle()?;
     result
 }
 

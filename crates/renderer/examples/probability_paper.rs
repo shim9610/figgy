@@ -15,13 +15,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
-    Chart, Color, Config, Renderer, Subplot,
+    Chart, Config, Renderer, SeriesConfig, Subplot,
     config::{AxisScale, LogTickPolicy, ProbabilityScale},
-    data_config::{DataRenderType, ScatterShape, XySeries},
+    data_config::ScatterShape,
     format::LabelFormat,
-    layout::{ChartArea, Rect},
 };
 use std::path::Path;
 use styled::{chrome, rgb, save};
@@ -81,18 +80,14 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
         ("fit_strength", fit_strength),
         ("fit_hours", fit_hours),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
 
     let cell = |x: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut config = renderer::default::default_config();
-        config.chart_area = ChartArea(Rect {
-            x,
-            y: 0,
-            width: 600,
-            height: 800,
-        });
-        chrome(&mut config, bg, ink, grid);
+        let mut chart = Chart::sized(600, 800);
+        let config = chart.config_mut();
+        config.chart_area.0.x = x;
+        chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 28.;
         config.left_y.out_margin = 120.;
         config.right_y.out_margin = 30.;
@@ -101,7 +96,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
         for axis in [&mut config.left_y, &mut config.right_y] {
             axis.label_style.font_size = 18.;
         }
-        Chart::new(config)
+        chart
             .with_title(title)
             .with_x_title(x_title)
             .with_y_title(y_title)
@@ -120,9 +115,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     let mut times = Subplot {
         config: cell(600, "Time to failure", "Time [h]", "Unreliability"),
         series: vec!["failures".into(), "weibull_fit".into()],
-        link_x: None,
-        link_y: None,
-        marker: None,
+        ..Default::default()
     };
     for axis in [&mut times.config.left_y, &mut times.config.right_y] {
         axis.scale = AxisScale::Probability(weibull);
@@ -133,39 +126,19 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     }
     config.subplots = vec![times];
 
-    let points = |id: &str, x: &str, color: Color, shape: ScatterShape| {
-        let mut style = scatter(color, 11.);
-        style.point_shape = shape;
-        series(
-            id,
-            x,
-            "p",
-            DataRenderType::Xy(XySeries {
-                scatter: Some(style),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        )
-    };
-    let fit = |id: &str, x: &str, color: Color| {
-        series(
-            id,
-            x,
-            "fit_p",
-            DataRenderType::Xy(XySeries {
-                scatter: None,
-                line: Some(line(color, 3.)),
-                errors: None,
-                stem: None,
-            }),
-        )
-    };
     let specs = [
-        points("strength", "strength", blue, ScatterShape::CircleFilled),
-        fit("normal_fit", "fit_strength", blue),
-        points("failures", "hours", red, ScatterShape::SquareFilled),
-        fit("weibull_fit", "fit_hours", red),
+        SeriesConfig::scatter("strength", "strength", "p")
+            .color(blue)
+            .marker(ScatterShape::CircleFilled, 11.),
+        SeriesConfig::line("normal_fit", "fit_strength", "fit_p")
+            .color(blue)
+            .width(3.),
+        SeriesConfig::scatter("failures", "hours", "p")
+            .color(red)
+            .marker(ScatterShape::SquareFilled, 11.),
+        SeriesConfig::line("weibull_fit", "fit_hours", "fit_p")
+            .color(red)
+            .width(3.),
     ];
     let mut chart = Chart::new(config);
     chart.auto_fit_x(r.pool(), "strength", 0.08)?;

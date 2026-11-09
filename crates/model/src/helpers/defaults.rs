@@ -613,3 +613,242 @@ impl Default for crate::view3d::View3d {
         crate::defaults::view3d()
     }
 }
+
+// The chart frame: the document and the options `default` builds (#265).
+// `AxisOptions` and `LabelStyle` have none: their default differs by axis
+// (`default_axis_options_x`, `_y`, `_colorbar`).
+
+impl Default for crate::config::Config {
+    fn default() -> Self {
+        crate::defaults::config()
+    }
+}
+
+impl Default for crate::config::ChartTitleOptions {
+    fn default() -> Self {
+        crate::defaults::chart_title_options()
+    }
+}
+
+impl Default for crate::config::AxisTitleOptions {
+    fn default() -> Self {
+        crate::defaults::axis_title_options()
+    }
+}
+
+impl Default for crate::config::GridOptions {
+    fn default() -> Self {
+        crate::defaults::grid_options()
+    }
+}
+
+impl Default for crate::config::ColorBarOptions {
+    fn default() -> Self {
+        crate::defaults::color_bar_options()
+    }
+}
+
+impl Default for crate::legend::Legend {
+    fn default() -> Self {
+        crate::defaults::legend()
+    }
+}
+
+impl Default for crate::layout::ChartArea {
+    fn default() -> Self {
+        crate::defaults::chart_area()
+    }
+}
+
+// Series styles a document always spells out (#265). They have no
+// `defaults/` source because no document omits them: these values exist for
+// hosts only. Strokes take the ink of the documented line default (black,
+// 1 px); a bar fills with the first colour of the balanced palette. A theme
+// recolours them.
+
+/// Ink for the stroke-only host defaults below.
+const INK: crate::color::Color = crate::color::Color::BLACK;
+
+impl Default for crate::data_config::Stem {
+    fn default() -> Self {
+        Self {
+            baseline: 0.0,
+            direction: crate::data_config::CategoryBarDirection::Vertical,
+            color: INK,
+            width: 1.0,
+            line_style: crate::line::LineStylePreset::Solid,
+        }
+    }
+}
+
+impl Default for crate::data_config::DataScatterStyleConfig {
+    fn default() -> Self {
+        Self {
+            point_color: INK,
+            point_shape: crate::data_config::ScatterShape::CircleFilled,
+            point_size: 6.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        }
+    }
+}
+
+impl Default for crate::data_config::DataErrorBarStyleConfig {
+    fn default() -> Self {
+        Self {
+            error_bar_color: INK,
+            error_bar_width: 1.0,
+            error_bar_cap_size: 6.0,
+            cap_width: 1.0,
+            error_bar_style_table: None,
+            error_bar_style_index_column: None,
+            error_bar_style_overrides: None,
+        }
+    }
+}
+
+impl Default for crate::data_config::DataBarStyleConfig {
+    fn default() -> Self {
+        Self {
+            fill_color: crate::preset::ColorCycle::Balanced.color(0),
+            border_color: INK,
+            border_width: 1.0,
+            baseline: 0.0,
+            gap_px: 0.0,
+            width_ratio: 1.0,
+            orientation: crate::data_config::BarOrientation::Vertical,
+            bar_style_overrides: None,
+        }
+    }
+}
+
+impl Default for crate::data_config::VectorStyle {
+    fn default() -> Self {
+        Self {
+            color: INK,
+            width_px: 1.5,
+            scale: crate::defaults::vector_scale(),
+            pivot: crate::defaults::vector_pivot(),
+            head_length_px: 9.0,
+            head_width_px: 8.0,
+            min_length_px: 0.0,
+            color_map: None,
+        }
+    }
+}
+
+impl Default for crate::data_config::FieldFillConfig {
+    fn default() -> Self {
+        Self {
+            mode: crate::data_config::FillMode::Continuous,
+            shading: crate::data_config::Shading::Flat,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl Default for crate::data_config::ContourLabelConfig {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            font_size: 12.0,
+            color: crate::defaults::contour_label_color(),
+            format: crate::format::LabelFormat::Decimal,
+            significant_digits: 2,
+            spacing_px: 120.0,
+            anchors: Vec::new(),
+            bg_color: None,
+            bg_padding_px: 2.0,
+        }
+    }
+}
+
+impl Default for crate::data_config::RangeConnector {
+    fn default() -> Self {
+        Self {
+            color: INK,
+            width: 1.0,
+        }
+    }
+}
+
+impl Default for crate::view3d::SurfaceWireframe {
+    fn default() -> Self {
+        Self {
+            color: INK,
+            width: 1.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data_config::{
+        ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
+        DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorBars, ErrorRef,
+        FieldFillConfig, FieldSeries, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig, Stem,
+        VectorStyle, XySeries,
+    };
+
+    fn series(render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "s".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            z_column: None,
+            render_type,
+        }
+    }
+
+    // Each host style default is a valid part of a series as it stands
+    // (#265): markers with error bars and stems, a line, histogram bars, a
+    // filled field with labelled contours, and the vector and wireframe
+    // looks.
+    #[test]
+    fn host_style_defaults_build_valid_series() {
+        let config = crate::Config::default();
+        let xy = series(DataRenderType::Xy(XySeries {
+            scatter: Some(DataScatterStyleConfig::default()),
+            line: Some(DataLineStyleConfig::default()),
+            errors: Some(ErrorBars {
+                x: None,
+                y: Some(ErrorRef::Symmetric { column: "e".into() }),
+                style: DataErrorBarStyleConfig::default(),
+            }),
+            stem: Some(Stem::default()),
+        }));
+        let histogram = series(DataRenderType::Histogram {
+            bar: DataBarStyleConfig::default(),
+        });
+        let field = series(DataRenderType::Field(FieldSeries {
+            matrix: MatrixRef {
+                columns: vec!["z0".into(), "z1".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            fill: Some(FieldFillConfig::default()),
+            contour: Some(ContourConfig {
+                levels: vec![0.5],
+                line: DataLineStyleConfig::default(),
+                per_level_color: None,
+                labels: Some(ContourLabelConfig::default()),
+            }),
+            surface: None,
+        }));
+        for item in [&xy, &histogram, &field] {
+            config
+                .validate_series(std::slice::from_ref(item))
+                .unwrap_or_else(|error| panic!("{:?}: {error:?}", item.render_type));
+        }
+        Stem::default().validate().unwrap();
+        ContourLabelConfig::default().validate().unwrap();
+        VectorStyle::default().validate().unwrap();
+        let wireframe = crate::view3d::SurfaceWireframe::default();
+        assert!(wireframe.width > 0.0 && wireframe.width.is_finite());
+    }
+}

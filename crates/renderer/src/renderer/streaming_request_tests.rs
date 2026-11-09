@@ -309,13 +309,13 @@ fn streamed_mapped_scatter_and_errorbar_keep_global_override_ids() {
         let stream_id = r
             .register_chart(chart.config().clone(), vec![stream_series])
             .unwrap();
-        let view = r
+        let mut view = r
             .create_chart_view(&chart, chart.config().chart_area.0)
             .unwrap();
         let frame = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: resident_id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         let reference = draw_target(&r, samples);
@@ -920,20 +920,20 @@ fn streamed_histogram_winner_and_mapped_bins_match_resident_full_chart() {
                 let stream_id = r
                     .register_chart(chart.config().clone(), declarations)
                     .unwrap();
-                let view = r
+                let mut view = r
                     .create_chart_view(&chart, chart.config().chart_area.0)
                     .unwrap();
                 let frame = r
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: resident_id,
-                        view: &view,
+                        view: &mut view,
                     }])
                     .unwrap();
                 let expected = paint_frame_pixels(&r, &frame, samples);
                 let prefix_frame = r
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: prefix_id,
-                        view: &view,
+                        view: &mut view,
                     }])
                     .unwrap();
                 let expected_prefix = paint_frame_pixels(&r, &prefix_frame, samples);
@@ -1056,13 +1056,13 @@ fn streamed_histogram_same_id_edges_and_values_match_resident() {
     let resident_id = r
         .register_chart(chart.config().clone(), vec![series])
         .unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: resident_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     let expected = paint_frame_pixels(&r, &frame, 1);
@@ -1270,7 +1270,7 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
     let _ = r.set_memory_budget(Some(budget));
     let _ = r.set_auto_resident_working_set_limit(Some(500_000_000));
     let config = r.chart_config(chart_id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     r.request_auto_streaming_chart(
@@ -1310,9 +1310,9 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
         }
     }
     wait_stream_slots(&mut r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id,
-        view: &view,
+        view: &mut view,
     }])
     .unwrap();
     assert!(matches!(
@@ -1340,7 +1340,7 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
     narrowed.left_y.min = 0.125;
     narrowed.left_y.max = 0.375;
     r.set_chart_config(chart_id, narrowed.clone()).unwrap();
-    let narrowed_view = r
+    let mut narrowed_view = r
         .create_chart_view(&Chart::new(narrowed.clone()), narrowed.chart_area.0)
         .unwrap();
     assert!(matches!(
@@ -1363,9 +1363,9 @@ fn automatic_stream_builds_chart_local_packed_rows_without_promoting_global_colu
     assert!(r.view_cache_test_status(chart_id).is_some());
     assert!(r.pool.slot("x").is_none());
     wait_stream_slots(&mut r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id,
-        view: &narrowed_view,
+        view: &mut narrowed_view,
     }])
     .unwrap();
     assert!(matches!(
@@ -1525,7 +1525,7 @@ fn packed_view_redraw_matches_exact_stream_pixels_after_zoom() {
     narrow.left_y.min = 0.25;
     narrow.left_y.max = 0.75;
     cached.set_chart_config(cached_id, narrow.clone()).unwrap();
-    let narrow_view = cached
+    let mut narrow_view = cached
         .create_chart_view(&Chart::new(narrow.clone()), narrow.chart_area.0)
         .unwrap();
     cached
@@ -1537,9 +1537,9 @@ fn packed_view_redraw_matches_exact_stream_pixels_after_zoom() {
     ));
     wait_stream_slots(&mut cached, 0);
     cached
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: cached_id,
-            view: &narrow_view,
+            view: &mut narrow_view,
         }])
         .unwrap();
     let cached_target = cached.stream_target_test(cached_id).unwrap();
@@ -1568,7 +1568,7 @@ fn run_auto_stream_for_view_test(
     options: crate::StreamingChartOptions,
     bindings: &[crate::StreamSourceBinding<'_>],
 ) {
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     r.request_auto_streaming_chart(chart_id, &view, options)
@@ -1582,9 +1582,9 @@ fn run_auto_stream_for_view_test(
         }
     }
     wait_stream_slots(r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id,
-        view: &view,
+        view: &mut view,
     }])
     .unwrap();
     assert!(matches!(
@@ -1733,7 +1733,7 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
     narrow.left_y.min = 0.25;
     narrow.left_y.max = 0.75;
     cached.set_chart_config(cached_id, narrow.clone()).unwrap();
-    let narrow_view = cached
+    let mut narrow_view = cached
         .create_chart_view(&Chart::new(narrow.clone()), narrow.chart_area.0)
         .unwrap();
     cached
@@ -1745,9 +1745,9 @@ fn packed_view_combined_errorbar_redraw_matches_exact_stream_pixels() {
     ));
     wait_stream_slots(&mut cached, 0);
     cached
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: cached_id,
-            view: &narrow_view,
+            view: &mut narrow_view,
         }])
         .unwrap();
     let cached_pixels = read_draw_target(&cached, &cached.stream_target_test(cached_id).unwrap());
@@ -2131,26 +2131,26 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
             let b = r
                 .register_chart(chart_b.config().clone(), vec![resident_b])
                 .unwrap();
-            let view_a = r.create_chart_view(&chart_a, panel_a).unwrap();
-            let view_a_prefix = r.create_chart_view(&chart_a, panel_a).unwrap();
-            let view_b = r.create_chart_view(&chart_b, panel_b).unwrap();
+            let mut view_a = r.create_chart_view(&chart_a, panel_a).unwrap();
+            let mut view_a_prefix = r.create_chart_view(&chart_a, panel_a).unwrap();
+            let mut view_b = r.create_chart_view(&chart_b, panel_b).unwrap();
             let reference = r
-                .prepare_registered(&[
+                .prepare_registered(&mut [
                     RegisteredChartDrawItem {
                         chart_id: a_reference,
-                        view: &view_a,
+                        view: &mut view_a,
                     },
                     RegisteredChartDrawItem {
                         chart_id: b,
-                        view: &view_b,
+                        view: &mut view_b,
                     },
                 ])
                 .unwrap();
             let expected = paint_frame_pixels(&r, &reference, samples);
             let mut b_only = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: b,
-                    view: &view_b,
+                    view: &mut view_b,
                 }])
                 .unwrap();
             let job = r
@@ -2158,14 +2158,14 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                 .unwrap();
             let b_revision = view_b.content_revision.load(Ordering::Acquire);
             assert!(matches!(
-                r.prepare_registered(&[
+                r.prepare_registered(&mut [
                     RegisteredChartDrawItem {
                         chart_id: a_stream,
-                        view: &view_a_prefix,
+                        view: &mut view_a_prefix,
                     },
                     RegisteredChartDrawItem {
                         chart_id: b,
-                        view: &view_b,
+                        view: &mut view_b,
                     },
                 ]),
                 Err(FiggyError::StaleStateToken { .. })
@@ -2206,14 +2206,14 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                         sequence: u64::MAX,
                     };
                     assert!(matches!(
-                        r.prepare_registered(&[
+                        r.prepare_registered(&mut [
                             RegisteredChartDrawItem {
                                 chart_id: a_stream,
-                                view: &view_a,
+                                view: &mut view_a,
                             },
                             RegisteredChartDrawItem {
                                 chart_id: unknown,
-                                view: &view_b,
+                                view: &mut view_b,
                             },
                         ]),
                         Err(FiggyError::UnknownChart { .. })
@@ -2234,9 +2234,9 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     .unwrap();
                 }
                 let direct_prefix = r
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: a_prefix,
-                        view: &view_a_prefix,
+                        view: &mut view_a_prefix,
                     }])
                     .unwrap();
                 let prefix_pixels = paint_frame_pixels(&r, &direct_prefix, samples);
@@ -2252,14 +2252,14 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                     r.validate_prepared(&b_only)
                 );
                 let mixed = r
-                    .prepare_registered(&[
+                    .prepare_registered(&mut [
                         RegisteredChartDrawItem {
                             chart_id: a_stream,
-                            view: &view_a,
+                            view: &mut view_a,
                         },
                         RegisteredChartDrawItem {
                             chart_id: b,
-                            view: &view_b,
+                            view: &mut view_b,
                         },
                     ])
                     .unwrap();
@@ -2282,28 +2282,28 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                 }
                 r.end_gpu_frame();
                 b_only = r
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: b,
-                        view: &view_b,
+                        view: &mut view_b,
                     }])
                     .unwrap();
                 prior_a_frame = Some(
-                    r.prepare_registered(&[RegisteredChartDrawItem {
+                    r.prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: a_stream,
-                        view: &view_a,
+                        view: &mut view_a,
                     }])
                     .unwrap(),
                 );
             }
             let final_frame = r
-                .prepare_registered(&[
+                .prepare_registered(&mut [
                     RegisteredChartDrawItem {
                         chart_id: a_stream,
-                        view: &view_a,
+                        view: &mut view_a,
                     },
                     RegisteredChartDrawItem {
                         chart_id: b,
-                        view: &view_b,
+                        view: &mut view_b,
                     },
                 ])
                 .unwrap();
@@ -2312,15 +2312,15 @@ fn mixed_prepared_frame_preserves_resident_chart_and_exact_stream_output() {
                 &expected,
             );
             b_only = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: b,
-                    view: &view_b,
+                    view: &mut view_b,
                 }])
                 .unwrap();
             let a_only = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: a_stream,
-                    view: &view_a,
+                    view: &mut view_a,
                 }])
                 .unwrap();
             r.cancel_chart_stream(a_stream).unwrap();
@@ -2583,13 +2583,13 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
             let stream_id = r
                 .register_chart(chart.config().clone(), declarations)
                 .unwrap();
-            let view = r
+            let mut view = r
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap();
             let frame = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: resident_id,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap();
             let reference = draw_target(&r, samples);
@@ -2774,9 +2774,9 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
 
             // Include actual grid and decoration, not just data-only parity.
             let frame = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: resident_id,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap();
             let reference = draw_target(&r, samples);
@@ -4387,7 +4387,7 @@ fn automatic_stream_style_change_restarts_the_data_prefix() {
 fn automatic_stream_becomes_terminal_only_after_receipts_and_final_display() {
     let (mut r, chart_id, _) = renderer(2);
     let config = r.chart_config(chart_id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let options = crate::StreamingChartOptions {
@@ -4441,9 +4441,9 @@ fn automatic_stream_becomes_terminal_only_after_receipts_and_final_display() {
         crate::AutoStreamingProgress::AllSubmitted { .. }
     ));
     let final_display = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(final_display);
@@ -4602,7 +4602,7 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
         )
         .unwrap();
     r.configure_streaming_runtime(limits(2)).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let x_epoch = r.pool.allocation_epoch("handoff-x").unwrap();
@@ -4671,9 +4671,9 @@ fn resident_range_handoff_keeps_old_authority_until_complete_then_commits_once()
             crate::AutoStreamingRangeRequest::AllSubmitted { .. } => {
                 wait_stream_slots(&mut r, 0);
                 let frame = r
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id,
-                        view: &view,
+                        view: &mut view,
                     }])
                     .unwrap();
                 drop(frame);
@@ -4933,7 +4933,7 @@ fn mixed_closure_handoff_keeps_both_old_authorities_until_one_stream_commit() {
         )
         .unwrap();
     r.configure_streaming_runtime(limits(2)).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let mut x = source("mixed-x", 1);
@@ -4991,9 +4991,9 @@ fn mixed_closure_handoff_keeps_both_old_authorities_until_one_stream_commit() {
         crate::AutoStreamingRangeRequest::AllSubmitted { .. }
     ));
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(frame);
@@ -5035,7 +5035,7 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
         )
         .unwrap();
     r.configure_streaming_runtime(limits(2)).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let mut x = source("stale-x", 1);
@@ -5096,9 +5096,9 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
         crate::AutoStreamingRangeRequest::AllSubmitted { .. }
     ));
     let frame = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(frame);
@@ -5118,7 +5118,7 @@ fn changed_resident_revision_rejects_handoff_commit_without_removing_resident_da
 fn automatic_stream_terminalizes_an_already_presented_display_after_receipts_complete() {
     let (mut r, chart_id, _) = renderer(2);
     let config = r.chart_config(chart_id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     r.request_auto_streaming_chart(
@@ -5155,9 +5155,9 @@ fn automatic_stream_terminalizes_an_already_presented_display_after_receipts_com
         crate::AutoStreamingProgress::Submitted { .. }
     ));
     let displayed_before_receipt = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(displayed_before_receipt);
@@ -5168,9 +5168,9 @@ fn automatic_stream_terminalizes_an_already_presented_display_after_receipts_com
     ));
 
     let terminal_refresh = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(terminal_refresh);
@@ -5194,7 +5194,7 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
         height: 240,
     };
     r.set_chart_config(chart_id, config.clone()).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let x = crate::Column {
@@ -5249,13 +5249,13 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
     let reference_id = r
         .register_chart(fitted.clone(), vec![declaration("reference", "rx", "ry")])
         .unwrap();
-    let reference_view = r
+    let mut reference_view = r
         .create_chart_view(&Chart::new(fitted.clone()), fitted.chart_area.0)
         .unwrap();
     let reference = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: reference_id,
-            view: &reference_view,
+            view: &mut reference_view,
         }])
         .unwrap();
     let expected = paint_frame_pixels(&r, &reference, 1);
@@ -5290,9 +5290,9 @@ fn initial_stream_fit_presents_partial_data_with_matching_axis_pixels() {
         assert_eq!(status.submitted_primitives, 2);
         assert_eq!(status.total_primitives, 7);
         let partial = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         let pixels = paint_frame_pixels(&r, &partial, 1);
@@ -5319,7 +5319,7 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     let (mut r, chart_id, _) = renderer(2);
     r.request_stream_auto_fit(chart_id, 0.0).unwrap();
     let config = r.chart_config(chart_id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let options = crate::StreamingChartOptions {
@@ -5373,9 +5373,9 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     }
     wait_stream_slots(&mut r, 0);
     let final_display = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(final_display);
@@ -5437,9 +5437,9 @@ fn automatic_stream_collects_bounds_in_upload_pass_and_replays_after_axis_growth
     for _ in 0..128 {
         let step = r.auto_stream_chart_step(chart_id, &bindings).unwrap();
         wait_stream_slots(&mut r, 0);
-        r.prepare_registered(&[RegisteredChartDrawItem {
+        r.prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
         if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
@@ -5604,7 +5604,7 @@ fn automatic_stream_does_not_publish_old_statistics_into_a_new_source_revision()
     let (mut r, chart_id, _) = renderer(2);
     r.request_stream_auto_fit(chart_id, 0.0).unwrap();
     let config = r.chart_config(chart_id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let options = crate::StreamingChartOptions {
@@ -5661,9 +5661,9 @@ fn automatic_stream_does_not_publish_old_statistics_into_a_new_source_revision()
     }
     wait_stream_slots(&mut r, 0);
     let final_display = r
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
     drop(final_display);
@@ -5801,7 +5801,7 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
     config.chart_area.0.width = 320;
     config.chart_area.0.height = 240;
     r.set_chart_config(chart_id, config.clone()).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
     let ceiling = r.gpu_memory_usage().total_bytes() + 64 * 1024 * 1024;
@@ -5855,9 +5855,9 @@ fn progressive_fit_releases_resources_across_repeated_cancel_and_refit() {
         let mut complete = false;
         for _ in 0..512 {
             let step = r.auto_stream_chart_step(chart_id, &bindings).unwrap();
-            r.prepare_registered(&[RegisteredChartDrawItem {
+            r.prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
             r.end_gpu_frame();
@@ -6056,9 +6056,9 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
             );
             last_submitted = status.submitted_primitives;
             let frame = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: chart,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap();
             let pixels = paint_frame_pixels(&r, &frame, samples);
@@ -6119,13 +6119,13 @@ fn fitted_stream_two_passes_reveal_exact_chunks_before_completion() {
         series.x_column = "resident-x".into();
         series.y_column = "resident-y".into();
         let reference = r.register_chart(fitted.clone(), vec![series]).unwrap();
-        let reference_view = r
+        let mut reference_view = r
             .create_chart_view(&Chart::new(fitted.clone()), fitted.chart_area.0)
             .unwrap();
         let frame = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: reference,
-                view: &reference_view,
+                view: &mut reference_view,
             }])
             .unwrap();
         let expected = paint_frame_pixels(&r, &frame, samples);
@@ -6187,7 +6187,7 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
         });
         r.set_chart_series(chart, vec![series]).unwrap();
         r.set_chart_config(chart, config.clone()).unwrap();
-        let view = r
+        let mut view = r
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         let x = crate::Column {
@@ -6224,9 +6224,9 @@ fn initial_fit_rescales_earlier_points_with_logarithmic_and_inverted_axes() {
             r.auto_stream_chart_step(chart, &bindings).unwrap();
             wait_stream_slots(&mut r, 0);
             let frame = r
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: chart,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap();
             let submitted = r.stream_status(chart).unwrap().submitted_primitives;
@@ -6389,7 +6389,7 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
         );
         for size in [(640, 480), (260, 500), (900, 300), (320, 240)] {
             let (config, panel, scale) = display_config_for_surface(&document, size);
-            let view = r
+            let mut view = r
                 .create_chart_view(&Chart::new(config.clone()), panel)
                 .unwrap();
             let options = crate::StreamingChartOptions {
@@ -6413,9 +6413,9 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
                 "resize {size:?} requested original rows"
             );
             wait_stream_slots(&mut r, 0);
-            r.prepare_registered(&[RegisteredChartDrawItem {
+            r.prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
             assert!(matches!(
@@ -6431,7 +6431,7 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
             fresh
                 .set_chart_series(fresh_id, r.chart_series(id).unwrap().to_vec())
                 .unwrap();
-            let fresh_view = fresh
+            let mut fresh_view = fresh
                 .create_chart_view(&Chart::new(config.clone()), panel)
                 .unwrap();
             fresh
@@ -6455,9 +6455,9 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
             }
             wait_stream_slots(&mut fresh, 0);
             fresh
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: fresh_id,
-                    view: &fresh_view,
+                    view: &mut fresh_view,
                 }])
                 .unwrap();
             let job = fresh.active_stream_job(fresh_id).unwrap();
@@ -6534,13 +6534,13 @@ fn completed_stream_grid_toggle_recomposes_without_source_replay() {
         config.grid.show_major_x = false;
         config.grid.show_major_y = false;
         r.set_chart_config(id, config.clone()).unwrap();
-        let view = r
+        let mut view = r
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         r.request_auto_streaming_chart(id, &view, options).unwrap();
-        r.prepare_registered(&[RegisteredChartDrawItem {
+        r.prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id: id,
-            view: &view,
+            view: &mut view,
         }])
         .unwrap();
         assert_eq!(r.active_stream_job(id), Some(job));
@@ -6648,9 +6648,9 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                     r.refresh_axis(&mut view, &Chart::new(c.clone()), c.chart_area.0)
                         .unwrap();
                 }
-                r.prepare_registered(&[RegisteredChartDrawItem {
+                r.prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: id,
-                    view: &view,
+                    view: &mut view,
                 }])
                 .unwrap();
                 let job = r.active_stream_job(id).unwrap();

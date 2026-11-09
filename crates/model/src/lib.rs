@@ -20,6 +20,8 @@ mod defaults;
 pub mod helpers;
 #[cfg(feature = "helpers")]
 pub use helpers::default;
+#[cfg(feature = "helpers")]
+pub use helpers::theme;
 pub mod drag;
 pub use decoration::{DecorationElement, DecorationId, DecorationLayout, DecorationOffset};
 pub mod annotation;

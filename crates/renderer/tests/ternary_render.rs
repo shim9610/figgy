@@ -1315,7 +1315,7 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
     // The screen path: prepare + paint through the resident composite.
     let chart = Chart::new(config.clone());
     let rect = config.chart_area.0;
-    let view = r.create_chart_view(&chart, rect).unwrap();
+    let mut view = r.create_chart_view(&chart, rect).unwrap();
     let styles: Vec<_> = series
         .iter()
         .map(|cfg| r.create_style_for_series(cfg).unwrap())
@@ -1325,12 +1325,12 @@ fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
         .zip(&styles)
         .map(|(config, style)| renderer::Series { config, style })
         .collect();
-    let items = [renderer::ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [renderer::ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &drawn,
     }];
-    let prepared = r.prepare(&items).unwrap();
+    let prepared = r.prepare(&mut items).unwrap();
     let (w, h) = (rect.width, rect.height);
     let device = r.device().clone();
     let queue = r.queue().clone();

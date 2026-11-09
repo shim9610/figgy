@@ -22,12 +22,12 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::*;
-use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark, Category};
+use renderer::config::{AxisBreak, AxisBreakStyle, AxisBreaks, Category};
 use renderer::energy_levels::{
     EnergyLevel, EnergyLevelSeries, IonizationLimit, LevelRole, Transition,
 };
 use renderer::text::RichText;
-use renderer::{Color, DataRenderType, Renderer, SeriesConfig};
+use renderer::{Color, Renderer, SeriesConfig};
 use std::path::{Path, PathBuf};
 
 /// One CSV record: the fields of one line, NIST's `="…"` quoting removed.
@@ -391,9 +391,8 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         ranges: vec![AxisBreak::new(0.25, 19.6)],
         style: AxisBreakStyle::Continuous,
         gap_px: 12.0,
-        mark: BreakMark::default(),
         frame_each_panel: false,
-        sizing: Default::default(),
+        ..Default::default()
     });
     // The continuum: annotations written from the limits.
     let top = 25.2;
@@ -417,15 +416,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
             *y -= 10.0 / plot.height.max(1) as f32;
         }
     }
-    let spec = SeriesConfig {
-        series_id: "he".into(),
-        source_id: None,
-        label: None,
-        x_column: String::new(),
-        y_column: String::new(),
-        z_column: None,
-        render_type: DataRenderType::EnergyLevels(series),
-    };
+    let spec = SeriesConfig::energy_diagram("he", series);
     save(r, &c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 

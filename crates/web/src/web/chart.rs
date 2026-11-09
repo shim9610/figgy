@@ -1440,22 +1440,10 @@ impl FiggyChart {
         // Browser resize is preview zoom, not a document mutation. The
         // stored chart remains the export SSoT; the live canvas renders a
         // scaled/letterboxed display chart derived from it.
-        let (display_config, panel_rect, display_scale) = self.display_config()?;
+        let (display_config, panel_rect, _) = self.display_config()?;
         let display_chart = Chart::new(display_config.into_owned());
-        if refresh_raster {
-            let selected_id: Option<String> = self
-                .chart_selection()?
-                .and_then(|id| self.hitmap.get(id).map(|el| el.element_id()));
-            self.renderer
-                .refresh_axis_with_selection_at(
-                    &mut self.view,
-                    &display_chart,
-                    panel_rect,
-                    selected_id.as_deref(),
-                    display_scale,
-                )
-                .map_err(js_err)?;
-        }
+        // `draw_registered` redraws the text and axis raster itself when the
+        // chart, its selection or its display placement changed (#265).
         if (annotation_dirty && !refresh_raster)
             || self.view.annotation_selected() != self.selected_annotation
         {
@@ -1475,9 +1463,9 @@ impl FiggyChart {
         self.renderer
             .draw_registered(
                 self.clear_color,
-                &[RegisteredChartDrawItem {
+                &mut [RegisteredChartDrawItem {
                     chart_id: self.chart_id,
-                    view: &self.view,
+                    view: &mut self.view,
                 }],
             )
             .map_err(js_err)?;
