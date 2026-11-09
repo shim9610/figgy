@@ -18,11 +18,10 @@
 /// which layer's elements are registered in the hit map, not which element is
 /// selected. `Base` is the default and exists on every chart, so a document
 /// without the field routes the pointer to the chart's own elements.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LayerRef {
     /// The chart's own series, axes and decorations.
-    #[default]
     Base,
     /// An overlay layer by index into the document's overlay list. The
     /// radial chart has no overlays; a setter must fall back to `Base` there and
@@ -37,6 +36,22 @@ pub enum LayerRef {
     /// subplot). An overlay index past the subplot's list reads as the
     /// subplot itself; a subplot index past the list reads as `Base`.
     SubplotOverlay(usize, usize),
+}
+
+impl LayerRef {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Base
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LayerRef {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl LayerRef {
@@ -85,7 +100,7 @@ pub(crate) fn set_bounded_active_layer(
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "AnnotationLayer::omitted")
 )]
 pub struct AnnotationLayer {
     /// Skips the layer's composite draws without re-rasterizing anything.
@@ -95,8 +110,11 @@ pub struct AnnotationLayer {
     pub items: Vec<crate::annotation::Annotation>,
 }
 
-impl Default for AnnotationLayer {
-    fn default() -> Self {
+impl AnnotationLayer {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             visible: true,
             items: Vec::new(),
@@ -104,11 +122,24 @@ impl Default for AnnotationLayer {
     }
 }
 
+#[cfg(feature = "helpers")]
+impl Default for AnnotationLayer {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 impl AnnotationLayer {
     /// `true` when nothing differs from the default; used to omit the field
     /// from JSON so existing documents serialize byte-identically.
     pub fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == Self::omitted()
+    }
+
+    /// A layer with no items, visible: a document without annotations
+    /// (#266).
+    pub fn empty() -> Self {
+        Self::omitted()
     }
 }
 
@@ -131,7 +162,7 @@ impl AnnotationLayer {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "OverlayLayer::omitted")
 )]
 pub struct OverlayLayer {
     /// The overlay's own Y axis, drawn on the right side of the data area.
@@ -150,15 +181,23 @@ pub struct OverlayLayer {
     pub legend: Option<crate::legend::Legend>,
 }
 
-impl Default for OverlayLayer {
-    /// A right-hand Y axis with the default Y label style, no series and no
-    /// legend of its own.
-    fn default() -> Self {
+impl OverlayLayer {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
-            y_axis: crate::default::default_axis_options_y(),
+            y_axis: crate::config::AxisOptions::omitted_y(),
             series: Vec::new(),
             legend: None,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for OverlayLayer {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -199,7 +238,7 @@ pub enum CellRef {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "Subplot::omitted")
 )]
 pub struct Subplot {
     /// The subplot's chart. Its own `subplots` must be empty (one level of
@@ -239,7 +278,7 @@ pub struct Subplot {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "InsetMarker::omitted")
 )]
 pub struct InsetMarker {
     /// The window in the parent's data coordinates, `[[x0, x1], [y0, y1]]`.
@@ -253,9 +292,11 @@ pub struct InsetMarker {
     pub connectors: bool,
 }
 
-impl Default for InsetMarker {
-    /// A derived window, a thin grey line and connectors.
-    fn default() -> Self {
+impl InsetMarker {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             window: None,
             line: crate::annotation::AnnotationLineStyle {
@@ -268,16 +309,32 @@ impl Default for InsetMarker {
     }
 }
 
-impl Default for Subplot {
-    /// The default chart, no series and no links.
+#[cfg(feature = "helpers")]
+impl Default for InsetMarker {
     fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+impl Subplot {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
-            config: crate::default::default_config(),
+            config: crate::config::Config::omitted(),
             series: Vec::new(),
             link_x: None,
             link_y: None,
             marker: None,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for Subplot {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -466,7 +523,7 @@ mod tests {
     #[test]
     fn overlay_layer_defaults_to_an_unassigned_right_axis() {
         let layer = OverlayLayer::default();
-        assert_eq!(layer.y_axis, crate::default::default_axis_options_y());
+        assert_eq!(layer.y_axis, crate::config::AxisOptions::omitted_y());
         assert!(layer.series.is_empty());
         assert!(layer.legend.is_none());
         assert!(!layer.owns_series("a"));
@@ -490,7 +547,7 @@ mod tests {
 
         let layer = OverlayLayer {
             series: vec!["pressure".into()],
-            legend: Some(crate::default::default_legend()),
+            legend: Some(crate::config::Legend::omitted()),
             ..Default::default()
         };
         let json = serde_json::to_value(&layer).unwrap();

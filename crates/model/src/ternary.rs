@@ -35,10 +35,26 @@ use crate::text::TextExtents;
 /// The ternary coordinate system of a `Config`. It has no field in this
 /// release: it is the switch that turns the chart into a triangle, and
 /// later options (such as a partial triangle) join it additively.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "TernaryOptions::omitted"))]
 pub struct TernaryOptions {}
+
+impl TernaryOptions {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {}
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TernaryOptions {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
 
 /// The fill of the closed regions a ternary series outlines: phase fields,
 /// soil-texture classes, rock classification areas. The host gives each
@@ -52,7 +68,7 @@ pub struct TernaryOptions {}
 /// as a line's area fill is.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "TernaryRegionStyle::omitted"))]
 pub struct TernaryRegionStyle {
     /// The fill colour; its alpha multiplies `opacity`.
     pub color: Color,
@@ -60,12 +76,22 @@ pub struct TernaryRegionStyle {
     pub opacity: f32,
 }
 
-impl Default for TernaryRegionStyle {
-    fn default() -> Self {
+impl TernaryRegionStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::new(0.3, 0.5, 0.8, 1.0),
             opacity: 0.35,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TernaryRegionStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -388,7 +414,7 @@ mod tests {
     use crate::{Color, ScatterShape};
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         for axis in [
             &mut config.bottom_x,
             &mut config.left_y,

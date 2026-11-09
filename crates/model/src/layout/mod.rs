@@ -398,13 +398,12 @@ mod inset_order_tests {
 mod tests {
     use super::{Side, colorbar_contribution};
     use crate::config::Config;
-    use crate::default::{default_colorbar_options, default_config};
     use crate::layout::{ChartArea, LayoutError, Rect};
     use crate::select::tests::LaysOut;
 
     fn config_with_colorbar(side: Side) -> Config {
-        let mut cfg = default_config();
-        let mut bar = default_colorbar_options();
+        let mut cfg = crate::config::Config::omitted();
+        let mut bar = crate::config::ColorBarOptions::omitted();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg
@@ -418,7 +417,7 @@ mod tests {
     // data_area() must be fully contained inside chart_area on success.
     #[test]
     fn data_area_contained_in_chart_area() {
-        let cfg = default_config();
+        let cfg = crate::config::Config::omitted();
         let da = cfg.data_area().unwrap();
         let ca = &cfg.chart_area;
         assert!(da.x >= ca.x);
@@ -430,7 +429,7 @@ mod tests {
     // All margin-contribution fields must be non-negative.
     #[test]
     fn margins_non_negative() {
-        let cfg = default_config();
+        let cfg = crate::config::Config::omitted();
         let m = cfg.margins();
         assert!(m.top >= 0.0);
         assert!(m.bottom >= 0.0);
@@ -443,7 +442,7 @@ mod tests {
     #[test]
     fn the_colorbar_band_is_charged_to_its_own_side_only() {
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
-            let base = default_config();
+            let base = crate::config::Config::omitted();
             let cfg = config_with_colorbar(side.clone());
             let (before, after) = (base.margins(), cfg.margins());
             let expected = band(&cfg);
@@ -515,7 +514,7 @@ mod tests {
     fn a_hidden_colorbar_reserves_nothing() {
         let mut cfg = config_with_colorbar(Side::Right);
         cfg.colorbar.as_mut().expect("colourbar").visible = false;
-        assert_eq!(cfg.margins(), default_config().margins());
+        assert_eq!(cfg.margins(), crate::config::Config::omitted().margins());
         assert_eq!(colorbar_contribution(&cfg, &Side::Right), 0.0);
     }
 
@@ -523,7 +522,7 @@ mod tests {
     // from one written before the field existed.
     #[test]
     fn a_config_without_a_colorbar_is_unaffected() {
-        let cfg = default_config();
+        let cfg = crate::config::Config::omitted();
         assert!(cfg.colorbar.is_none());
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
             assert_eq!(colorbar_contribution(&cfg, &side), 0.0);
@@ -661,7 +660,7 @@ mod tests {
     #[test]
     fn overlay_axes_widen_only_the_shared_right_margin() {
         use crate::layer::OverlayLayer;
-        let base = default_config();
+        let base = crate::config::Config::omitted();
         let own = base.margins();
         let mut cfg = base.clone();
         cfg.overlays.push(OverlayLayer::default());
@@ -694,7 +693,7 @@ mod tests {
     fn data_area_writes_set_the_group_right_band() {
         use crate::layer::OverlayLayer;
         use crate::layout::{Element, FitStrategy};
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.overlays.push(OverlayLayer::default());
         let before = cfg.data_area().unwrap().0;
         assert_eq!(
@@ -724,7 +723,7 @@ mod tests {
     #[test]
     fn validate_rejects_a_degenerate_overlay_axis() {
         use crate::layer::OverlayLayer;
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.overlays.push(OverlayLayer::default());
         assert!(cfg.validate().is_ok());
         let mut reversed = cfg.clone();
@@ -763,7 +762,7 @@ mod tests {
         let mut checked = 0usize;
 
         for _ in 0..1500 {
-            let mut cfg = default_config();
+            let mut cfg = crate::config::Config::omitted();
             cfg.chart_area = ChartArea(Rect {
                 x: (next() * 5000.0) as u32,
                 y: (next() * 5000.0) as u32,
@@ -775,7 +774,7 @@ mod tests {
                 super::axis_mut(&mut cfg, side).out_margin = next() * 90.0;
             }
             if next() < 0.5 {
-                let mut bar = default_colorbar_options();
+                let mut bar = crate::config::ColorBarOptions::omitted();
                 bar.side = sides[(next() * 4.0) as usize % 4].clone();
                 cfg.colorbar = Some(bar);
             }

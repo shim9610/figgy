@@ -45,9 +45,9 @@ pub enum LabelFormat {
 ///
 /// `Plain` ignores the axis scale, spacing and significant digits: the text
 /// depends on the value alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "PlainNumberFormat::omitted"))]
 pub struct PlainNumberFormat {
     /// Fixed decimal places, or `None` for the automatic form.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -55,6 +55,25 @@ pub struct PlainNumberFormat {
     /// With fixed decimals, drop trailing fractional zeros and a bare point.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "std::ops::Not::not"))]
     pub trim_zeros: bool,
+}
+
+impl PlainNumberFormat {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            decimals: Default::default(),
+            trim_zeros: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for PlainNumberFormat {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl PlainNumberFormat {
@@ -107,61 +126,158 @@ fn trim_fraction_zeros(text: String) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampUnit {
-    #[default]
     Seconds,
     Milliseconds,
     Microseconds,
     Nanoseconds,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+impl TimestampUnit {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Seconds
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimestampUnit {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampZone {
-    #[default]
     Utc,
     /// Fixed offset from UTC in minutes. Korea Standard Time is 540.
     FixedOffsetMinutes(i32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+impl TimestampZone {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Utc
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimestampZone {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampLabelMode {
-    #[default]
     Auto,
     /// Minimal strftime-like pattern: %Y %m %d %H %M %S %f and %%.
     Pattern(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+impl TimestampLabelMode {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Auto
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimestampLabelMode {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionalSecondDigits {
-    #[default]
     Auto,
     Fixed(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+impl FractionalSecondDigits {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Auto
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for FractionalSecondDigits {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimestampTickPolicy {
     /// Calendar-aware ticks such as minutes, hours, days, months, and years.
-    #[default]
     AutoCalendar,
     /// Reuse the numeric `major_spacing` / `minor_count` tick walkers.
     NumericSpacing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+impl TimestampTickPolicy {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::AutoCalendar
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimestampTickPolicy {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "TimestampLabelFormat::omitted"))]
 pub struct TimestampLabelFormat {
     pub unit: TimestampUnit,
     pub timezone: TimestampZone,
     pub label: TimestampLabelMode,
     pub fractional: FractionalSecondDigits,
     pub tick_policy: TimestampTickPolicy,
+}
+
+impl TimestampLabelFormat {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            unit: TimestampUnit::omitted(),
+            timezone: TimestampZone::omitted(),
+            label: TimestampLabelMode::omitted(),
+            fractional: FractionalSecondDigits::omitted(),
+            tick_policy: TimestampTickPolicy::omitted(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimestampLabelFormat {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 fn auto_sig_linear(min: f64, max: f64, step: f64) -> u8 {
@@ -225,7 +341,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
 
     // Result must be in 1..=15.
     #[test]
@@ -364,7 +479,7 @@ mod tests {
     // auto_significant_digits should mutate only the sig field.
     #[test]
     fn auto_sig_changes_only_sig_field() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         let before = cfg.clone();
         cfg.top_x.auto_significant_digits();
         let mut expected = before.clone();
@@ -380,7 +495,7 @@ mod tests {
     // auto_significant_digits_all should also mutate only sig fields.
     #[test]
     fn auto_sig_all_changes_only_sig_fields() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         let before = cfg.clone();
         cfg.auto_significant_digits_all();
         assert!(cfg.top_x.label_style.significant_digits >= 1);

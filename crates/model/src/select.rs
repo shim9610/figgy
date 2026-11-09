@@ -825,7 +825,10 @@ impl SubplotElement {
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,
-                annotations: std::mem::take(&mut stored.annotations),
+                annotations: std::mem::replace(
+                    &mut stored.annotations,
+                    crate::layer::AnnotationLayer::empty(),
+                ),
                 bar_groups,
                 line_offsets,
                 plot_background,
@@ -1967,7 +1970,6 @@ pub(crate) mod tests {
     }
 
     use super::*;
-    use crate::default::default_config;
     use crate::layout::{ChartArea, Rect, colorbar_rect};
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
 
@@ -2040,7 +2042,7 @@ pub(crate) mod tests {
     }
 
     fn cfg_800x600() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2450,7 +2452,7 @@ pub(crate) mod tests {
     fn overlay_legend_is_selectable_only_when_present() {
         let mut cfg = cfg_with_overlay();
         cfg.set_active_layer(LayerRef::Overlay(0));
-        let mut legend = crate::default::default_legend();
+        let mut legend = crate::config::Legend::omitted();
         legend.visible = true;
         legend.content = RichText {
             segments: rich_segments_from_text("P"),
@@ -2707,7 +2709,7 @@ pub(crate) mod tests {
 
     fn cfg_with_colorbar(side: Side) -> Config {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::default::default_colorbar_options();
+        let mut bar = crate::config::ColorBarOptions::omitted();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg

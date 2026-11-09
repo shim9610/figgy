@@ -415,12 +415,11 @@ mod tests {
         DataErrorBarStyleConfig, DataLineStyleConfig, DataScatterStyleConfig, ErrorRef,
         ScatterShape,
     };
-    use crate::default::default_config;
     use crate::line::LineStylePreset;
 
     #[test]
     fn boxed_inward_shows_full_frame_with_inside_ticks() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.apply_axis_preset(AxisPreset::BoxedInward);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(axis.line_visible);
@@ -434,7 +433,7 @@ mod tests {
 
     #[test]
     fn open_outward_hides_top_right_entirely() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
         assert!(cfg.bottom_x.line_visible);
         assert_eq!(cfg.bottom_x.tick, TickVisibility::Outside);
@@ -445,7 +444,7 @@ mod tests {
 
     #[test]
     fn minimal_drops_lines_and_ticks_but_keeps_labels() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.apply_axis_preset(AxisPreset::Minimal);
         for axis in [&cfg.top_x, &cfg.bottom_x, &cfg.left_y, &cfg.right_y] {
             assert!(!axis.line_visible);
@@ -461,7 +460,7 @@ mod tests {
     #[test]
     fn grotrian_drops_the_grid_and_mirrored_ticks_and_thins_the_ground_strip() {
         use crate::config::{AxisBreak, AxisBreaks};
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.left_y.min = 0.0;
         cfg.left_y.max = 25.0;
         cfg.left_y.breaks = Some(AxisBreaks {
@@ -484,7 +483,7 @@ mod tests {
             cfg.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
             Some(PieceSizing::Weights(vec![1.0, 9.0, 9.0]))
         );
-        let mut panels = default_config();
+        let mut panels = crate::config::Config::omitted();
         panels.left_y.breaks = Some(AxisBreaks {
             ranges: vec![AxisBreak::new(0.5, 10.0)],
             style: AxisBreakStyle::Panels,
@@ -495,14 +494,14 @@ mod tests {
             panels.left_y.breaks.as_ref().map(|b| b.sizing.clone()),
             Some(PieceSizing::ByValue)
         );
-        let mut plain = default_config();
+        let mut plain = crate::config::Config::omitted();
         plain.apply_axis_preset(AxisPreset::Grotrian);
         assert!(plain.left_y.breaks.is_none());
     }
 
     #[test]
     fn hidden_drops_lines_ticks_labels_and_the_grid_and_keeps_the_layout() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.grid.show_major_x = true;
         cfg.grid.show_minor_y = true;
         let before = cfg.clone();
@@ -522,7 +521,7 @@ mod tests {
     // A preset must not disturb anything outside frame/tick/label visibility.
     #[test]
     fn preset_leaves_ranges_margins_titles_untouched() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         let before = cfg.clone();
         cfg.apply_axis_preset(AxisPreset::OpenOutward);
 

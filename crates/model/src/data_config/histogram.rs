@@ -43,7 +43,7 @@ pub(super) fn default_bar_width_ratio() -> f32 {
 ///
 /// `None` inherits the series-level value. A zero `border_width` removes the
 /// outline for just that bin.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataBarBinStyleConfig {
     #[cfg_attr(
@@ -71,6 +71,28 @@ pub struct DataBarBinStyleConfig {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub width_ratio: Option<f32>,
+}
+
+impl DataBarBinStyleConfig {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            fill_color: Default::default(),
+            border_color: Default::default(),
+            border_width: Default::default(),
+            gap_px: Default::default(),
+            width_ratio: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for DataBarBinStyleConfig {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// One sparse histogram-bin style override.

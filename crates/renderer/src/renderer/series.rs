@@ -788,7 +788,7 @@ pub(super) fn polar_fill_closes(config: &Config) -> bool {
 /// The categories a category bar series of `config` (one panel) draws
 /// against: the categorical axis of the panel's bar direction.
 pub(super) fn category_bar_categories(config: &Config) -> Option<&[crate::config::Category]> {
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     match groups.direction {
         crate::data_config::CategoryBarDirection::Vertical => config.bottom_x.categories.as_deref(),
         crate::data_config::CategoryBarDirection::Horizontal => config.left_y.categories.as_deref(),
@@ -842,7 +842,7 @@ fn visit_category_bar_members<'c>(
     lookup: &mut impl FnMut(&str) -> Result<ColumnHandle>,
     mut visit: impl FnMut(usize, &'c SeriesConfig, &str, u32) -> Result<()>,
 ) -> Result<usize> {
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_count(config, series)?;
     let mut members = 0usize;
     for item in group {
@@ -984,7 +984,7 @@ pub(super) fn category_bar_params<'c>(
         .render_type
         .category_bars()
         .ok_or_else(|| invalid(crate::RuleKind::NotCategoryBars))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_count(config, series)?;
     let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
     let mut member = None;
@@ -1083,7 +1083,7 @@ pub(super) fn box_plot_params<'c>(
         .render_type
         .box_plot()
         .ok_or_else(|| invalid(crate::RuleKind::NotBoxPlot))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let n = category_bar_categories(config)
         .map(<[_]>::len)
         .ok_or_else(|| invalid(crate::RuleKind::BoxPlotsAxis))?;
@@ -1500,7 +1500,7 @@ pub(super) fn range_bar_params<'c>(
         .render_type
         .range_bars()
         .ok_or_else(|| invalid(crate::RuleKind::NotRangeBars))?;
-    let groups = config.bar_groups.clone().unwrap_or_default();
+    let groups = config.effective_bar_groups();
     let positions = lookup(&series.x_column)?;
     let n = positions.len_values;
     let mut lane = |id: &str| -> Result<u32> {

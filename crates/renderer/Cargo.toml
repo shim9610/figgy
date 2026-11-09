@@ -25,7 +25,7 @@ default-target = "x86_64-unknown-linux-gnu"
 targets = ["wasm32-unknown-unknown"]
 
 [dependencies]
-model = { package = "figgy-model", path = "../model", version = "0.12.1" }
+model = { package = "figgy-model", path = "../model", version = "0.12.1", default-features = false }
 
 bytemuck = { version = "1.19", features = ["derive"] }
 # Atomic ownership handoff for GPU resources awaiting submission/completion.
@@ -79,6 +79,10 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
 [features]
+default = ["helpers"]
+# Host conveniences re-exported from the model (#266): `Default` on the
+# document types and `renderer::default`. The library itself builds without it.
+helpers = ["model/helpers"]
 serde = ["model/serde"]
 # Test support: the CPU twins of the shader coverage (`renderer::pick::cpu_twin`).
 cpu-twin = []

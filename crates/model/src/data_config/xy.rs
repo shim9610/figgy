@@ -33,7 +33,10 @@ pub struct Stem {
     /// `Horizontal`: stems along x. The column roles never swap.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "is_vertical_stem")
+        serde(
+            default = "CategoryBarDirection::omitted",
+            skip_serializing_if = "is_vertical_stem"
+        )
     )]
     pub direction: CategoryBarDirection,
     /// The stroke colour.
@@ -44,7 +47,10 @@ pub struct Stem {
     /// dash starts at its baseline.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "is_solid_stem")
+        serde(
+            default = "crate::line::LineStylePreset::omitted",
+            skip_serializing_if = "is_solid_stem"
+        )
     )]
     pub line_style: crate::line::LineStylePreset,
 }
@@ -56,7 +62,7 @@ pub(super) fn is_vertical_stem(direction: &CategoryBarDirection) -> bool {
 
 #[cfg(feature = "serde")]
 pub(super) fn is_solid_stem(style: &crate::line::LineStylePreset) -> bool {
-    *style == crate::line::LineStylePreset::default()
+    *style == crate::line::LineStylePreset::omitted()
 }
 
 impl Stem {
@@ -140,10 +146,19 @@ pub enum LineFill {
     ToSeries(SeriesRef),
 }
 
-impl Default for LineFill {
-    /// `ToBaseline(0.0)`.
-    fn default() -> Self {
+impl LineFill {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self::ToBaseline(0.0)
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LineFill {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -153,11 +168,10 @@ impl Default for LineFill {
 /// straight segment. Dash phase, picking and the arc-length scan all follow the
 /// stepped path, so a dashed step line keeps its pattern around every corner
 /// and a pick on a riser still resolves to one of the two source indices.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineInterpolation {
     /// Straight segments between consecutive samples.
-    #[default]
     Linear,
     /// The value changes at the *start* of each segment: a vertical riser at
     /// `x[i]` up to `y[i + 1]`, then a horizontal run to `x[i + 1]`.
@@ -169,6 +183,22 @@ pub enum LineInterpolation {
     /// of `x[i]` and `x[i + 1]` (in data units), a riser there, then a
     /// horizontal run at `y[i + 1]`.
     StepMid,
+}
+
+impl LineInterpolation {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Linear
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LineInterpolation {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl LineInterpolation {
@@ -204,14 +234,19 @@ pub struct DataLineStyleConfig {
     /// from JSON at that default.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LineInterpolation::is_linear")
+        serde(
+            default = "LineInterpolation::omitted",
+            skip_serializing_if = "LineInterpolation::is_linear"
+        )
     )]
     pub interpolation: LineInterpolation,
 }
 
-impl Default for DataLineStyleConfig {
-    /// A solid, opaque black, 1 px line with no fill and linear interpolation.
-    fn default() -> Self {
+impl DataLineStyleConfig {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             line_style: LineStylePreset::Solid,
             line_color: Color::BLACK,
@@ -220,6 +255,13 @@ impl Default for DataLineStyleConfig {
             fill_color: None,
             interpolation: crate::data_config::LineInterpolation::Linear,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for DataLineStyleConfig {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -293,15 +335,30 @@ pub struct PointColorMap {
 }
 
 /// How a size value becomes a marker radius.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SizeScale {
     /// The value is proportional to marker area (the radius grows with its
     /// square root), which is how bubble sizes are read.
-    #[default]
     Area,
     /// The value is proportional to the radius.
     Radius,
+}
+
+impl SizeScale {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Area
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for SizeScale {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// A value column mapped to the marker radius.
@@ -325,7 +382,7 @@ pub struct PointSizeMap {
     /// The marker radius at `domain_max`, in logical pixels.
     pub max_px: f32,
     /// Whether the value is proportional to marker area or radius.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "SizeScale::omitted"))]
     pub scale: SizeScale,
 }
 
@@ -385,7 +442,7 @@ impl PointSizeMap {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataScatterPointStyleConfig {
     #[cfg_attr(
@@ -405,6 +462,26 @@ pub struct DataScatterPointStyleConfig {
     pub point_size: Option<f32>,
 }
 
+impl DataScatterPointStyleConfig {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            point_color: Default::default(),
+            point_shape: Default::default(),
+            point_size: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for DataScatterPointStyleConfig {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataScatterPointStyleOverride {
@@ -413,7 +490,7 @@ pub struct DataScatterPointStyleOverride {
     pub style: DataScatterPointStyleConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DataErrorBarPointStyleConfig {
     #[cfg_attr(
@@ -436,6 +513,27 @@ pub struct DataErrorBarPointStyleConfig {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub cap_width: Option<f32>,
+}
+
+impl DataErrorBarPointStyleConfig {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            error_bar_color: Default::default(),
+            error_bar_width: Default::default(),
+            error_bar_cap_size: Default::default(),
+            cap_width: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for DataErrorBarPointStyleConfig {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

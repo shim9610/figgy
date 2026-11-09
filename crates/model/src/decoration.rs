@@ -88,11 +88,11 @@ pub struct DecorationOffset {
     /// Chart-local logical pixels, independent of DPR/export scale.
     pub offset: [f32; 2],
 }
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "DecorationLayout::omitted")
 )]
 pub struct DecorationLayout {
     /// Explicit plot region in logical pixels. None uses the measured automatic
@@ -101,6 +101,26 @@ pub struct DecorationLayout {
     pub offsets: Vec<DecorationOffset>,
     /// Decoration selection is separate from data selection and hover.
     pub selected: Option<DecorationId>,
+}
+
+impl DecorationLayout {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            data_area: Default::default(),
+            offsets: Default::default(),
+            selected: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for DecorationLayout {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 impl DecorationLayout {
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {

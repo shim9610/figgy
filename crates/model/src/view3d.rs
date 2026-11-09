@@ -43,11 +43,10 @@ pub const BOX_ASPECT_RANGE: std::ops::RangeInclusive<f64> = 0.05..=20.0;
 pub const DEFAULT_BOX_ASPECT: [f64; 3] = [1.0, 1.0, 0.75];
 
 /// How the box is projected onto the screen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Projection3d {
     /// Parallel projection: a distance change scales the view.
-    #[default]
     Orthographic,
     /// A pinhole at [`View3d::distance`]: nearer parts are larger, and a
     /// shorter distance foreshortens more. The box is fitted to the data
@@ -56,11 +55,27 @@ pub enum Projection3d {
     Perspective,
 }
 
+impl Projection3d {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Orthographic
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for Projection3d {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// The camera of a 3D chart (`Config.view_3d`). The box's axes are x
 /// (`bottom_x`), y (`left_y`) and z (`right_y`, up).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "View3d::omitted"))]
 pub struct View3d {
     /// The camera's turn around the z axis, in degrees from the +x axis
     /// towards +y. Any finite value; it is read modulo 360.
@@ -81,8 +96,11 @@ pub struct View3d {
     pub box_aspect: Option<[f64; 3]>,
 }
 
-impl Default for View3d {
-    fn default() -> Self {
+impl View3d {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             azimuth_degrees: -60.0,
             elevation_degrees: 30.0,
@@ -90,6 +108,13 @@ impl Default for View3d {
             projection: Projection3d::Orthographic,
             box_aspect: None,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for View3d {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -109,7 +134,7 @@ pub struct SurfaceWireframe {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "SurfaceStyle::omitted")
 )]
 pub struct SurfaceStyle {
     /// A second grid of the same shape to colour the surface by; `None`
@@ -128,8 +153,22 @@ pub struct SurfaceStyle {
     pub emphasis_brightness: f32,
 }
 
-impl Default for SurfaceStyle {
-    fn default() -> Self {
+impl SurfaceStyle {
+    /// The look a surface draws with: `style`, or the documented default
+    /// when a series sets none (#266). Borrowed when given.
+    pub fn resolved(style: Option<&Self>) -> std::borrow::Cow<'_, Self> {
+        match style {
+            Some(style) => std::borrow::Cow::Borrowed(style),
+            None => std::borrow::Cow::Owned(Self::omitted()),
+        }
+    }
+}
+
+impl SurfaceStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color_matrix: None,
             wireframe: None,
@@ -139,6 +178,13 @@ impl Default for SurfaceStyle {
             texture_scale: 1.0,
             emphasis_brightness: 0.12,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for SurfaceStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -771,7 +817,7 @@ mod tests {
     use crate::{ScatterShape, layout::Element, layout::NudgeResult};
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         config.set_view_3d(Some(View3d::default()));
         config
     }
@@ -888,7 +934,7 @@ mod tests {
         // The view stays well defined at the pole.
         assert!(orbit.project_3d([1.0, 0.0, 0.0]).is_some());
         // A flat chart's data area still moves.
-        let mut flat = crate::default::default_config();
+        let mut flat = crate::config::Config::omitted();
         assert!(!flat.orbit_view(1.0, 1.0));
         assert!(!flat.zoom_view(2.0));
     }
@@ -1056,7 +1102,7 @@ mod tests {
             config.validate_view3d_series(&[grid]),
             Err(crate::RuleKind::View3dGridVector)
         );
-        let flat = crate::default::default_config();
+        let flat = crate::config::Config::omitted();
         assert_eq!(
             flat.validate_view3d_series(&[vector_3d(None, None)]),
             Ok(())
@@ -1083,7 +1129,7 @@ mod tests {
                 _ => 10,
             })
         };
-        for (config, last) in [(chart(), 3usize), (crate::default::default_config(), 9)] {
+        for (config, last) in [(chart(), 3usize), (crate::config::Config::omitted(), 9)] {
             let mut config = config;
             config.picked_data = Some(crate::config::DataSelectionsConfig {
                 refs: vec![crate::config::PickedDataRef::Point {
@@ -1189,7 +1235,7 @@ mod tests {
         assert!(matches!(err(bars), crate::RuleKind::View3dSeriesKind));
         // A flat chart draws the scatter and keeps a heatmap's surface style
         // and a series' z column.
-        let flat = crate::default::default_config();
+        let flat = crate::config::Config::omitted();
         assert_eq!(
             flat.validate_view3d_series(&[
                 scatter,
@@ -1270,7 +1316,7 @@ mod tests {
         assert!(!json.contains("box_aspect"), "{json}");
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.view_3d(), config.view_3d());
-        let flat = crate::default::default_config();
+        let flat = crate::config::Config::omitted();
         assert!(!serde_json::to_string(&flat).unwrap().contains("view_3d"));
         let plain = heatmap(None);
         let json = serde_json::to_string(&plain).unwrap();

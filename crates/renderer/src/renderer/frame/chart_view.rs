@@ -88,7 +88,7 @@ impl PanelRasterKey {
         scale: f32,
     ) -> Self {
         let mut config = config.clone();
-        config.annotations = crate::AnnotationLayer::default();
+        config.annotations = crate::AnnotationLayer::empty();
         Self {
             config,
             selection: selection.to_vec(),

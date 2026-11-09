@@ -34,7 +34,10 @@ pub struct RichText {
     /// JSON round-trips unchanged.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "TextAlign::is_left")
+        serde(
+            default = "TextAlign::omitted",
+            skip_serializing_if = "TextAlign::is_left"
+        )
     )]
     pub align: TextAlign,
 }
@@ -47,17 +50,32 @@ pub struct RichText {
 /// or all. The block's measured envelope is therefore the same for every
 /// alignment, so selection and hit boxes need no change, and single-line text
 /// (no slack) is unaffected. Tab-column cells move with their line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextAlign {
     /// Every line starts at the block's left edge — the layout all text had
     /// before alignment existed.
-    #[default]
     Left,
     /// Each line is centred on the block.
     Center,
     /// Every line ends at the block's right edge.
     Right,
+}
+
+impl TextAlign {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Left
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TextAlign {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl TextAlign {
@@ -328,7 +346,7 @@ mod rich_text_serde {
         color: Color,
         font_size: f32,
         font: String,
-        #[serde(default)]
+        #[serde(default = "TextAlign::omitted")]
         align: TextAlign,
     }
 

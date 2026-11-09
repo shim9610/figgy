@@ -111,7 +111,7 @@ pub struct AnnotationMap {
 impl AnnotationMap {
     pub(crate) fn empty(space: PixelSpace) -> Self {
         Self {
-            state: AnnotationLayer::default(),
+            state: AnnotationLayer::empty(),
             space,
             map: HitMap::for_state(),
             entries: Vec::new(),

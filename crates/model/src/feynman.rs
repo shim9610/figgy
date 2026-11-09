@@ -34,7 +34,7 @@ use std::f32::consts::PI;
 
 /// A Feynman diagram: its vertices, its propagators and their look. See the
 /// [module documentation](self).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanSeries {
     /// The vertices, in the host's order. External legs end at `Incoming`
@@ -53,15 +53,42 @@ pub struct FeynmanSeries {
     /// The look of the lines, markers and arrows.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "FeynmanStyle::is_default")
+        serde(
+            default = "FeynmanStyle::omitted",
+            skip_serializing_if = "FeynmanStyle::is_default"
+        )
     )]
     pub style: FeynmanStyle,
     /// How the automatic layout places the unplaced vertices.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "FeynmanLayout::is_default")
+        serde(
+            default = "FeynmanLayout::omitted",
+            skip_serializing_if = "FeynmanLayout::is_default"
+        )
     )]
     pub layout: FeynmanLayout,
+}
+
+impl FeynmanSeries {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            vertices: Default::default(),
+            propagators: Default::default(),
+            style: crate::FeynmanStyle::omitted(),
+            layout: crate::FeynmanLayout::omitted(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for FeynmanSeries {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// One vertex: an interaction point, or the free end of an external leg.
@@ -74,7 +101,10 @@ pub struct FeynmanVertex {
     /// and the default marker, nothing else.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "VertexRole::is_internal")
+        serde(
+            default = "VertexRole::omitted",
+            skip_serializing_if = "VertexRole::is_internal"
+        )
     )]
     pub role: VertexRole,
     /// The position in data units of the series' x and y axes; `None`
@@ -127,17 +157,32 @@ impl FeynmanVertex {
 }
 
 /// What a vertex is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VertexRole {
     /// An interaction point.
-    #[default]
     Internal,
     /// The start of an incoming external leg: on the early side of the
     /// time direction.
     Incoming,
     /// The end of an outgoing external leg: on the late side.
     Outgoing,
+}
+
+impl VertexRole {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Internal
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for VertexRole {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl VertexRole {
@@ -242,11 +287,10 @@ impl Propagator {
 }
 
 /// The particle a propagator carries: its stroke.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParticleLine {
     /// A plain line.
-    #[default]
     Plain,
     /// A solid line with an arrow along it.
     Fermion,
@@ -270,6 +314,22 @@ pub enum ParticleLine {
     Graviton,
     /// A double line (a heavy quark).
     DoubleLine,
+}
+
+impl ParticleLine {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Plain
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for ParticleLine {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl ParticleLine {
@@ -298,7 +358,10 @@ impl ParticleLine {
 pub struct MomentumArrow {
     pub label: RichText,
     /// Which side of the line, facing along it from `from` to `to`.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_left"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "MomentumSide::omitted", skip_serializing_if = "is_left")
+    )]
     pub side: MomentumSide,
     /// Point the arrow from `to` to `from`.
     #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "is_false"))]
@@ -312,18 +375,33 @@ pub struct MomentumArrow {
 }
 
 /// A side of a propagator, facing along it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MomentumSide {
-    #[default]
     Left,
     Right,
+}
+
+impl MomentumSide {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Left
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for MomentumSide {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// The look of a Feynman series, in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "FeynmanStyle::omitted"))]
 pub struct FeynmanStyle {
     /// The line colour, opaque: the series colour and its legend swatch.
     pub color: Color,
@@ -353,7 +431,7 @@ pub struct FeynmanStyle {
 /// `color` at that width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "FeynmanPicked::omitted"))]
 pub struct FeynmanPicked {
     /// The colour, channels in `0..=1`.
     pub color: Color,
@@ -361,14 +439,22 @@ pub struct FeynmanPicked {
     pub width_extra_px: f32,
 }
 
-impl Default for FeynmanPicked {
-    /// The selection highlight colour of the document's default picked
-    /// data, two pixels wider.
-    fn default() -> Self {
+impl FeynmanPicked {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::from_rgb8(255, 215, 0),
             width_extra_px: 2.0,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for FeynmanPicked {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -380,8 +466,11 @@ pub struct Wiggle {
     pub wavelength: f32,
 }
 
-impl Default for FeynmanStyle {
-    fn default() -> Self {
+impl FeynmanStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::from_rgb8(30, 30, 30),
             width: 1.5,
@@ -398,15 +487,22 @@ impl Default for FeynmanStyle {
             dot_radius: 3.0,
             loop_radius: 18.0,
             fan_step: 90.0,
-            picked: FeynmanPicked::default(),
+            picked: FeynmanPicked::omitted(),
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for FeynmanStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
 impl FeynmanStyle {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == Self::omitted()
     }
 
     fn validate(&self) -> Result<(), crate::RuleKind> {
@@ -435,28 +531,61 @@ impl FeynmanStyle {
 }
 
 /// The direction time runs in: where the layout puts the legs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TimeDirection {
     /// Incoming legs on the left, outgoing on the right.
-    #[default]
     LeftToRight,
     /// Incoming legs at the bottom, outgoing at the top.
     BottomToTop,
 }
 
+impl TimeDirection {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::LeftToRight
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TimeDirection {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// How the automatic layout places the unplaced vertices.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeynmanLayout {
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "TimeDirection::omitted"))]
     pub direction: TimeDirection,
+}
+
+impl FeynmanLayout {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            direction: crate::TimeDirection::omitted(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for FeynmanLayout {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl FeynmanLayout {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == Self::omitted()
     }
 }
 

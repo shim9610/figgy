@@ -207,7 +207,6 @@ impl Resizable for DataAreaElement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
     use crate::layout::{ChartArea, Rect};
     use crate::text::{RichText, TextExtents};
 
@@ -223,7 +222,7 @@ mod tests {
     }
 
     fn cfg_800x600() -> Config {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -323,7 +322,7 @@ mod tests {
 
     fn cfg_with_colorbar(side: Side) -> Config {
         let mut cfg = cfg_800x600();
-        let mut bar = crate::default::default_colorbar_options();
+        let mut bar = crate::config::ColorBarOptions::omitted();
         bar.side = side;
         cfg.colorbar = Some(bar);
         cfg

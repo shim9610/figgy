@@ -64,14 +64,29 @@ impl RadarTarget {
     since = "0.13.0",
     note = "part of the RadarChart document reader; removed with it in the next milestone"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarGridShape {
     /// Rings as regular polygons through the spokes (the default).
-    #[default]
     Polygon,
     /// Rings as circles.
     Circle,
+}
+
+impl RadarGridShape {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Polygon
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarGridShape {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// The chart-wide appearance: spoke layout, grid, and the series defaults a
@@ -84,7 +99,7 @@ pub enum RadarGridShape {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "RadarStyle::omitted")
 )]
 pub struct RadarStyle {
     /// Where the first category's spoke points, in degrees; -90 is up.
@@ -111,8 +126,11 @@ pub struct RadarStyle {
     /// does not carry it: a picked vertex takes the picked ring instead.
     pub emphasis_brightness: f32,
 }
-impl Default for RadarStyle {
-    fn default() -> Self {
+impl RadarStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             start_angle_degrees: -90.0,
             clockwise: true,
@@ -125,6 +143,13 @@ impl Default for RadarStyle {
             marker_size_px: RadarSeriesStyle::DEFAULT_MARKER_SIZE_PX,
             emphasis_brightness: 0.08,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -181,11 +206,11 @@ impl RadarSeries {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "RadarChart::omitted")
 )]
 pub struct RadarChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::DecorationLayout::omitted"))]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -199,13 +224,19 @@ pub struct RadarChart {
     /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::LayerRef::omitted",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::AnnotationLayer::omitted",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     /// One spoke per category, in drawing order from `start_angle_degrees`.
@@ -253,17 +284,20 @@ pub struct RadarChart {
     /// The frame's clear colour.
     pub background: Color,
 }
-impl Default for RadarChart {
-    fn default() -> Self {
+impl RadarChart {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
-            decorations: Default::default(),
+            decorations: crate::DecorationLayout::omitted(),
             title: String::new(),
             chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
+            active_layer: crate::LayerRef::omitted(),
+            annotations: crate::AnnotationLayer::omitted(),
             categories: vec![],
             series: vec![],
-            style: RadarStyle::default(),
+            style: RadarStyle::omitted(),
             hovered: None,
             selected: None,
             labels: RadarLabels::None,
@@ -278,6 +312,13 @@ impl Default for RadarChart {
             text_color: Color::from_rgb8(32, 46, 60),
             background: Color::WHITE,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarChart {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 impl RadarChart {

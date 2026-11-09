@@ -151,6 +151,14 @@ def static():
     if findings:
         raise RuntimeError("product code has panic paths or dropped errors (#152):\n"
                            + "\n".join(sorted(set(findings))))
+    # Host defaults are for hosts (#266): the model and renderer libraries
+    # build without the `helpers` feature, so their own code cannot fall back
+    # on `Default` or the `default` module. Native and WASM, with and without
+    # serde (serde reads omitted fields through each type's own source).
+    for target in ([], ["--target", "wasm32-unknown-unknown"]):
+        for features in ([], ["--features", "serde"]):
+            run(["cargo", "check", "--locked", "-p", PACKAGES[0], "-p", PACKAGES[1], "--lib",
+                 "--no-default-features", *features, *target])
     # Compile the browser tests too; running them needs a WebGPU browser.
     # Every WASM test target is named `*_browser`; the other tests are native.
     run(["cargo", "check", "--locked", "--workspace", "--target", "wasm32-unknown-unknown",

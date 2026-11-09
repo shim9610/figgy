@@ -682,14 +682,14 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// The look of the bars: material, corner radius, outline, texture,
         /// gloss and the brightness of a picked bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "CategoryBarStyle::omitted"))]
         style: CategoryBarStyle,
         /// Where the value labels go, how values are written and the drawn
         /// text of each bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "CategoryBarSeriesLabels::omitted"))]
         labels: CategoryBarSeriesLabels,
         /// What a value label says.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "CategoryBarLabelFormat::omitted"))]
         label_format: CategoryBarLabelFormat,
         /// Sparse per-bar overrides, keyed by category id and this series'
         /// id. At most one per bar; an override's `style` replaces the
@@ -737,11 +737,11 @@ pub(crate) enum WireRenderType {
         /// The fill colour of the series' boxes, opaque.
         color: Color,
         /// The look of the boxes and their parts.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "BoxPlotStyle::omitted"))]
         style: BoxPlotStyle,
         /// Which labels the boxes show, how a median is written and the
         /// drawn text of each box.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "BoxPlotSeriesLabels::omitted"))]
         labels: BoxPlotSeriesLabels,
         /// The ragged column of the outliers, one group per category.
         #[cfg_attr(
@@ -817,7 +817,7 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// The look of the bars: material, corner radius, outline, texture,
         /// gloss and the brightness of a picked bar.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "CategoryBarStyle::omitted"))]
         style: CategoryBarStyle,
         /// The column of the start values.
         start: ColumnId,
@@ -830,7 +830,10 @@ pub(crate) enum WireRenderType {
         /// How each bar's fill is chosen.
         #[cfg_attr(
             feature = "serde",
-            serde(default, skip_serializing_if = "RangeColor::is_single")
+            serde(
+                default = "RangeColor::omitted",
+                skip_serializing_if = "RangeColor::is_single"
+            )
         )]
         color_by: RangeColor,
         /// The finished share of each bar (a Gantt task's progress).
@@ -855,7 +858,7 @@ pub(crate) enum WireRenderType {
         /// Where the value labels go and the drawn text of each bar. The
         /// renderer never writes the text; `decimals` and `value_suffix` are
         /// not read.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "CategoryBarSeriesLabels::omitted"))]
         labels: CategoryBarSeriesLabels,
     },
     /// The polygon of a radar chart: one vertex per category of the polar
@@ -889,11 +892,11 @@ pub(crate) enum WireRenderType {
         color: Color,
         /// Outline width, fill and marker; unset fields take
         /// their defaults.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "RadarSeriesStyle::omitted"))]
         style: RadarSeriesStyle,
         /// Which vertices carry value labels, how a value is written and
         /// the drawn text of each vertex.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[cfg_attr(feature = "serde", serde(default = "RadarSeriesLabels::omitted"))]
         labels: RadarSeriesLabels,
     },
     /// A ternary series on a ternary chart (`Config.ternary`): markers and/or

@@ -1465,7 +1465,6 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
 
     // plan.min <= data_min, plan.max >= data_max.
     #[test]
@@ -1568,7 +1567,7 @@ mod tests {
     // auto_ticks Err must leave self unchanged.
     #[test]
     fn auto_ticks_err_preserves_state() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         let before = cfg.top_x.clone();
         let r = cfg.top_x.auto_ticks(-f64::MAX, f64::MAX, 5);
         assert!(r.is_err());
@@ -1578,7 +1577,7 @@ mod tests {
     // auto_ticks_all Err must leave all four axes unchanged.
     #[test]
     fn auto_ticks_all_err_preserves_all() {
-        let mut cfg = default_config();
+        let mut cfg = crate::config::Config::omitted();
         let before = cfg.clone();
         let r = cfg.auto_ticks_all((0.0, 10.0), (0.0, 10.0), (f64::NAN, 5.0), (0.0, 10.0), 5);
         assert!(r.is_err());
@@ -1805,7 +1804,7 @@ mod tests {
         major_spacing: f64,
         minor_count: usize,
     ) -> AxisOptions {
-        let mut axis = default_config().bottom_x;
+        let mut axis = crate::config::Config::omitted().bottom_x;
         axis.scale = scale;
         axis.min = min;
         axis.max = max;
@@ -2391,7 +2390,7 @@ mod piece_spacing_tests {
     /// round, and an unbroken axis keeps its spacing (#200).
     #[test]
     fn a_short_piece_keeps_two_majors() {
-        let mut axis = crate::default::default_axis_options_y();
+        let mut axis = crate::config::AxisOptions::omitted_y();
         axis.min = 0.0;
         axis.max = 100.0;
         axis.major_spacing = 20.0;
@@ -2423,7 +2422,7 @@ mod zoomed_break_tests {
     // walk keeps the axis' spacing instead of stepping down for it.
     #[test]
     fn a_range_that_cuts_into_a_break_keeps_its_spacing() {
-        let mut axis = crate::default::default_config().left_y;
+        let mut axis = crate::config::Config::omitted().left_y;
         axis.min = 19.5;
         axis.max = 24.0;
         axis.major_spacing =

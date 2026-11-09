@@ -25,7 +25,7 @@ use super::*;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "LineOffsets::omitted")
 )]
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
@@ -50,14 +50,23 @@ pub(super) fn is_zero_step(step: &f64) -> bool {
     *step == 0.0
 }
 
-impl Default for LineOffsets {
-    /// No members and no steps.
-    fn default() -> Self {
+impl LineOffsets {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             series: Vec::new(),
             step_y: 0.0,
             step_x: 0.0,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LineOffsets {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 

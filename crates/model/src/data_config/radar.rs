@@ -3,24 +3,38 @@
 use super::*;
 
 /// The marker drawn at every vertex of a radar series.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarMarker {
     /// No marker.
     None,
     /// A filled circle (the default).
-    #[default]
     Circle,
     /// A filled square.
     Square,
 }
 
+impl RadarMarker {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Circle
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarMarker {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// Which vertices of a radar series carry value labels.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RadarLabels {
     /// No data labels (the default).
-    #[default]
     None,
     /// Every vertex of every series.
     Values,
@@ -28,16 +42,32 @@ pub enum RadarLabels {
     Emphasized,
 }
 
+impl RadarLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::None
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarLabels {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// The look of a radar series. Every field is optional: an unset field
 /// takes its default ([`Self::DEFAULT_LINE_WIDTH_PX`] and the other
 /// `DEFAULT_*` constants), and a legacy [`RadarChart`](crate::radar::RadarChart)
 /// series reads an unset field from its chart style
 /// ([`Self::resolved_from`]).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "RadarSeriesStyle::omitted")
 )]
 pub struct RadarSeriesStyle {
     /// Outline width in logical pixels, `0..=12`; zero draws no outline.
@@ -54,6 +84,28 @@ pub struct RadarSeriesStyle {
     /// unset, `0..=1`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fill_opacity: Option<f32>,
+}
+
+impl RadarSeriesStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            line_width_px: Default::default(),
+            fill: Default::default(),
+            marker: Default::default(),
+            marker_size_px: Default::default(),
+            fill_opacity: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarSeriesStyle {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl RadarSeriesStyle {
@@ -133,7 +185,7 @@ impl RadarSeriesStyle {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "RadarSeriesLabels::omitted")
 )]
 pub struct RadarSeriesLabels {
     pub placement: RadarLabels,
@@ -152,8 +204,11 @@ pub struct RadarSeriesLabels {
     pub offsets: Vec<[f32; 2]>,
 }
 
-impl Default for RadarSeriesLabels {
-    fn default() -> Self {
+impl RadarSeriesLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             placement: RadarLabels::None,
             decimals: 1,
@@ -161,6 +216,13 @@ impl Default for RadarSeriesLabels {
             text: Vec::new(),
             offsets: Vec::new(),
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for RadarSeriesLabels {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 

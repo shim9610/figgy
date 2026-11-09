@@ -5,11 +5,10 @@ use super::*;
 // ───── Category bars ─────
 
 /// How the bars of one bar group share a category slot.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarMode {
     /// Side by side, one bar per series in series order.
-    #[default]
     Grouped,
     /// On top of each other in series order; positive and negative values
     /// stack away from zero independently.
@@ -21,39 +20,100 @@ pub enum CategoryBarMode {
     PercentStacked,
 }
 
+impl CategoryBarMode {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Grouped
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarMode {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// The direction bars grow in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarDirection {
     /// Categories along x, values along y.
-    #[default]
     Vertical,
     /// Categories along y, values along x.
     Horizontal,
 }
 
+impl CategoryBarDirection {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Vertical
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarDirection {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// Where a bar's value label goes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarLabels {
     None,
     Inside,
     Outside,
     /// Outside grouped bars, inside stacked ones.
-    #[default]
     Auto,
 }
 
+impl CategoryBarLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Auto
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarLabels {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// What a bar's value label says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarLabelFormat {
-    #[default]
     Value,
     /// The bar's share of its category total.
     Percent,
     ValuePercent,
     CategoryValue,
+}
+
+impl CategoryBarLabelFormat {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Value
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarLabelFormat {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// The look of a bar: [`DataRenderType::CategoryBars`]' `style`, and a
@@ -62,7 +122,7 @@ pub enum CategoryBarLabelFormat {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "CategoryBarStyle::omitted")
 )]
 pub struct CategoryBarStyle {
     /// A bar is a flat body: [`Material::supported_on_flat_body`] decides.
@@ -80,8 +140,11 @@ pub struct CategoryBarStyle {
     pub emphasis_brightness: f32,
 }
 
-impl Default for CategoryBarStyle {
-    fn default() -> Self {
+impl CategoryBarStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             material: Material::Flat,
             corner_radius: 5.0,
@@ -93,6 +156,13 @@ impl Default for CategoryBarStyle {
             gloss: 0.45,
             emphasis_brightness: 0.08,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -317,7 +387,7 @@ pub const MAX_CATEGORY_BAR_LABEL_CHARS: usize = 160;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "CategoryBarSeriesLabels::omitted")
 )]
 pub struct CategoryBarSeriesLabels {
     pub placement: CategoryBarLabels,
@@ -337,8 +407,11 @@ pub struct CategoryBarSeriesLabels {
     pub offsets: Vec<[f32; 2]>,
 }
 
-impl Default for CategoryBarSeriesLabels {
-    fn default() -> Self {
+impl CategoryBarSeriesLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             placement: CategoryBarLabels::Auto,
             decimals: 1,
@@ -349,17 +422,24 @@ impl Default for CategoryBarSeriesLabels {
     }
 }
 
+#[cfg(feature = "helpers")]
+impl Default for CategoryBarSeriesLabels {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// How the [`DataRenderType::CategoryBars`] series of one layer share their
 /// categorical axis: `Config::bar_groups`. The property of the set of bar
 /// series, not of one series. `None` there reads as the default (grouped,
 /// vertical, 0.7 of the slot, 3 px apart). A [`CategoryBarMode::PercentStacked`]
 /// group draws only non-negative values; a member series with a negative
 /// value is refused when the group is drawn.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "BarGroups::omitted")
 )]
 pub struct BarGroups {
     pub mode: CategoryBarMode,
@@ -370,14 +450,24 @@ pub struct BarGroups {
     pub bar_gap: f32,
 }
 
-impl Default for BarGroups {
-    fn default() -> Self {
+impl BarGroups {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             mode: CategoryBarMode::Grouped,
             direction: CategoryBarDirection::Vertical,
             group_width: 0.7,
             bar_gap: 3.0,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BarGroups {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -485,6 +575,13 @@ pub fn validate_category_bar_series(
 }
 
 impl crate::config::Config {
+    /// The bar group options this chart draws its own category bar series
+    /// with: its `bar_groups`, or the documented default when it has none
+    /// (#266). The one place an omitted `bar_groups` is resolved.
+    pub fn effective_bar_groups(&self) -> BarGroups {
+        self.bar_groups.unwrap_or_else(BarGroups::omitted)
+    }
+
     /// The bar group options of `layer`: the `bar_groups` of the chart that
     /// draws it (the parent's for `Base` and an overlay, the subplot's own
     /// for a subplot and its overlays), or the default.
@@ -499,7 +596,7 @@ impl crate::config::Config {
                 self.bar_groups.as_ref()
             }
         };
-        groups.cloned().unwrap_or_default()
+        groups.copied().unwrap_or_else(BarGroups::omitted)
     }
 
     /// The rules the category bar series of a chart are held to, with the

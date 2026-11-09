@@ -397,13 +397,12 @@ mod axis_tests {
     use super::ProbabilityScale;
     use crate::annotation::{AxisMap, AxisSpace};
     use crate::config::{AxisOptions, AxisScale, Category};
-    use crate::default::default_config;
     use crate::format::LabelFormat;
     use crate::layout::{BreakMap, axis_fraction, guarded_probability_range};
     use crate::tick::{TickError, ladder_multiple, log_label_ladders, major_ticks, minor_ticks};
 
     fn axis(scale: ProbabilityScale, min: f64, max: f64) -> AxisOptions {
-        let mut axis = default_config().left_y;
+        let mut axis = crate::config::Config::omitted().left_y;
         axis.scale = AxisScale::Probability(scale);
         axis.min = min;
         axis.max = max;
@@ -606,7 +605,7 @@ mod axis_tests {
     fn probability_axes_are_held_to_their_rules() {
         let normal = AxisScale::Probability(ProbabilityScale::Normal);
         let check = |edit: &dyn Fn(&mut crate::config::Config)| {
-            let mut config = default_config();
+            let mut config = crate::config::Config::omitted();
             config.left_y.scale = normal.clone();
             config.left_y.min = 0.01;
             config.left_y.max = 0.99;
@@ -635,7 +634,7 @@ mod axis_tests {
             ),
             (
                 Box::new(|c: &mut crate::config::Config| {
-                    let mut bar = crate::default::default_colorbar_options();
+                    let mut bar = crate::config::ColorBarOptions::omitted();
                     bar.axis.scale = AxisScale::Probability(ProbabilityScale::Weibull);
                     bar.axis.min = 0.1;
                     bar.axis.max = 0.9;
@@ -671,7 +670,7 @@ mod axis_tests {
         );
         let format = serde_json::to_string(&LabelFormat::Percent).unwrap();
         assert_eq!(format, r#""Percent""#);
-        let mut config = default_config();
+        let mut config = crate::config::Config::omitted();
         config.bottom_x.scale = AxisScale::Probability(ProbabilityScale::Logistic);
         config.bottom_x.min = 0.05;
         config.bottom_x.max = 0.95;

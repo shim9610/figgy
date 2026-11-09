@@ -236,7 +236,7 @@ fn validation_refuses_broken_diagrams() {
         z_column: None,
         render_type: DataRenderType::Feynman(s_channel()),
     };
-    let config = crate::default::default_config();
+    let config = crate::config::Config::omitted();
     assert_eq!(
         config.validate_feynman(std::slice::from_ref(&series)),
         Ok(())
@@ -542,7 +542,7 @@ fn series(id: &str, diagram: FeynmanSeries) -> SeriesConfig {
 #[test]
 fn step_selection_walks_the_rows_and_the_series() {
     let list = [series("a", s_channel()), series("b", s_channel())];
-    let mut config: Config = crate::default::default_config();
+    let mut config: Config = crate::config::Config::omitted();
     config.picked_data = Some(crate::config::DataSelectionsConfig {
         refs: vec![PickedDataRef::FeynmanVertex {
             source_id: None,

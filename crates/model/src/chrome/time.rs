@@ -681,7 +681,6 @@ fn div_ceil_i32(a: i32, b: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::default::default_config;
     use crate::format::{TimestampLabelFormat, TimestampLabelMode};
 
     #[test]
@@ -708,7 +707,7 @@ mod tests {
 
     #[test]
     fn calendar_plan_respects_measured_extent() {
-        let mut axis = default_config().bottom_x;
+        let mut axis = crate::config::Config::omitted().bottom_x;
         axis.min = 0.0;
         axis.max = 3_600.0;
         axis.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
@@ -754,7 +753,7 @@ mod tests {
             &cfg,
         )
         .unwrap();
-        let mut axis = default_config().bottom_x;
+        let mut axis = crate::config::Config::omitted().bottom_x;
         axis.min = jan_15;
         axis.max = may_15;
         axis.label_style.format = LabelFormat::Timestamp(cfg);

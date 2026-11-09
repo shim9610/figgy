@@ -31,12 +31,11 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
 /// they cross the wasm boundary as plain integers, following
 /// [`crate::preset::ColorCycle`]. `Custom` carries its own stops for hosts that
 /// need a ramp figgy does not ship.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColorMap {
     /// Perceptually uniform blue→green→yellow. The safe default for unsigned
     /// magnitudes.
-    #[default]
     Viridis,
     /// Perceptually uniform black→purple→orange→white.
     Magma,
@@ -55,6 +54,22 @@ pub enum ColorMap {
     /// back to fully transparent rather than inventing an endpoint, so a
     /// malformed custom map draws nothing instead of drawing a lie.
     Custom { stops: Vec<Color> },
+}
+
+impl ColorMap {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Viridis
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for ColorMap {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 // Ramp control points, sampled from the reference implementations at even

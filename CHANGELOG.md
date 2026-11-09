@@ -40,6 +40,16 @@ annotation's `align`) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **One source per document default; `Default` for hosts only** ([#266](https://github.com/shim9610/figgy/issues/266)).
+  - **One source.** Every serialized type with a default now spells it once, in a crate-private `omitted()` function: the value a field takes when a document omits it. This covers the 46 hand-written `impl Default`, the 55 `#[derive(Default)]` and the `default` module's values (`Config`, the axis, title, label, legend, grid and colour bar options, `ChartArea`). `#[serde(default)]` on those types reads it through `default = "Type::omitted"`. Documents parse and serialize exactly as before.
+  - **New `helpers` feature (on by default).** It gates `impl Default` on those types and the public `default` module, so the model's and the renderer's own code cannot fall back on a default. `ci/verify.py static` builds both libraries without it.
+  - **Named functions in place of defaults.**
+    - `AnnotationLayer::empty()` and `DataSelectionsConfig::empty()` mean "nothing".
+    - `Config::effective_bar_groups()` resolves an omitted `bar_groups` once. `BarGroups` is now `Copy`.
+    - `SurfaceStyle::resolved(Option<&SurfaceStyle>)` gives the surface look an unset style draws with.
+    - `RadialStyle::label_raster_key` and `RadialInteraction::label_raster_key` neutralize what the radial label raster ignores.
+  - **Migration:** a build with `default-features = false` adds `features = ["helpers"]` to keep `Default` and `figgy_model::default`.
+
 - **Wavelength labels written by the renderer, and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
   A `Transition` holds one wavelength, `wavelength: Option<f64>` and
   `wavelength_uncertainty: Option<f64>`, in place of `observed_wavelength`,
@@ -1435,6 +1445,15 @@ annotation's `align`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **No default fallbacks in the renderer; `helpers` feature** ([#266](https://github.com/shim9610/figgy/issues/266)).
+  - The renderer depends on the model without `helpers` and forwards its own `helpers` feature, which is on by default.
+  - Category bar and box plot layout reads `Config::effective_bar_groups()`. Before, the same fallback was written six times, each cloning the document's `bar_groups` and inventing a default.
+  - The 3D surface look reads `SurfaceStyle::resolved`.
+  - The radial label raster key comes from the model's `label_raster_key` functions.
+  - "No annotations" is `AnnotationLayer::empty()`.
+  - `ExportOptions::panel` and `document` no longer go through `Default`. `impl Default` for `ExportOptions` (`document(1.0)`) and `ExportScope` (`Document`) now sit behind `helpers`.
+  - **Migration:** a build with `default-features = false` adds `features = ["helpers"]` to keep `Default` on the model types, `renderer::default` and `ExportOptions::default()`.
 
 - **Wavelength labels and corner notes** ([#258](https://github.com/shim9610/figgy/issues/258)).
   The energy-level raster and the SVG and PDF export draw the labels

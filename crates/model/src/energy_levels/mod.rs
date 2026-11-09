@@ -47,7 +47,7 @@ pub const MAX_ENERGY_LEVEL_FIELD_CHARS: usize = MAX_CATEGORY_BAR_LABEL_CHARS;
 
 /// An energy-level diagram: its levels, ionization limits and transitions,
 /// and their look. See the [module documentation](self).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyLevelSeries {
     /// The levels, in the host's order (a levels file's row order). A
@@ -79,13 +79,19 @@ pub struct EnergyLevelSeries {
     /// The look of the strokes, arrows and labels.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "EnergyLevelStyle::is_default")
+        serde(
+            default = "EnergyLevelStyle::omitted",
+            skip_serializing_if = "EnergyLevelStyle::is_default"
+        )
     )]
     pub style: EnergyLevelStyle,
     /// Which levels are drawn: the main view or a fine-structure view.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LevelView::is_main")
+        serde(
+            default = "LevelView::omitted",
+            skip_serializing_if = "LevelView::is_main"
+        )
     )]
     pub show: LevelView,
     /// Draw the levels, limits and transitions of another energy-level
@@ -97,6 +103,30 @@ pub struct EnergyLevelSeries {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub source: Option<String>,
+}
+
+impl EnergyLevelSeries {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
+        Self {
+            levels: Default::default(),
+            limits: Default::default(),
+            transitions: Default::default(),
+            bands: Default::default(),
+            style: crate::energy_levels::EnergyLevelStyle::omitted(),
+            show: crate::energy_levels::LevelView::omitted(),
+            source: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for EnergyLevelSeries {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// One level: a row of a NIST levels file.
@@ -163,7 +193,10 @@ pub struct EnergyLevel {
     /// What the row is in a fine-structure multiplet.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "LevelRole::is_level")
+        serde(
+            default = "LevelRole::omitted",
+            skip_serializing_if = "LevelRole::is_level"
+        )
     )]
     pub role: LevelRole,
     /// The drawn label, beside the stroke; none draws no label. The host
@@ -182,12 +215,11 @@ pub struct EnergyLevel {
 }
 
 /// What a level row is in a fine-structure multiplet.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelRole {
     /// A level drawn in the main view: a single J, or an unresolved
     /// multiplet as NIST lists it.
-    #[default]
     Level,
     /// The host's centroid of a resolved multiplet, drawn in the main view
     /// in place of its components.
@@ -196,6 +228,22 @@ pub enum LevelRole {
     /// [`LevelView::Components`] view in place of its centroid; `multiplet`
     /// is the id of its centroid row.
     Component { multiplet: String },
+}
+
+impl LevelRole {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Level
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LevelRole {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl LevelRole {
@@ -214,17 +262,32 @@ impl LevelRole {
 }
 
 /// Which levels a series draws.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelView {
     /// Levels and multiplet centroids; fine-structure components are not
     /// drawn.
-    #[default]
     Main,
     /// Levels and fine-structure components, the resolved view an inset
     /// magnifies; centroids are not drawn. The inset's own categories and
     /// `left_y` range choose the window.
     Components,
+}
+
+impl LevelView {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Main
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LevelView {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl LevelView {
@@ -372,23 +435,23 @@ pub struct Transition {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnergyLevelStyle {
     /// The level strokes.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "LevelStrokeStyle::omitted"))]
     pub level: LevelStrokeStyle,
     /// The ionization limit lines.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "AnnotationLineStyle::omitted"))]
     pub limit: AnnotationLineStyle,
     /// The transition arrows.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "TransitionArrowStyle::omitted"))]
     pub transition: TransitionArrowStyle,
     /// Where a level's label sits against its stroke.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "LevelLabelSide::omitted"))]
     pub label_side: LevelLabelSide,
     /// How much a picked stroke or arrow widens: its width times this, in
     /// `1..=4`.
     #[cfg_attr(feature = "serde", serde(default = "default_picked_scale"))]
     pub picked_width_scale: f32,
     /// The level bands (#205).
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "LevelBandStyle::omitted"))]
     pub band: LevelBandStyle,
     /// Labels formatted from each transition's `wavelength` (#258): set,
     /// every transition with a wavelength and no host `label` gets one.
@@ -409,7 +472,10 @@ pub struct WavelengthLabels {
     /// The number's form: fixed decimals (at most
     /// [`MAX_WAVELENGTH_DECIMALS`]) or the automatic form, and whether
     /// trailing zeros are trimmed.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "crate::format::PlainNumberFormat::omitted")
+    )]
     pub format: crate::format::PlainNumberFormat,
     /// The unit written after each number, as the host writes it: `nm`,
     /// `Å`, `nm (air)`. The labels own it; the renderer converts nothing.
@@ -426,13 +492,23 @@ pub struct WavelengthLabels {
     pub text: RichText,
 }
 
-impl Default for WavelengthLabels {
-    fn default() -> Self {
+impl WavelengthLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             format: crate::format::PlainNumberFormat::AUTO,
             unit: None,
             text: RichText::plain("", Color::from_rgb8(40, 40, 40), 11.0, ""),
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for WavelengthLabels {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -482,28 +558,38 @@ impl WavelengthLabels {
     }
 }
 
-impl Default for EnergyLevelStyle {
-    fn default() -> Self {
+impl EnergyLevelStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
-            level: LevelStrokeStyle::default(),
+            level: LevelStrokeStyle::omitted(),
             limit: AnnotationLineStyle {
                 color: Color::from_rgb8(60, 60, 140),
                 width: 1.5,
                 style: crate::line::LineStylePreset::Dash,
             },
-            transition: TransitionArrowStyle::default(),
-            label_side: LevelLabelSide::default(),
+            transition: TransitionArrowStyle::omitted(),
+            label_side: LevelLabelSide::omitted(),
             picked_width_scale: default_picked_scale(),
-            band: LevelBandStyle::default(),
+            band: LevelBandStyle::omitted(),
             wavelength_labels: None,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for EnergyLevelStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
 impl EnergyLevelStyle {
     #[cfg(feature = "serde")]
     fn is_default(&self) -> bool {
-        *self == Self::default()
+        *self == Self::omitted()
     }
 }
 
@@ -524,13 +610,23 @@ pub struct LevelStrokeStyle {
     pub slot_fraction: f32,
 }
 
-impl Default for LevelStrokeStyle {
-    fn default() -> Self {
+impl LevelStrokeStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::from_rgb8(40, 40, 40),
             width: 2.0,
             slot_fraction: 0.7,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LevelStrokeStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -554,8 +650,11 @@ pub struct TransitionArrowStyle {
     pub color_by_value: bool,
 }
 
-impl Default for TransitionArrowStyle {
-    fn default() -> Self {
+impl TransitionArrowStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::from_rgb8(200, 120, 0),
             width: 1.5,
@@ -567,12 +666,18 @@ impl Default for TransitionArrowStyle {
     }
 }
 
+#[cfg(feature = "helpers")]
+impl Default for TransitionArrowStyle {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// Which end of a transition arrow carries the head.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TransitionDirection {
     /// From the upper level down to the lower one.
-    #[default]
     Emission,
     /// From the lower level up to the upper one.
     Absorption,
@@ -580,17 +685,48 @@ pub enum TransitionDirection {
     None,
 }
 
+impl TransitionDirection {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Emission
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for TransitionDirection {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// Where a level's label sits against its stroke.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LevelLabelSide {
     /// Past the stroke's right end, centred on it.
-    #[default]
     Right,
     /// Before the stroke's left end, centred on it.
     Left,
     /// Above the stroke's middle.
     Above,
+}
+
+impl LevelLabelSide {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Right
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LevelLabelSide {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// Which list of an energy-level series a value label belongs to: the
@@ -636,7 +772,7 @@ pub struct LevelBand {
 /// The look of the level bands (#205).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
+#[cfg_attr(feature = "serde", serde(default = "LevelBandStyle::omitted"))]
 pub struct LevelBandStyle {
     /// The band's fill.
     pub fill: Color,
@@ -644,12 +780,22 @@ pub struct LevelBandStyle {
     pub inner_width: f32,
 }
 
-impl Default for LevelBandStyle {
-    fn default() -> Self {
+impl LevelBandStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             fill: Color::from_rgba8(34, 52, 88, 40),
             inner_width: 0.8,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LevelBandStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -1686,7 +1832,7 @@ mod tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         config.bottom_x.categories = Some(
             ["1S", "1P*", "3S", "3P*"]
                 .into_iter()
@@ -2433,7 +2579,7 @@ mod category_group_tests {
     }
 
     fn chart() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         config.bottom_x.categories = Some(
             ["a", "b", "c", "d"]
                 .into_iter()
@@ -2559,7 +2705,7 @@ mod category_group_tests {
     #[cfg(feature = "serde")]
     #[test]
     fn groups_and_rich_labels_round_trip_and_stay_absent_by_default() {
-        let plain = crate::default::default_config();
+        let plain = crate::config::Config::omitted();
         let json = serde_json::to_value(&plain).unwrap();
         assert!(json["bottom_x"].get("category_groups").is_none());
         let config = chart();
@@ -2588,7 +2734,7 @@ mod inset_marker_tests {
     /// A 600 × 400 parent with categories a, b, c over 0..100, and an inset
     /// at its top right naming `b` over 40..50.
     fn document() -> Config {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         config.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
@@ -2603,7 +2749,7 @@ mod inset_marker_tests {
         config.left_y.min = 0.0;
         config.left_y.max = 100.0;
         let plot = config.data_area().unwrap().0;
-        let mut inset = crate::default::default_config();
+        let mut inset = crate::config::Config::omitted();
         inset.chart_area = ChartArea(Rect {
             x: plot.x + plot.width - 200,
             y: plot.y + 10,

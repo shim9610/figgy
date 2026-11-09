@@ -509,7 +509,7 @@ fn legacy_config(chrome: &LegacyChrome<'_>) -> Config {
         axis.line_width = 1.0;
     };
 
-    let mut config = crate::default::default_config();
+    let mut config = crate::config::Config::omitted();
     let mut category_axis = config.bottom_x.clone();
     style_axis(&mut category_axis, chrome.category_title);
     category_axis.categories = Some(chrome.categories.to_vec());
@@ -596,7 +596,7 @@ fn legacy_selection(
     series_id: &str,
 ) {
     if let Some(index) = categories.iter().position(|c| c.id == category_id) {
-        let mut picked = DataSelectionsConfig::default();
+        let mut picked = DataSelectionsConfig::empty();
         picked.refs.push(PickedDataRef::HistogramBin {
             source_id: None,
             series_id: series_id.to_owned(),
@@ -901,7 +901,7 @@ impl Config {
     /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         let text = |s: &str| {
             RichText::plain(
                 s,
@@ -1021,7 +1021,11 @@ impl Config {
                 z_column: None,
                 render_type: DataRenderType::Radar {
                     color: s.color,
-                    style: s.style.clone().unwrap_or_default().resolved_from(style),
+                    style: s
+                        .style
+                        .clone()
+                        .unwrap_or_else(crate::data_config::RadarSeriesStyle::omitted)
+                        .resolved_from(style),
                     labels: RadarSeriesLabels {
                         placement: chart.labels,
                         decimals: chart.label_decimals,
@@ -1057,7 +1061,7 @@ impl Config {
             && let Some(category) = selected.category_id.as_deref()
             && let Some(index) = chart.categories.iter().position(|c| c.id == category)
         {
-            let mut picked = DataSelectionsConfig::default();
+            let mut picked = DataSelectionsConfig::empty();
             picked.refs.push(PickedDataRef::Point {
                 source_id: None,
                 series_id: selected.series_id.clone(),

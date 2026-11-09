@@ -12,11 +12,10 @@
 ///
 /// Not `#[non_exhaustive]`: an exhaustive `match` stops compiling when a
 /// material is added, which is the intended upgrade signal.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Material {
     /// The fill color, unlit. Ignores every material parameter.
-    #[default]
     Flat,
     Matte,
     Ceramic,
@@ -28,6 +27,22 @@ pub enum Material {
     Enamel,
     Hatch,
     Pearl,
+}
+
+impl Material {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Flat
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for Material {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl Material {

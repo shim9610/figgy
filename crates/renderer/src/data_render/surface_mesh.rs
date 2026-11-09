@@ -663,8 +663,7 @@ pub(crate) fn surface_params_gpu(
     picked: Option<(u32, u32)>,
     pick_id: u32,
 ) -> SurfaceParamsGpu {
-    let default = model::view3d::SurfaceStyle::default();
-    let style = style.unwrap_or(&default);
+    let style = model::view3d::SurfaceStyle::resolved(style);
     let mut flags = 0;
     if style.color_matrix.is_some() {
         flags |= SURFACE_FLAG_COLOR_GRID;

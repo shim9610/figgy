@@ -90,12 +90,27 @@ impl BoxSummary {
     since = "0.13.0",
     note = "part of the BoxPlotChart document reader; removed with it in the next milestone"
 )]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotDirection {
-    #[default]
     Vertical,
     Horizontal,
+}
+
+impl BoxPlotDirection {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Vertical
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPlotDirection {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 /// The former box material enum, now the shared [`Material`](crate::Material). Boxes
 /// reject the materials
@@ -144,11 +159,11 @@ impl BoxPlotSeries {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "BoxPlotChart::omitted")
 )]
 pub struct BoxPlotChart {
     /// Editable decoration positions and selection, in logical pixels.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "crate::DecorationLayout::omitted"))]
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
@@ -162,13 +177,19 @@ pub struct BoxPlotChart {
     /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::LayerRef::is_base")
+        serde(
+            default = "crate::LayerRef::omitted",
+            skip_serializing_if = "crate::LayerRef::is_base"
+        )
     )]
     pub active_layer: crate::LayerRef,
     /// The dedicated annotation layer, shared with every chart family.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "crate::AnnotationLayer::is_default")
+        serde(
+            default = "crate::AnnotationLayer::omitted",
+            skip_serializing_if = "crate::AnnotationLayer::is_default"
+        )
     )]
     pub annotations: crate::AnnotationLayer,
     pub categories: Vec<Category>,
@@ -195,18 +216,21 @@ pub struct BoxPlotChart {
     pub text_color: Color,
     pub background: Color,
 }
-impl Default for BoxPlotChart {
-    fn default() -> Self {
+impl BoxPlotChart {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
-            decorations: Default::default(),
+            decorations: crate::DecorationLayout::omitted(),
             title: String::new(),
             chart_title: None,
-            active_layer: Default::default(),
-            annotations: Default::default(),
+            active_layer: crate::LayerRef::omitted(),
+            annotations: crate::AnnotationLayer::omitted(),
             categories: vec![],
             series: vec![],
             direction: BoxPlotDirection::Vertical,
-            style: BoxPlotStyle::default(),
+            style: BoxPlotStyle::omitted(),
             overrides: vec![],
             hovered: None,
             selected: None,
@@ -225,6 +249,13 @@ impl Default for BoxPlotChart {
             text_color: Color::from_rgb8(32, 46, 60),
             background: Color::WHITE,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPlotChart {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 impl BoxPlotChart {

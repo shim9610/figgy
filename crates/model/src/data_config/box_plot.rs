@@ -23,22 +23,52 @@ impl BoxPlotTarget {
 
 /// Which value labels a box shows: none, its median, or its median and its
 /// sample count.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotLabels {
-    #[default]
     None,
     Median,
     MedianAndCount,
 }
 
+impl BoxPlotLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::None
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPlotLabels {
+    fn default() -> Self {
+        Self::omitted()
+    }
+}
+
 /// The shape of a box's outlier markers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxOutlierShape {
-    #[default]
     Circle,
     Square,
+}
+
+impl BoxOutlierShape {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Circle
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxOutlierShape {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// The look of a box: [`DataRenderType::BoxPlot`]'s `style`, and a complete
@@ -47,7 +77,7 @@ pub enum BoxOutlierShape {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "BoxPlotStyle::omitted")
 )]
 pub struct BoxPlotStyle {
     /// A box is a flat body: [`Material::supported_on_flat_body`] decides.
@@ -84,8 +114,11 @@ pub struct BoxPlotStyle {
     pub emphasis_brightness: f32,
 }
 
-impl Default for BoxPlotStyle {
-    fn default() -> Self {
+impl BoxPlotStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         let ink = Color::from_rgb8(32, 46, 60);
         Self {
             material: Material::Matte,
@@ -114,6 +147,13 @@ impl Default for BoxPlotStyle {
             gloss: 0.45,
             emphasis_brightness: 0.08,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPlotStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -309,7 +349,7 @@ pub struct ViolinHalf {
     /// The density drawn at the full half width of the slot; a larger
     /// density is drawn wider. Finite and positive ([`Self::fit_density_scale`]).
     pub density_scale: f64,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "ViolinStyle::omitted"))]
     pub style: ViolinStyle,
 }
 
@@ -334,7 +374,7 @@ impl ViolinHalf {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "ViolinStyle::omitted")
 )]
 pub struct ViolinStyle {
     /// The fill, opaque; `None` takes the series' colour (or a box
@@ -346,14 +386,24 @@ pub struct ViolinStyle {
     pub outline_color: Color,
 }
 
-impl Default for ViolinStyle {
-    fn default() -> Self {
+impl ViolinStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             fill: None,
             outline: true,
             outline_width: 1.2,
             outline_color: Color::from_rgb8(32, 46, 60),
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for ViolinStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -370,7 +420,7 @@ impl Default for ViolinStyle {
 pub struct BoxPoints {
     pub positions: ColumnId,
     pub values: ColumnId,
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "BoxPointsStyle::omitted"))]
     pub style: BoxPointsStyle,
 }
 
@@ -380,7 +430,7 @@ pub struct BoxPoints {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "BoxPointsStyle::omitted")
 )]
 pub struct BoxPointsStyle {
     pub color: Color,
@@ -396,8 +446,11 @@ pub struct BoxPointsStyle {
     pub offset: f32,
 }
 
-impl Default for BoxPointsStyle {
-    fn default() -> Self {
+impl BoxPointsStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             color: Color::from_rgb8(32, 46, 60),
             size: 4.0,
@@ -406,6 +459,13 @@ impl Default for BoxPointsStyle {
             jitter: 0.5,
             offset: 0.0,
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPointsStyle {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 
@@ -426,7 +486,7 @@ pub const MAX_BOX_PLOT_LABEL_CHARS: usize = 160;
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default)
+    serde(default = "BoxPlotSeriesLabels::omitted")
 )]
 pub struct BoxPlotSeriesLabels {
     pub placement: BoxPlotLabels,
@@ -445,8 +505,11 @@ pub struct BoxPlotSeriesLabels {
     pub offsets: Vec<[f32; 2]>,
 }
 
-impl Default for BoxPlotSeriesLabels {
-    fn default() -> Self {
+impl BoxPlotSeriesLabels {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) fn omitted() -> Self {
         Self {
             placement: BoxPlotLabels::None,
             decimals: 1,
@@ -454,6 +517,13 @@ impl Default for BoxPlotSeriesLabels {
             text: Vec::new(),
             offsets: Vec::new(),
         }
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for BoxPlotSeriesLabels {
+    fn default() -> Self {
+        Self::omitted()
     }
 }
 

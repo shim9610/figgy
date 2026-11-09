@@ -1,8 +1,7 @@
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LineStylePreset {
     /// Solid line (no pattern).
-    #[default]
     Solid,
     /// Standard dash: `[8, 4]`.
     Dash,
@@ -24,6 +23,22 @@ pub enum LineStylePreset {
     LongDashDot,
     /// Long dash-dot-dot: `[14, 4, 2, 4, 2, 4]`.
     LongDashDotDot,
+}
+
+impl LineStylePreset {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Solid
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for LineStylePreset {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 impl LineStylePreset {

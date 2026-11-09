@@ -94,12 +94,27 @@ pub enum MathKind {
 /// default) or display style (`$$…$$`, `\displaystyle`), where big
 /// operators take their display variant and their limits above and below,
 /// and fractions their display gaps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathStyle {
-    #[default]
     Text,
     Display,
+}
+
+impl MathStyle {
+    /// The value this type takes where a document omits it: the one source
+    /// of its default (#266). `Default`, for hosts, returns it.
+    #[cfg_attr(not(feature = "helpers"), allow(dead_code))]
+    pub(crate) const fn omitted() -> Self {
+        Self::Text
+    }
+}
+
+#[cfg(feature = "helpers")]
+impl Default for MathStyle {
+    fn default() -> Self {
+        Self::omitted()
+    }
 }
 
 /// The style of a fraction: chosen from the surrounding style, or forced
@@ -1440,7 +1455,7 @@ mod tests {
         assert!(err.contains("segment 6"), "{err}");
         assert!(err.contains(MathErrorKind::UnknownParent.as_str()), "{err}");
 
-        let mut config = crate::default::default_config();
+        let mut config = crate::config::Config::omitted();
         config.chart_title.text = text;
         let json = serde_json::to_string(&config).unwrap();
         assert!(serde_json::from_str::<crate::config::Config>(&json).is_err());
