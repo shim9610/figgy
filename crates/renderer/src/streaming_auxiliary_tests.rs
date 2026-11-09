@@ -109,7 +109,7 @@ fn setup(
         .unwrap();
     // Deliberately use a smaller display: export must retain document dimensions.
     let (display, panel, _) = display_config_for_surface(chart.config(), (160, 120));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&Chart::new(display.clone()), panel)
         .unwrap();
     renderer
@@ -146,9 +146,9 @@ fn setup(
     renderer.wait_idle().unwrap();
     drop(
         renderer
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap(),
     );
@@ -203,7 +203,7 @@ fn pump(
 #[test]
 fn streamed_export_replays_document_resolution_and_preserves_display() {
     for histogram in [false, true] {
-        let (mut renderer, id, view, chart, series, x, y) = setup(histogram);
+        let (mut renderer, id, mut view, chart, series, x, y) = setup(histogram);
         let job = renderer.active_stream_job(id).unwrap();
         let status = renderer.stream_status(id).unwrap();
         let (device, queue) = data_render::shared_device().unwrap();
@@ -246,9 +246,9 @@ fn streamed_export_replays_document_resolution_and_preserves_display() {
             assert_eq!(renderer.stream_status(id).unwrap(), status);
             drop(
                 renderer
-                    .prepare_registered(&[RegisteredChartDrawItem {
+                    .prepare_registered(&mut [RegisteredChartDrawItem {
                         chart_id: id,
-                        view: &view,
+                        view: &mut view,
                     }])
                     .unwrap(),
             );
@@ -690,16 +690,16 @@ fn wide_stream(
     let budget = renderer.gpu_memory_usage().total_bytes() + 64 * 1024 * 1024;
     let _ = renderer.set_memory_budget(Some(budget));
     let _ = renderer.set_auto_resident_working_set_limit(Some(500_000_000));
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
-    request_wide_stream(&mut renderer, id, &view);
-    finish_wide_stream(&mut renderer, id, &view, &values);
+    request_wide_stream(&mut renderer, id, &mut view);
+    finish_wide_stream(&mut renderer, id, &mut view, &values);
     (renderer, id, view, values)
 }
 
 /// Ask for an automatic stream of `id` at the `wide_stream` size.
-fn request_wide_stream(renderer: &mut Renderer, id: ChartId, view: &ChartView) {
+fn request_wide_stream(renderer: &mut Renderer, id: ChartId, view: &mut ChartView) {
     renderer
         .request_auto_streaming_chart(
             id,
@@ -731,7 +731,7 @@ fn wide_bindings<'a>(
 fn finish_wide_stream(
     renderer: &mut Renderer,
     id: ChartId,
-    view: &ChartView,
+    view: &mut ChartView,
     values: &[(&'static str, crate::Column<f32>)],
 ) {
     let bindings = wide_bindings(values);
@@ -745,7 +745,7 @@ fn finish_wide_stream(
     renderer.wait_idle().unwrap();
     drop(
         renderer
-            .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+            .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
             .unwrap(),
     );
     assert!(matches!(
@@ -1006,7 +1006,7 @@ fn a_resident_handoff_snapshot_covers_every_series_column() {
                 max_in_flight_gpu_bytes: 16384,
             })
             .unwrap();
-        let view = renderer
+        let mut view = renderer
             .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
             .unwrap();
         let metadata = |ids: &[&str]| -> Vec<crate::StreamColumn> {
@@ -1098,9 +1098,9 @@ fn a_resident_handoff_snapshot_covers_every_series_column() {
                     renderer.wait_idle().unwrap();
                     drop(
                         renderer
-                            .prepare_registered(&[RegisteredChartDrawItem {
+                            .prepare_registered(&mut [RegisteredChartDrawItem {
                                 chart_id: id,
-                                view: &view,
+                                view: &mut view,
                             }])
                             .unwrap(),
                     );
@@ -1156,12 +1156,12 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
             .collect(),
     ];
     for edited in edits {
-        let (mut renderer, id, view, values) = wide_stream(many.clone());
-        request_wide_stream(&mut renderer, id, &view);
+        let (mut renderer, id, mut view, values) = wide_stream(many.clone());
+        request_wide_stream(&mut renderer, id, &mut view);
         let mut config = renderer.chart_config(id).unwrap().clone();
         config.bottom_x.max = 0.9;
         renderer.set_chart_config(id, config).unwrap();
-        request_wide_stream(&mut renderer, id, &view);
+        request_wide_stream(&mut renderer, id, &mut view);
         let bindings = wide_bindings(&values);
         for _ in 0..40 {
             match renderer.auto_stream_chart_step(id, &bindings).unwrap() {
@@ -1194,8 +1194,8 @@ fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
             }
         }
         drop(before);
-        request_wide_stream(&mut renderer, id, &view);
-        finish_wide_stream(&mut renderer, id, &view, &values);
+        request_wide_stream(&mut renderer, id, &mut view);
+        finish_wide_stream(&mut renderer, id, &mut view, &values);
         let job = renderer.active_stream_job(id).unwrap();
         let snapshot = renderer.auto_stream_snapshot(job).unwrap();
         assert_eq!(snapshot.series, edited);

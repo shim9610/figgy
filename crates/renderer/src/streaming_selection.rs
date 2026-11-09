@@ -587,7 +587,7 @@ impl Renderer {
             &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view,
                 chart_config: config,
                 series: &[Series {
@@ -814,7 +814,7 @@ impl Renderer {
                 &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
-                &[ChartDrawItem {
+                &[PanelDraw {
                     view,
                     chart_config: &config,
                     series: &[Series {

@@ -151,7 +151,7 @@ impl TargetPipelines {
         style_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) {
         for item in items {
             let Some(v) = style_variant(&item.chart_config.draw_style) else {
@@ -186,7 +186,7 @@ impl TargetPipelines {
         field_bgl: &wgpu::BindGroupLayout,
         surface_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) {
         let on_3d = |draws: fn(&crate::data_config::DataRenderType) -> bool| {
             items.iter().any(|item| {
@@ -229,7 +229,7 @@ impl TargetPipelines {
         transform_bgl: &wgpu::BindGroupLayout,
         region_bgl: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) {
         let needed = items.iter().any(|item| {
             item.chart_config.ternary().is_some()

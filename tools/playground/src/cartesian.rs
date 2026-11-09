@@ -130,6 +130,9 @@ pub struct CartesianHost {
     initial: Config,
     initial_series: Vec<SeriesConfig>,
     view: Option<ChartView>,
+    /// The display chart the view draws, kept across frames so its raster
+    /// stamp moves only when the display config or the selection changes.
+    display_chart: Option<Chart>,
     styles: Vec<ChartStyle>,
     /// Display scale the styles were built at; `None` forces a rebuild.
     styles_scale: Option<f32>,
@@ -172,6 +175,7 @@ impl CartesianHost {
             initial: scene.config,
             initial_series: scene.series,
             view: None,
+            display_chart: None,
             styles: Vec::new(),
             styles_scale: None,
             raster_dirty: true,
@@ -334,10 +338,25 @@ impl CartesianHost {
                 }
             }
         }
-        let chart = Chart::new(d.config.clone());
+        if self
+            .display_chart
+            .as_ref()
+            .is_none_or(|chart| chart.config() != &d.config)
+        {
+            self.display_chart = Some(Chart::new(d.config.clone()));
+        }
+        let selected = {
+            let hitmap = HitMap::for_active_layer(&d.config);
+            self.selected
+                .and_then(|id| hitmap.get(id))
+                .map(|el| el.element_id())
+        };
+        let chart = self.display_chart.as_mut()?;
+        chart.select(selected.as_deref());
+        let chart: &Chart = chart;
         let view = match self.view.take() {
             Some(v) => v,
-            None => match r.create_chart_view_at(&chart, d.panel, d.scale) {
+            None => match r.create_chart_view_at(chart, d.panel, d.scale) {
                 Ok(v) => {
                     self.raster_dirty = true;
                     v
@@ -350,20 +369,13 @@ impl CartesianHost {
         };
         let mut view = view;
         if self.raster_dirty || view.panel_rect() != d.panel {
-            let hitmap = HitMap::for_active_layer(&d.config);
-            let selected = self
-                .selected
-                .and_then(|id| hitmap.get(id))
-                .map(|el| el.element_id());
-            if let Err(e) =
-                r.refresh_axis_with_selection_at(
-                    &mut view,
-                    &chart,
-                    d.panel,
-                    selected.as_deref(),
-                    d.scale,
-                )
-            {
+            if let Err(e) = r.refresh_axis_with_selection_at(
+                &mut view,
+                chart,
+                d.panel,
+                selected.as_deref(),
+                d.scale,
+            ) {
                 self.error = Some(format!("refresh: {e}"));
             }
             self.warnings = view.render_warnings().to_vec();
@@ -371,7 +383,7 @@ impl CartesianHost {
         }
         if view.annotation_selected() != self.selected_annotation
             && let Err(e) =
-                r.refresh_annotations(&mut view, &chart, d.panel, self.selected_annotation)
+                r.refresh_annotations(&mut view, chart, d.panel, self.selected_annotation)
         {
             self.error = Some(format!("annotations: {e}"));
         }
@@ -380,9 +392,9 @@ impl CartesianHost {
             .zip(&self.styles)
             .map(|(config, style)| Series { config, style })
             .collect();
-        let prepared = r.prepare(&[ChartDrawItem {
-            view: &view,
-            chart_config: &d.config,
+        let prepared = r.prepare(&mut [ChartDrawItem {
+            view: &mut view,
+            chart,
             series: &draw,
         }]);
         drop(draw);
@@ -1999,8 +2011,18 @@ fn series_controls(
         DataRenderType::Feynman(diagram) => {
             color(ui, "line colour", &mut diagram.style.color);
             slider(ui, "line width", &mut diagram.style.width, 0.5..=24.0);
-            slider(ui, "wave amplitude", &mut diagram.style.wave.amplitude, 0.0..=64.0);
-            slider(ui, "coil size", &mut diagram.style.coil.amplitude, 0.0..=64.0);
+            slider(
+                ui,
+                "wave amplitude",
+                &mut diagram.style.wave.amplitude,
+                0.0..=64.0,
+            );
+            slider(
+                ui,
+                "coil size",
+                &mut diagram.style.coil.amplitude,
+                0.0..=64.0,
+            );
         }
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {

@@ -90,9 +90,9 @@ fn three_series() -> Vec<SeriesConfig> {
     ]
 }
 
-fn frame_with_view(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
+fn frame_with_view(r: &mut Renderer, id: ChartId, view: &mut ChartView) -> Vec<u8> {
     let prepared = r
-        .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+        .prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap();
     paint_frame_pixels(r, &prepared, 1)
 }
@@ -101,10 +101,10 @@ fn frame_with_view(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
 fn fresh_frame(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     let mut r = renderer();
     let id = r.register_chart(config.clone(), series).unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    frame_with_view(&mut r, id, &view)
+    frame_with_view(&mut r, id, &mut view)
 }
 
 /// Refresh every panel of `id` with the element `selected` names selected
@@ -143,7 +143,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
         format!("initial generations {:?}", view.layer_raster_generations()),
     );
     check(view.overlay_count() == 2, "view holds both overlays".into());
-    let first = frame_with_view(&mut r, id, &view);
+    let first = frame_with_view(&mut r, id, &mut view);
     check(
         first == fresh_frame(&config, three_series()),
         "first frame differs from a fresh render".into(),
@@ -213,7 +213,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
                 view.layer_raster_generations()
             ),
         );
-        let actual = frame_with_view(&mut r, id, &view);
+        let actual = frame_with_view(&mut r, id, &mut view);
         check(
             actual == fresh_frame(&next, three_series()),
             format!("{name}: cached view + refreshed layer differs from a fresh render"),
@@ -234,7 +234,18 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
         r.selection_box(&Chart::new(config), "data_area").is_some(),
         "the data area has no selection box".into(),
     );
-    refresh(&mut r, id, &mut view, Some("data_area"));
+    // The selection is the chart's: prepare draws it (#265).
+    let hit = crate::select::HitMap::for_active_layer(r.chart_config(id).unwrap())
+        .find("data_area")
+        .unwrap();
+    r.set_chart_selection(id, Some(hit)).unwrap();
+    drop(
+        r.prepare_registered(&mut [RegisteredChartDrawItem {
+            chart_id: id,
+            view: &mut view,
+        }])
+        .unwrap(),
+    );
     check(
         view.layer_raster_generations() == vec![3, 4, 4],
         format!(
@@ -242,11 +253,11 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
             view.layer_raster_generations()
         ),
     );
-    let selected = frame_with_view(&mut r, id, &view);
+    let selected = frame_with_view(&mut r, id, &mut view);
     check(selected != previous, "selection box drew nothing".into());
-    refresh(&mut r, id, &mut view, None);
+    r.set_chart_selection(id, None).unwrap();
     check(
-        frame_with_view(&mut r, id, &view) == previous,
+        frame_with_view(&mut r, id, &mut view) == previous,
         "clearing the selection did not restore the frame".into(),
     );
     drop(_fonts);
@@ -271,7 +282,7 @@ fn a_linked_range_edit_moves_every_layer_in_one_registry_call() {
     let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    let before = frame_with_view(&mut r, id, &view);
+    let before = frame_with_view(&mut r, id, &mut view);
 
     let mut state = r.chart_view_state(id).unwrap();
     let overlay_count = state.overlay_y.len();
@@ -285,7 +296,7 @@ fn a_linked_range_edit_moves_every_layer_in_one_registry_call() {
     let state_after = r.chart_view_state(id).unwrap();
 
     refresh(&mut r, id, &mut view, None);
-    let after = frame_with_view(&mut r, id, &view);
+    let after = frame_with_view(&mut r, id, &mut view);
     let fresh = fresh_frame(&edited, three_series());
 
     // A view state with the wrong overlay count cannot be applied at all.
@@ -615,7 +626,7 @@ fn an_adaptive_log_axis_replans_on_every_zoom() {
         }
         r.set_chart_config(id, edited.clone()).unwrap();
         refresh(&mut r, id, &mut view, None);
-        let frame = frame_with_view(&mut r, id, &view);
+        let frame = frame_with_view(&mut r, id, &mut view);
         if frame != fresh_frame(&edited, series.clone()) {
             failures.push(format!("set_y_range {min:e}..{max:e}: not a fresh render"));
         }
@@ -636,7 +647,7 @@ fn an_adaptive_log_axis_replans_on_every_zoom() {
             failures.push(format!("view state {min:e}..{max:e}: left_y"));
         }
         refresh(&mut r, id, &mut view, None);
-        if frame_with_view(&mut r, id, &view) != fresh_frame(&viewed, series.clone()) {
+        if frame_with_view(&mut r, id, &mut view) != fresh_frame(&viewed, series.clone()) {
             failures.push(format!("view state {min:e}..{max:e}: not a fresh render"));
         }
         chart = Chart::new(viewed);
@@ -712,30 +723,20 @@ fn render_warnings_are_merged_with_a_layer_tag() {
         view.render_warnings()[1].to_string().split(' ').next(),
         Some("overlays[1].y_axis.major_spacing")
     );
-    // A view created with fewer layers than the document cannot draw it.
+    // A view created with fewer layers than the document grows to the
+    // document's layer count on the next prepare (#265).
     let mut r = r;
     let id = r.register_chart(config.clone(), three_series()).unwrap();
-    let mut without = config.clone();
+    let mut without = config;
     without.overlays.pop();
     let mut short = r.create_chart_view(&Chart::new(without), PANEL).unwrap();
-    assert!(matches!(
-        r.prepare_registered(&[RegisteredChartDrawItem {
-            chart_id: id,
-            view: &short,
-        }]),
-        Err(FiggyError::StaleStateToken { .. })
-    ));
-    // A refresh grows the view to the document's layer count.
-    r.refresh_axis(&mut short, &Chart::new(config), PANEL)
-        .unwrap();
+    assert_eq!(short.overlay_count(), 1);
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
+        chart_id: id,
+        view: &mut short,
+    }])
+    .unwrap();
     assert_eq!(short.overlay_count(), 2);
-    assert!(
-        r.prepare_registered(&[RegisteredChartDrawItem {
-            chart_id: id,
-            view: &short,
-        }])
-        .is_ok()
-    );
 }
 
 // Offset spectra (`Config::line_offsets`, #50): each member is a panel of its

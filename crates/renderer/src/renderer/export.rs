@@ -240,7 +240,7 @@ impl<'a> ExportSource<'a> {
 
 /// Owned storage for the internal panels of a prepare or export call: the
 /// expanded configs and each panel's slice of the series, so the per-panel
-/// `ChartDrawItem`s can borrow from one place. Expansion copies configuration
+/// `PanelDraw`s can borrow from one place. Expansion copies configuration
 /// only; the series entries are the caller's references.
 ///
 /// Only layered items are materialized here; a single-layer item is drawn
@@ -255,7 +255,7 @@ pub(super) struct PanelDrawStorage<'a> {
 }
 
 impl<'a> PanelDrawStorage<'a> {
-    pub(super) fn expand(items: &[ChartDrawItem<'a>]) -> Result<Self> {
+    pub(super) fn expand(items: &[PanelDraw<'a>]) -> Result<Self> {
         let mut configs = Vec::new();
         let mut series = Vec::new();
         let mut views = Vec::new();
@@ -288,16 +288,13 @@ impl<'a> PanelDrawStorage<'a> {
     /// The per-panel draw items of `source` (the items `expand` was given),
     /// in source order: a single-layer item as it is, a layered item as its
     /// expanded panels.
-    pub(super) fn items<'s>(
-        &'s self,
-        source: &'s [ChartDrawItem<'a>],
-    ) -> Result<Vec<ChartDrawItem<'s>>> {
+    pub(super) fn items<'s>(&'s self, source: &'s [PanelDraw<'a>]) -> Result<Vec<PanelDraw<'s>>> {
         let mut out = Vec::with_capacity(source.len() + self.configs.len());
         let mut counts = self.counts.iter();
         let mut next = 0;
         for item in source {
             if !is_layered(item.chart_config) {
-                out.push(ChartDrawItem {
+                out.push(PanelDraw {
                     view: item.view,
                     chart_config: item.chart_config,
                     series: item.series,
@@ -308,7 +305,7 @@ impl<'a> PanelDrawStorage<'a> {
                 .next()
                 .ok_or(FiggyError::internal("one count per layered item"))?;
             for index in next..next + count {
-                out.push(ChartDrawItem {
+                out.push(PanelDraw {
                     view: self.views[index],
                     chart_config: &self.configs[index],
                     series: &self.series[index],
@@ -322,7 +319,7 @@ impl<'a> PanelDrawStorage<'a> {
 
 impl PanelDrawStorage<'_> {
     /// Panels per source item, in source order (1 for a single-layer item).
-    pub(super) fn group_sizes(&self, source: &[ChartDrawItem<'_>]) -> Result<Vec<usize>> {
+    pub(super) fn group_sizes(&self, source: &[PanelDraw<'_>]) -> Result<Vec<usize>> {
         let mut counts = self.counts.iter();
         source
             .iter()
@@ -814,7 +811,7 @@ impl Renderer {
                 style: st,
             })
             .collect();
-        let document = [ChartDrawItem {
+        let document = [PanelDraw {
             view: &view,
             chart_config: scaled_chart.config(),
             series: &series_objs,
@@ -1001,7 +998,7 @@ impl Renderer {
     /// directly, as before.
     fn attach_export_composites(
         &self,
-        inputs: &[ChartDrawItem<'_>],
+        inputs: &[PanelDraw<'_>],
         prepared: &mut [PreparedItem],
         format: wgpu::TextureFormat,
         sample_count: u32,

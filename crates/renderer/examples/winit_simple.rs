@@ -14,7 +14,7 @@
 //!    via `config.left_y.scale = AxisScale::Logarithmic`.
 //! 5. **ChartView / ChartStyle**: `renderer.create_chart_view(chart, rect)`,
 //!    `create_style_for_series(...)`.
-//! 6. **Draw**: a single `renderer.draw(clear, &items)` call — handles
+//! 6. **Draw**: a single `renderer.draw(clear, &mut items)` call — handles
 //!    surface frame acquire → encoder → render pass → paint → submit →
 //!    present internally.
 //!
@@ -887,30 +887,32 @@ impl App {
         }
 
         // ---- Series + ChartDrawItem slices ----
-        let series_per_panel: Vec<Vec<Series<'_>>> = self
+        // Each panel lends its view mutably (prepare redraws a stale raster)
+        // and its chart and series immutably: disjoint fields of one panel.
+        let mut parts: Vec<(&mut ChartView, &Chart, Vec<Series<'_>>)> = self
             .panels
-            .iter()
+            .iter_mut()
             .map(|p| {
-                p.series
+                let series = p
+                    .series
                     .iter()
                     .zip(p.styles.iter())
                     .map(|(cfg, style)| Series { config: cfg, style })
-                    .collect()
+                    .collect();
+                (&mut p.view, &p.chart, series)
             })
             .collect();
-        let items: Vec<ChartDrawItem<'_>> = self
-            .panels
-            .iter()
-            .zip(series_per_panel.iter())
-            .map(|(p, ss)| ChartDrawItem {
-                view: &p.view,
-                chart_config: p.chart.config(),
-                series: ss.as_slice(),
+        let mut items: Vec<ChartDrawItem<'_>> = parts
+            .iter_mut()
+            .map(|(view, chart, series)| ChartDrawItem {
+                view,
+                chart,
+                series: series.as_slice(),
             })
             .collect();
 
         // ---- single draw call — surface/encoder/pass/submit/present all internal. ----
-        if let Err(e) = renderer.draw(Color::WHITE, &items) {
+        if let Err(e) = renderer.draw(Color::WHITE, &mut items) {
             eprintln!("[draw] {e}");
         }
     }

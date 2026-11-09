@@ -64,16 +64,39 @@ impl SpaceBgKey {
     }
 }
 
-/// One chart panel to draw: view + chart config + series slice.
+/// One chart to prepare: its view, the chart itself and its series.
+///
+/// [`Renderer::prepare`] redraws the view's text and axis raster first when
+/// the view is stale: the chart changed since the view was drawn (its
+/// raster stamp), or the font generation moved. The raster draws the
+/// selection the chart holds ([`Chart::selected`]).
 pub struct ChartDrawItem<'a> {
-    pub view: &'a ChartView,
-    pub chart_config: &'a crate::config::Config,
+    pub view: &'a mut ChartView,
+    pub chart: &'a Chart,
     pub series: &'a [Series<'a>],
+}
+
+/// One resolved panel to draw: its view, the panel's internal config and
+/// its series. What [`ChartDrawItem`] resolves to once the view is fresh,
+/// and what exports and streaming build directly.
+pub(crate) struct PanelDraw<'a> {
+    pub(crate) view: &'a ChartView,
+    pub(crate) chart_config: &'a crate::config::Config,
+    pub(crate) series: &'a [Series<'a>],
 }
 
 /// Prepare-only resources for an explicitly identified renderer-owned chart.
 /// Config and ordered series are borrowed from the Renderer registry.
+/// [`Renderer::prepare_registered`] redraws a stale view's raster from the
+/// stored chart, its display placement and its selection first.
 pub struct RegisteredChartDrawItem<'a> {
     pub chart_id: ChartId,
-    pub view: &'a ChartView,
+    pub view: &'a mut ChartView,
+}
+
+/// A registered chart resolved for preparation once its view is fresh.
+#[derive(Clone, Copy)]
+pub(crate) struct RegisteredPanel<'a> {
+    pub(crate) chart_id: ChartId,
+    pub(crate) view: &'a ChartView,
 }

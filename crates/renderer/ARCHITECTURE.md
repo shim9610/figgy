@@ -390,17 +390,12 @@ if !draw && !raster && !view_dirty && !redraw_pending {
 }
 renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
-if raster || view_dirty {
-    // Also redoes the annotation rasters.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, selected_id.as_deref())?;
-} else if annotations {
+// `draw_registered` redraws the axis and annotation rasters itself when the
+// stored chart, its selection or its display placement changed (#265).
+if annotations && !raster {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }
-if renderer.is_streaming_chart(chart_id) {
-    renderer.draw_registered(clear, &[RegisteredChartDrawItem { chart_id, view: &view }])?;
-} else {
-    renderer.draw(clear, &items)?;
-}
+renderer.draw_registered(clear, &mut [RegisteredChartDrawItem { chart_id, view: &mut view }])?;
 last_presented_stamp = Some(stamp);
 view_dirty = false;
 redraw_pending = false;
@@ -444,9 +439,10 @@ full-pool buffer.
 
 The standalone `Chart::{data_dirty,raster_dirty}` booleans remain a compatibility
 mechanism for low-level callers that own an external `Chart`. `prepare` does not
-read or consume those booleans; it writes the transform whenever the caller has
-decided to draw. External-`Chart` hosts remain responsible for consuming
-`raster_dirty` and calling `refresh_axis`.
+read or consume those booleans. It compares the chart's raster stamp, an issued
+number moved by every raster-affecting edit and by `Chart::select`, with the one
+the view was drawn from, and redraws the view's raster when they differ (#265);
+it writes the transform whenever the caller has decided to draw.
 
 ### Identity and staleness checks
 
@@ -456,7 +452,7 @@ maintainer's approval in the issue first (rule 7).
 
 | Question | Pattern | Used by |
 |---|---|---|
-| Which renderer issued this? | **Issued number.** A process-wide counter issues a `u64` with a checked increment and fails with `FiggyError::CounterExhausted` instead of wrapping, so a value is never reused. | `issue_renderer_identity` (`src/renderer/device.rs`) issues `renderer_identity`. `ChartId` and `RenderRevision` pair it with a per-renderer sequence, so an id from one renderer never matches another renderer's. |
+| Which renderer issued this? | **Issued number.** A process-wide counter issues a `u64` with a checked increment and fails with `FiggyError::CounterExhausted` instead of wrapping, so a value is never reused. | `issue_renderer_identity` (`src/renderer/device.rs`) issues `renderer_identity`. `ChartId` and `RenderRevision` pair it with a per-renderer sequence, so an id from one renderer never matches another renderer's. `issue_raster_stamp` (`src/chart.rs`) issues a `Chart`'s raster stamp on every raster-affecting change, so a `ChartView` never mistakes another chart for the one it was drawn from (#265); an edit cannot fail, so once the counter is exhausted the stamp is `None` and `prepare` fails with `CounterExhausted`. |
 | Is this the same live instance? | **Allocation identity.** The address of an `Arc` names the instance; compare with `Arc::ptr_eq` or `Weak::as_ptr`. Whoever compares later keeps a clone or a `Weak`, so the allocation cannot be freed and its address reused while the comparison can still be made. A `Weak` also tells when the instance is gone. | `PoolIdentity`: a column pool, checked by the picker before it reuses its bindings. `ChartView::content_revision`: a panel; the resident display cache holds a `Weak` of it and retires the entry once `strong_count()` is 0. `ChartView::stream_revision` and `content_revision` in the streamed draw tokens. The owning tile of a stream-field `RecordedStep`. |
 | Is this the same stored content? | **Shared storage.** `Arc::ptr_eq` on shared GPU storage: equal means a cheap edit reused it. A shortcut, not an identity. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with`. |
 | Did the content change? | **Generation.** A counter that moves on every change. A token records it and compares it before use. It never names an object. | A column's allocation epoch (one per upload), the pool's `layout_generation`, `target_pipeline_generation`, `font_generation`, the value of a `ChartView` content revision, `RenderRevision`. |
@@ -814,17 +810,12 @@ if !draw && !raster && !view_dirty && !redraw_pending {
 }
 renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
-if raster || view_dirty {
-    // 주석 래스터도 함께 다시 만든다.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, selected_id.as_deref())?;
-} else if annotations {
+// 저장된 차트, 그 선택 상태, 표시 위치가 바뀌었으면 `draw_registered`가
+// 축·주석 래스터를 직접 다시 그린다(#265).
+if annotations && !raster {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }
-if renderer.is_streaming_chart(chart_id) {
-    renderer.draw_registered(clear, &[RegisteredChartDrawItem { chart_id, view: &view }])?;
-} else {
-    renderer.draw(clear, &items)?;
-}
+renderer.draw_registered(clear, &mut [RegisteredChartDrawItem { chart_id, view: &mut view }])?;
 last_presented_stamp = Some(stamp);
 view_dirty = false;
 redraw_pending = false;
@@ -832,7 +823,7 @@ redraw_pending = false;
 
 마지막 표시 기록과 호스트 플래그는 그리기가 성공한 뒤에만 갱신한다. 실패하면 다음 프레임에서 다시 시도한다. 변경이 없는 웹 rAF에서는 GPU 화면 출력 경로 전체를 생략한다. 상주 경로의 Precise 패널은 시리즈 본체(채움, 선, 마커, 막대, 행렬, 등고선, 벡터)를 패널 크기의 캐시 텍스처에 보관한다. `prepare`는 본체의 입력이 바뀔 때만 다시 그린다. 입력은 데이터-픽셀 변환, 데이터 영역, 그리기 스타일, `polar`·`colorbar`, 3D 패널의 카메라(`view_3d`, 이 패널의 합성 텍스처는 대상 샘플 수의 `Depth24PlusStencil8` 첨부도 가지며 곡면, 3D 표식, 3D 화살표가 이 첨부로 깊이 테스트를 한다), 시리즈 설정과 스타일을 만든 배율, 폰트 세대, 그 패널이 읽는 컬럼의 할당 epoch, 풀 배치·파이프라인 세대다. 다른 패널이 읽는 컬럼을 교체해도 이 패널은 다시 그리지 않는다. 그리드·장식·주석 레이어는 각자의 텍스처를 쓰고 픽·선택 강조는 캐시된 본체 위에 매번 그리므로, 제목·범례·축·그리드·주석·점을 편집하거나 선택해도 본체를 다시 그리지 않는다. 레이어가 있는 문서는 패널마다 캐시가 따로 있어 한 레이어를 편집하면 그 레이어의 본체만 다시 그린다. 출력 대상에 잘리는 패널과 스타일 패널(아래 내용에 따라 블렌드 결과가 달라진다)은 본체를 직접 그린다. 합성 텍스처는 premultiplied UNORM이라 일부만 덮인 픽셀에서 직접 그린 결과와 UNORM 반올림만큼 다를 수 있다. 무효화 규칙과 이 오차 범위는 [`src/renderer/resident_display_tests.rs`](src/renderer/resident_display_tests.rs)가 검사하며, 무작위 편집 시퀀스의 결과를 최종 상태를 처음부터 그린 렌더러와 비트 단위로 비교한다. 비상주 경로는 부분 표시를 위한 GPU 누적 이미지를 유지하고, 입력이 바뀌지 않은 완료 결과를 재사용한다.
 
-`Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않고, 호출될 때 좌표 변환을 기록한다. 외부에서 `Chart`를 관리한다면 호스트가 `raster_dirty`를 확인·해제하고 `refresh_axis`를 호출해야 한다.
+`Chart::{data_dirty,raster_dirty}`는 `Chart`를 직접 소유하는 저수준 호스트와의 호환성을 위해 남겨 둔 플래그다. `prepare`는 이 값을 읽거나 초기화하지 않는다. 대신 차트의 래스터 스탬프를 뷰를 그릴 때의 값과 비교해, 다르면 뷰의 래스터를 다시 그린다(#265). 래스터 스탬프는 래스터에 영향을 주는 편집과 `Chart::select`마다 새로 발급하는 번호다. 좌표 변환은 호출될 때마다 기록한다.
 
 ### 신원 확인과 오래된 토큰 판단
 
@@ -840,7 +831,7 @@ redraw_pending = false;
 
 | 질문 | 방식 | 쓰는 곳 |
 |---|---|---|
-| 어느 렌더러가 발급했는가? | **발급 번호.** 프로세스 전체에서 하나인 카운터가 `u64`를 발급한다. 증가는 overflow를 검사하고, 넘치면 값을 되돌리지 않고 `FiggyError::CounterExhausted`로 실패하므로 같은 값이 다시 나오지 않는다. | `issue_renderer_identity`(`src/renderer/device.rs`)가 `renderer_identity`를 발급한다. `ChartId`와 `RenderRevision`은 이 값을 렌더러별 순번과 묶으므로, 한 렌더러의 id가 다른 렌더러의 id와 같아지지 않는다. |
+| 어느 렌더러가 발급했는가? | **발급 번호.** 프로세스 전체에서 하나인 카운터가 `u64`를 발급한다. 증가는 overflow를 검사하고, 넘치면 값을 되돌리지 않고 `FiggyError::CounterExhausted`로 실패하므로 같은 값이 다시 나오지 않는다. | `issue_renderer_identity`(`src/renderer/device.rs`)가 `renderer_identity`를 발급한다. `ChartId`와 `RenderRevision`은 이 값을 렌더러별 순번과 묶으므로, 한 렌더러의 id가 다른 렌더러의 id와 같아지지 않는다. `issue_raster_stamp`(`src/chart.rs`)는 래스터에 영향을 주는 변경마다 `Chart`의 래스터 스탬프를 발급하므로, `ChartView`가 다른 차트를 자신을 그린 차트로 착각하지 않는다(#265). 편집은 실패할 수 없으므로 카운터가 소진되면 스탬프는 `None`이 되고 `prepare`가 `CounterExhausted`로 실패한다. |
 | 살아 있는 같은 인스턴스인가? | **할당 신원.** `Arc`의 주소가 인스턴스를 가리키며 `Arc::ptr_eq`나 `Weak::as_ptr`로 비교한다. 나중에 비교할 쪽은 그 `Arc`의 복제나 `Weak`를 들고 있어야 한다. 그래야 비교할 수 있는 동안 할당이 해제되지 않아 같은 주소가 다시 쓰이지 않는다. `Weak`는 인스턴스가 사라졌는지도 알려 준다. | `PoolIdentity`: 컬럼 풀. 픽커가 바인딩을 다시 쓰기 전에 확인한다. `ChartView::content_revision`: 패널. 상주 표시 캐시가 이 셀의 `Weak`를 들고 있다가 `strong_count()`가 0이 되면 항목을 지운다. 스트리밍 그리기 토큰의 `ChartView::stream_revision`·`content_revision`. 스트림 필드 `RecordedStep`의 소유 타일. |
 | 저장된 내용이 같은가? | **공유 저장소.** 공유 GPU 저장소에 `Arc::ptr_eq`를 쓴다. 같으면 가벼운 편집이 저장소를 그대로 재사용했다는 뜻이다. 빠른 판단용이며 신원이 아니다. | `RadialFrame::shares_annotations_with`, `BoundedAnnotationFrame::shares_rasters_with` |
 | 내용이 바뀌었는가? | **세대.** 바뀔 때마다 올라가는 카운터다. 토큰이 값을 기록해 두었다가 쓰기 전에 비교한다. 객체를 가리키지 않는다. | 컬럼의 할당 epoch(업로드마다 하나), 풀의 `layout_generation`, `target_pipeline_generation`, `font_generation`, `ChartView` content revision의 값, `RenderRevision` |

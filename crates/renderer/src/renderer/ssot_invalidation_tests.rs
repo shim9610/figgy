@@ -1555,14 +1555,14 @@ fn frame_values(
     revision: u64,
 ) -> (Vec<u8>, usize) {
     let c = r.chart_config(id).unwrap().clone();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(c.clone()), c.chart_area.0)
         .unwrap();
     if resident {
         let prepared = r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap();
         return (paint_frame_pixels(r, &prepared, 1), 0);
@@ -1612,9 +1612,9 @@ fn frame_values(
         crate::StreamingSelectionRequest::Complete { .. }
     ));
     wait_stream_slots(r, 0);
-    r.prepare_registered(&[RegisteredChartDrawItem {
+    r.prepare_registered(&mut [RegisteredChartDrawItem {
         chart_id: id,
-        view: &view,
+        view: &mut view,
     }])
     .unwrap();
     assert!(matches!(

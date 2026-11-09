@@ -1164,7 +1164,7 @@ impl Renderer {
             &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,
@@ -1177,7 +1177,7 @@ impl Renderer {
             &self.style_bgl,
             &self.star_data_bgl,
             format,
-            &[ChartDrawItem {
+            &[PanelDraw {
                 view: &chart_view,
                 chart_config: &config,
                 series: &series,

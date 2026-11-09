@@ -214,18 +214,6 @@ fn one_series<'a>(cfg: &'a SeriesConfig, style: &'a ChartStyle) -> [Series<'a>; 
     [Series { config: cfg, style }]
 }
 
-fn panel_items<'a>(
-    view: &'a ChartView,
-    chart_config: &'a Config,
-    series: &'a [Series<'a>],
-) -> [ChartDrawItem<'a>; 1] {
-    [ChartDrawItem {
-        view,
-        chart_config,
-        series,
-    }]
-}
-
 // ============================================================================
 // CallbackTrait — the split frame API against egui's prepare/paint schedule.
 // ============================================================================
@@ -251,35 +239,21 @@ impl CallbackTrait for LabCallback {
             return Vec::new();
         };
 
-        let cur_rect = panel.view.panel_rect();
-        let rect_changed = cur_rect != self.panel_rect_px;
-        if rect_changed {
+        // `Renderer::prepare` redraws the text and axis raster when the
+        // chart (here its area) changed, and writes the data→NDC transform
+        // every frame.
+        if panel.chart.config().chart_area.0 != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-        }
-        let raster_dirty = panel.chart.consume_raster_dirty();
-        // The data→NDC transform uniform is written by `Renderer::prepare`
-        // below every frame; the flag only needs consuming.
-        let _ = panel.chart.consume_data_dirty();
-        if rect_changed || raster_dirty {
-            let rect = if rect_changed {
-                self.panel_rect_px
-            } else {
-                cur_rect
-            };
-            if let Err(e) = state
-                .renderer
-                .refresh_axis(&mut panel.view, &panel.chart, rect)
-            {
-                state.last_error = Some(format!("refresh_axis: {e}"));
-                state.panels[self.panel_idx].prepared = None;
-                return Vec::new();
-            }
         }
 
         let prepared = {
             let series = one_series(&panel.series, &panel.style);
-            let items = panel_items(&panel.view, panel.chart.config(), &series);
-            state.renderer.prepare(&items)
+            let mut items = [ChartDrawItem {
+                view: &mut panel.view,
+                chart: &panel.chart,
+                series: &series,
+            }];
+            state.renderer.prepare(&mut items)
         };
         let panel = &mut state.panels[self.panel_idx];
         match prepared {

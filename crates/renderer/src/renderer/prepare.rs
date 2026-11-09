@@ -62,7 +62,7 @@ impl PrepareContext<'_> {
 /// more.
 pub(super) fn retain_frame_series<V>(
     cache: &mut HashMap<String, V>,
-    items: &[ChartDrawItem<'_>],
+    items: &[PanelDraw<'_>],
     limit: usize,
 ) {
     if cache.len() < limit {
@@ -130,7 +130,7 @@ pub(super) struct PrepareContext<'a> {
 }
 
 impl PrepareContext<'_> {
-    pub(super) fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+    pub(super) fn prepare(&mut self, items: &[PanelDraw<'_>]) -> Result<PreparedFrame> {
         // One expansion path: a layered document becomes one item per panel
         // here, so everything below sees single-layer panels only.
         // A frame without layered items is drawn from the caller's slice as
@@ -151,7 +151,7 @@ impl PrepareContext<'_> {
             .as_ref()
             .map(|storage| storage.items(items))
             .transpose()?;
-        let items: &[ChartDrawItem<'_>] = match &expanded {
+        let items: &[PanelDraw<'_>] = match &expanded {
             Some(expanded) => expanded.as_slice(),
             None => items,
         };
@@ -271,7 +271,7 @@ impl PrepareContext<'_> {
     /// here go out in one submission, ordered before the host's pass.
     pub(super) fn attach_resident_displays(
         &mut self,
-        inputs: &[ChartDrawItem<'_>],
+        inputs: &[PanelDraw<'_>],
         prepared: &mut [PreparedItem],
     ) {
         self.resident_displays
@@ -519,7 +519,7 @@ impl PrepareContext<'_> {
 
     pub(super) fn resolve_prepared_items(
         &self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         prepared_arcs: &[PreparedArcItem],
         prepared_contours: &[PreparedContourItem],
         pipelines: &TargetPipelines,

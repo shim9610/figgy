@@ -110,7 +110,7 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         .register_chart(config.clone(), vec![series])
         .expect("histogram registration failed");
     let chart = Chart::new(config.clone());
-    let view = renderer
+    let mut view = renderer
         .create_chart_view(&chart, config.chart_area.0)
         .expect("chart view creation failed");
     let raw = device.as_webgpu().expect("browser WebGPU backend required");
@@ -118,9 +118,9 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         .call1(raw.as_ref(), &JsValue::from_str("validation"))
         .expect("pushErrorScope failed");
     renderer
-        .prepare_registered(&[RegisteredChartDrawItem {
+        .prepare_registered(&mut [RegisteredChartDrawItem {
             chart_id,
-            view: &view,
+            view: &mut view,
         }])
         .expect("histogram preparation failed");
     let error = validation_error(&device).await;

@@ -310,24 +310,25 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 ### Cartesian edits: update the derived inputs before preparing
 
 `ChartView` holds rasterized axes, grid and decorations. `ChartStyle` holds GPU
-style data derived from a `SeriesConfig`. Editing the config does not update
-either object automatically in the caller-owned `prepare` path.
+style data derived from a `SeriesConfig`. `prepare` redraws a view's raster
+itself when its chart changed (#265); it does not rebuild the caller's styles.
 
 | Change | Required work before the next `prepare` |
 | --- | --- |
-| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection(view, chart, panel_rect, Some(element_id))` when displaying a selection: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. |
+| Axis range, ticks, grid, title, legend, decoration layout or panel size | Nothing: edit the `Chart` (its setters or `config_mut`) and `prepare` redraws the view, because every such edit moves the chart's raster stamp. To show a selection, `chart.select(Some(element_id))`: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. `refresh_axis` and `refresh_axis_with_selection` stay for a host that draws the raster itself. |
 | Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
 | Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
 | Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |
-| Renderer-owned chart ID | Commit edits with `set_chart_config` / `set_chart_series`, refresh the caller-owned view from that registered config, then call `prepare_registered`. This path maintains the series-style cache itself. |
+| Renderer-owned chart ID | Commit edits with `set_chart_config` / `set_chart_series` (and the selection with `set_chart_selection`), then call `prepare_registered`: it redraws the caller-owned view from the stored chart, its display placement and its selection, and maintains the series-style cache itself. |
 
-`prepare` updates transforms and derived GPU data; it does **not** rerasterize
-the view or recreate the `ChartStyle` values supplied by the caller.
-`update_transform` alone also leaves axis labels and the grid unchanged.
-Use the chart's dirty state or `ChartRenderStamp::needs_raster_since` to decide
-when to refresh; unchanged frames can reuse the existing view and styles.
+`prepare` updates transforms and derived GPU data and redraws a stale view; it
+does **not** recreate the `ChartStyle` values supplied by the caller. A view is
+stale when its chart's raster stamp, panel rectangle, scale or the font
+generation differ from the ones it was drawn with; an unchanged frame reuses
+the view and uploads nothing. `update_transform` alone leaves axis labels and
+the grid unchanged.
 
-In that refresh branch, call `refresh_axis` and then read
+After a prepare that redrew the view, read
 `view.render_warnings()`. It lists, as `RenderWarning`s, the annotations the new
 raster skipped and the tick settings it could not draw as written: for example a
 `major_spacing` drawn at automatic spacing or a clamped `minor_count` (limits in the
@@ -338,34 +339,34 @@ per frame. To report only changes, compare it with the list read after the
 previous refresh; a NaN `requested` value compares unequal to itself.
 
 This helper shows the caller-owned path after a series-style edit at scale 1.
-It conservatively refreshes decorations and rebuilds every style. A host can
-rebuild only the affected styles; an axis-only edit can reuse them all.
-Submit or discard commands using the previous frame **before** calling it.
+It rebuilds every style; `prepare` redraws the decorations if the chart
+changed. A host can rebuild only the affected styles; an axis-only edit can
+reuse them all. Submit or discard commands using the previous frame
+**before** calling it.
 
 ```rust,no_run
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, FiggyError, PreparedFrame,
     Renderer, Series, SeriesConfig,
 };
-use renderer::layout::Rect;
 
 fn prepare_after_series_edit(
     renderer: &mut Renderer,
     chart: &Chart,
     view: &mut ChartView,
     configs: &[SeriesConfig],
-    panel: Rect,
 ) -> Result<(Vec<ChartStyle>, PreparedFrame), FiggyError> {
     let styles = configs.iter()
         .map(|config| renderer.create_style_for_series(config))
         .collect::<Result<Vec<_>, _>>()?;
-    renderer.refresh_axis(view, chart, panel)?;
     let series: Vec<_> = configs.iter().zip(&styles)
         .map(|(config, style)| Series { config, style })
         .collect();
-    let frame = renderer.prepare(&[ChartDrawItem {
+    // Redraws the view's raster first when the chart changed since it was
+    // drawn.
+    let frame = renderer.prepare(&mut [ChartDrawItem {
         view,
-        chart_config: chart.config(),
+        chart,
         series: &series,
     }])?;
     // Store the styles for later frames, paint this token, then submit.

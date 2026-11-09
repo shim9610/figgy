@@ -665,7 +665,7 @@ mod tests {
             let mut chart = Chart::new(config);
             chart.set_x_range(0.0, 1.0);
             chart.set_y_range(0.0, 1.0);
-            let view = renderer
+            let mut view = renderer
                 .create_chart_view(&chart, chart.config().chart_area.0)
                 .unwrap();
             let style = renderer.create_style_for_series(&declaration).unwrap();
@@ -674,9 +674,9 @@ mod tests {
                 style: &style,
             }];
             let mut frame = renderer
-                .prepare(&[ChartDrawItem {
-                    view: &view,
-                    chart_config: chart.config(),
+                .prepare(&mut [ChartDrawItem {
+                    view: &mut view,
+                    chart: &chart,
                     series: &series,
                 }])
                 .unwrap();

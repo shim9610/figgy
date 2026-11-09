@@ -190,18 +190,15 @@ match frame_decision(
     Draw { refresh_raster } => {
         renderer.process_pending_maintenance()?;
         let stamp = renderer.chart_render_stamp(chart_id)?;
-        if refresh_raster {
-            // 축 이미지와 함께 주석 이미지도 다시 그린다.
-            renderer.refresh_axis_with_selection(
-                &mut view,
-                &display_chart,
-                rect,
-                selected_id.as_deref(), // 선택된 요소 id, 예: Some("data_area")
-            )?;
-        } else if annotation_dirty {
+        // 축·주석 이미지는 draw_registered가 직접 다시 그린다. 저장된 차트, 선택 요소
+        // (set_chart_selection), 표시 위치가 바뀌었을 때만 그린다(#265).
+        if annotation_dirty && !refresh_raster {
             renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
         }
-        renderer.draw(clear, &items)?;
+        renderer.draw_registered(
+            clear,
+            &mut [RegisteredChartDrawItem { chart_id, view: &mut view }],
+        )?;
 
         // submit/present 성공 뒤에만 onscreen 상태를 전진시킨다.
         view_dirty = false;

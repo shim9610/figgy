@@ -492,10 +492,12 @@ impl DemoState {
     }
 
     fn prepare_frame(&mut self) {
-        self.prepared = match self.renderer.prepare_registered(&[RegisteredChartDrawItem {
-            chart_id: self.chart_id,
-            view: &self.view,
-        }]) {
+        self.prepared = match self
+            .renderer
+            .prepare_registered(&mut [RegisteredChartDrawItem {
+                chart_id: self.chart_id,
+                view: &mut self.view,
+            }]) {
             Ok(prepared) => Some(prepared),
             Err(error) => {
                 self.snapshot.error = Some(error.to_string());

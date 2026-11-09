@@ -3721,7 +3721,7 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
         let phase = Instant::now();
         let mut c = chart.clone();
         c.decorations = DecorationLayout::default();
-        let (frame, base) = match (r.prepare(&c, scale), r.export(&c, scale)) {
+        let (frame, base) = match (r.prepare(&mut c, scale), r.export(&c, scale)) {
             (Ok(f), Ok(b)) => (f, b),
             (Err(e), _) | (_, Err(e)) => {
                 report.check(&at, "<frame>", Inv::I7, false, || e);
@@ -3960,7 +3960,7 @@ fn radial_ink(
             _ if parts => vec![(0.0, oy), (0.0, -oy), (ox, 0.0), (-ox, 0.0)],
             _ => vec![(ox, 0.0), (-ox, 0.0), (0.0, oy), (0.0, -oy)],
         };
-        let Some((moved, (dx, dy))) = candidates.into_iter().find_map(|(dx, dy)| {
+        let Some((mut moved, (dx, dy))) = candidates.into_iter().find_map(|(dx, dy)| {
             let mut trial = c.clone();
             (frame.drag(&mut trial, e.id, dx, dy) == Some(NudgeResult::Moved))
                 .then_some((trial, (dx, dy)))
@@ -3970,7 +3970,7 @@ fn radial_ink(
             });
             continue;
         };
-        let (frame2, image) = match (r.prepare(&moved, 1.0), r.export(&moved, 1.0)) {
+        let (frame2, image) = match (r.prepare(&mut moved, 1.0), r.export(&moved, 1.0)) {
             (Ok(f), Ok(i)) => (f, i),
             (Err(e2), _) | (_, Err(e2)) => {
                 report.check(at, &e.name, Inv::I2, false, || e2);
@@ -4163,7 +4163,7 @@ fn radial_ink(
                 shrunk == Some(NudgeResult::Moved),
                 || format!("shrinking it before the move gave {shrunk:?}"),
             );
-            let Ok(frame) = r.prepare(&moved, 1.0) else {
+            let Ok(frame) = r.prepare(&mut moved, 1.0) else {
                 continue;
             };
             let Some(entry) = radial_entries(&frame, &moved)
@@ -4199,7 +4199,7 @@ fn radial_ink(
             DecorationId::Axis(_) => (DRAG.0, 0.0),
             _ => DRAG,
         };
-        let frame = match r.prepare(&moved, 1.0) {
+        let frame = match r.prepare(&mut moved, 1.0) {
             Ok(f) => f,
             Err(e2) => {
                 report.check(at, &e.name, Inv::I6, false, || e2);
@@ -4597,12 +4597,12 @@ fn paint_view(
     let mut view = r.create_chart_view(&chart, rect).map_err(e)?;
     r.refresh_annotations(&mut view, &chart, rect, selected)
         .map_err(e)?;
-    let items = [renderer::ChartDrawItem {
-        view: &view,
-        chart_config: chart.config(),
+    let mut items = [renderer::ChartDrawItem {
+        view: &mut view,
+        chart: &chart,
         series: &[],
     }];
-    let prepared = r.prepare(&items).map_err(e)?;
+    let prepared = r.prepare(&mut items).map_err(e)?;
     let (w, h) = (rect.x + rect.width, rect.y + rect.height);
     let device = r.device().clone();
     let queue = r.queue().clone();

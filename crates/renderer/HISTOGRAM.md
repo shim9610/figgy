@@ -49,9 +49,9 @@ config.left_y.max = 4.2;
 config.bottom_x.title_option.text.segments = renderer::text::rich_segments_from_text("Count");
 config.left_y.title_option.text.segments = renderer::text::rich_segments_from_text("Measured value");
 renderer.set_chart_state(chart_id, config, series)?;
-// Then call `refresh_axis` with the registered config and `prepare_registered`
-// for the next paint, as after any other Config edit. Orientation does not
-// request auto-fit.
+// The next `prepare_registered` redraws the view's axes from the registered
+// config, as after any other Config edit. Orientation does not request
+// auto-fit.
 ```
 
 Axis scale, inversion, tick format/spacing and grid direction remain explicit

@@ -84,9 +84,9 @@ impl Host {
         self.stamp = Some(stamp);
         let prepared = self
             .r
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: self.id,
-                view: &self.view,
+                view: &mut self.view,
             }])
             .unwrap();
         paint_frame_pixels(&self.r, &prepared, 1)

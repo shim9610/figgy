@@ -86,23 +86,25 @@ the distinction between logical and physical pointer coordinates, see
 [the native API workflow](API.md#native-edit-pick-and-export-workflow).
 
 Cartesian hosts own the derived `ChartView` and, with `prepare`, the series'
-`ChartStyle` values. After changing axes, grid, labels, legend or panel size, call
-`refresh_axis` (or `refresh_axis_with_selection`) before preparing. After changing
-a series' appearance, mapped styles or identity, recreate its `ChartStyle` with
-`create_style_for_series` (or `create_style_for_series_scaled` at the display
-scale the style was built for). `prepare` updates transforms and GPU data but
-does not perform those two steps. Charts registered with `Renderer::register_chart`
-keep their own style cache, updated by `set_chart_config` / `set_chart_series`
-and drawn with `prepare_registered`; the caller-owned `ChartView` still needs
-`refresh_axis`.
+`ChartStyle` values. After changing axes, grid, labels, legend or panel size
+through the `Chart`, just prepare: `prepare` redraws the view's text and axis
+raster when the chart changed since the view was drawn, with the element
+`chart.select(..)` names drawn selected. `refresh_axis` (or
+`refresh_axis_with_selection`) stays for a host that draws the raster itself.
+After changing a series' appearance, mapped styles or identity, recreate its
+`ChartStyle` with `create_style_for_series` (or `create_style_for_series_scaled`
+at the display scale the style was built for); `prepare` does not rebuild it.
+Charts registered with `Renderer::register_chart` keep their own style cache,
+updated by `set_chart_config` / `set_chart_series`, and `prepare_registered`
+redraws the caller-owned `ChartView` from the stored chart and its selection.
 See the [edit table and compiled example](API.md#cartesian-edits-update-the-derived-inputs-before-preparing).
 
 The refresh also reports tick settings the axis raster could not draw as written.
-Read `view.render_warnings()` in the same branch that calls `refresh_axis`: each
+Read `view.render_warnings()` after a prepare that redrew the view: each
 `RenderWarning` names the axis, the value as written and the value drawn, such
 as a `major_spacing` that would need more than 1000 intervals and was drawn at
-automatic spacing. The list is re-derived only when the view is rasterized, so a
-host that refreshes on its dirty flag never pays for it per frame. Compare it
+automatic spacing. The list is re-derived only when the view is rasterized,
+never per frame. Compare it
 with the previous list to show only changes. The same list ends with the
 annotation layer's `AnnotationSkipped` warnings for items the annotation raster
 could not place. After an edit of `config.annotations.items`, `refresh_axis`
@@ -175,16 +177,16 @@ let cfg = SeriesConfig {
         }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
-let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
+let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
 let series = [Series { config: &cfg, style: &style }];
-let items  = [ChartDrawItem {
-    view: &view,
-    chart_config: chart.config(),
+let mut items = [ChartDrawItem {
+    view: &mut view,
+    chart: &chart,
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // acquire surface frame → prepare → encoder → pass → paint_prepared → submit → present
+renderer.draw(Color::WHITE, &mut items).unwrap();   // acquire surface frame → prepare (redraws a stale raster) → encoder → pass → paint_prepared → submit → present
 ```
 
 ### `ColumnSource` — the data adapter trait
@@ -341,11 +343,11 @@ struct FiggyCallback { panel_idx: usize /* one callback per panel */ }
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
         let state = resources.get_mut::<FiggyState>().unwrap();
-        // dirty handling: refresh_axis (raster). No per-frame update_transform —
-        // prepare writes the transform uniform itself.
-        // items = panel_draw_items(panel, &series): a free function over the panel
-        // fields, so `state.renderer` stays free for this `&mut` call.
-        let prepared = state.renderer.prepare(&items).unwrap();
+        // No raster or transform handling: prepare redraws a stale raster and
+        // writes the transform uniform itself. The panel lends its view
+        // mutably and its chart and series immutably (disjoint fields), so
+        // `state.renderer` stays free for this `&mut` call.
+        let prepared = state.renderer.prepare(&mut items).unwrap();
         // store the token per panel — egui runs every callback's prepare before
         // any paint, so one shared token would be overwritten by later panels
         state.panels[self.panel_idx].prepared = Some(prepared);
@@ -777,21 +779,22 @@ iced 0.14는 wgpu 27을 사용하므로, wgpu 30과 호환되는 iced 버전이 
 차이는 [네이티브 API 작업 흐름](API.md#native-edit-pick-and-export-workflow)에 있다.
 
 직교 차트 호스트는 파생 상태인 `ChartView`를 보관하고, `prepare`를 쓸 때는 시리즈별
-`ChartStyle`도 보관한다. 축·격자·라벨·범례·패널 크기를 바꾼 뒤에는 prepare 전에
-`refresh_axis`(또는 `refresh_axis_with_selection`)를 호출한다. 시리즈의 모양·매핑 스타일·
-식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다. 특정 표시 배율로
-만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다. `prepare`는 변환과
-GPU 데이터만 갱신하며 이 두 단계를 대신하지 않는다. `Renderer::register_chart`로 등록한
-차트는 자체 스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며
-`prepare_registered`로 그린다. 이때도 호출자가 가진 `ChartView`에는 `refresh_axis`가 필요하다.
+`ChartStyle`도 보관한다. 축·격자·라벨·범례·패널 크기를 `Chart`로 바꿨다면 그대로 prepare하면
+된다. `prepare`는 뷰를 그린 뒤로 차트가 바뀌었으면 글자·축 래스터를 다시 그리고,
+`chart.select(..)`로 지정한 요소를 선택 상태로 그린다. `refresh_axis`(또는
+`refresh_axis_with_selection`)는 래스터를 직접 그리려는 호스트를 위해 남아 있다. 시리즈의
+모양·매핑 스타일·식별자를 바꿨다면 `create_style_for_series`로 `ChartStyle`을 다시 만든다.
+특정 표시 배율로 만든 스타일은 같은 배율로 `create_style_for_series_scaled`를 호출한다.
+`prepare`는 스타일을 다시 만들지 않는다. `Renderer::register_chart`로 등록한 차트는 자체
+스타일 캐시를 두고 `set_chart_config` / `set_chart_series`로 갱신하며, `prepare_registered`가
+저장된 차트와 그 선택 상태로 호출자의 `ChartView`를 다시 그린다.
 [편집 표와 컴파일되는 예제](API.md#cartesian-edits-update-the-derived-inputs-before-preparing)를
 참고한다.
 
-`refresh_axis`는 축 래스터가 설정대로 그리지 못한 눈금 설정도 알려 준다. `refresh_axis`를
-호출한 분기에서 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
+래스터를 다시 그리면 축 래스터가 설정대로 그리지 못한 눈금 설정도 알려 준다. 뷰를 다시
+그린 prepare 뒤에 `view.render_warnings()`를 읽는다. 각 `RenderWarning`에는 축, 설정한 값,
 실제로 그린 값이 들어 있다. 예를 들어 간격이 1000개를 넘어야 하는 `major_spacing`은 자동
-간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 변경 플래그에 따라 갱신하는
-호스트는 프레임마다 비용을 내지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
+간격으로 그린다. 목록은 뷰를 래스터화할 때만 다시 만들므로 프레임마다 비용이 들지 않는다. 바뀐 경고만 보여 주려면 이전 목록과 비교한다.
 목록 끝에는 주석 층이 배치하지 못한 항목의 `AnnotationSkipped` 경고가 붙는다.
 `config.annotations.items`를 고친 뒤 `refresh_axis`를 호출하면 축과 함께 주석 래스터도 다시
 그리고, `refresh_annotations`는 주석 층(아래층·위층 텍스처)만 다시 그린다. 등록 차트에서는
@@ -860,16 +863,16 @@ let cfg = SeriesConfig {
         }), errors: None, stem: None }),
 };
 let style = renderer.create_style_for_series(&cfg).unwrap();   // budget-checked ChartStyle
-let view  = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
+let mut view = renderer.create_chart_view(&chart, chart.config().chart_area.0).unwrap();
 
 // frame loop:
 let series = [Series { config: &cfg, style: &style }];
-let items  = [ChartDrawItem {
-    view: &view,
-    chart_config: chart.config(),
+let mut items = [ChartDrawItem {
+    view: &mut view,
+    chart: &chart,
     series: &series,
 }];
-renderer.draw(Color::WHITE, &items).unwrap();   // surface frame 획득 → prepare → encoder → pass → paint_prepared → submit → present
+renderer.draw(Color::WHITE, &mut items).unwrap();   // surface frame 획득 → prepare(오래된 래스터를 다시 그림) → encoder → pass → paint_prepared → submit → present
 ```
 
 <a id="columnsource--데이터-어댑터-trait"></a>
@@ -990,11 +993,10 @@ struct FiggyCallback { panel_idx: usize /* 패널마다 콜백 하나 */ }
 impl egui_wgpu::CallbackTrait for FiggyCallback {
     fn prepare(&self, _device, _queue, _screen, _enc, resources) -> Vec<...> {
         let state = resources.get_mut::<FiggyState>().unwrap();
-        // 패널 영역이 바뀌었거나 래스터를 다시 그려야 하면 refresh_axis를 호출한다.
-        // prepare가 transform uniform을 직접 쓰므로 프레임마다 update_transform을 호출할 필요는 없다.
-        // items = panel_draw_items(panel, &series): 패널 필드만 받는 자유 함수라서
-        // 이 `&mut` 호출에 `state.renderer`를 그대로 쓸 수 있다.
-        let prepared = state.renderer.prepare(&items).unwrap();
+        // 래스터와 transform은 따로 처리하지 않는다. prepare가 오래된 래스터를 다시 그리고
+        // transform uniform도 직접 쓴다. 패널은 뷰를 쓰기 가능하게, 차트와 시리즈는 읽기 전용으로
+        // 빌려준다(서로 다른 필드). 그래서 이 `&mut` 호출에 `state.renderer`를 그대로 쓸 수 있다.
+        let prepared = state.renderer.prepare(&mut items).unwrap();
         // 토큰은 패널마다 따로 저장한다. egui는 모든 콜백의 prepare를 실행한 뒤 paint를
         // 실행하므로, 토큰 하나를 공유하면 뒤 패널의 prepare가 앞 패널의 토큰을 덮어쓴다
         state.panels[self.panel_idx].prepared = Some(prepared);

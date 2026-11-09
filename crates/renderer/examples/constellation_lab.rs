@@ -280,12 +280,12 @@ impl CallbackTrait for LabCallback {
         // consumes without rebuilding them.
         let prepared = {
             let series = build_series(&state.series, &state.styles);
-            let items = [ChartDrawItem {
-                view: &state.view,
-                chart_config: state.chart.config(),
+            let mut items = [ChartDrawItem {
+                view: &mut state.view,
+                chart: &state.chart,
                 series: &series,
             }];
-            state.renderer.prepare(&items)
+            state.renderer.prepare(&mut items)
         };
         state.prepared = match prepared {
             Ok(token) => Some(token),

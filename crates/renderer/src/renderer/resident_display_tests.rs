@@ -163,8 +163,8 @@ fn try_paint(
     painted.map(|()| read_draw_target(r, &target))
 }
 
-fn prepare(r: &mut Renderer, id: ChartId, view: &ChartView) -> PreparedFrame {
-    r.prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
+fn prepare(r: &mut Renderer, id: ChartId, view: &mut ChartView) -> PreparedFrame {
+    r.prepare_registered(&mut [RegisteredChartDrawItem { chart_id: id, view }])
         .unwrap()
 }
 
@@ -252,15 +252,15 @@ fn an_unchanged_repaint_never_draws_the_bodies_again() {
             let id = r
                 .register_chart(base_config(), vec![series("s0", "a")])
                 .unwrap();
-            let view = r
+            let mut view = r
                 .create_chart_view(&Chart::new(base_config()), PANEL)
                 .unwrap();
-            let frame = prepare(&mut r, id, &view);
+            let frame = prepare(&mut r, id, &mut view);
             let drawn = r.resident_display_serial(&view);
             assert!(drawn.is_some(), "{format:?} {samples}x: first frame draws");
             let first = painted_like_direct(&r, frame, samples);
             for repaint in 0..3 {
-                let frame = prepare(&mut r, id, &view);
+                let frame = prepare(&mut r, id, &mut view);
                 assert_eq!(
                     r.resident_display_serial(&view),
                     drawn,
@@ -288,7 +288,7 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     let mut view = r
         .create_chart_view(&Chart::new(base_config()), PANEL)
         .unwrap();
-    let frame = prepare(&mut r, id, &view);
+    let frame = prepare(&mut r, id, &mut view);
     let drawn = r.resident_display_serial(&view).unwrap();
     let mut previous = painted_like_direct(&r, frame, 1);
 
@@ -346,7 +346,7 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     ];
     for (name, apply) in cases {
         edit(&mut r, id, &mut view, |c| apply(c));
-        let frame = prepare(&mut r, id, &view);
+        let frame = prepare(&mut r, id, &mut view);
         assert_eq!(
             r.resident_display_serial(&view),
             Some(drawn),
@@ -363,8 +363,12 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
         r.selection_box(&Chart::new(config), "data_area").is_some(),
         "the data area has a selection box"
     );
-    refresh(&mut r, id, &mut view, Some("data_area"));
-    let frame = prepare(&mut r, id, &view);
+    // The selection is the chart's: prepare draws it.
+    let hit = crate::select::HitMap::for_active_layer(r.chart_config(id).unwrap())
+        .find("data_area")
+        .unwrap();
+    r.set_chart_selection(id, Some(hit)).unwrap();
+    let frame = prepare(&mut r, id, &mut view);
     assert_eq!(
         r.resident_display_serial(&view),
         Some(drawn),
@@ -385,7 +389,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
     let mut view = r
         .create_chart_view(&Chart::new(base_config()), PANEL)
         .unwrap();
-    let frame = prepare(&mut r, id, &view);
+    let frame = prepare(&mut r, id, &mut view);
     let mut previous = painted_like_direct(&r, frame, 1);
 
     enum Edit {
@@ -444,7 +448,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
                 r.upsert_column("a", &wave(0.9, 1.0)).unwrap();
             }
         }
-        let frame = prepare(&mut r, id, &view);
+        let frame = prepare(&mut r, id, &mut view);
         assert_eq!(
             r.resident_display_serial,
             before + 1,
@@ -454,7 +458,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
         let pixels = painted_like_direct(&r, frame, 1);
         assert_ne!(pixels, previous, "{name}: the edit is not visible");
         previous = pixels;
-        let frame = prepare(&mut r, id, &view);
+        let frame = prepare(&mut r, id, &mut view);
         assert_eq!(
             r.resident_display_serial,
             before + 1,
@@ -485,7 +489,7 @@ fn each_layer_keeps_its_own_bodies() {
     let mut view = r
         .create_chart_view(&Chart::new(config.clone()), PANEL)
         .unwrap();
-    let frame = prepare(&mut r, id, &view);
+    let frame = prepare(&mut r, id, &mut view);
     assert_eq!(r.resident_display_count(), 3, "one entry per panel");
     painted_like_direct(&r, frame, 1);
     let serials = |r: &Renderer, view: &ChartView| {
@@ -550,7 +554,7 @@ fn each_layer_keeps_its_own_bodies() {
                 refresh(&mut r, id, &mut view, None);
             }
         }
-        let frame = prepare(&mut r, id, &view);
+        let frame = prepare(&mut r, id, &mut view);
         let now = serials(&r, &view);
         let drawn = [now[0] != held[0], now[1] != held[1], now[2] != held[2]];
         assert_eq!(drawn, expected, "{name}: panels drawn again");
@@ -570,14 +574,14 @@ fn clipped_styled_stale_and_dropped_panels() {
     let id = r
         .register_chart(base_config(), vec![series("s0", "a")])
         .unwrap();
-    let view = r
+    let mut view = r
         .create_chart_view(&Chart::new(base_config()), PANEL)
         .unwrap();
 
     // Clipped by a smaller target: the cached frame paints what the direct
     // draw paints, exactly.
     {
-        let mut frame = prepare(&mut r, id, &view);
+        let mut frame = prepare(&mut r, id, &mut view);
         let clipped = try_paint(&r, &frame, 1, (200, 150)).unwrap();
         for item in &mut frame.items {
             item.resident_display = None;
@@ -587,11 +591,11 @@ fn clipped_styled_stale_and_dropped_panels() {
 
     // A frame prepared before the bodies were drawn again cannot paint.
     {
-        let stale = prepare(&mut r, id, &view);
+        let stale = prepare(&mut r, id, &mut view);
         let mut moved = r.chart_config(id).unwrap().clone();
         moved.bottom_x.min = 0.3;
         r.set_chart_config(id, moved).unwrap();
-        let fresh = prepare(&mut r, id, &view);
+        let fresh = prepare(&mut r, id, &mut view);
         assert!(matches!(
             try_paint(&r, &stale, 1, (PANEL.width, PANEL.height)),
             Err(FiggyError::StalePreparedFrame { .. })
@@ -613,10 +617,10 @@ fn clipped_styled_stale_and_dropped_panels() {
             < charged,
         "the bodies' texture is no longer charged as live"
     );
-    let other = r
+    let mut other = r
         .create_chart_view(&Chart::new(base_config()), PANEL)
         .unwrap();
-    prepare(&mut r, id, &other);
+    prepare(&mut r, id, &mut other);
     assert_eq!(r.resident_display_count(), 1);
 
     // A styled panel draws directly and holds no entry.
@@ -625,8 +629,8 @@ fn clipped_styled_stale_and_dropped_panels() {
     let styled = r
         .register_chart(sketch.clone(), vec![series("s9", "a")])
         .unwrap();
-    let styled_view = r.create_chart_view(&Chart::new(sketch), PANEL).unwrap();
-    let frame = prepare(&mut r, styled, &styled_view);
+    let mut styled_view = r.create_chart_view(&Chart::new(sketch), PANEL).unwrap();
+    let frame = prepare(&mut r, styled, &mut styled_view);
     assert!(
         frame
             .items
@@ -715,7 +719,7 @@ fn fresh_pixels(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Vec
         scene.selection,
     )
     .unwrap();
-    let frame = prepare(&mut r, id, &view);
+    let frame = prepare(&mut r, id, &mut view);
     try_paint(&r, &frame, samples, (PANEL.width, PANEL.height)).unwrap()
 }
 
@@ -901,7 +905,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
         let mut view = r
             .create_chart_view(&Chart::new(scene.config.clone()), PANEL)
             .unwrap();
-        prepare(&mut r, id, &view);
+        prepare(&mut r, id, &mut view);
         let serials = |r: &Renderer, view: &ChartView| {
             [
                 r.resident_display_serial(view).unwrap(),
@@ -925,7 +929,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
                 scene.selection,
             )
             .unwrap();
-            let frame = prepare(&mut r, id, &view);
+            let frame = prepare(&mut r, id, &mut view);
             let now = serials(&r, &view);
             let drawn = [now[0] != held[0], now[1] != held[1]];
             assert_eq!(drawn, expected, "{context}: panels drawn again");
@@ -937,7 +941,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
                 "{context}: differs from a render from nothing"
             );
             if step % 5 == 4 {
-                let frame = prepare(&mut r, id, &view);
+                let frame = prepare(&mut r, id, &mut view);
                 assert_eq!(serials(&r, &view), held, "{context}: repaint drew again");
                 assert!(
                     try_paint(&r, &frame, samples, (PANEL.width, PANEL.height)).unwrap() == pixels,
@@ -974,8 +978,8 @@ fn a_registered_display_paints_the_placed_document_at_its_scale() {
         assert_eq!((display_rect, display_scale), (panel_rect, scale));
 
         let chart = Chart::new(placed.clone());
-        let view = r.create_chart_view(&chart, panel_rect).unwrap();
-        let registered = prepare(&mut r, id, &view);
+        let mut view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let registered = prepare(&mut r, id, &mut view);
         let registered = try_paint(&r, &registered, 1, surface).unwrap();
 
         let styles: Vec<ChartStyle> = declarations
@@ -987,11 +991,11 @@ fn a_registered_display_paints_the_placed_document_at_its_scale() {
             .zip(&styles)
             .map(|(config, style)| Series { config, style })
             .collect();
-        let direct_view = r.create_chart_view(&chart, panel_rect).unwrap();
+        let mut direct_view = r.create_chart_view(&chart, panel_rect).unwrap();
         let direct = r
-            .prepare(&[ChartDrawItem {
-                view: &direct_view,
-                chart_config: &placed,
+            .prepare(&mut [ChartDrawItem {
+                view: &mut direct_view,
+                chart: &Chart::new(placed.clone()),
                 series: &direct_series,
             }])
             .unwrap();
@@ -1053,8 +1057,8 @@ fn a_registered_draw_skips_a_series_without_a_resident_source() {
         .unwrap();
     r.set_chart_display(id, Some((320, 240))).unwrap();
     let chart = Chart::new(r.chart_config(id).unwrap().clone());
-    let view = r.create_chart_view(&chart, PANEL).unwrap();
-    let frame = prepare(&mut r, id, &view);
+    let mut view = r.create_chart_view(&chart, PANEL).unwrap();
+    let frame = prepare(&mut r, id, &mut view);
     assert_eq!(frame.items.len(), 1);
     assert_eq!(
         frame.items[0].series.len(),

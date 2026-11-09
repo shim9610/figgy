@@ -408,7 +408,7 @@ impl Renderer {
     // The token lives in a state field, crossing the callback boundary:
     // ```ignore
     // fn build_items<'a>(view: &'a ChartView, chart: &'a Chart, series: &'a [Series<'a>])
-    //     -> Vec<ChartDrawItem<'a>> { /* prepare-only input */ }
+    //     -> Vec<PanelDraw<'a>> { /* prepare-only input */ }
     //
     // fn prepare(&self, _dev, _queue, _enc, res: &mut CallbackResources) -> Vec<CommandBuffer> {
     //     let s = res.get_mut::<FiggyState>().unwrap();
@@ -443,6 +443,8 @@ impl Renderer {
 
 // WindowedRenderer — figgy owns the surface and swap chain.
 
+#[cfg(test)]
+mod prepare_raster_tests;
 #[cfg(test)]
 mod tests;
 

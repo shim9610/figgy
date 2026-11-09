@@ -163,7 +163,7 @@ fn parity_with_samples(
             max_in_flight_gpu_bytes: io * 64,
         })
         .unwrap();
-    let view = streamed
+    let mut view = streamed
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
     streamed
@@ -263,9 +263,9 @@ fn parity_with_samples(
     streamed.wait_idle().unwrap();
     drop(
         streamed
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: id,
-                view: &view,
+                view: &mut view,
             }])
             .unwrap(),
     );

@@ -12,11 +12,12 @@
 //!    `&mut Renderer` in paint (see the struct doc).
 //! 3. Each frame: allocate 3 panel regions in egui, register an
 //!    `egui_wgpu::Callback` for each.
-//! 4. Callback `prepare` (`&mut CallbackResources`): `refresh_axis` if the
-//!    panel rect changed or the raster is dirty, then
-//!    `renderer::Renderer::prepare(items)` — which also writes the panel's
-//!    data→NDC transform uniform — and stash the returned `PreparedFrame`
-//!    token on the panel.
+//! 4. Callback `prepare` (`&mut CallbackResources`): set the panel rect and
+//!    the selected element on the chart, then
+//!    `renderer::Renderer::prepare(items)` — which redraws the text and axis
+//!    raster when the chart changed and writes the panel's data→NDC
+//!    transform uniform — and stash the returned `PreparedFrame` token on
+//!    the panel.
 //! 5. Callback `paint` (`&CallbackResources`): record only the prepared token
 //!    with `renderer::Renderer::paint_prepared(pass, target, token)`.
 //!
@@ -416,22 +417,12 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
 // ============================================================================
 
 /// Series list used to build the prepare-only panel input.
-fn panel_series(panel: &PanelEntry) -> Vec<Series<'_>> {
-    panel
-        .series
+fn panel_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec<Series<'a>> {
+    series
         .iter()
-        .zip(panel.styles.iter())
+        .zip(styles.iter())
         .map(|(cfg, style)| Series { config: cfg, style })
         .collect()
-}
-
-/// The single prepare-only `ChartDrawItem` slice for one panel.
-fn panel_draw_items<'a>(panel: &'a PanelEntry, series: &'a [Series<'a>]) -> [ChartDrawItem<'a>; 1] {
-    [ChartDrawItem {
-        view: &panel.view,
-        chart_config: panel.chart.config(),
-        series,
-    }]
 }
 
 struct FiggyCallback {
@@ -464,50 +455,26 @@ impl CallbackTrait for FiggyCallback {
             _ => None,
         };
 
-        // If the panel rect changed (or on first grading) or the raster is
-        // dirty, refresh the raster; the data→NDC transform uniform is
-        // written unconditionally by `Renderer::prepare` below, so no
-        // separate `update_transform` call is needed.
-        let cur_rect = panel.view.panel_rect();
-        if cur_rect != self.panel_rect_px {
+        // The chart holds what the raster draws: its area and its selected
+        // element. `Renderer::prepare` below redraws the text and axis
+        // raster when either changed, and writes the data→NDC transform
+        // every frame.
+        if panel.chart.config().chart_area.0 != self.panel_rect_px {
             panel.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-            if let Err(e) = state.renderer.refresh_axis_with_selection(
-                &mut panel.view,
-                &panel.chart,
-                self.panel_rect_px,
-                selected_id.as_deref(),
-            ) {
-                eprintln!("[figgy] refresh_axis failed: {e}");
-                panel.prepared = None;
-                return Vec::new();
-            }
-            let _ = panel.chart.consume_data_dirty();
-            let _ = panel.chart.consume_raster_dirty();
-        } else {
-            let raster_dirty = panel.chart.consume_raster_dirty();
-            // `Renderer::prepare` refreshes the transform every frame; the
-            // flag only needs resetting.
-            let _ = panel.chart.consume_data_dirty();
-            if raster_dirty
-                && let Err(e) = state.renderer.refresh_axis_with_selection(
-                    &mut panel.view,
-                    &panel.chart,
-                    cur_rect,
-                    selected_id.as_deref(),
-                )
-            {
-                eprintln!("[figgy] refresh_axis failed: {e}");
-                panel.prepared = None;
-                return Vec::new();
-            }
         }
+        panel.chart.select(selected_id.as_deref());
 
         // Mutable half of the frame: compile any missing pipelines, write
         // this panel's transform uniform, dispatch arc-length compute. The
         // returned token is what `paint` records against.
-        let series = panel_series(panel);
-        let items = panel_draw_items(panel, &series);
-        let prepared = state.renderer.prepare(&items);
+        let series = panel_series(&panel.series, &panel.styles);
+        let mut items = [ChartDrawItem {
+            view: &mut panel.view,
+            chart: &panel.chart,
+            series: &series,
+        }];
+        let prepared = state.renderer.prepare(&mut items);
+        drop(items);
         panel.prepared = match prepared {
             Ok(token) => Some(token),
             Err(e) => {

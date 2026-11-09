@@ -242,9 +242,9 @@ fn finish_display(f: &mut Fixture) {
     f.renderer.wait_idle().unwrap();
     drop(
         f.renderer
-            .prepare_registered(&[RegisteredChartDrawItem {
+            .prepare_registered(&mut [RegisteredChartDrawItem {
                 chart_id: f.id,
-                view: &f.view,
+                view: &mut f.view,
             }])
             .unwrap(),
     );
@@ -882,9 +882,9 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
                     .unwrap();
             }
             f.renderer
-                .prepare_registered(&[RegisteredChartDrawItem {
+                .prepare_registered(&mut [RegisteredChartDrawItem {
                     chart_id: f.id,
-                    view: &f.view,
+                    view: &mut f.view,
                 }])
                 .unwrap();
             let job = f.renderer.active_stream_job(f.id).unwrap();

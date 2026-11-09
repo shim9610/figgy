@@ -220,14 +220,14 @@ impl Renderer {
 
     pub(in crate::renderer) fn prepare_arc_items(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
     ) -> Result<Vec<PreparedArcItem>> {
         self.preparation_parts().1.prepare_arc_items(items)
     }
 
     pub(in crate::renderer) fn resolve_prepared_items(
         &mut self,
-        items: &[ChartDrawItem<'_>],
+        items: &[PanelDraw<'_>],
         prepared_arcs: &[PreparedArcItem],
         prepared_contours: &[PreparedContourItem],
         pipelines: &TargetPipelines,
