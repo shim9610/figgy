@@ -90,6 +90,61 @@ actual native renderer output. GIFs show exported animation frames.
 
 Milkyway uses line-only series; Constellation places stars at the source samples.
 
+**Charts new in 0.19**
+
+**Ternary · 3D surface · 3D vectors · Triangle mesh**
+
+<p>
+  <a href="crates/renderer/examples/ternary.rs"><img src="crates/renderer/assets/gallery-ternary.png" alt="Soil texture triangle with three cores" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-surface.png" alt="3D terrain surface with a trail" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/surface_3d.rs"><img src="crates/renderer/assets/gallery-quiver3d.png" alt="3D vector field of a vortex" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trimesh.png" alt="Stress around a hole on a triangle mesh" width="23%" align="top"></a>
+</p>
+
+**Triangle surface · Hexbin · Colour image · Polar heatmap**
+
+<p>
+  <a href="crates/renderer/examples/trimesh.rs"><img src="crates/renderer/assets/gallery-trisurf.png" alt="Drum vibration mode as a 3D triangle surface" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-hexbin.png" alt="Hexbin of taxi pickups" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/heatmap_contours.rs"><img src="crates/renderer/assets/gallery-imshow.png" alt="Planetary nebula as an RGB image" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-polar-heatmap.png" alt="Directional wave spectrum on polar axes" width="23%" align="top"></a>
+</p>
+
+**Wind rose · Sunburst · Parallel coordinates · Split violins**
+
+<p>
+  <a href="crates/renderer/examples/polar_plot.rs"><img src="crates/renderer/assets/gallery-rose.png" alt="Wind rose" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/radial_gallery.rs"><img src="crates/renderer/assets/gallery-sunburst.png" alt="Sunburst of electricity generation" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/parallel.rs"><img src="crates/renderer/assets/gallery-parallel.png" alt="Parallel coordinates of a hyperparameter sweep" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-violin.png" alt="Split violins of reaction times" width="23%" align="top"></a>
+</p>
+
+**Raincloud · Waterfall · Candlesticks · Gantt**
+
+<p>
+  <a href="crates/renderer/examples/boxplot_gallery.rs"><img src="crates/renderer/assets/gallery-raincloud.png" alt="Raincloud plot of commute times" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-waterfall.png" alt="Profit bridge waterfall" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-candlestick.png" alt="Candlestick chart with a moving average" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/range_bars.rs"><img src="crates/renderer/assets/gallery-gantt.png" alt="Gantt chart of a release plan" width="23%" align="top"></a>
+</p>
+
+**Shapes · Stems · Lollipop · Broken axis**
+
+<p>
+  <a href="crates/renderer/examples/overlay_axes.rs"><img src="crates/renderer/assets/gallery-shapes.png" alt="Flow cytometry gates as shape annotations" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-stem.png" alt="Stem plot of a filter impulse response" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/stem.rs"><img src="crates/renderer/assets/gallery-lollipop.png" alt="Ranked lollipop chart" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/broken_axes.rs"><img src="crates/renderer/assets/gallery-broken-axes.png" alt="Gamma spectrum on a broken axis" width="23%" align="top"></a>
+</p>
+
+**Energy levels · Feynman diagrams · Probability paper**
+
+<p>
+  <a href="crates/renderer/examples/nist_grotrian_gallery.rs"><img src="crates/renderer/assets/gallery-grotrian.png" alt="Grotrian diagram of He I" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/feynman.rs"><img src="crates/renderer/assets/gallery-feynman.png" alt="Six Feynman diagrams" width="23%" align="top"></a>
+  <a href="crates/renderer/examples/probability_paper.rs"><img src="crates/renderer/assets/gallery-probability.png" alt="Probability paper" width="23%" align="top"></a>
+</p>
+
 [Six editable visual recipes](crates/renderer/GALLERY.md#visual-concepts) show how
 palettes, axes, materials and labels restyle charts built with the same APIs.
 
@@ -102,6 +157,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Lines and scatter | `f64` columns through `ColumnSource` | [Usage](crates/renderer/USAGE.md) · [Series schema](crates/renderer/CONFIG.md#data_config--declarative-series-schema-the-active-api) |
 | Area fills and step lines | A line's `fill` (to a baseline or another series) and `interpolation` | [Area fill and step lines](crates/renderer/CONFIG.md#area-fill-and-step-lines) · [area_step.rs](crates/renderer/examples/area_step.rs) |
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
+| Stems and lollipops | An `XySeries` with markers and a `stem` (#206): one stroke per point from a baseline, along y for an impulse response, along x for a ranked lollipop | [Stems](crates/renderer/CONFIG.md#stems) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
 | Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
@@ -109,6 +165,9 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Parallel coordinates | One column per axis (`Parallel`) on a chart with `Config.parallel`, each axis its own range | [Parallel coordinates](crates/renderer/CONFIG.md#parallel-coordinates) |
 | Vector fields (quiver) | Anchors and (u, v) columns, or two matrices on a grid | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
 | Colour and size maps (bubbles) | A value column per point, mapped by `PointColorMap` through the colorbar (`Config.colorbar`) or by `PointSizeMap` through its size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
+| Probability axes | `AxisScale::Probability` (normal, Weibull or logistic paper) on a value axis; the host computes the plotting positions and any fit | [Axis options](crates/renderer/CONFIG.md#axisoptions-top_x--bottom_x--left_y--right_y) · [probability_paper.rs](crates/renderer/examples/probability_paper.rs) |
+| Broken axes | `AxisBreaks` on a value axis: ranges cut out, each cut marked as a gap, the pieces sized by span, equally or by weight | [Axis breaks](crates/renderer/CONFIG.md#axisbreaks) |
+| Insets | A subplot drawn over its parent with an `InsetMarker`: the magnified window and connectors on the parent, dragged and resized like any subplot | [Subplots and insets](crates/renderer/CONFIG.md#subplot-configsubplots) |
 | Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar`; heatmaps and contours draw as annular cells | [Polar](crates/renderer/POLAR.md) · [Heatmaps](crates/renderer/POLAR.md#heatmaps-and-contours) |
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
@@ -118,6 +177,8 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
 | Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
 | Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
+| Energy-level (Grotrian) diagrams | `EnergyLevels` records in the document: levels in term columns of a categorical axis and the transitions the host lists, parsed by the host from NIST Atomic Spectra Database exports; labels are placed automatically, and an inset can magnify the fine structure | [Energy levels](crates/renderer/CONFIG.md#energy-levels-datarendertypeenergylevels) · [nist_grotrian.rs](crates/renderer/examples/nist_grotrian.rs) |
+| Feynman diagrams | `Feynman` records in the document: vertices and the propagators joining them, each stroke naming its particle (fermion, photon, gluon, scalar and more); a vertex without a position is laid out automatically | [Feynman diagrams](crates/renderer/FEYNMAN.md) |
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
 | Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
 
@@ -375,7 +436,8 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
+| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) 
+| Ternary plots · 3D surfaces · triangle meshes · Feynman diagrams | [Ternary](crates/renderer/TERNARY.md) · [Surface](crates/renderer/SURFACE.md) · [Triangle meshes](crates/renderer/TRIMESH.md) · [Feynman](crates/renderer/FEYNMAN.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |
