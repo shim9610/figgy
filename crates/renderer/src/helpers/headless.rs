@@ -91,3 +91,36 @@ impl Renderer {
         )
     }
 }
+
+impl crate::radial::RadialRenderer {
+    /// A radial renderer with its own GPU device and no window, as
+    /// [`Renderer::headless`] makes the cartesian one. A failed adapter or
+    /// device request is [`RadialError::Gpu`](crate::radial::RadialError::Gpu).
+    pub async fn headless(
+        options: HeadlessOptions,
+    ) -> std::result::Result<Self, crate::radial::RadialError> {
+        let gpu = headless_device(options)
+            .await
+            .and_then(|(device, queue)| RendererDevice::new(device, queue))
+            .map_err(radial_gpu)?;
+        Self::try_new(gpu, HEADLESS_FORMAT)
+    }
+
+    /// [`Self::headless`] with [`HeadlessOptions::default`], without an
+    /// executor (native).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn headless_blocking() -> std::result::Result<Self, crate::radial::RadialError> {
+        let gpu = crate::gpu_readback::ready_now(headless_device(HeadlessOptions::default()))
+            .ok_or(FiggyError::internal(
+                "a native wgpu adapter and device request completes at once",
+            ))
+            .and_then(|request| request)
+            .and_then(|(device, queue)| RendererDevice::new(device, queue))
+            .map_err(radial_gpu)?;
+        Self::try_new(gpu, HEADLESS_FORMAT)
+    }
+}
+
+fn radial_gpu(error: FiggyError) -> crate::radial::RadialError {
+    crate::radial::RadialError::Gpu(error.to_string())
+}

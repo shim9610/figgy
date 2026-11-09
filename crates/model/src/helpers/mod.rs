@@ -10,4 +10,5 @@
 pub mod default;
 mod defaults;
 mod series;
+mod series_style;
 pub mod theme;

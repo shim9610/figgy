@@ -268,3 +268,100 @@ fn a_themed_chart_exports_with_its_look() {
         );
     }
 }
+
+// A placed chart, a resized document chart, an overlay and a swatch entry
+// are document values; a checked raster saves as PNG.
+#[test]
+fn chart_placement_overlay_swatch_and_png_save() {
+    let chart = Chart::placed(40, 30, 320, 200);
+    let area = chart.config().chart_area.0;
+    assert_eq!(
+        (area.x, area.y, area.width, area.height),
+        (40, 30, 320, 200)
+    );
+    let resized = Chart::sized(10, 10).with_area(5, 6, 300, 180);
+    let area = resized.config().chart_area.0;
+    assert_eq!((area.x, area.y, area.width, area.height), (5, 6, 300, 180));
+
+    let axis = renderer::config::Config::default().left_y;
+    let red = Color::new(0.9, 0.1, 0.1, 1.0);
+    let chart = Chart::sized(320, 200)
+        .with_overlay(axis, &["b", "c"])
+        .with_legend_swatch("Loss", red);
+    let config = chart.config();
+    assert_eq!(config.overlays.len(), 1);
+    assert_eq!(config.overlays[0].series, ["b", "c"]);
+    assert!(config.legend.visible);
+    let text: String = config
+        .legend
+        .content
+        .segments
+        .iter()
+        .map(|s| s.text)
+        .collect();
+    assert!(text.ends_with("Loss"), "{text:?}");
+    assert!(
+        config
+            .legend
+            .content
+            .segments
+            .iter()
+            .any(|s| s.color == Some(red))
+    );
+    assert!(config.validate().is_ok());
+
+    let mut renderer = Renderer::headless_blocking().expect("headless renderer");
+    let (x, y) = sine();
+    renderer.add_column("x", &x).unwrap();
+    renderer.add_column("y", &y).unwrap();
+    let series = [SeriesConfig::line("sine", "x", "y")];
+    let image = renderer
+        .export_rgba_blocking(
+            ExportSource::Chart {
+                chart: &Chart::sized(200, 120),
+                series: &series,
+            },
+            ExportOptions::panel(1.0),
+        )
+        .unwrap();
+    let path = scratch("raster.png");
+    image.save_png(&path).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        renderer::encode_png(&image).unwrap()
+    );
+    assert!(matches!(
+        image.save_png(scratch("missing/dir/raster.png")),
+        Err(SaveError::Write { .. })
+    ));
+}
+
+// The radial renderer makes its own device, and a radial chart takes the
+// title `with_title` gives it.
+#[test]
+fn a_headless_radial_renderer_draws_a_titled_chart() {
+    let mut renderer = RadialRenderer::headless_blocking().expect("headless radial renderer");
+    let chart = RadialChart {
+        labels: RadialLabels::None,
+        slices: vec![
+            RadialSlice::new("A", 25.0, Color::new(1.0, 0.0, 0.0, 1.0)),
+            RadialSlice::new("B", 75.0, Color::new(0.0, 0.0, 1.0, 1.0)),
+        ],
+        ..Default::default()
+    }
+    .with_title("Share");
+    let title = chart.chart_title.as_ref().unwrap();
+    assert_eq!(
+        (title.top_margin, title.offset_x, title.offset_y),
+        (0.0, 0.0, 0.0)
+    );
+    let png = renderer
+        .export_bytes_blocking(
+            &chart,
+            (240, 240),
+            ExportOptions::document(1.0),
+            ExportFormat::Png,
+        )
+        .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+}

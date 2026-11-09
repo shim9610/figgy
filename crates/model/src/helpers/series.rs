@@ -645,12 +645,14 @@ impl SeriesConfig {
     }
 
     /// Horizontal histogram bars: `x_column` and `y_column` swap roles, as
-    /// [`DataRenderType::Histogram`] documents. (Category bars take their
-    /// direction from the chart's `bar_groups`.)
+    /// [`DataRenderType::Histogram`] documents. An x-y series' stems run
+    /// sideways to a vertical baseline. (Category bars take their direction
+    /// from the chart's `bar_groups`.)
     pub fn horizontal(mut self) -> Self {
         if let DataRenderType::Histogram { bar } = &mut self.render_type {
             bar.orientation = crate::data_config::BarOrientation::Horizontal;
         }
+        self.horizontal_stem();
         self
     }
 
