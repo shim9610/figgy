@@ -17,12 +17,12 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, scatter, series};
+use gallery::Result;
 use renderer::{
     Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Chart, Color, HitMap,
-    LayerRef, OverlayLayer, Renderer, ShapeStyle,
-    config::{LegendCorner, LegendEntryKind, TickVisibility},
-    data_config::{DataRenderType, LineFill},
+    LayerRef, OverlayLayer, Renderer, SeriesConfig, ShapeStyle,
+    config::{LegendCorner, TickVisibility},
+    data_config::{DataRenderType, ScatterShape, XySeries},
     line::LineStylePreset,
     text::RichText,
 };
@@ -44,10 +44,6 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
         ink,
         rgb(38, 42, 66),
     );
-    chart.set_x_range(0., 90.);
-    chart.set_y_range(3.0, 4.3);
-    chart.config_mut().bottom_x.major_spacing = 15.;
-    chart.config_mut().left_y.major_spacing = 0.25;
     chart.config_mut().right_y.line_visible = false;
     chart.config_mut().right_y.tick = TickVisibility::None;
     chart.config_mut().left_y.title_option.text.color = mint;
@@ -76,9 +72,9 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             open - 0.08 * i
         })
         .collect();
-    r.add_column("minutes", &column(minutes))?;
-    r.add_column("voltage", &column(voltage))?;
-    r.add_column("current", &column(current))?;
+    r.add_column("minutes", &minutes)?;
+    r.add_column("voltage", &voltage)?;
+    r.add_column("current", &current)?;
     let mut overlay = OverlayLayer::default();
     overlay.series = vec!["current".into()];
     overlay.y_axis.out_margin = 110.;
@@ -106,36 +102,26 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
         config.left_y.major_spacing = 0.25;
         config.overlays[0].y_axis.major_spacing = 0.5;
     });
-    let mut filled = line(mint, 3.5);
-    filled.fill = Some(LineFill::ToBaseline(3.0));
-    filled.fill_color = Some(Color::from_rgba(mint.r, mint.g, mint.b, 0.12));
+    let mut voltage = SeriesConfig::line("voltage", "minutes", "voltage")
+        .label("Voltage")
+        .color(mint)
+        .width(3.5)
+        .fill_to(3.0);
+    // `fill_to` fills in the line's colour at a quarter of its opacity.
+    if let DataRenderType::Xy(XySeries {
+        line: Some(line), ..
+    }) = &mut voltage.render_type
+    {
+        line.fill_color = Some(Color::from_rgba(mint.r, mint.g, mint.b, 0.12));
+    }
     let specs = [
-        series(
-            "voltage",
-            "minutes",
-            "voltage",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(filled),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "current",
-            "minutes",
-            "current",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(lavender, 2.5)),
-                errors: None,
-                stem: None,
-            }),
-        ),
+        voltage,
+        SeriesConfig::line("current", "minutes", "current")
+            .label("Current")
+            .color(lavender)
+            .width(2.5),
     ];
-    chart = chart
-        .with_legend_entry("Voltage", mint, 3.5, LegendEntryKind::Line)
-        .with_legend_entry("Current", lavender, 2.5, LegendEntryKind::Line);
+    chart = chart.with_legend_from(&specs);
     chart.config_mut().legend.corner = LegendCorner::TopRight;
     // The base layer and the overlay are two panels of one data area.
     let expansion = chart
@@ -292,22 +278,13 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
     .enumerate()
     {
         let (x, y) = std::mem::take(&mut groups[k]);
-        r.add_column(format!("{id}-fsc"), &column(x))?;
-        r.add_column(format!("{id}-ssc"), &column(y))?;
-        specs.push(series(
-            id,
-            &format!("{id}-fsc"),
-            &format!("{id}-ssc"),
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(scatter(
-                    Color::from_rgba(color.r, color.g, color.b, alpha),
-                    4.5,
-                )),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        ));
+        r.add_column(format!("{id}-fsc"), &x)?;
+        r.add_column(format!("{id}-ssc"), &y)?;
+        specs.push(
+            SeriesConfig::scatter(id, format!("{id}-fsc"), format!("{id}-ssc"))
+                .color(Color::from_rgba(color.r, color.g, color.b, alpha))
+                .marker(ScatterShape::CircleFilled, 4.5),
+        );
     }
     let data = |(x, y): (f64, f64)| Anchor::Data { x, y };
     let gate = |color: Color, style: LineStylePreset, fill: bool| ShapeStyle {

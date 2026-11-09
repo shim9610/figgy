@@ -14,11 +14,11 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, Color, Renderer,
+    Anchor, Annotation, AnnotationKind, Color, Renderer, SeriesConfig,
     config::{AxisBreak, AxisBreakStyle, AxisBreaks, BreakMark},
-    data_config::{DataRenderType, LineFill, XySeries},
+    data_config::{DataRenderType, XySeries},
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
 };
@@ -70,22 +70,19 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
             (mean + 2. * mean.sqrt() * jitter(i)).max(0.)
         })
         .collect();
-    r.add_column("gamma-energy", &column(energy))?;
-    r.add_column("gamma-counts", &column(counts))?;
-    let mut trace = line(cyan, 2.5);
-    trace.fill = Some(LineFill::ToBaseline(0.));
-    trace.fill_color = Some(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14));
-    let specs = [series(
-        "spectrum",
-        "gamma-energy",
-        "gamma-counts",
-        DataRenderType::Xy(XySeries {
-            scatter: None,
-            line: Some(trace),
-            errors: None,
-            stem: None,
-        }),
-    )];
+    r.add_column("gamma-energy", &energy)?;
+    r.add_column("gamma-counts", &counts)?;
+    let mut trace = SeriesConfig::line("spectrum", "gamma-energy", "gamma-counts")
+        .color(cyan)
+        .width(2.5)
+        .fill_to(0.);
+    if let DataRenderType::Xy(XySeries {
+        line: Some(line), ..
+    }) = &mut trace.render_type
+    {
+        line.fill_color = Some(Color::from_rgba(cyan.r, cyan.g, cyan.b, 0.14));
+    }
+    let specs = [trace];
     chart.config_mut().legend.visible = false;
     chart.set_x_range(500., 1450.);
     chart.set_y_range(0., 6000.);

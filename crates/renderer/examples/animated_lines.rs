@@ -7,7 +7,7 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::*;
-use renderer::{Color, Renderer, data_config::DataRenderType};
+use renderer::{Color, Renderer, SeriesConfig, data_config::ScatterShape};
 use std::f64::consts::TAU;
 use std::path::Path;
 
@@ -15,86 +15,42 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
     let blue = Color::from_rgb8(34, 104, 198);
     let coral = Color::from_rgb8(225, 81, 79);
     let x: Vec<f64> = (0..401).map(|i| i as f64 / 400.0 * TAU * 2.0).collect();
-    r.add_column("wave-x", &column(x.clone()))?;
-    r.add_column("wave-a", &column(vec![0.0; x.len()]))?;
-    r.add_column("wave-b", &column(vec![0.0; x.len()]))?;
+    r.add_column("wave-x", &x)?;
+    r.add_column("wave-a", &vec![0.0; x.len()])?;
+    r.add_column("wave-b", &vec![0.0; x.len()])?;
     let specs = [
-        series(
-            "primary",
-            "wave-x",
-            "wave-a",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(blue, 3.0)),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "harmonic",
-            "wave-x",
-            "wave-b",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(coral, 2.5)),
-                errors: None,
-                stem: None,
-            }),
-        ),
+        SeriesConfig::line("primary", "wave-x", "wave-a")
+            .color(blue)
+            .width(3.0),
+        SeriesConfig::line("harmonic", "wave-x", "wave-b")
+            .color(coral)
+            .width(2.5),
     ];
     let mut wave = chart("Waves in motion", "Position", "Amplitude", (720, 460));
     wave.set_x_range(0.0, TAU * 2.0);
     wave.set_y_range(-1.6, 1.6);
 
     let curve: Vec<f64> = (0..501).map(|i| TAU * i as f64 / 500.0).collect();
-    r.add_column(
-        "orbit-x",
-        &column(curve.iter().map(|t| (2.0 * t).sin()).collect()),
-    )?;
-    r.add_column(
-        "orbit-y",
-        &column(curve.iter().map(|t| (3.0 * t + 0.4).sin()).collect()),
-    )?;
+    let orbit_x: Vec<f64> = curve.iter().map(|t| (2.0 * t).sin()).collect();
+    let orbit_y: Vec<f64> = curve.iter().map(|t| (3.0 * t + 0.4).sin()).collect();
+    r.add_column("orbit-x", &orbit_x)?;
+    r.add_column("orbit-y", &orbit_y)?;
     for id in ["trail-x", "trail-y"] {
-        r.add_column(id, &column(vec![0.0; 101]))?;
+        r.add_column(id, &vec![0.0; 101])?;
     }
     for id in ["head-x", "head-y"] {
-        r.add_column(id, &column(vec![0.0]))?;
+        r.add_column(id, &vec![0.0])?;
     }
     let orbit_specs = [
-        series(
-            "path",
-            "orbit-x",
-            "orbit-y",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(Color::from_rgb8(186, 204, 226), 1.5)),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "trail",
-            "trail-x",
-            "trail-y",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(blue, 3.5)),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "head",
-            "head-x",
-            "head-y",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(scatter(coral, 11.0)),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        ),
+        SeriesConfig::line("path", "orbit-x", "orbit-y")
+            .color(Color::from_rgb8(186, 204, 226))
+            .width(1.5),
+        SeriesConfig::line("trail", "trail-x", "trail-y")
+            .color(blue)
+            .width(3.5),
+        SeriesConfig::scatter("head", "head-x", "head-y")
+            .color(coral)
+            .marker(ScatterShape::CircleFilled, 11.0),
     ];
     let mut orbit = chart(
         "A 2:3 phase portrait",
@@ -109,26 +65,18 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
     }
     for i in 0..frames {
         let phase = TAU * i as f64 / frames as f64;
-        r.upsert_column(
-            "wave-a",
-            &column(x.iter().map(|x| (x - phase).sin()).collect()),
-        )?;
-        r.upsert_column(
-            "wave-b",
-            &column(x.iter().map(|x| 0.55 * (2.0 * x + phase).sin()).collect()),
-        )?;
+        let wave_a: Vec<f64> = x.iter().map(|x| (x - phase).sin()).collect();
+        let wave_b: Vec<f64> = x.iter().map(|x| 0.55 * (2.0 * x + phase).sin()).collect();
+        r.upsert_column("wave-a", &wave_a)?;
+        r.upsert_column("wave-b", &wave_b)?;
         save(r, &wave, &specs, &out.join(format!("wave/{i:03}.png")))?;
         let trail: Vec<f64> = (0..101).map(|j| phase - 0.8 + j as f64 * 0.008).collect();
-        r.upsert_column(
-            "trail-x",
-            &column(trail.iter().map(|t| (2.0 * t).sin()).collect()),
-        )?;
-        r.upsert_column(
-            "trail-y",
-            &column(trail.iter().map(|t| (3.0 * t + 0.4).sin()).collect()),
-        )?;
-        r.upsert_column("head-x", &column(vec![(2.0 * phase).sin()]))?;
-        r.upsert_column("head-y", &column(vec![(3.0 * phase + 0.4).sin()]))?;
+        let trail_x: Vec<f64> = trail.iter().map(|t| (2.0 * t).sin()).collect();
+        let trail_y: Vec<f64> = trail.iter().map(|t| (3.0 * t + 0.4).sin()).collect();
+        r.upsert_column("trail-x", &trail_x)?;
+        r.upsert_column("trail-y", &trail_y)?;
+        r.upsert_column("head-x", &vec![(2.0 * phase).sin()])?;
+        r.upsert_column("head-y", &vec![(3.0 * phase + 0.4).sin()])?;
         save(
             r,
             &orbit,

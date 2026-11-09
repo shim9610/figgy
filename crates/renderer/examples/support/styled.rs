@@ -60,6 +60,7 @@ pub fn theme(bg: Color, ink: Color, grid: Color) -> Theme {
     chrome.ink = ink;
     chrome.frame_ink = ink;
     chrome.label_ink = ink;
+    chrome.grid.major_x.color = grid;
     chrome.grid.major_y.color = grid;
     chrome.legend_fill = bg;
     chrome.legend_border = bg;

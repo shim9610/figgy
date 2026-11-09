@@ -28,24 +28,18 @@ use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 
 use renderer::color::Color;
-use renderer::config::{AxisOptions, AxisScale, Config, GridOptions, LegendEntryKind};
-use renderer::data::Column;
+use renderer::config::{AxisOptions, AxisScale, Config, GridOptions};
 use renderer::default;
 use renderer::demo;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MIN_EXPORT_SCALE, PreparedFrame, Renderer, RendererDevice,
-    ResizeHandle, Series, SeriesConfig, dpi_to_scale,
+    Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, HitId, HitMap, MIN_EXPORT_SCALE,
+    PreparedFrame, Renderer, RendererDevice, ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
 const N: usize = 1024;
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 // Use light foreground for axes / labels / titles so they read on dark egui backgrounds.
 const FG: Color = Color {
@@ -229,8 +223,8 @@ impl Drop for FiggyState {
 
 fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (xs, ys) = demo::sine_data(N);
-    renderer.add_column("sine_x", &col_f64(xs)).expect("add x");
-    renderer.add_column("sine_y", &col_f64(ys)).expect("add y");
+    renderer.add_column("sine_x", &xs).expect("add x");
+    renderer.add_column("sine_y", &ys).expect("add y");
     let mut config = dark_config();
     config.chart_area = ChartArea(rect);
     // Chart 1: grid off.
@@ -239,58 +233,29 @@ fn build_sine_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    let line_color = Color::from_rgb8(100, 180, 255);
-    let line_w = 1.0;
+    let series = vec![
+        SeriesConfig::line("sin", "sine_x", "sine_y")
+            .label("sin(x)")
+            .color(Color::from_rgb8(100, 180, 255))
+            .width(1.0),
+    ];
     let mut chart = Chart::new(config)
         .with_title("Sine (1 px line, no grid)")
         .with_x_title("x [rad]")
         .with_y_title("y")
-        .with_legend_entry("sin(x)", line_color, line_w, LegendEntryKind::Line);
+        .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "sine_x", 0.02).unwrap();
     chart.auto_fit_y(renderer.pool(), "sine_y", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
-    let cfg = SeriesConfig {
-        series_id: "sin".into(),
-        label: None,
-        source_id: None,
-        x_column: "sine_x".into(),
-        y_column: "sine_y".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: None,
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-    };
-    let style = renderer.create_style_for_series(&cfg).unwrap();
-    PanelEntry {
-        chart,
-        view,
-        series: vec![cfg],
-        styles: vec![style],
-        hitmap: HitMap::standard_chart(),
-        prepared: None,
-    }
+    panel_entry(renderer, chart, view, series)
 }
 
 fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (ts, vs_charge) = demo::rc_data(N);
     let (_, vs_discharge) = demo::rc_discharge_data(N);
-    renderer.add_column("rc_t", &col_f64(ts)).unwrap();
-    renderer
-        .add_column("rc_charge", &col_f64(vs_charge))
-        .unwrap();
-    renderer
-        .add_column("rc_discharge", &col_f64(vs_discharge))
-        .unwrap();
+    renderer.add_column("rc_t", &ts).unwrap();
+    renderer.add_column("rc_charge", &vs_charge).unwrap();
+    renderer.add_column("rc_discharge", &vs_discharge).unwrap();
 
     let mut config = dark_config();
     config.chart_area = ChartArea(rect);
@@ -299,65 +264,34 @@ fn build_rc_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     config.grid.show_minor_x = false;
     config.grid.show_minor_y = false;
 
-    let charge_color = Color::from_rgb8(255, 140, 100);
-    let discharge_color = Color::from_rgb8(120, 200, 255);
-    let line_w = 2.0;
+    let series = vec![
+        SeriesConfig::line("charge", "rc_t", "rc_charge")
+            .label("Charging")
+            .color(Color::from_rgb8(255, 140, 100))
+            .width(2.0),
+        SeriesConfig::line("discharge", "rc_t", "rc_discharge")
+            .label("Discharging")
+            .color(Color::from_rgb8(120, 200, 255))
+            .width(2.0),
+    ];
     let mut chart = Chart::new(config)
         .with_title("RC charge / discharge (2 px, major grid)")
         .with_x_title("t [s]")
         .with_y_title("V [V]")
-        .with_legend_entry("Charging", charge_color, line_w, LegendEntryKind::Line)
-        .with_legend_entry(
-            "Discharging",
-            discharge_color,
-            line_w,
-            LegendEntryKind::Line,
-        );
+        .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "rc_t", 0.02).unwrap();
     chart
         .auto_fit_y_union(renderer.pool(), &["rc_charge", "rc_discharge"], 0.05)
         .unwrap();
 
     let view = renderer.create_chart_view(&chart, rect).unwrap();
-    let mk = |id: &str, x: &str, y: &str, color: Color| SeriesConfig {
-        series_id: id.into(),
-        label: None,
-        source_id: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: None,
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-    };
-    let cfg_charge = mk("charge", "rc_t", "rc_charge", charge_color);
-    let cfg_discharge = mk("discharge", "rc_t", "rc_discharge", discharge_color);
-    let style_charge = renderer.create_style_for_series(&cfg_charge).unwrap();
-    let style_discharge = renderer.create_style_for_series(&cfg_discharge).unwrap();
-    PanelEntry {
-        chart,
-        view,
-        series: vec![cfg_charge, cfg_discharge],
-        styles: vec![style_charge, style_discharge],
-        hitmap: HitMap::standard_chart(),
-        prepared: None,
-    }
+    panel_entry(renderer, chart, view, series)
 }
 
 fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     let (es, sigmas) = demo::cross_section_data(N);
-    renderer.add_column("xs_e", &col_f64(es)).unwrap();
-    renderer.add_column("xs_sigma", &col_f64(sigmas)).unwrap();
+    renderer.add_column("xs_e", &es).unwrap();
+    renderer.add_column("xs_sigma", &sigmas).unwrap();
     let mut config = dark_config();
     config.chart_area = ChartArea(rect);
     config.left_y.scale = AxisScale::Logarithmic;
@@ -370,43 +304,39 @@ fn build_xs_panel(renderer: &mut Renderer, rect: Rect) -> PanelEntry {
     config.grid.minor_x_style = LineStylePreset::Dot;
     config.grid.minor_y_style = LineStylePreset::Dot;
 
-    let line_color = Color::from_rgb8(120, 220, 140);
-    let line_w = 3.5;
+    let series = vec![
+        SeriesConfig::line("sigma", "xs_e", "xs_sigma")
+            .label("σ(E)")
+            .color(Color::from_rgb8(120, 220, 140))
+            .width(3.5),
+    ];
     let mut chart = Chart::new(config)
         .with_title("Cross-section σ(E) — 3.5 px, log + minor grid")
         .with_x_title("E [keV]")
         .with_y_title("σ [barn]")
-        .with_legend_entry("σ(E)", line_color, line_w, LegendEntryKind::Line);
+        .with_legend_from(&series);
     chart.auto_fit_x(renderer.pool(), "xs_e", 0.0).unwrap();
     chart.auto_fit_y(renderer.pool(), "xs_sigma", 0.10).unwrap();
     let view = renderer.create_chart_view(&chart, rect).unwrap();
-    let cfg = SeriesConfig {
-        series_id: "sigma".into(),
-        label: None,
-        source_id: None,
-        x_column: "xs_e".into(),
-        y_column: "xs_sigma".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: None,
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color,
-                line_width: line_w,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-    };
-    let style = renderer.create_style_for_series(&cfg).unwrap();
+    panel_entry(renderer, chart, view, series)
+}
+
+/// A panel over `series`, with one GPU style per series.
+fn panel_entry(
+    renderer: &mut Renderer,
+    chart: Chart,
+    view: ChartView,
+    series: Vec<SeriesConfig>,
+) -> PanelEntry {
+    let styles = series
+        .iter()
+        .map(|cfg| renderer.create_style_for_series(cfg).unwrap())
+        .collect();
     PanelEntry {
         chart,
         view,
-        series: vec![cfg],
-        styles: vec![style],
+        series,
+        styles,
         hitmap: HitMap::standard_chart(),
         prepared: None,
     }
@@ -694,22 +624,16 @@ impl eframe::App for DemoApp {
                             .expect("FiggyState");
                         let (renderer, panels) = (&mut state.renderer, &state.panels);
                         for (i, panel) in panels.iter().enumerate() {
-                            match renderer.export_png_blocking(
+                            let path = format!("/tmp/figgy_egui_panel_{i}.png");
+                            match renderer.save_blocking(
                                 renderer::ExportSource::chart(&panel.chart, &panel.series),
                                 renderer::ExportOptions::panel(scale),
+                                &path,
                             ) {
-                                Ok(bytes) => {
-                                    let path = format!("/tmp/figgy_egui_panel_{i}.png");
-                                    match std::fs::write(&path, &bytes) {
-                                        Ok(_) => eprintln!(
-                                            "[export] saved {path} (DPI={}, scale={:.3}, {} bytes)",
-                                            self.export_dpi,
-                                            scale,
-                                            bytes.len(),
-                                        ),
-                                        Err(e) => eprintln!("[export] write {path} failed: {e}"),
-                                    }
-                                }
+                                Ok(()) => eprintln!(
+                                    "[export] saved {path} (DPI={}, scale={:.3})",
+                                    self.export_dpi, scale,
+                                ),
                                 Err(e) => eprintln!("[export] panel {i} failed: {e}"),
                             }
                         }

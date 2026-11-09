@@ -14,13 +14,9 @@ use eframe::wgpu;
 
 use renderer::color::Color;
 use renderer::config::{ConstellationOptions, DrawStyle};
-use renderer::data::Column;
-use renderer::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
-};
+use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
-use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice, Series,
 };
@@ -28,10 +24,6 @@ use renderer::{
 const POOL_CAPACITY: u64 = 8 * 1024 * 1024;
 /// Dark host backdrop behind the translucent line + PSF stars.
 const SPACE_BG: egui::Color32 = egui::Color32::from_rgb(11, 15, 23);
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 /// All figgy state, stored directly in `CallbackResources` — no `Mutex`.
 ///
@@ -90,44 +82,20 @@ fn build_state(
     let warm = vec![62.0, 77.0, 68.0, 88.0, 74.0, 92.0, 79.0, 86.0];
     let cool = vec![24.0, 39.0, 31.0, 48.0, 43.0, 60.0, 52.0, 67.0];
     renderer
-        .add_column("sample_x", &col_f64(ts.clone()))
+        .add_column("sample_x", &ts)
         .map_err(|e| e.to_string())?;
     renderer
-        .add_column("warm", &col_f64(warm))
+        .add_column("warm", &warm)
         .map_err(|e| e.to_string())?;
     renderer
-        .add_column("cool", &col_f64(cool.clone()))
+        .add_column("cool", &cool)
         .map_err(|e| e.to_string())?;
 
-    let scatter_line = |id: &str, y: &str, color: Color, point_size: f32| SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: "sample_x".into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: color,
-                point_shape: ScatterShape::CircleFilled,
-                point_size,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: color,
-                line_width: 2.0,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
+    let scatter_line = |id: &str, y: &str, color: Color, point_size: f32| {
+        SeriesConfig::scatter_line(id, "sample_x", y)
+            .marker(ScatterShape::CircleFilled, point_size)
+            .color(color)
+            .width(2.0)
     };
 
     let series = vec![
@@ -211,15 +179,12 @@ impl CallbackTrait for LabCallback {
             return Vec::new();
         };
 
-        // Slider → SSoT. Only on change, so the dirty bits don't spin.
-        // `config_mut` flags BOTH dirty bits, but constellation knobs here are
-        // GPU-side uniform parameters. No CPU backdrop/glow is tied to this
-        // lab style, so cancel the raster bit and let `Renderer::prepare`
-        // below carry it (it rewrites the transform uniform every frame).
+        // Slider → SSoT. Only on change, so the chart does not churn.
+        // `Renderer::prepare` below redraws what the change made stale and
+        // rewrites the transform uniform every frame.
         let wanted = DrawStyle::Constellation(self.opts);
         if state.chart.config().draw_style != wanted {
             state.chart.config_mut().draw_style = wanted;
-            let _ = state.chart.consume_raster_dirty();
         }
 
         for idx in 0..state.series.len() {
@@ -243,36 +208,13 @@ impl CallbackTrait for LabCallback {
             }
         }
 
-        let cur_rect = state.view.panel_rect();
-        if cur_rect != self.panel_rect_px {
+        // A moved panel is a new chart area; prepare redraws the raster
+        // there. The dirty bits only need resetting.
+        if state.view.panel_rect() != self.panel_rect_px {
             state.chart.config_mut().chart_area = ChartArea(self.panel_rect_px);
-            if let Err(e) =
-                state
-                    .renderer
-                    .refresh_axis(&mut state.view, &state.chart, self.panel_rect_px)
-            {
-                eprintln!("[lab] refresh_axis failed: {e}");
-                state.prepared = None;
-                return Vec::new();
-            }
-            let _ = state.chart.consume_data_dirty();
-            let _ = state.chart.consume_raster_dirty();
-        } else {
-            let raster_dirty = state.chart.consume_raster_dirty();
-            // The transform (data) dirty bit needs no explicit handling:
-            // `Renderer::prepare` below rewrites the transform uniform from
-            // the current config every frame.
-            let _ = state.chart.consume_data_dirty();
-            if raster_dirty
-                && let Err(e) = state
-                    .renderer
-                    .refresh_axis(&mut state.view, &state.chart, cur_rect)
-            {
-                eprintln!("[lab] refresh_axis failed: {e}");
-                state.prepared = None;
-                return Vec::new();
-            }
         }
+        let _ = state.chart.consume_data_dirty();
+        let _ = state.chart.consume_raster_dirty();
 
         // Mutable half of the frame: compiles missing styled pipelines,
         // writes the panel's transform uniform, dispatches arc-length

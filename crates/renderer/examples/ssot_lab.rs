@@ -28,14 +28,12 @@ use renderer::config::{
     AxisOptions, Config, ConstellationOptions, DrawStyle, GridOptions, MilkywayOptions,
     SketchOptions,
 };
-use renderer::data::Column;
 use renderer::default;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
-    Chart, ChartDrawItem, ChartStyle, ChartView, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, PreparedFrame, Renderer, RendererDevice, ScatterShape, Series,
-    SeriesConfig,
+    Chart, ChartDrawItem, ChartStyle, ChartView, PreparedFrame, Renderer, RendererDevice,
+    ScatterShape, Series, SeriesConfig,
 };
 
 // 3M points/series × (1 shared x + 4 y) columns × 4 bytes = 60 MB live,
@@ -51,10 +49,6 @@ const X_ID: &str = "quad_x";
 const Y_IDS: [&str; 4] = ["quad_y0", "quad_y1", "quad_y2", "quad_y3"];
 const SERIES_IDS: [&str; 4] = ["precise", "sketch", "milkyway", "constellation"];
 const X_SPAN: f64 = 12.566; // 4π
-
-fn col_f64(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
 
 const FG: Color = Color {
     r: 0.92,
@@ -183,13 +177,13 @@ impl LabState {
                 return;
             }
         }
-        if let Err(e) = self.renderer.add_column(X_ID, &col_f64(xs.clone())) {
+        if let Err(e) = self.renderer.add_column(X_ID, &xs) {
             self.last_error = Some(format!("regen add_column x: {e}"));
             return;
         }
         for (i, y_id) in Y_IDS.iter().enumerate() {
             let ys = lab_ys(i, self.data_variant, &xs);
-            if let Err(e) = self.renderer.add_column(*y_id, &col_f64(ys)) {
+            if let Err(e) = self.renderer.add_column(*y_id, &ys) {
                 self.last_error = Some(format!("regen add_column {y_id}: {e}"));
                 return;
             }
@@ -330,82 +324,35 @@ impl Default for LabApp {
     }
 }
 
-/// (draw style, title, series config) per panel — fixed, no dropdown.
-fn panel_recipe(i: usize) -> (DrawStyle, &'static str, DataRenderType) {
-    let line = |style, color, w| DataLineStyleConfig {
-        line_style: style,
-        line_color: color,
-        line_width: w,
-        fill: None,
-        fill_color: None,
-        interpolation: renderer::data_config::LineInterpolation::Linear,
-    };
-    let scatter = |color: Color, size| DataScatterStyleConfig {
-        point_color: color,
-        point_shape: ScatterShape::CircleFilled,
-        point_size: size,
-        point_style_table: None,
-        point_style_index_column: None,
-        point_style_overrides: None,
-        point_color_map: None,
-        point_size_map: None,
-    };
+/// (draw style, title, series) per panel — fixed, no dropdown.
+fn panel_recipe(i: usize) -> (DrawStyle, &'static str, SeriesConfig) {
+    let line = || SeriesConfig::line(SERIES_IDS[i], X_ID, Y_IDS[i]);
     match i {
         0 => (
             DrawStyle::Precise,
             "Precise — dashed line (GPU arc scan)",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(
-                    LineStylePreset::Dash,
-                    Color::from_rgb8(100, 180, 255),
-                    2.0,
-                )),
-                errors: None,
-                stem: None,
-            }),
+            line()
+                .dash(LineStylePreset::Dash)
+                .color(Color::from_rgb8(100, 180, 255))
+                .width(2.0),
         ),
         1 => (
             DrawStyle::Sketch(SketchOptions::default()),
             "Sketch — arc-parameterized wobble",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(
-                    LineStylePreset::Solid,
-                    Color::from_rgb8(255, 150, 110),
-                    2.0,
-                )),
-                errors: None,
-                stem: None,
-            }),
+            line().color(Color::from_rgb8(255, 150, 110)).width(2.0),
         ),
         2 => (
             DrawStyle::Milkyway(MilkywayOptions::default()),
             "Milkyway — ribbon + indirect star pass",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(
-                    LineStylePreset::Solid,
-                    Color::from_rgb8(190, 150, 255),
-                    2.0,
-                )),
-                errors: None,
-                stem: None,
-            }),
+            line().color(Color::from_rgb8(190, 150, 255)).width(2.0),
         ),
         _ => (
             DrawStyle::Constellation(ConstellationOptions::default()),
             "Constellation — PSF stars",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(scatter(Color::from_rgb8(255, 214, 130), 3.0)),
-                line: Some(line(
-                    LineStylePreset::Solid,
-                    Color::from_rgb8(255, 214, 130),
-                    1.5,
-                )),
-                errors: None,
-                stem: None,
-            }),
+            SeriesConfig::scatter_line(SERIES_IDS[i], X_ID, Y_IDS[i])
+                .marker(ScatterShape::CircleFilled, 3.0)
+                .color(Color::from_rgb8(255, 214, 130))
+                .width(1.5),
         ),
     }
 }
@@ -432,11 +379,11 @@ impl LabApp {
         let n = self.point_count as usize;
         let xs = lab_xs(n);
         renderer
-            .add_column(X_ID, &col_f64(xs.clone()))
+            .add_column(X_ID, &xs)
             .map_err(|e| format!("add_column x failed: {e}"))?;
         for (i, y_id) in Y_IDS.iter().enumerate() {
             renderer
-                .add_column(*y_id, &col_f64(lab_ys(i, 0, &xs)))
+                .add_column(*y_id, &lab_ys(i, 0, &xs))
                 .map_err(|e| format!("add_column {y_id} failed: {e}"))?;
         }
 
@@ -448,7 +395,7 @@ impl LabApp {
         };
         let mut panels = Vec::with_capacity(4);
         for i in 0..4 {
-            let (draw_style, title, render_type) = panel_recipe(i);
+            let (draw_style, title, series) = panel_recipe(i);
             let mut config = dark_config();
             config.chart_area = ChartArea(placeholder);
             config.draw_style = draw_style;
@@ -461,15 +408,6 @@ impl LabApp {
             let view = renderer
                 .create_chart_view(&chart, placeholder)
                 .map_err(|e| format!("create_chart_view failed: {e}"))?;
-            let series = SeriesConfig {
-                series_id: SERIES_IDS[i].into(),
-                label: None,
-                source_id: None,
-                x_column: X_ID.into(),
-                y_column: Y_IDS[i].into(),
-                z_column: None,
-                render_type,
-            };
             let style = renderer.create_style_for_series(&series).unwrap();
             panels.push(PanelEntry {
                 chart,

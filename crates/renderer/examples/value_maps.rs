@@ -13,11 +13,11 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, scatter, series};
+use gallery::Result;
 use renderer::{
-    Color, ColorMap, Renderer,
+    Color, ColorMap, Renderer, SeriesConfig,
     config::{LegendCorner, LegendEntryKind},
-    data_config::{DataRenderType, PointColorMap, PointSizeMap, SizeScale},
+    data_config::{DataRenderType, PointColorMap, PointSizeMap, ScatterShape, SizeScale, XySeries},
     text::RichText,
 };
 use std::path::Path;
@@ -56,23 +56,21 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         age.push(100. * (1. - t) + 14. * j1);
     }
     for (id, data) in [("sx", x), ("sy", y), ("sage", age)] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
-    let mut points = scatter(ink, 5.5);
-    points.point_color_map = Some(PointColorMap {
-        column: "sage".into(),
-    });
-    let specs = [series(
-        "stars",
-        "sx",
-        "sy",
-        DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(points),
-            line: None,
-            errors: None,
-            stem: None,
-        }),
-    )];
+    let mut stars = SeriesConfig::scatter("stars", "sx", "sy")
+        .color(ink)
+        .marker(ScatterShape::CircleFilled, 5.5);
+    if let DataRenderType::Xy(XySeries {
+        scatter: Some(points),
+        ..
+    }) = &mut stars.render_type
+    {
+        points.point_color_map = Some(PointColorMap {
+            column: "sage".into(),
+        });
+    }
+    let specs = [stars];
     colorbar(
         chart.config_mut(),
         ColorMap::Custom {
@@ -89,22 +87,15 @@ fn colormap_scatter(r: &mut Renderer, out: &Path) -> Result {
         25.,
         ink,
     );
-    chart
+    let title = &mut chart
         .config_mut()
         .colorbar
         .as_mut()
         .unwrap()
         .axis
-        .title_option
-        .visible = true;
-    chart
-        .config_mut()
-        .colorbar
-        .as_mut()
-        .unwrap()
-        .axis
-        .title_option
-        .text = RichText::plain("Age (Myr)", ink, 19., "");
+        .title_option;
+    title.visible = true;
+    title.text = RichText::plain("Age (Myr)", ink, 19., "");
     chart.config_mut().bottom_x.major_spacing = 5.;
     chart.config_mut().left_y.major_spacing = 3.5;
     let image = export(r, &chart, &specs, bg)?;
@@ -150,9 +141,8 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
             p.push(0.4 + 9.6 * j3 * j3 * pop);
         }
         for (suffix, data) in [("x", x), ("y", y), ("pop", p)] {
-            r.add_column(format!("{id}-{suffix}"), &column(data))?;
+            r.add_column(format!("{id}-{suffix}"), &data)?;
         }
-        let mut marker = scatter(Color::from_rgba(color.r, color.g, color.b, 0.62), 8.);
         let mut size = PointSizeMap {
             column: format!("{id}-pop"),
             domain_min: 0.,
@@ -162,18 +152,19 @@ fn bubbles(r: &mut Renderer, out: &Path) -> Result {
             scale: SizeScale::Area,
         };
         size.fit_domain(0.4, 10.);
-        marker.point_size_map = Some(size);
-        specs.push(series(
-            id,
-            &format!("{id}-x"),
-            &format!("{id}-y"),
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(marker),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        ));
+        let mut region = SeriesConfig::scatter(id, format!("{id}-x"), format!("{id}-y"))
+            .color(Color::from_rgba(color.r, color.g, color.b, 0.62))
+            .marker(ScatterShape::CircleFilled, 8.);
+        if let DataRenderType::Xy(XySeries {
+            scatter: Some(marker),
+            ..
+        }) = &mut region.render_type
+        {
+            marker.point_size_map = Some(size);
+        }
+        specs.push(region);
+        // The legend shows each region's colour opaque, not the translucent
+        // marker fill.
         chart = chart.with_legend_entry(label, color, 2., LegendEntryKind::Scatter);
     }
     let image = export(r, &chart, &specs, bg)?;

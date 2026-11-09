@@ -14,11 +14,11 @@ use eframe::egui_wgpu::{self, CallbackTrait};
 use eframe::wgpu;
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
-    Chart, ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource,
-    DataRenderType, DataScatterStyleConfig, FiggyError, HiLoColumnSource, PreparedFrame,
-    RegisteredChartDrawItem, Renderer, RendererDevice, ScatterShape, SeriesConfig, StreamColumn,
-    StreamColumnSource, StreamEncoding, StreamReplay, StreamSourceBinding, StreamStatistics,
-    StreamingChartOptions, StreamingLimits, StreamingProgress,
+    Chart, ChartId, ChartView, ColumnPairWriter, ColumnRangeWriteError, ColumnSource, FiggyError,
+    HiLoColumnSource, PreparedFrame, RegisteredChartDrawItem, Renderer, RendererDevice,
+    ScatterShape, SeriesConfig, StreamColumn, StreamColumnSource, StreamEncoding, StreamReplay,
+    StreamSourceBinding, StreamStatistics, StreamingChartOptions, StreamingLimits,
+    StreamingProgress,
 };
 
 const POOL_CAPACITY: u64 = 1024 * 1024;
@@ -655,29 +655,9 @@ impl DemoApp {
             .with_y_title("Virtual signal");
         chart.set_x_range(0.0, 1.0);
         chart.set_y_range(0.0, 1.0);
-        let series = SeriesConfig {
-            series_id: "stream-points".into(),
-            source_id: None,
-            label: None,
-            x_column: "stream-x".into(),
-            y_column: "stream-y".into(),
-            z_column: None,
-            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(DataScatterStyleConfig {
-                    point_color: renderer::Color::new(0.15, 0.65, 1.0, 0.35),
-                    point_shape: ScatterShape::SquareFilled,
-                    point_size: 1.0,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                }),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        };
+        let series = SeriesConfig::scatter("stream-points", "stream-x", "stream-y")
+            .marker(ScatterShape::SquareFilled, 1.0)
+            .color(renderer::Color::new(0.15, 0.65, 1.0, 0.35));
         let chart_id = renderer.register_chart(chart.config().clone(), vec![series])?;
         let view = renderer.create_chart_view(&chart, placeholder)?;
         render_state

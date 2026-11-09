@@ -6,41 +6,20 @@
 
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
-use renderer::data::Column;
-use renderer::data_config::{
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef,
-    ScatterShape, SeriesConfig,
-};
-use renderer::default;
-use renderer::gpu::{create_instance, request_adapter_blocking, request_device_blocking};
-use renderer::layout::{ChartArea, Rect};
-use renderer::line::LineStylePreset;
-use renderer::{Chart, RasterImage, Renderer, RendererDevice, encode_png};
+use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig, XySeries};
+use renderer::theme::{SubplotScope, Theme};
+use renderer::{Chart, ExportOptions, ExportSource, Renderer, encode_png};
 
-fn col(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-/// Composite the transparent export over a deep-space backdrop.
-fn over_space(img: &mut RasterImage) {
-    const BG: [f32; 3] = [11.0, 15.0, 23.0];
-    for px in img.rgba.chunks_exact_mut(4) {
-        let a = px[3] as f32 / 255.0;
-        for (c, bg) in px[..3].iter_mut().zip(BG) {
-            *c = (*c as f32 * a + bg * (1.0 - a)).round().min(255.0) as u8;
-        }
-        px[3] = 255;
-    }
-}
+/// The deep-space backdrop the exports clear to.
+const SPACE: Color = Color::from_rgb8(11, 15, 23);
 
 fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
-    let mut img = r
+    let img = r
         .export_rgba_blocking(
-            renderer::ExportSource::chart(chart, series),
-            renderer::ExportOptions::panel(1.0),
+            ExportSource::chart(chart, series),
+            ExportOptions::panel(1.0).with_clear(SPACE),
         )
         .expect("export");
-    over_space(&mut img);
     let ink = img
         .rgba
         .chunks_exact(4)
@@ -51,59 +30,43 @@ fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) 
 }
 
 fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: None,
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: color,
-                line_width: 2.0,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-    }
+    SeriesConfig::line(id, x, y).color(color).width(2.0)
+}
+
+fn planet_series(
+    id: &str,
+    x: &str,
+    y: &str,
+    shape: ScatterShape,
+    size: f32,
+    color: Color,
+) -> SeriesConfig {
+    SeriesConfig::scatter(id, x, y)
+        .color(color)
+        .marker(shape, size)
 }
 
 fn build_chart(style: DrawStyle) -> Chart {
-    let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: 960,
-        height: 620,
-    });
-    config.draw_style = style;
-    // Dark-backdrop chrome: light axis/label/title colors via plain SSoT
-    // fields; no grid; no legend box (its white fill fights the backdrop).
-    let chrome = Color::from_rgb8(186, 194, 210);
-    for axis in [
-        &mut config.top_x,
-        &mut config.bottom_x,
-        &mut config.left_y,
-        &mut config.right_y,
+    // Dark-backdrop chrome: the dark theme's light ink, over the backdrop
+    // the export clears to; no grid; no legend.
+    let mut theme = Theme::dark();
+    theme.chrome.background = None;
+    let grid = &mut theme.chrome.grid;
+    for line in [
+        &mut grid.major_x,
+        &mut grid.major_y,
+        &mut grid.minor_x,
+        &mut grid.minor_y,
     ] {
-        axis.line_color = chrome;
-        axis.label_style.color = chrome;
-        axis.title_option.text.color = chrome;
+        line.show = false;
     }
-    config.chart_title.text.color = Color::from_rgb8(214, 220, 232);
-    config.grid.show_major_x = false;
-    config.grid.show_major_y = false;
-    config.grid.show_minor_x = false;
-    config.grid.show_minor_y = false;
-    config.legend.visible = false;
+    let mut chart = Chart::sized(960, 620);
+    theme.apply_chrome(chart.config_mut(), SubplotScope::All);
+    // After the theme, which writes the draw style too.
+    chart.config_mut().draw_style = style;
+    chart.config_mut().legend.visible = false;
 
-    let mut chart = Chart::new(config)
+    let mut chart = chart
         .with_title("Milkyway — line as star chain")
         .with_x_title("t")
         .with_y_title("value");
@@ -113,15 +76,7 @@ fn build_chart(style: DrawStyle) -> Chart {
 }
 
 fn main() {
-    let inst = create_instance();
-    let adapter = request_adapter_blocking(&inst).expect("adapter");
-    let (device, queue) = request_device_blocking(&adapter).expect("device");
-    let mut r = Renderer::try_new(
-        RendererDevice::new(device, queue).expect("figgy poll thread"),
-        wgpu::TextureFormat::Bgra8Unorm,
-        8 * 1024 * 1024,
-    )
-    .expect("renderer");
+    let mut r = Renderer::headless_blocking().expect("renderer");
 
     std::fs::create_dir_all("target/constellation_demo").expect("mkdir");
 
@@ -133,9 +88,9 @@ fn main() {
         .iter()
         .map(|&t| 14.0 + 30.0 * t + 9.0 * (t * 8.0 + 1.0).cos())
         .collect();
-    r.add_column("t", &col(ts)).unwrap();
-    r.add_column("warm", &col(warm)).unwrap();
-    r.add_column("cool", &col(cool)).unwrap();
+    r.add_column("t", &ts).unwrap();
+    r.add_column("warm", &warm).unwrap();
+    r.add_column("cool", &cool).unwrap();
 
     let series = [
         line_series("nebula_warm", "t", "warm", Color::from_rgb8(255, 142, 92)),
@@ -211,11 +166,11 @@ fn main() {
                 + 0.62 * peak(x, 1585.0, 28.0)
         })
         .collect();
-    r.add_column("spec_x", &col(sxs)).unwrap();
+    r.add_column("spec_x", &sxs).unwrap();
     let spec_scales = [1.0, 0.55, 0.10, 0.05, 0.02];
     for (i, k) in spec_scales.iter().enumerate() {
         let ys: Vec<f64> = base.iter().map(|b| b * k).collect();
-        r.add_column(format!("spec_{i}"), &col(ys)).unwrap();
+        r.add_column(format!("spec_{i}"), &ys).unwrap();
     }
     let spec_colors = [
         Color::from_rgb8(110, 200, 255),
@@ -254,18 +209,12 @@ fn main() {
     // as the 1× render upscaled — same star count per data span, same clump
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
-    let mut img = r
-        .export_rgba_blocking(
-            renderer::ExportSource::chart(&spec_chart(), &spec_distinct),
-            renderer::ExportOptions::panel(2.0),
-        )
-        .expect("export");
-    over_space(&mut img);
-    std::fs::write(
+    r.save_blocking(
+        ExportSource::chart(&spec_chart(), &spec_distinct),
+        ExportOptions::panel(2.0).with_clear(SPACE),
         "target/constellation_demo/spectrum_x2.png",
-        encode_png(&img).expect("png"),
     )
-    .expect("write");
+    .expect("export");
     println!("wrote target/constellation_demo/spectrum_x2.png");
 
     // Sampling invariance: the same curve sampled coarsely (10 pts) vs
@@ -279,10 +228,10 @@ fn main() {
     };
     let (cx, cy) = curve(10, 70.0);
     let (fx, fy) = curve(400, 30.0);
-    r.add_column("coarse_x", &col(cx)).unwrap();
-    r.add_column("coarse_y", &col(cy)).unwrap();
-    r.add_column("fine_x", &col(fx)).unwrap();
-    r.add_column("fine_y", &col(fy)).unwrap();
+    r.add_column("coarse_x", &cx).unwrap();
+    r.add_column("coarse_y", &cy).unwrap();
+    r.add_column("fine_x", &fx).unwrap();
+    r.add_column("fine_y", &fy).unwrap();
     let sampling = [
         line_series(
             "samp_coarse",
@@ -309,30 +258,6 @@ fn main() {
     );
 
     // ── Step 2: ringed planets (scatter). Ring angle = ScatterShape. ──
-    let planet_series =
-        |id: &str, x: &str, y: &str, shape: ScatterShape, size: f32, color: Color| SeriesConfig {
-            series_id: id.into(),
-            source_id: None,
-            label: None,
-            x_column: x.into(),
-            y_column: y.into(),
-            z_column: None,
-            render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: Some(DataScatterStyleConfig {
-                    point_color: color,
-                    point_shape: shape,
-                    point_size: size,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                }),
-                line: None,
-                errors: None,
-                stem: None,
-            }),
-        };
 
     // Three scatter series, distinct ring angles, chart-scale markers.
     let m = 11;
@@ -354,10 +279,10 @@ fn main() {
         .enumerate()
         .map(|(i, _)| 21.0 + 9.0 * ((i as f64) * 1.3 + 2.0).sin())
         .collect();
-    r.add_column("px", &col(pxs)).unwrap();
-    r.add_column("pa", &col(pa)).unwrap();
-    r.add_column("pb", &col(pb)).unwrap();
-    r.add_column("pc", &col(pc)).unwrap();
+    r.add_column("px", &pxs).unwrap();
+    r.add_column("pa", &pa).unwrap();
+    r.add_column("pb", &pb).unwrap();
+    r.add_column("pc", &pc).unwrap();
     let chart_planets = [
         planet_series(
             "p_a",
@@ -394,8 +319,8 @@ fn main() {
     // Close-up showcase: few big planets to inspect the baked surfaces.
     let bx: Vec<f64> = vec![0.14, 0.38, 0.62, 0.86, 0.26, 0.74];
     let by: Vec<f64> = vec![70.0, 76.0, 68.0, 74.0, 30.0, 26.0];
-    r.add_column("bx", &col(bx)).unwrap();
-    r.add_column("by", &col(by)).unwrap();
+    r.add_column("bx", &bx).unwrap();
+    r.add_column("by", &by).unwrap();
     let big = [planet_series(
         "big",
         "bx",
@@ -412,36 +337,10 @@ fn main() {
     );
 
     // Line + scatter combined: planets riding their own star chain.
-    let combo = [SeriesConfig {
-        series_id: "combo".into(),
-        source_id: None,
-        label: None,
-        x_column: "px".into(),
-        y_column: "pb".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: Color::from_rgb8(255, 142, 92),
-                point_shape: ScatterShape::Circle,
-                point_size: 15.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: Some(DataLineStyleConfig {
-                line_style: LineStylePreset::Solid,
-                line_color: Color::from_rgb8(255, 142, 92),
-                line_width: 2.0,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            }),
-            errors: None,
-            stem: None,
-        }),
-    }];
+    let combo = [SeriesConfig::scatter_line("combo", "px", "pb")
+        .color(Color::from_rgb8(255, 142, 92))
+        .width(2.0)
+        .marker(ScatterShape::Circle, 15.0)];
     export(
         &mut r,
         &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
@@ -455,44 +354,27 @@ fn main() {
     let jerr: Vec<f64> = (0..m2)
         .map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs())
         .collect();
-    r.add_column("perr", &col(jerr)).unwrap();
-    let jets = [SeriesConfig {
-        series_id: "jets".into(),
-        source_id: None,
-        label: None,
-        x_column: "px".into(),
-        y_column: "pb".into(),
-        z_column: None,
-        render_type: DataRenderType::Xy(renderer::data_config::XySeries {
-            scatter: Some(DataScatterStyleConfig {
-                point_color: Color::from_rgb8(255, 142, 92),
-                point_shape: ScatterShape::Circle,
-                point_size: 13.0,
-                point_style_table: None,
-                point_style_index_column: None,
-                point_style_overrides: None,
-                point_color_map: None,
-                point_size_map: None,
-            }),
-            line: None,
-            errors: Some(renderer::data_config::ErrorBars {
-                x: None,
-                y: Some(ErrorRef::Symmetric {
-                    column: "perr".into(),
-                }),
-                style: DataErrorBarStyleConfig {
-                    error_bar_color: Color::from_rgb8(255, 160, 110),
-                    error_bar_width: 2.0,
-                    error_bar_cap_size: 7.0,
-                    cap_width: 2.0,
-                    error_bar_style_table: None,
-                    error_bar_style_index_column: None,
-                    error_bar_style_overrides: None,
-                },
-            }),
-            stem: None,
-        }),
-    }];
+    r.add_column("perr", &jerr).unwrap();
+    let mut jets = planet_series(
+        "jets",
+        "px",
+        "pb",
+        ScatterShape::Circle,
+        13.0,
+        Color::from_rgb8(255, 142, 92),
+    )
+    .y_errors("perr");
+    if let DataRenderType::Xy(XySeries {
+        errors: Some(errors),
+        ..
+    }) = &mut jets.render_type
+    {
+        errors.style.error_bar_color = Color::from_rgb8(255, 160, 110);
+        errors.style.error_bar_width = 2.0;
+        errors.style.error_bar_cap_size = 7.0;
+        errors.style.cap_width = 2.0;
+    }
+    let jets = [jets];
     export(
         &mut r,
         &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),

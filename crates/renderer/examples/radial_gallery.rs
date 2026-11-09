@@ -3,7 +3,7 @@
 //! `children` drawn as nested rings (source group, source, technology).
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use renderer::{
-    Color, Material, RendererDevice, encode_png,
+    Color, ExportOptions, Material, RendererDevice,
     gpu::{create_instance, request_adapter_blocking, request_device_blocking},
     radial::*,
 };
@@ -242,18 +242,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, mut chart) in cases {
         // The drawn label strings are written once each case is edited.
         chart.format_labels();
-        let img = renderer.export_rgba_blocking(
-            &chart,
-            (900, 620),
-            renderer::ExportOptions::document(1.0),
-        )?;
-        std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
+        let path = directory.join(format!("{name}.png"));
+        renderer.save_blocking(&chart, (900, 620), ExportOptions::document(1.0), &path)?;
         renderer.end_frame();
         gpu.device().poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: None,
         })?;
-        eprintln!("{name}: {}x{}", img.width, img.height);
+        eprintln!("{}", path.display());
     }
     Ok(())
 }

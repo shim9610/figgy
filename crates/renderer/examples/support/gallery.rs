@@ -1,56 +1,12 @@
 //! Shared native device setup, presentation defaults and PNG checks for gallery examples.
 //! Chart data and series definitions live in each example, not in this module.
 use renderer::{
-    Chart, Color, Renderer, SeriesConfig,
-    data::Column,
-    data_config::{DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape},
-    encode_png,
-    line::LineStylePreset,
+    Chart, Color, Renderer, SeriesConfig, encode_png,
     theme::{SubplotScope, Theme},
 };
 use std::{error::Error, path::Path};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
-
-pub fn column(data: Vec<f64>) -> Column<f64> {
-    Column { data }
-}
-
-pub fn line(color: Color, width: f32) -> DataLineStyleConfig {
-    DataLineStyleConfig {
-        line_style: LineStylePreset::Solid,
-        line_color: color,
-        line_width: width,
-        fill: None,
-        fill_color: None,
-        interpolation: renderer::data_config::LineInterpolation::Linear,
-    }
-}
-
-pub fn scatter(color: Color, size: f32) -> DataScatterStyleConfig {
-    DataScatterStyleConfig {
-        point_color: color,
-        point_shape: ScatterShape::CircleFilled,
-        point_size: size,
-        point_style_table: None,
-        point_style_index_column: None,
-        point_style_overrides: None,
-        point_color_map: None,
-        point_size_map: None,
-    }
-}
-
-pub fn series(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type,
-    }
-}
 
 /// The gallery look: the light theme with a navy title, a slate frame, a
 /// pale major grid and smaller text.

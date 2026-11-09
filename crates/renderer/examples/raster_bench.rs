@@ -6,20 +6,14 @@
 
 use std::time::Instant;
 
+use renderer::Chart;
 use renderer::axis_render::{AxisLayerKind, try_raster_chart_layer_to_rgba};
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
-use renderer::default;
-use renderer::layout::{ChartArea, Rect};
 
-fn build_config(w: u32, h: u32, style: DrawStyle) -> renderer::config::Config {
-    let mut config = default::default_config();
-    config.chart_area = ChartArea(Rect {
-        x: 0,
-        y: 0,
-        width: w,
-        height: h,
-    });
+fn build_chart(w: u32, h: u32, style: DrawStyle) -> Chart {
+    let mut chart = Chart::sized(w, h);
+    let config = chart.config_mut();
     config.draw_style = style;
     let chrome = Color::from_rgb8(186, 194, 210);
     for axis in [
@@ -32,7 +26,7 @@ fn build_config(w: u32, h: u32, style: DrawStyle) -> renderer::config::Config {
         axis.label_style.color = chrome;
         axis.title_option.text.color = chrome;
     }
-    config
+    chart
 }
 
 fn time_layer(config: &renderer::config::Config, layer: AxisLayerKind) -> f64 {
@@ -55,9 +49,9 @@ fn main() {
             ("precise", DrawStyle::Precise),
             ("milkyway", DrawStyle::Milkyway(MilkywayOptions::default())),
         ] {
-            let config = build_config(w, h, style);
-            let grid = time_layer(&config, AxisLayerKind::Grid);
-            let deco = time_layer(&config, AxisLayerKind::Decoration);
+            let chart = build_chart(w, h, style);
+            let grid = time_layer(chart.config(), AxisLayerKind::Grid);
+            let deco = time_layer(chart.config(), AxisLayerKind::Decoration);
             println!(
                 "{w}x{h} {name:>13}: grid {grid:7.2} ms | deco(+glow) {deco:7.2} ms | refresh total ~{:7.2} ms",
                 grid + deco

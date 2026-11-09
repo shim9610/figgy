@@ -22,15 +22,13 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
     Category, Chart, Color, Renderer, SeriesConfig,
-    config::{LegendCorner, LegendEntryKind, append_legend_entry, scatter_shape_char},
-    data::Column,
+    config::{LegendCorner, append_legend_entry, scatter_shape_char},
     data_config::{
-        BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarSeriesLabels,
-        CategoryBarStyle, DataRenderType, RangeColor, RangeConnector, RangeProgress,
-        RangeStateStyle, RangeTotal, RangeWhiskers, ScatterShape, XySeries,
+        BarGroups, CategoryBarDirection, CategoryBarLabels, DataRenderType, RangeColor,
+        RangeConnector, RangeProgress, RangeStateStyle, RangeTotal, RangeWhiskers, ScatterShape,
     },
     format::{LabelFormat, TimestampLabelFormat, TimestampLabelMode},
     text::RichSegment,
@@ -61,30 +59,6 @@ fn swatch(chart: &mut Chart, label: &str, color: Color) {
     );
     append_legend_entry(&mut legend.content, vec![mark], label);
     legend.visible = true;
-}
-
-/// A range bar series reading `start` and `end` at `positions`, every
-/// option off.
-fn range_bars(id: &str, positions: &str, start: &str, end: &str, color: Color) -> SeriesConfig {
-    series(
-        id,
-        positions,
-        end,
-        DataRenderType::RangeBars {
-            color,
-            style: CategoryBarStyle {
-                corner_radius: 3.0,
-                ..CategoryBarStyle::default()
-            },
-            start: start.into(),
-            whiskers: None,
-            color_by: RangeColor::Single,
-            progress: None,
-            connector: None,
-            slot_width: None,
-            labels: CategoryBarSeriesLabels::default(),
-        },
-    )
 }
 
 // A profit bridge: each step floats between the running total before and
@@ -135,13 +109,11 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
         }
         flag.push(if is_total { 1.0 } else { 0.0 });
     }
-    r.add_column(
-        "wf-pos",
-        &column((0..steps.len()).map(|i| i as f64).collect()),
-    )?;
-    r.add_column("wf-start", &column(start))?;
-    r.add_column("wf-end", &column(end))?;
-    r.add_column("wf-total", &column(flag))?;
+    let positions: Vec<f64> = (0..steps.len()).map(|i| i as f64).collect();
+    r.add_column("wf-pos", &positions)?;
+    r.add_column("wf-start", &start)?;
+    r.add_column("wf-end", &end)?;
+    r.add_column("wf-total", &flag)?;
     let config = chart.config_mut();
     config.bottom_x.categories = Some(
         steps
@@ -154,14 +126,16 @@ fn waterfall(r: &mut Renderer, out: &Path) -> Result {
         ..BarGroups::default()
     });
     config.legend.corner = LegendCorner::TopRight;
-    let mut bars = range_bars("bridge", "wf-pos", "wf-start", "wf-end", total);
+    let mut bars = SeriesConfig::range_bars("bridge", "wf-pos", "wf-start", "wf-end", total);
     if let DataRenderType::RangeBars {
+        style,
         color_by,
         connector,
         labels,
         ..
     } = &mut bars.render_type
     {
+        style.corner_radius = 3.0;
         *color_by = RangeColor::Direction {
             up,
             down,
@@ -236,13 +210,13 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
         })
         .collect();
     // Seconds since the epoch keep their full precision as hi/lo pairs.
-    r.add_hilo_column("cd-t", &Column { data: t })?;
-    r.add_column("cd-open", &column(open))?;
-    r.add_column("cd-close", &column(close))?;
-    r.add_column("cd-low", &column(low))?;
-    r.add_column("cd-high", &column(high))?;
-    r.add_column("cd-sma", &column(sma))?;
-    let mut candles = range_bars("price", "cd-t", "cd-open", "cd-close", up);
+    r.add_hilo_column("cd-t", &t)?;
+    r.add_column("cd-open", &open)?;
+    r.add_column("cd-close", &close)?;
+    r.add_column("cd-low", &low)?;
+    r.add_column("cd-high", &high)?;
+    r.add_column("cd-sma", &sma)?;
+    let mut candles = SeriesConfig::range_bars("price", "cd-t", "cd-open", "cd-close", up);
     if let DataRenderType::RangeBars {
         style,
         whiskers,
@@ -266,17 +240,10 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
         // One row is one day on the numeric time axis.
         *slot_width = Some(DAY);
     }
-    let trend = series(
-        "sma",
-        "cd-t",
-        "cd-sma",
-        DataRenderType::Xy(XySeries {
-            scatter: None,
-            line: Some(line(average, 2.5)),
-            errors: None,
-            stem: None,
-        }),
-    );
+    let trend = SeriesConfig::line("sma", "cd-t", "cd-sma")
+        .color(average)
+        .width(2.5)
+        .label("20-day moving average");
     let config = chart.config_mut();
     config.bar_groups = Some(BarGroups {
         group_width: 0.7,
@@ -289,12 +256,12 @@ fn candlestick(r: &mut Renderer, out: &Path) -> Result {
     });
     swatch(&mut chart, "Close above open", up);
     swatch(&mut chart, "Close below open", down);
-    chart = chart.with_legend_entry("20-day moving average", average, 2.5, LegendEntryKind::Line);
+    let specs = [candles, trend];
+    chart = chart.with_legend_from(&specs);
     chart.set_x_range(T0 - DAY, T0 + n as f64 * DAY);
     chart.set_y_range(95., 125.);
     chart.config_mut().left_y.major_spacing = 5.;
     chart.config_mut().left_y.auto_significant_digits();
-    let specs = [candles, trend];
     let image = export(r, &chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-candlestick.png"))
 }
@@ -346,22 +313,12 @@ fn gantt(r: &mut Renderer, out: &Path) -> Result {
         tasks.iter().map(f).collect()
     };
     let last = (rows.len() - 1) as f64;
-    r.add_column("gt-row", &column(pick(&|t| last - t.0 as f64)))?;
-    r.add_hilo_column(
-        "gt-start",
-        &Column {
-            data: pick(&|t| T0 + t.1 * DAY),
-        },
-    )?;
-    r.add_hilo_column(
-        "gt-end",
-        &Column {
-            data: pick(&|t| T0 + (t.1 + t.2) * DAY),
-        },
-    )?;
-    r.add_column("gt-state", &column(pick(&|t| t.3 as f64)))?;
-    r.add_column("gt-progress", &column(pick(&|t| t.4)))?;
-    let mut bars = range_bars("tasks", "gt-row", "gt-start", "gt-end", states[3].1);
+    r.add_column("gt-row", &pick(&|t| last - t.0 as f64))?;
+    r.add_hilo_column("gt-start", &pick(&|t| T0 + t.1 * DAY))?;
+    r.add_hilo_column("gt-end", &pick(&|t| T0 + (t.1 + t.2) * DAY))?;
+    r.add_column("gt-state", &pick(&|t| t.3 as f64))?;
+    r.add_column("gt-progress", &pick(&|t| t.4))?;
+    let mut bars = SeriesConfig::range_bars("tasks", "gt-row", "gt-start", "gt-end", states[3].1);
     if let DataRenderType::RangeBars {
         color_by,
         progress,

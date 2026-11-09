@@ -18,14 +18,11 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::*;
+use gallery::{Result, chart, output_directory, save, with_renderer};
 use renderer::{
-    Color, ColorMap, Renderer,
+    Color, ColorMap, Renderer, SeriesConfig,
     config::AxisScale,
-    data_config::{
-        ContourConfig, ContourLabelConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout,
-        MatrixOrientation, MatrixRef, Shading,
-    },
+    data_config::{ContourLabelConfig, DataRenderType, FieldFillConfig, MatrixRef, Shading},
     default,
     format::{LabelFormat, PlainNumberFormat},
     text::RichText,
@@ -44,56 +41,43 @@ fn contours(r: &mut Renderer, out: &Path) -> Result {
     let axis: Vec<f64> = (0..n)
         .map(|i| -3.0 + 6.0 * i as f64 / (n - 1) as f64)
         .collect();
-    r.add_column("field-x", &column(axis.clone()))?;
-    r.add_column("field-y", &column(axis.clone()))?;
+    r.add_column("field-x", &axis)?;
+    r.add_column("field-y", &axis)?;
     let mut columns = Vec::new();
     for (i, x) in axis.iter().enumerate() {
         let id = format!("field-z-{i}");
-        let values = axis
+        let values: Vec<f64> = axis
             .iter()
             .map(|y| {
                 1.1 * (-((x + 1.0).powi(2) / 1.3 + (y - 0.7).powi(2) / 0.8)).exp()
                     + 0.85 * (-((x - 1.1).powi(2) / 0.7 + (y + 0.7).powi(2) / 1.8)).exp()
             })
             .collect();
-        r.add_column(id.clone(), &column(values))?;
+        r.add_column(id.clone(), &values)?;
         columns.push(id);
     }
-    let contour = ContourConfig {
-        levels: (1..=10).map(|i| i as f64 * 0.1).collect(),
-        line: line(Color::from_rgba(1.0, 1.0, 1.0, 0.9), 1.3),
-        per_level_color: None,
-        labels: Some(ContourLabelConfig {
-            visible: true,
-            font_size: 13.0,
-            color: Color::WHITE,
-            format: LabelFormat::Decimal,
-            significant_digits: 2,
-            spacing_px: 140.0,
-            anchors: Vec::new(),
-            bg_color: None,
-            bg_padding_px: 3.0,
-        }),
-    };
-    let specs = [series(
-        "potential",
-        "field-x",
-        "field-y",
-        DataRenderType::Field(renderer::data_config::FieldSeries {
-            matrix: MatrixRef {
-                columns,
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
-            },
-            fill: Some(FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.0,
-            }),
-            contour: Some(contour),
-            surface: None,
-        }),
-    )];
+    let levels = (1..=10).map(|i| i as f64 * 0.1).collect();
+    let matrix = MatrixRef::columns_are_x(columns);
+    let mut potential = SeriesConfig::contours("potential", "field-x", "field-y", matrix, levels)
+        .color(Color::from_rgba(1.0, 1.0, 1.0, 0.9))
+        .width(1.3);
+    // Under the isolines an interpolated fill; on them white labels.
+    if let DataRenderType::Field(field) = &mut potential.render_type {
+        field.fill = Some(FieldFillConfig {
+            shading: Shading::Interpolated,
+            ..Default::default()
+        });
+        if let Some(contour) = &mut field.contour {
+            contour.labels = Some(ContourLabelConfig {
+                font_size: 13.0,
+                color: Color::WHITE,
+                spacing_px: 140.0,
+                bg_padding_px: 3.0,
+                ..Default::default()
+            });
+        }
+    }
+    let specs = [potential];
     let mut c = chart("A smooth field, exact contour levels", "x", "y", (960, 640));
     c.set_x_range(-3.0, 3.0);
     c.set_y_range(-3.0, 3.0);
@@ -208,42 +192,25 @@ fn hexbin(r: &mut Renderer, out: &Path) -> Result {
         }
     }
     let peak = counts.iter().copied().fold(0.0f64, f64::max);
-    r.add_column(
-        "hexbin-x",
-        &column((0..cols).map(|c| x_min + c as f64 * px).collect()),
-    )?;
-    r.add_column(
-        "hexbin-y",
-        &column((0..rows).map(|row| y_min + row as f64 * py).collect()),
-    )?;
+    let centres_x: Vec<f64> = (0..cols).map(|c| x_min + c as f64 * px).collect();
+    let centres_y: Vec<f64> = (0..rows).map(|row| y_min + row as f64 * py).collect();
+    r.add_column("hexbin-x", &centres_x)?;
+    r.add_column("hexbin-y", &centres_y)?;
     let mut ids = Vec::with_capacity(cols);
     for c in 0..cols {
         let id = format!("hexbin-n-{c}");
-        let cells = counts[c * rows..(c + 1) * rows]
+        let cells: Vec<f64> = counts[c * rows..(c + 1) * rows]
             .iter()
             .map(|n| if *n > 0.0 { *n } else { f64::NAN })
             .collect();
-        r.add_column(id.clone(), &column(cells))?;
+        r.add_column(id.clone(), &cells)?;
         ids.push(id);
     }
-    let specs = [series(
+    let specs = [SeriesConfig::hexbin(
         "pickups",
         "hexbin-x",
         "hexbin-y",
-        DataRenderType::Field(renderer::data_config::FieldSeries {
-            matrix: MatrixRef {
-                columns: ids,
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Hexagonal,
-            },
-            fill: Some(FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Flat,
-                opacity: 1.0,
-            }),
-            contour: None,
-            surface: None,
-        }),
+        MatrixRef::columns_are_x(ids),
     )];
     chart.set_x_range(x_min, x_max);
     chart.set_y_range(y_min, y_max);
@@ -378,41 +345,25 @@ fn imshow(r: &mut Renderer, out: &Path) -> Result {
     }
     // The host's display stretch: an arcsinh curve lifts the faint halo.
     let stretch = |v: f64| ((8.0 * v).asinh() / 8f64.asinh()).clamp(0.0, 1.0);
-    r.add_column(
-        "nebula-x",
-        &column((0..w).map(|c| c as f64 + 0.5 - half_w).collect()),
-    )?;
-    r.add_column(
-        "nebula-y",
-        &column((0..h).map(|row| row as f64 + 0.5 - half_h).collect()),
-    )?;
+    let pixel_x: Vec<f64> = (0..w).map(|c| c as f64 + 0.5 - half_w).collect();
+    let pixel_y: Vec<f64> = (0..h).map(|row| row as f64 + 0.5 - half_h).collect();
+    r.add_column("nebula-x", &pixel_x)?;
+    r.add_column("nebula-y", &pixel_y)?;
     let mut channels: [Vec<String>; 3] = Default::default();
     for (k, name) in ["r", "g", "b"].into_iter().enumerate() {
         for c in 0..w {
             let id = format!("nebula-{name}-{c}");
-            let values = (0..h).map(|row| stretch(pixels[c * h + row][k])).collect();
-            r.add_column(id.clone(), &column(values))?;
+            let values: Vec<f64> = (0..h).map(|row| stretch(pixels[c * h + row][k])).collect();
+            r.add_column(id.clone(), &values)?;
             channels[k].push(id);
         }
     }
-    let lattice = |columns: &Vec<String>| MatrixRef {
-        columns: columns.clone(),
-        orientation: MatrixOrientation::ColumnsAreX,
-        grid_layout: GridLayout::Centers,
-    };
-    let specs = [series(
-        "nebula",
-        "nebula-x",
-        "nebula-y",
-        DataRenderType::RgbImage {
-            red: lattice(&channels[0]),
-            green: lattice(&channels[1]),
-            blue: lattice(&channels[2]),
-            range: [0.0, 1.0],
-            shading: Shading::Interpolated,
-            opacity: 1.0,
-        },
-    )];
+    let [red, green, blue] = channels.map(MatrixRef::columns_are_x);
+    let mut nebula = SeriesConfig::rgb_image("nebula", "nebula-x", "nebula-y", red, green, blue);
+    if let DataRenderType::RgbImage { shading, .. } = &mut nebula.render_type {
+        *shading = Shading::Interpolated;
+    }
+    let specs = [nebula];
     chart.set_x_range(-half_w, half_w);
     chart.set_y_range(-half_h, half_h);
     chart.config_mut().bottom_x.major_spacing = 40.0;

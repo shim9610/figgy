@@ -1,8 +1,8 @@
 //! An independent rich title on a pie chart.
 //! cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles
 use renderer::{
-    BoundedTitleOptions, Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice,
-    TextAlign, encode_png,
+    BoundedTitleOptions, Color, ExportOptions, RadialChart, RadialRenderer, RadialSlice,
+    RendererDevice, TextAlign,
     gpu::{create_instance, request_adapter_blocking, request_device_blocking},
 };
 use std::path::PathBuf;
@@ -48,8 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pie.format_labels();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut radial = RadialRenderer::try_new(gpu, format)?;
-    let image =
-        radial.export_rgba_blocking(&pie, (800, 520), renderer::ExportOptions::document(2.))?;
-    std::fs::write(output.join("pie.png"), encode_png(&image)?)?;
+    let options = ExportOptions::document(2.);
+    radial.save_blocking(&pie, (800, 520), options, output.join("pie.png"))?;
     Ok(())
 }

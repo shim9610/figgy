@@ -17,15 +17,24 @@ mod gallery;
 #[allow(dead_code)]
 #[path = "support/styled.rs"]
 mod styled;
-use gallery::{Result, column, line, series};
+use gallery::Result;
 use renderer::{
-    Color, Renderer,
-    config::LegendEntryKind,
-    data_config::{DataRenderType, LineFill, LineInterpolation},
+    Color, Renderer, SeriesConfig,
+    data_config::{DataLineStyleConfig, DataRenderType, LineFill, LineInterpolation, XySeries},
     line::LineStylePreset,
 };
 use std::path::Path;
 use styled::{cartesian, export, rgb, save};
+
+/// The line style of a line series, for the fields no modifier sets.
+fn line_of(series: &mut SeriesConfig) -> &mut DataLineStyleConfig {
+    match &mut series.render_type {
+        DataRenderType::Xy(XySeries {
+            line: Some(line), ..
+        }) => line,
+        _ => unreachable!("a line series"),
+    }
+}
 
 // A forecast: the history as a solid line, the forecast dashed, with 80% and
 // 95% bands filled between their edge series.
@@ -95,62 +104,33 @@ fn forecast(r: &mut Renderer, out: &Path) -> Result {
         ("up95", up95),
         ("lo95", lo95),
     ] {
-        r.add_column(id, &column(data))?;
+        r.add_column(id, &data)?;
     }
     let edge = |id: &str, to: Option<&str>, alpha: f32| {
-        let mut style = line(Color::from_rgba(teal.r, teal.g, teal.b, 0.0), 0.5);
+        let mut series = SeriesConfig::line(id, "day", id)
+            .color(Color::from_rgba(teal.r, teal.g, teal.b, 0.0))
+            .width(0.5);
+        let style = line_of(&mut series);
         style.fill = to.map(|s| LineFill::ToSeries(s.into()));
         style.fill_color = Some(Color::from_rgba(teal.r, teal.g, teal.b, alpha));
-        series(
-            id,
-            "day",
-            id,
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(style),
-                errors: None,
-                stem: None,
-            }),
-        )
+        series
     };
-    let mut dashed = line(teal, 3.);
-    dashed.line_style = LineStylePreset::Dash;
     let specs = [
         edge("up95", Some("lo95"), 0.14),
         edge("lo95", None, 0.),
         edge("up80", Some("lo80"), 0.22),
         edge("lo80", None, 0.),
-        series(
-            "history",
-            "day",
-            "history",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(ink, 3.)),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "forecast",
-            "day",
-            "forecast",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(dashed),
-                errors: None,
-                stem: None,
-            }),
-        ),
+        SeriesConfig::line("history", "day", "history")
+            .label("Actual")
+            .color(ink)
+            .width(3.),
+        SeriesConfig::line("forecast", "day", "forecast")
+            .label("Forecast, 80% and 95% bands")
+            .color(teal)
+            .width(3.)
+            .dash(LineStylePreset::Dash),
     ];
-    chart = chart
-        .with_legend_entry("Actual", ink, 3., LegendEntryKind::Line)
-        .with_legend_entry(
-            "Forecast, 80% and 95% bands",
-            teal,
-            3.,
-            LegendEntryKind::Line,
-        );
+    chart = chart.with_legend_from(&specs);
     let image = export(r, &chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-forecast.png"))
 }
@@ -206,41 +186,24 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
             temp
         })
         .collect();
-    r.add_column("hour", &column(hours))?;
-    r.add_column("setpoint", &column(setpoint))?;
-    r.add_column("minute", &column(minute))?;
-    r.add_column("room", &column(room))?;
-    let mut step = line(violet, 2.5);
+    r.add_column("hour", &hours)?;
+    r.add_column("setpoint", &setpoint)?;
+    r.add_column("minute", &minute)?;
+    r.add_column("room", &room)?;
+    let mut schedule = SeriesConfig::line("setpoint", "hour", "setpoint")
+        .label("Setpoint schedule")
+        .color(violet)
+        .width(2.5)
+        .fill_to(14.);
+    let step = line_of(&mut schedule);
     step.interpolation = LineInterpolation::StepPost;
-    step.fill = Some(LineFill::ToBaseline(14.));
     step.fill_color = Some(Color::from_rgba(violet.r, violet.g, violet.b, 0.16));
-    let specs = [
-        series(
-            "setpoint",
-            "hour",
-            "setpoint",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(step),
-                errors: None,
-                stem: None,
-            }),
-        ),
-        series(
-            "room",
-            "minute",
-            "room",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(line(coral, 3.5)),
-                errors: None,
-                stem: None,
-            }),
-        ),
-    ];
-    chart = chart
-        .with_legend_entry("Setpoint schedule", violet, 2.5, LegendEntryKind::Line)
-        .with_legend_entry("Room temperature", coral, 3.5, LegendEntryKind::Line);
+    let measured = SeriesConfig::line("room", "minute", "room")
+        .label("Room temperature")
+        .color(coral)
+        .width(3.5);
+    let specs = [schedule, measured];
+    chart = chart.with_legend_from(&specs);
     let image = export(r, &chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-thermostat.png"))
 }
@@ -250,8 +213,8 @@ fn thermostat(r: &mut Renderer, out: &Path) -> Result {
 fn step_modes(r: &mut Renderer, out: &Path) -> Result {
     let sx: Vec<f64> = (0..8).map(f64::from).collect();
     let sy = vec![1.0, 2.5, 1.5, 3.0, 2.0, 3.5, 2.5, 3.0];
-    r.add_column("sx", &column(sx))?;
-    r.add_column("sy", &column(sy))?;
+    r.add_column("sx", &sx)?;
+    r.add_column("sy", &sy)?;
     let steps = [
         (
             "pre",
@@ -270,21 +233,12 @@ fn step_modes(r: &mut Renderer, out: &Path) -> Result {
         ),
     ]
     .map(|(id, interpolation, color)| {
-        let mut style = line(color, 2.0);
+        let mut series = SeriesConfig::line(id, "sx", "sy").color(color).width(2.0);
+        let style = line_of(&mut series);
         style.interpolation = interpolation;
         // A fill under a step line follows the steps.
         style.fill = (id == "post").then_some(LineFill::ToBaseline(0.0));
-        series(
-            id,
-            "sx",
-            "sy",
-            DataRenderType::Xy(renderer::data_config::XySeries {
-                scatter: None,
-                line: Some(style),
-                errors: None,
-                stem: None,
-            }),
-        )
+        series
     });
     let mut chart = gallery::chart("Step interpolation", "Sample", "Value", (960, 600));
     chart.set_x_range(-0.5, 7.5);
