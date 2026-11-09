@@ -441,6 +441,38 @@ documents the intended `prepare` / `paint_prepared` ownership pattern, but its
 build target is disabled while iced 0.14 remains on wgpu 27. wgpu device,
 queue, and render-pass types cannot be shared across major versions.
 
+### Series constructors
+
+With the `helpers` feature (on by default), each chart family has a
+constructor on `SeriesConfig` that names its columns and draws with the
+host style defaults. Chainable modifiers set the common fields; any other
+field is set on the returned series directly. Both are plain values in the
+document: nothing is stored besides the series.
+
+```rust
+use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
+
+let series = [
+    SeriesConfig::line("sine", "x", "y").label("sin x").width(2.0),
+    SeriesConfig::scatter("samples", "x", "noisy")
+        .label("samples")
+        .color(Color::from_rgb8(214, 39, 40))
+        .marker(ScatterShape::Diamond, 7.0)
+        .y_errors("sigma"),
+    SeriesConfig::line("trend", "x", "fit").dash(LineStylePreset::Dash).fill_to(0.0),
+];
+```
+
+The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
+`heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`,
+`category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`,
+`mesh`, `energy_diagram` and `feynman_diagram` (and `of_kind` for any
+`DataRenderType`). Matrices are named with `MatrixRef::columns_are_x` or
+`columns_are_y`. The modifiers: `label`, `color`, `width`, `dash`, `marker`,
+`fill_to`, `x_errors`, `y_errors`, `horizontal` (histograms) and `z` (3D).
+A family that needs its chart set up (a category axis, polar, ternary or
+parallel axes) still validates against that chart.
+
 ### Cartesian series, maps and layers
 
 Every column-backed series is declared in `SeriesConfig::render_type`
@@ -988,6 +1020,34 @@ if let Some(ticket) = pending.take() {
 ### iced 통합 상태
 
 [보관 중인 iced 통합 예제](https://github.com/shim9610/figgy/blob/master/crates/renderer/unsupported/iced_embed_wgpu27.rs)에서 `prepare` / `paint_prepared`의 소유권 패턴을 확인할 수 있다. 다만 iced 0.14는 wgpu 27을 사용하므로 현재 빌드 대상에서는 제외한다. 서로 다른 wgpu 주 버전의 장치·큐·렌더 패스 타입은 공유할 수 없다.
+
+### 시리즈 생성 함수
+
+`helpers` 기능(기본으로 켜져 있다)을 쓰면 차트 종류마다 `SeriesConfig`에 생성 함수가 있다. 생성
+함수는 컬럼을 지정하고 호스트용 기본 스타일로 그린다. 이어 붙이는 수정 메서드로 공통 필드를 바꾸고,
+그 밖의 필드는 돌려받은 시리즈에서 직접 고친다. 둘 다 문서 안의 값일 뿐이며 시리즈 말고는 따로
+저장하는 것이 없다.
+
+```rust
+use renderer::{ScatterShape, SeriesConfig, color::Color, line::LineStylePreset};
+
+let series = [
+    SeriesConfig::line("sine", "x", "y").label("sin x").width(2.0),
+    SeriesConfig::scatter("samples", "x", "noisy")
+        .label("samples")
+        .color(Color::from_rgb8(214, 39, 40))
+        .marker(ScatterShape::Diamond, 7.0)
+        .y_errors("sigma"),
+    SeriesConfig::line("trend", "x", "fit").dash(LineStylePreset::Dash).fill_to(0.0),
+];
+```
+
+생성 함수: `line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`,
+`rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`,
+`parallel`, `mesh`, `energy_diagram`, `feynman_diagram`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다.
+행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로 지정한다. 수정 메서드: `label`, `color`, `width`,
+`dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal`(히스토그램), `z`(3D). 차트 설정이
+필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그 차트 설정에 맞춰 검증된다.
 
 ### 직교 시리즈·매핑·레이어
 
