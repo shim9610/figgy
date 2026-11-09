@@ -665,13 +665,24 @@ fn each_radius_label(
         |value| point(geometry, ray, ring_radius(polar, geometry, axis, value)),
         |position, m| centered_rect(center(position, m), m),
     );
+    let radius_of = |position: (f32, f32)| {
+        (position.0 - geometry.center[0]).hypot(position.1 - geometry.center[1])
+    };
+    let drawn = |radius: f32| radius >= inner - 0.5 && radius <= geometry.radius + 0.5;
+    // The innermost drawn label, skipped when the chart hides it (#259).
+    let first = polar
+        .hide_first_radius_label
+        .then(|| {
+            labels
+                .iter()
+                .map(|label| radius_of(label.position))
+                .filter(|radius| drawn(*radius))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .filter(|radius| radius.is_finite());
     for label in &labels {
-        let (dx, dy) = (
-            label.position.0 - geometry.center[0],
-            label.position.1 - geometry.center[1],
-        );
-        let radius = dx.hypot(dy);
-        if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
+        let radius = radius_of(label.position);
+        if !drawn(radius) || first == Some(radius) {
             continue;
         }
         let m = extents(&label.text, ls, measure);
@@ -737,5 +748,71 @@ fn extents(text: &NumericTickText, ls: &LabelStyle, measure: &dyn MeasureText) -
     match text {
         NumericTickText::Plain(text) => measure.measure_plain(text, &ls.label_font, ls.font_size),
         NumericTickText::Power(text) => measure.measure_rich(text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `hide_first_radius_label` drops the innermost ring's label and keeps
+    /// every other one where it was (#259).
+    #[test]
+    fn hiding_the_first_radius_label_drops_only_the_innermost() {
+        struct Measure;
+        impl crate::text::MeasureText for Measure {
+            fn measure_plain(
+                &self,
+                text: &str,
+                _family: &str,
+                size: f32,
+            ) -> crate::text::TextExtents {
+                crate::text::TextExtents {
+                    width: text.chars().count() as f32 * size * 0.5,
+                    ascent: size * 0.8,
+                    descent: size * 0.2,
+                }
+            }
+            fn measure_rich(&self, _text: &crate::text::RichText) -> crate::text::TextExtents {
+                TextExtents {
+                    width: 0.0,
+                    ascent: 0.0,
+                    descent: 0.0,
+                }
+            }
+        }
+        let labels = |config: &Config| {
+            let da = config.data_area().unwrap();
+            let mut rects = Vec::new();
+            let mut each = |part: crate::sink::DrawnPart| {
+                if let crate::sink::DrawnPart::Text(rect) = part {
+                    rects.push(rect);
+                }
+            };
+            emit_polar_radius_labels(config, &da, &Measure, &mut crate::sink::Parts(&mut each));
+            rects
+        };
+        let mut config = crate::default::default_config();
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 360.0;
+        config.left_y.min = 0.0;
+        config.left_y.max = 10.0;
+        config.set_polar(Some(crate::polar::PolarOptions::default()));
+        let all = labels(&config);
+        assert!(all.len() >= 3, "{all:?}");
+        let mut hidden = config.clone();
+        hidden.polar_mut().unwrap().hide_first_radius_label = true;
+        let kept = labels(&hidden);
+        assert_eq!(kept.len(), all.len() - 1);
+        let center = config.polar_geometry().unwrap().center;
+        let distance = |r: &crate::layout::RectF| {
+            (r.x + r.width * 0.5 - center[0]).hypot(r.y + r.height * 0.5 - center[1])
+        };
+        let innermost = all
+            .iter()
+            .min_by(|a, b| distance(a).total_cmp(&distance(b)))
+            .unwrap();
+        assert!(!kept.contains(innermost));
+        assert!(kept.iter().all(|r| all.contains(r)));
     }
 }

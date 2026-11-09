@@ -808,25 +808,47 @@ pub fn axis_title_placement(
 /// tick reach, and is centred along the strip's own long dimension. Therefore
 /// `length_frac`, `align`, `offset_{x,y}`, and resize all move the title through
 /// the same rectangle that the renderer paints and the hit map selects.
+///
+/// `labels_reach` is how far past the strip's outer edge the tick labels
+/// reach ([`colorbar_labels_reach`](crate::chrome::colorbar_labels_reach),
+/// zero without labels). A title that the band's centre would put over the
+/// labels sits a small gap past them instead, as far as the band reaches
+/// (#259).
 pub fn colorbar_title_placement(
     side: Side,
     strip: &RectF,
     axis: &AxisOptions,
     offset: (f32, f32),
     extents: TextExtents,
+    labels_reach: f32,
 ) -> TitlePlacement {
     let tick = axis.major_tick_length.max(0.0);
     let out_margin = axis.out_margin.max(0.0);
+    // The room kept between the labels and the title, and between the title
+    // and the band's outer edge: a third of the label font, the clearance
+    // `auto_layout` keeps at the default 12 px labels, so a scaled export
+    // keeps the 1x proportions.
+    let gap = axis.label_style.font_size.max(0.0) / 3.0;
+    let clear = if labels_reach.is_finite() && labels_reach > 0.0 {
+        labels_reach + gap
+    } else {
+        0.0
+    };
+    // How far past the strip's outer edge the title's inner edge sits:
+    // centred in the band, or past the labels, but no closer to the band's
+    // outer edge (where the chart area may end) than the gap.
+    let centred = tick + (out_margin - extents.height()) * 0.5;
+    let inner = centred.max(clear.min(tick + out_margin - extents.height() - gap));
     match side {
         Side::Top | Side::Bottom => {
-            let band_top = if matches!(side, Side::Top) {
-                strip.y - tick - out_margin
+            let title_top = if matches!(side, Side::Top) {
+                strip.y - inner - extents.height()
             } else {
-                strip.y + strip.height + tick
+                strip.y + strip.height + inner
             };
             let origin = (
                 strip.x + strip.width * 0.5 - extents.width * 0.5 + offset.0,
-                band_top + (out_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
+                title_top + extents.ascent + offset.1,
             );
             TitlePlacement {
                 origin,
@@ -835,11 +857,13 @@ pub fn colorbar_title_placement(
             }
         }
         Side::Left | Side::Right => {
+            // The rotated title's thickness across the strip is its height.
+            let reach = inner + extents.height() * 0.5;
             let center = (
                 if matches!(side, Side::Left) {
-                    strip.x - tick - out_margin * 0.5
+                    strip.x - reach
                 } else {
-                    strip.x + strip.width + tick + out_margin * 0.5
+                    strip.x + strip.width + reach
                 },
                 strip.y + strip.height * 0.5,
             );
@@ -1190,17 +1214,26 @@ impl BandMeasure {
     /// whole pixel. `None` when there is no title, or when the title at
     /// `offset` already clears the labels by the clearance and stays inside
     /// the band.
-    fn placed_offset(&self, band: f32, offset: f32) -> Option<f32> {
+    fn placed_offset(&self, band: f32, offset: f32, pushed: Option<f32>) -> Option<f32> {
         const EPS: f32 = 1e-3;
         let (near, far) = self.title?;
         let thickness = far - near;
         let clear = self.reach.unwrap_or(0.0) + AUTO_LAYOUT_CLEARANCE;
-        // The centred title's inner edge, moved by the offset.
-        let at = (band - thickness) * 0.5 + offset;
+        // The title's inner edge before the offset, as the placement puts
+        // it: centred in the band, or for a colourbar title (`pushed`, the
+        // gap it keeps past its labels) past the labels when the centre would
+        // sit on them (`colorbar_title_placement`, #259); then moved by the
+        // offset.
+        let centred = (band - thickness) * 0.5;
+        let base = match pushed {
+            Some(gap) => centred.max((self.reach.unwrap_or(0.0) + gap).min(band - thickness - gap)),
+            None => centred,
+        };
+        let at = base + offset;
         if at >= clear - EPS && at + thickness <= band + EPS {
             return None;
         }
-        let placed = (clear - (band - thickness) * 0.5).ceil();
+        let placed = (clear - base).ceil();
         (placed.is_finite() && placed != offset).then_some(placed)
     }
 }
@@ -1474,7 +1507,12 @@ fn fit_band(
     }
     if let Some(axis) = owner.axis(cfg) {
         let sign = outward_sign(side);
-        if let Some(outward) = band.placed_offset(width, sign * axis.title_option.offset_y) {
+        // A colourbar title is pushed past its labels by a third of their
+        // font (`colorbar_title_placement`).
+        let pushed =
+            matches!(owner, BandOwner::ColorBar).then(|| axis.label_style.font_size.max(0.0) / 3.0);
+        if let Some(outward) = band.placed_offset(width, sign * axis.title_option.offset_y, pushed)
+        {
             axis.title_option.offset_y = sign * outward;
             changed = true;
         }
@@ -1924,16 +1962,68 @@ mod tests {
 
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
             let before =
-                colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m).rect(m);
-            let after = colorbar_title_placement(side, &moved, &axis, (0.0, 0.0), m).rect(m);
+                colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m, 0.0).rect(m);
+            let after = colorbar_title_placement(side, &moved, &axis, (0.0, 0.0), m, 0.0).rect(m);
             assert_eq!(after, before.translated(13.0, -9.0));
         }
 
-        let right = colorbar_title_placement(Side::Right, &strip, &axis, (0.0, 0.0), m).rect(m);
+        let right =
+            colorbar_title_placement(Side::Right, &strip, &axis, (0.0, 0.0), m, 0.0).rect(m);
         assert_eq!(right.y + right.height * 0.5, strip.y + strip.height * 0.5);
 
-        let top = colorbar_title_placement(Side::Top, &strip, &axis, (0.0, 0.0), m).rect(m);
+        let top = colorbar_title_placement(Side::Top, &strip, &axis, (0.0, 0.0), m, 0.0).rect(m);
         assert_eq!(top.x + top.width * 0.5, strip.x + strip.width * 0.5);
+    }
+
+    #[test]
+    fn colorbar_title_clears_the_tick_labels_on_every_side() {
+        let strip = RectF {
+            x: 300.0,
+            y: 200.0,
+            width: 40.0,
+            height: 100.0,
+        };
+        let mut axis = crate::default::default_axis_options_colorbar();
+        // A band wide enough for the labels and the title, whose centre
+        // would sit on the labels (#259).
+        axis.out_margin = 60.0;
+        let m = extents();
+        let reach = 30.0;
+        let clear = reach + axis.label_style.font_size / 3.0 - 1e-3;
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let r =
+                colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m, reach).rect(m);
+            match side {
+                Side::Right => assert!(r.x >= strip.x + strip.width + clear, "{r:?}"),
+                Side::Left => assert!(r.x + r.width <= strip.x - clear, "{r:?}"),
+                Side::Bottom => assert!(r.y >= strip.y + strip.height + clear, "{r:?}"),
+                Side::Top => assert!(r.y + r.height <= strip.y - clear, "{r:?}"),
+            }
+        }
+        // A band too narrow to clear them: the title goes no further than
+        // the band's outer edge, where the chart area may end.
+        axis.out_margin = 36.0;
+        let tick = axis.major_tick_length.max(0.0);
+        let band_end = tick + axis.out_margin + 1e-3;
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let r =
+                colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m, reach).rect(m);
+            match side {
+                Side::Right => assert!(r.x + r.width <= strip.x + strip.width + band_end, "{r:?}"),
+                Side::Left => assert!(r.x >= strip.x - band_end, "{r:?}"),
+                Side::Bottom => {
+                    assert!(r.y + r.height <= strip.y + strip.height + band_end, "{r:?}")
+                }
+                Side::Top => assert!(r.y >= strip.y - band_end, "{r:?}"),
+            }
+        }
+        // A band wide enough keeps the title at its centre.
+        axis.out_margin = 200.0;
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let with = colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m, reach);
+            let without = colorbar_title_placement(side, &strip, &axis, (0.0, 0.0), m, 0.0);
+            assert_eq!(with.rect(m), without.rect(m));
+        }
     }
 
     #[test]
@@ -2260,17 +2350,22 @@ mod tests {
         // In a 110 px band the centred title's inner edge is at 48.5, clear
         // of labels reaching 30 + 4: it stays, and so does an offset one that
         // still clears them inside the band.
-        assert_eq!(both.placed_offset(110.0, 0.0), None);
-        assert_eq!(both.placed_offset(110.0, -14.5), None);
-        assert_eq!(both.placed_offset(110.0, 40.0), None);
+        assert_eq!(both.placed_offset(110.0, 0.0, None), None);
+        assert_eq!(both.placed_offset(110.0, -14.5, None), None);
+        assert_eq!(both.placed_offset(110.0, 40.0, None), None);
         // Into the labels, or out of the band: placed at 34, i.e. -14.5,
         // rounded outward.
-        assert_eq!(both.placed_offset(110.0, -20.0), Some(-14.0));
-        assert_eq!(both.placed_offset(110.0, 50.0), Some(-14.0));
+        assert_eq!(both.placed_offset(110.0, -20.0, None), Some(-14.0));
+        assert_eq!(both.placed_offset(110.0, 50.0, None), Some(-14.0));
         // A band of exactly 51 px: the title's inner edge goes from 19 to 34.
-        assert_eq!(both.placed_offset(51.0, 0.0), Some(15.0));
-        assert_eq!(both.placed_offset(51.0, 15.0), None);
-        assert_eq!(labels.placed_offset(110.0, -20.0), None, "no title");
+        assert_eq!(both.placed_offset(51.0, 0.0, None), Some(15.0));
+        assert_eq!(both.placed_offset(51.0, 15.0, None), None);
+        assert_eq!(labels.placed_offset(110.0, -20.0, None), None, "no title");
+        // A colourbar title is already placed past its labels (#259): in the
+        // 51 px band it needs no offset, and an offset that would pull it back
+        // over them moves it to the same place.
+        assert_eq!(both.placed_offset(51.0, 0.0, Some(LABEL_GAP)), None);
+        assert_eq!(both.placed_offset(51.0, -10.0, Some(LABEL_GAP)), Some(0.0));
     }
 
     // auto_layout (#44).

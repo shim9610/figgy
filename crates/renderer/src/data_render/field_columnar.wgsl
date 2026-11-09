@@ -202,7 +202,8 @@ struct ContourMetric {
     kappa: f32,
     gradient_square: f32,
     /// The gradient's unit direction in the draw's pixel frame. Read by the
-    /// polar distance (`contour_level_distance_at`) only.
+    /// polar distance (`contour_level_distance_at`) and the floor's
+    /// screen-pixel width (`contour_floor_width_scale`).
     n: vec2<f32>,
 };
 
@@ -244,6 +245,7 @@ fn contour_metric(s: ContourSample) -> ContourMetric {
     out.g_len = g_len;
     out.kappa = kappa;
     out.gradient_square = gradient_square;
+    out.n = select(vec2<f32>(0.0, 0.0), g / g_len, g_len > 0.0);
     return out;
 }
 
@@ -538,6 +540,30 @@ fn contour_color(in: FieldOut) -> vec4<f32> {
     return contour_paint(in).color;
 }
 
+// The floor contour's screen frame (#259): `fs_floor_contour` and its pick
+// set these to the screen-pixel derivatives of `axis_t` before painting; the
+// flat entries leave them unset, so their widths stay in the draw's pixels.
+var<private> floor_contour_on_screen: bool = false;
+var<private> floor_dt_dx: vec2<f32> = vec2<f32>(0.0, 0.0);
+var<private> floor_dt_dy: vec2<f32> = vec2<f32>(0.0, 0.0);
+
+/// How many floor-plane pixels across the isoline make one screen pixel at
+/// this fragment, along the level's gradient `n` (unit, floor-plane pixel
+/// frame), so a floor stroke is `line_width_px` wide on screen in every
+/// direction. With the floor gradient `∇f = n · |∇f|` in floor pixels, the
+/// screen gradient is `Jᵀ (n / pixel_t) · |∇f|` with `J`'s columns the
+/// screen derivatives of `axis_t`, and the distances scale by their ratio.
+/// One on the flat entries and where the derivatives are degenerate.
+fn contour_floor_width_scale(n: vec2<f32>) -> f32 {
+    if (!floor_contour_on_screen) {
+        return 1.0;
+    }
+    let pixel_t = transform.pixel_to_ndc * 0.5;
+    let v = n / pixel_t;
+    let scale = length(vec2<f32>(dot(floor_dt_dx, v), dot(floor_dt_dy, v)));
+    return select(1.0, scale, f32_is_finite(scale) && scale > 0.0);
+}
+
 fn contour_paint(in: FieldOut) -> ContourPaint {
     var out = contour_paint_none();
     let lookup = field_lookup(in.axis_t, LATTICE_SAMPLES);
@@ -555,7 +581,7 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
     if (!f32_is_finite(field.line_width_px)) {
         return out;
     }
-    let half_w = max(field.line_width_px, 0.0) * 0.5;
+    let half_w = max(field.line_width_px, 0.0) * 0.5 * contour_floor_width_scale(metric.n);
     // The reject below must keep a neighbouring cell's line, which legitimately
     // reaches into this fragment: `margin` is how much z changes over half a
     // stroke plus a pixel of antialiasing.
@@ -628,9 +654,12 @@ fn contour_paint(in: FieldOut) -> ContourPaint {
 //
 // On a 3D chart a contour draws on the box floor: the same quad, projected
 // through the camera (`project_3d.wgsl`), with `axis_t` the floor point in
-// the space the flat entries locate cells in. The unchanged `fs_contour`
-// then finds the isolines in floor coordinates, so its stroke widths are
-// floor-plane pixels and foreshorten with the floor (#49 D7).
+// the space the flat entries locate cells in. `fs_floor_contour` finds the
+// isolines in floor coordinates as `fs_contour` does, with each stroke's
+// half-width carried to the floor through the screen derivatives of
+// `axis_t`, so a floor isoline is `line_width_px` wide on screen whichever
+// way it runs (#259; #49 D7 measured it in floor-plane pixels, which thinned
+// the strokes running across the view).
 
 @vertex
 fn vs_floor(@builtin(vertex_index) vid: u32) -> FieldOut {
@@ -649,12 +678,25 @@ fn vs_floor(@builtin(vertex_index) vid: u32) -> FieldOut {
     return out;
 }
 
+/// The floor contours: the flat contour fragment with the strokes measured
+/// on screen (`contour_floor_width_scale`).
+@fragment
+fn fs_floor_contour(in: FieldOut) -> @location(0) vec4<f32> {
+    floor_contour_on_screen = true;
+    floor_dt_dx = dpdx(in.axis_t);
+    floor_dt_dy = dpdy(in.axis_t);
+    return contour_color(in);
+}
+
 /// The floor contours' ID pick: the series (`view3d.flags.w`, its pick
 /// slot plus one, with the top bit marking a floor contour), the topmost
 /// level painted at the pixel and the sample-lattice cell it lies in, as
 /// the flat contour pick names it.
 @fragment
 fn fs_floor_contour_pick(in: FieldOut) -> @location(0) vec4<u32> {
+    floor_contour_on_screen = true;
+    floor_dt_dx = dpdx(in.axis_t);
+    floor_dt_dy = dpdy(in.axis_t);
     let paint = contour_paint(in);
     if (paint.level == 0xffffffffu) {
         discard;

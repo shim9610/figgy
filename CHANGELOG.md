@@ -52,7 +52,7 @@ subplot's `marker`) are additive.
   U, 29 in every-level Ar). No API or serialized field changes.
 - **Break gaps in pixels; two broken axes meet as a cross** ([#249](https://github.com/shim9610/figgy/issues/249)).
   `AxisBreaks.gap` (a fraction of the axis length) is replaced by
-  `gap_px: f32`, the gap's width in logical pixels (default 12, at most
+  `gap_px: f32`, the gap's width in logical pixels (default 8, at most
   `MAX_AXIS_BREAK_GAP_PX` = 200; `Config::scaled` scales it), so the x and
   y gaps of one chart are the same width whatever the plot's aspect.
   Both were added in this unreleased cycle (#200), so no released document
@@ -75,7 +75,7 @@ subplot's `marker`) are additive.
   (`chrome::grid::emit_grid` takes the display or export `scale`), so a 2x
   export stays the 1x one doubled.
   **Migration:** replace `gap: f` with `gap_px: f * axis_length_px` (or
-  drop it for the 12 px default), and pass the axis length to `BreakMap::of`
+  drop it for the 8 px default), and pass the axis length to `BreakMap::of`
   and `layout::axis_fraction`.
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   A refused rule is a `RuleKind` value (new module `rule`, re-exported at the
@@ -1405,6 +1405,22 @@ subplot's `marker`) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Gallery findings** ([#259](https://github.com/shim9610/figgy/issues/259)).
+  - A 3D floor contour (a heatmap's or a mesh's) is `line_width` wide on
+    screen whichever way it runs. It was measured in floor-plane pixels, so
+    the strokes running across the view thinned out and broke up below
+    about 2 px.
+  - A colourbar title that the band's centre would lay over the tick labels
+    sits a third of the label font past them instead, as far as its band
+    reaches; `auto_layout` places it from the same base.
+  - A hexagonal grid takes the nearest centre in the lattice's own metric,
+    so a lattice stretched along one axis draws stretched hexagons rather
+    than slabs. A lattice regular in data units draws the same cells.
+  - The default `AxisBreaks::gap_px` is 8 px.
+  - `PolarOptions.hide_first_radius_label` (default `false`, omitted from
+    JSON) skips the innermost radius ring's label, as on a wind rose's calm
+    circle.
 
 - **Typed validation reasons** ([#215](https://github.com/shim9610/figgy/issues/215)).
   `FiggyError::InvalidConfig { field, kind }` and

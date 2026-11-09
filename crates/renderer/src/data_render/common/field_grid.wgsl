@@ -300,9 +300,12 @@ fn locate_end(search: CellSearch) -> CellHit {
 // `GridLayout::Hexagonal`: `n` columns by `m` rows of flat-topped hexagons,
 // the cell of column `c`, row `r` centred at `(x[c], y[r] + (c & 1) · py / 2)`
 // with the uniform pitches `px = x[1] − x[0]`, `py = y[1] − y[0]` (registration
-// checked them). A hexagon is the Voronoi cell of its centre on that lattice
-// in the data metric, the one the host binned in (so a cell regular in data
-// units is the host's bin whatever the axes' pixel scales): a fragment
+// checked them). A hexagon is the Voronoi cell of its centre in the
+// lattice's own metric: the regular hexagon scaled to the two pitches, the
+// metric hexbin binning uses (#259). On a lattice regular in data units
+// (`px = √3 / 2 · py`) it is the data metric up to a uniform scale, so the
+// cell is the host's bin whatever the axes' pixel scales; on any other
+// lattice the cells are stretched hexagons, never slabs: a fragment
 // belongs to the nearest centre among the column nearest its x, the row
 // nearest its y in that column, and that cell's six neighbours. The
 // candidates past the lattice's edge are kept as rivals and never answer,
@@ -334,17 +337,16 @@ fn hex_center_t(l: vec4<f32>, c: i32, r: i32) -> vec2<f32> {
     return vec2<f32>(l.x + f32(c) * l.z, l.y + f32(r) * l.w + f32(c & 1) * l.w * 0.5);
 }
 
-/// Data units per axis fraction on a linear axis (the hexagonal rules
-/// allow no other): the axis range over the panel's share of the frame.
-fn hex_data_per_t() -> vec2<f32> {
-    let range = (transform.data_max + transform.data_max_lo)
-        - (transform.data_min + transform.data_min_lo);
-    return range / transform.data_to_panel_scale;
+/// Lattice units per axis fraction: the column pitch is 1.5 and the row
+/// pitch √3, the pitches of the regular hexagon of unit side, so distances
+/// in these units choose the nearest centre of a regular lattice.
+fn hex_metric(l: vec4<f32>) -> vec2<f32> {
+    return vec2<f32>(1.5 / l.z, 1.7320508 / l.w);
 }
 
-/// The data-space offset from `a` to `b`, both axis fractions.
-fn hex_data_offset(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return (b - a) * hex_data_per_t();
+/// The lattice-metric offset from `a` to `b`, both axis fractions.
+fn hex_lattice_offset(l: vec4<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return (b - a) * hex_metric(l);
 }
 
 /// The six neighbours of column `c`, row `r` on the flat-topped lattice
@@ -377,11 +379,11 @@ fn hex_cell(t: vec2<f32>) -> HexHit {
     let c0 = i32(round((t.x - l.x) / l.z));
     let r0 = i32(round((t.y - l.y - f32(c0 & 1) * l.w * 0.5) / l.w));
     var best = vec2<i32>(c0, r0);
-    var best_d = hex_data_offset(t, hex_center_t(l, c0, r0));
+    var best_d = hex_lattice_offset(l, t, hex_center_t(l, c0, r0));
     var best_d2 = dot(best_d, best_d);
     for (var k = 0u; k < 6u; k = k + 1u) {
         let n = hex_neighbor(c0, r0, k);
-        let d = hex_data_offset(t, hex_center_t(l, n.x, n.y));
+        let d = hex_lattice_offset(l, t, hex_center_t(l, n.x, n.y));
         let d2 = dot(d, d);
         if (d2 < best_d2) {
             best = n;
@@ -399,16 +401,16 @@ fn hex_cell(t: vec2<f32>) -> HexHit {
 
 /// The chart-pixel distance from `t` inside hexagon (`c`, `r`) to its
 /// nearest edge: the nearest of the six bisectors with its neighbours. A
-/// bisector in the data metric runs through the two centres' midpoint
+/// bisector in the lattice metric runs through the two centres' midpoint
 /// normal to their offset there; in axis fractions its normal is that
-/// offset scaled by the squared data-per-fraction, and in pixels by the
-/// fractions per pixel again, so an axis drawn wide or narrow keeps the
-/// stroke `width_px` across.
+/// offset scaled by the squared metric, and in pixels by the fractions per
+/// pixel again, so an axis drawn wide or narrow keeps the stroke
+/// `width_px` across.
 fn hex_edge_distance_px(t: vec2<f32>, c: i32, r: i32) -> f32 {
     let l = hex_lattice();
     let a = hex_center_t(l, c, r);
     let pixel_t = transform.pixel_to_ndc * 0.5;
-    let k = hex_data_per_t();
+    let k = hex_metric(l);
     var edge = 3.4e38;
     for (var i = 0u; i < 6u; i = i + 1u) {
         let n = hex_neighbor(c, r, i);

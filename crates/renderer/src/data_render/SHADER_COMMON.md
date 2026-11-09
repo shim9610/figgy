@@ -543,14 +543,16 @@ With the flag set, `field_cell_sample`, `field_pick_cell` and
 the lattice's origin and pitches are `x[0]`, `y[0]`, `x[1] − x[0]`,
 `y[1] − y[0]` read from the pool (`hex_lattice`), the cell of column `c`,
 row `r` is centred at `(x[c], y[r] + (c & 1) · py / 2)` (`hex_center_t`),
-and the fragment's cell is the nearest centre, in the data metric
-(`hex_data_offset`: axis fractions scaled by the axis ranges over the panel
-share, so the cell is the host's bin whatever the axes' pixel scales), among
+and the fragment's cell is the nearest centre, in the lattice's own metric
+(`hex_lattice_offset`: axis fractions scaled so the pitches are those of the
+regular hexagon of unit side, 1.5 across the columns and √3 along them; on a
+lattice regular in data units this is the data metric up to a uniform scale,
+and on any other the cells are stretched hexagons, #259), among
 the column nearest its x, the row nearest its y in that column and that
 cell's six neighbours (`hex_neighbor`). A candidate past the lattice's edge
 stays a rival and never answers, so a border cell is a whole hexagon. The
 selection outline is `width_px` inside the nearest of the six bisectors
-(`hex_edge_distance_px`, the bisector's data-metric normal scaled into
+(`hex_edge_distance_px`, the bisector's lattice-metric normal scaled into
 pixels). Nothing per cell is stored; the lookup is O(1) per fragment.
 
 **Colour images** (`FIELD_RGB`, `DataRenderType::RgbImage`, #139). The
@@ -1872,11 +1874,15 @@ largest barycentric weight); its patch is the picked triangle, one
 instance.
 
 The floor contours are entries of the flat modules: the field module's
-`vs_floor` / `fs_contour` / `fs_floor_contour_pick` place a quad over the
-box floor (`t.z = 0`) through `project_box`, its fragments carrying the
-floor point in the flat entries' cell space, so the unchanged contour
-search runs per floor fragment and the stroke widths are floor-plane
-pixels (#49 D7); the mesh module's `vs_tri_floor` / `fs_tri_floor` /
+`vs_floor` / `fs_floor_contour` / `fs_floor_contour_pick` place a quad over
+the box floor (`t.z = 0`) through `project_box`, its fragments carrying the
+floor point in the flat entries' cell space, so the contour search runs per
+floor fragment; the floor entries set the screen derivatives of that point
+before painting (`contour_floor_width_scale`), which carry each stroke's
+half-width to the floor along the level's gradient, so a floor stroke is
+`line_width_px` wide on screen whichever way it runs (#259; #49 D7 measured
+it in floor-plane pixels, which thinned the strokes running across the
+view); the mesh module's `vs_tri_floor` / `fs_tri_floor` /
 `fs_tri_floor_pick` (§5.25) place every triangle on the floor. The ID pick
 writes `(id, 0, c, r)` for a grid surface sample, `(id, 2, triangle,
 vertex)` for a mesh surface, and `(id | 0x80000000, level, c, r)` for a
@@ -2169,13 +2175,16 @@ compiles the module only when a mesh is drawn.
 the triangle surface module (§5.21) and the contours on the box floor
 through the floor entries of `mesh_floor.wgsl`: `vs_tri_floor` places each
 triangle's vertices at `t.z = 0` through `project_box`, carrying the values
-and the gradient `vs_tri` carries (`mesh_triangle`, `mesh_gradient_px`: the
-stroke width is floor-plane pixels, as a heatmap's floor contours' is, #49
-D7, so the draw and the 1×1 pick agree); `fs_tri_floor` is
-`mesh_contour_paint` with the fragment clipped to the box floor
+and the gradient `vs_tri` carries (`mesh_triangle`, `mesh_gradient_px`);
+`fs_tri_floor` sets `mesh_floor_width_scale` to the screen gradient of the
+fragment's value over that floor-plane gradient (`mesh_floor_screen_scale`,
+before any discard), so the stroke is `line_width_px` wide on screen, as a
+heatmap's floor contours' is (#259), and is `mesh_contour_paint` with the
+fragment clipped to the box floor
 (`MeshOut.floor_t`, the fragment's axis fractions, zero in the flat
 entries), and `fs_tri_floor_pick` writes `(id | 0x80000000, level,
-triangle, 0)`. The flat mesh pipelines are not compiled for a 3D chart.
+triangle, 0)`, with the same width scale, so the draw and the 1×1 pick
+agree. The flat mesh pipelines are not compiled for a 3D chart.
 
 **Selection.** `fs_tri_selection` runs over `vs_tri` with the data selection
 uniform as group 1 (`TriMeshPass::Selection`), through the selection layer's

@@ -94,6 +94,12 @@ fn fs_tri(in: MeshOut) -> @location(0) vec4<f32> {
 /// (exact for a linear function, with no curvature). A plateau (zero
 /// gradient) draws nothing; face values draw no contours. The level search
 /// and the compositing are the heatmap's (`field_paint.wgsl`).
+// The floor contour's width scale (#259): the screen gradient of the
+// fragment's value over its floor-plane gradient, set by the floor entries
+// (`mesh_floor.wgsl`) before painting so a floor stroke is `line_width_px`
+// wide on screen. One for the flat draw.
+var<private> mesh_floor_width_scale: f32 = 1.0;
+
 fn mesh_contour_paint(in: MeshOut) -> ContourPaint {
     var out = contour_paint_none();
     if ((in.info.y & MESH_VALUES_FINITE) == 0u || field_flag(FIELD_FACE_VALUES)) {
@@ -106,7 +112,7 @@ fn mesh_contour_paint(in: MeshOut) -> ContourPaint {
     let v = mesh_fragment_value(in);
     let z = v.z;
     let f = z.x + z.y;
-    let half_w = max(field.line_width_px, 0.0) * 0.5;
+    let half_w = max(field.line_width_px, 0.0) * 0.5 * mesh_floor_width_scale;
     let margin = (half_w + 1.0) * g;
     let search_lo = f - margin;
     let search_hi = f + margin;

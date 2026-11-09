@@ -195,13 +195,13 @@ pub struct AxisBreaks {
 }
 
 impl Default for AxisBreaks {
-    /// No range, `Continuous`, a 12 px gap, slash marks, framed pieces and
+    /// No range, `Continuous`, an 8 px gap, slash marks, framed pieces and
     /// pieces sized by their spans.
     fn default() -> Self {
         Self {
             ranges: Vec::new(),
             style: AxisBreakStyle::default(),
-            gap_px: 12.0,
+            gap_px: 8.0,
             mark: BreakMark::default(),
             frame_each_panel: true,
             sizing: PieceSizing::ByValue,
@@ -1502,6 +1502,8 @@ impl Config {
                 radial_label_angle_degrees: _,
                 // A ring shape, not a pixel dimension.
                 grid_shape: _,
+                // A switch.
+                hide_first_radius_label: _,
             }) => true,
             None => false,
         };
