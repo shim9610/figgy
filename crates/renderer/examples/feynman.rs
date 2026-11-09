@@ -302,6 +302,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 },
                 text: tex(caption, 20.),
                 box_style: None,
+                align: Default::default(),
             }));
         specs.push(SeriesConfig {
             series_id: format!("diagram-{k}"),

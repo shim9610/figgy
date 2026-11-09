@@ -329,6 +329,7 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
                 border_width: 1.5,
                 padding: 7.,
             }),
+            align: Default::default(),
         })
     };
     chart.config_mut().annotations.items = vec![

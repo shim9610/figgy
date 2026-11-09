@@ -313,6 +313,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             },
             text,
             box_style: None,
+            align: Default::default(),
         })
     };
     for (name, _, _, [sand, silt, clay]) in classes() {
@@ -329,6 +330,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             anchor: Anchor::Ratio { x: 0.76, y: 0.02 },
             text: note,
             box_style: None,
+            align: Default::default(),
         }));
 
     let image = export(r, &chart, &specs, bg)?;

@@ -115,6 +115,7 @@ fn gamma_spectrum(r: &mut Renderer, out: &Path) -> Result {
             anchor: Anchor::Data { x, y },
             text: RichText::plain(text, color, size, ""),
             box_style: None,
+            align: Default::default(),
         })
     };
     config.annotations.items = vec![
