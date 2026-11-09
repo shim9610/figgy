@@ -106,3 +106,36 @@ fn the_radial_renderer_saves_by_format() {
         .unwrap();
     assert!(String::from_utf8(svg).unwrap().contains("<svg"));
 }
+
+// A sized chart takes its area, the legend takes one entry per labelled
+// series with the series' own symbol, and fitting the layout is
+// `auto_layout` with the chart's own font measure.
+#[test]
+fn chart_conveniences_build_the_document() {
+    let series = [
+        SeriesConfig::line("a", "x", "y").label("first"),
+        SeriesConfig::scatter("b", "x", "y"),
+        SeriesConfig::scatter("c", "x", "y").label("third"),
+    ];
+    let mut chart = Chart::sized(640, 400)
+        .with_title("Sized")
+        .with_legend_from(&series);
+    let area = chart.config().chart_area.0;
+    assert_eq!((area.x, area.y, area.width, area.height), (0, 0, 640, 400));
+    let legend = &chart.config().legend;
+    assert!(legend.visible);
+    let text: String = legend.content.segments.iter().map(|s| s.text).collect();
+    assert!(text.contains("first") && text.contains("third"), "{text:?}");
+    let ids: std::collections::BTreeSet<_> = legend
+        .content
+        .segments
+        .iter()
+        .filter_map(|s| s.series_id.as_deref())
+        .collect();
+    assert_eq!(ids, ["a", "c"].into_iter().collect());
+
+    let measure = renderer::CpuTextMeasure::for_style(&chart.config().draw_style);
+    let expected = renderer::layout::auto_layout(chart.config(), &measure);
+    chart.fit_layout();
+    assert_eq!(chart.config(), &expected);
+}

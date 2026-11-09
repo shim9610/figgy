@@ -12,6 +12,7 @@
 
 pub use ::model::helpers::*;
 
+mod chart;
 mod defaults;
 mod headless;
 mod save;

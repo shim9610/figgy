@@ -597,7 +597,8 @@ let mut renderer = Renderer::headless_blocking()?;        // instance, adapter, 
 renderer.add_column("x", &xs)?;                          // a Vec<f64> or a slice, no wrapper
 renderer.add_column("y", &ys)?;
 let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
-let chart = Chart::new(renderer::config::Config::default()).with_title("A sine wave");
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.fit_layout();                                       // margins fitted to the labels
 let source = ExportSource::Chart { chart: &chart, series: &series };
 renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // or .svg / .pdf
 ```
@@ -615,6 +616,10 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   names no format, or the file write.
 - `RadialRenderer` has the same `export_bytes`, `export_bytes_blocking` and
   `save_blocking`, with the chart and its size.
+- `Chart::sized(width, height)` starts from the documented default look with
+  that chart area; `with_legend_from(&series)` adds one legend entry per
+  labelled series with the series' own symbol; `fit_layout()` fits the axis
+  bands and margins to their labels (`layout::auto_layout`).
 
 ### PNG export (memory only — saving is the caller's job)
 
@@ -1182,7 +1187,8 @@ let mut renderer = Renderer::headless_blocking()?;        // 인스턴스, 어�
 renderer.add_column("x", &xs)?;                          // Vec<f64>나 슬라이스를 감싸지 않고 넘긴다
 renderer.add_column("y", &ys)?;
 let series = [SeriesConfig::line("sine", "x", "y").label("sin x")];
-let chart = Chart::new(renderer::config::Config::default()).with_title("A sine wave");
+let mut chart = Chart::sized(960, 600).with_title("A sine wave").with_legend_from(&series);
+chart.fit_layout();                                       // 여백을 라벨에 맞춘다
 let source = ExportSource::Chart { chart: &chart, series: &series };
 renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .svg, .pdf도 된다
 ```
@@ -1198,6 +1204,9 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
   오류 중 하나다.
 - `RadialRenderer`에도 같은 `export_bytes`, `export_bytes_blocking`, `save_blocking`이 있고, 차트와
   크기를 받는다.
+- `Chart::sized(width, height)`는 기본 모양에 그 크기의 차트 영역을 준 차트다.
+  `with_legend_from(&series)`는 라벨이 있는 시리즈마다 그 시리즈의 기호로 범례 항목을 하나씩 더하고,
+  `fit_layout()`은 축 띠와 여백을 라벨과 제목에 맞춘다(`layout::auto_layout`).
 
 ### PNG 내보내기
 
