@@ -2,8 +2,8 @@ use super::*;
 use crate::Config;
 use crate::config::Category;
 use crate::data_config::{
-    BoxPlotTarget, DataLineStyleConfig, MatrixRef, PointColorMap, Shading, VectorColorMap,
-    ViolinBody, ViolinHalf,
+    BoxPlotTarget, DataLineStyleConfig, MatrixRef, PointColorMap, Shading, SizeScale,
+    VectorColorMap, ViolinBody, ViolinHalf, XySeries,
 };
 use crate::tri_mesh::{MeshValueLocation, MeshValues};
 
@@ -41,8 +41,8 @@ fn xy(series: &SeriesConfig) -> &XySeries {
 }
 
 // Markers drop, a ternary series fills its region and a size map changes
-// its scale; an x-y series takes no region and a series without a size map
-// keeps its markers as they are.
+// its scale through the marker closure; an x-y series takes no region and
+// a series without markers takes no marker edit.
 #[test]
 fn marker_and_region_modifiers() {
     let series = SeriesConfig::scatter_line("a", "x", "y").no_markers();
@@ -71,21 +71,30 @@ fn marker_and_region_modifiers() {
     assert_eq!((style.color, style.opacity), (fill, 0.75));
     valid(&ternary, &region);
 
+    let radius = |scatter: &mut crate::data_config::DataScatterStyleConfig| {
+        if let Some(size) = &mut scatter.point_size_map {
+            size.scale = SizeScale::Radius;
+        }
+    };
     let sized = SeriesConfig::scatter("s", "x", "y")
         .size_by("m", [0.0, 1.0], [2.0, 9.0])
-        .size_scale(SizeScale::Radius);
+        .style_markers(radius);
     let size = xy(&sized).scatter.as_ref().unwrap().point_size_map.as_ref();
     assert_eq!(size.unwrap().scale, SizeScale::Radius);
     valid(&Config::default(), &sized);
 
-    let plain = SeriesConfig::scatter("s", "x", "y");
-    assert_eq!(plain.clone().size_scale(SizeScale::Radius), plain);
     let line = SeriesConfig::line("l", "x", "y");
     assert_eq!(line.clone().region(fill, 0.5), line);
+    assert_eq!(
+        line.clone()
+            .style_markers(|scatter| scatter.point_size_map = None),
+        line
+    );
 }
 
-// Range bars take their colouring, whiskers, progress, connector, slot and
-// labels; category bars take the labels too, and a box plot takes none.
+// Range bars take their colouring, whiskers, connector and labels from
+// modifiers, and progress, slot and bar style from the parts closure;
+// category bars take the labels too, and a box plot takes none.
 #[test]
 fn range_bar_modifiers() {
     let up = Color::from_rgb8(40, 150, 90);
@@ -100,10 +109,17 @@ fn range_bar_modifiers() {
     let bars = SeriesConfig::range_bars("r", "i", "start", "end", up)
         .range_colors(colors.clone())
         .whiskers("low", "high", 1.5)
-        .progress("done", 0.35)
         .connector(grey, 1.5)
-        .bar_labels(CategoryBarLabels::Outside, text.clone());
+        .bar_labels(CategoryBarLabels::Outside, text.clone())
+        .style_range_bars(|parts| {
+            *parts.progress = Some(RangeProgress {
+                column: "done".into(),
+                remaining_opacity: 0.35,
+            });
+            parts.style.corner_radius = 2.0;
+        });
     let DataRenderType::RangeBars {
+        style,
         whiskers,
         color_by,
         progress,
@@ -136,6 +152,7 @@ fn range_bar_modifiers() {
         Some((grey, 1.5))
     );
     assert_eq!(*slot_width, None);
+    assert_eq!(style.corner_radius, 2.0);
     assert_eq!(
         (labels.placement, &labels.text),
         (CategoryBarLabels::Outside, &text)
@@ -143,7 +160,8 @@ fn range_bar_modifiers() {
     valid(&categorical(), &bars);
 
     // A numeric position axis takes a slot width.
-    let candles = SeriesConfig::range_bars("c", "t", "open", "close", up).slot_width(86_400.0);
+    let candles = SeriesConfig::range_bars("c", "t", "open", "close", up)
+        .style_range_bars(|parts| *parts.slot_width = Some(86_400.0));
     let DataRenderType::RangeBars { slot_width, .. } = &candles.render_type else {
         panic!("range bars");
     };
@@ -166,15 +184,15 @@ fn range_bar_modifiers() {
         .clone()
         .range_colors(colors)
         .whiskers("low", "high", 1.5)
-        .progress("done", 0.35)
         .connector(grey, 1.5)
-        .slot_width(1.0)
-        .bar_labels(CategoryBarLabels::Outside, text);
+        .bar_labels(CategoryBarLabels::Outside, text)
+        .style_range_bars(|parts| *parts.slot_width = Some(1.0));
     assert_eq!(same, boxes);
 }
 
-// Box plots take a violin, raw points, overrides (moved in, not copied)
-// and outliers; range bars take none.
+// Box plots take a violin and outliers from modifiers, and raw points,
+// overrides (moved in, not copied) and the box style from the parts
+// closure; range bars take none.
 #[test]
 fn box_plot_modifiers() {
     let ink = Color::from_rgb8(60, 90, 140);
@@ -196,10 +214,14 @@ fn box_plot_modifiers() {
     let buffer = overrides.as_ptr();
     let boxes = SeriesConfig::box_plot("b", "i", "records", ink)
         .violin(violin.clone())
-        .box_points(points.clone())
-        .box_overrides(overrides)
-        .outliers("out");
+        .outliers("out")
+        .style_box_plot(|parts| {
+            *parts.points = Some(points.clone());
+            *parts.overrides = Some(overrides);
+            parts.style.notched = true;
+        });
     let DataRenderType::BoxPlot {
+        style,
         outliers,
         overrides,
         violin: v,
@@ -215,15 +237,18 @@ fn box_plot_modifiers() {
     assert_eq!(overrides.len(), 1);
     assert_eq!(overrides.as_ptr(), buffer);
     assert_eq!(outliers.as_deref(), Some("out"));
+    assert!(style.notched);
     valid(&categorical(), &boxes);
 
     let bars = SeriesConfig::range_bars("r", "i", "start", "end", ink);
     let same = bars
         .clone()
         .violin(violin)
-        .box_points(points)
-        .box_overrides(Vec::new())
-        .outliers("out");
+        .outliers("out")
+        .style_box_plot(|parts| {
+            *parts.points = Some(points);
+            *parts.overrides = Some(Vec::new());
+        });
     assert_eq!(same, bars);
 }
 
@@ -296,13 +321,14 @@ fn field_and_mesh_modifiers() {
     assert_eq!(same, arrows);
 }
 
-// Vectors take a scale, a minimum length and a colour column; a grid
-// series keeps its colour (it takes a colour grid), and a field takes none.
+// Vectors take a scale and a colour column, and a minimum length through
+// the glyph closure; a grid series keeps its colour (it takes a colour
+// grid), and a field takes none.
 #[test]
 fn vector_modifiers() {
     let arrows = SeriesConfig::vectors("v", "x", "y", "u", "w")
         .vector_scale(VectorScale::Data { factor: 0.35 })
-        .min_length(2.0)
+        .style_vectors(|style| style.min_length_px = 2.0)
         .color_by("speed");
     let DataRenderType::Vector { style, .. } = &arrows.render_type else {
         panic!("a vector series");
@@ -324,7 +350,7 @@ fn vector_modifiers() {
     let same = heat
         .clone()
         .vector_scale(VectorScale::Pixels { px_per_unit: 4.0 })
-        .min_length(3.0);
+        .style_vectors(|style| style.min_length_px = 3.0);
     assert_eq!(same, heat);
 
     // Markers still take the colour column.
@@ -335,16 +361,14 @@ fn vector_modifiers() {
     );
 }
 
-// The column swap of a horizontal histogram.
+// A horizontal histogram names its columns in their swapped roles: the
+// counts on x, the edges on y.
 #[test]
-fn swap_xy_swaps_the_columns() {
-    let bars = SeriesConfig::histogram("h", "edges", "counts")
-        .horizontal()
-        .swap_xy();
+fn a_horizontal_histogram_takes_swapped_columns() {
+    let bars = SeriesConfig::histogram("h", "counts", "edges").horizontal();
     assert_eq!(
         (bars.x_column.as_str(), bars.y_column.as_str()),
         ("counts", "edges")
     );
     valid(&Config::default(), &bars);
-    assert_eq!(bars.clone().swap_xy().swap_xy(), bars);
 }

@@ -35,8 +35,8 @@ use renderer::{
     SeriesConfig,
     config::LegendCorner,
     data_config::{
-        BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, DataRenderType, Violin,
-        ViolinBody, ViolinHalf, ViolinStyle,
+        BarGroups, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin, ViolinBody, ViolinHalf,
+        ViolinStyle,
     },
     theme::SubplotScope,
 };
@@ -233,11 +233,7 @@ fn designed(title: &str, x: &str, y: &str, bg: Color, ink: Color, grid: Color) -
 /// A box plot series at the positions `{id}.pos` over the host's record
 /// `{id}.record` with `violin` behind its boxes.
 fn violin_series(id: &str, color: Color, violin: Violin) -> SeriesConfig {
-    let mut series = SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color);
-    if let DataRenderType::BoxPlot { violin: body, .. } = &mut series.render_type {
-        *body = Some(violin);
-    }
-    series
+    SeriesConfig::box_plot(id, format!("{id}.pos"), format!("{id}.record"), color).violin(violin)
 }
 
 /// A density half over `{id}.curve` and `{id}.density`, its widest point
@@ -437,7 +433,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
     config.grid.show_major_x = true;
     config.grid.show_major_y = false;
     config.legend.visible = false;
-    let mut cloud = violin_series(
+    let cloud = violin_series(
         "commute",
         modes[0].2,
         Violin {
@@ -449,7 +445,8 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
             box_width: 0.1,
         },
     )
-    .style_boxes(|style| {
+    .style_box_plot(|parts| {
+        let style = parts.style;
         style.caps = false;
         style.show_outliers = false;
         style.outline_color = ink;
@@ -457,12 +454,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
         style.median_width = 2.0;
         style.whisker_color = ink;
         style.whisker_width = 1.4;
-    });
-    if let DataRenderType::BoxPlot {
-        points, overrides, ..
-    } = &mut cloud.render_type
-    {
-        *overrides = Some(
+        *parts.overrides = Some(
             modes
                 .iter()
                 .skip(1)
@@ -473,7 +465,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
                 })
                 .collect(),
         );
-        *points = Some(BoxPoints {
+        *parts.points = Some(BoxPoints {
             positions: "commute.cat".into(),
             values: "commute.value".into(),
             style: BoxPointsStyle {
@@ -484,7 +476,7 @@ fn raincloud(r: &mut Renderer, out: &Path) -> Result {
                 ..BoxPointsStyle::default()
             },
         });
-    }
+    });
     chart.set_x_range(0., 80.);
     chart.config_mut().bottom_x.major_spacing = 10.;
     chart.config_mut().bottom_x.auto_significant_digits();

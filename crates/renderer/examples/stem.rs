@@ -83,7 +83,7 @@ fn impulse_response(r: &mut Renderer, out: &Path) -> Result {
         .color(teal)
         .width(2.5)
         .marker(ScatterShape::CircleFilled, 10.)
-        .stem_color(faded(teal, 0.75));
+        .style_stem(|stem| stem.color = faded(teal, 0.75));
     let specs = [ideal, taps];
     chart.set_x_range(-21.5, 21.5);
     chart.set_y_range(-0.1, 0.45);

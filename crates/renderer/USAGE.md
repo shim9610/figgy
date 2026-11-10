@@ -466,14 +466,100 @@ let series = [
 ```
 
 The families: `line`, `scatter`, `scatter_line`, `stem`, `histogram`,
-`heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`,
-`category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`,
-`mesh`, `energy_diagram` and `feynman_diagram` (and `of_kind` for any
-`DataRenderType`). Matrices are named with `MatrixRef::columns_are_x` or
-`columns_are_y`. The modifiers: `label`, `color`, `width`, `dash`, `marker`,
-`fill_to`, `x_errors`, `y_errors`, `horizontal` (histograms) and `z` (3D).
-A family that needs its chart set up (a category axis, polar, ternary or
-parallel axes) still validates against that chart.
+`heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `vectors_grid`,
+`vectors_3d`, `streamlines`, `category_bars`, `box_plot`, `range_bars`,
+`radar`, `ternary`, `parallel`, `mesh`, `energy_diagram` and
+`feynman_diagram` (and `of_kind` for any `DataRenderType`). Matrices are
+named with `MatrixRef::columns_are_x` or `columns_are_y` (and
+`with_layout`). A family that needs its chart set up (a category axis,
+polar, ternary or parallel axes) still validates against that chart.
+
+One-line modifiers cover what most charts of a kind set:
+
+- Any series: `label`, `color`, `width`, `dash`, `marker`, `z` (3D).
+- Lines and markers: `with_line`, `no_markers`, `fill_to`, `fill_between`,
+  `fill_color`, `interpolation` (steps), `with_stem`, `horizontal` (a
+  histogram's bars or sideways stems).
+- Error bars: `x_errors`, `y_errors`, `error_bars` (widths and cap size),
+  `error_color`.
+- Point maps: `color_by`, `size_by`.
+- Histograms: `bar_border`, `bar_gap`. A horizontal histogram names its
+  columns swapped (counts, then edges) and chains `horizontal()`.
+- Range bars: `range_colors` (up/down candles), `whiskers` (wicks),
+  `connector` (a waterfall), `bar_labels` (also category bars).
+- Box plots: `violin`, `outliers`.
+- Fields and meshes: `shading`, `opacity`, `filled`, `contour_levels`,
+  `contour_labels`.
+- Vectors: `vector_scale`, `arrow_head` (also streamline arrows), `pivot`.
+- Ternary: `region`.
+
+Everything else goes through a closure on the family's sub-style:
+`style_line`, `style_markers` (including a size map's `scale`),
+`style_stem` (a stem's own colour, width or dash), `style_bars` (category
+and range bars), `style_vectors` (minimum length, colour grid),
+`style_contours`, `style_surface` (3D look), and two that hand over every
+field of their family as `&mut` parts (`renderer::helpers::RangeBarsParts`,
+`BoxPlotParts`):
+
+```rust
+use renderer::SeriesConfig;
+use renderer::color::Color;
+use renderer::data_config::{BoxPoints, BoxPointsStyle, CategoryBarLabels, RangeProgress};
+
+let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end", Color::from_rgb8(70, 110, 170))
+    .bar_labels(CategoryBarLabels::Outside, owners)     // one string per bar
+    .style_range_bars(|parts| {
+        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        *parts.slot_width = Some(1.0);                   // a numeric (day) position axis
+    });
+let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb8(60, 120, 110))
+    .outliers("commute.outliers")
+    .style_box_plot(|parts| {
+        parts.style.notched = true;
+        *parts.points = Some(BoxPoints {                 // a raincloud
+            positions: "commute.cat".into(),
+            values: "commute.value".into(),
+            style: BoxPointsStyle::default(),
+        });
+    });
+```
+
+A modifier or closure that does not apply to a series' family leaves the
+series as it is.
+
+### Chart parts
+
+With the `helpers` feature, the parts a host adds to a chart have
+constructors too, and `Chart` takes them in a chain:
+
+- `Color::with_alpha(a)`: the same colour at another alpha.
+- `Annotation::reference_line(axis, value, color, width)`,
+  `span(axis, from, to, fill)`, `text(anchor, text, color, size)` and
+  `text_rich(anchor, rich_text)`, then `with_label`, `with_line_style`,
+  `with_box` and `with_align`.
+- `AxisOptions::overlay_y(title, color)`: the right-hand axis of an overlay
+  layer, titled and coloured like its series.
+- `Subplot::new(config, &series_ids)`, then `with_link_x(cell)` and
+  `with_link_y(cell)`.
+- `Chart::with_annotation`, `with_label_format` (both main axes),
+  `without_grid`, `with_colorbar_title`, `with_polar` and `with_subplot`.
+- `Chart::placed(x, y, width, height)` puts the chart area at an offset and
+  `with_area(..)` resizes a chart built from a document; `set_area(..)` moves
+  an existing chart's area in place, as a window resize does;
+  `with_overlay(y_axis, &series_ids)` adds an overlay layer;
+  `with_legend_swatch(label, color)` adds a filled-square entry for a meaning
+  that is not a series.
+
+```rust
+use renderer::{Annotation, AnnotationAxis, Chart, color::Color, config::AxisOptions};
+
+let red = Color::from_rgb8(200, 60, 50);
+let chart = Chart::sized(960, 600)
+    .with_overlay(AxisOptions::overlay_y("Pressure (kPa)", red), &["pressure"])
+    .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
+    .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
+    .without_grid();
+```
 
 ### Cartesian series, maps and layers
 
@@ -622,22 +708,11 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // o
   that chart area; `with_legend_from(&series)` adds one legend entry per
   labelled series with the series' own symbol; `fit_layout()` fits the axis
   bands and margins to their labels (`layout::auto_layout`).
-- `Chart::placed(x, y, width, height)` puts the chart area at an offset and
-  `with_area(..)` resizes a chart built from a document; `set_area(..)` moves
-  an existing chart's area in place, as a window resize does;
-  `with_overlay(y_axis, &series_ids)` adds an overlay layer;
-  `with_legend_swatch(label, color)` adds a filled-square entry for a meaning
-  that is not a series.
 - `RadialRenderer::headless_blocking()` makes a radial renderer the same way,
   `RadialChart::with_title(text)` gives it a title it accepts, and
   `RasterImage::save_png(path)` writes an image the host checked first.
-- Series modifiers beyond the common ones: `fill_color`, `fill_between`,
-  `interpolation`, `with_line`, `with_stem`, `stem_color`, `error_bars`,
-  `error_color`, `bar_border`, `bar_gap`, `color_by`, `size_by`, `shading`,
-  `opacity`, `filled`, `contour_labels`, `arrow_head` and `pivot`, plus
-  `style_line`, `style_markers`, `style_bars`, `style_boxes` and
-  `style_vectors` for any other field of those sub-styles. A modifier that
-  does not apply to a series' family leaves it unchanged.
+- The chart's own placement, overlays, annotations and subplots:
+  [Chart parts](#chart-parts).
 
 ### Themes
 
@@ -1139,11 +1214,88 @@ let series = [
 ```
 
 생성 함수: `line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`,
-`rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`,
-`parallel`, `mesh`, `energy_diagram`, `feynman_diagram`. 그 밖의 `DataRenderType`은 `of_kind`로 만든다.
-행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로 지정한다. 수정 메서드: `label`, `color`, `width`,
-`dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal`(히스토그램), `z`(3D). 차트 설정이
-필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그 차트 설정에 맞춰 검증된다.
+`rgb_image`, `vectors`, `vectors_grid`, `vectors_3d`, `streamlines`, `category_bars`, `box_plot`,
+`range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`. 그 밖의
+`DataRenderType`은 `of_kind`로 만든다. 행렬은 `MatrixRef::columns_are_x`나 `columns_are_y`로
+지정한다(`with_layout`도 있다). 차트 설정이 필요한 종류(범주 축, 극좌표, 삼각 좌표, 평행 좌표)는 그
+차트 설정에 맞춰 검증된다.
+
+한 줄짜리 수정 메서드는 그 종류의 차트에서 대개 바꾸는 값을 다룬다.
+
+- 모든 시리즈: `label`, `color`, `width`, `dash`, `marker`, `z`(3D).
+- 선과 마커: `with_line`, `no_markers`, `fill_to`, `fill_between`, `fill_color`,
+  `interpolation`(계단), `with_stem`, `horizontal`(히스토그램 막대를 가로로, 줄기를 옆으로).
+- 오차 막대: `x_errors`, `y_errors`, `error_bars`(선 두께와 끝선 길이), `error_color`.
+- 점 매핑: `color_by`, `size_by`.
+- 히스토그램: `bar_border`, `bar_gap`. 가로 히스토그램은 컬럼을 바꿔(개수, 구간 경계 순서로) 넘기고
+  `horizontal()`을 붙인다.
+- 범위 막대: `range_colors`(캔들의 상승·하락 색), `whiskers`(꼬리), `connector`(폭포 차트),
+  `bar_labels`(범주형 막대에도 쓴다).
+- 박스플롯: `violin`, `outliers`.
+- 필드와 메시: `shading`, `opacity`, `filled`, `contour_levels`, `contour_labels`.
+- 벡터: `vector_scale`, `arrow_head`(유선의 화살표에도 쓴다), `pivot`.
+- 삼각 좌표: `region`.
+
+나머지 필드는 하위 스타일을 받는 클로저로 바꾼다. `style_line`, `style_markers`(크기 매핑의
+`scale` 포함), `style_stem`(줄기만의 색, 두께, 점선), `style_bars`(범주형·범위 막대),
+`style_vectors`(최소 길이, 색 격자), `style_contours`, `style_surface`(3D 모양)가 있다. 범위 막대와
+박스플롯은 그 종류의 필드를 모두 `&mut`로 묶어 넘기는 클로저를 쓴다(`renderer::helpers::RangeBarsParts`,
+`BoxPlotParts`).
+
+```rust
+use renderer::SeriesConfig;
+use renderer::color::Color;
+use renderer::data_config::{BoxPoints, BoxPointsStyle, CategoryBarLabels, RangeProgress};
+
+let tasks = SeriesConfig::range_bars("tasks", "day", "begin", "end", Color::from_rgb8(70, 110, 170))
+    .bar_labels(CategoryBarLabels::Outside, owners)     // 막대마다 문자열 하나
+    .style_range_bars(|parts| {
+        *parts.progress = Some(RangeProgress { column: "done".into(), remaining_opacity: 0.35 });
+        *parts.slot_width = Some(1.0);                   // 숫자(날짜) 위치 축
+    });
+let commute = SeriesConfig::box_plot("commute", "pos", "record", Color::from_rgb8(60, 120, 110))
+    .outliers("commute.outliers")
+    .style_box_plot(|parts| {
+        parts.style.notched = true;
+        *parts.points = Some(BoxPoints {                 // 레인클라우드
+            positions: "commute.cat".into(),
+            values: "commute.value".into(),
+            style: BoxPointsStyle::default(),
+        });
+    });
+```
+
+시리즈 종류에 맞지 않는 수정 메서드나 클로저는 시리즈를 바꾸지 않는다.
+
+### 차트 부품
+
+`helpers` 기능을 쓰면 호스트가 차트에 더하는 부품에도 생성 함수가 있고, `Chart`에 이어 붙여 넣을 수
+있다.
+
+- `Color::with_alpha(a)`: 알파만 바꾼 같은 색.
+- `Annotation::reference_line(axis, value, color, width)`, `span(axis, from, to, fill)`,
+  `text(anchor, text, color, size)`, `text_rich(anchor, rich_text)`. 여기에 `with_label`,
+  `with_line_style`, `with_box`, `with_align`을 붙인다.
+- `AxisOptions::overlay_y(title, color)`: 오버레이 레이어의 오른쪽 축. 제목과 색을 그 축이 맡은
+  시리즈에 맞춘다.
+- `Subplot::new(config, &series_ids)`. 축을 이으려면 `with_link_x(cell)`, `with_link_y(cell)`를 붙인다.
+- `Chart::with_annotation`, `with_label_format`(두 주 축), `without_grid`, `with_colorbar_title`,
+  `with_polar`, `with_subplot`.
+- `Chart::placed(x, y, width, height)`는 차트 영역을 원하는 위치에 두고, `with_area(..)`는 문서로
+  만든 차트의 크기를 바꾸며, `set_area(..)`는 창 크기가 바뀔 때처럼 이미 있는 차트의 영역을 그 자리에서
+  옮긴다. `with_overlay(y_axis, &series_ids)`는 오버레이 레이어를 더하고,
+  `with_legend_swatch(label, color)`는 시리즈가 아닌 의미를 나타내는 색 사각형 범례 항목을 더한다.
+
+```rust
+use renderer::{Annotation, AnnotationAxis, Chart, color::Color, config::AxisOptions};
+
+let red = Color::from_rgb8(200, 60, 50);
+let chart = Chart::sized(960, 600)
+    .with_overlay(AxisOptions::overlay_y("Pressure (kPa)", red), &["pressure"])
+    .with_annotation(Annotation::reference_line(AnnotationAxis::Y, 0.0, Color::BLACK, 1.0))
+    .with_annotation(Annotation::span(AnnotationAxis::X, 2.0, 3.5, red.with_alpha(0.15)))
+    .without_grid();
+```
 
 ### 직교 시리즈·매핑·레이어
 
@@ -1266,18 +1418,10 @@ renderer.save_blocking(source, ExportOptions::document(2.0), "sine.png")?;  // .
 - `Chart::sized(width, height)`는 기본 모양에 그 크기의 차트 영역을 준 차트다.
   `with_legend_from(&series)`는 라벨이 있는 시리즈마다 그 시리즈의 기호로 범례 항목을 하나씩 더하고,
   `fit_layout()`은 축 띠와 여백을 라벨과 제목에 맞춘다(`layout::auto_layout`).
-- `Chart::placed(x, y, width, height)`는 차트 영역을 원하는 위치에 두고, `with_area(..)`는 문서로
-  만든 차트의 크기를 바꾸며, `set_area(..)`는 창 크기가 바뀔 때처럼 이미 있는 차트의 영역을 그 자리에서
-  옮긴다. `with_overlay(y_axis, &series_ids)`는 오버레이 레이어를 더하고,
-  `with_legend_swatch(label, color)`는 시리즈가 아닌 의미를 나타내는 색 사각형 범례 항목을 더한다.
 - `RadialRenderer::headless_blocking()`은 원형 차트 렌더러를 같은 방식으로 만든다.
   `RadialChart::with_title(text)`는 원형 차트가 받아들이는 제목을 주고,
   `RasterImage::save_png(path)`는 호스트가 먼저 검사한 이미지를 파일로 쓴다.
-- 공통 modifier 말고도 `fill_color`, `fill_between`, `interpolation`, `with_line`, `with_stem`,
-  `stem_color`, `error_bars`, `error_color`, `bar_border`, `bar_gap`, `color_by`, `size_by`,
-  `shading`, `opacity`, `filled`, `contour_labels`, `arrow_head`, `pivot`이 있다. 이 하위 스타일의
-  나머지 필드는 `style_line`, `style_markers`, `style_bars`, `style_boxes`, `style_vectors`로
-  바꾼다. 시리즈 계열에 맞지 않는 modifier는 시리즈를 바꾸지 않는다.
+- 차트 영역의 위치, 오버레이, 주석, 서브플롯은 [차트 부품](#차트-부품)에 정리했다.
 
 ### 테마
 

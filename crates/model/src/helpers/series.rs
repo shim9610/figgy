@@ -153,7 +153,9 @@ impl SeriesConfig {
     }
 
     /// Vertical bars from pre-binned data: `edges` holds the bin edges and
-    /// `counts` one value per bin. Binning is the host's job.
+    /// `counts` one value per bin. Binning is the host's job. For
+    /// horizontal bars, pass the counts first and the edges second and
+    /// chain [`Self::horizontal`].
     pub fn histogram(
         id: impl Into<String>,
         edges: impl Into<ColumnId>,
@@ -352,7 +354,8 @@ impl SeriesConfig {
 
     /// Range bars (a Gantt or floating-bar chart): one bar per row at
     /// `positions`, from `start` to `end`, on a category axis. On a numeric
-    /// axis the series also needs its `slot_width`.
+    /// axis the series also needs its `slot_width`, set through
+    /// [`Self::style_range_bars`].
     pub fn range_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,

@@ -73,7 +73,7 @@ fn stem_error_and_bar_modifiers() {
     let series = SeriesConfig::scatter("a", "x", "y")
         .color(green)
         .with_stem(-1.0)
-        .stem_color(ink)
+        .style_stem(|stem| stem.color = ink)
         .horizontal()
         .y_errors("e")
         .error_bars(2.0, 9.0)
@@ -245,13 +245,6 @@ fn closures_reach_sub_styles() {
     assert_eq!(style.corner_radius, 3.0);
     valid(&config, &bars);
 
-    let boxes = SeriesConfig::box_plot("x", "i", "records", Color::BLACK)
-        .style_boxes(|style| style.notched = true);
-    let DataRenderType::BoxPlot { style, .. } = &boxes.render_type else {
-        panic!("a box plot");
-    };
-    assert!(style.notched);
-
     let line = SeriesConfig::line("l", "x", "y").style_line(|line| line.line_width = 4.0);
     assert_eq!(xy(&line).line.as_ref().unwrap().line_width, 4.0);
     let markers = SeriesConfig::scatter("s", "x", "y")
@@ -273,6 +266,10 @@ fn modifiers_leave_other_families_alone() {
         .error_bars(1.0, 1.0)
         .shading(Shading::Interpolated)
         .arrow_head(1.0, 1.0)
-        .color_by("c");
+        .color_by("c")
+        .style_stem(|stem| stem.width = 9.0);
     assert_eq!(same, bars);
+    // A line without a stem takes no stem edit.
+    let line = SeriesConfig::line("l", "x", "y");
+    assert_eq!(line.clone().style_stem(|stem| stem.width = 9.0), line);
 }

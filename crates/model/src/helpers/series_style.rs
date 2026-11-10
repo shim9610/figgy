@@ -3,14 +3,15 @@
 //! The fields the examples still set by hand after the first round: line
 //! fills and interpolation, stems, error bars, histogram bars, point colour
 //! and size maps, field fills and contour labels, vector glyphs, and
-//! closures that reach a sub-style no modifier names. Like the first round,
+//! closures that reach a sub-style no modifier names (the rarer settings,
+//! such as a stem's own colour or a size map's scale, live there). Like the first round,
 //! each is a plain method on the document type; a modifier that does not
 //! apply to a series' family leaves the series as it is.
 
 use crate::color::Color;
 use crate::data::ColumnId;
 use crate::data_config::{
-    BoxPlotStyle, CategoryBarDirection, CategoryBarStyle, ContourLabelConfig, DataLineStyleConfig,
+    CategoryBarDirection, CategoryBarStyle, ContourLabelConfig, DataLineStyleConfig,
     DataRenderType, DataScatterStyleConfig, FieldFillConfig, FieldSeries, LineFill,
     LineInterpolation, MatrixRef, PointColorMap, PointSizeMap, SeriesConfig, Shading, Stem,
     VectorComponents, VectorPivot, VectorStyle, XySeries,
@@ -132,13 +133,15 @@ impl SeriesConfig {
         self
     }
 
-    /// The stem's own colour, apart from its markers.
-    pub fn stem_color(mut self, color: Color) -> Self {
+    /// Edit the stem of an x-y series that has one (set with
+    /// [`Self::with_stem`]): its own colour apart from the markers, its
+    /// width or its dash.
+    pub fn style_stem(mut self, edit: impl FnOnce(&mut Stem)) -> Self {
         if let DataRenderType::Xy(XySeries {
             stem: Some(stem), ..
         }) = &mut self.render_type
         {
-            stem.color = color;
+            edit(stem);
         }
         self
     }
@@ -320,7 +323,9 @@ impl SeriesConfig {
         self
     }
 
-    /// Edit the markers of an x-y or ternary series.
+    /// Edit the markers of an x-y or ternary series, including the colour
+    /// and size maps set with [`Self::color_by`] and [`Self::size_by`]
+    /// (for example the size map's `scale`).
     pub fn style_markers(mut self, edit: impl FnOnce(&mut DataScatterStyleConfig)) -> Self {
         if let Some(scatter) = self.markers() {
             edit(scatter);
@@ -328,7 +333,8 @@ impl SeriesConfig {
         self
     }
 
-    /// Edit the bar style of a category or range bar series.
+    /// Edit the bar style of a category or range bar series (a histogram's
+    /// bars take [`Self::bar_border`] and [`Self::bar_gap`]).
     pub fn style_bars(mut self, edit: impl FnOnce(&mut CategoryBarStyle)) -> Self {
         if let DataRenderType::CategoryBars { style, .. }
         | DataRenderType::RangeBars { style, .. } = &mut self.render_type
@@ -338,15 +344,8 @@ impl SeriesConfig {
         self
     }
 
-    /// Edit the box style of a box plot series.
-    pub fn style_boxes(mut self, edit: impl FnOnce(&mut BoxPlotStyle)) -> Self {
-        if let DataRenderType::BoxPlot { style, .. } = &mut self.render_type {
-            edit(style);
-        }
-        self
-    }
-
-    /// Edit the glyph style of a vector series.
+    /// Edit the glyph style of a vector series: its scale, minimum length,
+    /// colour map, head and line.
     pub fn style_vectors(mut self, edit: impl FnOnce(&mut VectorStyle)) -> Self {
         if let DataRenderType::Vector { style, .. } = &mut self.render_type {
             edit(style);
