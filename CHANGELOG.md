@@ -750,7 +750,11 @@ annotation's `align`) are additive.
   band is padded by 0.3 em above and below, 0 without a title; the plots
   of subplot cells that share a grid row or column (same chart-area y and
   height, or x and width) are lined up and sized alike, the titles of
-  widened bands placed beside their labels again. Chart titles sit on a
+  widened bands placed beside their labels again; a legend the host placed
+  past the plot keeps its corner and offsets, each band it crosses grows to
+  hold it and the edge padding of its font, and that side's axis title moves
+  past it, the title gap from the legend, when beside its labels it would
+  overlap it. Chart titles sit on a
   baseline: the new `MeasureText::font_line(family, size)` (by default a
   reference measurement, in the renderer the face's own line metrics) gives
   the font's line, which the placement centres in the band with the ink

@@ -1348,12 +1348,20 @@ fn outward_sign(side: &Side) -> f32 {
 /// the padding at its outer edge ([`edge_padding`]). The labels are every
 /// label run the band has to hold (see [`auto_layout`]); only the part past
 /// the inner edge counts.
+///
+/// A legend box the host placed past the data area's edge on this side
+/// adds `legend`, the room it needs from the inner edge (its reach and the
+/// edge padding of its font), and, when it lies beside the title along the
+/// band, `blocked`: its near and far distance outward, which the title
+/// keeps the gap from ([`BandMeasure::hold_legend`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BandMeasure {
     reach: Option<f32>,
     title: Option<(f32, f32)>,
     gap: f32,
     padding: f32,
+    legend: Option<f32>,
+    blocked: Option<(f32, f32)>,
 }
 
 impl BandMeasure {
@@ -1385,19 +1393,69 @@ impl BandMeasure {
             title: title_span,
             gap: title_gap(label_size),
             padding: edge_padding(edge),
+            legend: None,
+            blocked: None,
+        }
+    }
+
+    /// Hold the legend box `legend` in the band on `side` whose inner edge
+    /// is `inner`, `tick` past the data area, when the box reaches past the
+    /// data area's edge on that side: the band then needs the box's reach
+    /// past the inner edge and the edge padding of the legend's font. When
+    /// the box also lies beside the title `title` along the band, the
+    /// title is placed past it ([`BandMeasure::title_clear`]). A box inside
+    /// the data area on this side changes nothing (#270).
+    fn hold_legend(&mut self, side: &Side, inner: f32, tick: f32, legend: &Probe, title: &Probe) {
+        let Some(r) = legend.bounds else {
+            return;
+        };
+        let (near, far) = band_span(side, inner, r);
+        if far <= -tick {
+            return;
+        }
+        let room = far.max(0.0) + edge_padding(legend.font);
+        self.legend = Some(self.legend.map_or(room, |held| held.max(room)));
+        if title.bounds.is_some_and(|t| along_overlap(side, t, r)) {
+            self.blocked = Some(match self.blocked {
+                Some((n, f)) => (n.min(near), f.max(far)),
+                None => (near, far),
+            });
+        }
+    }
+
+    /// Whether a title `thickness` thick whose inner edge is `at` comes
+    /// within the gap of the legend beside it.
+    fn title_blocked(&self, at: f32, thickness: f32) -> bool {
+        const EPS: f32 = 1e-3;
+        self.blocked.is_some_and(|(near, far)| {
+            at < far + self.gap - EPS && at + thickness > near - self.gap + EPS
+        })
+    }
+
+    /// Where the inner edge of a title `thickness` thick goes, outward from
+    /// the inner edge: the gap past the labels, or, when a legend beside
+    /// it would be in the way there, the gap past the legend.
+    fn title_clear(&self, thickness: f32) -> f32 {
+        let beside = self.reach.unwrap_or(0.0) + self.gap;
+        match self.blocked {
+            Some((_, far)) if self.title_blocked(beside, thickness) => far + self.gap,
+            _ => beside,
         }
     }
 
     /// The band the labels and a title placed the gap past them need: the
     /// labels' reach, the gap, the title's thickness and the edge padding
     /// to the band's outer edge; the reach and the edge padding without a
-    /// title, and the edge padding alone for a band with neither.
+    /// title, and the edge padding alone for a band with neither. A legend
+    /// past the data area moves the title past it, and the band holds the
+    /// legend and its padding too.
     fn required(&self) -> f32 {
         let reach = self.reach.unwrap_or(0.0);
-        match self.title {
-            Some((near, far)) => reach + self.gap + (far - near) + self.padding,
+        let held = match self.title {
+            Some((near, far)) => self.title_clear(far - near) + (far - near) + self.padding,
             None => reach + self.padding,
-        }
+        };
+        self.legend.map_or(held, |legend| held.max(legend))
     }
 
     /// The outward title offset that places the title, in a band `band`
@@ -1424,20 +1482,32 @@ impl BandMeasure {
             None => centred,
         };
         let at = base + offset;
-        if at >= clear - EPS && at + thickness <= band + EPS {
+        if at >= clear - EPS && at + thickness <= band + EPS && !self.title_blocked(at, thickness) {
             return None;
         }
-        let placed = (clear - base).ceil();
+        let placed = (self.title_clear(thickness) - base).ceil();
         (placed.is_finite() && placed != offset).then_some(placed)
     }
 
     /// The outward offset that puts an axis title, centred in a band `band`
-    /// wide before the offset, the gap past its labels, rounded outward to
-    /// a whole pixel, wherever it sits now. `None` without a title.
+    /// wide before the offset, the gap past its labels (or past a legend in
+    /// the way, [`BandMeasure::title_clear`]), rounded outward to a whole
+    /// pixel, wherever it sits now. `None` without a title.
     fn beside_offset(&self, band: f32) -> Option<f32> {
         let (near, far) = self.title?;
-        let placed = (self.reach.unwrap_or(0.0) + self.gap - (band - (far - near)) * 0.5).ceil();
+        let thickness = far - near;
+        let placed = (self.title_clear(thickness) - (band - thickness) * 0.5).ceil();
         placed.is_finite().then_some(placed)
+    }
+}
+
+/// Whether `a` and `b` share a stretch along the band on `side`: their
+/// horizontal extents for the top and bottom bands, their vertical extents
+/// for the left and right ones.
+fn along_overlap(side: &Side, a: RectF, b: RectF) -> bool {
+    match side {
+        Side::Top | Side::Bottom => a.x < b.x + b.width && b.x < a.x + a.width,
+        Side::Left | Side::Right => a.y < b.y + b.height && b.y < a.y + a.height,
     }
 }
 
@@ -1522,8 +1592,19 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   of the chart. This is `auto_layout`'s own rule:
 ///   [`fit_chart_title_margin`], which the title helpers use, only grows a
 ///   band too small for its title.
-/// - **Legend.** A legend box over the colourbar moves to the first corner,
-///   with zero offsets, where it clears the bar.
+/// - **Legend.** A legend box that reaches past the data area is the host's
+///   placement and takes priority: its corner and offsets are kept, and
+///   each band it crosses (the document's legend and each overlay layer's)
+///   grows to hold its reach past the band's inner edge and the edge
+///   padding of the legend's font, measured from the box the legend
+///   element emits. When that side's axis title, beside its labels, would
+///   come within the title gap of the box, the title is placed the title
+///   gap past the legend instead, and the band holds it there; the tick
+///   labels stay with their axis. The legend is anchored to a data-area
+///   corner, so its reach does not change while the bands do. A legend
+///   inside the data area changes no band. A legend box over the colourbar
+///   after that moves to the first corner, with zero offsets, where it
+///   clears the bar.
 /// - **Subplots** are laid out as charts of their own, and then the plots
 ///   of a grid are lined up. The document's own chart and each subplot are
 ///   cells; cells with the same chart-area x and width form a column, cells
@@ -1547,8 +1628,9 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
 /// right axis (only `line_offset` separates them), polar angle labels
-/// against radius labels (the angle band is fixed by the font size), and
-/// labels that collide with each other along an axis or at a corner.
+/// against radius labels (the angle band is fixed by the font size), an
+/// overlay axis' title against a legend right of the plot, and labels that
+/// collide with each other along an axis or at a corner.
 pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
     let mut out = cfg.clone();
     lay_out_chart(&mut out, measure);
@@ -1580,13 +1662,14 @@ const SIDES: [Side; 4] = [Side::Top, Side::Bottom, Side::Left, Side::Right];
 /// panel, and then set: a change on one side moves the labels of the
 /// others, which the next pass measures again.
 fn auto_layout_pass(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
-    let (long, bands) = crate::select::on_drawn_panel(cfg, |panel| {
+    let doc: &Config = cfg;
+    let (long, bands) = crate::select::on_drawn_panel(doc, |panel| {
         let labels = SIDES.map(|side| Probe::of(panel, &Element::AxisLabel(side), measure));
         let long = long_labels(panel, &labels, measure);
         let held = held_labels(panel, &labels, measure);
         let bands = SIDES
             .each_ref()
-            .map(|side| axis_band_measure(panel, side, &held, measure));
+            .map(|side| axis_band_measure(Some(doc), panel, side, &held, measure));
         (long, bands)
     });
     if switch_long_labels(cfg, long, measure) {
@@ -1602,7 +1685,7 @@ fn auto_layout_pass(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
     for layer in 0..cfg.overlays.len() {
         let measured = cfg.overlay_panel(layer).and_then(|panel| {
             let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
-            axis_band_measure(&panel, &Side::Right, &labels, measure)
+            axis_band_measure(None, &panel, &Side::Right, &labels, measure)
         });
         if let Some((band, drawn)) = measured {
             changed |= fit_band(cfg, &band, drawn, &Side::Right, BandOwner::Overlay(layer));
@@ -1715,8 +1798,12 @@ fn held_labels(panel: &Config, labels: &[Probe; 4], measure: &dyn MeasureText) -
 /// The band of the axis on `side` of the drawn panel `panel`, holding the
 /// labels `held` and the axis' title, and the `out_margin` it was drawn
 /// with. A title a ternary or 3D chart places itself is among `held`
-/// instead ([`held_labels`]).
+/// instead ([`held_labels`]). With `doc`, the document `panel` is drawn
+/// from, the band also holds every legend of the document placed past the
+/// data area on `side` ([`BandMeasure::hold_legend`]): the panel's own and
+/// each overlay layer's.
 fn axis_band_measure(
+    doc: Option<&Config>,
     panel: &Config,
     side: &Side,
     held: &Probe,
@@ -1741,10 +1828,20 @@ fn axis_band_measure(
         _ => 0.0,
     };
     let label_size = axis.label_style.font_size;
-    Some((
-        BandMeasure::of(side, inner, held, &title, label_size, bare),
-        axis.out_margin,
-    ))
+    let mut band = BandMeasure::of(side, inner, held, &title, label_size, bare);
+    if let Some(doc) = doc {
+        let legend = Probe::of(panel, &Element::Legend, measure);
+        band.hold_legend(side, inner, tick, &legend, &title);
+        for layer in 0..doc.overlays.len() {
+            if doc.overlays[layer].legend.is_some()
+                && let Some(overlay) = doc.overlay_panel(layer)
+            {
+                let legend = Probe::of(&overlay, &Element::Legend, measure);
+                band.hold_legend(side, inner, tick, &legend, &title);
+            }
+        }
+    }
+    Some((band, axis.out_margin))
 }
 
 /// The colourbar's band of the drawn panel `panel`, measured from the strip
@@ -2236,12 +2333,13 @@ fn raise_bands(chart: &mut Config, to: CellBands) {
 /// the parent's right axis and the overlay axes the band is the group's.
 /// Returns whether an offset changed.
 fn place_widened_titles(chart: &mut Config, measure: &dyn MeasureText) -> bool {
-    let bands = crate::select::on_drawn_panel(chart, |panel| {
+    let doc: &Config = chart;
+    let bands = crate::select::on_drawn_panel(doc, |panel| {
         let labels = SIDES.map(|side| Probe::of(panel, &Element::AxisLabel(side), measure));
         let held = held_labels(panel, &labels, measure);
         SIDES
             .each_ref()
-            .map(|side| axis_band_measure(panel, side, &held, measure))
+            .map(|side| axis_band_measure(Some(doc), panel, side, &held, measure))
     });
     let mut changed = false;
     for (side, measured) in SIDES.iter().zip(bands) {
@@ -2252,7 +2350,7 @@ fn place_widened_titles(chart: &mut Config, measure: &dyn MeasureText) -> bool {
     for layer in 0..chart.overlays.len() {
         let measured = chart.overlay_panel(layer).and_then(|panel| {
             let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
-            axis_band_measure(&panel, &Side::Right, &labels, measure)
+            axis_band_measure(None, &panel, &Side::Right, &labels, measure)
         });
         if let Some((band, _)) = measured {
             changed |= place_beside(chart, &band, &Side::Right, BandOwner::Overlay(layer));
@@ -3312,6 +3410,8 @@ mod tests {
             title: Some((40.0, 53.0)),
             gap: LABEL_GAP,
             padding: AUTO_LAYOUT_EDGE_PADDING,
+            legend: None,
+            blocked: None,
         };
         assert_eq!(
             both.required(),
@@ -3322,6 +3422,8 @@ mod tests {
             title,
             gap,
             padding,
+            legend: None,
+            blocked: None,
         };
         let wider = band(Some(30.0), Some((40.0, 53.0)), 9.0, 11.0);
         assert_eq!(wider.required(), 30.0 + 9.0 + 13.0 + 11.0);
@@ -3664,9 +3766,10 @@ mod tests {
         assert_eq!(auto_layout(&out, &measure), out);
     }
 
-    // The colourbar's band is set from the strip outward the same way, and a
-    // legend box dragged over the bar goes back to the first corner where it
-    // clears it.
+    // The colourbar's band is set from the strip outward the same way. A
+    // legend box dragged past the data area over the bar is the host's
+    // placement: it stays, and the right band grows to hold it inside the
+    // bar (#270).
     #[test]
     fn auto_layout_fits_the_colorbar_band_and_clears_the_legend_off_it() {
         let measure = Labels;
@@ -3697,18 +3800,189 @@ mod tests {
         let ca = RectF::from_rect(&out.chart_area);
         let outer = ca.x + ca.width - (title.x + title.width);
         assert!(outer >= padding - 1e-3, "{outer}");
-        assert_eq!((out.legend.offset_x, out.legend.offset_y), (0.0, 0.0));
-        let legend = rects(&out, Element::Legend, &measure)[0];
+        assert_eq!(
+            (out.legend.corner, out.legend.offset_x, out.legend.offset_y),
+            (LegendCorner::TopRight, 120.0, 200.0)
+        );
+        assert_legend_clear(&out, &measure);
+        assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    // A legend inside the data area under a colourbar dragged onto the plot
+    // goes to the first corner, with zero offsets, where it clears the bar.
+    #[test]
+    fn auto_layout_clears_an_inside_legend_off_a_dragged_colorbar() {
+        let measure = Labels;
+        let mut cfg = crate::defaults::config();
+        let mut bar = crate::defaults::color_bar_options();
+        bar.length_frac = 1.0;
+        cfg.colorbar = Some(bar);
+        cfg.legend.content.segments = crate::text::rich_segments_from_text("series");
+        // Laid out without the legend, then the bar is dragged over the
+        // middle of the top-right legend box; offsets do not change bands.
+        let laid = auto_layout(&cfg, &measure);
+        let mut dragged = laid.clone();
+        dragged.legend.visible = true;
+        let legend = rects(&dragged, Element::Legend, &measure)[0];
+        let strip = rects(&laid, Element::ColorBar, &measure)[0];
+        if let Some(bar) = dragged.colorbar.as_mut() {
+            bar.offset_x = (legend.x + legend.width * 0.5 - (strip.x + strip.width * 0.5)).round();
+        }
+        let out = auto_layout(&dragged, &measure);
+        assert_eq!(
+            (out.legend.corner, out.legend.offset_x, out.legend.offset_y),
+            (LegendCorner::TopLeft, 0.0, 0.0)
+        );
+        assert_legend_clear(&out, &measure);
+        assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    /// The legend of `cfg` overlaps no colourbar part, tick label or axis
+    /// title, and lies inside the chart area with at least the edge padding
+    /// of its font to the chart edge, or to the colourbar band, on every
+    /// side it crosses past the data area.
+    fn assert_legend_clear(cfg: &Config, measure: &dyn MeasureText) {
+        let legend = rects(cfg, Element::Legend, measure)[0];
+        let mut others = Vec::new();
         for element in [
             Element::ColorBar,
             Element::ColorBarLabel,
             Element::ColorBarTitle,
         ] {
-            for r in rects(&out, element, &measure) {
-                assert!(!rects_overlap(legend, r), "{legend:?} {r:?}");
+            others.extend(rects(cfg, element, measure));
+        }
+        for side in SIDES {
+            others.extend(rects(cfg, Element::AxisLabel(side.clone()), measure));
+            others.extend(rects(cfg, Element::AxisTitle(side), measure));
+        }
+        for r in others {
+            assert!(!rects_overlap(legend, r), "{legend:?} {r:?}");
+        }
+        let da = RectF::from_rect(&cfg.data_area().expect("a data area"));
+        let ca = RectF::from_rect(&cfg.chart_area);
+        let padding = edge_padding(cfg.legend.content.font_size);
+        for side in SIDES {
+            let past = band_span(&side, band_inner_edge(&side, da, 0.0), legend).1 > 0.0;
+            let inset = cfg.colorbar_band(&side);
+            let room = match side {
+                Side::Left => legend.x - (ca.x + inset),
+                Side::Right => ca.x + ca.width - inset - (legend.x + legend.width),
+                Side::Top => legend.y - (ca.y + cfg.chart_title.top_margin + inset),
+                Side::Bottom => ca.y + ca.height - inset - (legend.y + legend.height),
+            };
+            if past {
+                assert!(room >= padding - 1e-3, "{side:?}: {room} for {padding}");
             }
         }
-        assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    /// `laid` with the legend of `cfg`.
+    fn cfg_laid(laid: &Config, cfg: &Config) -> Config {
+        let mut out = laid.clone();
+        out.legend = cfg.legend.clone();
+        out
+    }
+
+    /// The default document with axis titles `y` and `x`, and a visible
+    /// legend of `glyphs` glyphs at `corner` with the offsets `offset`.
+    fn with_legend(glyphs: usize, corner: LegendCorner, offset: (f32, f32)) -> Config {
+        let mut cfg = with_titles("y");
+        cfg.legend.visible = true;
+        cfg.legend.content.segments = crate::text::rich_segments_from_text(&"s".repeat(glyphs));
+        cfg.legend.corner = corner;
+        (cfg.legend.offset_x, cfg.legend.offset_y) = offset;
+        cfg
+    }
+
+    // A legend the host moved below the plot keeps its corner and offsets;
+    // the bottom band grows to hold it and the edge padding, so it is not
+    // clipped and covers neither the x labels nor the x title. A short one
+    // beside the title leaves the title beside its labels; a wide one under
+    // the title pushes the title past it, the title gap from the legend.
+    #[test]
+    fn auto_layout_holds_a_legend_below_the_plot() {
+        let measure = Labels;
+        for (glyphs, offset_x, pushed) in [(6, 0.0, false), (60, 150.0, true)] {
+            let cfg = with_legend(glyphs, LegendCorner::BottomLeft, (offset_x, 70.0));
+            let out = auto_layout(&cfg, &measure);
+            assert_eq!(out.legend, cfg.legend, "the legend is not moved");
+            assert!(
+                out.bottom_x.out_margin
+                    > auto_layout(&with_titles("y"), &measure).bottom_x.out_margin
+            );
+            assert_legend_clear(&out, &measure);
+            let legend = rects(&out, Element::Legend, &measure)[0];
+            let title = rects(&out, Element::AxisTitle(Side::Bottom), &measure)[0];
+            let past = title.y - (legend.y + legend.height);
+            if pushed {
+                assert!((GAP..GAP + 1.0).contains(&past), "{past}");
+            } else {
+                // Above the legend, clear of the labels.
+                assert!(past < 0.0, "{past}");
+                let clearance = title_clearance(&out, Side::Bottom, &measure);
+                assert!(clearance >= GAP - 1e-3, "{clearance}");
+            }
+            assert_eq!(auto_layout(&out, &measure), out, "idempotent");
+        }
+    }
+
+    // The same on the left: a legend moved left of the plot level with the
+    // y title widens the left band to hold it and its padding, and the
+    // title goes past it; the tick labels stay with the axis.
+    #[test]
+    fn auto_layout_holds_a_legend_left_of_the_plot() {
+        let measure = Labels;
+        let plain = auto_layout(&with_titles("y"), &measure);
+        let da = plain.data_area().expect("a data area");
+        // Level with the centred title, its right edge 4 px left of the
+        // labels: where the title beside them would be.
+        let mut cfg = with_legend(6, LegendCorner::TopLeft, (0.0, 0.0));
+        let at_corner = rects(&cfg_laid(&plain, &cfg), Element::Legend, &measure)[0];
+        let labels_left = rects(&plain, Element::AxisLabel(Side::Left), &measure)
+            .iter()
+            .map(|r| r.x)
+            .fold(f32::INFINITY, f32::min);
+        cfg.legend.offset_x = (labels_left - 4.0 - (at_corner.x + at_corner.width)).floor();
+        cfg.legend.offset_y =
+            (da.height as f32 * 0.5 - LEGEND_INSET - at_corner.height * 0.5).round();
+        let out = auto_layout(&cfg, &measure);
+        assert_eq!(out.legend, cfg.legend, "the legend is not moved");
+        assert!(out.left_y.out_margin > plain.left_y.out_margin);
+        assert_legend_clear(&out, &measure);
+        let legend = rects(&out, Element::Legend, &measure)[0];
+        let title = rects(&out, Element::AxisTitle(Side::Left), &measure)[0];
+        let past = legend.x - (title.x + title.width);
+        assert!((GAP..GAP + 1.0).contains(&past), "{past}");
+        let labels = rects(&out, Element::AxisLabel(Side::Left), &measure);
+        let plain_labels = rects(&plain, Element::AxisLabel(Side::Left), &measure);
+        let out_da = out.data_area().expect("a data area");
+        assert_eq!(
+            labels[0].x + labels[0].width - out_da.x as f32,
+            plain_labels[0].x + plain_labels[0].width - da.x as f32,
+            "the labels stay with the axis"
+        );
+        assert_eq!(auto_layout(&out, &measure), out, "idempotent");
+    }
+
+    // A legend inside the data area changes no band: the layout is the one
+    // of the same document without a legend.
+    #[test]
+    fn auto_layout_leaves_the_bands_of_an_inside_legend() {
+        let measure = Labels;
+        for corner in [
+            LegendCorner::TopLeft,
+            LegendCorner::TopRight,
+            LegendCorner::BottomLeft,
+            LegendCorner::BottomRight,
+        ] {
+            let cfg = with_legend(20, corner, (0.0, 0.0));
+            let mut hidden = cfg.clone();
+            hidden.legend.visible = false;
+            let mut out = auto_layout(&cfg, &measure);
+            assert_eq!(out.legend, cfg.legend);
+            out.legend.visible = false;
+            assert_eq!(out, auto_layout(&hidden, &measure));
+        }
     }
 
     // An overlay's labels and title set the shared right band through the

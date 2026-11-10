@@ -19,11 +19,14 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Color, ColorMap, Material, Renderer, SeriesConfig,
+    AxisTitleElement, Color, ColorMap, LegendElement, Material, Renderer, SelectionGeometry,
+    SeriesConfig,
     categorical::*,
-    config::{DrawStyle, SketchOptions},
+    config::{DrawStyle, LegendCorner, SketchOptions},
     data_config::{MatrixRef, ScatterShape, Shading},
+    layout::Side,
     radial::*,
+    text::RichSegment,
 };
 use std::path::Path;
 use styled::{SIZE, cartesian, export, rgb, save};
@@ -175,7 +178,39 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_columns(&columns)?;
     let mut cartesian = renderer::Chart::new(config).with_area(0, 0, SIZE.0, SIZE.1);
-    cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
+    // The value axis runs 0 to 100 (the largest stack is 89) in steps of 20,
+    // printed in the document's integer format, which a range change resets.
+    let format = cartesian.config().bottom_x.label_style.format.clone();
+    cartesian.set_x_range(0., 100.);
+    let value_axis = &mut cartesian.config_mut().bottom_x;
+    value_axis.major_spacing = 20.;
+    value_axis.label_style.format = format;
+    // The legend in one row: three spaces between entries instead of a line
+    // break.
+    let legend = &mut cartesian.config_mut().legend;
+    legend.corner = LegendCorner::BottomLeft;
+    legend.content.segments = std::mem::take(&mut legend.content.segments)
+        .into_iter()
+        .flat_map(|s| match s.text {
+            '\n' => std::iter::repeat_n(RichSegment::plain(' '), 3),
+            _ => std::iter::repeat_n(s, 1),
+        })
+        .collect();
+    // Laid out with the legend in the plot's corner, then moved under the x
+    // title, centred on the plot. The legend is the host's placement: the
+    // layout grows the bottom band to hold it.
+    cartesian.fit_layout();
+    let measure = renderer::CpuTextMeasure::for_style(&cartesian.config().draw_style);
+    let cfg = cartesian.config();
+    let title = AxisTitleElement { side: Side::Bottom }.bounds(cfg, &measure);
+    let boxed = LegendElement.bounds(cfg, &measure);
+    if let (Ok(plot), Some(title), Some(boxed)) = (cfg.data_area(), title, boxed) {
+        let offset_x = plot.x as f32 + (plot.width as f32 - boxed.width) * 0.5 - boxed.x;
+        let offset_y = title.y + title.height + 10. - boxed.y;
+        let legend = &mut cartesian.config_mut().legend;
+        legend.offset_x = offset_x.round();
+        legend.offset_y = offset_y.round();
+    }
     let image = export(r, &mut cartesian, &specs, bg)?;
     save(&image, bg, &out.join("concept-revenue.png"))
 }
