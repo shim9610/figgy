@@ -44,6 +44,7 @@ pub mod format;
 pub mod layout;
 pub mod legend;
 pub mod line;
+pub mod monotonic;
 pub mod preset;
 pub mod probability;
 pub mod radial;
