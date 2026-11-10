@@ -734,7 +734,8 @@ annotation's `align`) are additive.
   same rule, the chart title band is the title's height and 0.3 em of its
   font (at least the edge padding) above and below it, 0 without a title, a
   legend over the colourbar goes to the first corner that clears it, and
-  each subplot is laid out as its own chart. No serialized field is added.
+  each subplot is laid out as its own chart, then lined up with the cells
+  of its grid row and column. No serialized field is added.
   Not covered: overlay axes drawn over each other, polar angle labels against
   radius labels, and labels that collide along an axis or at a corner. Call
   it again after an auto-fit or a zoom: the range helpers reset a linear axis
@@ -743,7 +744,10 @@ annotation's `align`) are additive.
   ([#270](https://github.com/shim9610/figgy/issues/270)). Bands shrink as
   well as grow, end 8 px past what they hold, and hold the overhang of the
   perpendicular end labels and the category group headers; the chart title
-  band is padded by 0.3 em above and below, 0 without a title.
+  band is padded by 0.3 em above and below, 0 without a title; the plots
+  of subplot cells that share a grid row or column (same chart-area y and
+  height, or x and width) are lined up and sized alike, the titles of
+  widened bands placed beside their labels again.
   `fit_chart_title_margin` (`with_title`, `set_title`) is unchanged.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),

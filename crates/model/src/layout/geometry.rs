@@ -1250,6 +1250,16 @@ impl BandMeasure {
         let placed = (clear - base).ceil();
         (placed.is_finite() && placed != offset).then_some(placed)
     }
+
+    /// The outward offset that puts an axis title, centred in a band `band`
+    /// wide before the offset, [`LABEL_GAP`] past its labels, rounded
+    /// outward to a whole pixel, wherever it sits now. `None` without a
+    /// title.
+    fn beside_offset(&self, band: f32) -> Option<f32> {
+        let (near, far) = self.title?;
+        let placed = (self.reach.unwrap_or(0.0) + LABEL_GAP - (band - (far - near)) * 0.5).ceil();
+        placed.is_finite().then_some(placed)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,7 +1331,22 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   helpers use, only grows a band too small for its title.
 /// - **Legend.** A legend box over the colourbar moves to the first corner,
 ///   with zero offsets, where it clears the bar.
-/// - **Subplots** are laid out as charts of their own.
+/// - **Subplots** are laid out as charts of their own, and then the plots
+///   of a grid are lined up. The document's own chart and each subplot are
+///   cells; cells with the same chart-area x and width form a column, cells
+///   with the same y and height a row. In a column every plot gets the
+///   widest left and right margin of the column; in a row the deepest
+///   bottom margin and the deepest top margin, after each titled cell of the
+///   row gets the row's deepest chart title band, so the titles line up
+///   too. Then cells of a row with the same chart-area width get the same
+///   plot width, and cells of a column with the same height the same plot
+///   height, what a cell lacks going to its right and bottom bands (in a
+///   regular grid this keeps the edges lined up). A band is widened through
+///   its axis' `out_margin` (the right one through the group band, so
+///   overlay axes and a colourbar count), and a title in a band wider than
+///   it needs is placed [`LABEL_GAP`] past its labels, whatever offset it
+///   had. A cell that shares no row or column with another keeps its own
+///   fit, and a widening that would leave a cell no data area is not made.
 ///
 /// Not covered: overlay axes drawn over each other or over the parent's
 /// right axis (only `line_offset` separates them), polar angle labels
@@ -1337,6 +1362,7 @@ pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
         lay_out_chart(&mut chart, measure);
         adopt_chart_layout(&mut out.subplots[index].config, &chart);
     }
+    align_cells(&mut out, measure);
     out
 }
 
@@ -1707,6 +1733,268 @@ fn rects_overlap(a: RectF, b: RectF) -> bool {
     let w = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
     let h = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
     w > 0.0 && h > 0.0
+}
+
+/// The plot margins of one cell of a document ([`Config::margins`]) and its
+/// chart title band: what [`auto_layout`] lines up across a grid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CellBands {
+    top: f32,
+    bottom: f32,
+    left: f32,
+    right: f32,
+    title: f32,
+}
+
+impl CellBands {
+    /// What `cfg` has now.
+    fn of(cfg: &Config) -> Self {
+        let m = cfg.margins();
+        Self {
+            top: m.top,
+            bottom: m.bottom,
+            left: m.left,
+            right: m.right,
+            title: cfg.chart_title.top_margin,
+        }
+    }
+
+    /// The margin on `side`.
+    fn side(&self, side: &Side) -> f32 {
+        match side {
+            Side::Top => self.top,
+            Side::Bottom => self.bottom,
+            Side::Left => self.left,
+            Side::Right => self.right,
+        }
+    }
+}
+
+/// Cell `i` of the document `doc`: its own chart for 0, subplot `i - 1`
+/// after it, as stored (bands do not depend on linked ranges).
+fn cell(doc: &Config, i: usize) -> &Config {
+    match i.checked_sub(1) {
+        None => doc,
+        Some(index) => &doc.subplots[index].config,
+    }
+}
+
+/// [`cell`], to change.
+fn cell_mut(doc: &mut Config, i: usize) -> &mut Config {
+    match i.checked_sub(1) {
+        None => doc,
+        Some(index) => &mut doc.subplots[index].config,
+    }
+}
+
+/// Whether two cells share a grid column: the same chart-area x and width.
+fn same_column(a: &Config, b: &Config) -> bool {
+    a.chart_area.x == b.chart_area.x && a.chart_area.width == b.chart_area.width
+}
+
+/// Whether two cells share a grid row: the same chart-area y and height.
+fn same_row(a: &Config, b: &Config) -> bool {
+    a.chart_area.y == b.chart_area.y && a.chart_area.height == b.chart_area.height
+}
+
+/// Whether cell `i` of `doc` shares a row or a column with another cell.
+fn in_grid(doc: &Config, i: usize) -> bool {
+    let me = cell(doc, i);
+    (0..=doc.subplots.len())
+        .filter(|&k| k != i)
+        .map(|k| cell(doc, k))
+        .any(|other| same_row(me, other) || same_column(me, other))
+}
+
+/// The edges cell `i` of `doc` is lined up to: the widest left and right
+/// margins of its column, the deepest bottom margin of its row, and the
+/// deepest top margin of its row once every titled cell of the row has the
+/// row's deepest chart title band (a cell without a title band keeps
+/// none). A cell alone in its row and column gets its own bands.
+///
+/// Raising a cell to these bands leaves every maximum unchanged, so the
+/// cells can be raised one after another in place.
+fn edge_alignment(doc: &Config, i: usize) -> CellBands {
+    let me = cell(doc, i);
+    let cells = doc.subplots.len() + 1;
+    let titled = |cfg: &Config| cfg.chart_title.top_margin > 0.0;
+    let row_title = (0..cells)
+        .map(|k| cell(doc, k))
+        .filter(|other| same_row(me, other) && titled(other))
+        .fold(me.chart_title.top_margin, |deepest, other| {
+            deepest.max(other.chart_title.top_margin)
+        });
+    let mut to = CellBands::of(me);
+    if titled(me) {
+        to.title = row_title;
+    }
+    for other in (0..cells).map(|k| cell(doc, k)) {
+        let m = other.margins();
+        if same_column(me, other) {
+            to.left = to.left.max(m.left);
+            to.right = to.right.max(m.right);
+        }
+        if same_row(me, other) {
+            let title = other.chart_title.top_margin;
+            let aligned = if titled(other) { row_title } else { title };
+            to.top = to.top.max(m.top - title + aligned);
+            to.bottom = to.bottom.max(m.bottom);
+        }
+    }
+    to
+}
+
+/// The bands that give cell `i` of `doc` the plot size of its neighbours:
+/// the widest plot margins across (left and right) of the cells of its row
+/// with its chart-area width, the deepest down (top and bottom) of the cells
+/// of its column with its height. What its own margins lack goes to the
+/// right and the bottom band. In a regular grid, after
+/// [`edge_alignment`], every cell of a column lacks the same width and
+/// every cell of a row the same height, so the edges stay lined up.
+fn size_alignment(doc: &Config, i: usize) -> CellBands {
+    let me = cell(doc, i);
+    let mut to = CellBands::of(me);
+    let (own_across, own_down) = (to.left + to.right, to.top + to.bottom);
+    let (mut across, mut down) = (own_across, own_down);
+    for other in (0..=doc.subplots.len()).map(|k| cell(doc, k)) {
+        let m = other.margins();
+        if same_row(me, other) && other.chart_area.width == me.chart_area.width {
+            across = across.max(m.left + m.right);
+        }
+        if same_column(me, other) && other.chart_area.height == me.chart_area.height {
+            down = down.max(m.top + m.bottom);
+        }
+    }
+    to.right += across - own_across;
+    to.bottom += down - own_down;
+    to
+}
+
+/// Line up the plots of the cells of `doc` that share a grid row or column,
+/// each laid out on its own first: their edges ([`edge_alignment`]), then
+/// their sizes ([`size_alignment`]), then the titles in the bands that grew
+/// ([`place_widened_titles`]).
+fn align_cells(doc: &mut Config, measure: &dyn MeasureText) {
+    let cells = doc.subplots.len() + 1;
+    for i in 0..cells {
+        let to = edge_alignment(doc, i);
+        raise_bands(cell_mut(doc, i), to);
+    }
+    for i in 0..cells {
+        let to = size_alignment(doc, i);
+        raise_bands(cell_mut(doc, i), to);
+    }
+    for i in 0..cells {
+        if !in_grid(doc, i) {
+            continue;
+        }
+        match i.checked_sub(1) {
+            None => {
+                place_widened_titles(doc, measure);
+            }
+            Some(index) => {
+                let Some(mut chart) = doc.subplot_config(index) else {
+                    continue;
+                };
+                if place_widened_titles(&mut chart, measure) {
+                    adopt_chart_layout(&mut doc.subplots[index].config, &chart);
+                }
+            }
+        }
+    }
+}
+
+/// Raise the bands of one cell to `to`, never lower them: the chart title
+/// band to its own, then each axis band by what its plot margin lacks (the
+/// right one through the group band, [`super::right_out_margin_effective`],
+/// so overlay axes and a colourbar count). Nothing changes when that leaves
+/// a chart that had a data area without one.
+fn raise_bands(chart: &mut Config, to: CellBands) {
+    let had_data_area = chart.data_area().is_ok();
+    let fitted = (
+        chart.chart_title.top_margin,
+        chart.top_x.out_margin,
+        chart.bottom_x.out_margin,
+        chart.left_y.out_margin,
+        chart.right_y.out_margin,
+    );
+    if to.title > chart.chart_title.top_margin {
+        chart.chart_title.top_margin = to.title;
+    }
+    let now = CellBands::of(chart);
+    for side in &SIDES {
+        let by = to.side(side) - now.side(side);
+        if by > 0.0 {
+            let band = match side {
+                Side::Right => super::right_out_margin_effective(chart),
+                _ => axis_ref(chart, side).out_margin,
+            };
+            axis_mut(chart, side).out_margin = band + by;
+        }
+    }
+    if had_data_area && chart.data_area().is_err() {
+        (
+            chart.chart_title.top_margin,
+            chart.top_x.out_margin,
+            chart.bottom_x.out_margin,
+            chart.left_y.out_margin,
+            chart.right_y.out_margin,
+        ) = fitted;
+    }
+}
+
+/// Place each axis title of `chart` whose band is wider than what it holds
+/// (the band [`BandMeasure::required`] for its labels and title, as
+/// [`fit_band`] sets it) [`LABEL_GAP`] past its labels
+/// ([`BandMeasure::beside_offset`]) rather than centred in the band. For
+/// the parent's right axis and the overlay axes the band is the group's.
+/// Returns whether an offset changed.
+fn place_widened_titles(chart: &mut Config, measure: &dyn MeasureText) -> bool {
+    let bands = crate::select::on_drawn_panel(chart, |panel| {
+        let labels = SIDES.map(|side| Probe::of(panel, &Element::AxisLabel(side), measure));
+        let held = held_labels(panel, &labels, measure);
+        SIDES
+            .each_ref()
+            .map(|side| axis_band_measure(panel, side, &held, measure))
+    });
+    let mut changed = false;
+    for (side, measured) in SIDES.iter().zip(bands) {
+        if let Some((band, _)) = measured {
+            changed |= place_beside(chart, &band, side, BandOwner::Axis(side));
+        }
+    }
+    for layer in 0..chart.overlays.len() {
+        let measured = chart.overlay_panel(layer).and_then(|panel| {
+            let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
+            axis_band_measure(&panel, &Side::Right, &labels, measure)
+        });
+        if let Some((band, _)) = measured {
+            changed |= place_beside(chart, &band, &Side::Right, BandOwner::Overlay(layer));
+        }
+    }
+    changed
+}
+
+/// Give the title of `owner`'s axis, whose band on `side` measures `band`,
+/// the offset that puts it [`LABEL_GAP`] past its labels, when the band it
+/// is drawn in is wider than `band` needs. Returns whether the offset
+/// changed.
+fn place_beside(cfg: &mut Config, band: &BandMeasure, side: &Side, owner: BandOwner<'_>) -> bool {
+    let width = drawn_band(cfg, owner);
+    if width <= band.required(LABEL_GAP).ceil() {
+        return false;
+    }
+    let Some(outward) = band.beside_offset(width) else {
+        return false;
+    };
+    let offset = outward_sign(side) * outward;
+    match owner.axis(cfg) {
+        Some(axis) if axis.title_option.offset_y != offset => {
+            axis.title_option.offset_y = offset;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Store what [`auto_layout`] chose for the chart of a subplot, laid out
@@ -2888,6 +3176,132 @@ mod tests {
             cfg.subplots[0].config.chart_area
         );
         assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    /// A cell of a grid at `(x, y)`, 480 x 420 like the `mixed_axes`
+    /// example's, titled `title` (none when empty) with a left title.
+    fn grid_cell(x: u32, y: u32, title: &str) -> Config {
+        let mut cfg = with_titles("y");
+        cfg.chart_area = ChartArea(Rect {
+            x,
+            y,
+            width: 480,
+            height: 420,
+        });
+        cfg.chart_title.text.segments = crate::text::rich_segments_from_text(title);
+        cfg
+    }
+
+    /// The plot of every cell of `doc`: its own chart's, then each
+    /// subplot's.
+    fn plots(doc: &Config) -> Vec<Rect> {
+        let mut out = vec![doc.data_area().expect("a data area").0];
+        for index in 0..doc.subplots.len() {
+            let chart = doc.subplot_config(index).expect("a subplot");
+            out.push(chart.data_area().expect("a data area").0);
+        }
+        out
+    }
+
+    // A 2 x 2 grid shaped like the `mixed_axes` example, and a lone cell
+    // beside it. The upper-right cell has no chart title; the lower-left one
+    // five-digit labels and no x title; the lower-right one an overlay with
+    // a titled axis on the right. Fitted alone, the cells' plots differ;
+    // aligned, each column shares its left and right plot edges (the
+    // overlay's band included) and each row its top and bottom edges, a
+    // title in a widened band sits the gap past its labels, the lone cell
+    // keeps its own fit and a second call changes nothing.
+    #[test]
+    fn auto_layout_lines_up_the_plots_of_a_grid() {
+        let measure = Labels;
+        let mut doc = grid_cell(0, 0, "Temperature");
+        let untitled = grid_cell(480, 0, "");
+        let mut wide = grid_cell(0, 420, "Humidity");
+        five_digit_labels(&mut wide.left_y);
+        wide.bottom_x.title_option.text.segments.clear();
+        let mut twin = grid_cell(480, 420, "Daytime");
+        let mut overlay = crate::defaults::overlay_layer();
+        overlay.y_axis.title_option.visible = true;
+        overlay.y_axis.title_option.text.segments = crate::text::rich_segments_from_text("%");
+        twin.overlays.push(overlay);
+        let mut lone = grid_cell(960, 100, "Lone");
+        lone.chart_area.0.height = 300;
+        for config in [untitled, wide, twin, lone] {
+            let mut sub = crate::defaults::subplot();
+            sub.config = config;
+            doc.subplots.push(sub);
+        }
+
+        // Each cell fitted alone, as before the alignment.
+        let mut alone = vec![auto_layout(&doc_without_subplots(&doc), &measure)];
+        alone.extend(
+            doc.subplots
+                .iter()
+                .map(|s| auto_layout(&s.config, &measure)),
+        );
+        let fitted: Vec<Rect> = alone.iter().map(|c| c.data_area().unwrap().0).collect();
+        assert_ne!(
+            fitted[0].x, fitted[2].x,
+            "the left edges differ when fitted"
+        );
+        assert_ne!(
+            fitted[1].x + fitted[1].width,
+            fitted[3].x + fitted[3].width,
+            "the right edges differ when fitted"
+        );
+        assert_ne!(fitted[0].y, fitted[1].y, "the top edges differ when fitted");
+        assert_ne!(
+            fitted[2].y + fitted[2].height,
+            fitted[3].y + fitted[3].height,
+            "the bottom edges differ when fitted"
+        );
+
+        let out = auto_layout(&doc, &measure);
+        let plot = plots(&out);
+        for (a, b) in [(0, 2), (1, 3)] {
+            assert_eq!(plot[a].x, plot[b].x, "column {a} {b}: left edge");
+            assert_eq!(plot[a].width, plot[b].width, "column {a} {b}: right edge");
+        }
+        for (a, b) in [(0, 1), (2, 3)] {
+            assert_eq!(plot[a].y, plot[b].y, "row {a} {b}: top edge");
+            assert_eq!(plot[a].height, plot[b].height, "row {a} {b}: bottom edge");
+        }
+        // Every plot of the grid is the same size.
+        for p in &plot[1..4] {
+            assert_eq!((p.width, p.height), (plot[0].width, plot[0].height));
+        }
+        // The titled cells of a row share the chart title band; an
+        // untitled one gets none and a deeper top axis band instead.
+        assert!(out.chart_title.top_margin > 0.0);
+        assert_eq!(out.subplots[0].config.chart_title.top_margin, 0.0);
+        assert!(out.subplots[0].config.top_x.out_margin > out.top_x.out_margin);
+        assert_eq!(
+            out.subplots[1].config.chart_title.top_margin,
+            out.subplots[2].config.chart_title.top_margin
+        );
+        // The lone cell keeps its own fit.
+        assert_eq!(plot[4], fitted[4]);
+        assert_eq!(out.subplots[3].config, alone[4]);
+        // The parent's left band, widened to the lower-left cell's, keeps
+        // its title the gap past its labels; the overlay's title clears its
+        // labels in the right band of its group.
+        assert!(out.left_y.out_margin > alone[0].left_y.out_margin);
+        let clearance = title_clearance(&out, Side::Left, &measure);
+        assert!(
+            (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
+            "{clearance}"
+        );
+        let twin = out.subplot_config(2).unwrap().overlay_panel(0).unwrap();
+        let clearance = title_clearance(&twin, Side::Right, &measure);
+        assert!(clearance >= LABEL_GAP - 1e-3, "{clearance}");
+        assert_eq!(auto_layout(&out, &measure), out, "idempotent");
+    }
+
+    /// `doc` without its subplots: its own chart alone.
+    fn doc_without_subplots(doc: &Config) -> Config {
+        let mut alone = doc.clone();
+        alone.subplots.clear();
+        alone
     }
 
     // The chart title's band is its measured height (13 px) and 0.3 em of
