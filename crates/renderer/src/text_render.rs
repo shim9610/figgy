@@ -1712,6 +1712,12 @@ impl crate::text::MeasureText for CpuTextMeasure {
             descent: m.descent,
         }
     }
+
+    /// The line ascent and descent the regular face this measure draws
+    /// `family` with states at `size` (the handwritten face in sketch mode).
+    fn font_line(&self, family: &str, size: f32) -> crate::text::TextExtents {
+        font_line_metrics(family, size, self.policy)
+    }
 }
 
 /// Compute the real rendered bounding box of `rt` using glyph measurements.
@@ -1913,6 +1919,23 @@ pub fn measure_plain_text(
         width,
         ascent: max_ascent,
         descent: max_descent,
+    }
+}
+
+/// The line ascent and descent the regular face `family` resolves to in
+/// `policy` states at `size` (the handwritten face in sketch mode): how far
+/// a line of it reaches above and below its baseline whatever its letters.
+/// `width` is 0.
+pub(crate) fn font_line_metrics(family: &str, size: f32, policy: FontPolicy) -> TextMetrics {
+    let font = match policy {
+        FontPolicy::Handwritten => handwritten_font(false),
+        FontPolicy::Standard => resolve_font(family, false, false),
+    };
+    let m = font.metrics(&[]).scale(size);
+    TextMetrics {
+        width: 0.0,
+        ascent: m.ascent,
+        descent: m.descent,
     }
 }
 

@@ -24,8 +24,9 @@ use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    Element, LEGEND_BORDER_WIDTH, NudgeReject, NudgeResult, RectF, Side, axis_title_placement,
-    chart_title_placement_in, colorbar_title_placement, legend_rect, visible_colorbar_rect,
+    Element, LEGEND_BORDER_WIDTH, MeasuredTitle, NudgeReject, NudgeResult, RectF, Side,
+    axis_title_placement, chart_title_placement_in, colorbar_title_placement, legend_rect,
+    visible_colorbar_rect,
 };
 use crate::resize::{Resizable, ResizeHandle};
 use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, TextRef, union};
@@ -1264,8 +1265,8 @@ fn emit_chart_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink
 }
 
 /// The one placement of a chart title: `title` centred across `chart_area`
-/// and in the band `top_margin` high at its top, moved by the title's
-/// offsets. A Cartesian chart passes its chart area and the title's own
+/// and on its baseline in the band `top_margin` high at its top
+/// ([`chart_title_placement_in`]), moved by the title's offsets. A Cartesian chart passes its chart area and the title's own
 /// band; a chart that lays out its own title band (the radial chart) passes
 /// its canvas and that band. Places nothing for a hidden or empty title.
 pub fn emit_chart_title_in(
@@ -1279,14 +1280,15 @@ pub fn emit_chart_title_in(
     if !ct.visible || ct.text.segments.is_empty() {
         return;
     }
-    let m = measure.measure_rich(&ct.text);
-    let placement = chart_title_placement_in(chart_area, top_margin, (ct.offset_x, ct.offset_y), m);
+    let measured = MeasuredTitle::of(&ct.text, measure);
+    let placement =
+        chart_title_placement_in(chart_area, top_margin, (ct.offset_x, ct.offset_y), measured);
     sink.text(
         Slot::Above,
         &PlacedText {
             text: TextRef::Rich(&ct.text),
             origin: placement.origin,
-            extents: m,
+            extents: measured.ink,
             rotation: None,
         },
     );

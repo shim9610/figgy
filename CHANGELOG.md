@@ -747,8 +747,18 @@ annotation's `align`) are additive.
   band is padded by 0.3 em above and below, 0 without a title; the plots
   of subplot cells that share a grid row or column (same chart-area y and
   height, or x and width) are lined up and sized alike, the titles of
-  widened bands placed beside their labels again.
-  `fit_chart_title_margin` (`with_title`, `set_title`) is unchanged.
+  widened bands placed beside their labels again. Chart titles sit on a
+  baseline: the new `MeasureText::font_line(family, size)` (by default a
+  reference measurement, in the renderer the face's own line metrics) gives
+  the font's line, which the placement centres in the band with the ink
+  where it reaches further, so titles of one font and size share a baseline
+  whatever their letters; `auto_layout` fits the band to that line, gives a
+  grid row's titles one band and the `chart_title.offset_y` that puts them
+  on one baseline, and `fit_chart_title_margin` (`with_title`, `set_title`)
+  grows a band lower than the line. Migration: `layout::chart_title_placement`
+  and `chart_title_placement_in` take a `MeasuredTitle`
+  (`MeasuredTitle::of(&text, measure)`) instead of the title's
+  `TextExtents`.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),
   [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart

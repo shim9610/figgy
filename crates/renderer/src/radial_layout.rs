@@ -9,7 +9,7 @@ use crate::decoration::scaled_rich_text;
 use crate::decoration_render::CanvasSink;
 use crate::raster::Canvas;
 use crate::sketch::DecoStroker;
-use crate::text_render::{FontPolicy, measure_plain_text, measure_rich_text};
+use crate::text_render::{FontPolicy, font_line_metrics, measure_plain_text, measure_rich_text};
 use model::layout::{NudgeReject, NudgeResult, RectF};
 use model::resize::{Resizable, ResizeHandle};
 use model::select::{Selectable, SelectionGeometry};
@@ -38,6 +38,14 @@ impl MeasureText for FrameMeasure {
         let m = measure_rich_text(&scaled_rich_text(rt, self.scale), FontPolicy::Standard);
         TextExtents {
             width: m.width / self.scale,
+            ascent: m.ascent / self.scale,
+            descent: m.descent / self.scale,
+        }
+    }
+    fn font_line(&self, family: &str, size: f32) -> TextExtents {
+        let m = font_line_metrics(family, size * self.scale, FontPolicy::Standard);
+        TextExtents {
+            width: 0.0,
             ascent: m.ascent / self.scale,
             descent: m.descent / self.scale,
         }

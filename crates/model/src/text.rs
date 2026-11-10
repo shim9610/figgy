@@ -525,6 +525,27 @@ pub trait MeasureText {
             align: TextAlign::Left,
         })
     }
+
+    /// The line ascent and descent of the font `family` at `size`: how far
+    /// a line of it reaches above and below its baseline whatever its
+    /// letters, as the font states it (`width` is 0). A chart title sits on
+    /// a baseline placed from this, so titles of one font and size share a
+    /// baseline whether or not their letters descend
+    /// ([`crate::layout::chart_title_placement`]).
+    ///
+    /// The default measures a reference string that reaches an accented
+    /// capital's top and a descender's bottom (`"ÅÉgj"`) through
+    /// [`Self::measure_plain`], so an implementor without font tables still
+    /// gives every title of a font one line; a renderer returns the metrics
+    /// of the face it draws with.
+    fn font_line(&self, family: &str, size: f32) -> TextExtents {
+        let reference = self.measure_plain("ÅÉgj", family, size);
+        TextExtents {
+            width: 0.0,
+            ascent: reference.ascent,
+            descent: reference.descent,
+        }
+    }
 }
 
 /// One plain `RichSegment` per char, mapping Unicode super/subscript chars to

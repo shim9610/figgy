@@ -2,7 +2,7 @@ use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, BarAlign, ColorBarOptions, Config, LegendCorner};
 use crate::format::LabelFormat;
 use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, StrokeStyle, TextRef};
-use crate::text::{MeasureText, TextExtents};
+use crate::text::{MeasureText, RichText, TextExtents};
 
 use super::{ChartArea, DataArea, Element, RectF, Side, axis_mut, axis_ref, tick_contribution};
 
@@ -651,29 +651,122 @@ pub fn chart_title_placement(
     chart_area: &ChartArea,
     top_margin: f32,
     offset: (f32, f32),
-    extents: TextExtents,
+    title: MeasuredTitle,
 ) -> TitlePlacement {
-    chart_title_placement_in(RectF::from_rect(chart_area), top_margin, offset, extents)
+    chart_title_placement_in(RectF::from_rect(chart_area), top_margin, offset, title)
+}
+
+/// A chart title as its placement reads it: the ink of its text
+/// ([`MeasureText::measure_rich`]), the line of its font at its font size
+/// ([`MeasureText::font_line`]) and that font size, which sets the padding
+/// of its band ([`Self::padding`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeasuredTitle {
+    /// The measured ink: the first line's rise above its baseline and
+    /// everything below it.
+    pub ink: TextExtents,
+    /// The font's own line ascent and descent at the title's font size.
+    pub font_line: TextExtents,
+    /// The title's font size (`RichText::font_size`).
+    pub font_size: f32,
+}
+
+impl MeasuredTitle {
+    /// `text` measured by `measure`: its ink, and the line of its font
+    /// family at its font size.
+    pub fn of(text: &RichText, measure: &dyn MeasureText) -> Self {
+        Self {
+            ink: measure.measure_rich(text),
+            font_line: measure.font_line(&text.font, text.font_size),
+            font_size: text.font_size,
+        }
+    }
+
+    /// The padding [`auto_layout`] fits above and below the title in its
+    /// band: 0.3 em of its font size, at least the 8 px edge padding (8.4 px
+    /// at the default 28 px title).
+    pub fn padding(&self) -> f32 {
+        AUTO_LAYOUT_EDGE_PADDING.max(AUTO_LAYOUT_TITLE_PADDING_EMS * self.font_size)
+    }
+
+    /// The reach above the first baseline: the font's line ascent, or the
+    /// ink's when it rises higher (a superscript, a fraction, a ∑ limit).
+    pub fn ascent(&self) -> f32 {
+        self.font_line.ascent.max(self.ink.ascent)
+    }
+
+    /// The reach below the first baseline: the font's line descent, or the
+    /// ink's when it reaches lower (a subscript, a second line).
+    pub fn descent(&self) -> f32 {
+        self.font_line.descent.max(self.ink.descent)
+    }
+
+    /// The room the title takes in its band above its first baseline: the
+    /// padding and [`Self::ascent`].
+    fn above(&self) -> f32 {
+        self.padding() + self.ascent()
+    }
+
+    /// The room the title takes in its band below its first baseline:
+    /// [`Self::descent`] and the padding.
+    fn below(&self) -> f32 {
+        self.descent() + self.padding()
+    }
 }
 
 /// [`chart_title_placement`] in an `f32` rectangle: a chart that lays out
-/// its own title band (the radial chart) centres its title across its
+/// its own title band (the radial chart) places its title across its
 /// canvas with it.
+///
+/// The title is centred across `chart_area` and set on a baseline in the
+/// band `top_margin` high at its top, so titles of one font and size share
+/// a baseline whatever their letters:
+///
+/// - The title's line, [`MeasuredTitle::ascent`] above the first baseline
+///   and [`MeasuredTitle::descent`] below it (the font's line, or the ink
+///   where it reaches further), is centred in the band. In the band
+///   [`auto_layout`] fits, the line and [`MeasuredTitle::padding`] above and
+///   below it, the baseline is the padding and the ascent below the band's
+///   top. The placement reads no pixel constant, so a chart scaled by `s`
+///   (a 2x export) places its title `s` times as far.
+/// - The ink is then kept inside the band: in a band lower than the line,
+///   the title moves down or up just enough to keep its ink in.
+/// - Ink taller than the band is centred in it, as the band cannot hold it.
+///
+/// `offset` then moves the title (a drag, or [`auto_layout`]'s shared
+/// baseline for a row of a grid); it is not held inside the band.
 pub fn chart_title_placement_in(
     chart_area: RectF,
     top_margin: f32,
     offset: (f32, f32),
-    extents: TextExtents,
+    title: MeasuredTitle,
 ) -> TitlePlacement {
+    let ink = title.ink;
+    let top = chart_area.y;
+    let baseline = if ink.height() > top_margin {
+        top + (top_margin - ink.height()) * 0.5 + ink.ascent
+    } else {
+        (top + centred_baseline(top_margin, title.above(), title.below()))
+            .max(top + ink.ascent)
+            .min(top + top_margin - ink.descent)
+    };
     let origin = (
-        chart_area.x + chart_area.width * 0.5 - extents.width * 0.5 + offset.0,
-        chart_area.y + (top_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
+        chart_area.x + chart_area.width * 0.5 - ink.width * 0.5 + offset.0,
+        baseline + offset.1,
     );
     TitlePlacement {
         origin,
         rotation_center: origin,
         rotation_degrees: 0.0,
     }
+}
+
+/// The baseline, from the top of a band `band` high, of a line that takes
+/// `above` over its baseline and `below` under it, centred in the band.
+/// [`chart_title_placement_in`] and [`align_titles`] share it, so a row's
+/// titles that need no move get exactly none.
+fn centred_baseline(band: f32, above: f32, below: f32) -> f32 {
+    (band - above - below) * 0.5 + above
 }
 
 /// Room the default title band leaves around one default-size title line: the
@@ -688,13 +781,15 @@ fn chart_title_band_padding() -> f32 {
 /// Grow `cfg.chart_title.top_margin` when the measured title is taller than
 /// its band.
 ///
-/// [`chart_title_placement`] centres the title block in the band, so a block
-/// taller than the band starts above the chart area and its first line is
-/// clipped. Only in that case the band grows to the block's height plus the
-/// room the default band gives a single default-size line, rounded up to a
-/// whole pixel. A title that already fits is left exactly as it is: text is
-/// measured by its ink, so refitting every title would move the data area
-/// whenever the title's letters changed.
+/// The title's height is its line: [`MeasuredTitle::ascent`] above the first
+/// baseline and [`MeasuredTitle::descent`] below it, the font's line or the
+/// ink where it reaches further. A band lower than that cannot hold the
+/// title on its baseline ([`chart_title_placement`]), and a band lower than
+/// the ink clips its first line. Only in that case the band grows to the
+/// line's height plus the room the default band gives a single default-size
+/// line, rounded up to a whole pixel. A title that already fits is left
+/// exactly as it is, so the data area does not move when the title's letters
+/// change.
 ///
 /// The band is never shrunk, so a margin the host made larger is kept.
 /// Nothing changes when the title is hidden or empty, when the measurement is
@@ -710,7 +805,8 @@ pub fn fit_chart_title_margin(cfg: &mut Config, measure: &dyn MeasureText) -> bo
     if !title.visible || title.text.segments.is_empty() {
         return false;
     }
-    let height = measure.measure_rich(&title.text).height();
+    let measured = MeasuredTitle::of(&title.text, measure);
+    let height = measured.ascent() + measured.descent();
     let current = title.top_margin;
     if !height.is_finite() || current.is_nan() || height <= current {
         return false;
@@ -1045,7 +1141,8 @@ const AUTO_LAYOUT_EDGE_PADDING: f32 = 8.0;
 
 /// The padding [`auto_layout`] keeps above and below the chart title in its
 /// band, as a fraction of the title's font size: 0.3 em, never less than
-/// [`AUTO_LAYOUT_EDGE_PADDING`] (8.4 px at the default 28 px title).
+/// [`AUTO_LAYOUT_EDGE_PADDING`] (8.4 px at the default 28 px title)
+/// ([`MeasuredTitle::padding`]).
 const AUTO_LAYOUT_TITLE_PADDING_EMS: f32 = 0.3;
 
 /// What [`auto_layout`] reads from the parts of one emitted element: the
@@ -1322,13 +1419,19 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   way from its own labels and title (the right margin is the widest band
 ///   of the group), and so is the colourbar's `axis.out_margin`, measured
 ///   from the strip.
-/// - **Chart title.** `chart_title.top_margin` is set to the measured title's
-///   height plus a padding above and below it of 0.3 em of the title's font
-///   size, at least the edge padding, rounded up to a whole pixel; the title
-///   is centred in that band. A hidden or empty title gets a band of 0, and
-///   the top axis band then holds the padding at the top of the chart. This
-///   is `auto_layout`'s own rule: [`fit_chart_title_margin`], which the title
-///   helpers use, only grows a band too small for its title.
+/// - **Chart title.** `chart_title.top_margin` is set to the title's line
+///   ([`MeasuredTitle`]: the font's line ascent and descent, or the ink's
+///   where it reaches further, as a superscript, a subscript, a formula or a
+///   second line does) plus a padding above and below it of 0.3 em of the
+///   title's font size, at least the edge padding, rounded up to a whole
+///   pixel. The placement centres the line in the band
+///   ([`chart_title_placement`]), so the first baseline sits that padding
+///   and the ascent below the band's top, and titles of one font and size
+///   share a baseline whatever their letters. A hidden or empty title gets
+///   a band of 0, and the top axis band then holds the padding at the top
+///   of the chart. This is `auto_layout`'s own rule:
+///   [`fit_chart_title_margin`], which the title helpers use, only grows a
+///   band too small for its title.
 /// - **Legend.** A legend box over the colourbar moves to the first corner,
 ///   with zero offsets, where it clears the bar.
 /// - **Subplots** are laid out as charts of their own, and then the plots
@@ -1337,9 +1440,13 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   with the same y and height a row. In a column every plot gets the
 ///   widest left and right margin of the column; in a row the deepest
 ///   bottom margin and the deepest top margin, after each titled cell of the
-///   row gets the row's deepest chart title band, so the titles line up
-///   too. Then cells of a row with the same chart-area width get the same
-///   plot width, and cells of a column with the same height the same plot
+///   row gets the row's chart title band: the deepest reach above the
+///   baseline and the deepest below it of the row's titles, with their
+///   padding. Where a row holds more than one title, each gets the
+///   `chart_title.offset_y` that puts its baseline where that deepest reach
+///   puts it, whatever offset it had, so the titles share one baseline.
+///   Then cells of a row with the same chart-area width get the same plot
+///   width, and cells of a column with the same height the same plot
 ///   height, what a cell lacks going to its right and bottom bands (in a
 ///   regular grid this keeps the edges lined up). A band is widened through
 ///   its axis' `out_margin` (the right one through the group band, so
@@ -1644,26 +1751,17 @@ fn fit_band(
     changed
 }
 
-/// Set `cfg.chart_title.top_margin` to what the title needs: its measured
-/// height and a padding above and below it of
-/// [`AUTO_LAYOUT_TITLE_PADDING_EMS`] of its font size, at least
-/// [`AUTO_LAYOUT_EDGE_PADDING`], rounded up to a whole pixel
-/// ([`chart_title_placement`] centres the title in the band). A hidden or
-/// empty title gets 0. Nothing changes when the measurement is not finite,
-/// when the margin is NaN (validation reports it), or when the change would
+/// Set `cfg.chart_title.top_margin` to what the title needs on its
+/// baseline ([`chart_title_placement`]): [`MeasuredTitle::padding`],
+/// [`MeasuredTitle::ascent`], [`MeasuredTitle::descent`] and the padding
+/// again, rounded up to a whole pixel ([`title_room`]). A hidden or empty
+/// title gets 0. Nothing changes when the measurement is not finite, when
+/// the margin is NaN (validation reports it), or when the change would
 /// leave no data area in a chart that had one. Returns whether the band
 /// changed.
 fn fit_title_band(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
-    let title = &cfg.chart_title;
-    let required = if !title.visible || title.text.segments.is_empty() {
-        0.0
-    } else {
-        let height = measure.measure_rich(&title.text).height();
-        let pad =
-            AUTO_LAYOUT_EDGE_PADDING.max(AUTO_LAYOUT_TITLE_PADDING_EMS * title.text.font_size);
-        (height + 2.0 * pad).ceil()
-    };
-    let current = title.top_margin;
+    let required = title_room(cfg, measure).map_or(0.0, |(above, below)| (above + below).ceil());
+    let current = cfg.chart_title.top_margin;
     if !required.is_finite() || current.is_nan() || required == current {
         return false;
     }
@@ -1674,6 +1772,17 @@ fn fit_title_band(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
         return false;
     }
     true
+}
+
+/// The room the chart title of `cfg` takes in its band above and below its
+/// first baseline, each with its padding ([`MeasuredTitle`]); `None` for a
+/// hidden or empty title.
+fn title_room(cfg: &Config, measure: &dyn MeasureText) -> Option<(f32, f32)> {
+    let title = &cfg.chart_title;
+    (title.visible && !title.text.segments.is_empty()).then(|| {
+        let measured = MeasuredTitle::of(&title.text, measure);
+        (measured.above(), measured.below())
+    })
 }
 
 /// Move a legend box that overlaps the colourbar to the first corner, with
@@ -1806,24 +1915,68 @@ fn in_grid(doc: &Config, i: usize) -> bool {
         .any(|other| same_row(me, other) || same_column(me, other))
 }
 
+/// Whether a cell has a chart title band.
+fn titled(cfg: &Config) -> bool {
+    cfg.chart_title.top_margin > 0.0
+}
+
+/// The chart titles of the row of one cell: the deepest room above and
+/// below the first baseline among the titled cells of the row
+/// ([`title_room`]), and whether a titled cell other than that one is
+/// among them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RowTitles {
+    above: f32,
+    below: f32,
+    shared: bool,
+}
+
+impl RowTitles {
+    /// The titles of the row of cell `i` of `doc`, itself included.
+    fn of(doc: &Config, i: usize, measure: &dyn MeasureText) -> Self {
+        let me = cell(doc, i);
+        let mut row = Self::default();
+        for k in 0..=doc.subplots.len() {
+            let other = cell(doc, k);
+            if !same_row(me, other) || !titled(other) {
+                continue;
+            }
+            if let Some((above, below)) = title_room(other, measure) {
+                row.above = row.above.max(above);
+                row.below = row.below.max(below);
+                row.shared |= k != i;
+            }
+        }
+        row
+    }
+
+    /// The title band that holds every title of the row on one baseline.
+    fn band(self) -> f32 {
+        (self.above + self.below).ceil()
+    }
+}
+
 /// The edges cell `i` of `doc` is lined up to: the widest left and right
 /// margins of its column, the deepest bottom margin of its row, and the
 /// deepest top margin of its row once every titled cell of the row has the
-/// row's deepest chart title band (a cell without a title band keeps
-/// none). A cell alone in its row and column gets its own bands.
+/// row's chart title band (a cell without a title band keeps none). The
+/// row's title band holds the deepest reach above the baseline and the
+/// deepest below it of the row's titles ([`RowTitles`]), so the titles can
+/// share one baseline ([`align_titles`]), and is at least the deepest title
+/// band of the row. A cell alone in its row and column gets its own bands.
 ///
 /// Raising a cell to these bands leaves every maximum unchanged, so the
 /// cells can be raised one after another in place.
-fn edge_alignment(doc: &Config, i: usize) -> CellBands {
+fn edge_alignment(doc: &Config, i: usize, measure: &dyn MeasureText) -> CellBands {
     let me = cell(doc, i);
     let cells = doc.subplots.len() + 1;
-    let titled = |cfg: &Config| cfg.chart_title.top_margin > 0.0;
     let row_title = (0..cells)
         .map(|k| cell(doc, k))
         .filter(|other| same_row(me, other) && titled(other))
         .fold(me.chart_title.top_margin, |deepest, other| {
             deepest.max(other.chart_title.top_margin)
-        });
+        })
+        .max(RowTitles::of(doc, i, measure).band());
     let mut to = CellBands::of(me);
     if titled(me) {
         to.title = row_title;
@@ -1842,6 +1995,31 @@ fn edge_alignment(doc: &Config, i: usize) -> CellBands {
         }
     }
     to
+}
+
+/// Put the chart titles of each row of `doc` that holds more than one on
+/// one baseline: the baseline of the row's line, the deepest reach above
+/// and below the baseline of its titles ([`RowTitles`]), centred in the
+/// band as [`chart_title_placement`] centres one title's. A titled cell
+/// whose band holds the row's titles ([`RowTitles::band`]) gets the
+/// `chart_title.offset_y` that moves its baseline there, whatever offset it
+/// had; a title whose own line is the row's gets 0. The offsets depend only
+/// on the titles' text and the bands, so the cells can be set one after
+/// another in place.
+fn align_titles(doc: &mut Config, measure: &dyn MeasureText) {
+    for i in 0..=doc.subplots.len() {
+        let me = cell(doc, i);
+        let row = RowTitles::of(doc, i, measure);
+        let band = me.chart_title.top_margin;
+        if !row.shared || !titled(me) || band < row.band() {
+            continue;
+        }
+        let Some((above, below)) = title_room(me, measure) else {
+            continue;
+        };
+        let shared = centred_baseline(band, row.above, row.below);
+        cell_mut(doc, i).chart_title.offset_y = shared - centred_baseline(band, above, below);
+    }
 }
 
 /// The bands that give cell `i` of `doc` the plot size of its neighbours:
@@ -1872,18 +2050,20 @@ fn size_alignment(doc: &Config, i: usize) -> CellBands {
 
 /// Line up the plots of the cells of `doc` that share a grid row or column,
 /// each laid out on its own first: their edges ([`edge_alignment`]), then
-/// their sizes ([`size_alignment`]), then the titles in the bands that grew
-/// ([`place_widened_titles`]).
+/// their sizes ([`size_alignment`]), then the chart titles of each row on
+/// one baseline ([`align_titles`]) and the axis titles in the bands that
+/// grew ([`place_widened_titles`]).
 fn align_cells(doc: &mut Config, measure: &dyn MeasureText) {
     let cells = doc.subplots.len() + 1;
     for i in 0..cells {
-        let to = edge_alignment(doc, i);
+        let to = edge_alignment(doc, i, measure);
         raise_bands(cell_mut(doc, i), to);
     }
     for i in 0..cells {
         let to = size_alignment(doc, i);
         raise_bands(cell_mut(doc, i), to);
     }
+    align_titles(doc, measure);
     for i in 0..cells {
         if !in_grid(doc, i) {
             continue;
@@ -2287,8 +2467,9 @@ mod tests {
     }
 
     // A three-line title (39 px) is taller than the default 32 px band, so
-    // centring it would start above the chart area. Fitting grows the band to
-    // the block plus the default padding, which the placement then centres.
+    // it cannot sit on its baseline and its ink would be clipped. Fitting
+    // grows the band to the block plus the default padding, and the
+    // placement keeps the block inside it.
     #[test]
     fn fitting_grows_the_band_to_hold_a_multi_line_title() {
         let mut cfg = titled("one\ntwo\nthree");
@@ -2300,7 +2481,8 @@ mod tests {
         assert_eq!(band, (m.height() + chart_title_band_padding()).ceil());
 
         let ca = &cfg.chart_area;
-        let rect = chart_title_placement(ca, band, (0.0, 0.0), m).rect(m);
+        let measured = MeasuredTitle::of(&cfg.chart_title.text, &LineMeasure);
+        let rect = chart_title_placement(ca, band, (0.0, 0.0), measured).rect(m);
         assert!(rect.y >= ca.y as f32, "first line inside the chart area");
         assert!(
             rect.y + rect.height <= ca.y as f32 + band,
@@ -2363,6 +2545,254 @@ mod tests {
         assert!(!fit_chart_title_margin(&mut short, &LineMeasure));
         assert_eq!(short.chart_title.top_margin, 32.0);
         assert!(short.data_area().is_ok());
+    }
+
+    /// A measure with a font line of 12 px up and 4 px down whose ink
+    /// depends on the letters: 10 px up for every title, 3 px down with a
+    /// descender, none without; 15 px up with a superscript, 6 px down with
+    /// a subscript, 22 px up and 9 px down with a `∑` (a formula with
+    /// limits), and 16 px more down per further line. 8 px per character.
+    struct Ink;
+    impl MeasureText for Ink {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+            let seg = |f: &dyn Fn(&crate::text::RichSegment) -> bool| rt.segments.iter().any(f);
+            let lines = rt.segments.iter().filter(|s| s.text == '\n').count() as f32;
+            let mut ascent: f32 = 10.0;
+            let mut descent: f32 = 0.0;
+            if seg(&|s| "gjpqy".contains(s.text)) {
+                descent = 3.0;
+            }
+            if seg(&|s| s.superscript) {
+                ascent = 15.0;
+            }
+            if seg(&|s| s.subscript) {
+                descent = descent.max(6.0);
+            }
+            if seg(&|s| s.text == '∑') {
+                (ascent, descent) = (22.0, 9.0);
+            }
+            TextExtents {
+                width: rt.segments.len() as f32 * 8.0,
+                ascent,
+                descent: descent + 16.0 * lines,
+            }
+        }
+
+        fn font_line(&self, _: &str, _: f32) -> TextExtents {
+            TextExtents {
+                width: 0.0,
+                ascent: 12.0,
+                descent: 4.0,
+            }
+        }
+    }
+
+    /// The first baseline and the ink rectangle of the chart title of `cfg`
+    /// as [`Ink`] places it, relative to the top of its chart area.
+    fn title_ink(cfg: &Config) -> (f32, RectF) {
+        let measured = MeasuredTitle::of(&cfg.chart_title.text, &Ink);
+        let t = &cfg.chart_title;
+        let placed = chart_title_placement(
+            &cfg.chart_area,
+            t.top_margin,
+            (t.offset_x, t.offset_y),
+            measured,
+        );
+        let rect = placed.rect(measured.ink);
+        let top = cfg.chart_area.y as f32;
+        (placed.origin.1 - top, rect.translated(0.0, -top))
+    }
+
+    /// Whether `rect`, relative to the top of the chart area, lies in a
+    /// title band `band` high.
+    fn in_band(rect: RectF, band: f32) -> bool {
+        rect.y >= -1e-3 && rect.y + rect.height <= band + 1e-3
+    }
+
+    // Titles of one font and size sit on one baseline whether or not their
+    // letters descend: in the band `auto_layout` fits, which is the same for
+    // both, and in a host-set band, the default one or a larger one. In the
+    // fitted band the baseline is the padding and the font's ascent below
+    // the band's top, give or take half the pixel the band is rounded up by.
+    #[test]
+    fn titles_with_and_without_descenders_share_the_baseline() {
+        let (low, flat) = (titled("Temperature"), titled("Pressure"));
+        let (a, b) = (auto_layout(&low, &Ink), auto_layout(&flat, &Ink));
+        assert_eq!(a.chart_title.top_margin, b.chart_title.top_margin);
+        // 28 px font: 8.4 px padding, the font's 12 + 4 px line.
+        assert_eq!(a.chart_title.top_margin, (2.0f32 * 8.4 + 16.0).ceil());
+        // The 33 px band centres the 32.8 px of line and padding.
+        assert!((title_ink(&a).0 - (0.1 + 8.4 + 12.0)).abs() < 1e-3);
+        assert_eq!(title_ink(&a).0, title_ink(&b).0);
+        for band in [32.0, 60.0, 120.0] {
+            let (mut a, mut b) = (low.clone(), flat.clone());
+            a.chart_title.top_margin = band;
+            b.chart_title.top_margin = band;
+            let ((at, ar), (bt, br)) = (title_ink(&a), title_ink(&b));
+            assert_eq!(at, bt, "band {band}");
+            assert!(in_band(ar, band) && in_band(br, band), "band {band}");
+        }
+        // The offsets still move the title.
+        let mut moved = a.clone();
+        moved.chart_title.offset_x = 5.0;
+        moved.chart_title.offset_y = 7.0;
+        let ((y, r), (y0, r0)) = (title_ink(&moved), title_ink(&a));
+        assert!((y - y0 - 7.0).abs() < 1e-3 && (r.x - r0.x - 5.0).abs() < 1e-3);
+    }
+
+    // Ink that reaches past the font's line (a superscript, a subscript, a
+    // formula with limits, a second line) still fits the band `auto_layout`
+    // fits, with the padding above it and below it.
+    #[test]
+    fn scripted_two_line_and_math_titles_fit_their_band() {
+        let mut formula = titled("∑ x");
+        formula.chart_title.text.segments[0].text = '∑';
+        for cfg in [
+            titled("CO₂"),
+            titled("x² + y²"),
+            titled("one\ntwo"),
+            formula,
+        ] {
+            let out = auto_layout(&cfg, &Ink);
+            let band = out.chart_title.top_margin;
+            let (_, rect) = title_ink(&out);
+            assert!(in_band(rect, band), "{band} {rect:?}");
+            assert!(rect.y >= 8.4 - 1e-3, "{rect:?}");
+            assert!(
+                band - (rect.y + rect.height) >= 8.4 - 1e-3,
+                "{band} {rect:?}"
+            );
+            assert_eq!(auto_layout(&out, &Ink), out);
+        }
+    }
+
+    // In a row of a grid the titles share one band and one baseline, the
+    // deepest of the row's, even when one reaches above the font's line and
+    // another below it; the titles of another row keep their own.
+    #[test]
+    fn an_aligned_row_shares_one_baseline() {
+        let mut doc = grid_cell(0, 0, "Pressure");
+        let mut formula = grid_cell(480, 0, "∑ x");
+        formula.chart_title.text.segments[0].text = '∑';
+        formula.chart_title.offset_y = 30.0;
+        let mut row = [
+            formula,
+            grid_cell(960, 0, "one\ntwo"),
+            grid_cell(0, 420, "Temperature"),
+            grid_cell(480, 420, "Humidity"),
+        ];
+        // A dragged title of a row is put back on the row's baseline.
+        row[2].chart_title.offset_y = -6.0;
+        for config in row {
+            let mut sub = crate::defaults::subplot();
+            sub.config = config;
+            doc.subplots.push(sub);
+        }
+        let out = auto_layout(&doc, &Ink);
+        let cells: Vec<Config> = std::iter::once(out.clone())
+            .chain((0..4).map(|i| out.subplot_config(i).unwrap()))
+            .collect();
+        let placed: Vec<(f32, RectF)> = cells.iter().map(title_ink).collect();
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        for i in [1, 2] {
+            assert!(close(placed[i].0, placed[0].0), "top row baseline {i}");
+            assert_eq!(
+                cells[i].chart_title.top_margin,
+                cells[0].chart_title.top_margin
+            );
+        }
+        // The formula's 22 px rise sets the top row's baseline, the second
+        // line's 16 px reach below it its band; the 55 px band centres the
+        // 54.8 px of both and the padding.
+        assert!(close(placed[0].0, 0.1 + 8.4 + 22.0), "{}", placed[0].0);
+        assert_eq!(
+            cells[0].chart_title.top_margin,
+            (8.4f32 + 22.0 + 16.0 + 8.4).ceil()
+        );
+        assert!(close(placed[3].0, placed[4].0), "bottom row baseline");
+        assert!(close(placed[3].0, 0.1 + 8.4 + 12.0), "{}", placed[3].0);
+        for (cfg, (_, rect)) in cells.iter().zip(&placed) {
+            assert!(in_band(*rect, cfg.chart_title.top_margin), "{rect:?}");
+        }
+        assert_eq!(auto_layout(&out, &Ink), out, "idempotent");
+    }
+
+    // A host-set band lower than the title's line keeps the ink inside it:
+    // the line is centred, the ink moved just inside, and two titles of one
+    // font keep one baseline while their ink fits. A title taller than its
+    // band is centred in it, as before the baseline placement.
+    #[test]
+    fn a_small_fixed_band_keeps_the_ink_inside_and_centres_a_taller_title() {
+        for band in [13.0, 14.0, 16.0, 18.0, 24.0] {
+            let mut low = titled("Temperature");
+            low.chart_title.top_margin = band;
+            let mut flat = titled("Pressure");
+            flat.chart_title.top_margin = band;
+            let ((lt, lr), (ft, fr)) = (title_ink(&low), title_ink(&flat));
+            assert!(in_band(lr, band) && in_band(fr, band), "band {band}");
+            if band >= 16.0 {
+                assert_eq!(lt, ft, "band {band}");
+            }
+        }
+        let mut tall = titled("one\ntwo\nthree");
+        tall.chart_title.top_margin = 20.0;
+        let ink = Ink.measure_rich(&tall.chart_title.text);
+        let (baseline, rect) = title_ink(&tall);
+        assert_eq!(baseline, (20.0 - ink.height()) * 0.5 + ink.ascent);
+        assert_eq!(rect.y + rect.height * 0.5, 10.0);
+    }
+
+    // The placement reads no pixel constant: a chart and its title scaled
+    // by 2 (a 2x export) place the title twice as far, in a band that has
+    // room for the padding and in one that has not.
+    #[test]
+    fn the_title_placement_scales_with_the_chart() {
+        let one = MeasuredTitle {
+            ink: TextExtents {
+                width: 80.0,
+                ascent: 10.0,
+                descent: 3.0,
+            },
+            font_line: TextExtents {
+                width: 0.0,
+                ascent: 12.0,
+                descent: 4.0,
+            },
+            font_size: 14.0,
+        };
+        let two = MeasuredTitle {
+            ink: TextExtents {
+                width: 160.0,
+                ascent: 20.0,
+                descent: 6.0,
+            },
+            font_line: TextExtents {
+                width: 0.0,
+                ascent: 24.0,
+                descent: 8.0,
+            },
+            font_size: 28.0,
+        };
+        let area = RectF {
+            x: 10.0,
+            y: 20.0,
+            width: 300.0,
+            height: 200.0,
+        };
+        let twice = RectF {
+            x: 20.0,
+            y: 40.0,
+            width: 600.0,
+            height: 400.0,
+        };
+        for band in [14.0, 20.0, 40.0] {
+            let a = chart_title_placement_in(area, band, (3.0, 2.0), one).origin;
+            let b = chart_title_placement_in(twice, 2.0 * band, (6.0, 4.0), two).origin;
+            assert!(
+                (b.0 - 2.0 * a.0).abs() < 1e-3 && (b.1 - 2.0 * a.1).abs() < 1e-3,
+                "band {band}: {a:?} {b:?}"
+            );
+        }
     }
 
     #[test]

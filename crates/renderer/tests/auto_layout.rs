@@ -72,7 +72,8 @@ fn released_configs() -> Vec<(String, Config)> {
 
 /// What `auto_layout` may write, set back to the input's, so the rest can be
 /// compared whole: the bands, the title offsets across them, the label
-/// formats, the chart title band and the legend's placement.
+/// formats, the chart title band and its offset down (a grid row's shared
+/// baseline) and the legend's placement.
 fn without_layout(mut out: Config, input: &Config) -> Config {
     fn axis(to: &mut renderer::config::AxisOptions, from: &renderer::config::AxisOptions) {
         to.out_margin = from.out_margin;
@@ -91,6 +92,7 @@ fn without_layout(mut out: Config, input: &Config) -> Config {
             axis(&mut to.axis, &from.axis);
         }
         out.chart_title.top_margin = input.chart_title.top_margin;
+        out.chart_title.offset_y = input.chart_title.offset_y;
         out.legend.corner = input.legend.corner;
         out.legend.offset_x = input.legend.offset_x;
         out.legend.offset_y = input.legend.offset_y;
@@ -170,6 +172,12 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
             before.chart_title.top_margin, after.chart_title.top_margin
         ));
     }
+    if before.chart_title.offset_y != after.chart_title.offset_y {
+        out.push(format!(
+            "chart_title.offset_y {} -> {}",
+            before.chart_title.offset_y, after.chart_title.offset_y
+        ));
+    }
     let (b, a) = (&before.legend, &after.legend);
     if (b.corner, b.offset_x, b.offset_y) != (a.corner, a.offset_x, a.offset_y) {
         out.push(format!(
@@ -200,7 +208,9 @@ fn layout_changes(before: &Config, after: &Config) -> Vec<String> {
 //   left one 25 px), holds the last x label's overhang past the 8 px right
 //   tick, shrinks the bottom colourbar's band to its labels, its title (a
 //   third of the label font past them) and the padding, and pads its
-//   two-line 30 px title by 0.3 em above and below.
+//   two-line 30 px title by 0.3 em above and below; above its first
+//   baseline the band holds the font's line ascent, which rises past the
+//   ink of "Released".
 #[cfg(feature = "serde")]
 #[test]
 fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands() {
@@ -249,7 +259,7 @@ fn auto_layout_sets_the_default_and_the_released_config_documents_to_exact_bands
                     "left_y.title_option.offset_y 0 -> -25",
                     "right_y.out_margin 8 -> 14",
                     "colorbar.axis.out_margin 60 -> 45",
-                    "chart_title.top_margin 48 -> 74",
+                    "chart_title.top_margin 48 -> 80",
                 ][..],
             ),
             (

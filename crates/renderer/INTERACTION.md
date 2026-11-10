@@ -441,8 +441,8 @@ optional rich `chart_title`. `RadialChart`
 holds the shared chart title, `chart_title: Option<ChartTitleOptions>`, written
 and read as the same `{ visible, text }` object; its `offset_x`, `offset_y` and
 `top_margin` must be 0 there, because the position lives in `decorations`, and
-the title is centred in the chart's own title band across the canvas through
-`select::emit_chart_title_in`. `CategoricalChart`, `BoxPlotChart` and
+the title is centred across the canvas, its line centred in the chart's own
+title band, through `select::emit_chart_title_in`. `CategoricalChart`, `BoxPlotChart` and
 `RadarChart` hold `chart_title: BoundedTitleOptions { visible, text: RichText }`;
 those three documents are read into a Cartesian or polar `Config`, whose chart
 title the rich title becomes.

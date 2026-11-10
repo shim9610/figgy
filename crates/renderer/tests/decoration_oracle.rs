@@ -809,14 +809,17 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#44",
     },
     // The `Annotations` scene's arrow past its tip (the shared exclusions'
-    // rows) at the data area the exact bands give it: one point and one
-    // pixel fewer.
+    // rows) at the data area the exact bands give it, with the chart title
+    // band holding the font's line (#270): 2 points and 2 pixels at 1x and
+    // 3 of each at 2x where the shared rows have 4, 1 point after the drag.
+    // The points are the shaft's grab band left of the head's tip, over the
+    // span.
     Exclusion {
         scene: "Annotations",
         layer: "annotations",
         element: "annotation_3",
         inv: Inv::I2,
-        detail: "3 points of stroke outlines are farther than the grab reach from ink*",
+        detail: "2 points of stroke outlines are farther than the grab reach from ink*",
         reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
         issue: "#47",
     },
@@ -824,8 +827,17 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         scene: "Annotations",
         layer: "annotations",
         element: "annotation_3",
+        inv: Inv::I2,
+        detail: "3 points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band past the head's tip, at 2x",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 3 points of stroke outlines*",
+        detail: "after the drag, I2 of annotation_3: 1 points of stroke outlines*",
         reason: "the arrow shaft past the tip, as in I2",
         issue: "#47",
     },
@@ -834,7 +846,7 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         layer: "annotations",
         element: "annotation_0",
         inv: Inv::I2,
-        detail: "3 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 3})*",
+        detail: "2 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 2})*",
         reason: "the span's pixels under the arrow shaft's band past the tip",
         issue: "#47",
     },
@@ -842,32 +854,19 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         scene: "Annotations",
         layer: "annotations",
         element: "annotation_0",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_0: 3 of * ({\"annotation_3\": 3})*",
-        reason: "the span under the arrow shaft past the tip, as in I2",
+        inv: Inv::I2,
+        detail: "3 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 3})*",
+        reason: "the span's pixels under the arrow shaft's band past the tip, at 2x",
         issue: "#47",
     },
-    // A 3D chart's right (z) title is placed along the box edge, at the
-    // fractional position the box in the exact bands' data area gives it.
     Exclusion {
-        scene: "Surface",
-        layer: "document",
-        element: "axis_title_right",
-        inv: Inv::I5,
-        detail: "*of its * ink pixels*differ by more than*box-filtered*",
-        reason: "the short title on the box edge lands at the fractional position the box in \
-                 the exact bands' data area gives it; its 2x extent halved stays within the \
-                 bound, and the ink difference is glyph snapping at the two scales",
-        issue: "#270",
-    },
-    Exclusion {
-        scene: "Quiver3d",
-        layer: "document",
-        element: "axis_title_right",
-        inv: Inv::I5,
-        detail: "*of its * ink pixels*differ by more than*box-filtered*",
-        reason: "the z title on the box edge, as for Surface",
-        issue: "#270",
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_0: 2 of * ({\"annotation_3\": 2})*",
+        reason: "the span under the arrow shaft past the tip, as in I2",
+        issue: "#47",
     },
 ];
 

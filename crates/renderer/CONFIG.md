@@ -125,7 +125,7 @@ scale against that contract.
 | `text` | `RichText` | greek / sub/super / bold/italic styled segments; `align` (`Left` default / `Center` / `Right`) places the lines of multi-line text |
 | `visible` | bool | |
 | `offset_x / y` | f32 | Fine position offset (px). It does not change the margins; a title drag accumulates here. The left and right axis titles read it in the rotated title's own frame |
-| `top_margin` | f32 | (chart_title only) chart-title band height; the title is centred in it. The title helpers (`Chart::with_title`, the web `set_title`) grow it through `layout::fit_chart_title_margin` when the title is taller than the band; a value injected directly is kept as given |
+| `top_margin` | f32 | (chart_title only) chart-title band height; the title's line (its font's line ascent and descent, or its ink where that reaches further) is centred in it, so titles of one font and size share a baseline whatever their letters. The title helpers (`Chart::with_title`, the web `set_title`) grow it through `layout::fit_chart_title_margin` when the title is taller than the band; a value injected directly is kept as given |
 
 ### Math in `RichText`
 
@@ -1504,7 +1504,7 @@ pub struct Config {
 | `text` | `RichText` | 그리스 문자·위아래 첨자·굵게·기울임 등을 구간별로 지정한 텍스트. `align`(기본 `Left` / `Center` / `Right`)은 여러 줄 텍스트의 각 줄 위치를 정한다. |
 | `visible` | bool | |
 | `offset_x / y` | f32 | 제목 위치를 미세 조절하는 이동량(px). 여백 계산에는 반영하지 않으며 제목을 드래그한 결과가 여기에 누적된다. 좌·우 축 제목은 회전한 제목의 좌표계로 읽는다 |
-| `top_margin` | f32 | 차트 제목 영역의 높이(`chart_title` 전용). 제목은 이 영역의 가운데에 놓인다. 제목 헬퍼(`Chart::with_title`, 웹 `set_title`)는 제목이 영역보다 높을 때 `layout::fit_chart_title_margin`으로 이 값을 늘리며, 설정에 직접 넣은 값은 그대로 둔다. |
+| `top_margin` | f32 | 차트 제목 영역의 높이(`chart_title` 전용). 제목의 줄(글꼴의 줄 높이, 잉크가 그보다 더 멀리 닿으면 잉크)이 이 영역의 가운데에 놓이므로, 글꼴과 크기가 같은 제목은 글자와 상관없이 같은 기준선에 선다. 제목 헬퍼(`Chart::with_title`, 웹 `set_title`)는 제목이 영역보다 높을 때 `layout::fit_chart_title_margin`으로 이 값을 늘리며, 설정에 직접 넣은 값은 그대로 둔다. |
 
 ### `RichText`의 수식
 
