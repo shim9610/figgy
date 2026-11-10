@@ -714,17 +714,6 @@ const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#44",
     },
     Exclusion {
-        scene: "CategoryAxis",
-        layer: "base",
-        element: "tick_labels_bottom",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_bottom: *({\"axis_title_bottom\": *",
-        reason: "the scene's `auto_layout` leaves the gap (4 px) between the staggered labels' outer row and \
-                 their title; the (+7, +5) drag moves that row under the title's padded box, as \
-                 for LongLabels' right axis. They stay grabbable elsewhere",
-        issue: "#205",
-    },
-    Exclusion {
         scene: "EnergyLevelsCu",
         layer: "document",
         element: "category_groups_bottom",
@@ -775,18 +764,6 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         issue: "#205",
     },
     Exclusion {
-        scene: "*",
-        layer: "*",
-        element: "*tick_labels_bottom",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of *tick_labels_bottom: *({\"*axis_title_bottom\": *",
-        reason: "`auto_layout` sets the bottom band exactly and puts the title the gap (4 px) \
-                 past the labels (or the staggered labels' outer row); the (+7, +5) drag moves \
-                 the labels down under the title's padded box, as for LongLabels' right axis. \
-                 They stay grabbable elsewhere",
-        issue: "#270",
-    },
-    Exclusion {
         scene: "LongLabels",
         layer: "base",
         element: "tick_labels_top",
@@ -797,22 +774,28 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
                  along their axes, which auto_layout does not move (out of scope in the plan)",
         issue: "#44",
     },
+    // The BoxPlot scene's rotated "Response" title, placed the edge
+    // padding from the chart edge (#270): its box spans x 8.5..21.5 at
+    // 1x and 17.5..42.5 at 2x (the 2x measure is 25 px, not 26). Looked at
+    // side by side, both draw the same glyphs at the same place; 68 % of
+    // the 1x ink pixels differ from the 2x ink box-filtered against the
+    // 65 % text limit, the glyph snapping at the two sizes, as for the
+    // category headers above.
     Exclusion {
-        scene: "LongLabels",
-        layer: "base",
-        element: "*tick_labels_right",
-        inv: Inv::I6,
-        detail: "after the drag, I2 of tick_labels_right: *({\"axis_title_right\": *",
-        reason: "auto_layout leaves the gap (4 px) between the labels and their title; the \
-                 (+7, +5) drag moves the right labels outward under the title's padded box, as \
-                 on the twin axes' overlay. They stay grabbable elsewhere",
-        issue: "#44",
+        scene: "BoxPlot",
+        layer: "document",
+        element: "axis_title_left",
+        inv: Inv::I5,
+        detail: "*ink pixels (*) differ by more than * from its 2x ink box-filtered*",
+        reason: "the rotated title's glyphs snap differently at 1x and 2x; the ink is in the \
+                 same place at both scales",
+        issue: "#270",
     },
     // The `Annotations` scene's arrow past its tip (the shared exclusions'
     // rows) at the data area the exact bands give it, with the chart title
     // band holding the font's line (#270): 2 points and 2 pixels at 1x and
-    // 3 of each at 2x where the shared rows have 4, 1 point after the drag.
-    // The points are the shaft's grab band left of the head's tip, over the
+    // at 2x where the shared rows have 4, 2 points after the drag. The
+    // points are the shaft's grab band left of the head's tip, over the
     // span.
     Exclusion {
         scene: "Annotations",
@@ -827,17 +810,8 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         scene: "Annotations",
         layer: "annotations",
         element: "annotation_3",
-        inv: Inv::I2,
-        detail: "3 points of stroke outlines are farther than the grab reach from ink*",
-        reason: "the arrow shaft's grab band past the head's tip, at 2x",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_3",
         inv: Inv::I6,
-        detail: "after the drag, I2 of annotation_3: 1 points of stroke outlines*",
+        detail: "after the drag, I2 of annotation_3: 2 points of stroke outlines*",
         reason: "the arrow shaft past the tip, as in I2",
         issue: "#47",
     },
@@ -848,15 +822,6 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
         inv: Inv::I2,
         detail: "2 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 2})*",
         reason: "the span's pixels under the arrow shaft's band past the tip",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Annotations",
-        layer: "annotations",
-        element: "annotation_0",
-        inv: Inv::I2,
-        detail: "3 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 3})*",
-        reason: "the span's pixels under the arrow shaft's band past the tip, at 2x",
         issue: "#47",
     },
     Exclusion {

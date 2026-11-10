@@ -898,6 +898,18 @@ pub fn axis_title_placement(
     }
 }
 
+/// The room [`colorbar_title_placement`] keeps between the colourbar's
+/// labels and its title, and between the title and the band's outer edge:
+/// half the label font ([`AUTO_LAYOUT_TITLE_GAP_EMS`]) and half the title
+/// font ([`AUTO_LAYOUT_EDGE_PADDING_EMS`]), the proportional parts of what
+/// [`auto_layout`] keeps (#270), so a scaled export keeps the 1x proportions.
+fn colorbar_title_gaps(axis: &AxisOptions) -> (f32, f32) {
+    (
+        AUTO_LAYOUT_TITLE_GAP_EMS * axis.label_style.font_size.max(0.0),
+        AUTO_LAYOUT_EDGE_PADDING_EMS * axis.title_option.text.font_size.max(0.0),
+    )
+}
+
 /// Place a colourbar title from the actual painted strip rectangle.
 ///
 /// The title sits in `axis.out_margin`, immediately beyond the strip's major
@@ -921,10 +933,9 @@ pub fn colorbar_title_placement(
     let tick = axis.major_tick_length.max(0.0);
     let out_margin = axis.out_margin.max(0.0);
     // The room kept between the labels and the title, and between the title
-    // and the band's outer edge: a third of the label font, the clearance
-    // `auto_layout` keeps at the default 12 px labels, so a scaled export
-    // keeps the 1x proportions.
-    let gap = axis.label_style.font_size.max(0.0) / 3.0;
+    // and the band's outer edge: half the label font and half the title font
+    // ([`colorbar_title_gaps`]).
+    let (gap, edge) = colorbar_title_gaps(axis);
     let clear = if labels_reach.is_finite() && labels_reach > 0.0 {
         labels_reach + gap
     } else {
@@ -932,9 +943,9 @@ pub fn colorbar_title_placement(
     };
     // How far past the strip's outer edge the title's inner edge sits:
     // centred in the band, or past the labels, but no closer to the band's
-    // outer edge (where the chart area may end) than the gap.
+    // outer edge (where the chart area may end) than the edge room.
     let centred = tick + (out_margin - extents.height()) * 0.5;
-    let inner = centred.max(clear.min(tick + out_margin - extents.height() - gap));
+    let inner = centred.max(clear.min(tick + out_margin - extents.height() - edge));
     match side {
         Side::Top | Side::Bottom => {
             let title_top = if matches!(side, Side::Top) {
@@ -1132,12 +1143,42 @@ fn align_offset(available: f32, length: f32, align: &BarAlign) -> f32 {
 // auto_layout measurement (#44)
 // ---------------------------------------------------------------------------
 
-/// Padding [`auto_layout`] keeps between what a fitted band holds and the
-/// band's outer edge, in pixels: twice [`LABEL_GAP`], so labels and titles
-/// stand clear of the chart edge (or of the colourbar band past them) by
-/// more than they stand clear of each other. A band with nothing to hold is
-/// this padding alone.
+/// The least padding [`auto_layout`] keeps between what a fitted band
+/// holds and the band's outer edge, in pixels: twice [`LABEL_GAP`]. A band
+/// with nothing to hold is this padding alone; one that holds text or a
+/// drawn axis pads by [`AUTO_LAYOUT_EDGE_PADDING_EMS`] of its font when that
+/// is more ([`edge_padding`]).
 const AUTO_LAYOUT_EDGE_PADDING: f32 = 8.0;
+
+/// The padding [`auto_layout`] keeps between what a fitted band holds and
+/// the band's outer edge, as a fraction of the font size of the text at
+/// that edge (the band's title, else the labels it holds, else the labels
+/// of the axis whose line or ticks it holds): 0.5 em, never less than
+/// [`AUTO_LAYOUT_EDGE_PADDING`] (9 px at the default 18 px labels, 11 px
+/// beside the default 22 px axis title) (#270).
+const AUTO_LAYOUT_EDGE_PADDING_EMS: f32 = 0.5;
+
+/// The gap [`auto_layout`] keeps between an axis or colourbar title and its
+/// labels, as a fraction of the labels' font size: 0.5 em, never less than
+/// [`LABEL_GAP`] (8 px at 16 px labels) (#270). The colourbar title's
+/// placement keeps the proportional part alone
+/// ([`colorbar_title_placement`]), so a scaled export keeps the 1x
+/// proportions.
+const AUTO_LAYOUT_TITLE_GAP_EMS: f32 = 0.5;
+
+/// The gap [`auto_layout`] keeps between a title and labels of font size
+/// `label_size` ([`AUTO_LAYOUT_TITLE_GAP_EMS`], at least [`LABEL_GAP`]).
+fn title_gap(label_size: f32) -> f32 {
+    LABEL_GAP.max(AUTO_LAYOUT_TITLE_GAP_EMS * label_size)
+}
+
+/// The padding [`auto_layout`] keeps past text of font size `size` at a
+/// band's outer edge ([`AUTO_LAYOUT_EDGE_PADDING_EMS`], at least
+/// [`AUTO_LAYOUT_EDGE_PADDING`]); a band that holds nothing passes 0 and
+/// gets the least padding.
+fn edge_padding(size: f32) -> f32 {
+    AUTO_LAYOUT_EDGE_PADDING.max(AUTO_LAYOUT_EDGE_PADDING_EMS * size)
+}
 
 /// The padding [`auto_layout`] keeps above and below the chart title in its
 /// band, as a fraction of the title's font size: 0.3 em, never less than
@@ -1147,12 +1188,14 @@ const AUTO_LAYOUT_TITLE_PADDING_EMS: f32 = 0.3;
 
 /// What [`auto_layout`] reads from the parts of one emitted element: the
 /// union of their extents, and of its text blocks the most digits one
-/// prints and the widest one. Kept as numbers, so measuring stores no part.
+/// prints, the widest one and the largest font size. Kept as numbers, so
+/// measuring stores no part.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Probe {
     bounds: Option<RectF>,
     digits: usize,
     widest: f32,
+    font: f32,
 }
 
 impl Probe {
@@ -1177,6 +1220,7 @@ impl Probe {
             },
             digits: self.digits.max(other.digits),
             widest: self.widest.max(other.widest),
+            font: self.font.max(other.font),
         }
     }
 
@@ -1190,15 +1234,25 @@ impl Probe {
 impl Sink for Probe {
     fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
         self.add(text.rect());
-        let digits = match text.text {
-            TextRef::Plain { text, .. } => text.chars().filter(char::is_ascii_digit).count(),
-            TextRef::Rich(rich) => rich
-                .segments
-                .iter()
-                .filter(|s| s.text.is_ascii_digit())
-                .count(),
+        let (digits, size) = match text.text {
+            TextRef::Plain { text, size, .. } => {
+                (text.chars().filter(char::is_ascii_digit).count(), size)
+            }
+            TextRef::Rich(rich) => (
+                rich.segments
+                    .iter()
+                    .filter(|s| s.text.is_ascii_digit())
+                    .count(),
+                rich.segments
+                    .iter()
+                    .map(|s| s.font_size.unwrap_or(rich.font_size))
+                    .fold(0.0, f32::max),
+            ),
         };
         self.digits = self.digits.max(digits);
+        if size.is_finite() {
+            self.font = self.font.max(size);
+        }
         if text.extents.width.is_finite() {
             self.widest = self.widest.max(text.extents.width);
         }
@@ -1290,54 +1344,83 @@ fn outward_sign(side: &Side) -> f32 {
 
 /// One band as measured: how far the labels it holds reach past the inner
 /// edge, and the near and far distance of its title, both outward from that
-/// edge. The labels are every label run the band has to hold (see
-/// [`auto_layout`]); only the part past the inner edge counts.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// edge; with the gap its title keeps from the labels ([`title_gap`]) and
+/// the padding at its outer edge ([`edge_padding`]). The labels are every
+/// label run the band has to hold (see [`auto_layout`]); only the part past
+/// the inner edge counts.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct BandMeasure {
     reach: Option<f32>,
     title: Option<(f32, f32)>,
+    gap: f32,
+    padding: f32,
 }
 
 impl BandMeasure {
-    fn of(side: &Side, inner: f32, labels: &Probe, title: &Probe) -> Self {
+    /// The band on `side` whose inner edge is `inner`, holding `labels` and
+    /// `title`; `label_size` is the font size of the axis' own labels. The
+    /// outer edge is padded for the title, or without one for the labels
+    /// that run into the band (the largest font among them), or without
+    /// either for `bare`: the font of the axis whose line or ticks the band
+    /// holds, 0 (the least padding) when it holds nothing.
+    fn of(
+        side: &Side,
+        inner: f32,
+        labels: &Probe,
+        title: &Probe,
+        label_size: f32,
+        bare: f32,
+    ) -> Self {
+        let reach = labels.bounds.map(|r| band_span(side, inner, r).1.max(0.0));
+        let title_span = title.bounds.map(|r| band_span(side, inner, r));
+        let edge = if title_span.is_some() {
+            title.font
+        } else if reach.is_some_and(|reach| reach > 0.0) {
+            labels.font
+        } else {
+            bare
+        };
         Self {
-            reach: labels.bounds.map(|r| band_span(side, inner, r).1.max(0.0)),
-            title: title.bounds.map(|r| band_span(side, inner, r)),
+            reach,
+            title: title_span,
+            gap: title_gap(label_size),
+            padding: edge_padding(edge),
         }
     }
 
-    /// The band the labels and a title placed `gap` past them need: the
+    /// The band the labels and a title placed the gap past them need: the
     /// labels' reach, the gap, the title's thickness and the edge padding
-    /// ([`AUTO_LAYOUT_EDGE_PADDING`]) to the band's outer edge; the reach
-    /// and the edge padding without a title, and the edge padding alone for
-    /// a band with neither.
-    fn required(&self, gap: f32) -> f32 {
+    /// to the band's outer edge; the reach and the edge padding without a
+    /// title, and the edge padding alone for a band with neither.
+    fn required(&self) -> f32 {
         let reach = self.reach.unwrap_or(0.0);
         match self.title {
-            Some((near, far)) => reach + gap + (far - near) + AUTO_LAYOUT_EDGE_PADDING,
-            None => reach + AUTO_LAYOUT_EDGE_PADDING,
+            Some((near, far)) => reach + self.gap + (far - near) + self.padding,
+            None => reach + self.padding,
         }
     }
 
     /// The outward title offset that places the title, in a band `band`
     /// wide where it is now offset outward by `offset`, beside its labels:
-    /// its inner edge [`LABEL_GAP`] past their reach, rounded outward to a
-    /// whole pixel. `None` when there is no title, or when the title at
-    /// `offset` already clears the labels by the gap and stays inside the
-    /// band.
-    fn placed_offset(&self, band: f32, offset: f32, pushed: Option<f32>) -> Option<f32> {
+    /// its inner edge the gap past their reach, rounded outward to a whole
+    /// pixel. `None` when there is no title, or when the title at `offset`
+    /// already clears the labels by the gap and stays inside the band.
+    fn placed_offset(&self, band: f32, offset: f32, pushed: Option<(f32, f32)>) -> Option<f32> {
         const EPS: f32 = 1e-3;
         let (near, far) = self.title?;
         let thickness = far - near;
-        let clear = self.reach.unwrap_or(0.0) + LABEL_GAP;
+        let clear = self.reach.unwrap_or(0.0) + self.gap;
         // The title's inner edge before the offset, as the placement puts
         // it: centred in the band, or for a colourbar title (`pushed`, the
-        // gap it keeps past its labels) past the labels when the centre would
-        // sit on them (`colorbar_title_placement`, #259); then moved by the
-        // offset.
+        // gap it keeps past its labels and the room it keeps from the band's
+        // outer edge, [`colorbar_title_gaps`]) past the labels when the
+        // centre would sit on them (`colorbar_title_placement`, #259); then
+        // moved by the offset.
         let centred = (band - thickness) * 0.5;
         let base = match pushed {
-            Some(gap) => centred.max((self.reach.unwrap_or(0.0) + gap).min(band - thickness - gap)),
+            Some((gap, edge)) => {
+                centred.max((self.reach.unwrap_or(0.0) + gap).min(band - thickness - edge))
+            }
             None => centred,
         };
         let at = base + offset;
@@ -1349,12 +1432,11 @@ impl BandMeasure {
     }
 
     /// The outward offset that puts an axis title, centred in a band `band`
-    /// wide before the offset, [`LABEL_GAP`] past its labels, rounded
-    /// outward to a whole pixel, wherever it sits now. `None` without a
-    /// title.
+    /// wide before the offset, the gap past its labels, rounded outward to
+    /// a whole pixel, wherever it sits now. `None` without a title.
     fn beside_offset(&self, band: f32) -> Option<f32> {
         let (near, far) = self.title?;
-        let placed = (self.reach.unwrap_or(0.0) + LABEL_GAP - (band - (far - near)) * 0.5).ceil();
+        let placed = (self.reach.unwrap_or(0.0) + self.gap - (band - (far - near)) * 0.5).ceil();
         placed.is_finite().then_some(placed)
     }
 }
@@ -1398,27 +1480,35 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   size. Other formats are left alone, and a format never switches back.
 /// - **`out_margin`.** The band of each side is set to exactly what it
 ///   holds, smaller or larger than it was: the reach of its labels past the
-///   tick, [`LABEL_GAP`], the title's thickness and an edge padding of 8 px
-///   to the band's outer edge, rounded up to a whole pixel; the reach and the
+///   tick, the title gap, the title's thickness and an edge padding to the
+///   band's outer edge, rounded up to a whole pixel; the reach and the
 ///   padding when the side has no title, and the padding alone when it holds
-///   nothing. The labels a band holds are its own tick labels and category
-///   group headers, and the part of any other label that runs past the data
+///   nothing. The title gap is half the font size of the axis' labels, at
+///   least [`LABEL_GAP`]; the edge padding is half the font size of what
+///   sits at the outer edge (the title, else the labels that run into the
+///   band, the largest of their fonts, else the axis' own label font when
+///   the band holds its drawn line or ticks), at least 8 px, which is also
+///   the padding of a band that holds nothing drawn. Both scale with the
+///   fonts, so a 2x export of the result is the 1x layout scaled (#270).
+///   The labels a band holds are its own tick labels and category group
+///   headers, and the part of any other label that runs past the data
 ///   area on its side: the end labels of the perpendicular axes (the top y
 ///   label in the top band, the last x label in the right band), and on
 ///   polar, ternary, 3D and parallel charts every label, and the axis titles
 ///   a ternary or 3D chart places along its own edges, wherever they are
 ///   drawn. A band change that would leave no data area is not made.
-/// - **Title offsets.** A title that does not clear its labels by
-///   [`LABEL_GAP`], or leaves its band, gets the offset across the band
-///   (`title_option.offset_y`) that puts its inner edge [`LABEL_GAP`] past
-///   the labels, rounded outward to a whole pixel. A title that already
+/// - **Title offsets.** A title that does not clear its labels by the
+///   title gap, or leaves its band, gets the offset across the band
+///   (`title_option.offset_y`) that puts its inner edge the gap past the
+///   labels, rounded outward to a whole pixel. A title that already
 ///   clears them inside its band, centred or offset by the host, is left
 ///   where it is. The offset is an ordinary SSOT field: drag, hit testing and
 ///   selection follow it.
 /// - **Overlays and the colourbar.** Each overlay axis' band is set the same
 ///   way from its own labels and title (the right margin is the widest band
 ///   of the group), and so is the colourbar's `axis.out_margin`, measured
-///   from the strip.
+///   from the strip; [`colorbar_title_placement`] puts its title half the
+///   label font past its labels.
 /// - **Chart title.** `chart_title.top_margin` is set to the title's line
 ///   ([`MeasuredTitle`]: the font's line ascent and descent, or the ink's
 ///   where it reaches further, as a superscript, a subscript, a formula or a
@@ -1451,7 +1541,7 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   regular grid this keeps the edges lined up). A band is widened through
 ///   its axis' `out_margin` (the right one through the group band, so
 ///   overlay axes and a colourbar count), and a title in a band wider than
-///   it needs is placed [`LABEL_GAP`] past its labels, whatever offset it
+///   it needs is placed the title gap past its labels, whatever offset it
 ///   had. A cell that shares no row or column with another keeps its own
 ///   fit, and a widening that would leave a cell no data area is not made.
 ///
@@ -1634,13 +1724,27 @@ fn axis_band_measure(
 ) -> Option<(BandMeasure, f32)> {
     let da = panel.data_area().ok()?;
     let axis = axis_ref(panel, side);
-    let inner = band_inner_edge(side, RectF::from_rect(&da), tick_contribution(axis));
+    let tick = tick_contribution(axis);
+    let inner = band_inner_edge(side, RectF::from_rect(&da), tick);
     let title = if places_own_titles(panel) {
         Probe::default()
     } else {
         Probe::of(panel, &Element::AxisTitle(side.clone()), measure)
     };
-    Some((BandMeasure::of(side, inner, held, &title), axis.out_margin))
+    // An axis line or tick drawn on the data area's edge or past it (the
+    // plot frame) pads like the axis' labels, so a frame on a side without
+    // text does not crowd the chart edge. A ternary, polar or parallel
+    // chart draws its axes inside the data area: they pad by the least.
+    let frame = Probe::of(panel, &Element::Axis(side.clone()), measure).bounds;
+    let bare = match frame {
+        Some(r) if band_span(side, inner, r).1 >= -tick - 1.0 => axis.label_style.font_size,
+        _ => 0.0,
+    };
+    let label_size = axis.label_style.font_size;
+    Some((
+        BandMeasure::of(side, inner, held, &title, label_size, bare),
+        axis.out_margin,
+    ))
 }
 
 /// The colourbar's band of the drawn panel `panel`, measured from the strip
@@ -1655,7 +1759,14 @@ fn colorbar_band_measure(
     let title = Probe::of(panel, &Element::ColorBarTitle, measure);
     Some((
         bar.side.clone(),
-        BandMeasure::of(&bar.side, inner, &labels, &title),
+        BandMeasure::of(
+            &bar.side,
+            inner,
+            &labels,
+            &title,
+            bar.axis.label_style.font_size,
+            0.0,
+        ),
         bar.axis.out_margin,
     ))
 }
@@ -1710,20 +1821,15 @@ fn fit_band(
     let Some(before) = owner.axis(cfg).map(|axis| axis.out_margin) else {
         return false;
     };
-    // A colourbar title is pushed past its labels by a third of their font
-    // (`colorbar_title_placement`), an axis title placed [`LABEL_GAP`] past
-    // them.
+    // A colourbar title is pushed past its labels by half their font
+    // (`colorbar_title_placement`); an axis title is placed by its offset.
     let pushed = match owner {
-        BandOwner::ColorBar => owner
-            .axis(cfg)
-            .map(|axis| axis.label_style.font_size.max(0.0) / 3.0),
+        BandOwner::ColorBar => owner.axis(cfg).as_deref().map(colorbar_title_gaps),
         BandOwner::Axis(_) | BandOwner::Overlay(_) => None,
     };
     let mut changed = false;
     let mut width = drawn;
-    let required = band
-        .required(pushed.map_or(LABEL_GAP, |gap| gap.max(LABEL_GAP)))
-        .ceil();
+    let required = band.required().ceil();
     if required.is_finite() && required != before {
         let had_data_area = cfg.data_area().is_ok();
         let group = drawn_band(cfg, owner);
@@ -2125,7 +2231,7 @@ fn raise_bands(chart: &mut Config, to: CellBands) {
 
 /// Place each axis title of `chart` whose band is wider than what it holds
 /// (the band [`BandMeasure::required`] for its labels and title, as
-/// [`fit_band`] sets it) [`LABEL_GAP`] past its labels
+/// [`fit_band`] sets it) the title gap past its labels
 /// ([`BandMeasure::beside_offset`]) rather than centred in the band. For
 /// the parent's right axis and the overlay axes the band is the group's.
 /// Returns whether an offset changed.
@@ -2156,12 +2262,12 @@ fn place_widened_titles(chart: &mut Config, measure: &dyn MeasureText) -> bool {
 }
 
 /// Give the title of `owner`'s axis, whose band on `side` measures `band`,
-/// the offset that puts it [`LABEL_GAP`] past its labels, when the band it
+/// the offset that puts it the title gap past its labels, when the band it
 /// is drawn in is wider than `band` needs. Returns whether the offset
 /// changed.
 fn place_beside(cfg: &mut Config, band: &BandMeasure, side: &Side, owner: BandOwner<'_>) -> bool {
     let width = drawn_band(cfg, owner);
-    if width <= band.required(LABEL_GAP).ceil() {
+    if width <= band.required().ceil() {
         return false;
     }
     let Some(outward) = band.beside_offset(width) else {
@@ -2836,7 +2942,7 @@ mod tests {
         axis.out_margin = 60.0;
         let m = extents();
         let reach = 30.0;
-        let clear = reach + axis.label_style.font_size / 3.0 - 1e-3;
+        let clear = reach + AUTO_LAYOUT_TITLE_GAP_EMS * axis.label_style.font_size - 1e-3;
         for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
             let r =
                 colorbar_title_placement(side.clone(), &strip, &axis, (0.0, 0.0), m, reach).rect(m);
@@ -3167,15 +3273,33 @@ mod tests {
         assert_eq!(hidden, Probe::default());
         assert_eq!(probe.with(hidden), probe);
 
+        assert_eq!(probe.font, LABEL_SIZE);
+
         // Measured from the band's inner edge, the tick beyond the data
-        // area: the labels reach the gap and 56 px, the 13 px title sits centred in the 110 px band.
+        // area: the labels reach the gap and 56 px, the 13 px title sits
+        // centred in the 110 px band. The title keeps half the 18 px label
+        // font from the labels, and the band's outer edge is padded by half
+        // the 22 px title font.
         let mut titled = cfg.clone();
         titled.left_y.title_option.text.segments = crate::text::rich_segments_from_text("y");
         let title = Probe::of(&titled, &Element::AxisTitle(Side::Left), &measure);
+        assert_eq!(title.font, TITLE_SIZE);
         let inner = band_inner_edge(&Side::Left, RectF::from_rect(&da), 5.0);
-        let band = BandMeasure::of(&Side::Left, inner, &probe, &title);
+        let band = BandMeasure::of(&Side::Left, inner, &probe, &title, LABEL_SIZE, 0.0);
         assert_eq!(band.reach, Some(LABEL_GAP + 56.0));
         assert_eq!(band.title, Some((55.0 - 6.5, 55.0 + 6.5)));
+        assert_eq!((band.gap, band.padding), (9.0, 11.0));
+        // Without a title the labels set the padding; with nothing past the
+        // inner edge the band pads for its frame, or by the least padding
+        // without one.
+        let none = Probe::default();
+        let untitled = BandMeasure::of(&Side::Left, inner, &probe, &none, LABEL_SIZE, 0.0);
+        assert_eq!(untitled.padding, 9.0);
+        let outside = BandMeasure::of(&Side::Left, 0.0, &probe, &none, LABEL_SIZE, 0.0);
+        assert_eq!(outside.reach, Some(0.0));
+        assert_eq!(outside.padding, AUTO_LAYOUT_EDGE_PADDING);
+        let framed = BandMeasure::of(&Side::Left, 0.0, &probe, &none, LABEL_SIZE, 30.0);
+        assert_eq!(framed.padding, 15.0);
     }
 
     // A title placed beside labels reaching `R` needs a band of
@@ -3186,24 +3310,28 @@ mod tests {
         let both = BandMeasure {
             reach: Some(30.0),
             title: Some((40.0, 53.0)),
+            gap: LABEL_GAP,
+            padding: AUTO_LAYOUT_EDGE_PADDING,
         };
         assert_eq!(
-            both.required(LABEL_GAP),
+            both.required(),
             30.0 + LABEL_GAP + 13.0 + AUTO_LAYOUT_EDGE_PADDING
         );
-        assert_eq!(
-            both.required(6.0),
-            30.0 + 6.0 + 13.0 + AUTO_LAYOUT_EDGE_PADDING
-        );
-        let labels = BandMeasure {
-            reach: Some(30.0),
-            title: None,
+        let band = |reach, title, gap, padding| BandMeasure {
+            reach,
+            title,
+            gap,
+            padding,
         };
-        assert_eq!(labels.required(6.0), 30.0 + AUTO_LAYOUT_EDGE_PADDING);
-        assert_eq!(
-            BandMeasure::default().required(LABEL_GAP),
-            AUTO_LAYOUT_EDGE_PADDING
-        );
+        let wider = band(Some(30.0), Some((40.0, 53.0)), 9.0, 11.0);
+        assert_eq!(wider.required(), 30.0 + 9.0 + 13.0 + 11.0);
+        let labels = band(Some(30.0), None, LABEL_GAP, 9.0);
+        assert_eq!(labels.required(), 30.0 + 9.0);
+        let empty = band(None, None, LABEL_GAP, AUTO_LAYOUT_EDGE_PADDING);
+        assert_eq!(empty.required(), AUTO_LAYOUT_EDGE_PADDING);
+        // The gap and the padding are half the font, at least 4 and 8 px.
+        assert_eq!((title_gap(6.0), title_gap(16.0)), (LABEL_GAP, 8.0));
+        assert_eq!((edge_padding(0.0), edge_padding(25.0)), (8.0, 12.5));
         // In a 110 px band the centred title's inner edge is at 48.5, clear
         // of labels reaching 30 + 4: it stays, and so does an offset one that
         // still clears them inside the band.
@@ -3221,8 +3349,13 @@ mod tests {
         // A colourbar title is already placed past its labels (#259): in the
         // 55 px band it needs no offset, and an offset that would pull it back
         // over them moves it to the same place.
-        assert_eq!(both.placed_offset(55.0, 0.0, Some(LABEL_GAP)), None);
-        assert_eq!(both.placed_offset(55.0, -10.0, Some(LABEL_GAP)), Some(0.0));
+        let pushed = Some((LABEL_GAP, AUTO_LAYOUT_EDGE_PADDING));
+        assert_eq!(both.placed_offset(55.0, 0.0, pushed), None);
+        assert_eq!(both.placed_offset(55.0, -10.0, pushed), Some(0.0));
+        // One whose placement keeps more room from the band's edge than the
+        // band has past it is moved the rest of the way.
+        let edge = Some((LABEL_GAP, AUTO_LAYOUT_EDGE_PADDING + 1.0));
+        assert_eq!(both.placed_offset(55.0, 0.0, edge), Some(1.0));
     }
 
     // auto_layout (#44, #270).
@@ -3230,6 +3363,15 @@ mod tests {
     /// The width of the widest default label (`0.00` .. `1.00`, four
     /// glyphs).
     const DEFAULT_LABEL: f32 = 4.0 * GLYPH;
+    /// The default tick-label and axis-title font sizes.
+    const LABEL_SIZE: f32 = 18.0;
+    const TITLE_SIZE: f32 = 22.0;
+    /// What `auto_layout` keeps at the default fonts: the title gap (half
+    /// the 18 px label font), the edge padding past labels (the same) and
+    /// past an axis title (half the 22 px title font).
+    const GAP: f32 = 9.0;
+    const LABEL_PADDING: f32 = 9.0;
+    const TITLE_PADDING: f32 = 11.0;
 
     fn with_titles(left: &str) -> Config {
         let mut cfg = crate::defaults::config();
@@ -3281,8 +3423,9 @@ mod tests {
 
     /// The room between what the band on `side` holds and the band's outer
     /// edge: its `out_margin` less how far past its inner edge any tick
-    /// label, group header or the side's own title reaches.
-    fn edge_gap(cfg: &Config, side: Side, measure: &dyn MeasureText) -> f32 {
+    /// label, group header or the side's own title reaches (0 when none
+    /// does).
+    fn edge_gap(cfg: &Config, side: Side, measure: &dyn MeasureText) -> (f32, f32) {
         let da = RectF::from_rect(&cfg.data_area().expect("a data area"));
         let axis = axis_ref(cfg, &side);
         let inner = band_inner_edge(&side, da, tick_contribution(axis));
@@ -3300,24 +3443,35 @@ mod tests {
                 reach = reach.max(band_span(&side, inner, r).1);
             }
         }
-        axis.out_margin - reach
+        (axis.out_margin - reach, reach)
     }
 
-    /// Every band of `cfg` ends the edge padding past what it holds: to the
+    /// Every band of `cfg` ends the edge padding past what it holds (half
+    /// the font of its title, else of the labels that run into it, else of
+    /// its axis' labels when it holds the axis line, at least 8 px): to the
     /// pixel it is rounded up to, or, beside a title placed by a rounded
     /// offset, within a pixel either way.
     fn assert_padded(cfg: &Config, measure: &dyn MeasureText) {
+        let label_font = SIDES
+            .iter()
+            .map(|side| axis_ref(cfg, side).label_style.font_size)
+            .fold(0.0, f32::max);
         for side in SIDES {
-            let gap = edge_gap(cfg, side.clone(), measure);
+            let (gap, reach) = edge_gap(cfg, side.clone(), measure);
             let titled = !rects(cfg, Element::AxisTitle(side.clone()), measure).is_empty();
-            let low = if titled {
-                AUTO_LAYOUT_EDGE_PADDING - 1.0
+            let padding = if titled {
+                edge_padding(axis_ref(cfg, &side).title_option.text.font_size)
+            } else if reach > 0.0 {
+                edge_padding(label_font)
+            } else if !rects(cfg, Element::Axis(side.clone()), measure).is_empty() {
+                edge_padding(axis_ref(cfg, &side).label_style.font_size)
             } else {
                 AUTO_LAYOUT_EDGE_PADDING
             };
+            let low = if titled { padding - 1.0 } else { padding };
             assert!(
-                gap >= low - 1e-3 && gap < AUTO_LAYOUT_EDGE_PADDING + 1.0,
-                "{side:?}: {gap}"
+                gap >= low - 1e-3 && gap < padding + 1.0,
+                "{side:?}: {gap} for {padding}"
             );
         }
     }
@@ -3344,12 +3498,9 @@ mod tests {
         let out = auto_layout(&crate::defaults::config(), &measure);
         assert_eq!(
             out.left_y.out_margin,
-            LABEL_GAP + DEFAULT_LABEL + AUTO_LAYOUT_EDGE_PADDING
+            LABEL_GAP + DEFAULT_LABEL + LABEL_PADDING
         );
-        assert_eq!(
-            out.bottom_x.out_margin,
-            LABEL_GAP + 13.0 + AUTO_LAYOUT_EDGE_PADDING
-        );
+        assert_eq!(out.bottom_x.out_margin, LABEL_GAP + 13.0 + LABEL_PADDING);
     }
 
     /// The gap between the title on `side` and the outer edge of its band.
@@ -3390,16 +3541,13 @@ mod tests {
             assert_eq!(cfg, input, "the input is not modified");
             assert_eq!(
                 out.left_y.out_margin,
-                reach + LABEL_GAP + title + AUTO_LAYOUT_EDGE_PADDING,
+                reach + GAP + title + TITLE_PADDING,
                 "{band}"
             );
             let clearance = title_clearance(&out, Side::Left, &measure);
-            assert!(
-                (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
-                "{band}: {clearance}"
-            );
+            assert!((GAP..GAP + 1.0).contains(&clearance), "{band}: {clearance}");
             let outer = title_outer_gap(&out, Side::Left, &measure);
-            assert!(outer >= AUTO_LAYOUT_EDGE_PADDING - 1.0, "{band}: {outer}");
+            assert!(outer >= TITLE_PADDING - 1.0, "{band}: {outer}");
             let offset = out.left_y.title_option.offset_y;
             assert!(offset < 0.0 && offset == offset.round(), "{band}: {offset}");
             // Everything else is the input's.
@@ -3414,7 +3562,7 @@ mod tests {
     #[test]
     fn auto_layout_sizes_a_band_without_a_title_for_its_labels_alone() {
         let measure = Labels;
-        let needed = LABEL_GAP + 56.0 + AUTO_LAYOUT_EDGE_PADDING;
+        let needed = LABEL_GAP + 56.0 + LABEL_PADDING;
         for band in [20.0, 110.0] {
             let mut cfg = crate::defaults::config();
             five_digit_labels(&mut cfg.left_y);
@@ -3438,17 +3586,14 @@ mod tests {
         let measure = Labels;
         let out = auto_layout(&with_titles("y"), &measure);
         let clearance = title_clearance(&out, Side::Left, &measure);
-        assert!(
-            (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
-            "{clearance}"
-        );
+        assert!((GAP..GAP + 1.0).contains(&clearance), "{clearance}");
         // Left: offset_y is screen x; +30 moves the title inward, into the
         // labels.
         let mut inward = out.clone();
         inward.left_y.title_option.offset_y += 30.0;
-        assert!(title_clearance(&inward, Side::Left, &measure) < LABEL_GAP);
+        assert!(title_clearance(&inward, Side::Left, &measure) < GAP);
         assert_eq!(auto_layout(&inward, &measure), out);
-        // 5 px outward is still inside the 8 px padding: kept.
+        // 5 px outward is still inside the 11 px padding: kept.
         let mut outward = out.clone();
         outward.left_y.title_option.offset_y -= 5.0;
         assert_eq!(auto_layout(&outward, &measure), outward);
@@ -3537,13 +3682,11 @@ mod tests {
         cfg.legend.offset_y = 200.0;
         let out = auto_layout(&cfg, &measure);
         let bar = out.colorbar.as_ref().unwrap();
-        // The bar's title sits a third of the 18 px label font past its
-        // labels, and the band ends the padding past the title.
-        let (reach, gap) = (LABEL_GAP + 56.0, 6.0);
-        assert_eq!(
-            bar.axis.out_margin,
-            reach + gap + 13.0 + AUTO_LAYOUT_EDGE_PADDING
-        );
+        // The bar's title sits half the 18 px label font past its labels,
+        // and the band ends half the title's font past the title.
+        let (reach, gap) = (LABEL_GAP + 56.0, 9.0);
+        let padding = edge_padding(bar.axis.title_option.text.font_size);
+        assert_eq!(bar.axis.out_margin, reach + gap + 13.0 + padding);
         let labels = rects(&out, Element::ColorBarLabel, &measure);
         let title = rects(&out, Element::ColorBarTitle, &measure)[0];
         let placed = labels
@@ -3553,7 +3696,7 @@ mod tests {
         assert!((gap..gap + 1.0).contains(&placed), "{placed}");
         let ca = RectF::from_rect(&out.chart_area);
         let outer = ca.x + ca.width - (title.x + title.width);
-        assert!(outer >= AUTO_LAYOUT_EDGE_PADDING - 1e-3, "{outer}");
+        assert!(outer >= padding - 1e-3, "{outer}");
         assert_eq!((out.legend.offset_x, out.legend.offset_y), (0.0, 0.0));
         let legend = rects(&out, Element::Legend, &measure)[0];
         for element in [
@@ -3590,16 +3733,19 @@ mod tests {
 
         let out = auto_layout(&cfg, &measure);
         // The overlay's band: its labels, the gap, its title and the padding.
+        let axis = &out.overlays[0].y_axis;
+        let gap = title_gap(axis.label_style.font_size);
+        let padding = edge_padding(axis.title_option.text.font_size);
         assert_eq!(
-            out.overlays[0].y_axis.out_margin,
-            LABEL_GAP + DEFAULT_LABEL + LABEL_GAP + 13.0 + AUTO_LAYOUT_EDGE_PADDING
+            axis.out_margin,
+            LABEL_GAP + DEFAULT_LABEL + gap + 13.0 + padding
         );
         let panel = out.overlay_panel(0).unwrap();
-        assert!(title_clearance(&panel, Side::Right, &measure) >= LABEL_GAP - 1e-3);
+        assert!(title_clearance(&panel, Side::Right, &measure) >= gap - 1e-3);
         let outer = title_outer_gap(&panel, Side::Right, &measure);
-        assert!(outer >= AUTO_LAYOUT_EDGE_PADDING - 1.0, "{outer}");
+        assert!(outer >= padding - 1.0, "{outer}");
         let chart = out.subplot_config(0).unwrap();
-        assert!(title_clearance(&chart, Side::Left, &measure) >= LABEL_GAP - 1e-3);
+        assert!(title_clearance(&chart, Side::Left, &measure) >= GAP - 1e-3);
         assert_padded(&chart, &measure);
         assert_eq!(
             out.subplots[0].config.chart_area,
@@ -3717,13 +3863,10 @@ mod tests {
         // labels in the right band of its group.
         assert!(out.left_y.out_margin > alone[0].left_y.out_margin);
         let clearance = title_clearance(&out, Side::Left, &measure);
-        assert!(
-            (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
-            "{clearance}"
-        );
+        assert!((GAP..GAP + 1.0).contains(&clearance), "{clearance}");
         let twin = out.subplot_config(2).unwrap().overlay_panel(0).unwrap();
         let clearance = title_clearance(&twin, Side::Right, &measure);
-        assert!(clearance >= LABEL_GAP - 1e-3, "{clearance}");
+        assert!(clearance >= GAP - 1e-3, "{clearance}");
         assert_eq!(auto_layout(&out, &measure), out, "idempotent");
     }
 
@@ -3778,7 +3921,7 @@ mod tests {
                 .iter()
                 .map(|r| r.y)
                 .fold(f32::INFINITY, f32::min);
-            assert!(top - out.chart_area.y as f32 >= AUTO_LAYOUT_EDGE_PADDING);
+            assert!(top - out.chart_area.y as f32 >= LABEL_PADDING);
         }
     }
 
@@ -3808,14 +3951,11 @@ mod tests {
             "they run past the plot"
         );
         for gap in [top - ca.y, ca.x + ca.width - right] {
-            assert!(
-                (AUTO_LAYOUT_EDGE_PADDING..AUTO_LAYOUT_EDGE_PADDING + 1.0).contains(&gap),
-                "{gap}"
-            );
+            assert!((LABEL_PADDING..LABEL_PADDING + 1.0).contains(&gap), "{gap}");
         }
         assert_eq!(
             out.right_y.out_margin,
-            (DEFAULT_LABEL * 0.5 + AUTO_LAYOUT_EDGE_PADDING).ceil()
+            (DEFAULT_LABEL * 0.5 + LABEL_PADDING).ceil()
         );
         assert_padded(&out, &measure);
     }
@@ -3854,9 +3994,49 @@ mod tests {
             .map(|r| r.y + r.height)
             .fold(f32::NEG_INFINITY, f32::max);
         let title = rects(&out, Element::AxisTitle(Side::Bottom), &measure)[0];
-        assert!(title.y >= header_bottom + LABEL_GAP - 1e-3, "{title:?}");
+        assert!(title.y >= header_bottom + GAP - 1e-3, "{title:?}");
         assert_padded(&out, &measure);
         assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    // The gap between an axis title and its labels and the padding at a
+    // band's outer edge are half the font (#270): 12 px text keeps the least
+    // gap (6 px, over 4) and padding (8 px), 40 px text 20 px of each. The
+    // top band holds the frame and pads like the labels.
+    #[test]
+    fn auto_layout_scales_the_title_gap_and_the_edge_padding_with_the_font() {
+        let measure = Labels;
+        let mut paddings = Vec::new();
+        for size in [12.0f32, 18.0, 40.0] {
+            let mut cfg = with_titles("y");
+            for side in SIDES {
+                let axis = axis_mut(&mut cfg, &side);
+                axis.label_style.font_size = size;
+                axis.title_option.text.font_size = size;
+            }
+            let out = auto_layout(&cfg, &measure);
+            let gap = LABEL_GAP.max(AUTO_LAYOUT_TITLE_GAP_EMS * size);
+            let padding = AUTO_LAYOUT_EDGE_PADDING.max(AUTO_LAYOUT_EDGE_PADDING_EMS * size);
+            assert_eq!((gap, padding), (title_gap(size), edge_padding(size)));
+            for side in [Side::Left, Side::Bottom] {
+                let clearance = title_clearance(&out, side.clone(), &measure);
+                assert!(
+                    (gap..gap + 1.0).contains(&clearance),
+                    "{size} {side:?}: {clearance}"
+                );
+                let outer = title_outer_gap(&out, side.clone(), &measure);
+                assert!(
+                    (padding - 1.0..padding + 1.0).contains(&outer),
+                    "{size} {side:?}: {outer}"
+                );
+            }
+            let (top, _) = edge_gap(&out, Side::Top, &measure);
+            assert!((padding..padding + 1.0).contains(&top), "{size}: {top}");
+            assert_padded(&out, &measure);
+            assert_eq!(auto_layout(&out, &measure), out, "{size}: idempotent");
+            paddings.push(top);
+        }
+        assert!(paddings[0] < paddings[1] && paddings[1] < paddings[2]);
     }
 
     // A chart with a hidden frame (no lines, ticks or labels) holds nothing

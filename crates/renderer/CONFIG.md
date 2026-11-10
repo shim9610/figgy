@@ -99,8 +99,9 @@ its labels over rows instead (#205), so every category keeps its name. Precision
 automatically enlarge `out_margin` or move titles: increase the explicit margin
 when a deliberately long label needs more room, or call `layout::auto_layout`,
 which sets each band to exactly what its labels and title need (smaller or
-larger) with an 8 px edge padding, gives a title that runs into its labels the
-offset that places it beside them, and switches too-long decimal labels to
+larger) with an edge padding of half the font at the band's edge (at least
+8 px), gives a title that runs into its labels the offset that places it half
+their font beside them, and switches too-long decimal labels to
 `Power` in the config it returns. The same formatting rules apply
 to colorbar tick labels.
 

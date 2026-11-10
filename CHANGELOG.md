@@ -724,12 +724,12 @@ annotation's `align`) are additive.
   or are wider than five ems switches to `LabelFormat::Power`; each band's
   `out_margin` is set to exactly what it holds, smaller or larger
   ([#270](https://github.com/shim9610/figgy/issues/270)): the labels' reach,
-  `LABEL_GAP`, the title's thickness and an 8 px edge padding, or the
+  the title gap, the title's thickness and the edge padding, or the
   padding alone on a side that holds nothing, where the labels include the
   side's category group headers and the end labels of the perpendicular
   axes that run past the plot; a title that does not
-  clear its labels by `LABEL_GAP` inside its band gets the `offset_y` that
-  puts it `LABEL_GAP` past them, and one that already clears, centred or
+  clear its labels by the gap inside its band gets the `offset_y` that
+  puts it the gap past them, and one that already clears, centred or
   offset by the host, stays; overlay axes and the colourbar's axis follow the
   same rule, the chart title band is the title's height and 0.3 em of its
   font (at least the edge padding) above and below it, 0 without a title, a
@@ -742,7 +742,10 @@ annotation's `align`) are additive.
   to `Decimal`.
 - **`auto_layout` fits bands both ways**
   ([#270](https://github.com/shim9610/figgy/issues/270)). Bands shrink as
-  well as grow, end 8 px past what they hold, and hold the overhang of the
+  well as grow, end half the font of what sits at their outer edge (the
+  title, else the labels, else beside a drawn frame the axis' labels; at
+  least 8 px) past what they hold, with an axis or colourbar title half its
+  labels' font (at least `LABEL_GAP`) past them, and hold the overhang of the
   perpendicular end labels and the category group headers; the chart title
   band is padded by 0.3 em above and below, 0 without a title; the plots
   of subplot cells that share a grid row or column (same chart-area y and
