@@ -203,7 +203,8 @@ pub(in crate::renderer) struct ContourScratchEntry {
 impl PrepareContext<'_> {
     /// Prepare every contour series' reusable GPU state.
     ///
-    /// Returns the grid receipts for the token, the same way
+    /// Reads each panel's `contour_spacings` and sets its `contour` snapshot
+    /// in place. Returns the grid receipts for the token, the same way
     /// `ensure_field_scratches` does. Automatic label anchors are the only
     /// contour compute dispatch and remain frame-dependent.
     /// `scale` is the export DPI multiplier — the same one
@@ -215,28 +216,26 @@ impl PrepareContext<'_> {
         &mut self,
         items: &[PanelDraw<'_>],
         scale: f32,
-        contour_spacings: &[Vec<Option<f32>>],
-    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
-        self.frame_batch(|ctx| {
-            ctx.ensure_contour_scratches_in_frame(items, scale, contour_spacings)
-        })
+        panels: &mut [PreparedPanelProducts],
+    ) -> Result<Vec<Arc<GridSources>>> {
+        self.frame_batch(|ctx| ctx.ensure_contour_scratches_in_frame(items, scale, panels))
     }
 
     fn ensure_contour_scratches_in_frame(
         &mut self,
         items: &[PanelDraw<'_>],
         scale: f32,
-        contour_spacings: &[Vec<Option<f32>>],
-    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        panels: &mut [PreparedPanelProducts],
+    ) -> Result<Vec<Arc<GridSources>>> {
         retain_frame_series(&mut self.contour_cache, items, CONTOUR_SCRATCH_CACHE_LIMIT);
-        let mut prepared = Vec::with_capacity(items.len());
         let mut receipts = Vec::new();
-        if items.len() != contour_spacings.len() {
+        if items.len() != panels.len() {
             return Err(FiggyError::internal(
                 "one contour spacing list per draw item",
             ));
         }
-        for (item, item_spacings) in items.iter().zip(contour_spacings) {
+        for (item, panel) in items.iter().zip(panels.iter_mut()) {
+            let item_spacings = &panel.contour_spacings;
             if item.series.len() != item_spacings.len() {
                 return Err(FiggyError::internal("one contour spacing per series"));
             }
@@ -324,9 +323,9 @@ impl PrepareContext<'_> {
             if let Some(encoder) = encoder {
                 self.queue.submit(std::iter::once(encoder.finish()));
             }
-            prepared.push(PreparedContourItem { series: per_series });
+            panel.contour = PreparedContourItem { series: per_series };
         }
-        Ok((prepared, receipts))
+        Ok(receipts)
     }
 
     /// The label snapshot a contour series draws with at `transform`: the
@@ -759,7 +758,8 @@ impl PrepareContext<'_> {
 impl Renderer {
     /// Prepare every contour series' reusable GPU state.
     ///
-    /// Returns the grid receipts for the token, the same way
+    /// Reads each panel's `contour_spacings` and sets its `contour` snapshot
+    /// in place. Returns the grid receipts for the token, the same way
     /// `ensure_field_scratches` does. Automatic label anchors are the only
     /// contour compute dispatch and remain frame-dependent.
     /// `scale` is the export DPI multiplier — the same one
@@ -771,11 +771,11 @@ impl Renderer {
         &mut self,
         items: &[PanelDraw<'_>],
         scale: f32,
-        contour_spacings: &[Vec<Option<f32>>],
-    ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
+        panels: &mut [PreparedPanelProducts],
+    ) -> Result<Vec<Arc<GridSources>>> {
         self.preparation_parts()
             .1
-            .ensure_contour_scratches(items, scale, contour_spacings)
+            .ensure_contour_scratches(items, scale, panels)
     }
 
     /// Build or reuse one contour series' GPU state.
