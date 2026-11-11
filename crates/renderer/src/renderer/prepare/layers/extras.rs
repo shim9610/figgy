@@ -106,7 +106,9 @@ impl PrepareContext<'_> {
                 let data = match category_bars {
                     Some(layer) => Some(layer.data.clone()),
                     None if rt.radar().is_some() && primitives.line => {
-                        Some(self.radar_label_group(
+                        Some(self.radar_label_columns(
+                            chart_config,
+                            s.series_specs.iter().map(|spec| spec.config),
                             cfg,
                             column_buffer,
                             series.style.display_scale,
@@ -115,28 +117,23 @@ impl PrepareContext<'_> {
                     }
                     None => None,
                 };
-                // A radar series' lane among the panel's labelled radar
-                // series, from their atlases' widest strings (#272).
-                let lanes = radar_label_lanes(
-                    chart_config,
-                    s.series_specs.iter().map(|spec| spec.config),
-                    cfg,
-                    |index, _| {
-                        Ok(products
-                            .contours
-                            .get(index)
-                            .and_then(|series| series.value_labels.as_ref())
-                            .map_or(0.0, |atlas| atlas.widest()))
-                    },
-                )?;
+                // A radar series' labels are placed with those of its label
+                // group's members (#272), whose cells come from the atlases
+                // this prepare resolved for them.
                 match (
                     data,
                     self.value_label_data(
                         chart_config,
+                        s.series_specs.iter().map(|spec| spec.config),
                         cfg,
                         atlas,
                         series.style.display_scale,
-                        &lanes,
+                        |index, _| {
+                            Ok(products
+                                .contours
+                                .get(index)
+                                .and_then(|series| series.value_labels.clone()))
+                        },
                     )?,
                     pipelines.bar_value_label.as_ref(),
                 ) {

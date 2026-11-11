@@ -405,7 +405,7 @@ fn corner_label_box(
 /// eye reads them as touching.
 pub(crate) const LABEL_VISUAL_GAP: f32 = 2.0;
 
-/// The visual gap ([`LABEL_VISUAL_GAP`]) between a decision box of a tick
+/// The visual gap (`LABEL_VISUAL_GAP`, 2 px) between a decision box of a tick
 /// label in an `a_font` px font and one in a `b_font` px font (#272): the
 /// sum of each box's half of the gap, read as the share of its own font it
 /// is of the default 18 px font,
@@ -419,8 +419,9 @@ pub(crate) const LABEL_VISUAL_GAP: f32 = 2.0;
 /// scale); the fonts are scaled with the config, so read from the fonts
 /// the gap is `s` times the 1x gap wherever the labels are decided, as the
 /// gap past the tick is ([`each_kept_axis_tick_label`]). So a 2x export
-/// keeps the labels the 1x one keeps.
-pub(crate) fn visual_gap_for(a_font: f32, b_font: f32) -> f32 {
+/// keeps the labels the 1x one keeps. The renderer's radar value labels
+/// keep the same gap from each other.
+pub fn visual_gap_for(a_font: f32, b_font: f32) -> f32 {
     0.5 * LABEL_VISUAL_GAP * (a_font.max(0.0) + b_font.max(0.0)) / LABEL_GAP_FONT
 }
 

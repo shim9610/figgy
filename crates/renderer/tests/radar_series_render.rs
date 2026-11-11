@@ -904,6 +904,44 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
             );
             previous = after.rgba;
         }
+        // Both series labelled: the first series' labels make room for the
+        // second's at their spokes (#272) and follow every edit of the
+        // second series' labels and values like a fresh renderer.
+        let mut both = labelled.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut both[1].render_type {
+            labels.placement = RadarLabels::Values;
+            labels.text = vec!["b".into(); 5];
+        }
+        let mut other_text = both.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut other_text[1].render_type {
+            labels.text[1] = "bbbb".into();
+        }
+        for (name, edited) in [
+            ("other series labelled", &both),
+            ("other series' label text", &other_text),
+        ] {
+            let after = export(&mut r, &grid, edited, scale);
+            assert_ne!(after.rgba, previous, "{name} {scale}x");
+            assert_eq!(
+                after.rgba,
+                export(&mut renderer(), &grid, edited, scale).rgba,
+                "{name} {scale}x: cached"
+            );
+            previous = after.rgba;
+        }
+        // The second series' values equal to the first's at every spoke.
+        let equal = col(ONE.to_vec());
+        r.upsert_column("two", &equal).unwrap();
+        let mut fresh = renderer();
+        fresh.upsert_column("two", &equal).unwrap();
+        let after = export(&mut r, &grid, &other_text, scale);
+        assert_ne!(after.rgba, previous, "other series' values {scale}x");
+        assert_eq!(
+            after.rgba,
+            export(&mut fresh, &grid, &other_text, scale).rgba,
+            "other series' values {scale}x: cached"
+        );
+        r.upsert_column("two", &col(TWO.to_vec())).unwrap();
     }
 }
 
@@ -980,12 +1018,13 @@ fn labelled_radar_documents() -> Vec<renderer::RadarChart> {
 
 /// Radar value labels keep clear of each other, of the ring labels and of
 /// the category labels (#272), at 1x and 2x: each series' labels drawn
-/// alone (the others' dragged off the chart, so every lane stays where it
-/// is)
-/// share no pixel, a pixel apart, with another series' labels, and no
-/// label pixel lies in the box of a ring or category label the chrome
-/// draws. In the gallery the 7 pt and 6 pt at Ergonomics overlapped, and
-/// the 8 pt sat on the ring label 8.
+/// alone (the others' dragged off the chart, so every label stays where it
+/// is placed: the drag applies after the placement) share no pixel, a
+/// pixel apart, with another series' labels, and no label pixel lies in
+/// the box of a ring or category label the chrome draws. In the gallery
+/// the 7 pt and 6 pt at Ergonomics overlapped, and the 8 pt sat on the
+/// ring label 8. Each label stays next to its own vertex: its ink lies
+/// within one em plus the marker size of the vertex.
 #[test]
 fn radar_value_labels_meet_no_other_label() {
     for (d, document) in labelled_radar_documents().into_iter().enumerate() {
@@ -1002,8 +1041,9 @@ fn radar_value_labels_meet_no_other_label() {
         }
         let chart = Chart::new(config);
         // `only` keeps the labels of that series on the chart; the others
-        // are dragged far off it, which leaves every lane where it is (the
-        // drag applies after the placement); `None` drags them all off.
+        // are dragged far off it, which leaves every label where it is
+        // placed (the drag applies after the placement); `None` drags them
+        // all off.
         let labelled = |only: Option<usize>| {
             let mut out = series.clone();
             for (k, s) in out.iter_mut().enumerate() {
@@ -1019,7 +1059,7 @@ fn radar_value_labels_meet_no_other_label() {
             let bare = export(&mut r, &chart, &labelled(None), scale);
             let ink = |k: usize, r: &mut Renderer| {
                 let img = export(r, &chart, &labelled(Some(k)), scale);
-                save(&format!("radar-lanes-{d}-{k}-{scale}x"), &img);
+                save(&format!("radar-value-labels-{d}-{k}-{scale}x"), &img);
                 img.rgba
                     .chunks_exact(4)
                     .zip(bare.rgba.chunks_exact(4))
@@ -1048,8 +1088,52 @@ fn radar_value_labels_meet_no_other_label() {
                     }
                 }
             }
-            // The ring and category labels as the chrome draws them.
+            // Each label stays next to its own vertex (#272): every pixel of
+            // a series' labels lies within one em plus the marker size, plus
+            // the extent of its widest label, of one of that series'
+            // vertices.
             let scaled = chart.config().scaled(scale);
+            let face = &scaled.left_y.label_style;
+            for (k, mask) in inks.iter().enumerate() {
+                let DataRenderType::Radar { labels, style, .. } = &series[k].render_type else {
+                    unreachable!("a radar document opens as radar series")
+                };
+                let extent = labels
+                    .text
+                    .iter()
+                    .map(|t| {
+                        let m = renderer::text_render::measure_plain_text(
+                            t,
+                            &face.label_font,
+                            face.font_size,
+                            false,
+                            false,
+                            renderer::text_render::FontPolicy::Standard,
+                        );
+                        m.width.hypot(m.ascent + m.descent)
+                    })
+                    .fold(0.0f32, f32::max);
+                let bound = f64::from(
+                    face.font_size + style.marker_size() * scale + extent + 2.0 * scale + 1.0,
+                );
+                let values = &document.series[k].values;
+                for y in 0..h {
+                    for x in 0..w {
+                        if !at(mask, x, y) {
+                            continue;
+                        }
+                        let near = values.iter().enumerate().any(|(i, v)| {
+                            let (vx, vy) = vertex(&chart, scale, i as f64, *v);
+                            (x as f64 + 0.5 - vx).hypot(y as f64 + 0.5 - vy) <= bound
+                        });
+                        assert!(
+                            near,
+                            "{d} {k} {scale}x: a label pixel at {x},{y} far from its vertices"
+                        );
+                    }
+                }
+            }
+            // The ring and category labels as the chrome draws them.
             let measure = renderer::CpuTextMeasure::for_style(&scaled.draw_style);
             for element in [
                 renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),

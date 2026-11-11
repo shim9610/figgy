@@ -4,7 +4,8 @@
 //! bar end, the box's median line or the radar vertex, that the drawn pixels are the SSOT string's own raster, that
 //! an empty string draws nothing, that a drag offset moves the label by
 //! itself, that the selected label's box is its frame, the labels of a
-//! subplot, and the typed pick of a label.
+//! subplot, the typed pick of a label, and how the labels of several radar
+//! series make room for each other next to their own vertices (#272).
 //!
 //! The bars and boxes are pure red and blue, the labels magenta (the value
 //! axis' tick label colour) or white inside a dark bar, so a colour
@@ -70,6 +71,10 @@ const BOXES: [Stats; 3] = [
 const OUTLIERS: [&[f64]; 3] = [&[85.0], &[], &[]];
 /// The radar values over four categories, on a 0..1 radius.
 const RADAR: [f64; 4] = [0.6, 0.5, 0.7, 0.4];
+/// A second radar series over the same categories (#272): far below the
+/// first at the top spoke, a little above it at the right one, equal at the
+/// bottom one and within the visual gap of it at the left one.
+const RADAR_B: [f64; 4] = [0.3, 0.53, 0.7, 0.405];
 
 /// A renderer holding the bar columns, the box record and outliers and the
 /// radar columns, with GPU picking on.
@@ -118,6 +123,7 @@ fn renderer() -> Renderer {
     .unwrap();
     r.add_column("cat", &col(vec![0.0, 1.0, 2.0, 3.0])).unwrap();
     r.add_column("radar", &col(RADAR.to_vec())).unwrap();
+    r.add_column("radar.b", &col(RADAR_B.to_vec())).unwrap();
     r.enable_gpu_picking().unwrap();
     r
 }
@@ -821,12 +827,19 @@ fn radar_chart() -> Chart {
 }
 
 fn radar(placement: RadarLabels) -> SeriesConfig {
+    radar_series("radar", "radar", &RADAR, placement)
+}
+
+/// A radar series `id` over the value column `column` holding `values`,
+/// an outline 2 px wide with no marker and no fill, labelled with each
+/// value as written.
+fn radar_series(id: &str, column: &str, values: &[f64], placement: RadarLabels) -> SeriesConfig {
     SeriesConfig {
-        series_id: "radar".into(),
+        series_id: id.into(),
         source_id: None,
         label: None,
         x_column: "cat".into(),
-        y_column: "radar".into(),
+        y_column: column.into(),
         z_column: None,
         render_type: DataRenderType::Radar {
             color: RED,
@@ -843,7 +856,7 @@ fn radar(placement: RadarLabels) -> SeriesConfig {
             },
             labels: RadarSeriesLabels {
                 placement,
-                text: RADAR.iter().map(|v| format!("{v}")).collect(),
+                text: values.iter().map(|v| format!("{v}")).collect(),
                 ..RadarSeriesLabels::default()
             },
         },
@@ -865,11 +878,73 @@ fn vertex(chart: &Chart, scale: f32, i: f64, v: f64) -> (f32, f32) {
     )
 }
 
-/// A radar vertex's label sits outside the polygon along its spoke, `9` px
-/// from the vertex, as the former radar chart placed it: above the top
-/// vertex, right of the right one, below the bottom one and left of the
-/// left one, at 1x and 2x. `Emphasized` labels show only for a series with
-/// a selection.
+/// How far a radar label's content box keeps from its vertex at `scale`
+/// (#272): `max(4, 0.25 em)` past the vertex's mark, here half the 2 px
+/// outline of [`radar_series`], which draws no marker.
+fn radar_clear(chart: &Chart, scale: f32) -> f32 {
+    let font = chart.config().left_y.label_style.font_size;
+    (1.0 + 4.0f32.max(0.25 * font)) * scale
+}
+
+/// The distance from `p` to the box `b`, 0 inside it.
+fn box_distance(b: (f32, f32, f32, f32), p: (f32, f32)) -> f32 {
+    let dx = (b.0 - p.0).max(p.0 - b.2).max(0.0);
+    let dy = (b.1 - p.1).max(p.1 - b.3).max(0.0);
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// A radar label's content box keeps its gap from its vertex and is never
+/// farther from it than one em plus the marker size (#272; `marker` in
+/// logical pixels, the outline width without a marker).
+fn assert_next_to_vertex(
+    chart: &Chart,
+    content: (f32, f32, f32, f32),
+    vertex: (f32, f32),
+    marker: f32,
+    scale: f32,
+    case: &str,
+) {
+    let font = chart.config().left_y.label_style.font_size;
+    let slack = 2.0 * scale + 1.0;
+    let d = box_distance(content, vertex);
+    assert!(
+        d <= (font + marker) * scale + slack,
+        "{case}: {content:?} lies {d} px from its vertex {vertex:?}"
+    );
+    assert!(
+        d >= radar_clear(chart, scale) - slack,
+        "{case}: {content:?} lies {d} px from its vertex {vertex:?}"
+    );
+}
+
+/// The radar label of `text` whose ink lies within `40` px (at `scale`) of
+/// `at` in `img`: its content box.
+fn radar_label_near(
+    chart: &Chart,
+    img: &RasterImage,
+    at: (f32, f32),
+    text: &str,
+    scale: f32,
+    case: &str,
+) -> ((u32, u32, u32, u32), (f32, f32, f32, f32)) {
+    let reach = 40.0 * scale;
+    let region = (
+        (at.0 - reach).max(0.0) as u32,
+        (at.1 - reach).max(0.0) as u32,
+        (at.0 + reach).ceil() as u32,
+        (at.1 + reach).ceil() as u32,
+    );
+    let ink = bbox(img, region, is_label).unwrap_or_else(|| panic!("{case}: no label near {at:?}"));
+    let axis = &chart.config().left_y.label_style;
+    let content = content_box(text, &axis.label_font, axis.font_size * scale, ink);
+    (ink, content)
+}
+
+/// A radar vertex's label sits next to its vertex, outside it along its
+/// spoke (#272): its content box `max(4, 0.25 em)` past the vertex's mark,
+/// above the top vertex, right of the right one, below the bottom one and
+/// left of the left one, centred on the spoke, at 1x and 2x. `Emphasized`
+/// labels show only for a series with a selection.
 #[test]
 fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
     let mut r = renderer();
@@ -884,67 +959,25 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
             .block_on()
             .unwrap();
         let slack = 2.0 * scale + 1.0;
-        let gap = 9.0 * scale;
-        let font = chart.config().left_y.label_style.font_size;
-        let quarter = |i: usize| {
-            let (vx, vy) = vertex(&chart, scale, i as f64, RADAR[i]);
-            let (w, h) = (img.width as f32, img.height as f32);
-            // The quarter of the panel beyond the vertex along its spoke.
-            let region = match i {
-                0 => (0.0, 0.0, w, vy),
-                1 => (vx, 0.0, w, h),
-                2 => (0.0, vy, w, h),
-                _ => (0.0, 0.0, vx, h),
+        let clear = radar_clear(&chart, scale);
+        for (i, v) in RADAR.iter().enumerate() {
+            let case = format!("{scale}x vertex {i}");
+            let (vx, vy) = vertex(&chart, scale, i as f64, *v);
+            let (_, b) = radar_label_near(&chart, &img, (vx, vy), &format!("{v}"), scale, &case);
+            let (cx, cy) = ((b.0 + b.2) * 0.5, (b.1 + b.3) * 0.5);
+            let (near, across) = match i {
+                0 => (vy - b.3, cx - vx),
+                1 => (b.0 - vx, cy - vy),
+                2 => (b.1 - vy, cx - vx),
+                _ => (vx - b.2, cy - vy),
             };
-            let region = (
-                region.0 as u32,
-                region.1 as u32,
-                region.2.ceil() as u32,
-                region.3.ceil() as u32,
+            assert!((near - clear).abs() <= slack, "{case}: {b:?} {near} px out");
+            assert!(
+                across.abs() <= slack,
+                "{case}: {b:?} {across} px off the spoke"
             );
-            (vx, vy, bbox(&img, region, is_label))
-        };
-        let (vx, vy, top) = quarter(0);
-        let top = top.expect("a label above the top vertex");
-        assert!(
-            (centre(top).0 - vx).abs() <= slack,
-            "{scale}x top: {top:?} at {vx}"
-        );
-        // The former radar's baseline: `gap` along the spoke, then
-        // `0.35` of the font size down, so the digits centre on the spoke.
-        let drop = 0.35 * font * scale;
-        let baseline = vy - gap + drop;
-        assert!(
-            (top.3 as f32 + 1.0 - baseline).abs() <= slack,
-            "{scale}x top: {top:?} for a baseline at {baseline}"
-        );
-        let (vx, vy, right) = quarter(1);
-        let right = right.expect("a label right of the right vertex");
-        assert!(
-            (right.0 as f32 - (vx + gap)).abs() <= slack,
-            "{scale}x right: {right:?} at {vx}"
-        );
-        assert!(
-            (centre(right).1 - vy).abs() <= slack + scale,
-            "{scale}x right: {right:?} at {vy}"
-        );
-        let (vx, vy, bottom) = quarter(2);
-        let bottom = bottom.expect("a label below the bottom vertex");
-        assert!(
-            (centre(bottom).0 - vx).abs() <= slack,
-            "{scale}x bottom: {bottom:?} at {vx}"
-        );
-        let baseline = vy + gap + drop;
-        assert!(
-            (bottom.3 as f32 + 1.0 - baseline).abs() <= slack,
-            "{scale}x bottom: {bottom:?} for a baseline at {baseline}"
-        );
-        let (vx, _, left) = quarter(3);
-        let left = left.expect("a label left of the left vertex");
-        assert!(
-            (left.2 as f32 + 1.0 - (vx - gap)).abs() <= slack,
-            "{scale}x left: {left:?} at {vx}"
-        );
+            assert_next_to_vertex(&chart, b, (vx, vy), 2.0, scale, &case);
+        }
     }
     // `Emphasized`: nothing until the series has a selection.
     let mut emphasized = [radar(RadarLabels::Emphasized)];
@@ -983,6 +1016,235 @@ fn radar_labels_sit_outside_the_vertex_along_the_spoke() {
         .block_on()
         .unwrap();
     assert_eq!(bbox(&img, all, is_label), None);
+}
+
+/// The two radar series of `RADAR` and `RADAR_B`, labelled.
+fn two_radars() -> Vec<SeriesConfig> {
+    vec![
+        radar(RadarLabels::Values),
+        radar_series("radar.b", "radar.b", &RADAR_B, RadarLabels::Values),
+    ]
+}
+
+/// `series` with only the label of category `i` of series `k` on the
+/// chart: every other label is dragged far off it, which leaves each label
+/// where it is placed (the drag applies after the placement).
+fn only_label(series: &[SeriesConfig], k: usize, i: usize) -> Vec<SeriesConfig> {
+    let mut out = series.to_vec();
+    for (j, s) in out.iter_mut().enumerate() {
+        if let DataRenderType::Radar { labels, .. } = &mut s.render_type {
+            labels.offsets = (0..labels.text.len())
+                .map(|c| {
+                    if j == k && c == i {
+                        [0.0; 2]
+                    } else {
+                        [4000.0; 2]
+                    }
+                })
+                .collect();
+        }
+    }
+    out
+}
+
+/// Where a radar label sits against its vertex (#272).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Spot {
+    /// Outside the vertex along the spoke.
+    Outside,
+    /// Inside it, toward the centre.
+    Inside,
+    /// Beside it at its radius, counter-clockwise of the spoke on screen.
+    Ccw,
+    /// Beside it, clockwise of the spoke.
+    Cw,
+}
+
+/// The labels of two radar series move only where they would touch, and
+/// stay next to their own vertices (#272), at 1x and 2x: far-apart values
+/// at the top spoke keep both labels outside their vertices; close ones at
+/// the right spoke put the larger value's outside and the smaller value's
+/// inside its own vertex; equal values at the bottom spoke, and values
+/// within the visual gap of each other at the left one, split one to each
+/// side of the spoke at the vertices' radius, the earlier of the scan (the
+/// larger value, or the lower rank) counter-clockwise. Every label keeps
+/// its gap and lies within one em plus the mark of its vertex, no two
+/// labels touch, and each picks as its own series and category where it
+/// is drawn.
+#[test]
+fn radar_labels_of_two_series_move_only_where_they_touch() {
+    let mut r = renderer();
+    let chart = radar_chart();
+    let values = [RADAR, RADAR_B];
+    let ids = ["radar", "radar.b"];
+    // Per series and spoke: top, right, bottom, left.
+    let spots = [
+        [Spot::Outside, Spot::Inside, Spot::Ccw, Spot::Cw],
+        [Spot::Outside, Spot::Outside, Spot::Cw, Spot::Ccw],
+    ];
+    for scale in SCALES {
+        let slack = 2.0 * scale + 1.0;
+        let clear = radar_clear(&chart, scale);
+        let mut placed = Vec::new();
+        for k in 0..2 {
+            for i in 0..4 {
+                let series = only_label(&two_radars(), k, i);
+                let img = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &series),
+                        renderer::ExportOptions::panel(scale),
+                    )
+                    .block_on()
+                    .unwrap();
+                let case = format!("{scale}x {} vertex {i}", ids[k]);
+                let v = values[k][i];
+                let (vx, vy) = vertex(&chart, scale, i as f64, v);
+                let (ink, b) =
+                    radar_label_near(&chart, &img, (vx, vy), &format!("{v}"), scale, &case);
+                // The spoke's outward direction and its counter-clockwise
+                // side on screen (y down), as unit axes.
+                let (u, n) = match i {
+                    0 => ((0.0, -1.0), (-1.0, 0.0)),
+                    1 => ((1.0, 0.0), (0.0, -1.0)),
+                    2 => ((0.0, 1.0), (1.0, 0.0)),
+                    _ => ((-1.0, 0.0), (0.0, 1.0)),
+                };
+                let (d, c) = match spots[k][i] {
+                    Spot::Outside => (u, n),
+                    Spot::Inside => ((-u.0, -u.1), n),
+                    Spot::Ccw => (n, u),
+                    Spot::Cw => ((-n.0, -n.1), u),
+                };
+                // The near edge `clear` past the vertex along `d`, the box
+                // centred on the vertex along the other axis `c`.
+                let (cx, cy) = ((b.0 + b.2) * 0.5, (b.1 + b.3) * 0.5);
+                let near = if d.0 > 0.5 {
+                    b.0 - vx
+                } else if d.0 < -0.5 {
+                    vx - b.2
+                } else if d.1 > 0.5 {
+                    b.1 - vy
+                } else {
+                    vy - b.3
+                };
+                let across = (cx - vx) * c.0 + (cy - vy) * c.1;
+                assert!(
+                    (near - clear).abs() <= slack,
+                    "{case}: {:?} expected, {b:?} {near} px from {vx},{vy}",
+                    spots[k][i]
+                );
+                assert!(
+                    across.abs() <= slack,
+                    "{case}: {:?} expected, {b:?} {across} px off",
+                    spots[k][i]
+                );
+                assert_next_to_vertex(&chart, b, (vx, vy), 2.0, scale, &case);
+                assert_picks(
+                    pick_at(&mut r, &chart, &series, &img, scale, centre(ink)),
+                    ids[k],
+                    i,
+                    &case,
+                );
+                placed.push((case, ink));
+            }
+        }
+        // No two labels touch: their inks keep at least a pixel apart.
+        for (a, (case_a, ia)) in placed.iter().enumerate() {
+            for (case_b, ib) in placed.iter().skip(a + 1) {
+                let apart =
+                    ia.2 + 1 < ib.0 || ib.2 + 1 < ia.0 || ia.3 + 1 < ib.1 || ib.3 + 1 < ia.1;
+                assert!(apart, "{case_a} {ia:?} touches {case_b} {ib:?}");
+            }
+        }
+    }
+}
+
+/// The selection box of a moved radar label is its frame where it is drawn
+/// (#272): the inside label of the first series at the right spoke and the
+/// split one of the second at the left spoke, at 1x and 2x.
+#[test]
+fn a_moved_radar_label_is_outlined_where_it_is_drawn() {
+    let mut r = renderer();
+    let mut chart = radar_chart();
+    for (k, id, i, v) in [
+        (0usize, "radar", 1usize, RADAR[1]),
+        (1, "radar.b", 3, RADAR_B[3]),
+    ] {
+        let series = only_label(&two_radars(), k, i);
+        for scale in SCALES {
+            let case = format!("{scale}x {id} vertex {i}");
+            chart.config_mut().picked_data = None;
+            let plain = r
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            chart.config_mut().picked_data = Some(DataSelectionsConfig {
+                refs: vec![PickedDataRef::ValueLabel {
+                    source_id: None,
+                    series_id: id.into(),
+                    category_index: i,
+                    part: None,
+                }],
+                ..DataSelectionsConfig::default()
+            });
+            let selected = r
+                .export_rgba(
+                    renderer::ExportSource::chart(&chart, &series),
+                    renderer::ExportOptions::panel(scale),
+                )
+                .block_on()
+                .unwrap();
+            let at = vertex(&chart, scale, i as f64, v);
+            let (_, content) = radar_label_near(&chart, &plain, at, &format!("{v}"), scale, &case);
+            assert_selection_frame(&plain, &selected, content, scale, &case);
+        }
+    }
+}
+
+/// A radar label group has no member cap (rule 10): twenty labelled radar
+/// series, past the old 16, place their labels together at every spoke.
+/// Crowded as they are, the labels of the innermost, a middle and the
+/// outermost series each stay next to their own vertices at 1x and 2x.
+#[test]
+fn twenty_labelled_radar_series_keep_their_labels_next_to_their_vertices() {
+    const M: usize = 20;
+    let mut r = renderer();
+    let value = |k: usize| (8 + 4 * k) as f64 / 100.0;
+    let mut series = Vec::new();
+    for k in 0..M {
+        let id = format!("radar.{k}");
+        r.add_column(&id, &col(vec![value(k); 4])).unwrap();
+        series.push(radar_series(&id, &id, &[value(k); 4], RadarLabels::Values));
+    }
+    let chart = radar_chart();
+    for scale in SCALES {
+        for k in [0, 10, M - 1] {
+            for i in 0..4 {
+                let only = only_label(&series, k, i);
+                let img = r
+                    .export_rgba(
+                        renderer::ExportSource::chart(&chart, &only),
+                        renderer::ExportOptions::panel(scale),
+                    )
+                    .block_on()
+                    .unwrap();
+                let case = format!("{scale}x series {k} vertex {i}");
+                let at = vertex(&chart, scale, i as f64, value(k));
+                let (ink, content) =
+                    radar_label_near(&chart, &img, at, &format!("{}", value(k)), scale, &case);
+                assert_next_to_vertex(&chart, content, at, 2.0, scale, &case);
+                assert_picks(
+                    pick_at(&mut r, &chart, &only, &img, scale, centre(ink)),
+                    &format!("radar.{k}"),
+                    i,
+                    &case,
+                );
+            }
+        }
+    }
 }
 
 /// The selected label's box is its frame: the pixels the selection adds lie
@@ -1027,62 +1289,86 @@ fn the_selected_label_is_outlined_by_its_frame() {
             )
             .block_on()
             .unwrap();
-        // The content box: the string's measured size around its ink.
         let ink = bbox(&plain, slot(&chart, direction, 0, scale), is_label).unwrap();
-        let want = raster("20", &family, size * scale, MAGENTA);
-        let want_ink = bbox(&want, (0, 0, want.width, want.height), is_label).unwrap();
-        let content = (
-            ink.0 as f32 - want_ink.0 as f32,
-            ink.1 as f32 - want_ink.1 as f32,
-        );
-        let m = measure_plain_text(
-            "20",
-            &family,
-            size * scale,
-            false,
-            false,
-            FontPolicy::Standard,
-        );
-        let pad = SELECTION_PADDING * scale;
-        let frame = (
-            content.0 - pad,
-            content.1 - pad,
-            content.0 + m.width + pad,
-            content.1 + (m.ascent + m.descent).ceil() + pad,
-        );
-        let half = SELECTION_STROKE_WIDTH * scale * 0.5 + 1.0;
-        let mut changed = 0;
-        let mut edges = [false; 4];
-        for y in 0..plain.height {
-            for x in 0..plain.width {
-                let (a, b) = (pixel(&plain, x, y), pixel(&selected, x, y));
-                if a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 2) {
-                    continue;
-                }
-                changed += 1;
-                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                let on = [
-                    (px - frame.0).abs() <= half && py >= frame.1 - half && py <= frame.3 + half,
-                    (px - frame.2).abs() <= half && py >= frame.1 - half && py <= frame.3 + half,
-                    (py - frame.1).abs() <= half && px >= frame.0 - half && px <= frame.2 + half,
-                    (py - frame.3).abs() <= half && px >= frame.0 - half && px <= frame.2 + half,
-                ];
-                assert!(
-                    on.iter().any(|e| *e),
-                    "{scale}x: ({x}, {y}) changed off the frame {frame:?}"
-                );
-                for (edge, hit) in edges.iter_mut().zip(on) {
-                    *edge |= hit;
-                }
-                // The box is drawn in the selection colour.
-                assert!(b[2] > b[0] && b[2] > b[1], "{scale}x: ({x}, {y}) is {b:?}");
-            }
-        }
-        assert!(
-            changed > 0 && edges.iter().all(|e| *e),
-            "{scale}x: {changed} pixels, edges {edges:?}"
-        );
+        let content = content_box("20", &family, size * scale, ink);
+        assert_selection_frame(&plain, &selected, content, scale, &format!("{scale}x"));
     }
+}
+
+/// The content box `(x0, y0, x1, y1)` of the label `text` in the face
+/// `family` at `size` export pixels drawn as `ink`: the string's measured
+/// size around its ink, as the atlas bakes it.
+fn content_box(
+    text: &str,
+    family: &str,
+    size: f32,
+    ink: (u32, u32, u32, u32),
+) -> (f32, f32, f32, f32) {
+    let want = raster(text, family, size, MAGENTA);
+    let want_ink = bbox(&want, (0, 0, want.width, want.height), is_label).unwrap();
+    let m = measure_plain_text(text, family, size, false, false, FontPolicy::Standard);
+    let (x0, y0) = (
+        ink.0 as f32 - want_ink.0 as f32,
+        ink.1 as f32 - want_ink.1 as f32,
+    );
+    (x0, y0, x0 + m.width, y0 + (m.ascent + m.descent).ceil())
+}
+
+/// Every pixel `selected` changes over `plain` lies on the selection frame
+/// around `content` (a label's content box grown by `SELECTION_PADDING`,
+/// stroked `SELECTION_STROKE_WIDTH` wide, at `scale`) in the selection
+/// colour, and every edge of the frame is drawn.
+fn assert_selection_frame(
+    plain: &RasterImage,
+    selected: &RasterImage,
+    content: (f32, f32, f32, f32),
+    scale: f32,
+    case: &str,
+) {
+    let pad = SELECTION_PADDING * scale;
+    let frame = (
+        content.0 - pad,
+        content.1 - pad,
+        content.2 + pad,
+        content.3 + pad,
+    );
+    let half = SELECTION_STROKE_WIDTH * scale * 0.5 + 1.0;
+    let mut changed = 0;
+    let mut edges = [false; 4];
+    for y in 0..plain.height {
+        for x in 0..plain.width {
+            let (a, b) = (pixel(plain, x, y), pixel(selected, x, y));
+            if a.iter().zip(b).all(|(p, q)| p.abs_diff(q) <= 2) {
+                continue;
+            }
+            changed += 1;
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let on = [
+                (px - frame.0).abs() <= half && py >= frame.1 - half && py <= frame.3 + half,
+                (px - frame.2).abs() <= half && py >= frame.1 - half && py <= frame.3 + half,
+                (py - frame.1).abs() <= half && px >= frame.0 - half && px <= frame.2 + half,
+                (py - frame.3).abs() <= half && px >= frame.0 - half && px <= frame.2 + half,
+            ];
+            assert!(
+                on.iter().any(|e| *e),
+                "{case}: ({x}, {y}) changed off the frame {frame:?}"
+            );
+            for (edge, hit) in edges.iter_mut().zip(on) {
+                *edge |= hit;
+            }
+            // The box is drawn in the selection colour, a blue: over a
+            // transparent background it is that colour, over a drawn
+            // outline it turns the pixel toward it.
+            assert!(
+                (b[2] > b[0] && b[2] > b[1]) || b[2] > a[2],
+                "{case}: ({x}, {y}) is {b:?} over {a:?}"
+            );
+        }
+    }
+    assert!(
+        changed > 0 && edges.iter().all(|e| *e),
+        "{case}: {changed} pixels, edges {edges:?}"
+    );
 }
 
 /// A bar series on an overlay or a subplot carries its labels: they draw
@@ -1545,10 +1831,10 @@ fn an_edge_box_label_flips_to_the_other_side() {
 
 /// A radar label that would cross the data area's edge or the outer ring
 /// (where the category labels sit, #272) outward along its spoke goes
-/// inward along it instead: fully drawn, inside the data area, `9` px from
-/// the vertex with the former baseline drop, picked there, at 1x and 2x.
-/// The top and bottom vertices flip; the right one, with room inside the
-/// ring, does not.
+/// inward along it instead: fully drawn, inside the data area, its content
+/// box its gap past the vertex on the centre's side and next to it, picked
+/// there, at 1x and 2x. The top and bottom vertices flip; the right one,
+/// with room inside the ring, does not.
 #[test]
 fn an_edge_radar_label_flips_inward() {
     let mut r = renderer();
@@ -1562,7 +1848,6 @@ fn an_edge_radar_label_flips_inward() {
     let series = [radar(RadarLabels::Values)];
     let mut edge_series = series.clone();
     edge_series[0].y_column = "radar.edge".into();
-    let font = edge.config().left_y.label_style.font_size;
     for scale in SCALES {
         let roomy_img = r
             .export_rgba(
@@ -1580,9 +1865,8 @@ fn an_edge_radar_label_flips_inward() {
             .unwrap();
         let area = data_area_px(&edge, scale);
         let slack = 2.0 * scale + 1.0;
-        let gap = 9.0 * scale;
-        let drop = 0.35 * font * scale;
-        for (i, side) in [(0usize, 1.0f32), (2, -1.0)] {
+        let clear = radar_clear(&edge, scale);
+        for i in [0usize, 2] {
             let case = format!("{scale}x vertex {i}");
             let (_, ry) = vertex(&roomy, scale, i as f64, RADAR[i]);
             let (vx, vy) = vertex(&edge, scale, i as f64, EDGE[i]);
@@ -1614,11 +1898,19 @@ fn an_edge_radar_label_flips_inward() {
                 (centre(ink).0 - vx).abs() <= slack,
                 "{case}: {ink:?} at {vx}"
             );
-            let baseline = vy + side * gap + drop;
-            assert!(
-                (ink.3 as f32 + 1.0 - baseline).abs() <= slack,
-                "{case}: {ink:?} for a baseline at {baseline}"
+            let b = content_box(
+                &format!("{}", EDGE[i]),
+                &edge.config().left_y.label_style.label_font,
+                edge.config().left_y.label_style.font_size * scale,
+                ink,
             );
+            // Below the top vertex, above the bottom one.
+            let near = if i == 0 { b.1 - vy } else { vy - b.3 };
+            assert!(
+                (near - clear).abs() <= slack,
+                "{case}: {b:?} {near} px inward of {vy}"
+            );
+            assert_next_to_vertex(&edge, b, (vx, vy), 2.0, scale, &case);
             assert_picks(
                 pick_at(&mut r, &edge, &edge_series, &img, scale, centre(ink)),
                 "radar",
@@ -1640,7 +1932,7 @@ fn an_edge_radar_label_flips_inward() {
         )
         .expect("the right vertex's label outside");
         assert!(
-            right.0 as f32 >= vx + gap - slack,
+            right.0 as f32 >= vx + clear - slack,
             "{scale}x: {right:?} at {vx}"
         );
     }

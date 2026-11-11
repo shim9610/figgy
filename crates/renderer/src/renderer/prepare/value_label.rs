@@ -122,47 +122,59 @@ pub(in crate::renderer) fn selected_value_label(
     })
 }
 
-/// Where series `cfg`'s value labels go among those of the panel `config`
-/// (#272): for a radar series, its rank among the panel's radar series in
-/// `series` that draw value labels and their count, the widest label of
-/// any of them (`widest`, given each one's index in `series`: its atlas'
-/// widest string), the radius axis' ray and the box of the drawn ring
-/// labels ([`ring_label_band`]); [`data_render::RadarLabelLanes::NONE`]
-/// for any other series. Each radar series takes its own lane beside its
-/// spoke, so labels of two series never meet whatever their values.
-pub(in crate::renderer) fn radar_label_lanes<'s>(
+/// The members of a radar label group in the panel `config` (#272): the
+/// radar series of `series` that draw value labels, in series order, each
+/// with its index in `series`. Their labels at one spoke are placed
+/// together; the group's rank, lane table and label cells all follow this
+/// one order.
+pub(in crate::renderer) fn radar_label_members<'s>(
+    config: &Config,
+    series: impl IntoIterator<Item = &'s SeriesConfig>,
+) -> impl Iterator<Item = (usize, &'s SeriesConfig)> {
+    series
+        .into_iter()
+        .enumerate()
+        .filter(move |(_, s)| s.render_type.radar().is_some() && draws_value_labels(config, s))
+}
+
+/// Series `cfg`'s label group among `series` in the panel `config`: for a
+/// radar series that draws value labels, its rank among the group's
+/// members ([`radar_label_members`]) and their count, the visual gap two
+/// labels keep (#272, the label font's `visual_gap_for`), the radius
+/// axis' ray and the box of the drawn ring labels ([`ring_label_band`]);
+/// [`data_render::RadarLabelGroup::NONE`] for any other series.
+pub(in crate::renderer) fn radar_label_group<'s>(
     config: &Config,
     series: impl IntoIterator<Item = &'s SeriesConfig>,
     cfg: &SeriesConfig,
-    mut widest: impl FnMut(usize, &SeriesConfig) -> Result<f32>,
-) -> Result<data_render::RadarLabelLanes> {
-    let mut lanes = data_render::RadarLabelLanes::NONE;
+) -> data_render::RadarLabelGroup {
+    let mut group = data_render::RadarLabelGroup::NONE;
     let Some(polar) = config.polar().filter(|_| cfg.render_type.radar().is_some()) else {
-        return Ok(lanes);
+        return group;
     };
-    lanes.count = 0;
-    for (index, s) in series.into_iter().enumerate() {
-        if s.render_type.radar().is_none() || !draws_value_labels(config, s) {
-            continue;
-        }
+    group.count = 0;
+    for (_, s) in radar_label_members(config, series) {
         if s.series_id == cfg.series_id {
-            lanes.rank = lanes.count;
+            group.rank = group.count;
         }
-        lanes.count += 1;
-        lanes.widest = lanes.widest.max(widest(index, s)?);
+        group.count += 1;
     }
-    lanes.count = lanes.count.max(1);
-    lanes.ray = polar.ray_direction();
-    lanes.ring = ring_label_band(config);
-    Ok(lanes)
+    group.count = group.count.max(1);
+    let font = value_label_axis(config, &cfg.render_type)
+        .label_style
+        .font_size;
+    group.visual_gap = crate::chrome::visual_gap_for(font, font);
+    group.ray = polar.ray_direction();
+    group.ring = ring_label_band(config);
+    group
 }
 
 /// The box of the ring (radius) labels the polar panel `config` draws, in
 /// the frame of its ray from the centre as fractions of the outer radius
-/// (`RadarLabelLanes::ring`): the drawn boxes the chrome emits, so a moved,
+/// (`RadarLabelGroup::ring`): the drawn boxes the chrome emits, so a moved,
 /// hidden or thinned label counts as drawn. Empty without ring labels.
 fn ring_label_band(config: &Config) -> [f32; 4] {
-    let empty = data_render::RadarLabelLanes::NONE.ring;
+    let empty = data_render::RadarLabelGroup::NONE.ring;
     let (Some(polar), Some(geometry)) = (config.polar(), config.polar_geometry()) else {
         return empty;
     };
@@ -294,18 +306,45 @@ impl PrepareContext<'_> {
         Ok(atlas)
     }
 
-    /// Series `cfg`'s value label layer data in the panel `config` at
-    /// `scale` render pixels per logical pixel: its label uniform, its
-    /// label cells (one per label, any number) and group 1 over `atlas`;
-    /// `lanes` places a radar series' labels among the panel's
-    /// ([`radar_label_lanes`]).
-    pub(in crate::renderer) fn value_label_data(
+    /// The atlas series `cfg`'s value labels draw from under `config` when
+    /// the scratch cache holds it as baked for them now (what
+    /// [`Self::ensure_value_label_scratch`] resolved), else `None`.
+    pub(in crate::renderer) fn resident_value_label_atlas(
         &self,
         config: &Config,
         cfg: &SeriesConfig,
+    ) -> Option<Arc<data_render::ValueLabelAtlas>> {
+        let atlas_input = value_label_atlas_input(config, cfg)?;
+        match self.contour_cache.get(cfg.series_id.as_str()) {
+            Some(ScratchEntry::ValueLabels(scratch))
+                if scratch.atlas_input == atlas_input
+                    && scratch.font_generation == crate::text_render::font_generation() =>
+            {
+                scratch.atlas.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// Series `cfg`'s value label layer data in the panel `config` at
+    /// `scale` render pixels per logical pixel: its label uniform, its
+    /// label cells (one per label, any number) and group 1 over `atlas`.
+    /// A radar series' cells hold a block per member of its label group
+    /// among `series` ([`radar_label_group`]), in member order, each
+    /// written from that member's atlas (`member_atlas`, given the member's
+    /// index in `series`), so its labels are placed with the others at
+    /// their spokes.
+    pub(in crate::renderer) fn value_label_data<'s>(
+        &self,
+        config: &Config,
+        series: impl IntoIterator<Item = &'s SeriesConfig> + Clone,
+        cfg: &SeriesConfig,
         atlas: &data_render::ValueLabelAtlas,
         scale: f32,
-        lanes: &data_render::RadarLabelLanes,
+        mut member_atlas: impl FnMut(
+            usize,
+            &SeriesConfig,
+        ) -> Result<Option<Arc<data_render::ValueLabelAtlas>>>,
     ) -> Result<Option<data_render::ValueLabelData>> {
         let selected = series_selected(config, cfg);
         let Some((kind, text)) = data_render::value_label_kind(&cfg.render_type, selected) else {
@@ -314,13 +353,14 @@ impl PrepareContext<'_> {
         let axis = value_label_axis(config, &cfg.render_type);
         let categories = value_label_categories(config, &cfg.render_type);
         let count = data_render::value_label_count(kind, text, categories);
+        let group = radar_label_group(config, series.clone(), cfg);
         let params = data_render::value_label_params(
             kind,
             count,
             atlas,
             axis.label_style.font_size,
             scale,
-            lanes,
+            &group,
         );
         data_render::create_value_label_data(
             self.device,
@@ -330,25 +370,72 @@ impl PrepareContext<'_> {
             self.sampler,
             &params,
             |push| {
-                data_render::value_label_cells(
-                    &cfg.render_type,
-                    text,
-                    cfg.value_label_offsets().unwrap_or(&[]),
-                    categories,
-                    count,
-                    atlas,
-                    scale,
-                    push,
-                )
+                if kind != data_render::VALUE_LABEL_KIND_RADAR || group.count <= 1 {
+                    data_render::value_label_cells(
+                        &cfg.render_type,
+                        text,
+                        cfg.value_label_offsets().unwrap_or(&[]),
+                        categories,
+                        count,
+                        atlas,
+                        scale,
+                        push,
+                    );
+                    return Ok(());
+                }
+                // One block of `count` cells per member, in member order:
+                // a member's own cells, padded with empty ones (no label).
+                for (index, member) in radar_label_members(config, series) {
+                    let own = member.series_id == cfg.series_id;
+                    let resolved = if own {
+                        None
+                    } else {
+                        member_atlas(index, member)?
+                    };
+                    let member_text = data_render::value_label_kind(
+                        &member.render_type,
+                        series_selected(config, member),
+                    )
+                    .map_or(&[][..], |(_, text)| text);
+                    let mut written = 0usize;
+                    let mut pad = |cell: [f32; 4]| {
+                        if written < count {
+                            push(cell);
+                            written += 1;
+                        }
+                    };
+                    if let Some(member_atlas) = resolved.as_deref().or(own.then_some(atlas)) {
+                        data_render::value_label_cells(
+                            &member.render_type,
+                            member_text,
+                            member.value_label_offsets().unwrap_or(&[]),
+                            categories,
+                            count,
+                            member_atlas,
+                            scale,
+                            &mut pad,
+                        );
+                    }
+                    while written < count {
+                        push([0.0; 4]);
+                        written += 1;
+                    }
+                }
+                Ok(())
             },
         )
         .map(Some)
     }
 
     /// The category bar group 3 a radar series' value labels read: its
-    /// category and value columns, one label per row.
-    pub(in crate::renderer) fn radar_label_group(
+    /// category column, one label per row, and the value columns of its
+    /// label group's members among `series` in the panel `config`
+    /// ([`radar_label_group`]), its own at its rank. Each member holds one
+    /// value per category, as its polygon does.
+    pub(in crate::renderer) fn radar_label_columns<'s>(
         &self,
+        config: &Config,
+        series: impl IntoIterator<Item = &'s SeriesConfig> + Clone,
         cfg: &SeriesConfig,
         column_buffer: &wgpu::Buffer,
         scale: f32,
@@ -364,19 +451,29 @@ impl PrepareContext<'_> {
             })
         };
         let count = u32::try_from(x.len_values.min(y.len_values)).unwrap_or(u32::MAX);
-        let params = data_render::radar_label_params(lane(&x)?, count, scale);
-        let values = lane(&y)?;
+        let group = radar_label_group(config, series.clone(), cfg);
+        let params = data_render::radar_label_params(lane(&x)?, count, &group, scale);
         let style_map =
             data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[])?;
+        let own = lane(&y)?;
         data_render::create_category_bar_data_bind_group(
             self.device,
             self.gpu_ledger,
             self.category_bar_data_bgl,
             column_buffer,
             &params,
-            1,
+            group.count.max(1) as usize,
             |push| {
-                push(values);
+                if group.count <= 1 {
+                    push(own);
+                    return Ok(());
+                }
+                for (_, member) in radar_label_members(config, series) {
+                    let mx = lookup(&member.x_column)?;
+                    let my = lookup(&member.y_column)?;
+                    radar_columns_fit(config, member, mx.len_values, my.len_values)?;
+                    push(lane(&my)?);
+                }
                 Ok(())
             },
             style_map,

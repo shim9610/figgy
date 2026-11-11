@@ -250,8 +250,10 @@ series' `labels.text[i]` (SSOT configuration, written by `format_labels`,
 `format_box_plot_labels` or `format_radar_labels`; the renderer never formats
 a value), drawn at the bar end, past the top of the box or outside the
 vertex along its spoke, from the pool on every draw, and moved by its drag
-offset `labels.offsets[i]` (logical pixels, x right, y down). Labels never
-displace each other, and nothing is thinned: a crowded categorical axis
+offset `labels.offsets[i]` (logical pixels, x right, y down). Only the
+labels of radar series that would touch at one spoke make room for each
+other, each staying next to its own vertex (inside it or beside it,
+[#272](https://github.com/shim9610/figgy/issues/272)); nothing is thinned: a crowded categorical axis
 staggers its labels over rows ([#205](https://github.com/shim9610/figgy/issues/205)) instead.
 
 - **Hover and click.** A label is a typed pick target: `pick_chart_data`
