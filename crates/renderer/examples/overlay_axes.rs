@@ -19,10 +19,10 @@ mod gallery;
 mod styled;
 use gallery::Result;
 use renderer::{
-    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Chart, Color, HitMap,
-    LayerRef, OverlayLayer, Renderer, SeriesConfig, ShapeStyle,
+    Anchor, Annotation, AnnotationKind, AnnotationLineStyle, BoxStyle, Color, HitMap, LayerRef,
+    Renderer, SeriesConfig, ShapeStyle,
     config::{LegendCorner, TickVisibility},
-    data_config::{DataRenderType, ScatterShape, XySeries},
+    data_config::ScatterShape,
     line::LineStylePreset,
     text::RichText,
 };
@@ -75,23 +75,17 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
     r.add_column("minutes", &minutes)?;
     r.add_column("voltage", &voltage)?;
     r.add_column("current", &current)?;
-    let mut overlay = OverlayLayer::default();
-    overlay.series = vec!["current".into()];
-    overlay.y_axis.out_margin = 110.;
-    overlay.y_axis.line_visible = false;
-    overlay.y_axis.tick = TickVisibility::None;
-    overlay.y_axis.min = 0.;
-    overlay.y_axis.max = 3.5;
-    overlay.y_axis.major_spacing = 0.5;
-    overlay.y_axis.label_style.color = lavender;
-    overlay.y_axis.label_style.font_size = 21.;
-    overlay.y_axis.title_option.visible = true;
-    overlay.y_axis.title_option.text = RichText::plain("Current (A)", lavender, 23., "");
-    // Layers are expanded when the chart is built, so the overlay joins the
-    // config before the chart that draws it exists.
-    let mut config = chart.config().clone();
-    config.overlays.push(overlay);
-    let mut chart = Chart::new(config);
+    let mut current_axis = renderer::default::default_axis_options_y();
+    current_axis.line_visible = false;
+    current_axis.tick = TickVisibility::None;
+    current_axis.min = 0.;
+    current_axis.max = 3.5;
+    current_axis.major_spacing = 0.5;
+    current_axis.label_style.color = lavender;
+    current_axis.label_style.font_size = 21.;
+    current_axis.title_option.visible = true;
+    current_axis.title_option.text = RichText::plain("Current (A)", lavender, 23., "");
+    chart = chart.with_overlay(current_axis, &["current"]);
     chart.set_x_range(0., 90.);
     chart.set_y_range(3.0, 4.3);
     // Fixed ranges keep round ticks; `auto_fit_y` and
@@ -102,20 +96,13 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
         config.left_y.major_spacing = 0.25;
         config.overlays[0].y_axis.major_spacing = 0.5;
     });
-    let mut voltage = SeriesConfig::line("voltage", "minutes", "voltage")
-        .label("Voltage")
-        .color(mint)
-        .width(3.5)
-        .fill_to(3.0);
-    // `fill_to` fills in the line's colour at a quarter of its opacity.
-    if let DataRenderType::Xy(XySeries {
-        line: Some(line), ..
-    }) = &mut voltage.render_type
-    {
-        line.fill_color = Some(Color::from_rgba(mint.r, mint.g, mint.b, 0.12));
-    }
     let specs = [
-        voltage,
+        SeriesConfig::line("voltage", "minutes", "voltage")
+            .label("Voltage")
+            .color(mint)
+            .width(3.5)
+            .fill_to(3.0)
+            .fill_color(Color::from_rgba(mint.r, mint.g, mint.b, 0.12)),
         SeriesConfig::line("current", "minutes", "current")
             .label("Current")
             .color(lavender)
@@ -145,6 +132,7 @@ fn twin_axes(r: &mut Renderer, out: &Path) -> Result {
             .is_some()
     );
     // Overlay layers are part of the document, not the base panel.
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),
@@ -338,7 +326,7 @@ fn shapes(r: &mut Renderer, out: &Path) -> Result {
     chart.set_y_range(0., 250.);
     chart.config_mut().bottom_x.major_spacing = 50.;
     chart.config_mut().left_y.major_spacing = 50.;
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-shapes.png"))
 }
 

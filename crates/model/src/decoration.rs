@@ -207,6 +207,13 @@ impl Selectable<DecorationLayout> for DecorationElement {
     fn as_resizable(&self) -> Option<&dyn crate::resize::Resizable<DecorationLayout>> {
         (self.id == DecorationId::DataArea).then_some(self)
     }
+    /// The plot region and its edges sit behind the labels and axes.
+    fn is_background(&self) -> bool {
+        matches!(
+            self.id,
+            DecorationId::DataArea | DecorationId::DataAreaEdge(_)
+        )
+    }
     fn element_id(&self) -> String {
         self.id.element_id()
     }

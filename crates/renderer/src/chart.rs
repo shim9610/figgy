@@ -19,12 +19,13 @@ use crate::data_config::{BarOrientation, DataRenderType, SeriesConfig};
 use crate::data_render::ColumnPool;
 use crate::error::{FiggyError, Result};
 use crate::format::LabelFormat;
-use crate::text::{RichText, rich_segments_from_text};
+use crate::text::{RichText, rich_segments_from_label};
 use crate::text_render::CpuTextMeasure;
 
 /// Apply min/max and scale-appropriate tick settings to one axis, for the
 /// tick plan of `scale` (the axis' own scale or, for a mirrored axis, its
-/// partner's).
+/// partner's). The spacing is chosen for the range the axis prints: its
+/// shown range with a unit (#273), where `major_spacing` is read.
 pub(crate) fn apply_axis_range(
     axis: &mut crate::config::AxisOptions,
     min: f64,
@@ -38,7 +39,6 @@ pub(crate) fn apply_axis_range(
     }
     axis.min = min;
     axis.max = max;
-    axis.major_spacing = crate::tick::axis_major_spacing(scale, min, max);
     match scale {
         AxisScale::Logarithmic => {
             axis.minor_count = 8;
@@ -60,6 +60,9 @@ pub(crate) fn apply_axis_range(
             axis.label_style.significant_digits = 3;
         }
     }
+    // After the label format, which decides whether the unit applies.
+    let (shown_min, shown_max) = axis.shown_range();
+    axis.major_spacing = crate::tick::axis_major_spacing(scale, shown_min, shown_max);
 }
 
 /// How a range reaches one axis: [`apply_view_range`] or
@@ -78,9 +81,10 @@ pub(crate) fn apply_view_range(axis: &mut AxisOptions, min: f64, max: f64, scale
     apply_axis_range(axis, min, max, scale);
 }
 
-/// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
-fn fill_plain_segments(rt: &mut RichText, s: &str) {
-    rt.segments = rich_segments_from_text(s);
+/// Fill `rt.segments` with the label `s`: plain text with its `$…$` spans
+/// as TeX ([`rich_segments_from_label`]).
+fn fill_label_segments(rt: &mut RichText, s: &str) {
+    rt.segments = rich_segments_from_label(s);
 }
 
 pub(crate) use crate::layout::guarded_log_range;
@@ -721,9 +725,13 @@ impl Chart {
         self.data_dirty = true;
     }
 
-    // Text builders (raster only).
+    // Text builders (raster only). Each takes its text as a label, the way
+    // matplotlib does: `$…$`, `\(…\)` and `$$…$$` spans are TeX, `\$` is a
+    // dollar sign, and text whose TeX does not parse is shown as written
+    // ([`crate::text::rich_segments_from_label`]).
 
-    /// Set the chart title text as plain segments. For styled segments
+    /// Set the chart title text as a label (plain text with `$…$` spans as
+    /// TeX). For styled segments
     /// (bold, italic, …) edit `config_mut().chart_title.text` directly; a host
     /// that wants the same band fit then calls
     /// [`crate::layout::fit_chart_title_margin`] with
@@ -734,7 +742,7 @@ impl Chart {
     /// grows so the first line is not clipped at the top of the chart. A
     /// title that fits leaves the band unchanged.
     pub fn with_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.chart_title.text, text);
+        fill_label_segments(&mut self.config.chart_title.text, text);
         self.fit_chart_title_margin();
         self.mark_raster();
         self
@@ -753,16 +761,16 @@ impl Chart {
         changed
     }
 
-    /// Set the bottom X axis title text.
+    /// Set the bottom X axis title text, a label with `$…$` spans as TeX.
     pub fn with_x_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.bottom_x.title_option.text, text);
+        fill_label_segments(&mut self.config.bottom_x.title_option.text, text);
         self.mark_raster();
         self
     }
 
-    /// Set the left Y axis title text.
+    /// Set the left Y axis title text, a label with `$…$` spans as TeX.
     pub fn with_y_title(mut self, text: &str) -> Self {
-        fill_plain_segments(&mut self.config.left_y.title_option.text, text);
+        fill_label_segments(&mut self.config.left_y.title_option.text, text);
         self.mark_raster();
         self
     }
@@ -773,7 +781,8 @@ impl Chart {
     /// override (`line_width` biases nothing today — the symbol glyph
     /// carries the look); entries are separated by explicit `'\n'` segments.
     /// For custom layouts (one-line legends, mid-text symbols) edit
-    /// `config_mut().legend.content.segments` directly.
+    /// `config_mut().legend.content.segments` directly. `label` is a label
+    /// with `$…$` spans as TeX.
     pub fn with_legend_entry(
         mut self,
         label: &str,
@@ -783,7 +792,11 @@ impl Chart {
     ) -> Self {
         let _ = line_width;
         let symbol = crate::config::symbol_segments(&kind, color);
-        crate::config::append_legend_entry(&mut self.config.legend.content, symbol, label);
+        crate::config::append_legend_entry_rich(
+            &mut self.config.legend.content,
+            symbol,
+            rich_segments_from_label(label),
+        );
         self.config.legend.visible = true;
         self.mark_raster();
         self
@@ -808,6 +821,9 @@ impl Chart {
     ///   (1 up to 6 decades, 2 up to 12, then `ceil(decades / 6)`),
     ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
     ///   superscript), `sig_digits = 1`.
+    ///
+    /// An axis with a [`crate::config::AxisOptions::unit`] (#273) gets the
+    /// spacing of its shown range, the units `major_spacing` is read in.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         self.x_range(min, max, apply_view_range);
     }
@@ -1675,7 +1691,7 @@ mod tests {
     fn fit_chart_title_margin_marks_the_raster_dirty_only_when_it_grows() {
         let mut c = Chart::new(dummy_config());
         c.with_decoration_change(|cfg| {
-            cfg.chart_title.text.segments = rich_segments_from_text("one\ntwo\nthree");
+            cfg.chart_title.text.segments = crate::text::rich_segments_from_text("one\ntwo\nthree");
         });
         c.consume_data_dirty();
         c.consume_raster_dirty();

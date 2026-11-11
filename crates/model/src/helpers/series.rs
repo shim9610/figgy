@@ -153,7 +153,9 @@ impl SeriesConfig {
     }
 
     /// Vertical bars from pre-binned data: `edges` holds the bin edges and
-    /// `counts` one value per bin. Binning is the host's job.
+    /// `counts` one value per bin. Binning is the host's job. For
+    /// horizontal bars, pass the counts first and the edges second and
+    /// chain [`Self::horizontal`].
     pub fn histogram(
         id: impl Into<String>,
         edges: impl Into<ColumnId>,
@@ -352,7 +354,8 @@ impl SeriesConfig {
 
     /// Range bars (a Gantt or floating-bar chart): one bar per row at
     /// `positions`, from `start` to `end`, on a category axis. On a numeric
-    /// axis the series also needs its `slot_width`.
+    /// axis the series also needs its `slot_width`, set through
+    /// [`Self::style_range_bars`].
     pub fn range_bars(
         id: impl Into<String>,
         positions: impl Into<ColumnId>,
@@ -480,10 +483,17 @@ impl SeriesConfig {
 
     // Modifiers.
 
-    /// The legend text, in the legend's own text look.
+    /// The legend text, in the legend's own text look. `$…$`, `\(…\)` and
+    /// `$$…$$` spans are TeX and `\$` is a dollar sign
+    /// ([`crate::text::rich_segments_from_label`]).
     pub fn label(mut self, text: &str) -> Self {
         let look = crate::defaults::legend().content;
-        self.label = Some(RichText::plain(text, look.color, look.font_size, look.font));
+        self.label = Some(RichText::from_label(
+            text,
+            look.color,
+            look.font_size,
+            look.font,
+        ));
         self
     }
 
@@ -650,12 +660,14 @@ impl SeriesConfig {
     }
 
     /// Horizontal histogram bars: `x_column` and `y_column` swap roles, as
-    /// [`DataRenderType::Histogram`] documents. (Category bars take their
-    /// direction from the chart's `bar_groups`.)
+    /// [`DataRenderType::Histogram`] documents. An x-y series' stems run
+    /// sideways to a vertical baseline. (Category bars take their direction
+    /// from the chart's `bar_groups`.)
     pub fn horizontal(mut self) -> Self {
         if let DataRenderType::Histogram { bar } = &mut self.render_type {
             bar.orientation = crate::data_config::BarOrientation::Horizontal;
         }
+        self.horizontal_stem();
         self
     }
 

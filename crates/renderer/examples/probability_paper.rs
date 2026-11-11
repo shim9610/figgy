@@ -84,13 +84,10 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     }
 
     let cell = |x: u32, title: &str, x_title: &str, y_title: &str| -> Config {
-        let mut chart = Chart::sized(600, 800);
+        let mut chart = Chart::placed(x, 0, 600, 800);
         let config = chart.config_mut();
-        config.chart_area.0.x = x;
         chrome(config, bg, ink, grid);
         config.chart_title.text.font_size = 28.;
-        config.left_y.out_margin = 120.;
-        config.right_y.out_margin = 30.;
         config.grid.show_major_x = true;
         config.legend.visible = false;
         for axis in [&mut config.left_y, &mut config.right_y] {
@@ -149,6 +146,7 @@ fn probability_paper(r: &mut Renderer, out: &Path) -> Result {
     chart.with_axis_range_change(|c| {
         c.subplots[0].config.bottom_x.label_style.format = LabelFormat::Decimal;
     });
+    chart.fit_layout();
     let image = r.export_rgba_blocking(
         renderer::ExportSource::chart(&chart, &specs),
         renderer::ExportOptions::document(1.).with_clear(bg),

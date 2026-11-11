@@ -7,10 +7,7 @@
 #[path = "support/gallery.rs"]
 mod gallery;
 use gallery::{Result, chart, output_directory, save, with_renderer};
-use renderer::{
-    Color, Renderer, SeriesConfig,
-    data_config::{DataBarStyleConfig, DataRenderType},
-};
+use renderer::{Color, Renderer, SeriesConfig};
 use std::path::Path;
 
 pub fn render(r: &mut Renderer, out: &Path) -> Result {
@@ -26,25 +23,16 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
         .collect();
     r.add_column("bin-edges", &edges)?;
     r.add_column("bin-counts", &counts)?;
-    let bar = DataBarStyleConfig {
-        fill_color: Color::from_rgb8(19, 154, 139),
-        border_color: Color::from_rgb8(10, 102, 95),
-        border_width: 0.8,
-        gap_px: 2.0,
-        ..Default::default()
-    };
-    let vertical = SeriesConfig::of_kind(
-        "distribution",
-        "bin-edges",
-        "bin-counts",
-        DataRenderType::Histogram { bar },
-    );
+    let vertical = SeriesConfig::histogram("distribution", "bin-edges", "bin-counts")
+        .color(Color::from_rgb8(19, 154, 139))
+        .bar_border(Color::from_rgb8(10, 102, 95), 0.8)
+        .bar_gap(2.0);
     let title = "A two-population distribution";
     let mut c = chart(title, "Measured value", "Count", (960, 600));
     c.set_x_range(-4.2, 4.2);
     c.set_y_range(0.0, 120.0);
     let specs = std::slice::from_ref(&vertical);
-    save(r, &c, specs, &out.join("gallery-histogram.png"))?;
+    save(r, &mut c, specs, &out.join("gallery-histogram.png"))?;
 
     // Orientation defines the column roles; reuse the uploaded columns and
     // exchange their bindings together with the axis ranges and titles.
@@ -54,7 +42,12 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     c.set_x_range(0.0, 120.0);
     c.set_y_range(-4.2, 4.2);
     let specs = [horizontal];
-    save(r, &c, &specs, &out.join("gallery-histogram-horizontal.png"))
+    save(
+        r,
+        &mut c,
+        &specs,
+        &out.join("gallery-histogram-horizontal.png"),
+    )
 }
 
 fn main() -> Result {

@@ -69,7 +69,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
         let wave_b: Vec<f64> = x.iter().map(|x| 0.55 * (2.0 * x + phase).sin()).collect();
         r.upsert_column("wave-a", &wave_a)?;
         r.upsert_column("wave-b", &wave_b)?;
-        save(r, &wave, &specs, &out.join(format!("wave/{i:03}.png")))?;
+        save(r, &mut wave, &specs, &out.join(format!("wave/{i:03}.png")))?;
         let trail: Vec<f64> = (0..101).map(|j| phase - 0.8 + j as f64 * 0.008).collect();
         let trail_x: Vec<f64> = trail.iter().map(|t| (2.0 * t).sin()).collect();
         let trail_y: Vec<f64> = trail.iter().map(|t| (3.0 * t + 0.4).sin()).collect();
@@ -79,7 +79,7 @@ pub fn render(r: &mut Renderer, out: &Path, frames: usize) -> Result {
         r.upsert_column("head-y", &vec![(3.0 * phase + 0.4).sin()])?;
         save(
             r,
-            &orbit,
+            &mut orbit,
             &orbit_specs,
             &out.join(format!("orbit/{i:03}.png")),
         )?;

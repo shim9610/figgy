@@ -5,7 +5,8 @@
 //! its box, the selection box is the bounds padded, and a drag moves the
 //! pixels and the bounds together. The legend keeps its labels' node runs
 //! whole through its update and remove helpers, and a tall formula grows
-//! the title band.
+//! the title band. The text wrappers (`with_x_title`, `SeriesConfig::label`,
+//! …) read `$…$` spans as TeX into the same segments (#272).
 //!
 //! The decoration rasters are the CPU placement pass the renderer uploads;
 //! the catalogue scenes (`support/playground_scenes.rs`) carry math titles,
@@ -408,4 +409,176 @@ fn any_math_segment_list_measures_and_draws() {
             renderer::text_render::draw_rich_text(&mut canvas, &rt, (4.0, 40.0), policy).unwrap();
         }
     }
+}
+
+/// The drawn rects of `element` in `cfg`.
+fn element_rects(cfg: &Config, element: renderer::layout::Element) -> Vec<RectF> {
+    let mut out = Vec::new();
+    renderer::select::on_drawn_panel(cfg, |panel| {
+        renderer::select::emit_element(
+            panel,
+            &element,
+            &CpuTextMeasure::for_style(&panel.draw_style),
+            &mut renderer::sink::Parts(&mut |part| out.push(part.extent())),
+        );
+    });
+    out
+}
+
+// The text wrappers read their text as matplotlib reads a label (#272):
+// `with_x_title`, `with_y_title`, `with_title` and `with_colorbar_title`
+// give the segments `RichText::from_tex` gives for a `$…$` span, the math
+// y title measures taller than the same words in plain text, and
+// `auto_layout` gives it room: a wider left band than the plain title's,
+// and every title inside the chart, clear of its tick labels.
+#[test]
+fn the_title_wrappers_read_dollar_spans_as_tex_and_auto_layout_gives_them_room() {
+    use renderer::layout::Element;
+    use renderer::text_render::{FontPolicy, measure_rich_text};
+
+    let x_title = r"$\sin(2\pi f t)$";
+    let y_title = r"$\dfrac{\partial u}{\partial t}$ (K/s)";
+    let mut chart = renderer::Chart::sized(WIDTH, HEIGHT)
+        .with_title(r"Spectrum $\hat S(f)$")
+        .with_x_title(x_title)
+        .with_y_title(y_title);
+    chart.config_mut().colorbar = Some(renderer::default::default_colorbar_options());
+    let chart = chart.with_colorbar_title(r"$|E|^2$ (V²/m²)");
+    let cfg = chart.config();
+    let segments = |src: &str| tex(src, 12.0).segments;
+    assert_eq!(cfg.bottom_x.title_option.text.segments, segments(x_title));
+    assert_eq!(cfg.left_y.title_option.text.segments, segments(y_title));
+    assert_eq!(
+        cfg.chart_title.text.segments,
+        segments(r"Spectrum $\hat S(f)$")
+    );
+    let bar = cfg.colorbar.as_ref().unwrap();
+    assert_eq!(
+        bar.axis.title_option.text.segments,
+        segments(r"$|E|^2$ (V²/m²)")
+    );
+    assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+
+    let plain = renderer::Chart::sized(WIDTH, HEIGHT).with_y_title("du/dt (K/s)");
+    let height = |text: &RichText| measure_rich_text(text, FontPolicy::Standard).height();
+    let (math_height, plain_height) = (
+        height(&cfg.left_y.title_option.text),
+        height(&plain.config().left_y.title_option.text),
+    );
+    assert!(
+        math_height > plain_height + 4.0,
+        "{math_height} vs {plain_height}"
+    );
+
+    let layout = |cfg: &Config| {
+        renderer::layout::auto_layout(cfg, &CpuTextMeasure::for_style(&cfg.draw_style))
+    };
+    let out = layout(cfg);
+    let plain_out = layout(plain.config());
+    let left_edge = |cfg: &Config| cfg.data_area().unwrap().x;
+    assert!(
+        left_edge(&out) > left_edge(&plain_out),
+        "{} vs {}",
+        left_edge(&out),
+        left_edge(&plain_out)
+    );
+    let chart_rect = RectF {
+        x: 0.0,
+        y: 0.0,
+        width: WIDTH as f32,
+        height: HEIGHT as f32,
+    };
+    for side in [Side::Bottom, Side::Left] {
+        let titles = element_rects(&out, Element::AxisTitle(side.clone()));
+        let labels = element_rects(&out, Element::AxisLabel(side.clone()));
+        assert_eq!(titles.len(), 1, "{side:?}");
+        let title = titles[0];
+        assert!(inside(title, chart_rect, 0.0), "{side:?}: {title:?}");
+        assert!(!labels.is_empty(), "{side:?}");
+        for label in labels {
+            let w = (title.x + title.width).min(label.x + label.width) - title.x.max(label.x);
+            let h = (title.y + title.height).min(label.y + label.height) - title.y.max(label.y);
+            assert!(w <= 0.0 || h <= 0.0, "{side:?}: {title:?} over {label:?}");
+        }
+    }
+}
+
+// A series label given with TeX reaches the legend through
+// `with_legend_from` as the series holds it, next to a `with_legend_swatch`
+// and a `with_legend_entry` label read the same way; the legend validates
+// and its box holds the formulas' ink, hits, selects and drags.
+#[test]
+fn tex_series_labels_reach_the_legend_through_the_helpers() {
+    let series = [
+        renderer::SeriesConfig::line("fit", "x", "y").label(r"$\hat y \pm 1.96\sigma$"),
+        renderer::SeriesConfig::scatter("data", "x", "y").label(r"data $y_i$, \$5"),
+    ];
+    let chart = renderer::Chart::sized(WIDTH, HEIGHT)
+        .with_legend_from(&series)
+        .with_legend_swatch(r"$\Delta E < 0$", Color::BLACK)
+        .with_legend_entry(
+            r"$\sqrt{x}$",
+            Color::BLACK,
+            1.0,
+            renderer::config::LegendEntryKind::Line,
+        );
+    let content = &chart.config().legend.content;
+    assert_eq!(legend_entry_count(content), 4);
+    assert_eq!(content.validate_math(), Ok(()));
+    assert!(content.within_limits());
+    let math_nodes = content
+        .segments
+        .iter()
+        .filter(|s| matches!(s.math_node, Some(n) if n.id == 0))
+        .count();
+    assert_eq!(math_nodes, 4, "one math span per entry");
+    let label = series[0].label.as_ref().unwrap();
+    assert_eq!(
+        label.segments,
+        tex(r"$\hat y \pm 1.96\sigma$", 12.0).segments
+    );
+    assert!(
+        content
+            .segments
+            .windows(label.segments.len())
+            .any(|w| w == &label.segments[..])
+    );
+    let text: String = content.segments.iter().map(|s| s.text).collect();
+    assert!(text.contains(", $5"), "{text:?}");
+
+    // The framed legend's own ink, frame and formulas, lies in its bounds,
+    // and so does the frame of the legend with the formulas taken out.
+    let mut with = bare();
+    with.legend.visible = true;
+    with.legend.content = content.clone();
+    let mut without = with.clone();
+    without.legend.content.segments = content
+        .segments
+        .iter()
+        .filter(|s| s.math_node.is_none() && s.math_parent.is_none())
+        .cloned()
+        .collect();
+    for (name, cfg) in [("with", &with), ("without", &without)] {
+        let mut hidden = cfg.clone();
+        hidden.legend.visible = false;
+        let ink = diff_box(
+            &try_raster_chart_to_rgba(cfg).expect("raster"),
+            &try_raster_chart_to_rgba(&hidden).expect("raster"),
+            cfg.chart_area.0.width,
+        )
+        .unwrap_or_else(|| panic!("{name}: no ink"));
+        let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+        let bounds = LegendElement.bounds(cfg, &measure).expect("bounds");
+        assert!(
+            inside(ink, bounds, SLACK),
+            "{name}: {ink:?} outside {bounds:?}"
+        );
+    }
+    // Then without the frame: the two frames differ in size, so their
+    // difference is two outlines, not the formulas' ink.
+    for cfg in [&mut with, &mut without] {
+        cfg.legend.bg_color = Color::new(0.0, 0.0, 0.0, 0.0);
+        cfg.legend.border_color = Color::new(0.0, 0.0, 0.0, 0.0);
+    }
+    check_element("legend", &LegendElement, &with, &without, false);
 }

@@ -73,3 +73,34 @@ async fn a_math_title_draws_hits_and_exports_with_the_bundled_font() {
     assert_eq!(kept.chart_title.text, config.chart_title.text);
     assert!(rich_text_from_tex(r"$\frac{a}$", 12.0, "", 0.0, 0.0, 0.0, 1.0).is_err());
 }
+
+/// The text setters read their text as matplotlib reads a label (#272):
+/// `$…$` spans are TeX, `\$` is a dollar sign and text whose TeX does not
+/// parse is shown as written.
+#[wasm_bindgen_test(async)]
+async fn the_text_setters_read_dollar_spans_as_tex() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    let has_math =
+        |text: &renderer::text::RichText| text.segments.iter().any(|s| s.math_node.is_some());
+    chart.set_title(r"$\sum_i x_i$").unwrap();
+    chart.set_x_title(r"$\sin(2\pi f t)$").unwrap();
+    chart.set_y_title(r"Price (\$)").unwrap();
+    let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    assert!(has_math(&config.chart_title.text));
+    assert!(has_math(&config.bottom_x.title_option.text));
+    assert_eq!(
+        config.left_y.title_option.text.segments,
+        renderer::text::rich_segments_from_text("Price ($)")
+    );
+    chart.frame().unwrap();
+    let bounds: serde_json::Value =
+        serde_json::from_str(&chart.decoration_bounds("axis_title_bottom").unwrap()).unwrap();
+    assert!(bounds["rect"][2].as_f64().unwrap() > 10.0, "{bounds}");
+
+    chart.set_x_title(r"$\frac{$").unwrap();
+    let config: Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    assert_eq!(
+        config.bottom_x.title_option.text.segments,
+        renderer::text::rich_segments_from_text(r"$\frac{$")
+    );
+}

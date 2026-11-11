@@ -62,6 +62,9 @@ fn validate_axis_range(field: &'static str, axis: &AxisOptions) -> Result<(), Co
     if let Err(reason) = axis.validate_breaks() {
         return fail(reason);
     }
+    if let Err(reason) = axis.validate_unit() {
+        return fail(reason);
+    }
     if axis.cross_at.is_some_and(|v| !v.is_finite()) {
         return fail(crate::RuleKind::AxisCrossAt);
     }

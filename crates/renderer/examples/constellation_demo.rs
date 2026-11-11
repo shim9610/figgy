@@ -6,14 +6,17 @@
 
 use renderer::color::Color;
 use renderer::config::{DrawStyle, MilkywayOptions};
-use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig, XySeries};
+use renderer::data_config::{ScatterShape, SeriesConfig};
 use renderer::theme::{SubplotScope, Theme};
-use renderer::{Chart, ExportOptions, ExportSource, Renderer, encode_png};
+use renderer::{Chart, ExportOptions, ExportSource, Renderer};
 
 /// The deep-space backdrop the exports clear to.
 const SPACE: Color = Color::from_rgb8(11, 15, 23);
 
-fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) {
+/// Fit the chart's margins to its labels, render it on the backdrop and
+/// write it as a PNG.
+fn export(r: &mut Renderer, chart: &mut Chart, series: &[SeriesConfig], path: &str) {
+    chart.fit_layout();
     let img = r
         .export_rgba_blocking(
             ExportSource::chart(chart, series),
@@ -25,25 +28,12 @@ fn export(r: &mut Renderer, chart: &Chart, series: &[SeriesConfig], path: &str) 
         .chunks_exact(4)
         .filter(|p| p[0] > 30 || p[1] > 35 || p[2] > 45)
         .count();
-    std::fs::write(path, encode_png(&img).expect("png")).expect("write");
+    img.save_png(path).expect("write");
     println!("wrote {path} (bright px: {ink})");
 }
 
 fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
     SeriesConfig::line(id, x, y).color(color).width(2.0)
-}
-
-fn planet_series(
-    id: &str,
-    x: &str,
-    y: &str,
-    shape: ScatterShape,
-    size: f32,
-    color: Color,
-) -> SeriesConfig {
-    SeriesConfig::scatter(id, x, y)
-        .color(color)
-        .marker(shape, size)
 }
 
 fn build_chart(style: DrawStyle) -> Chart {
@@ -127,7 +117,7 @@ fn main() {
     for (name, style) in cases {
         export(
             &mut r,
-            &build_chart(style),
+            &mut build_chart(style),
             &series,
             &format!("target/constellation_demo/{name}.png"),
         );
@@ -140,7 +130,7 @@ fn main() {
         });
         export(
             &mut r,
-            &build_chart(style),
+            &mut build_chart(style),
             &series,
             &format!("target/constellation_demo/{name}.png"),
         );
@@ -194,13 +184,13 @@ fn main() {
     };
     export(
         &mut r,
-        &spec_chart(),
+        &mut spec_chart(),
         &spec_correlated,
         "target/constellation_demo/spectrum_correlated.png",
     );
     export(
         &mut r,
-        &spec_chart(),
+        &mut spec_chart(),
         &spec_distinct,
         "target/constellation_demo/spectrum.png",
     );
@@ -209,8 +199,10 @@ fn main() {
     // as the 1× render upscaled — same star count per data span, same clump
     // structure — NOT a denser, blown-out chain (field report). The scaled
     // config divides star_density and multiplies structure_scale.
+    let mut x2 = spec_chart();
+    x2.fit_layout();
     r.save_blocking(
-        ExportSource::chart(&spec_chart(), &spec_distinct),
+        ExportSource::chart(&x2, &spec_distinct),
         ExportOptions::panel(2.0).with_clear(SPACE),
         "target/constellation_demo/spectrum_x2.png",
     )
@@ -252,7 +244,7 @@ fn main() {
     });
     export(
         &mut r,
-        &build_chart(style),
+        &mut build_chart(style),
         &sampling,
         "target/constellation_demo/sampling_match.png",
     );
@@ -284,34 +276,19 @@ fn main() {
     r.add_column("pb", &pb).unwrap();
     r.add_column("pc", &pc).unwrap();
     let chart_planets = [
-        planet_series(
-            "p_a",
-            "px",
-            "pa",
-            ScatterShape::Circle,
-            13.0,
-            Color::from_rgb8(255, 142, 92),
-        ),
-        planet_series(
-            "p_b",
-            "px",
-            "pb",
-            ScatterShape::Triangle,
-            13.0,
-            Color::from_rgb8(96, 168, 255),
-        ),
-        planet_series(
-            "p_c",
-            "px",
-            "pc",
-            ScatterShape::DiamondFilled,
-            13.0,
-            Color::from_rgb8(120, 220, 150),
-        ),
+        SeriesConfig::scatter("p_a", "px", "pa")
+            .color(Color::from_rgb8(255, 142, 92))
+            .marker(ScatterShape::Circle, 13.0),
+        SeriesConfig::scatter("p_b", "px", "pb")
+            .color(Color::from_rgb8(96, 168, 255))
+            .marker(ScatterShape::Triangle, 13.0),
+        SeriesConfig::scatter("p_c", "px", "pc")
+            .color(Color::from_rgb8(120, 220, 150))
+            .marker(ScatterShape::DiamondFilled, 13.0),
     ];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &chart_planets,
         "target/constellation_demo/planets_chart.png",
     );
@@ -321,17 +298,12 @@ fn main() {
     let by: Vec<f64> = vec![70.0, 76.0, 68.0, 74.0, 30.0, 26.0];
     r.add_column("bx", &bx).unwrap();
     r.add_column("by", &by).unwrap();
-    let big = [planet_series(
-        "big",
-        "bx",
-        "by",
-        ScatterShape::Square,
-        44.0,
-        Color::from_rgb8(255, 170, 110),
-    )];
+    let big = [SeriesConfig::scatter("big", "bx", "by")
+        .color(Color::from_rgb8(255, 170, 110))
+        .marker(ScatterShape::Square, 44.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &big,
         "target/constellation_demo/planets_big.png",
     );
@@ -343,7 +315,7 @@ fn main() {
         .marker(ScatterShape::Circle, 15.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &combo,
         "target/constellation_demo/planets_combo.png",
     );
@@ -355,29 +327,15 @@ fn main() {
         .map(|i| 4.5 + 2.5 * ((i as f64) * 1.1).cos().abs())
         .collect();
     r.add_column("perr", &jerr).unwrap();
-    let mut jets = planet_series(
-        "jets",
-        "px",
-        "pb",
-        ScatterShape::Circle,
-        13.0,
-        Color::from_rgb8(255, 142, 92),
-    )
-    .y_errors("perr");
-    if let DataRenderType::Xy(XySeries {
-        errors: Some(errors),
-        ..
-    }) = &mut jets.render_type
-    {
-        errors.style.error_bar_color = Color::from_rgb8(255, 160, 110);
-        errors.style.error_bar_width = 2.0;
-        errors.style.error_bar_cap_size = 7.0;
-        errors.style.cap_width = 2.0;
-    }
-    let jets = [jets];
+    let jets = [SeriesConfig::scatter("jets", "px", "pb")
+        .color(Color::from_rgb8(255, 142, 92))
+        .marker(ScatterShape::Circle, 13.0)
+        .y_errors("perr")
+        .error_color(Color::from_rgb8(255, 160, 110))
+        .error_bars(2.0, 7.0)];
     export(
         &mut r,
-        &build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+        &mut build_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
         &jets,
         "target/constellation_demo/jets.png",
     );

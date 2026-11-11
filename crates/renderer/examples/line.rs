@@ -5,7 +5,11 @@ use renderer::{Chart, Color, ExportOptions, ExportSource, Renderer, SeriesConfig
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = Renderer::headless_blocking()?;
     let x: Vec<f64> = (0..=100).map(|i| f64::from(i) / 10.0).collect();
-    let y: Vec<f64> = x.iter().map(|x| x.sin()).collect();
+    let f = 0.2;
+    let y: Vec<f64> = x
+        .iter()
+        .map(|t| (std::f64::consts::TAU * f * t).sin())
+        .collect();
     renderer.add_column("x", &x)?;
     renderer.add_column("y", &y)?;
 
@@ -13,9 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .color(Color::from_rgb8(34, 104, 198))
         .width(2.5)];
     let mut chart = Chart::sized(960, 600)
-        .with_title("A sine wave")
+        .with_title("A 0.2 Hz sine wave")
         .with_x_title("Time (s)")
-        .with_y_title("Amplitude");
+        // A `$…$` span in a title is TeX.
+        .with_y_title(r"$\sin(2\pi f t)$");
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-1.2, 1.2);
     chart.fit_layout();

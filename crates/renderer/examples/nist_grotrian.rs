@@ -357,17 +357,18 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         }
         categories.push(category);
     }
-    let header = |text: &str| RichText::plain(text, Color::from_rgb8(24, 39, 63), 16.0, "");
+    // The headers name the total spin S in TeX.
+    let header = |text: &str| RichText::from_tex(text, Color::from_rgb8(24, 39, 63), 16.0, "");
     c.config_mut().bottom_x.category_groups = Some(renderer::config::CategoryGroups {
         groups: vec![
             renderer::config::CategoryGroup {
-                label: header("Singlets (S = 0)"),
+                label: header(r"Singlets ($S = 0$)")?,
                 first: "1S".into(),
                 last: "1F*".into(),
                 bracket: true,
             },
             renderer::config::CategoryGroup {
-                label: header("Triplets (S = 1)"),
+                label: header(r"Triplets ($S = 1$)")?,
                 first: "3S".into(),
                 last: "3F*".into(),
                 bracket: true,
@@ -375,7 +376,6 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         ],
         offset: [0.0; 2],
     });
-    c.config_mut().bottom_x.out_margin = 84.0;
     c.config_mut().bottom_x.categories = Some(categories);
     // A Grotrian diagram reads by its levels: no grid, no mirrored ticks.
     let config = c.config_mut();
@@ -417,7 +417,7 @@ pub fn render(r: &mut Renderer, out: &Path, levels: &Path, lines: &Path) -> Resu
         }
     }
     let spec = SeriesConfig::energy_diagram("he", series);
-    save(r, &c, &[spec], &out.join("nist-grotrian-he-i.png"))
+    save(r, &mut c, &[spec], &out.join("nist-grotrian-he-i.png"))
 }
 
 fn main() -> Result {

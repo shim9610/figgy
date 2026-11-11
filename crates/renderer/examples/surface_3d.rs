@@ -20,8 +20,7 @@ use renderer::{
     Chart, Color, ColorMap, LayerRef, Material, Renderer, SeriesConfig,
     data_config::{
         ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FieldSeries,
-        MatrixRef, ScatterShape, Shading, VectorColorMap, VectorComponents, VectorPivot,
-        VectorScale, VectorStyle,
+        MatrixRef, ScatterShape, Shading, VectorColorMap, VectorPivot, VectorScale,
     },
     text::RichText,
     view3d::{SurfaceStyle, SurfaceWireframe, View3d},
@@ -242,7 +241,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
     // The floor sits at sea level, well below the massif's base.
     chart.config_mut().right_y.min = 0.;
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-surface.png"))
 }
 
@@ -297,31 +296,20 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
     ] {
         r.add_column(id, &data)?;
     }
-    let mut style = VectorStyle {
-        color: ink,
-        width_px: 2.4,
-        scale: VectorScale::Data { factor: 1. },
-        pivot: VectorPivot::Middle,
-        head_length_px: 10.,
-        head_width_px: 8.,
-        min_length_px: 2.,
-        color_map: Some(VectorColorMap::Column("vortex-speed".into())),
-    };
-    // The longest arrow spans 0.9 of the lattice spacing.
-    style.fit_scale_3d(ub, vb, wb, 0.9 * spacing);
-    let components = VectorComponents::Points {
-        u: "vortex-u".into(),
-        v: "vortex-v".into(),
-        w: Some("vortex-w".into()),
-    };
-    let arrows = SeriesConfig::of_kind(
-        "vortex",
-        "vortex-x",
-        "vortex-y",
-        DataRenderType::Vector { components, style },
+    let specs = [SeriesConfig::vectors_3d(
+        "vortex", "vortex-x", "vortex-y", "vortex-z", "vortex-u", "vortex-v", "vortex-w",
     )
-    .z("vortex-z");
-    let specs = [arrows];
+    .color(ink)
+    .width(2.4)
+    .pivot(VectorPivot::Middle)
+    .arrow_head(10., 8.)
+    .style_vectors(|style| {
+        style.scale = VectorScale::Data { factor: 1. };
+        style.min_length_px = 2.;
+        style.color_map = Some(VectorColorMap::Column("vortex-speed".into()));
+        // The longest arrow spans 0.9 of the lattice spacing.
+        style.fit_scale_3d(ub, vb, wb, 0.9 * spacing);
+    })];
     let mut chart = cartesian(
         "Burgers vortex / swirl, inflow and updraft",
         "x (km)",
@@ -364,7 +352,7 @@ fn vortex(r: &mut Renderer, out: &Path) -> Result {
     chart.auto_fit_view_3d_z(r.pool(), LayerRef::Base, &specs, 0.)?;
     nice_z(&mut chart, 1.);
     short_labels(&mut chart);
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-quiver3d.png"))
 }
 

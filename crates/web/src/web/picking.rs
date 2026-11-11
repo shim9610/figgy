@@ -62,7 +62,8 @@ impl FiggyChart {
     // ---- pointer interaction (coordinates in canvas pixels) ----
 
     /// Hit-test the chart chrome at canvas pixel `(x, y)` — returns the
-    /// topmost element's stable id (`"data_area"`, `"axis_bottom"`,
+    /// stable id of the element under the point (where padded hit regions
+    /// overlap, the one the pointer is visually on, #272) (`"data_area"`, `"axis_bottom"`,
     /// `"tick_labels_left"`, `"axis_title_left"`, `"colorbar"`,
     /// `"colorbar_axis"`, `"colorbar_tick_labels"`,
     /// `"colorbar_title"`, …) or `null`. Pure geometry, no selection state

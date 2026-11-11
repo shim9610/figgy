@@ -63,6 +63,7 @@ pub(crate) fn axis_options_colorbar() -> AxisOptions {
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
+        unit: None,
     }
 }
 
@@ -93,6 +94,7 @@ pub(crate) fn axis_options_x() -> AxisOptions {
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
+        unit: None,
     }
 }
 
@@ -123,6 +125,7 @@ pub(crate) fn axis_options_y() -> AxisOptions {
         cross_at: None,
         log_ticks: LogTickPolicy::Decades,
         breaks: None,
+        unit: None,
     }
 }
 
@@ -319,6 +322,7 @@ pub(crate) fn label_style_x() -> LabelStyle {
         label_offset_y: 0.0,
         format: LabelFormat::Decimal,
         significant_digits: 3,
+        clearance: crate::config::LabelClearanceMode::Auto,
     }
 }
 

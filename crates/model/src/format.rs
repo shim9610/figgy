@@ -203,11 +203,14 @@ impl LabelStyle {
 }
 
 impl AxisOptions {
+    /// Set `label_style.significant_digits` for the range and spacing the
+    /// labels print: the shown range with a [`AxisOptions::unit`] (#273).
     pub fn auto_significant_digits(&mut self) {
+        let (min, max) = self.shown_range();
         let sig = LabelStyle::compute_auto_significant_digits(
             self.scale.clone(),
-            self.min,
-            self.max,
+            min,
+            max,
             self.major_spacing,
         );
         self.label_style.significant_digits = sig.max(1);

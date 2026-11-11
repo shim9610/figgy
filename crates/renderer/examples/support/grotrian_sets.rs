@@ -204,7 +204,6 @@ fn grotrian(title: &str, y_title: &str, categories: Vec<Category>) -> Chart {
     // adds and sizes its own break afterwards.
     config.apply_axis_preset(renderer::AxisPreset::Grotrian);
     config.bottom_x.categories = Some(categories);
-    config.bottom_x.out_margin = 84.0;
     c
 }
 

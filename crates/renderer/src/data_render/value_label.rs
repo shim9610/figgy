@@ -36,31 +36,82 @@ pub(crate) const VALUE_LABEL_AUTO: u32 = 2;
 pub(crate) const BAR_LABEL_GAP: f32 = 6.0;
 /// Logical pixels between the top of a box and its label's baseline.
 pub(crate) const BOX_LABEL_GAP: f32 = 10.0;
-/// Logical pixels between a radar vertex and its label along the spoke.
-pub(crate) const RADAR_LABEL_GAP: f32 = 9.0;
+/// The least gap between a radar vertex's marker and its label, in logical
+/// pixels: the gap is `max(4, 0.25 em)` of the label font (#272).
+pub(crate) const RADAR_LABEL_MIN_GAP: f32 = 4.0;
+/// The gap between a radar vertex's marker and its label as a share of the
+/// label font size, when that is more than [`RADAR_LABEL_MIN_GAP`].
+pub(crate) const RADAR_LABEL_GAP_EM: f32 = 0.25;
+
+/// A radar series' label group (#272): the panel's radar series that draw
+/// value labels, whose labels at one spoke are placed together on every
+/// draw from their values (`value_label_radar`), and what that placement
+/// keeps clear of. A display parameter chosen from configuration (the
+/// group's membership, the label font and the ring labels' drawn boxes);
+/// the values are read on the GPU.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RadarLabelGroup {
+    /// This series' place among the group's members, in series order: its
+    /// block of label cells and its entry of the lane table.
+    pub rank: u32,
+    /// The members: the panel's radar series that draw value labels.
+    pub count: u32,
+    /// The visual gap two labels keep (#272, `visual_gap_for` of the
+    /// label font), in render pixels.
+    pub visual_gap: f32,
+    /// The radius axis' ray, a unit vector y down.
+    pub ray: [f32; 2],
+    /// The box of the drawn ring (radius) labels in the ray's frame from the
+    /// polar centre, as fractions of the outer radius: `[along min, along
+    /// max, across min, across max]`, across toward the side the labels sit
+    /// on (`PolarOptions::ray_side`); empty (min above max) without ring
+    /// labels.
+    pub ring: [f32; 4],
+}
+
+impl RadarLabelGroup {
+    /// A group of one with nothing to keep clear of: every kind but radar.
+    pub const NONE: Self = Self {
+        rank: 0,
+        count: 1,
+        visual_gap: 0.0,
+        ray: [1.0, 0.0],
+        ring: [1.0, -1.0, 1.0, -1.0],
+    };
+}
 
 /// Everything the bar module's value label entries read besides the
 /// transform, the series' bar style map, its category bar group 3 and its
 /// label cells (one per label: content width, placement and drag offset,
 /// `value_label_cells`): the atlas geometry, the kind and the label
-/// count.
+/// count, and a radar series' label group and what its labels keep clear
+/// of.
 ///
-/// GPU twin: `value_label.wgsl::ValueLabelParams`, 96 B.
+/// GPU twin: `value_label.wgsl::ValueLabelParams`, 128 B.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ValueLabelParamsGpu {
     pub atlas: crate::gpu_contour::LabelParamsGpu,
-    /// `[kind, labels, 0, 0]`.
+    /// `[kind, labels, radar rank, radar count]`: a radar series' place
+    /// among its label group's members and their count, each member a
+    /// block of `labels` cells ([`RadarLabelGroup`]); 0 and 1 for the
+    /// other kinds.
     pub shape: [u32; 4],
-    /// `[gap px, baseline above the content bottom px, font px, scale]`.
+    /// `[gap px, baseline above the content bottom px, font px, scale]`;
+    /// a radar label's gap is past its vertex's marker.
     pub metrics: [f32; 4],
     /// The selection box colour, premultiplied.
     pub selection_color: [f32; 4],
     /// `[stroke width px, padding px, 0, 0]`.
     pub selection: [f32; 4],
+    /// A radar series' `[visual gap px, 0, ray x, ray y]`
+    /// ([`RadarLabelGroup`]).
+    pub radar: [f32; 4],
+    /// A radar series' ring label band ([`RadarLabelGroup::ring`]).
+    pub ring: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 96);
+const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 128);
 
 /// One series' baked value label atlas on the GPU: the texture its labels
 /// sample, its cell geometry, and each string's measured cell width.
@@ -236,35 +287,68 @@ pub(crate) fn value_label_count(
 
 /// The value label uniform of one series: the atlas geometry, its kind and
 /// its label count ([`value_label_count`]) at `scale` render pixels per
-/// logical pixel. The labels' cells are [`value_label_cells`].
+/// logical pixel, and for a radar series its label group (`group`,
+/// [`RadarLabelGroup::NONE`] for the other kinds). The labels' cells are
+/// [`value_label_cells`], one block per member of the group.
 pub(crate) fn value_label_params(
     kind: u32,
     count: usize,
     atlas: &ValueLabelAtlas,
     font_px: f32,
     scale: f32,
+    group: &RadarLabelGroup,
 ) -> ValueLabelParamsGpu {
     let gap = match kind {
-        VALUE_LABEL_KIND_BARS | VALUE_LABEL_KIND_RANGE => BAR_LABEL_GAP,
-        VALUE_LABEL_KIND_BOXES => BOX_LABEL_GAP,
-        _ => RADAR_LABEL_GAP,
+        VALUE_LABEL_KIND_BARS | VALUE_LABEL_KIND_RANGE => BAR_LABEL_GAP * scale,
+        VALUE_LABEL_KIND_BOXES => BOX_LABEL_GAP * scale,
+        _ => radar_label_gap(font_px, scale),
     };
     let (color, stroke, padding) = selection_policy(scale);
     ValueLabelParamsGpu {
         atlas: atlas.geometry,
-        shape: [kind, u32::try_from(count).unwrap_or(u32::MAX), 0, 0],
-        metrics: [gap * scale, atlas.baseline_px, font_px, scale],
+        shape: [
+            kind,
+            u32::try_from(count).unwrap_or(u32::MAX),
+            group.rank,
+            group.count.max(1),
+        ],
+        metrics: [gap, atlas.baseline_px, font_px, scale],
         selection_color: color,
         selection: [stroke, padding, 0.0, 0.0],
+        radar: [group.visual_gap, 0.0, group.ray[0], group.ray[1]],
+        ring: group.ring,
     }
+}
+
+/// The gap between a radar vertex's marker and its label in render
+/// pixels, for a label font of `font_px` render pixels at `scale` render
+/// pixels per logical pixel: `max(4, 0.25 em)` (#272).
+pub(crate) fn radar_label_gap(font_px: f32, scale: f32) -> f32 {
+    (RADAR_LABEL_MIN_GAP * scale).max(RADAR_LABEL_GAP_EM * font_px)
+}
+
+/// How far a radar series' vertex mark reaches from the vertex, in logical
+/// pixels: its marker's circumradius (half the size of a circle, half the
+/// diagonal of a square), or half the outline width without a marker or
+/// with a thinner one. A label keeps its gap past it.
+pub(crate) fn radar_marker_reach(radar: &crate::data_config::RadarRef<'_>) -> f32 {
+    let half = radar.style.marker_size() * 0.5;
+    let marker = match radar.style.marker() {
+        crate::data_config::RadarMarker::None => 0.0,
+        crate::data_config::RadarMarker::Circle => half,
+        crate::data_config::RadarMarker::Square => half * std::f32::consts::SQRT_2,
+    };
+    marker.max(radar.style.line_width() * 0.5)
 }
 
 /// Push the label cells of one series, the first `count` labels in
 /// category (or, for range bars, row) order: the width of its string's
 /// cell (zero for an empty string or a label its placement hides), its
-/// placement and its drag offset (`offsets`) at `scale` render pixels per
-/// logical pixel. [`create_value_label_data`] writes them into the cells'
-/// mapping.
+/// placement (for a radar label, its vertex mark's reach,
+/// [`radar_marker_reach`]) and its drag offset (`offsets`), at `scale`
+/// render pixels per logical pixel. [`create_value_label_data`] writes
+/// them into the cells' mapping; a radar series writes one such block per
+/// member of its label group.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn value_label_cells(
     render_type: &DataRenderType,
@@ -276,6 +360,11 @@ pub(crate) fn value_label_cells(
     scale: f32,
     push: &mut dyn FnMut([f32; 4]),
 ) {
+    // A radar label's cell holds its vertex mark's reach where the other
+    // kinds hold the placement (a radar label has one placement).
+    let reach = render_type
+        .radar()
+        .map(|radar| radar_marker_reach(&radar) * scale);
     for (index, text) in text.iter().take(count).enumerate() {
         let category = categories.get(index).map(|c| c.id.as_str());
         let placement = label_placement(render_type, category);
@@ -283,7 +372,8 @@ pub(crate) fn value_label_cells(
         let cell = match placement {
             Some(placement) if !text.is_empty() => {
                 let [dx, dy] = offsets.get(index).copied().unwrap_or([0.0; 2]);
-                [width, placement as f32, dx * scale, dy * scale]
+                let y = reach.unwrap_or(placement as f32);
+                [width, y, dx * scale, dy * scale]
             }
             _ => [0.0; 4],
         };
@@ -360,11 +450,12 @@ pub struct ValueLabelData {
 /// Upload `params` and the series' label cells and bind them with `atlas`
 /// and `sampler` into `layout` ([`create_value_label_bind_group_layout`]).
 ///
-/// The cells buffer holds `params.shape[1]` cells, sized by the labels:
-/// `write` pushes them in order ([`value_label_cells`]) and they go
-/// straight into its mapping at creation, nothing staged on the CPU; cells
-/// it does not push read as zero (no label), pushes past the count are
-/// dropped.
+/// The cells buffer holds `params.shape[1]` cells for each of the
+/// `params.shape[3]` members of the series' label group (one for every kind
+/// but radar), sized by the labels and the group: `write` pushes them in
+/// order ([`value_label_cells`], member by member) and they go straight
+/// into its mapping at creation, nothing staged on the CPU; cells it does
+/// not push read as zero (no label), pushes past the count are dropped.
 pub(crate) fn create_value_label_data(
     device: &wgpu::Device,
     ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
@@ -372,12 +463,12 @@ pub(crate) fn create_value_label_data(
     atlas: &ValueLabelAtlas,
     sampler: &wgpu::Sampler,
     params: &ValueLabelParamsGpu,
-    write: impl FnOnce(&mut dyn FnMut([f32; 4])),
+    write: impl FnOnce(&mut dyn FnMut([f32; 4])) -> crate::Result<()>,
 ) -> crate::Result<ValueLabelData> {
     use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
     const CELL: usize = std::mem::size_of::<[f32; 4]>();
     let tally = ChargeTally::new();
-    let count = params.shape[1] as usize;
+    let count = (params.shape[1] as usize).saturating_mul(params.shape[3].max(1) as usize);
     let cell_bytes = (count.max(1) as u64).checked_mul(CELL as u64).ok_or(
         crate::FiggyError::GpuResourceLimit {
             resource: "value label cells",
@@ -423,7 +514,7 @@ pub(crate) fn create_value_label_data(
                     .copy_from_slice(bytemuck::bytes_of(&cell));
                 written += 1;
             }
-        });
+        })?;
     }
     cells.unmap();
     let buffer = charged_buffer_init(
@@ -548,14 +639,21 @@ pub(crate) fn issue_value_labels(
 }
 
 /// The category bar group 3 params of a radar series' value labels: the
-/// category column as `positions`, one label per row, a group of one; the
-/// value column is the lane table's one entry. The radar entries read
-/// nothing else.
-pub(crate) fn radar_label_params(positions: u32, count: u32, scale: f32) -> CategoryBarParamsGpu {
+/// category column as `positions`, one label per row, and the series'
+/// label group ([`RadarLabelGroup`]) as the bar group's members: the lane
+/// table holds every member's value column in member order, entry
+/// `group.rank` this series'. The radar entries read nothing else.
+pub(crate) fn radar_label_params(
+    positions: u32,
+    count: u32,
+    group: &RadarLabelGroup,
+    scale: f32,
+) -> CategoryBarParamsGpu {
     let mut params: CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
     params.positions = positions;
     params.count = count;
-    params.members = 1;
+    params.member = group.rank;
+    params.members = group.count.max(1);
     params.mode = CATEGORY_BAR_MODE_GROUPED;
     params.scale = scale;
     params

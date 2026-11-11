@@ -131,10 +131,10 @@ field setters:
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair, give the partner (`top_x`, `right_y`) the `scale` of the main axis (`bottom_x`, `left_y`), and choose each axis's major spacing, minor count, label format and precision from that scale, so a logarithmic `left_y` puts decades on both edges. The auto-fits and subplot setters do the same. A categorical partner keeps its scale, and on a 3D or ternary chart, where `right_y` is the z or c axis, the partner keeps its own scale and gets the ticks of it. A second value axis with its own scale is an overlay layer (`Config::overlays`); a view state applies each axis's scale as it carries it. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These leave a categorical axis (`categories` set) unchanged; `set_x_range` / `set_y_range` set its `category_window` ([#205](https://github.com/shim9610/figgy/issues/205)), the slots it shows, and the full range clears it. |
-| `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
-| `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
+| `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. `$…$` spans are TeX ([math in labels](USAGE.md#math-in-labels)). |
+| `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text, `$…$` spans as TeX; these helpers do not fit margins. |
 | `FeynmanSeries::auto_layout()` / `Renderer::auto_layout(chart, series_id)` | Write the automatic layout's place into the `at` of every vertex without one (#234), the auto-fit pattern: a display parameter committed into the SSOT, which the host reads back through `chart_series`. Placed vertices are untouched. An error when the layout's solver stops converging or its working memory cannot be allocated. `drag_vertex` (`Renderer::drag_feynman` with `FeynmanHit::Vertex`) commits the layout on the first drag, `drag_bend` sets a line's `bend`, and `drag_label` moves a label's offset in logical pixels, the value-label drag. See [Feynman diagrams](FEYNMAN.md). |
-| `layout::auto_layout(&config, &measure)` | Returns a copy of the config, the input untouched, whose `out_margin`s, axis title `offset_y`s, label formats, chart title band, legend corner and colourbar band are chosen so labels, titles, legend and colourbar do not overlap as `measure` (for example `CpuTextMeasure::for_style(&config.draw_style)`) lays them out. A band grows, never shrinks, to the labels, `LABEL_GAP`, the title and `LABEL_GAP`; a title that does not clear its labels gets the offset that puts it beside them; a document that already clears is returned unchanged, and a long `Decimal` or `Plain` axis becomes `Power`. Ranges, ticks, series and annotations are never written. Apply the result with `set_chart_config`; call it again after an auto-fit or a zoom. The browser wrapper's `autoLayout(configJson)` is the same call. |
+| `layout::auto_layout(&config, &measure)` | Returns a copy of the config, the input untouched, whose `out_margin`s, axis title `offset_y`s, label formats, chart title band, legend corner and colourbar band are chosen so labels, titles, legend and colourbar do not overlap as `measure` (for example `CpuTextMeasure::for_style(&config.draw_style)`) lays them out. Every band is set to exactly what it holds, smaller or larger: the labels (with the category group headers and the end labels of the perpendicular axes that run past the plot), a title gap of half the labels' font (at least `LABEL_GAP`), the title and an edge padding of half the font of what sits at the band's edge (at least 8 px), or the padding alone on a side without text (half the axis' label font beside a drawn frame, 8 px where nothing is drawn); the chart title band is the title's line (its font's line ascent and descent, or its ink where that reaches further) with 0.3 em of its font (at least the padding) above and below, 0 without a title, and the titles of a grid row share one band and one baseline. A title that does not clear its labels gets the offset that puts it beside them, and a long `Decimal` or `Plain` axis becomes `Power`. Ranges, ticks, series and annotations are never written. Apply the result with `set_chart_config`; call it again after an auto-fit or a zoom. The browser wrapper's `autoLayout(configJson)` is the same call. |
 
 Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
 linear range, while `0.0` adds no padding. The renderer does not impose a global
@@ -177,6 +177,54 @@ every output scale place the same ticks), and crowded labels are first
 demoted 1..9 → 1, 2, 5 → decades while at least two remain, then strided. Number format and requested precision
 are controlled by `label_style.format` and `label_style.significant_digits`,
 including colorbar labels; unusually long labels still need explicit margin space.
+Where two axes meet, and beside an axis' break mark, a tick label whose box
+comes within a small visual gap of the other axis' corner label or a
+slash is dropped
+(`label_style.clearance: LabelClearanceMode::Auto`, the default,
+[#272](https://github.com/shim9610/figgy/issues/272)): one axis yields at a
+corner (a y axis to the x axis, an x axis only to a categorical y axis, a 3D
+chart's z axis to the floor's labels) and its setting alone decides there;
+two boxes count as overlapping when they come closer than the visual gap
+both across and along the screen (2 px in total between two labels in the
+default 18 px tick label font, each box's half read as that share of its own
+font, so `(a + b) / 18` px between an `a` px and a `b` px label and it
+scales with the display or export), so boxes 1 px apart at 18 px count and
+labels the gap apart or more stay; the decision is made at rest (a drag moves
+the kept set as one), a 2x export keeps the labels of 1x, and an axis keeps
+at least two labels. `LabelClearanceMode::Keep` keeps every label of that
+axis; `Chart::with_label_clearance(mode)` (`helpers`) sets every axis.
+An axis prints its values in another unit with `unit: Some(AxisUnit {
+scale, offset })` ([#273](https://github.com/shim9610/figgy/issues/273)):
+its labels read `scale * value + offset` (ADC counts as volts, kelvin as
+°C), the ticks planned in those shown units so the labels are round
+numbers, each placed at `(shown - offset) / scale`, while `min`, `max`, the
+data and the picks stay in data units. `major_spacing` is then read in shown
+units, and the range helpers above choose it for the shown range:
+
+```rust
+use renderer::{Chart, config::AxisUnit};
+
+let mut chart = Chart::new(renderer::default::default_config());
+chart.config_mut().left_y.unit = Some(AxisUnit::new(5.0 / 32768.0, 0.0));
+chart.set_y_range(0.0, 32768.0); // 0 to 5 V
+assert_eq!(chart.config().left_y.major_spacing, 1.0);
+let axis = &chart.config().left_y;
+let volts: Vec<f64> = renderer::tick::major_ticks(axis)
+    .map(|counts| renderer::tick::shown_tick_value(axis, counts))
+    .collect();
+assert_eq!(volts, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+```
+
+A log axis takes only `offset = 0` and `scale > 0`; a probability axis, an
+axis with `Timestamp` labels and a categorical axis refuse a unit.
+With the `helpers` feature, `Chart::with_x_unit(scale, offset)` and
+`Chart::with_y_unit(scale, offset)` set `bottom_x.unit` / `left_y.unit` and
+choose `major_spacing` for the shown range as the range setters do
+(`AxisOptions::unit`), so `Chart::sized(640, 400)` after `set_y_range(0.0,
+32768.0)` and `.with_y_unit(5.0 / 32768.0, 0.0)` ticks at 0 to 5 V. Like
+`with_label_format` they write the bottom and left axes alone: `top_x`,
+`right_y` and overlay axes keep their own units. A unit the axis refuses is
+stored as given and `Config::validate_chart` names it; neither panics.
 Calendar-based timestamp ticks follow their own layout policy. The renderer
 still validates a directly edited config when it registers, refreshes, prepares
 or exports the chart. After any edit, refresh the derived view as described below.

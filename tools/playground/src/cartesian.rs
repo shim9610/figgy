@@ -6,8 +6,8 @@
 //! they edit the document, so drags stay exact at any window size.
 
 use renderer::config::{
-    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, ProbabilityScale,
-    SketchOptions,
+    AxisOptions, AxisScale, AxisUnit, Config, DrawStyle, LabelClearanceMode, LogTickPolicy,
+    MilkywayOptions, ProbabilityScale, SketchOptions,
 };
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
@@ -487,6 +487,11 @@ impl CartesianHost {
             changed |= self.zoom(r, &d, px(pos.unwrap()), factor, zx, zy);
         }
         if let Some((x, y)) = self.cursor_data {
+            // The readout in the units the axes print (#273).
+            let (x, y) = (
+                d.config.bottom_x.shown_value(x),
+                d.config.left_y.shown_value(y),
+            );
             response
                 .clone()
                 .on_hover_text_at_pointer(format!("x = {x:.4}\ny = {y:.4}"));
@@ -1078,6 +1083,74 @@ impl CartesianHost {
                     }
                 }
             });
+            // The unit an axis pair prints in (`AxisOptions::unit`, #273):
+            // `scale * value + offset`, on round steps of the shown values.
+            // The data and the picks stay raw.
+            for (x, label) in [(true, "X unit"), (false, "Y unit")] {
+                let axis = if x { &config.bottom_x } else { &config.left_y };
+                let mut on = axis.unit.is_some();
+                let mut unit = axis.unit.unwrap_or(AxisUnit::new(1.0, 0.0));
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    changed |= ui
+                        .checkbox(&mut on, label)
+                        .on_hover_text(
+                            "Print the axis as scale × value + offset: counts as volts, \
+                             kelvin as °C. A log axis takes offset 0 and scale > 0.",
+                        )
+                        .changed();
+                    ui.add_enabled_ui(on, |ui| {
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut unit.scale)
+                                    .speed(0.01)
+                                    .prefix("scale "),
+                            )
+                            .changed();
+                        changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut unit.offset)
+                                    .speed(0.1)
+                                    .prefix("offset "),
+                            )
+                            .changed();
+                    });
+                });
+                if changed {
+                    set_unit(&mut config, x, on.then_some(unit));
+                }
+            }
+            // The tick label clearance (`LabelStyle::clearance`, #272):
+            // `Auto` drops a label that comes within a small visual gap
+            // (2 px in total at the 18 px label font) of the corner label
+            // of the axis across or a break mark, `Keep` drops none.
+            ui.horizontal(|ui| {
+                for (x, label) in [(true, "keep X labels"), (false, "keep Y labels")] {
+                    let pair = if x {
+                        [&mut config.bottom_x, &mut config.top_x]
+                    } else {
+                        [&mut config.left_y, &mut config.right_y]
+                    };
+                    let mut keep = pair[0].label_style.clearance == LabelClearanceMode::Keep;
+                    if ui
+                        .checkbox(&mut keep, label)
+                        .on_hover_text(
+                            "Keep every tick label where it meets the labels of the axis \
+                             across or a break mark (right_y is a 3D chart's z axis).",
+                        )
+                        .changed()
+                    {
+                        let mode = if keep {
+                            LabelClearanceMode::Keep
+                        } else {
+                            LabelClearanceMode::Auto
+                        };
+                        for axis in pair {
+                            axis.label_style.clearance = mode;
+                        }
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut config.legend.visible, "Legend");
                 choice(ui, "corner", &mut config.legend.corner, CORNERS);
@@ -1570,6 +1643,35 @@ fn from_space(axis: &AxisOptions, v: f64) -> f64 {
 /// Put the X or Y axis pair on `scale`, keeping the range where the scale
 /// can draw it: a logarithmic axis needs a positive minimum, a probability
 /// axis both bounds strictly inside `(0, 1)`.
+/// Give an axis pair `unit` and choose its spacing for the shown range, as
+/// the range helpers do (#273).
+fn set_unit(config: &mut Config, x: bool, unit: Option<AxisUnit>) {
+    let (min, max, categorical) = {
+        let axis = if x { &config.bottom_x } else { &config.left_y };
+        (axis.min, axis.max, axis.categories.is_some())
+    };
+    let mut chart = Chart::new(config.clone());
+    chart.with_axis_range_change(|c| {
+        let pair = if x {
+            [&mut c.bottom_x, &mut c.top_x]
+        } else {
+            [&mut c.left_y, &mut c.right_y]
+        };
+        for axis in pair {
+            axis.unit = unit;
+        }
+    });
+    // A categorical axis refuses a unit; its window stays as it is.
+    if !categorical {
+        if x {
+            chart.set_x_range(min, max);
+        } else {
+            chart.set_y_range(min, max);
+        }
+    }
+    *config = chart.config().clone();
+}
+
 fn set_scale(config: &mut Config, x: bool, scale: AxisScale) {
     let (min, max) = {
         let axis = if x { &config.bottom_x } else { &config.left_y };

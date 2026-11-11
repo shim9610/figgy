@@ -409,7 +409,7 @@ impl FiggyChart {
     pub(super) fn label_text(&self, label: &str) -> Result<RichText, JsValue> {
         let content = &self.chart_config()?.legend.content;
         Ok(RichText {
-            segments: rich_segments_from_text(label),
+            segments: rich_segments_from_label(label),
             color: content.color,
             font_size: content.font_size,
             font: content.font.clone(),
@@ -605,7 +605,8 @@ impl FiggyChart {
     ///
     /// Upsert by `series_id`: a new id takes the next color of the active
     /// cycle; an existing id is replaced in place and keeps its color.
-    /// Non-empty `label` adds/updates the legend row.
+    /// Non-empty `label` adds/updates the legend row; its `$…$` spans are
+    /// TeX and `\$` is a dollar sign.
     pub fn add_line_series(
         &mut self,
         series_id: &str,
@@ -715,7 +716,8 @@ impl FiggyChart {
     }
 
     /// Set / change / remove a series' legend label. `'\n'` breaks lines;
-    /// unicode sub/superscripts (`₀`, `⁻`, …) map to styled segments.
+    /// unicode sub/superscripts (`₀`, `⁻`, …) map to styled segments;
+    /// `$…$` spans are TeX and `\$` is a dollar sign.
     /// Empty string removes the legend row. Returns `true` when the
     /// series exists.
     pub fn set_series_label(&mut self, series_id: &str, label: &str) -> Result<bool, JsValue> {

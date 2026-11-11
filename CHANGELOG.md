@@ -33,14 +33,25 @@ axes' `breaks`, the `EnergyLevels` series kind, a value label selection's
 chart's `plot_background`, the xy series' `stem`, the `TriMesh` series
 kind and the `mesh_triangle` selection, the axes' `category_window`, the
 breaks' `sizing`, the energy-level `bands` and `band` style, a
-subplot's `marker`, the energy-level `wavelength_labels` and a text
-annotation's `align`) are additive.
+subplot's `marker`, the energy-level `wavelength_labels`, a text
+annotation's `align`, the tick labels' `clearance` and the axes' `unit`)
+are additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
 
 - **Series constructors and modifiers** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` gains one constructor per chart family (`line`, `scatter`, `scatter_line`, `stem`, `histogram`, `heatmap`, `contours`, `hexbin`, `rgb_image`, `vectors`, `streamlines`, `category_bars`, `box_plot`, `range_bars`, `radar`, `ternary`, `parallel`, `mesh`, `energy_diagram`, `feynman_diagram`, and `of_kind`), each naming its columns and drawing with the host style defaults. Chainable modifiers set the common fields: `label`, `color`, `width`, `dash`, `marker`, `fill_to`, `x_errors`, `y_errors`, `horizontal` and `z`. `MatrixRef::columns_are_x`, `columns_are_y` and `with_layout` name a matrix. These are methods on the document types: the series stays the single source of truth.
+
+- **More series modifiers and chart parts** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `SeriesConfig` also takes one-line modifiers for what most charts of a kind set: `with_line` (a line through the markers of an x-y or ternary series), `no_markers`, `fill_to`, `fill_between`, `fill_color`, `interpolation`, `with_stem`, `error_bars`, `error_color`, `color_by` (markers, parallel, streamline and point vector series), `size_by`; `bar_border` and `bar_gap` (histograms); `range_colors`, `whiskers`, `connector` and `bar_labels` (range bars; `bar_labels` also category bars); `violin` and `outliers` (box plots); `shading`, `opacity`, `filled` (a fill under contours), `contour_levels` and `contour_labels` (fields and meshes); `vector_scale`, `arrow_head` and `pivot` (vectors); `region` (ternary). Every other field is set in a closure on its sub-style: `style_line`, `style_markers` (a size map's scale, for one), `style_stem` (a stem's own colour), `style_bars`, `style_vectors` (the minimum length), `style_contours`, `style_surface`, and `style_range_bars` and `style_box_plot`, which hand over every field of their family as `RangeBarsParts` and `BoxPlotParts` (`&mut` references; progress, slot width, raw points, per-box overrides). `horizontal()` also turns a stem sideways; a horizontal histogram names its columns swapped. New constructors `vectors_grid` (matrix components) and `vectors_3d`, and `RadialChart::with_title`, a title the radial chart accepts. Chart parts: `Color::with_alpha`; `Annotation::reference_line`, `span`, `text` and `text_rich` with `with_label`, `with_line_style`, `with_box` and `with_align`; `AxisOptions::overlay_y`; `Subplot::new` with `with_link_x` and `with_link_y`; and on the renderer's `Chart`, `with_annotation`, `with_label_format`, `without_grid`, `with_colorbar_title`, `with_polar` and `with_subplot`. A modifier or closure that does not apply to a series' family leaves it as it is.
+
+- **Math in labels, as matplotlib writes it** ([#272](https://github.com/shim9610/figgy/issues/272)). `text::rich_segments_from_label(&str)` and `RichText::from_label(text, color, size, font)` read a label the way matplotlib does: `$…$`, `\(…\)` and `$$…$$` spans are TeX (the segments `RichText::from_tex` gives), `\$` is a dollar sign, text outside math maps Unicode super- and subscripts as `rich_segments_from_text` does, and a string whose TeX does not parse is shown as written, with each `\$` as `$` (no panic, no error). Every convenience function that takes text as `&str` converts it through this one function: `SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y` and `RadialChart::with_title`. The SSOT types and their constructors stay explicit: `RichText::plain` is plain text and `RichText::from_tex` is math. Breaking for text that holds a `$`: see the renderer entry for the migration.
+
+- **Tick labels make way at corners and break marks** ([#272](https://github.com/shim9610/figgy/issues/272)). Where two axes of a rectangular chart meet, one axis' tick labels yield to the other's (a y axis to the x axis, an x axis only to a categorical y axis; a categorical axis never yields), and on a 3D chart the z labels yield to the floor's labels: a label whose box (its width by its digits' height, 0.7 em) overlaps the other axis' label nearest the corner is dropped. A label whose box overlaps a slash of its axis' own break mark is dropped too. Two boxes overlap here when they come within a small visual gap of each other, closer than it both across and along the screen: 2 px in total between two labels in the default 18 px tick label font, each box's half read as that share of its own font, so `(a + b) / 18` px between an `a` px and a `b` px label, scaling with the display or export scale. Boxes 1 px apart at 18 px count and labels the gap apart or more stay, so labels that look separate are kept; the decision is made at rest, so a drag moves the kept set as one; a 2x export keeps the labels of 1x; and an axis never drops below two labels. Drawing, hit testing, selection and auto layout see the same labels. The new `LabelStyle::clearance: LabelClearanceMode` chooses it per axis: `Auto` (the default, omitted from JSON, so older documents parse and re-serialize byte for byte) as above, `Keep` drops no label for a corner or a break mark. At a corner the yielding axis' setting alone decides: a `Keep` y axis keeps its corner label, a `Keep` x axis does not stop the y label from yielding. **Migration:** a `LabelStyle { .. }` struct literal or exhaustive pattern adds `clearance`: `LabelClearanceMode::Auto` for the default, `Keep` to draw every label as model 0.12 did.
+
+- **A click goes to the element the pointer is on** ([#272](https://github.com/shim9610/figgy/issues/272)). `HitMap::hit_test` no longer takes the topmost element whose padded hit region holds the point: where the padded regions of several elements overlap, an element whose own, unpadded geometry holds the point wins over one that reaches it only with its selection padding, among padding-only hits the one whose geometry is nearest wins, and ties keep the topmost registration. A point within one pixel of an element's geometry (`select::INK_FRINGE`, the reach of an antialiased edge or a border straddling its box) counts as on it. Backgrounds (`Selectable::is_background`: the data area, a subplot's frame, a decoration map's plot region) take no part: one answers only where no element above it holds the point, so a label's padding still grabs the label over the plot. Hit testing, selection and the start of a drag come through this one decision, made in one pass that keeps only the best candidate. New, both additive: `Selectable::is_background` (default `false`) and `SelectionGeometry::hit_distance`, how far the point stands from the element's own geometry where its hit region holds it.
+
+- **Axis units: an axis prints its values in another unit** ([#273](https://github.com/shim9610/figgy/issues/273)). `AxisOptions::unit: Option<AxisUnit>`, with `AxisUnit { scale, offset }`, makes the axis print `shown = scale * value + offset` without the host converting the data: 16-bit ADC counts as volts (`scale = 5/32768`), kelvin as degrees Celsius (`offset = -273.15`), seconds as milliseconds. The data, `min`, `max`, `breaks`, `cross_at`, annotations and picks stay in data units. The ticks are planned in shown units over the shown range (`AxisOptions::shown_range`), so the labels are round numbers after the conversion (`0, 0.5, 1.0 V`, not converted counts), and each tick is placed at its data position `(shown - offset) / scale`: `tick::major_ticks` and `minor_ticks` walk the shown grid, still in increasing data order for a negative scale, and `tick::shown_tick_value` gives the walked value a label prints, so `0.1 + 0.2` noise never reaches a label. `major_spacing` is read in shown units; `auto_ticks`, `auto_significant_digits` and the range helpers plan for the shown range. The label format (`Decimal`, `Percent`, `Power`, `Plain` and the rest) applies to the shown value. A logarithmic axis walks decades of the shown value. Every consumer of the tick plan sees the same ticks: drawing, grid lines, auto layout, hit testing, selection and drag, the corner and break-mark clearance, and SVG / PDF / PNG export, on the Cartesian axes, overlay axes, the colourbar axis, the polar radius (and angle) axis, ternary and 3D box axes. A linked subplot axis takes its target's unit with its spacing. `Config::validate_chart` refuses a scale that is not finite and non-zero (`RuleKind::AxisUnitScale`), an offset that is not finite (`AxisUnitOffset`), a logarithmic axis' unit unless `offset == 0` and `scale > 0` (`AxisUnitLog`), and a unit on a probability axis (`AxisUnitProbability`), an axis with `Timestamp` labels (`AxisUnitTimestamp`) or a categorical axis (`AxisUnitCategorical`); `AxisOptions::validate_unit` and `effective_unit` share that decision. With the `helpers` feature, `AxisOptions::unit(scale, offset)` sets it and chooses the spacing for the shown range. `None` is the default and is omitted from JSON, so older documents parse and re-serialize byte for byte. **Migration:** an `AxisOptions { .. }` struct literal or exhaustive pattern adds `unit: None` (or `unit: _`).
 
 - **Themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature, `model::theme` holds `Theme`: a look written into the document once, never stored as a name. `ChromeTheme` covers the chart and plot fills, the draw style, the axis frame (`AxisPreset`), axis, label, title and legend colours, fonts and sizes, the grid, the legend box, the colourbar outline and the selection highlight. `SeriesTheme` has one part per family: a `ColorCycle`, line widths and marker sizes, bars, boxes and violins, field colour maps and contour labels, vectors, radar, range bars, ternary regions, 3D surfaces, energy levels, Feynman diagrams and the radial chart. Built in: `light` (the documented default), `dark`, `paper`, `dashboard` and `sketch`, also through `Theme::named`. `Theme::apply(&mut config, &mut series, SubplotScope)` writes the chrome of the chart, its overlays and the chosen subplots, and styles the series drawn there; the legend symbols follow the new series look. `apply_chrome`, `style_series` and `apply_radial` apply one part. A theme keeps ranges, scales, label formats, categories, axis breaks, the chart area, offsets, all text, the annotation layer, the layer structure, series ids, columns and labels, and the selection's refs. Energy-level and Feynman charts keep their own frame.
 
@@ -720,19 +731,50 @@ annotation's `align`) are additive.
   setting, a series, an annotation or a pick. A `Decimal` or `Plain`,
   non-categorical axis whose labels print more than five digits (`0.00300`)
   or are wider than five ems switches to `LabelFormat::Power`; each band's
-  `out_margin` grows, never shrinks, to the labels' reach, `LABEL_GAP`, the
-  title's thickness and `LABEL_GAP` again (a band that already holds them,
-  or a side with neither labels nor a title, is kept); a title that does not
-  clear its labels by `LABEL_GAP` inside its band gets the `offset_y` that
-  puts it `LABEL_GAP` past them, and one that already clears, centred or
+  `out_margin` is set to exactly what it holds, smaller or larger
+  ([#270](https://github.com/shim9610/figgy/issues/270)): the labels' reach,
+  the title gap, the title's thickness and the edge padding, or the
+  padding alone on a side that holds nothing, where the labels include the
+  side's category group headers and the end labels of the perpendicular
+  axes that run past the plot; a title that does not
+  clear its labels by the gap inside its band gets the `offset_y` that
+  puts it the gap past them, and one that already clears, centred or
   offset by the host, stays; overlay axes and the colourbar's axis follow the
-  same rule, the title band follows `fit_chart_title_margin`, a
+  same rule, the chart title band is the title's height and 0.3 em of its
+  font (at least the edge padding) above and below it, 0 without a title, a
   legend over the colourbar goes to the first corner that clears it, and
-  each subplot is laid out as its own chart. No serialized field is added.
+  each subplot is laid out as its own chart, then lined up with the cells
+  of its grid row and column. No serialized field is added.
   Not covered: overlay axes drawn over each other, polar angle labels against
-  radius labels, and labels at a corner, which run along their axes. Call it
-  again after an auto-fit or a zoom: the range helpers reset a linear axis to
-  `Decimal`.
+  radius labels, and labels that collide along an axis or at a corner. Call
+  it again after an auto-fit or a zoom: the range helpers reset a linear axis
+  to `Decimal`.
+- **`auto_layout` fits bands both ways**
+  ([#270](https://github.com/shim9610/figgy/issues/270)). Bands shrink as
+  well as grow, end half the font of what sits at their outer edge (the
+  title, else the labels, else beside a drawn frame the axis' labels; at
+  least 8 px) past what they hold, with an axis or colourbar title half its
+  labels' font (at least `LABEL_GAP`) past them, and hold the overhang of the
+  perpendicular end labels and the category group headers; the chart title
+  band is padded by 0.3 em above and below, 0 without a title; the plots
+  of subplot cells that share a grid row or column (same chart-area y and
+  height, or x and width) are lined up and sized alike, the titles of
+  widened bands placed beside their labels again; a legend the host placed
+  past the plot keeps its corner and offsets, each band it crosses grows to
+  hold it and the edge padding of its font, and that side's axis title moves
+  past it, the title gap from the legend, when beside its labels it would
+  overlap it. Chart titles sit on a
+  baseline: the new `MeasureText::font_line(family, size)` (by default a
+  reference measurement, in the renderer the face's own line metrics) gives
+  the font's line, which the placement centres in the band with the ink
+  where it reaches further, so titles of one font and size share a baseline
+  whatever their letters; `auto_layout` fits the band to that line, gives a
+  grid row's titles one band and the `chart_title.offset_y` that puts them
+  on one baseline, and `fit_chart_title_margin` (`with_title`, `set_title`)
+  grows a band lower than the line. Migration: `layout::chart_title_placement`
+  and `chart_title_placement_in` take a `MeasuredTitle`
+  (`MeasuredTitle::of(&text, measure)`) instead of the title's
+  `TextExtents`.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),
   [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
@@ -1463,9 +1505,19 @@ annotation's `align`) are additive.
   - A view made with `create_chart_view` and drawn by `prepare_registered` is not redrawn on its first frame when the stored chart matches: a redraw whose panel and annotation raster keys all match uploads nothing, and a registered chart's annotation edit redraws the annotation layer alone. A view with fewer overlay layers than the stored chart grows on the next prepare instead of failing with `StaleStateToken`.
   - **Migration:** build the item with `view: &mut view, chart: &chart` (wrap a bare `Config` in `Chart::new`), pass `&mut [..]`, set the selection with `chart.select(..)` instead of `refresh_axis_with_selection`, and drop the host's dirty-flag `refresh_axis` branch.
 
+- **Chart placement, overlays, swatches, a headless radial renderer and a PNG save** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::placed(x, y, width, height)` and `with_area(..)` (resize a chart built from a document), `set_area(..)` (move an existing chart's area in place, as on a window resize), `with_overlay(y_axis, &series_ids)`, `with_legend_swatch(label, color)` for a legend entry that is not a series, `RadialRenderer::headless` / `headless_blocking`, and `RasterImage::save_png(path)` for a host that checks pixels before writing them.
+
 - **The examples use the helpers** ([#265](https://github.com/shim9610/figgy/issues/265)). The headless examples make their renderer with `Renderer::headless_blocking`, pass plain `Vec`s to `add_column`, build series with the `SeriesConfig` constructors and modifiers, take legends from their series (`with_legend_from`) and save with `save_blocking` where they need no image check. The gallery look and the designed scenes' chrome are themes (`examples/support/gallery.rs`, `support/styled.rs`). The examples shrink from 15,116 to 13,683 lines; the quick start (`examples/line.rs` and the README) from 85 to 30. Gallery images change only where a legend symbol now shows its series' own mark, where an axis title takes the gallery theme's ink, and where the dark style previews take the dark theme's chrome. `winit_simple` and `constellation_lab` leave the raster redraw to `prepare` and set the selection on the chart.
 
 - **Chart themes** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `renderer::theme` re-exports the model's themes, `Chart::apply_theme(&theme, &mut series, SubplotScope)` applies one to the chart and its series and refits the layout to the new text sizes, and `Chart::with_theme(&theme)` applies the chrome alone and fits.
+
+- **Math in the text wrappers** ([#272](https://github.com/shim9610/figgy/issues/272)). Breaking. `Chart::with_title`, `with_x_title`, `with_y_title`, `with_legend_entry`, and with the `helpers` feature `with_colorbar_title` and `with_legend_swatch`, read their text through `text::rich_segments_from_label`: `with_y_title(r"$\sin(2\pi f t)$")` draws a formula, and a title's band and `fit_layout` measure it as drawn. `with_legend_from` carries each series' label as it is, math included. The examples that built TeX segments by hand (`line`, `error_bars`, `area_step`, `vector_field`) use the wrappers, and `examples/support/gallery.rs` drops its `tex_label`. **Migration:** a `$` in a string passed to these wrappers (and to `SeriesConfig::label`, `Annotation::text`, `AxisOptions::overlay_y`, `RadialChart::with_title` and the browser text setters) now opens math; write `\$` (in Rust, `r"Price (\$)"` or `"Price (\\$)"`) for a dollar sign. A lone `$` with no closing one still shows as written, since its TeX does not parse. Text set on the document directly (`RichText::plain`, a JSON `RichText`) is unchanged.
+
+- **Axis units** ([#273](https://github.com/shim9610/figgy/issues/273)). The renderer draws, hits, selects, lays out and exports the tick labels of an axis with a `unit` in its shown units (see the model entry); the data, the column pool and the picks are untouched. `Chart::set_x_range`, `set_y_range`, the `auto_fit_*` family and a view state choose `major_spacing` for the shown range of an axis with a unit. A contour label still prints its level in data units. A unit edit is an axis chrome edit: the axis raster is redone and the data is not touched. The renderer formats no cursor or hover readout of an axis value; the playground's hover readout prints the shown values, and its Chart section has a scale and offset per axis pair. With the `helpers` feature, `Chart::with_x_unit(scale, offset)` and `with_y_unit(scale, offset)` set the unit of `bottom_x` / `left_y` (the paired `top_x` / `right_y` keep theirs, as with `with_label_format`) and choose the spacing for the shown range as the range setters do; a unit the axis refuses is stored for `Config::validate_chart` to name, with no panic. The test catalogue gains the `AxisUnits` scene (counts printed as volts, samples as milliseconds, an overlay's kelvin as °C), which the decoration oracle, the auto layout sweep and the vector export sweep cover.
+
+- **Tick label clearance** ([#272](https://github.com/shim9610/figgy/issues/272)). The renderer draws, hits, selects and lays out the tick labels the model keeps at axis corners and break marks (see the model entry). With the `helpers` feature, `Chart::with_label_clearance(LabelClearanceMode)` sets `label_style.clearance` on every axis (`bottom_x`, `top_x`, `left_y`, `right_y`, which is a 3D chart's z axis). A clearance edit is a label style edit: the axis raster is redone and the data is not touched. The playground's Chart section has "keep X labels" and "keep Y labels".
+
+- **Radar value labels stay next to their vertices** ([#272](https://github.com/shim9610/figgy/issues/272)). A radar value label sits outside its vertex along the spoke, `max(4, 0.25 em)` past the marker (was 9 px from the vertex), and still flips inward at the outer ring or the data area's edge. Only labels that would touch move, and only next to their own vertex: of two labelled series on one spoke, the larger value's label stays outside and the smaller value's goes inside its own vertex; equal or nearly equal values that would still touch split to the two sides of the spoke at the vertices' radius; a label that would touch the ring labels goes inside or beside its vertex. More series on a spoke are placed the same way from the outermost vertex inward. The shader reads the other labelled series' values at the spoke on every draw (SHADER_COMMON.md §5.17); nothing is stored, and there is no cap on the series. Drawing, picking and the selection box share the placement.
 
 - **Chart conveniences** ([#265](https://github.com/shim9610/figgy/issues/265)). With the `helpers` feature: `Chart::sized(width, height)` (the documented default look with that chart area), `with_legend_from(&series)` (one entry per labelled series, its symbol from the series through `legend::series_symbol_segments`, so a colour is written once) and `fit_layout()` (`layout::auto_layout` with the chart's own font measure).
 
@@ -3330,6 +3382,38 @@ annotation's `align`) are additive.
   `"none"` or a JSON array of indices. `FiggyBoundedChart.apply_theme(name)`
   themes a radial chart. An unknown name or a bad list changes nothing.
 
+- **Math in the text setters** ([#272](https://github.com/shim9610/figgy/issues/272)).
+  Breaking. `FiggyChart.set_title`, `set_x_title`, `set_y_title`,
+  `set_colorbar_title`, and the labels of `add_line_series` and
+  `set_series_label` (and the `<figgy-chart>` methods that forward to
+  them) read their text as matplotlib reads a label: `$…$`, `\(…\)` and
+  `$$…$$` spans are TeX, `\$` is a dollar sign, and text whose TeX does not
+  parse is shown as written. Migration: write `\$` (in a JavaScript string
+  literal, `"Price (\\$)"`) where a `$` is meant as a dollar sign. A
+  `RichText` JSON value (`set_config`, `add_annotation`, `add_corner_note`,
+  `rich_text_from_tex`) is taken as it is.
+
+- **Tick label clearance** ([#272](https://github.com/shim9610/figgy/issues/272)).
+  The config JSON's axis `label_style` takes an optional `clearance`,
+  `"Auto"` (the default, absent from the JSON) or `"Keep"`, set through
+  `get_config` / `set_config` as the label format is. `"Auto"` drops a tick
+  label where its box comes within a small visual gap (2 px in total at the
+  default 18 px label font, `(a + b) / 18` px between an `a` px and a `b`
+  px label) of the label of the axis across at a corner or a break mark's
+  slash, so boxes 1 px apart at 18 px count; `"Keep"` keeps every label of that axis.
+
+- **Axis units** ([#273](https://github.com/shim9610/figgy/issues/273)).
+  An axis in the config JSON takes an optional `unit`,
+  `{ "scale": 0.00015258789, "offset": 0 }`, absent by default, set through
+  `get_config` / `set_config` as the label settings are (the colourbar's
+  through `set_colorbar_axis` too). The axis then prints
+  `scale * value + offset` on round shown steps; the data and the picks
+  stay raw. `set_config` refuses a scale that is zero or not finite, an
+  offset that is not finite, a log axis' unit with an offset or a negative
+  scale, and a unit on a probability, timestamp or categorical axis, each
+  with its `code` (`AxisUnitScale`, `AxisUnitOffset`, `AxisUnitLog`,
+  `AxisUnitProbability`, `AxisUnitTimestamp`, `AxisUnitCategorical`).
+
 - **A chart background** ([#265](https://github.com/shim9610/figgy/issues/265)).
   The config JSON takes an optional `background` colour that fills the whole
   chart area under everything else. `FiggyChart.set_background(color_json)`
@@ -3884,11 +3968,14 @@ entries above describe the changes.
   oracle sweep runs every Cartesian scene through `auto_layout` and holds it
   to I1 to I7 (`auto_layout_i1` … `auto_layout_i7`). `tests/auto_layout.rs`
   checks purity and idempotence on every scene, untouched data fields, the
-  default config and the released config documents (only the 0.10.0 and
-  0.11.0 edited documents change, listed), a serde round trip and
+  bands of the default config and the released config documents (every
+  change listed), a serde round trip and
   `set_chart_config`; the model unit tests pin the band rule, offsets,
   formats, the colourbar, the legend, overlays and subplots with a stub
-  measure, and the web crate `autoLayout`.
+  measure, and the web crate `autoLayout`. With #270 they also cover a band
+  shrinking to its labels, the chart title's padding and a title-less chart,
+  the perpendicular labels' overhang, category group headers, a hidden frame
+  and a ternary chart.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
   The model pins the plan's golden ladders, majors and minors (with guarded
   and extreme ranges), a sweep where every `Decades(n)` ladder draws the

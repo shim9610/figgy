@@ -260,10 +260,6 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
     let config = chart.config_mut();
     config.apply_axis_preset(AxisPreset::Hidden);
     config.legend.visible = false;
-    config.left_y.out_margin = 40.;
-    config.right_y.out_margin = 40.;
-    config.bottom_x.out_margin = 30.;
-    config.top_x.out_margin = 10.;
     let mut specs = Vec::new();
     for (k, (caption, diagram)) in diagrams().into_iter().enumerate() {
         let (x, y) = ((k % 3) as f64, if k < 3 { 1. } else { 0. });
@@ -307,7 +303,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
             diagram,
         ));
     }
-    let image = export(r, &chart, &specs, bg)?;
+    let image = export(r, &mut chart, &specs, bg)?;
     save(&image, bg, &out.join("gallery-feynman.png"))
 }
 
